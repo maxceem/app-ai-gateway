@@ -18,6 +18,12 @@
  *
  * The end user is carried as a fixed-length digest of its id, so a long id
  * never makes the job id too long, and the caller's id is compared by digest.
+ * The digest is of the id's JSON text, which keeps every UTF-16 code unit, so
+ * two different ids never share one.
+ *
+ * The id is also bound to the connection's upstream route (`routeDigest`):
+ * once the connection points somewhere else, its old job ids name a job that
+ * may not exist there, so they stop resolving.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -37,6 +43,8 @@ export interface JobClaims {
   readonly appId: string;
   /** A digest of the end user's id (`userDigest`), or null for none. */
   readonly userDigest: string | null;
+  /** The connection's upstream route when the job was sent (`routeDigest`). */
+  readonly route: string;
   readonly issuedAt: number;
 }
 
@@ -53,6 +61,7 @@ interface WireClaims {
   readonly a: string;
   readonly p: string;
   readonly u: string | null;
+  readonly h: string;
   readonly t: number;
 }
 
@@ -117,10 +126,30 @@ function fromBase64Url(text: string): Uint8Array | null {
   return toBase64Url(bytes) === text ? bytes : null;
 }
 
-/** A fixed-length digest of an end user's id, as job ids carry it, or null for none. */
+async function digest(text: string): Promise<string> {
+  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text))));
+}
+
+/**
+ * A fixed-length digest of an end user's id, as job ids carry it, or null for
+ * none. Of its JSON text: a lone surrogate is written as an escape there, so it
+ * never encodes the same as U+FFFD.
+ */
 export async function userDigest(userId: string | null): Promise<string | null> {
-  if (userId === null) return null;
-  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(userId))));
+  return userId === null ? null : digest(JSON.stringify(userId));
+}
+
+/** Where a connection sends its requests: the parts that choose the upstream. */
+export interface UpstreamRoute {
+  readonly type: string;
+  readonly baseUrl: string | null;
+  readonly cloudflareGateway: { readonly accountId: string; readonly gatewayId: string } | null;
+}
+
+/** A short digest of a connection's upstream route. It changes when the base URL or the Cloudflare gateway does. */
+export async function routeDigest(route: UpstreamRoute): Promise<string> {
+  const gateway = route.cloudflareGateway === null ? null : [route.cloudflareGateway.accountId, route.cloudflareGateway.gatewayId];
+  return (await digest(JSON.stringify([route.type, route.baseUrl, gateway]))).slice(0, 16);
 }
 
 /** A signed job id for `claims`. Throws when `JWT_SECRET` cannot sign. */
@@ -135,6 +164,7 @@ export async function signJobId(secret: string, claims: JobClaimsInput): Promise
     a: claims.accountId,
     p: claims.appId,
     u: await userDigest(claims.userId),
+    h: claims.route,
     t: claims.issuedAt,
   };
   const body = toBase64Url(encoder.encode(JSON.stringify(wire)));
@@ -173,7 +203,7 @@ export async function readJobId(secret: string | undefined, id: string): Promise
   } catch {
     return null;
   }
-  if (![wire.k, wire.c, wire.s, wire.o, wire.m, wire.r, wire.a, wire.p].every(text)) return null;
+  if (![wire.k, wire.c, wire.s, wire.o, wire.m, wire.r, wire.a, wire.p, wire.h].every(text)) return null;
   if (!(wire.u === null || text(wire.u)) || typeof wire.t !== "number") return null;
   return {
     job: wire.k!,
@@ -185,6 +215,7 @@ export async function readJobId(secret: string | undefined, id: string): Promise
     accountId: wire.a!,
     appId: wire.p!,
     userDigest: wire.u ?? null,
+    route: wire.h!,
     issuedAt: wire.t,
   };
 }

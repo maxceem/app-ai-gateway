@@ -65,7 +65,7 @@ import { clientResponseHeaders, upstreamHeaders, withoutHeaders } from "./header
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
-import { jobSigningReady, jobSigningUnavailable, signJobId } from "../jobs/job-id.ts";
+import { jobSigningReady, jobSigningUnavailable, routeDigest, signJobId } from "../jobs/job-id.ts";
 import { gatewayLinks, jobEstimate, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
@@ -357,6 +357,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
             ? { form: await withFields(parsed.form ?? bytes, contentType, formChanges, formRemoved), contentType: null }
             : // A raw body the client named no type for is sent with none, never an empty one.
               { bytes, contentType: contentType === "" ? null : contentType };
+
+      // A job's id is signed by the gateway: without a key that can sign, the
+      // job is refused here, before its key is opened or anything is spent.
+      if (operation.lifecycle === "job" && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
 
       // The credentials are opened before admission: a request that cannot be sent must not spend anything.
       const credentials = await connectionCredentials(c.env, connection);
@@ -1187,6 +1191,7 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
     accountId: attempt.accountId,
     appId: attempt.appId,
     userId: attempt.identity.userId,
+    route: await routeDigest(connection),
     issuedAt: now,
   });
   const entry = jobEstimate(attempt, operation, { status: "ok", httpStatus: upstream.status, latencyMs, signedId: jobId, now });

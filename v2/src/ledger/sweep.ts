@@ -206,7 +206,10 @@ export async function runSweep(
     const lastTry = item.tries + 1 >= pace.maxTries;
     try {
       if (result.done) {
-        await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
+        // Only the row as it was read: facts saved on it meanwhile (a job's
+        // final figure, from a client poll) keep it for the next run.
+        const read = typeof row.detail_json === "string" ? row.detail_json : null;
+        await env.DB.prepare("DELETE FROM open_work WHERE id = ? AND detail_json IS ?").bind(item.id, read).run();
         done += 1;
       } else if (lastTry) {
         await env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?")

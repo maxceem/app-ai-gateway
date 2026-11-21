@@ -4,11 +4,12 @@
  * failure cases every lifecycle gets.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { readJobId, signJobId, userDigest, type JobClaims, type JobClaimsInput } from "../src/jobs/job-id.ts";
+import { readJobId, routeDigest, signJobId, userDigest, type JobClaims, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { checkJob, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, settleJobFromFacts, settleJobFromResult } from "../src/jobs/jobs.ts";
+import type { ChargeStore } from "../src/do/ChargeStore.ts";
 import { recordLedgerEntry } from "../src/ledger/write.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
@@ -21,6 +22,9 @@ const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
 const QUEUE = fal.operations.find((one) => one.name === "fal.queue")!;
 const SPEC = QUEUE.job!;
+
+/** The route digest of a test fal connection. */
+const routeOf = (baseUrl: string | null = null) => routeDigest({ type: "fal", baseUrl, cloudflareGateway: null });
 
 async function setup(rates: Record<string, unknown> | null = null, baseUrl: string | null = null) {
   await seedAccount();
@@ -133,6 +137,7 @@ describe("job ids", () => {
     operation: "fal.queue",
     model: "fal-ai/flux/dev",
     requestId: "req-1",
+    route: "r0",
     accountId: "acc",
     appId: "app",
     userId: null,
@@ -474,6 +479,7 @@ describe("the sweep and the four failure cases", () => {
       accountId: ACCOUNT_ID,
       appId,
       userDigest: await userDigest("user-1"),
+      route: await routeOf(),
       issuedAt: 1,
     };
     const result = { status: 200, headers: new Headers({ "x-fal-billable-units": "3" }), body: { images: [] } };
@@ -487,7 +493,7 @@ describe("the sweep and the four failure cases", () => {
     const { appId, connectionId, slug } = await setup();
     const job = `job_${crypto.randomUUID()}`;
     await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
-    const claims: JobClaims = { job, connectionId, slug, operation: "fal.queue", model: "fal-ai/flux/dev", requestId: "r", accountId: ACCOUNT_ID, appId, userDigest: null, issuedAt: 1 };
+    const claims: JobClaims = { job, connectionId, slug, operation: "fal.queue", model: "fal-ai/flux/dev", requestId: "r", accountId: ACCOUNT_ID, appId, userDigest: null, route: await routeOf(), issuedAt: 1 };
     const result = { status: 200, headers: new Headers({ "x-fal-billable-units": "4" }), body: {} };
     expect(await Promise.all([settleJobFromResult(env, claims, "j1.x.y", SPEC, result, 3_000), settleJobFromResult(env, claims, "j1.x.y", SPEC, result, 3_001)])).toEqual([
       "settled",
@@ -554,6 +560,7 @@ describe("signing, refunds, saved results and the sweep's pace (review fixes)", 
       accountId: ACCOUNT_ID,
       appId,
       userId: null,
+      route: await routeOf(),
       issuedAt: 1,
     });
     return { claims: (await readJobId(env.JWT_SECRET, jobId))!, jobId };
@@ -692,8 +699,8 @@ describe("signing, refunds, saved results and the sweep's pace (review fixes)", 
       { now: Date.now(), lastTry: false, signal: AbortSignal.abort() },
     );
     expect(answer).toEqual({ done: false, reason: "timed out" });
-    // Only the status call: no result call.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // Checked after the connection read: no call at all.
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(await charges(appId)).toHaveLength(1);
   });
 
@@ -708,5 +715,213 @@ describe("signing, refunds, saved results and the sweep's pace (review fixes)", 
     await runSweep(env, { now: Date.now() + 5 * 60_000 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect((await openWork(appId))[0]).toMatchObject({ tries: 1, last_error: "the job's connection is disabled" });
+  });
+});
+
+describe("saved final figures are append-only, and job ids follow their route (review fixes, round 2)", () => {
+  function attemptFor(appId: string, requestId: string): CallAttempt {
+    return {
+      requestId,
+      seq: 1,
+      accountId: ACCOUNT_ID,
+      appId,
+      identity: { accountId: ACCOUNT_ID, appId, userId: "user-1", installId: null, appleAccountId: null, authMethod: "api_key", credentialType: "api_key" } as never,
+      providerType: "fal",
+      connectionId: "c",
+      providerSlug: "fal",
+      operation: "fal.queue",
+      model: "fal-ai/flux/dev",
+      price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
+      reportsCost: false,
+      requestedMode: { tier: "standard", region: "global" } as never,
+      startedAt: 1_000,
+      appVersion: null,
+      clientTraceId: null,
+      requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
+    };
+  }
+
+  async function signed(appId: string, connectionId: string, slug: string, job: string) {
+    const jobId = await signJobId(env.JWT_SECRET, {
+      job,
+      connectionId,
+      slug,
+      operation: "fal.queue",
+      model: "fal-ai/flux/dev",
+      requestId: "req-1",
+      accountId: ACCOUNT_ID,
+      appId,
+      userId: null,
+      route: await routeOf(),
+      issuedAt: 1,
+    });
+    return { claims: (await readJobId(env.JWT_SECRET, jobId))!, jobId };
+  }
+
+  const estimateOf = (appId: string, job: string, jobId: string) =>
+    jobEstimate(attemptFor(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: jobId, now: 2_000 });
+
+  const D1_DOWN = {
+    prepare: () => {
+      throw new Error("D1 down");
+    },
+    batch: () => Promise.reject(new Error("D1 down")),
+  } as unknown as D1Database;
+
+  const onlyThisApp = (appId: string) => env.DB.prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
+  const costs = async (appId: string) => (await charges(appId)).map((row) => [row.kind, row.cost_nano]);
+  const SETTLED_AT_4 = [
+    ["estimate", 50_000_000],
+    ["correction", 50_000_000],
+  ];
+
+  it("keeps the first figure: a later poll with no units header never replaces it, before or after the estimate lands", async () => {
+    const { appId, connectionId, slug } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    const { claims, jobId } = await signed(appId, connectionId, slug, job);
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("waiting");
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: null, outputs: 2 }, 3_100)).toBe("waiting");
+    await writeToLedger(env.DB, [estimateOf(appId, job, jobId)]);
+    // The estimate is in now; a poll whose header expired still settles at the saved 4.
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: null, outputs: 2 }, 3_200)).toBe("settled");
+    expect(await costs(appId)).toEqual(SETTLED_AT_4);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("keeps the figure when D1 took the estimate but its reply was lost, and the store writes it again", async () => {
+    const { appId, connectionId, slug } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    const { claims, jobId } = await signed(appId, connectionId, slug, job);
+    const entry = estimateOf(appId, job, jobId);
+    await writeToLedger(env.DB, [entry]);
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([entry]);
+    expect(await settleJobFromFacts({ ...env, DB: D1_DOWN } as Env, claims, jobId, SPEC, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("waiting");
+    expect(await runDurableObjectAlarm(store)).toBe(true);
+    expect(JSON.parse(String((await openWork(appId))[0]!.detail_json)).result).toEqual({ status: 200, units: 4, outputs: 2 });
+    await onlyThisApp(appId);
+    fetchSpy.mockClear();
+    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await costs(appId)).toEqual(SETTLED_AT_4);
+  });
+
+  it("keeps a figure added to a store entry while its alarm was writing the older copy", async () => {
+    const { appId, connectionId, slug } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    const { jobId } = await signed(appId, connectionId, slug, job);
+    const entry = estimateOf(appId, job, jobId);
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([entry]);
+    await runInDurableObject(store, async (object) => {
+      const instance = object as unknown as ChargeStore;
+      const real = env.DB;
+      const racing = {
+        prepare: (query: string) => real.prepare(query),
+        batch: async (statements: D1PreparedStatement[]) => {
+          // The figure arrives while the alarm awaits D1 with the older copy.
+          await instance.keepJobResult(job, { status: 200, units: 4, outputs: 2 });
+          return real.batch(statements);
+        },
+      } as unknown as D1Database;
+      (instance as unknown as { env: Env }).env = { ...env, DB: racing } as Env;
+      await instance.alarm();
+      expect(await instance.pendingCount()).toBe(1);
+      (instance as unknown as { env: Env }).env = env;
+      await instance.alarm();
+      expect(await instance.pendingCount()).toBe(0);
+    });
+    expect(JSON.parse(String((await openWork(appId))[0]!.detail_json)).result).toEqual({ status: 200, units: 4, outputs: 2 });
+  });
+
+  it("keeps a job's check while JWT_SECRET cannot verify, and settles a saved figure without it", async () => {
+    const { appId, slug, key, connectionId } = await setup();
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    const broken = { ...env, JWT_SECRET: "" } as Env;
+    fetchSpy.mockClear();
+    await runSweep(broken, { now: Date.now() + 5 * 60_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await openWork(appId))[0]).toMatchObject({ tries: 1, last_error: "JWT_SECRET cannot verify job ids" });
+
+    const job = `job_${crypto.randomUUID()}`;
+    const { claims, jobId } = await signed(appId, connectionId, slug, job);
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("waiting");
+    await writeToLedger(env.DB, [estimateOf(appId, job, jobId)]);
+    await runSweep(broken, { now: Date.now() + 60 * 60_000 });
+    const rows = await env.DB.prepare("SELECT kind, cost_nano FROM charge WHERE owner_id = ? ORDER BY kind DESC").bind(job).all();
+    expect(rows.results.map((row) => [row.kind, row.cost_nano])).toEqual(SETTLED_AT_4);
+  });
+
+  it("settles a saved figure after its connection was deleted", async () => {
+    const { appId, connectionId, slug } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    const { claims, jobId } = await signed(appId, connectionId, slug, job);
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("waiting");
+    await writeToLedger(env.DB, [estimateOf(appId, job, jobId)]);
+    await env.DB.prepare("DELETE FROM provider_connection WHERE id = ?").bind(connectionId).run();
+    clearCaches();
+    await onlyThisApp(appId);
+    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect(await costs(appId)).toEqual(SETTLED_AT_4);
+  });
+
+  it("writes nothing when the item's time ran out right before settling", async () => {
+    const { appId, connectionId, slug } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    const { claims, jobId } = await signed(appId, connectionId, slug, job);
+    await writeToLedger(env.DB, [estimateOf(appId, job, jobId)]);
+    expect(await settleJobFromFacts(env, claims, jobId, SPEC, { status: 200, units: 4, outputs: 2 }, 3_000, AbortSignal.abort())).toBe("aborted");
+    expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
+    expect(await openWork(appId)).toHaveLength(1);
+  });
+
+  it("stops resolving a job id once its connection points at another backend", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    await env.DB.prepare("UPDATE provider_connection SET base_url = 'https://other-fal.example/' WHERE slug = ?").bind(slug).run();
+    clearCaches();
+    fetchSpy.mockClear();
+    const { response, json } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(response.status).toBe(404);
+    expect(json).toMatchObject({ error: { code: "job_not_found" } });
+    await onlyThisApp(appId);
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(logged("job_check_connection_changed")).toBe(true);
+    expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("reads the connection fresh in the sweep: one paused in another isolate is never used", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submit(appId, slug, key);
+    // This isolate has the connection cached as active; another one pauses it.
+    await env.DB.prepare("UPDATE provider_connection SET status = 'disabled' WHERE slug = ?").bind(slug).run();
+    await onlyThisApp(appId);
+    fetchSpy.mockClear();
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await openWork(appId))[0]).toMatchObject({ last_error: "the job's connection is disabled" });
+  });
+
+  it("spends no request allowance on a job refused for its signing key", async () => {
+    const { appId, slug, key } = await setup();
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.limits', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ per_app: { requests: { per_minute: 1 } } }), appId)
+      .run();
+    clearCaches();
+    falAnswers({});
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Math.floor(Date.now() / 60_000) * 60_000 + 30_000);
+    expect((await submit(appId, slug, key, undefined, { env: { ...env, JWT_SECRET: "short" } as Env })).response.status).toBe(500);
+    expect((await submit(appId, slug, key)).response.status).toBe(200);
+  });
+
+  it("keeps two user ids apart that encode to the same bytes", async () => {
+    expect(await userDigest("a\uD800")).not.toBe(await userDigest("a\uFFFD"));
   });
 });

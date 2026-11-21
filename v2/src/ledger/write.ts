@@ -140,10 +140,19 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
   VALUES (${CHARGE_COLUMNS.map(() => "?").join(", ")})
   ON CONFLICT(id) DO NOTHING`;
 
+/**
+ * An open-work row is written once. A retry of the same row only adds a job's
+ * saved final figure (`$.result`) when the stored row has none: saved facts
+ * are never replaced or removed by a write, only by the settlement that uses
+ * them.
+ */
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-  ON CONFLICT(id) DO NOTHING`;
+  ON CONFLICT(id) DO UPDATE SET
+    detail_json = json_set(COALESCE(open_work.detail_json, '{}'), '$.result', json(json_extract(excluded.detail_json, '$.result'))),
+    gave_up_at = NULL
+  WHERE json_extract(open_work.detail_json, '$.result') IS NULL AND json_extract(excluded.detail_json, '$.result') IS NOT NULL`;
 
 /** The statements that write some entries, in one batch. */
 export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]): D1PreparedStatement[] {

@@ -35,6 +35,7 @@ import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contra
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
+import { jobSigningReady, jobSigningUnavailable } from "../jobs/job-id.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { priceSources, resolvePresetTarget } from "../pricing/billability.ts";
 import {
@@ -380,6 +381,8 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       if (head === undefined) {
         throw paused ?? new GatewayError(502, "provider_not_configured", "No provider connection of this preset can serve it");
       }
+      // A job's id is signed by the gateway: refused before anything is spent when nothing can sign it.
+      if ([head, ...rest].some((one) => one.operation.lifecycle === "job") && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
 
       await admitRequest({
         env: c.env,

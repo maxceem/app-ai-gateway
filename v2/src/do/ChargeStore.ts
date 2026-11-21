@@ -68,8 +68,9 @@ export class ChargeStore extends DurableObject<Env> {
   /**
    * Keeps a job's final result with its estimate, when the estimate waits
    * here: the result goes on the job's check row, so both are written
-   * together and the sweep settles the job from it. False when no entry here
-   * is that job's estimate.
+   * together and the sweep settles the job from it. The first result kept
+   * wins; a later one never replaces it. False when no entry here is that
+   * job's estimate.
    */
   async keepJobResult(job: string, result: Readonly<Record<string, unknown>> | object): Promise<boolean> {
     const rows = this.ctx.storage.sql.exec<{ id: string; entry: string }>("SELECT id, entry FROM pending").toArray();
@@ -80,6 +81,7 @@ export class ChargeStore extends DurableObject<Env> {
       const openWork = entry.openWork.map((work) => {
         if (work.kind !== "job_check") return work;
         found = true;
+        if (work.detail?.result !== undefined && work.detail.result !== null) return work;
         return { ...work, detail: { ...(work.detail ?? {}), result } };
       });
       if (!found) return false;
@@ -114,7 +116,9 @@ export class ChargeStore extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(now + delay);
       return;
     }
-    for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
+    // Only an entry still as it was written: one a job's result was added to
+    // meanwhile (`keepJobResult`) stays, and is written again with it.
+    for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ? AND entry = ?", row.id, row.entry);
     log("info", "charge_store_written", { written: rows.length });
     this.setDelay(0);
     const left = await this.pendingCount();

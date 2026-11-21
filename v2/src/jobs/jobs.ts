@@ -29,12 +29,12 @@ import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
 import { chargeFromRow, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
-import { connectionCredentials, connectionDescription, loadConnection, type ConnectionRecord } from "../providers/connections.ts";
+import { connectionCredentials, connectionDescription, loadConnection, loadConnectionFresh, type ConnectionRecord } from "../providers/connections.ts";
 import type { JobRequest, JobSpec, OperationDescription, ProviderDescription, Unit } from "../providers/operation.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { callCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
-import { readJobId, type JobClaims } from "./job-id.ts";
+import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
 
 /** When the sweep first checks a job. fal keeps results for an hour, large ones for 6 minutes (T15). */
 export const JOB_FIRST_CHECK_MS = 2 * 60 * 1000;
@@ -174,11 +174,18 @@ export interface JobContext {
   readonly spec: JobSpec;
 }
 
-/** The connection and operation behind a job, or null when they are gone or changed. */
-export async function jobContext(env: Env, claims: JobClaims): Promise<JobContext | null> {
-  const connection = await loadConnection(env, claims.accountId, claims.slug);
+/**
+ * The connection and operation behind a job, or null when they are gone or
+ * changed. With `fresh`, the connection is read from D1 now, not from this
+ * isolate's cache (the sweep, which must see a status just changed); that read
+ * throws when D1 cannot answer.
+ */
+export async function jobContext(env: Env, claims: JobClaims, options: { readonly fresh?: boolean } = {}): Promise<JobContext | null> {
+  const connection = options.fresh === true ? await loadConnectionFresh(env, claims.accountId, claims.slug) : await loadConnection(env, claims.accountId, claims.slug);
   // A connection made again under the same slug is another key: its jobs are not this one's.
   if (connection === null || connection.id !== claims.connectionId) return null;
+  // A connection that now points somewhere else may have another job under the same request id.
+  if ((await routeDigest(connection)) !== claims.route) return null;
   const description = connectionDescription(connection);
   const operation = description?.operations.find((one) => one.name === claims.operation);
   if (description === null || operation === undefined || operation.lifecycle !== "job" || operation.job === undefined) return null;
@@ -331,102 +338,137 @@ export type JobSettlement =
   /** The result is not final yet. */
   | "not_final"
   /** The estimate is not in the ledger yet: try again later. */
-  | "waiting";
+  | "waiting"
+  /** The sweep's time for this item ran out before any write: try again later. */
+  | "aborted";
 
-/** The open-work row's columns for a job's saved result. */
-function savedResultRow(claims: JobClaims, jobId: string, spec: JobSpec, facts: JobResultFacts, now: number) {
-  return {
-    id: jobCheckId(claims.job),
-    accountId: claims.accountId,
-    appId: claims.appId,
-    owner: claims.job,
-    detail: JSON.stringify({ jobId, result: facts, ...checkPace(spec) }),
-    facts: JSON.stringify(facts),
-    now,
-  };
+/**
+ * A job as its check row knows it. Settling a saved figure needs nothing
+ * more: no signing key and no connection, since the rates are on the estimate.
+ */
+export interface JobRef {
+  readonly job: string;
+  readonly accountId: string;
+  readonly appId: string;
+  /** The signed job id, kept on the check row for a later live check. */
+  readonly jobId: string;
+  readonly retryEveryMs: number;
+  readonly maxTries: number;
+}
+
+/** A job's reference from its signed claims. */
+export function jobRefOf(claims: JobClaims, jobId: string, spec: JobSpec): JobRef {
+  return { job: claims.job, accountId: claims.accountId, appId: claims.appId, jobId, ...checkPace(spec) };
+}
+
+/** The final figure saved on a job's check row, or null when it holds none. Throws when D1 cannot answer. */
+async function savedJobFacts(db: D1Database, job: string): Promise<JobResultFacts | null> {
+  const row = await db.prepare("SELECT detail_json FROM open_work WHERE id = ?").bind(jobCheckId(job)).first<{ detail_json: string | null }>();
+  if (row === null || row.detail_json === null) return null;
+  try {
+    return factsOf((JSON.parse(row.detail_json) as Record<string, unknown>).result);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Saves a final result whose estimate is not in the ledger yet, so it is
- * settled later from the same facts with the same correction id, never
- * dropped. It goes on the job's check row in D1; while D1 cannot take it, on
- * the estimate's entry in the failed-write store, which writes both together.
- * Only when neither works is it logged in full, to be settled by hand.
+ * Saves a job's final figure where its estimate is, so it is settled later
+ * from the same facts with the same correction id. Append-only: the first
+ * figure saved wins, and nothing here removes one. It goes on the job's check
+ * row in D1; while D1 cannot take it, on the estimate's entry in the
+ * failed-write store, which writes both together. Only when neither works is
+ * it logged in full, to be settled by hand.
  */
-async function saveJobResult(env: Env, claims: JobClaims, jobId: string, spec: JobSpec, facts: JobResultFacts, now: number): Promise<void> {
-  const row = savedResultRow(claims, jobId, spec, facts, now);
+async function saveJobResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<void> {
+  const detail = JSON.stringify({ jobId: ref.jobId, result: facts, retryEveryMs: ref.retryEveryMs, maxTries: ref.maxTries });
   try {
     await env.DB.prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, 'job_check', ?, ?, 'job', ?, NULL, ?, ?, 0, ?)
        ON CONFLICT(id) DO UPDATE SET detail_json = json_set(COALESCE(open_work.detail_json, '{}'), '$.result', json(?)),
-         due_at = MIN(open_work.due_at, excluded.due_at), gave_up_at = NULL`,
+         due_at = MIN(open_work.due_at, excluded.due_at), gave_up_at = NULL
+       WHERE json_extract(open_work.detail_json, '$.result') IS NULL`,
     )
-      .bind(row.id, row.accountId, row.appId, row.owner, row.detail, now, now, row.facts)
+      .bind(jobCheckId(ref.job), ref.accountId, ref.appId, ref.job, detail, now, now, JSON.stringify(facts))
       .run();
     return;
   } catch (error) {
-    log("warn", "job_result_save_failed", { app: claims.appId, job: claims.job, error: errorFacts(error) });
+    log("warn", "job_result_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
   try {
-    if (await env.CHARGE_STORE.getByName(claims.appId).keepJobResult(claims.job, { ...facts })) return;
+    if (await env.CHARGE_STORE.getByName(ref.appId).keepJobResult(ref.job, { ...facts })) return;
   } catch (error) {
-    log("warn", "job_result_store_failed", { app: claims.appId, job: claims.job, error: errorFacts(error) });
+    log("warn", "job_result_store_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
-  log("error", "job_result_unrecorded", { app: claims.appId, job: claims.job, jobId, result: facts as unknown as Record<string, unknown> });
+  log("error", "job_result_unrecorded", { app: ref.appId, job: ref.job, jobId: ref.jobId, result: facts as unknown as Record<string, unknown> });
 }
 
 /**
- * Settles a job from a final result's facts. Safe to call from a client poll
- * and the sweep at once: one correction results. Removes the job's check once
- * done. While the estimate is not in the ledger, the facts are saved
- * (`saveJobResult`) and the answer is `waiting`. Never throws.
+ * Settles a job. The first final figure wins: one already saved on the job's
+ * check is used over the one given, so a later answer with fewer facts (an
+ * expired units header) never replaces it. Safe to call from a client poll
+ * and the sweep at once: one correction results, and it removes the check in
+ * the same write. While the estimate is not in the ledger, the figure is
+ * saved and the answer is `waiting`. With `signal`, nothing is written once
+ * the sweep's time for the item ran out. Never throws.
  */
-export async function settleJobFromFacts(
+export async function settleJobFacts(env: Env, ref: JobRef, facts: JobResultFacts, now: number, signal?: AbortSignal): Promise<JobSettlement> {
+  const tags = { app: ref.appId, job: ref.job };
+  const checkDone = () => env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(ref.job)).run();
+  let saved: JobResultFacts | null = null;
+  try {
+    saved = await savedJobFacts(env.DB, ref.job);
+    const first = saved ?? facts;
+    const estimate = await jobEstimateCharge(env.DB, ref.job);
+    if (signal?.aborted) return "aborted";
+    if (estimate === null) {
+      if (saved === null) await saveJobResult(env, ref, facts, now);
+      return "waiting";
+    }
+    const final = jobFinalFigure(estimate, first);
+    if (final === null) {
+      // Never read as 0: the estimate stays, already labelled an estimate.
+      log("warn", "job_units_missing", { ...tags, status: first.status });
+      await checkDone();
+      return "estimate_kept";
+    }
+    const settled = await settleJob(env.DB, { jobId: ref.job, final, now, doneWork: jobCheckId(ref.job) });
+    switch (settled.status) {
+      case "settled":
+        return "settled";
+      case "already":
+        await checkDone();
+        return "settled";
+      case "charge_missing":
+        if (saved === null) await saveJobResult(env, ref, facts, now);
+        return "waiting";
+      case "no_rate":
+        log("error", "job_settle_no_rate", { ...tags, bucket: settled.bucket });
+        await checkDone();
+        return "estimate_kept";
+    }
+  } catch (error) {
+    log("warn", "job_settle_failed", { ...tags, error: errorFacts(error) });
+    if (saved === null && !signal?.aborted) await saveJobResult(env, ref, facts, now);
+    return signal?.aborted ? "aborted" : "waiting";
+  }
+}
+
+/** Settles a job from a final result's facts, as `settleJobFacts`. */
+export function settleJobFromFacts(
   env: Env,
   claims: JobClaims,
   jobId: string,
   spec: JobSpec,
   facts: JobResultFacts,
   now: number,
+  signal?: AbortSignal,
 ): Promise<JobSettlement> {
-  const facts_ = { app: claims.appId, job: claims.job, providerSlug: claims.slug, model: claims.model };
-  try {
-    const estimate = await jobEstimateCharge(env.DB, claims.job);
-    if (estimate === null) {
-      await saveJobResult(env, claims, jobId, spec, facts, now);
-      return "waiting";
-    }
-    const final = jobFinalFigure(estimate, facts);
-    if (final === null) {
-      // Never read as 0: the estimate stays, already labelled an estimate.
-      log("warn", "job_units_missing", { ...facts_, status: facts.status });
-      await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
-      return "estimate_kept";
-    }
-    const settled = await settleJob(env.DB, { jobId: claims.job, final, now, doneWork: jobCheckId(claims.job) });
-    switch (settled.status) {
-      case "settled":
-        return "settled";
-      case "already":
-        await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
-        return "settled";
-      case "charge_missing":
-        await saveJobResult(env, claims, jobId, spec, facts, now);
-        return "waiting";
-      case "no_rate":
-        log("error", "job_settle_no_rate", { ...facts_, bucket: settled.bucket });
-        await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(claims.job)).run();
-        return "estimate_kept";
-    }
-  } catch (error) {
-    log("warn", "job_settle_failed", { ...facts_, error: errorFacts(error) });
-    await saveJobResult(env, claims, jobId, spec, facts, now);
-    return "waiting";
-  }
+  return settleJobFacts(env, jobRefOf(claims, jobId, spec), facts, now, signal);
 }
 
-/** Settles a job from a result call: `not_final` when its status is not final, else as `settleJobFromFacts`. */
+/** Settles a job from a result call: `not_final` when its status is not final, else as `settleJobFacts`. */
 export async function settleJobFromResult(
   env: Env,
   claims: JobClaims,
@@ -434,10 +476,11 @@ export async function settleJobFromResult(
   spec: JobSpec,
   result: JobResult,
   now: number,
+  signal?: AbortSignal,
 ): Promise<JobSettlement> {
   const facts = jobResultFacts(spec, result);
   if (facts === null) return "not_final";
-  return settleJobFromFacts(env, claims, jobId, spec, facts, now);
+  return settleJobFromFacts(env, claims, jobId, spec, facts, now, signal);
 }
 
 /** The JSON body of an answer, or null. */
@@ -451,27 +494,59 @@ export async function jsonOf(response: Response): Promise<unknown> {
 
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
 
+/** What a settlement means for the sweep's row. */
+function sweepResult(settled: JobSettlement, status?: number): HandlerResult {
+  switch (settled) {
+    case "waiting":
+      return retry("estimate not in the ledger yet");
+    case "aborted":
+      return retry("timed out");
+    case "not_final":
+      return retry(`result not final (${status ?? "?"})`);
+    default:
+      return { done: true };
+  }
+}
+
 /**
- * The sweep's check of one job: a saved result is settled as it is; else the
- * status first, then, once done, the result, settled as a client poll would.
- * Every provider's jobs go through this one handler. A paused connection's key
- * is never opened: its job waits. The item's time limit stops the work between
- * steps, so a check that ran out of time starts no result call and settles
- * nothing.
+ * The sweep's check of one job. Every provider's jobs go through this one
+ * handler.
+ *
+ * - A saved final figure is settled as it is, from the row alone: no signing
+ *   key and no connection are needed, so a configuration problem never loses
+ *   it.
+ * - Else the job is checked live: status first, then, once done, the result,
+ *   settled as a client poll would. That needs the signing key (without one,
+ *   the check waits) and the connection read fresh (a paused one's key is
+ *   never opened; one gone or pointed elsewhere leaves the estimate, logged).
+ * - The item's time limit is checked after each read and before any write.
  */
 export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
-  const id = item.detail?.jobId;
-  const claims = typeof id === "string" ? await readJobId(env.JWT_SECRET, id) : null;
-  if (typeof id !== "string" || claims === null) {
+  const detail = item.detail ?? {};
+  const jobId = typeof detail.jobId === "string" ? detail.jobId : null;
+  const ref: JobRef = {
+    job: item.ownerId,
+    accountId: item.accountId,
+    appId: item.appId,
+    jobId: jobId ?? "",
+    retryEveryMs: typeof detail.retryEveryMs === "number" ? detail.retryEveryMs : JOB_CHECK_EVERY_MS,
+    maxTries: typeof detail.maxTries === "number" ? detail.maxTries : JOB_MAX_CHECKS,
+  };
+  const saved = factsOf(detail.result);
+  if (saved !== null) return sweepResult(await settleJobFacts(env, ref, saved, now, signal));
+
+  if (!jobSigningReady(env.JWT_SECRET)) return retry("JWT_SECRET cannot verify job ids");
+  const claims = jobId === null ? null : await readJobId(env.JWT_SECRET, jobId);
+  if (claims === null || claims.job !== item.ownerId) {
     log("error", "job_check_unreadable", { app: item.appId, work: item.id });
     return { done: true };
   }
-  const context = await jobContext(env, claims);
-  if (context === null) return retry("the job's connection is gone");
-  const saved = factsOf(item.detail?.result);
-  if (saved !== null) {
-    const settled = await settleJobFromFacts(env, claims, id, context.spec, saved, now);
-    return settled === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
+  const context = await jobContext(env, claims, { fresh: true });
+  if (signal?.aborted) return retry("timed out");
+  if (context === null) {
+    // Gone, made again, or pointed at another backend: the estimate stays.
+    log("warn", "job_check_connection_changed", { app: claims.appId, job: claims.job, providerSlug: claims.slug });
+    return { done: true };
   }
   if (context.connection.status === "disabled") return retry("the job's connection is disabled");
   const status = await fetchJob(env, context, "status", claims, null, signal);
@@ -481,8 +556,6 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
   const result = await fetchJob(env, context, "result", claims, null, signal);
   const body = await jsonOf(result.response);
   if (signal?.aborted) return retry("timed out");
-  const settled = await settleJobFromResult(env, claims, id, context.spec, { status: result.response.status, headers: result.response.headers, body }, now);
-  if (settled === "waiting") return retry("estimate not in the ledger yet");
-  if (settled === "not_final") return retry(`result not final (${result.response.status})`);
-  return { done: true };
+  const settled = await settleJobFromResult(env, claims, jobId!, context.spec, { status: result.response.status, headers: result.response.headers, body }, now, signal);
+  return sweepResult(settled, result.response.status);
 };
