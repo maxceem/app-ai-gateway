@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { applyFinalResult, boundedJson, checkJob, countNeedsBody, FIGURE_D1_DEADLINE_MS, figureWork, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
-import { recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
+import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
 import { fal } from "../src/providers/fal.ts";
@@ -1003,10 +1004,9 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
   });
 
-  it("counts outputs only without a units header, and never more than a bounded part of the body", async () => {
-    expect(countNeedsBody(SPEC, new Headers({ "x-fal-billable-units": "2" }))).toBe(false);
-    expect(countNeedsBody(SPEC, new Headers())).toBe(true);
-    expect(await boundedJson(new Response('{"images":[1,2]}'), 64)).toEqual({ images: [1, 2] });
+  it("counts outputs from never more than a bounded part of the body", async () => {
+    expect(countNeedsBody(SPEC)).toBe(true);
+    expect(await boundedJson(new Response('{"images":[1,2]}'), 64)).toEqual({ kind: "parsed", value: { images: [1, 2] } });
     let cancelled = false;
     const big = new ReadableStream<Uint8Array>({
       pull: (controller) => controller.enqueue(new Uint8Array(1024)),
@@ -1014,7 +1014,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
         cancelled = true;
       },
     });
-    expect(await boundedJson(new Response(big), 4096)).toBeNull();
+    expect(await boundedJson(new Response(big), 4096)).toEqual({ kind: "too_large" });
     expect(cancelled).toBe(true);
 
     const { appId, slug, key } = await setup();
@@ -1067,3 +1067,130 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
   });
 });
 
+describe("per-output counts, stalled writes, read errors, submit deadlines, the store's cap and poll caching (review fixes, round 5)", () => {
+  const PER_IMAGE = { "fal-ai/flux/dev": { per_image: 10_000_000 } };
+
+  /** A two-image flux/dev estimate entry with its check, as a submit writes it. */
+  function estimateEntry(appId: string, job: string) {
+    return jobEstimate(
+      {
+        requestId: job,
+        seq: 1,
+        accountId: ACCOUNT_ID,
+        appId,
+        identity: { accountId: ACCOUNT_ID, appId, userId: "user-1", installId: null, appleAccountId: null, authMethod: "api_key", credentialType: "api_key" } as never,
+        providerType: "fal",
+        connectionId: "c",
+        providerSlug: "fal",
+        operation: "fal.queue",
+        model: "fal-ai/flux/dev",
+        price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
+        reportsCost: false,
+        requestedMode: { tier: "standard", region: "global" } as never,
+        startedAt: 1_000,
+        appVersion: null,
+        clientTraceId: null,
+        requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
+      } as CallAttempt,
+      QUEUE,
+      { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "signed-id", now: 2_000 },
+    );
+  }
+
+  it("settles a per-image estimate from the outputs, even when fal also sends billed units", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    // Estimated at two images at $0.01; three came back, and fal also billed 4 units, which a rate per image cannot use.
+    falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(rows.reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
+  });
+
+  it("sends a job's estimate and its check to the failed-write store together when the D1 write stalls", async () => {
+    const { appId } = await setup();
+    const job = `job_${crypto.randomUUID()}`;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const recording = recordLedgerEntry({ ...env, DB: slowD1(Promise.resolve(), true) } as Env, estimateEntry(appId, job));
+    await vi.advanceTimersByTimeAsync(LEDGER_D1_DEADLINE_MS);
+    await recording;
+    vi.useRealTimers();
+    const store = env.CHARGE_STORE.getByName(appId);
+    expect(await store.pendingCount()).toBe(1);
+    await runDurableObjectAlarm(store);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect((await openWork(appId)).map((row) => row.id)).toEqual([jobCheckId(job)]);
+  });
+
+  it("checks a result again when its body is cut off while the sweep reads it, instead of ending the check", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    falAnswers({
+      result: () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => {
+              controller.enqueue(new TextEncoder().encode('{"images":[{},'));
+              controller.error(new Error("connection dropped"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await openWork(appId)).toHaveLength(1);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    // Readable on the next check: three images settle it.
+    falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
+    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
+  });
+
+  it("stops the submit's fetch at the body deadline and answers at once, even when the stream's cleanup never ends", async () => {
+    const { appId, slug, key } = await setup();
+    let signal: AbortSignal | null = null;
+    fetchSpy.mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? null;
+      return new Response(
+        new ReadableStream({
+          start: (controller) => controller.enqueue(new TextEncoder().encode('{"request_id":')),
+          cancel: () => new Promise<void>(() => undefined),
+        }),
+        { status: 200 },
+      );
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const answer = submit(appId, slug, key);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect((await answer).response.status).toBe(502);
+    expect(signal!.aborted).toBe(true);
+    expect(logged("job_submission_lost")).toBe(true);
+  });
+
+  it("keeps at most MAX_PENDING entries and rows in all, across both of the store's tables", async () => {
+    const { appId } = await setup();
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([estimateEntry(appId, `job_${crypto.randomUUID()}`)]);
+    const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId };
+    const rows = Array.from({ length: MAX_PENDING }, (_, units) => figureWork(ref, { status: 200, units, outputs: null }, 3_000));
+    await store.keepWork(rows);
+    expect(await store.pendingCount()).toBe(MAX_PENDING);
+  });
+
+  it("lets no cache keep a poll's refusal either", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    // Another end user of the same app: refused as unknown, and never cached.
+    const other = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key, { user: "user-2" });
+    expect(other.response.status).toBe(404);
+    expect(other.response.headers.get("cache-control")).toBe("no-store");
+    const forged = await call("GET", `/v2/apps/${appId}/jobs/not-a-job/status`, key);
+    expect(forged.response.status).toBe(404);
+    expect(forged.response.headers.get("cache-control")).toBe("no-store");
+  });
+});

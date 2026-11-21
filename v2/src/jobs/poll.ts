@@ -20,7 +20,7 @@ import { connectionDescription, loadConnection } from "../providers/connections.
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, boundedJson, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, boundedJson, countedBody, countNeedsBody, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -84,15 +84,18 @@ export function jobPollHandler(which: "status" | "result") {
         const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
           if (context.spec.finalStatuses.includes(response.status)) {
-            // Settled from the units header when it has a number. Only without one is a
-            // copy of the body read to count outputs, at most OUTPUTS_READ_LIMIT bytes;
-            // the app gets the body itself, untouched, and never waits on the count.
-            const copy = !bodiless && countNeedsBody(context.spec, response.headers) ? response.clone() : null;
+            // When the operation counts outputs, a copy of the body is read to count
+            // them, at most OUTPUTS_READ_LIMIT bytes, in the background: the app gets
+            // the body itself, untouched, and never waits on the count.
+            const copy = !bodiless && countNeedsBody(context.spec) ? response.clone() : null;
             const ref = { job: claims.job, accountId: claims.accountId, appId: claims.appId };
             const now = Date.now();
             c.executionCtx.waitUntil(
               (async () => {
-                const body = copy === null ? null : await boundedJson(copy);
+                const read = copy === null ? null : await boundedJson(copy);
+                // A copy cut off while reading counts nothing: the job's check stays, and the sweep reads it again.
+                if (read?.kind === "read_error") return;
+                const body = read === null ? null : countedBody(read);
                 const facts = jobResultFacts(context.spec, { status: response.status, headers: response.headers, body });
                 if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
               })(),
@@ -116,6 +119,19 @@ export function jobPollHandler(which: "status" | "result") {
     );
   };
 }
+
+/**
+ * Marks every poll answer `no-store`, refusals and errors included: a 404
+ * kept by a shared cache for one caller could be served to the job's owner at
+ * the same URL. A route middleware, so it also covers answers the error
+ * handler writes.
+ */
+export const pollNoStore = async (c: { res: Response }, next: () => Promise<void>): Promise<void> => {
+  await next();
+  const headers = new Headers(c.res.headers);
+  noStore(headers);
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+};
 
 export const jobStatusHandler = jobPollHandler("status");
 export const jobResultHandler = jobPollHandler("result");

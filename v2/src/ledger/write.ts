@@ -13,6 +13,7 @@
  * - The request is never failed or delayed by any of this: callers run it
  *   after the response is sent.
  */
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
@@ -192,6 +193,9 @@ export async function writeToLedger(db: D1Database, entries: readonly LedgerEntr
   await db.batch(ledgerStatements(db, entries));
 }
 
+/** How long `recordLedgerEntry` waits for D1 before the entry goes to the failed-write store. */
+export const LEDGER_D1_DEADLINE_MS = 5_000;
+
 /** The UTC day of a time, `YYYY-MM-DD`. */
 export function utcDay(at: number): string {
   return new Date(at).toISOString().slice(0, 10);
@@ -203,7 +207,10 @@ export function utcDay(at: number): string {
  */
 export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<void> {
   try {
-    await writeToLedger(env.DB, [entry]);
+    // A D1 write that stalls must not outlast the request's waitUntil window:
+    // past the deadline the entry (its charge and its open work, together) goes
+    // to the store too. Its ids are stable, so a late D1 commit is harmless.
+    await withDeadline(writeToLedger(env.DB, [entry]), LEDGER_D1_DEADLINE_MS, "writing the charge");
     return;
   } catch (error) {
     log("warn", "ledger_write_failed", { app: entry.charge.appId, charge: entry.charge.id, error: errorFacts(error) });

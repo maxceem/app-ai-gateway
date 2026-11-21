@@ -1022,6 +1022,7 @@ export async function sendAttempts(
       clearTimeout(timer);
     }
     const latencyMs = Date.now() - providerStart;
+    fetchControllers.set(upstream, controller);
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
@@ -1163,7 +1164,7 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
   const { operation, attempt, connection } = prepared;
   const spec = operation.job!;
   // The provider has accepted the job by now, so a body that stalls must not hold the app or the estimate.
-  const body = await jsonWithin(upstream, JOB_SUBMIT_BODY_TIMEOUT_MS);
+  const body = await jsonWithin(upstream, JOB_SUBMIT_BODY_TIMEOUT_MS, fetchControllers.get(upstream));
   const requestId = providerRequestId(spec, body);
   if (requestId === null) {
     recordLostSubmission(c, prepared, "ok", latencyMs, "no_request_id", upstream.status);
@@ -1193,16 +1194,18 @@ async function answerJobSubmit(c: ProxyContext, prepared: PreparedAttempt, upstr
   return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
 }
 
+/** Each upstream answer's fetch controller, so a body read that runs out of time can stop the fetch itself. */
+const fetchControllers = new WeakMap<Response, AbortController>();
+
 /** How long the body of an accepted job submission may take to arrive. */
 export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
 
 /**
  * A response's JSON body, or null when it does not parse, fails, or does not
- * arrive in time. The body is read through a reader this function owns, so a
- * body that stalls is cancelled at the deadline and the upstream stream is
- * closed, not left open behind a `json()` call that holds its lock.
+ * arrive in time. At the deadline the fetch is aborted and the answer returns
+ * at once: nothing waits on the stream's own cleanup, which can hang.
  */
-async function jsonWithin(response: Response, ms: number): Promise<unknown> {
+async function jsonWithin(response: Response, ms: number, fetchController: AbortController | undefined): Promise<unknown> {
   if (response.body === null) return null;
   const reader = response.body.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1220,7 +1223,8 @@ async function jsonWithin(response: Response, ms: number): Promise<unknown> {
   try {
     const chunks = await Promise.race([reading, late]);
     if (chunks === LATE) {
-      await reader.cancel().catch(() => undefined);
+      fetchController?.abort();
+      void reader.cancel().catch(() => undefined);
       return null;
     }
     if (chunks === null) return null;

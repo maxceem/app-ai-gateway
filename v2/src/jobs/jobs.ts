@@ -24,6 +24,7 @@
  * A submission whose answer was lost is never sent again: it keeps its
  * estimate, marked `estimated`, and is logged (T15).
  */
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -288,22 +289,31 @@ export function jobResultFacts(spec: JobSpec, result: JobResult): JobResultFacts
 export const OUTPUTS_READ_LIMIT = 1024 * 1024;
 
 /**
- * Whether the result's body must be read to count it: only when outputs are
- * counted and the provider's units header gave no number. A result with
- * billed units is settled from its headers alone.
+ * Whether the result's body is read to count its outputs: whenever the
+ * provider's operation counts them. The gateway does not know at fetch time
+ * which unit the estimate bills, and an estimate per output needs the count
+ * even when a units header is there (that header gives billed units, which a
+ * rate per image cannot use). The read is bounded and never holds the app's
+ * answer; an estimate per billed unit is settled from the header either way.
  */
-export function countNeedsBody(spec: JobSpec, headers: Headers): boolean {
-  if (spec.outputsField === undefined) return false;
-  return spec.unitsHeader === undefined || headerNumber(headers.get(spec.unitsHeader)) === null;
+export function countNeedsBody(spec: JobSpec): boolean {
+  return spec.outputsField !== undefined;
 }
 
+/** A body read for counting: parsed (null when it is not JSON), larger than the limit, or cut off while reading. */
+export type BodyRead =
+  | { readonly kind: "parsed"; readonly value: unknown }
+  | { readonly kind: "too_large" }
+  | { readonly kind: "read_error" };
+
 /**
- * A body read as JSON, at most `limit` bytes; null when it is larger, not
- * JSON, or cannot be read. Reading stops (and the stream is cancelled) at the
- * limit, so counting never holds a large result in memory.
+ * A body read as JSON, at most `limit` bytes. Reading stops (and the stream
+ * is cancelled) at the limit, so counting never holds a large result in
+ * memory. A body that is whole but not JSON is parsed as null; one that fails
+ * while it is read is a read error, which the sweep tries again.
  */
-export async function boundedJson(response: Response, limit: number = OUTPUTS_READ_LIMIT): Promise<unknown> {
-  if (response.body === null) return null;
+export async function boundedJson(response: Response, limit: number = OUTPUTS_READ_LIMIT): Promise<BodyRead> {
+  if (response.body === null) return { kind: "parsed", value: null };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -313,21 +323,30 @@ export async function boundedJson(response: Response, limit: number = OUTPUTS_RE
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
-        await reader.cancel().catch(() => undefined);
-        return null;
+        void reader.cancel().catch(() => undefined);
+        return { kind: "too_large" };
       }
       chunks.push(value);
     }
-    const bytes = new Uint8Array(size);
-    let at = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, at);
-      at += chunk.byteLength;
-    }
-    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
-    return null;
+    return { kind: "read_error" };
   }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  try {
+    return { kind: "parsed", value: JSON.parse(new TextDecoder().decode(bytes)) as unknown };
+  } catch {
+    return { kind: "parsed", value: null };
+  }
+}
+
+/** The body counting reads: the parsed value, or null when it was too large (the estimate stays for a count per output). */
+export function countedBody(read: BodyRead): unknown {
+  return read.kind === "parsed" ? read.value : null;
 }
 
 /** Whether a result gives any count at all. One with none is never saved: it can never settle. */
@@ -477,17 +496,6 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
  */
 export const FIGURE_D1_DEADLINE_MS = 3_000;
 
-/** `work`, or a rejection once `ms` has passed. The work itself keeps running; every write it makes is safe whenever it lands. */
-function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  // A late failure of the work, after the deadline answered, is not an unhandled rejection.
-  work.catch(() => undefined);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms);
-  });
-  return Promise.race([work, late]).finally(() => clearTimeout(timer));
-}
-
 /**
  * Keeps a figure that could not settle yet, for the sweep: as its own row in
  * D1; while D1 cannot take it, in the failed-write store; when neither works,
@@ -600,8 +608,14 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   const result = await fetchJob(env, context, "result", claims, null, signal);
   let body: unknown = null;
-  if (countNeedsBody(context.spec, result.response.headers)) body = await boundedJson(result.response);
-  else await result.response.body?.cancel().catch(() => undefined);
+  if (countNeedsBody(context.spec)) {
+    const read = await boundedJson(result.response);
+    // Cut off while reading: the result may still be readable on the next check.
+    if (read.kind === "read_error") return retry("result body could not be read");
+    body = countedBody(read);
+  } else {
+    void result.response.body?.cancel().catch(() => undefined);
+  }
   const facts = jobResultFacts(context.spec, { status: result.response.status, headers: result.response.headers, body });
   if (facts === null) return retry(`result not final (${result.response.status})`);
   // From here the provider's figure is in hand: finish keeping it even if the item's time runs out.

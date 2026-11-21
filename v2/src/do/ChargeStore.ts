@@ -7,10 +7,10 @@
  * batches, with the same `ON CONFLICT(id) DO NOTHING` write, until D1 takes
  * them. Writing one twice is harmless. Nothing kept here is ever edited.
  *
- * Limits (set in step 1c): it holds at most `MAX_PENDING` entries and keeps
- * one for at most `RETENTION_MS` after it arrived. Past either, the oldest
- * entries are written to the logs in full (`usage_record_failed`) and
- * dropped; the console shows the gap. Nothing is lost silently: a logged
+ * Limits (set in step 1c): it holds at most `MAX_PENDING` entries and rows
+ * in all, across both tables, and keeps each for at most `RETENTION_MS` after
+ * it arrived. Past either, the oldest are written to the logs in full
+ * (`usage_record_failed`, `open_work_unrecorded`) and dropped; the console shows the gap. Nothing is lost silently: a logged
  * charge can still be written by hand.
  */
 import { DurableObject } from "cloudflare:workers";
@@ -126,34 +126,45 @@ export class ChargeStore extends DurableObject<Env> {
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());
   }
 
-  /** Drops what is past the limits, oldest first, logging each in full. */
+  /**
+   * Drops what is past the limits, logging each in full: anything older than
+   * `RETENTION_MS`, then the oldest across both tables (entries and rows
+   * without a charge) until at most `MAX_PENDING` are left.
+   */
   private trim(now: number): void {
-    const expired = this.ctx.storage.sql
-      .exec<{ id: string; entry: string }>("SELECT id, entry FROM pending WHERE stored_at < ?", now - RETENTION_MS)
-      .toArray();
-    const count = this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending").one().n;
-    const over = Math.max(0, count - expired.length - MAX_PENDING);
-    const overflow =
-      over === 0
-        ? []
-        : this.ctx.storage.sql
-            .exec<{ id: string; entry: string }>(
-              "SELECT id, entry FROM pending WHERE stored_at >= ? ORDER BY stored_at, id LIMIT ?",
-              now - RETENTION_MS,
-              over,
-            )
-            .toArray();
-    for (const row of [...expired, ...overflow]) {
-      logLostEntry(JSON.parse(row.entry) as LedgerEntry, new Error("The charge store gave up on this charge"));
-      this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
+    const cutoff = now - RETENTION_MS;
+    const sql = this.ctx.storage.sql;
+    for (const row of sql.exec<{ id: string; entry: string }>("SELECT id, entry FROM pending WHERE stored_at < ?", cutoff).toArray()) {
+      this.dropEntry(row.id, row.entry);
     }
-    const expiredWork = this.ctx.storage.sql
-      .exec<{ id: string; row: string }>("SELECT id, row FROM pending_work WHERE stored_at < ?", now - RETENTION_MS)
-      .toArray();
-    for (const one of expiredWork) {
-      log("error", "open_work_unrecorded", { work: one.id, row: JSON.parse(one.row) as Record<string, unknown> });
-      this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
+    for (const one of sql.exec<{ id: string; row: string }>("SELECT id, row FROM pending_work WHERE stored_at < ?", cutoff).toArray()) {
+      this.dropWork(one.id, one.row);
     }
+    const count = sql.exec<{ n: number }>("SELECT (SELECT COUNT(*) FROM pending) + (SELECT COUNT(*) FROM pending_work) AS n").one().n;
+    const over = Math.max(0, count - MAX_PENDING);
+    if (over === 0) return;
+    const oldest = sql
+      .exec<{ kind: "entry" | "work"; id: string; body: string }>(
+        `SELECT 'entry' AS kind, id, entry AS body, stored_at FROM pending
+         UNION ALL SELECT 'work' AS kind, id, row AS body, stored_at FROM pending_work
+         ORDER BY stored_at, id LIMIT ?`,
+        over,
+      )
+      .toArray();
+    for (const one of oldest) {
+      if (one.kind === "entry") this.dropEntry(one.id, one.body);
+      else this.dropWork(one.id, one.body);
+    }
+  }
+
+  private dropEntry(id: string, entry: string): void {
+    logLostEntry(JSON.parse(entry) as LedgerEntry, new Error("The charge store gave up on this charge"));
+    this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", id);
+  }
+
+  private dropWork(id: string, row: string): void {
+    log("error", "open_work_unrecorded", { work: id, row: JSON.parse(row) as Record<string, unknown> });
+    this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", id);
   }
 
   private delay(): number {

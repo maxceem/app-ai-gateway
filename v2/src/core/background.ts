@@ -11,3 +11,18 @@ export function contained(task: BackgroundTask, work: Promise<unknown>): Promise
     (error: unknown) => log("error", "background_task_failed", { task, error: errorFacts(error) }),
   );
 }
+
+/**
+ * `work`, or a rejection once `ms` has passed. The work itself keeps running:
+ * use it only where every write the work makes is safe whenever it lands (a
+ * write by stable id), so a slow D1 still leaves time for a fallback.
+ */
+export function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  // A late failure of the work, after the deadline answered, is not an unhandled rejection.
+  work.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
