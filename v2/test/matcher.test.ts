@@ -1,7 +1,6 @@
-import { customDescription } from "../src/providers/custom.ts";
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, ProviderDescriptionError, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderDescriptionError, ProviderMatcher } from "../src/providers/matcher.ts";
 import { defineOperation, defineProvider } from "../src/providers/operation.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { fal } from "../src/providers/fal.ts";
@@ -74,15 +73,10 @@ describe("OpenAI", () => {
     });
   });
 
-  it("refuses the admin API, whatever the case, before anything else", () => {
+  it("refuses the admin API unless it is listed: there are no refused paths, only what is declared or listed", () => {
+    expect(matcher.match("GET", "v1/organization/admin_api_keys")).toEqual({ kind: "refused", reason: "not_declared" });
     const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
-    for (const path of ["v1/organization", "v1/organization/admin_api_keys", "V1/ORGANIZATION/projects"]) {
-      expect(matcher.match("GET", path, { passthrough: listed })).toEqual({
-        kind: "refused",
-        reason: "refused_path",
-        pattern: expect.stringMatching(/^v1\/organization/),
-      });
-    }
+    expect(matcher.match("GET", "v1/organization/admin_api_keys", { passthrough: listed })).toMatchObject({ kind: "passthrough" });
   });
 });
 
@@ -99,7 +93,7 @@ describe("passthrough paths", () => {
       listed: { method: "GET", path: "v1/files/{file_id}" },
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
-      liveToken: null,
+      suggested: null,
     });
   });
 
@@ -140,15 +134,6 @@ describe("passthrough paths", () => {
     expect(() => compilePassthrough([{ method: "GET", path: "v1/x", priceNano: -1 }])).toThrow();
   });
 
-  it("gives a custom provider on a built-in host that provider's refused paths", () => {
-    const custom = customDescription({ baseUrl: "https://api.openai.com/", auth: { header: "authorization", format: "Bearer {key}" }, paths: [] });
-    const customMatcher = new ProviderMatcher(custom);
-    const route = upstreamRoute(custom, { baseUrl: "https://api.openai.com/", cloudflareGateway: null });
-    const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
-    expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed, route })).toMatchObject({
-      reason: "refused_path",
-    });
-  });
 });
 
 describe("upstream templates", () => {
@@ -158,7 +143,6 @@ describe("upstream templates", () => {
     serviceModes: [],
     hosts: { main: "example.com" },
     auth: { header: "x", format: "{key}" },
-    refused: [],
     operations: [
       defineOperation({
         name: "t.prefixed",
@@ -179,11 +163,6 @@ describe("upstream templates", () => {
     expect(matcher.match("GET", "v1/x.")).toEqual({ kind: "refused", reason: "bad_path", detail: "dot_segment" });
   });
 
-  it("still refuse such a value by a refused pattern, before a listed path can match it", () => {
-    const refusing = new ProviderMatcher({ ...provider, refused: ["v1/x{id}"] });
-    const passthrough = compilePassthrough([{ method: "GET", path: "v1/{segment}" }]);
-    expect(refusing.match("GET", "v1/x..", { passthrough })).toMatchObject({ reason: "refused_path" });
-  });
 });
 
 describe("broken descriptions are caught when compiled", () => {
