@@ -464,21 +464,15 @@ export interface JobSpec {
    */
   readonly outputs?: readonly { readonly field: string; readonly unit: Unit }[];
   /**
-   * How a result says the job was cancelled before it ran, which the provider
-   * bills nothing for: its status, and a header naming the cancel (fal's
-   * `499` with `x-fal-error-type: client_cancelled`, T15); the status alone
-   * is not enough. Billed units, when reported, settle it as any result.
-   * With none, it is free only when the gateway saw the job still queued as
-   * it sent the cancel (`queuedWhen`); otherwise the estimate stays.
+   * How a result confirms the job was cancelled: its status, and a header
+   * naming the cancel (fal's `499` with `x-fal-error-type: client_cancelled`,
+   * T15); the status alone is not enough. It is the provider's final answer,
+   * whether the cancel came through the gateway or was sent to the provider
+   * directly. Billed units, when reported, settle it as any result (a job
+   * cancelled while running); with none, the provider billed nothing, and
+   * the job is free (a job cancelled while queued).
    */
   readonly cancelled?: { readonly status: number; readonly header: { readonly name: string; readonly value: string } };
-  /**
-   * The status answer's field, and its values, that say the job is still
-   * queued (fal's `IN_QUEUE`). Before the gateway sends a cancel, it asks the
-   * status; a job seen queued then is recorded, and only such a job's
-   * confirmed cancel with no billed units is free.
-   */
-  readonly queuedWhen?: { readonly field: string; readonly values: readonly string[] };
   /**
    * How often the sweep checks a job no client polled, so a result is read
    * before the provider drops it. Default: every minute.

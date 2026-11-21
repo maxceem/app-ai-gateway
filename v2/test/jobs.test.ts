@@ -1937,30 +1937,21 @@ describe("cancels, unlisted and video models (step 6b)", () => {
   const cancelledResult = () =>
     Response.json({ detail: "Request cancelled by the client." }, { status: 499, headers: { "x-fal-error-type": "client_cancelled" } });
 
-  /** fal's status answer for a job still waiting in the queue. */
-  const queuedStatus = () => Response.json({ status: "IN_QUEUE", queue_position: 0 });
-  /** fal's status answer for a job that is running. */
-  const runningStatus = () => Response.json({ status: "IN_PROGRESS" });
-
   it("cancels through the gateway, free, and settles a job cancelled while queued to zero", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
     expect(await total(appId)).toBe(50_000_000);
-    falAnswers({ status: queuedStatus });
     fetchSpy.mockClear();
     const { response, json } = await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
     expect(response.status).toBe(202);
     expect(json).toEqual({ status: "CANCELLATION_REQUESTED" });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    // The status first, to see the job still queued; then the cancel itself.
-    expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual([
-      "https://queue.fal.run/fal-ai/flux/requests/req-1/status",
-      "https://queue.fal.run/fal-ai/flux/requests/req-1/cancel",
-    ]);
-    expect(fetchSpy.mock.calls[1]![1]?.method).toBe("PUT");
-    // A cancel writes no charge.
+    // The cancel is only forwarded: one call, and nothing written.
+    expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual(["https://queue.fal.run/fal-ai/flux/requests/req-1/cancel"]);
+    expect(fetchSpy.mock.calls[0]![1]?.method).toBe("PUT");
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect((await openWork(appId)).filter((row) => String(row.id).includes("cancel"))).toEqual([]);
     // fal confirms it: status COMPLETED, then the result's 499 with client_cancelled.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
     await onlyThisApp(appId);
@@ -1969,11 +1960,10 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(await openWork(appId)).toEqual([]);
   });
 
-  it("settles a confirmed cancel from fal's units when fal reports them, queued or not", async () => {
+  it("settles a confirmed cancel from fal's units when fal reports them", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
-    falAnswers({ status: queuedStatus });
     await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
     // A 499 that still reports 3 billed units: the units win, at $0.025 each.
     falAnswers({
@@ -1984,29 +1974,17 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(await total(appId)).toBe(75_000_000);
   });
 
-  it("keeps the estimate of a job cancelled while running when fal reports no units", async () => {
+  it("settles a job cancelled at fal directly to zero, read by the sweep alone", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
-    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
-    falAnswers({ status: runningStatus });
-    await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
-    // It may have run: with no units and no sign it was still queued, the estimate stays.
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    expect(await total(appId)).toBe(50_000_000);
+    // The gateway never saw the cancel: fal's 499 with client_cancelled and no units is its final word.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
-    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await onlyThisApp(appId);
     await runSweep(env, { now: Date.now() + 5 * 60_000 });
-    expect(await total(appId)).toBe(50_000_000);
-    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
-  });
-
-  it("keeps the estimate of a job cancelled at fal directly, with no units", async () => {
-    const { appId, slug, key } = await setup();
-    falAnswers({});
-    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
-    // The gateway never saw a cancel, so it has no sign the job never ran.
-    falAnswers({ result: cancelledResult });
-    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
-    expect(await total(appId)).toBe(50_000_000);
+    expect(await total(appId)).toBe(0);
+    expect(await openWork(appId)).toEqual([]);
   });
 
   it("charges a running job that finishes despite its cancel in full, from fal's units (T15)", async () => {
@@ -2043,12 +2021,12 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
-    // A lost provider answer: a provider error, and no charge. (The status asked first is lost too.)
-    fetchSpy.mockRejectedValueOnce(new TypeError("network")).mockRejectedValueOnce(new TypeError("network"));
+    // A lost provider answer: a provider error, and no charge.
+    fetchSpy.mockRejectedValueOnce(new TypeError("network"));
     expect((await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key)).response.status).toBe(502);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
     // Sent again while the job is still queued: fal takes it.
-    falAnswers({ status: queuedStatus });
+    falAnswers({});
     expect((await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key)).response.status).toBe(202);
     // A repeat after the job finished: fal's own answer, passed on.
     falAnswers({ cancel: () => Response.json({ detail: "ALREADY_COMPLETED" }, { status: 400 }) });

@@ -418,16 +418,11 @@ export interface JobResultFacts {
   readonly outputs: OutputCounts | null;
   /**
    * The result confirms the job was cancelled (`JobSpec.cancelled`), and the
-   * provider reported no billed units. Free only when the gateway saw the job
-   * still queued when it sent the cancel (`queuedCancel`); otherwise it may
-   * have run, and the estimate stays.
+   * provider reported no billed units: the provider's final word that the
+   * cancel cost nothing, so it is free. A cancel that did cost something
+   * comes with its billed units instead, and settles at them.
    */
   readonly cancelled?: true;
-  /**
-   * The gateway saw the job queued when it sent the cancel: its evidence row
-   * exists. Looked up when settling, never saved.
-   */
-  readonly queuedCancel?: true;
   /**
    * True when the body had to be read to count outputs, but could not be: cut
    * off, empty, or not whole JSON. Then a missing output count says nothing.
@@ -485,8 +480,8 @@ export async function boundedJson(
  */
 export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
   const units = spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader));
-  // A confirmed cancel is final. Billed units, when reported, settle it as any
-  // result; without them it is free only if the job never started (`queuedCancel`).
+  // A confirmed cancel is final, whoever sent it. Billed units, when reported,
+  // settle it as any result; without them the provider billed nothing.
   const cancelled = spec.cancelled;
   if (cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value) {
     return units !== null ? { status: response.status, units, outputs: null } : { status: response.status, units: null, outputs: null, cancelled: true };
@@ -516,7 +511,7 @@ function factsOf(value: unknown): JobResultFacts | null {
   if (typeof facts.status !== "number" || !count(facts.units)) return null;
   const outputs = savedOutputs(facts.outputs, facts.outputUnit);
   if (outputs === undefined) return null;
-  // A saved figure was read whole: `unread` is never kept, nor is `queuedCancel`, which is looked up.
+  // A saved figure was read whole: `unread` is never kept.
   return { status: facts.status, units: facts.units as number | null, outputs, ...(facts.cancelled === true ? { cancelled: true as const } : {}) };
 }
 
@@ -544,9 +539,9 @@ function savedOutputs(value: unknown, legacyUnit: unknown): OutputCounts | null 
 
 /**
  * The counts a result gives, by unit. A success is one job (a price per
- * request), with its outputs in their unit. A failure, or a job cancelled
- * before it ran, is free only when the provider reports 0 billed units: then
- * every count is 0.
+ * request), with its outputs in their unit. A failure is free only when the
+ * provider reports 0 billed units, and a confirmed cancel when it reports
+ * none: then every count is 0.
  */
 function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   const counts: Partial<Record<Unit, number>> = {};
@@ -557,8 +552,8 @@ function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   if (succeeded(facts)) {
     counts.requests = 1;
     for (const [unit, count] of Object.entries(facts.outputs ?? {})) counts[unit as Unit] = count;
-  } else if (facts.units === 0 || (facts.cancelled === true && facts.queuedCancel === true)) {
-    // Free: the provider reported 0 billed units, or the job was cancelled before it ran.
+  } else if (facts.units === 0 || facts.cancelled === true) {
+    // Free: the provider reported 0 billed units, or confirmed a cancel and billed none.
     counts.model_units = 0;
     counts.requests = 0;
     for (const unit of OUTPUT_UNITS) counts[unit] = 0;
@@ -690,12 +685,8 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
  * D1 cannot answer.
  */
 export async function settleFigure(env: Env, ref: JobRef, given: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
-  let facts = given;
+  const facts = given;
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
-  // A cancel with no billed units is free only when the gateway saw the job still queued as it sent the cancel.
-  if (facts.cancelled === true && facts.units === null && facts.queuedCancel !== true && known !== null && (await queuedCancelRecorded(env.DB, ref.job))) {
-    facts = { ...facts, queuedCancel: true };
-  }
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
   if (known === null && !countless) return "waiting";
@@ -807,62 +798,6 @@ export function isFigureWork(id: string): boolean {
 }
 
 /**
- * The id of a job's queued-cancel evidence: an open-work row written once,
- * when the gateway sends a cancel for a job it just saw still queued. It is
- * no work: the sweep only clears it once it is due, long after the result is
- * read, and settling the job deletes it with the job's other rows.
- */
-export function queuedCancelWorkId(job: string): string {
-  return `job_cancel_queued:${job}`;
-}
-
-/** How long queued-cancel evidence is kept: well past the time a result stays readable. */
-export const QUEUED_CANCEL_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Whether the gateway saw the job queued when it sent the job's cancel. */
-async function queuedCancelRecorded(db: D1Database, job: string): Promise<boolean> {
-  return (await db.prepare("SELECT 1 AS hit FROM open_work WHERE id = ?").bind(queuedCancelWorkId(job)).first()) !== null;
-}
-
-/**
- * Records that the gateway sent a cancel for a job it saw still queued, the
- * evidence a cancel with no billed units needs to be free. Written once, as
- * a figure is: in D1, else the failed-write store, else logged. Never throws.
- */
-export async function recordQueuedCancel(env: Env, ref: JobRef, now: number): Promise<void> {
-  const row: OpenWorkRow = {
-    id: queuedCancelWorkId(ref.job),
-    kind: "job_check",
-    accountId: ref.accountId,
-    appId: ref.appId,
-    ownerType: "job",
-    ownerId: ref.job,
-    chargeId: null,
-    detail: { queuedCancel: true },
-    dueAt: now + QUEUED_CANCEL_KEEP_MS,
-    createdAt: now,
-  };
-  try {
-    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the cancel evidence");
-    return;
-  } catch (error) {
-    log("warn", "job_cancel_evidence_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
-  }
-  try {
-    await env.CHARGE_STORE.getByName(ref.appId).keepWork([row]);
-  } catch (error) {
-    log("warn", "job_cancel_evidence_unrecorded", { app: ref.appId, job: ref.job, error: errorFacts(error) });
-  }
-}
-
-/** The status answer says the job is still queued (`JobSpec.queuedWhen`). */
-export function jobQueued(spec: JobSpec, body: unknown): boolean {
-  if (spec.queuedWhen === undefined || typeof body !== "object" || body === null) return false;
-  const value = (body as Record<string, unknown>)[spec.queuedWhen.field];
-  return typeof value === "string" && spec.queuedWhen.values.includes(value);
-}
-
-/**
  * The sweep's job work. Every provider's jobs go through this one handler.
  *
  * - **A figure row** is settled from the row alone: no signing key and no
@@ -881,8 +816,6 @@ export function jobQueued(spec: JobSpec, body: unknown): boolean {
 export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAlive }) => {
   const ref: JobRef = { job: item.ownerId, accountId: item.accountId, appId: item.appId };
   const detail = item.detail ?? {};
-  // Cancel evidence is no work: once due, long after the result could be read, it is cleared.
-  if (item.id === queuedCancelWorkId(item.ownerId)) return { done: true };
   if (isFigureWork(item.id)) {
     const facts = factsOf(detail.result);
     if (facts === null) {

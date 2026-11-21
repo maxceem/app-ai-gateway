@@ -45,13 +45,10 @@ import {
   JOB_POLL_TIMEOUT_MS,
   jobContext,
   jobLocation,
-  jobQueued,
   jobRedirectTargets,
   jobStatusQuery,
   readResultFacts,
-  recordQueuedCancel,
   withGatewayLinks,
-  type JobContext,
 } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
@@ -59,27 +56,6 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 
 function unknownJob(): GatewayError {
   return new GatewayError(404, "job_not_found", "No such job for this app");
-}
-
-/**
- * Whether the job is still queued, as its status says just before a cancel
- * is sent (`JobSpec.queuedWhen`). False when the operation says nothing about
- * queuing, or the status cannot be read: then a cancel with no billed units
- * keeps the estimate.
- */
-async function seenQueued(env: Env, context: JobContext, claims: JobClaims, userId: string | null): Promise<boolean> {
-  if (context.spec.queuedWhen === undefined) return false;
-  try {
-    const { response } = await fetchJob(env, context, "status", claims, userId);
-    if (response.status < 200 || response.status > 299) {
-      void response.body?.cancel().catch(() => undefined);
-      return false;
-    }
-    const read = await boundedJson(response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
-    return read.kind === "parsed" && jobQueued(context.spec, read.value);
-  } catch {
-    return false;
-  }
 }
 
 /** Whether the claims name this app and this caller's end user, compared by digest. */
@@ -123,14 +99,8 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
         // Only the query fields the operation lists go upstream, and only on a status poll.
         const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
         const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
-        // A cancel asks the status first: a job seen still queued is recorded, so its
-        // confirmed cancel with no billed units can be free. Any other is charged as it ran.
-        const queued = which === "cancel" && (await seenQueued(c.env, context, claims, caller.identity.userId));
+        // A cancel is only forwarded: the job settles on its status or result as any other.
         const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
-        // Recorded before the answer goes back, so a result read right after the cancel already finds it.
-        if (queued && response.status >= 200 && response.status <= 299) {
-          await recordQueuedCancel(c.env, { job: claims.job, accountId: claims.accountId, appId: claims.appId }, Date.now());
-        }
         const headers = clientResponseHeaders(response.headers, keyHeader);
         jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
         headers.delete("content-length");

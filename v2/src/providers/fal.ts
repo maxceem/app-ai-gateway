@@ -105,10 +105,8 @@ export const fal = defineProvider({
         doneWhen: { field: "status", values: ["COMPLETED"] },
         // A success, or a failure fal reports `0` billed units with (T15).
         finalStatuses: [200, 422],
-        // A confirmed cancel: free only for a job the gateway saw queued, unless fal reports units (T15).
+        // A confirmed cancel: fal's billed units settle it; with none it was queued and is free (T15).
         cancelled: { status: 499, header: { name: "x-fal-error-type", value: "client_cancelled" } },
-        // A job still queued when the gateway sends its cancel never ran (T15).
-        queuedWhen: { field: "status", values: ["IN_QUEUE"] },
         links: { status: "status_url", result: "response_url", cancel: "cancel_url" },
         unitsHeader: UNITS_HEADER,
         // Image models answer `images`, video models `video` (T15's `ltx-video`).
