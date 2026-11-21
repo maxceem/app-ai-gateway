@@ -148,8 +148,11 @@ export type RequestMeasure =
    * `field` divided by the frame rate in `fps` (fal's `num_frames` and
    * `frame_rate`). Given only when the request names the frame count, so an
    * image request never gets it. A missing frame rate uses `defaultFps`.
+   * With `forKind`, only a model whose price says it is that kind (our price
+   * list's `kind: "video"`) gets it: an image model keeps its own estimate,
+   * whatever video fields its request names.
    */
-  | { readonly measure: "frames_seconds"; readonly field: string; readonly fps: string; readonly defaultFps: number }
+  | { readonly measure: "frames_seconds"; readonly field: string; readonly fps: string; readonly defaultFps: number; readonly forKind?: string }
   /**
    * The megapixels of the images the request asks for, as fal bills them:
    * per image, width × height in units of 1024 × 1024 pixels, rounded up,

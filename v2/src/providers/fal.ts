@@ -35,8 +35,10 @@ const FETCH_KEPT = [
  *   or less, and a size object's missing side is 512;
  * - a video model billed per second (`ltxv-13b`) bills the frames it asks for
  *   over its frame rate: 65 frames at 24 fps is 2.708 units (T15). Given only
- *   when the request names `num_frames`, and then it replaces the image
- *   estimate, being the later measure in the same unit;
+ *   when the request names `num_frames` and the model is priced as a video
+ *   (`kind: "video"`), and then it replaces the image estimate, being the
+ *   later measure in the same unit. An image model keeps its megapixels,
+ *   whatever video fields its request names;
  * - beside them, the image count, one video and one job, so a price per
  *   image, per video or per request (a customer's own, or ours for
  *   `ltx-video`) still bills.
@@ -60,7 +62,7 @@ const estimate = [
     unit: "model_units",
   },
   { measure: "image_count", field: "num_images", default: 1, unit: "images" },
-  { measure: "frames_seconds", field: "num_frames", fps: "frame_rate", defaultFps: 24, unit: "model_units" },
+  { measure: "frames_seconds", field: "num_frames", fps: "frame_rate", defaultFps: 24, forKind: "video", unit: "model_units" },
   { measure: "one", unit: "videos" },
   { measure: "one", unit: "requests" },
 ] as const;

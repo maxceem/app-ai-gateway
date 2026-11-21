@@ -2065,6 +2065,20 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(await total(appId)).toBe(54_180_000);
   });
 
+  it("keeps an image model's megapixel estimate when its request also names video fields", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    // fal-ai/flux/dev is $0.025 per megapixel: two 1440 × 1440 images are 2 × 2 units, so $0.10.
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", {
+      prompt: "x",
+      num_images: 2,
+      image_size: { width: 1440, height: 1440 },
+      num_frames: 1,
+      frame_rate: 24,
+    });
+    expect(await total(appId)).toBe(100_000_000);
+  });
+
   it("estimates a video with no frame count as one unit, and corrects it from fal's units", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});

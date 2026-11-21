@@ -63,7 +63,7 @@ export function requestFormFields(operation: OperationDescription): string[] {
 }
 
 /** A measure's raw amount from the request, before scaling, or null when the request does not give it. */
-function measuredAmount(measure: RequestMeasure, fields: RequestFields): number | null {
+function measuredAmount(measure: RequestMeasure, fields: RequestFields, priceKind: string | undefined): number | null {
   if (measure.measure === "one") return 1;
   const value = fieldValue(fields, { in: "body", field: measure.field });
   switch (measure.measure) {
@@ -82,7 +82,8 @@ function measuredAmount(measure: RequestMeasure, fields: RequestFields): number 
       return count * (megapixelsOf(fieldValue(fields, { in: "body", field: measure.size }), measure.sizes) ?? 1);
     }
     case "frames_seconds": {
-      // Only a request that names its frame count gets a length: an image request never does.
+      // Only a model priced as the measure's kind gets a length, and only when its request names its frame count.
+      if (measure.forKind !== undefined && priceKind !== measure.forKind) return null;
       const frames = positiveNumber(value);
       if (frames === null) return null;
       const fps = positiveNumber(fieldValue(fields, { in: "body", field: measure.fps })) ?? measure.defaultFps;
@@ -144,12 +145,12 @@ function requestUsageOf(counts: Readonly<Partial<Record<Unit, number>>>, estimat
  * meter takes nothing from it, or the request does not give the measure.
  * A request count is always one request.
  */
-export function requestUsage(operation: OperationDescription, fields: RequestFields): UsageObservation | null {
+export function requestUsage(operation: OperationDescription, fields: RequestFields, priceKind?: string): UsageObservation | null {
   if (operation.meter.kind === "request_count") return requestUsageOf({ requests: 1 }, false);
   // Every measure the request gives, each in its own unit; one it does not give is left out.
   const counts: Partial<Record<Unit, number>> = {};
   for (const measure of requestMeasuresOf(operation.meter)) {
-    const amount = measuredAmount(measure, fields);
+    const amount = measuredAmount(measure, fields, priceKind);
     if (amount === null) continue;
     const count = scaledCount(measure.unit, amount);
     if (Number.isSafeInteger(count)) counts[measure.unit] = count;
@@ -248,7 +249,7 @@ export function requestFacts(
   price: ModelPrice | null,
   logFacts: Readonly<Record<string, unknown>>,
 ): RequestFacts {
-  const measured = requestUsage(operation, fields);
+  const measured = requestUsage(operation, fields, price?.kind);
   const priceKeys = priceKeyValues(operation, fields);
   const unpriced = unpricedOptionsNamed(operation, fields, price);
   if (unpriced.length > 0) log("warn", "request_option_unpriced", { ...logFacts, options: unpriced.join(",") });
