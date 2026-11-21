@@ -76,7 +76,11 @@ async function get(url: string, user: string): Promise<{ status: number; body: a
   return { status: response.status, body: await response.json() };
 }
 
-/** The user's usage once it reaches `cost` nano-dollars over `charges` charges (charges are written after the answer). */
+/**
+ * The user's usage once it reaches `cost` nano-dollars over `charges` charges
+ * (charges are written after the answer). A correction changes the cost, not
+ * the count of charges.
+ */
 async function usageReaches(user: string, charges: number, cost: number): Promise<{ charges: number; cost_nano: number }> {
   let last: unknown = null;
   for (let tries = 0; tries < 30; tries += 1) {
@@ -111,7 +115,7 @@ test("a queue job gets a signed job id and gateway links, and its estimate count
   const result = await get(submitted.body.response_url, user);
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(result.body.images.length, 2);
-  await usageReaches(user, 2, 50_000_000);
+  await usageReaches(user, 1, 50_000_000);
 });
 
 test("a job that fails with 0 units costs nothing once its result is read", { skip }, async () => {
@@ -121,7 +125,7 @@ test("a job that fails with 0 units costs nothing once its result is read", { sk
   await usageReaches(user, 1, 25_000_000);
   const result = await get(submitted.body.response_url, user);
   assert.equal(result.status, 422);
-  await usageReaches(user, 2, 0);
+  await usageReaches(user, 1, 0);
 });
 
 test("a job id that is not this app's own is unknown", { skip }, async () => {
