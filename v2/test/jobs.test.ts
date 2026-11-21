@@ -2217,8 +2217,40 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     const headers = new Headers({ "x-fal-error-type": "client_cancelled" });
     expect(readResultFacts(SPEC, { status: 499, headers }, null)).toEqual({ status: 499, units: null, outputs: null, cancelled: true });
     const billed = new Headers({ "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "3" });
-    expect(readResultFacts(SPEC, { status: 499, headers: billed }, null)).toEqual({ status: 499, units: 3, outputs: null });
+    expect(readResultFacts(SPEC, { status: 499, headers: billed }, null)).toEqual({ status: 499, units: 3, outputs: null, cancelled: true });
+    // A units header that is there but cannot be read is not a free cancel: the estimate stays.
+    const garbled = new Headers({ "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" });
+    expect(readResultFacts(SPEC, { status: 499, headers: garbled }, null)).toEqual({ status: 499, units: null, outputs: null });
     expect(readResultFacts(SPEC, { status: 499, headers: new Headers() }, null)).toBeNull();
+  });
+
+  it("keeps the estimate when a confirmed cancel's units header cannot be read, and logs the raw value", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
+    const before = await total(appId);
+    const warn = vi.spyOn(console, "warn");
+    falAnswers({
+      status: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" } }),
+      result: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(before);
+    expect(warn.mock.calls.some((args) => String(args[0]).includes("job_units_unreadable") && String(args[0]).includes("4, 4"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("settles a cancel fal billed at a flat price per job as one job", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    falAnswers({
+      result: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(await total(appId)).toBe(20_000_000);
   });
 
   it("counts a result's outputs by unit, so a price per video bills its videos beside an empty image list", async () => {

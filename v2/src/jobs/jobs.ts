@@ -417,10 +417,11 @@ export interface JobResultFacts {
   /** The outputs in the result, counted by unit, or null when it names none the gateway can count. */
   readonly outputs: OutputCounts | null;
   /**
-   * The result confirms the job was cancelled (`JobSpec.cancelled`), and the
-   * provider reported no billed units: the provider's final word that the
-   * cancel cost nothing, so it is free. A cancel that did cost something
-   * comes with its billed units instead, and settles at them.
+   * The result confirms the job was cancelled (`JobSpec.cancelled`). With no
+   * billed units, it is the provider's final word that the cancel cost
+   * nothing, so it is free. With billed units, they settle it, and a price per
+   * request counts it as one job. A units header that cannot be read never
+   * marks a cancel: the estimate stays.
    */
   readonly cancelled?: true;
   /**
@@ -479,12 +480,18 @@ export async function boundedJson(
  * estimate's rate is never lost to a broken body.
  */
 export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
-  const units = spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader));
+  const rawUnits = spec.unitsHeader === undefined ? null : response.headers.get(spec.unitsHeader);
+  const units = headerNumber(rawUnits);
   // A confirmed cancel is final, whoever sent it. Billed units, when reported,
-  // settle it as any result; without them the provider billed nothing.
+  // settle it; a header that is there but cannot be read keeps the estimate,
+  // since only a missing header means the provider billed nothing.
   const cancelled = spec.cancelled;
   if (cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value) {
-    return units !== null ? { status: response.status, units, outputs: null } : { status: response.status, units: null, outputs: null, cancelled: true };
+    if (rawUnits !== null && units === null) {
+      log("warn", "job_units_unreadable", { status: response.status, header: spec.unitsHeader, value: rawUnits.slice(0, 64) });
+      return { status: response.status, units: null, outputs: null };
+    }
+    return { status: response.status, units, outputs: null, cancelled: true };
   }
   if (!spec.finalStatuses.includes(response.status)) return null;
   const facts: JobResultFacts = {
@@ -552,6 +559,9 @@ function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   if (succeeded(facts)) {
     counts.requests = 1;
     for (const [unit, count] of Object.entries(facts.outputs ?? {})) counts[unit as Unit] = count;
+  } else if (facts.cancelled === true && facts.units !== null && facts.units > 0) {
+    // A cancel the provider billed is one billable job, for a price per request.
+    counts.requests = 1;
   } else if (facts.units === 0 || facts.cancelled === true) {
     // Free: the provider reported 0 billed units, or confirmed a cancel and billed none.
     counts.model_units = 0;
