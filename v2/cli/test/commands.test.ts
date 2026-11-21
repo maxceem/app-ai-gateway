@@ -308,7 +308,7 @@ test("logout with an unsafe state file asks to repair it, never to move the sign
     assert.equal(error.code, "unsafe_storage");
     assert.equal(
       error.nextAction,
-      `Restore the file's mode to 0600 (chmod 600 ${store.path}), then run agw account logout again. If the file cannot be recovered, revoke the sign-in in the console under Access.`,
+      `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${store.path}\nIf that is not possible, revoke the sign-in in the console under Access.`,
     );
     // The sign-in is still where the repaired file can end it.
     assert.equal(JSON.parse(await readFile(store.path, "utf8")).active.login.refreshToken, "agw_ort_test");
@@ -331,12 +331,37 @@ test("a symlinked state directory gets its own hint, which names the directory",
     );
     assert.ok(error instanceof LocalDirectoryError);
     assert.equal(error.code, "unsafe_storage");
-    assert.equal(error.exitCode, 4);
+    assert.equal(error.exitCode, 2);
     assert.equal(error.nextAction, expected);
     // Sign-in hints keep it rather than pointing at the state file.
     const shown = signInFailure(error, URL_);
     assert.ok(shown instanceof CliError);
     assert.equal(shown.nextAction, expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout in a symlinked state directory asks to keep the sign-in, never to start over empty", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    await mkdir(join(dir, "real"));
+    await new StateStore(join(dir, "real")).update((state) => void Object.assign(state, signedInState(URL_, "agw_oat_1")));
+    const link = join(dir, "link with space");
+    await symlink(join(dir, "real"), link);
+    const store = new StateStore(link);
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 2);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(
+      error.nextAction,
+      `Keep connection.json. Replace this directory with a private directory you own at the same path, move connection.json into it, then run agw account logout again:\n${link}\nIf that is not possible, revoke the sign-in in the console under Access.`,
+    );
+    // The sign-in is still there to be ended.
+    assert.equal(JSON.parse(await readFile(join(dir, "real", "connection.json"), "utf8")).active.login.refreshToken, "agw_ort_test");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

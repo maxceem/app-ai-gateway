@@ -628,7 +628,7 @@ test("logout that cannot save the state asks to repair the file, or to revoke th
   assert.ok(error instanceof LocalStateError);
   assert.equal(error.code, "unsafe_storage");
   assert.equal(error.exitCode, 4);
-  assert.match(error.nextAction ?? "", /chmod 600 \/home\/me\/\.local\/state\/agw\/v2\/connection\.json/);
+  assert.match(error.nextAction ?? "", /mode to 0600.*\n\/home\/me\/\.local\/state\/agw\/v2\/connection\.json\n/);
   assert.match(error.nextAction ?? "", /under Access/);
   assert.doesNotMatch(error.nextAction ?? "", /Move/);
 });

@@ -73,10 +73,10 @@ export async function protectedDirectory(path: string): Promise<void> {
   // Moving the state file aside would not help here, so the hint names the directory itself.
   const replace = `Replace this directory with a private directory you own, then run the same command again:\n${path}`;
   if (!s.isDirectory() || s.isSymbolicLink())
-    throw new LocalDirectoryError("unsafe_storage", "CLI storage must be a real directory.", replace, 4);
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage must be a real directory.", replace, 2);
   if (!posixPermissions()) return;
   if (process.getuid && s.uid !== process.getuid())
-    throw new LocalDirectoryError("unsafe_storage", "CLI storage belongs to another user.", replace, 4);
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage belongs to another user.", replace, 2);
   await chmod(path, 0o700);
 }
 
@@ -121,18 +121,27 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
 const RECOVER_STATE =
   "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
 
+const REVOKE_IN_CONSOLE = "If that is not possible, revoke the sign-in in the console under Access.";
+
 /**
- * For `account logout`: moving the state file aside would hide its sign-in,
- * which would then never be revoked. So the hint repairs the file, or ends
- * the sign-in from the console. A directory failure keeps its own hint.
+ * For `account logout`: moving the state file aside, or starting over in an
+ * empty directory, would hide its sign-in, which would then never be revoked.
+ * So the hint keeps the file and repairs what holds it, or ends the sign-in
+ * from the console. Paths stand on their own line as plain text, so a path
+ * with spaces reads the same however it is copied.
  */
 export function logoutStateFailure(error: unknown, store: object): unknown {
-  if (!(error instanceof LocalStateError) || error instanceof LocalDirectoryError) return error;
+  if (!(error instanceof LocalStateError)) return error;
   const path = "path" in store && typeof store.path === "string" ? store.path : "the connection state file";
-  return new LocalStateError(
+  const directory = "directory" in store && typeof store.directory === "string" ? store.directory : "the CLI state directory";
+  const nextAction =
+    error instanceof LocalDirectoryError
+      ? `Keep connection.json. Replace this directory with a private directory you own at the same path, move connection.json into it, then run agw account logout again:\n${directory}\n${REVOKE_IN_CONSOLE}`
+      : `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${path}\n${REVOKE_IN_CONSOLE}`;
+  return new (error instanceof LocalDirectoryError ? LocalDirectoryError : LocalStateError)(
     error.code,
     error.message,
-    `Restore the file's mode to 0600 (chmod 600 ${path}), then run agw account logout again. If the file cannot be recovered, revoke the sign-in in the console under Access.`,
+    nextAction,
     error.exitCode,
     error.details,
   );
