@@ -92,6 +92,8 @@ export const elevenlabs = defineProvider({
       transport: "stream",
       model: ttsModel,
       modelKinds: ["speech"],
+      // Its recording arrives in base64 inside JSON, beside the timestamps.
+      storedAudio: { fields: ["audio_base64"], mime: "audio/mpeg" },
       meter: ttsMeter,
     }),
     defineOperation({
@@ -110,6 +112,8 @@ export const elevenlabs = defineProvider({
       transport: "http",
       model: ttsModel,
       modelKinds: ["speech"],
+      // Its recording arrives in base64 inside JSON, beside the timestamps.
+      storedAudio: { fields: ["audio_base64"], mime: "audio/mpeg" },
       meter: ttsMeter,
     }),
     defineOperation({

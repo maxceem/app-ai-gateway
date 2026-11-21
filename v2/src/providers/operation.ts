@@ -547,6 +547,13 @@ export interface OperationDescription {
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
   /**
+   * JSON fields of its answer that hold a recording in bare base64, such as
+   * ElevenLabs' `audio_base64` beside its timestamps. A stored conversation
+   * treats them as audio: kept as media, or left out where an app keeps no
+   * audio (`../conversations/record.ts`).
+   */
+  readonly storedAudio?: { readonly fields: readonly string[]; readonly mime: string };
+  /**
    * How this operation's requests and answers are read, over its provider's
    * (`readingRules`): a custom provider's path of an API style carries the
    * rules of the built-in provider its definition comes from (`./custom.ts`),

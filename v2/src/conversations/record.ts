@@ -41,6 +41,8 @@ export interface ConversationCapture {
   httpStatus: number;
   latencyMs: number;
   keep: KeptMedia;
+  /** JSON fields of the answer that hold a recording in base64 (`OperationDescription.storedAudio`). */
+  audio?: { fields: readonly string[]; mime: string };
   request: CapturedBytes;
   response: CapturedBytes & { aborted: boolean };
 }
@@ -163,12 +165,18 @@ class MediaShelf {
 interface Walk {
   shelf: MediaShelf;
   streamed: boolean;
+  /** Fields that hold a recording in bare base64, declared by the operation. */
+  audio?: { fields: readonly string[]; mime: string };
 }
 
 const DATA_URL = /^data:([^;,]+)(?:;[^,]*)?;base64,/i;
 
 /** One string of a JSON body: media becomes a reference or a note, an oversized string a note. */
 async function keptString(value: string, key: string | undefined, walk: Walk): Promise<string> {
+  // A recording the operation declares, in bare base64: a piece at a time in a stream.
+  if (key !== undefined && walk.audio?.fields.includes(key) === true) {
+    return walk.streamed ? walk.shelf.piece(value, walk.audio.mime) : walk.shelf.placeBase64(value, walk.audio.mime);
+  }
   const dataUrl = DATA_URL.exec(value);
   if (dataUrl) return walk.shelf.placeBase64(value.slice(dataUrl[0].length), dataUrl[1]!.toLowerCase());
   // Generated images arrive as bare base64 under `b64_json`.
@@ -263,8 +271,7 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
  * A streamed answer, each event's JSON kept the way a JSON body is, so media
  * in a stream is treated as it is in one whole response.
  */
-async function keptEventStream(text: string, shelf: MediaShelf): Promise<string> {
-  const walk: Walk = { shelf, streamed: true };
+async function keptEventStream(text: string, walk: Walk, filtering: boolean): Promise<string> {
   const lines: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     const data = /^data: ?(.*)$/s.exec(line);
@@ -274,9 +281,35 @@ async function keptEventStream(text: string, shelf: MediaShelf): Promise<string>
     } catch {
       // `[DONE]` and other plain text.
     }
+    if (value === undefined && data !== null && filtering && data[1]!.trim() !== "[DONE]") {
+      // An event it cannot read, such as a piece of audio cut short, may be media
+      // the app keeps out: where any is kept out, it is noted by its size alone.
+      lines.push(`data: ${OMITTED}unreadable;${new TextEncoder().encode(data[1]!).byteLength}`);
+      continue;
+    }
     lines.push(value === undefined ? line : `data: ${JSON.stringify(await keptJson(value, walk))}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Newline-delimited JSON, as ElevenLabs streams speech with timestamps: each
+ * line kept the way an event of a stream is. Null where a line is not JSON.
+ */
+async function keptJsonLines(text: string, walk: Walk): Promise<unknown[] | null> {
+  const values: unknown[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    try {
+      values.push(JSON.parse(line));
+    } catch {
+      return null;
+    }
+  }
+  if (values.length < 2) return null;
+  const kept: unknown[] = [];
+  for (const value of values) kept.push(await keptJson(value, walk));
+  return kept;
 }
 
 /** An uploaded file's type, from its name where the upload did not say. */
@@ -286,7 +319,13 @@ function fileType(file: File): string {
   return typeForExtension(file.name) ?? "application/octet-stream";
 }
 
-async function storedBody(body: CapturedBytes, shelf: MediaShelf): Promise<StoredBody> {
+async function storedBody(
+  body: CapturedBytes,
+  shelf: MediaShelf,
+  keep: KeptMedia,
+  audio?: { fields: readonly string[]; mime: string },
+): Promise<StoredBody> {
+  const filtering = !keep.images || !keep.audio || !keep.files;
   const contentType = body.contentType;
   const type = mediaType(contentType);
   if (body.bytes === null) {
@@ -330,17 +369,21 @@ async function storedBody(body: CapturedBytes, shelf: MediaShelf): Promise<Store
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }
   let text = new TextDecoder().decode(body.bytes);
-  if (type === "text/event-stream") text = await keptEventStream(text, shelf);
+  if (type === "text/event-stream") text = await keptEventStream(text, { shelf, streamed: true, ...(audio ? { audio } : {}) }, filtering);
   if (isJson(type) || type === "") {
+    let parsed: unknown;
+    let readable = true;
     try {
-      return {
-        kind: "json",
-        content_type: contentType,
-        value: await keptJson(JSON.parse(text), { shelf, streamed: false }),
-      };
+      parsed = JSON.parse(text);
     } catch {
-      if (type !== "") return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
+      readable = false;
     }
+    if (readable) {
+      return { kind: "json", content_type: contentType, value: await keptJson(parsed, { shelf, streamed: false, ...(audio ? { audio } : {}) }) };
+    }
+    const lines = await keptJsonLines(text, { shelf, streamed: true, ...(audio ? { audio } : {}) });
+    if (lines !== null) return { kind: "json", content_type: contentType, value: lines };
+    if (type !== "" || filtering) return { kind: "omitted", content_type: contentType, reason: "unreadable", bytes: body.totalBytes };
   }
   return text.length > MAX_RECORD_BYTES
     ? { kind: "omitted", content_type: contentType, reason: "too_large", bytes: body.totalBytes }
@@ -356,8 +399,8 @@ export async function conversationRecord(
   capture: ConversationCapture,
 ): Promise<{ line: string; media: StoredMedia[] }> {
   const shelf = new MediaShelf(recordDay(capture.createdAt), capture.keep);
-  let request = await storedBody(capture.request, shelf);
-  let response = await storedBody(capture.response, shelf);
+  let request = await storedBody(capture.request, shelf, capture.keep);
+  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio);
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,

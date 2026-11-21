@@ -133,6 +133,7 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   rules: "replaced",
   uploads: "replaced",
   pricedEveryWay: "replaced",
+  storedAudio: "kept",
 };
 
 /** A provider's own operation of `style`: the first that is a POST with its model in the body or a form field. */

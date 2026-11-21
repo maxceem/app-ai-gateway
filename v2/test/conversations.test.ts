@@ -345,6 +345,48 @@ describe("conversation records", () => {
     }
   });
 
+  it("leaves out an operation's declared base64 audio, in JSON and in streamed lines, where audio is not kept (Sol round 1)", async () => {
+    const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
+    const noAudio = { images: true, audio: false, files: true };
+    const whole = JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h", "i"] } });
+    const one = await conversationRecord(capture({
+      keep: noAudio,
+      audio,
+      response: { contentType: "application/json", bytes: encoder.encode(whole), totalBytes: whole.length, aborted: false },
+    }));
+    expect(one.line).not.toContain("SUQzBAAAAAAA");
+    expect(JSON.parse(one.line).response.value).toMatchObject({ audio_base64: expect.stringMatching(/^agw-omitted:audio\/mpeg;/), alignment: { characters: ["h", "i"] } });
+
+    const lines = [whole, JSON.stringify({ audio_base64: "SUQzBAAAAAAB", alignment: null })].join("\n");
+    const streamed = await conversationRecord(capture({
+      keep: noAudio,
+      audio,
+      response: { contentType: "application/json", bytes: encoder.encode(lines), totalBytes: lines.length, aborted: false },
+    }));
+    expect(streamed.line).not.toContain("SUQzBAAAAAA");
+    expect(JSON.parse(streamed.line).response).toMatchObject({ kind: "json", value: [{ alignment: { characters: ["h", "i"] } }, { alignment: null }] });
+
+    // Where audio is kept, it is stored as media.
+    const kept = await conversationRecord(capture({
+      audio,
+      response: { contentType: "application/json", bytes: encoder.encode(whole), totalBytes: whole.length, aborted: false },
+    }));
+    expect(kept.media).toHaveLength(1);
+  });
+
+  it("notes an unreadable streamed event by its size where any media is kept out (Sol round 1)", async () => {
+    const stream = ["data: {\"type\":\"response.output_audio.delta\",\"delta\":\"UklGRiQAAABX", "", "data: [DONE]", ""].join("\n");
+    const record = async (keep: { images: boolean; audio: boolean; files: boolean }) => (JSON.parse((await conversationRecord(capture({
+      keep,
+      response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: false },
+    }))).line) as { response: { text: string } }).response.text;
+    const filtered = await record({ images: true, audio: false, files: true });
+    expect(filtered).not.toContain("UklGRiQAAABX");
+    expect(filtered).toContain("agw-omitted:unreadable;");
+    expect(filtered).toContain("data: [DONE]");
+    expect(await record(KEEP_ALL)).toContain("UklGRiQAAABX");
+  });
+
   it("keeps a spoken reply as media", async () => {
     const speech = new Uint8Array([1, 2, 3, 4]);
     const { line, media } = await conversationRecord(capture({

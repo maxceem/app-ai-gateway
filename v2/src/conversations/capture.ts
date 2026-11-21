@@ -37,6 +37,8 @@ export interface CaptureInput {
   readonly appId: string;
   /** The app's `conversations.keep`. */
   readonly keep: KeptMedia;
+  /** Answer fields that hold a recording in base64 (`OperationDescription.storedAudio`). */
+  readonly audio?: { readonly fields: readonly string[]; readonly mime: string };
   /** The charge's own id, so a stored conversation and its charge always name each other. */
   readonly chargeId: string;
   readonly identity: GatewayIdentity;
@@ -129,6 +131,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     httpStatus: input.httpStatus,
     latencyMs: input.latencyMs,
     keep: input.keep,
+    ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
     request: {
       contentType: request.contentType,
       bytes: request.bytes === null ? null : new Uint8Array(request.bytes),
