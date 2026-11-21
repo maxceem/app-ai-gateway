@@ -75,8 +75,10 @@ describe("a custom provider's description", () => {
     expect(knownHostOwner("https://api.eu.mistral.ai/")?.type).toBe("mistral");
     expect(knownHostOwner("https://openai.example.com/")).toBeNull();
     const description = customDescription({ baseUrl: "https://api.openai.com/v1/", auth: AUTH, paths: [] });
-    expect(description.refused).toBe(openai.refused);
+    // Its hosts are OpenAI's; OpenAI's rules judge it where its requests go, not from its own description.
+    expect(description.refused).toEqual([]);
     expect(description.hosts).toBe(openai.hosts);
+    expect(upstreamRoute(description, { baseUrl: "https://api.openai.com/v1/", cloudflareGateway: null }).owner).toBe(openai);
   });
 
   it("turns each API-style path into its operation, and leaves plain paths to passthrough", () => {
@@ -107,11 +109,9 @@ describe("a custom provider's description", () => {
       for (const name of description.otherHosts ?? []) {
         const host = name.startsWith("*.") ? `jp${name.slice(1)}` : name;
         expect(knownHostOwner(`https://${host}/`)?.type, host).toBe(description.type);
-        // Every refused path, except one that names other hosts; one naming this host applies to every request here.
-        const expected = description.refused.flatMap((entry) =>
-          typeof entry === "string" || entry.hosts === undefined ? [entry] : entry.hosts.includes(host) ? [entry.methods === undefined ? entry.path : { path: entry.path, methods: entry.methods }] : [],
-        );
-        expect(customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] }).refused, host).toEqual(expected);
+        // The owner judges every request here: its route names it (`upstreamRoute`).
+        const custom = customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] });
+        expect(upstreamRoute(custom, { baseUrl: `https://${host}/`, cloudflareGateway: null }).owner, host).toBe(description);
       }
     }
     for (const host of ["us.api.openai.com", "gb.api.openai.com", "eu.api.openai.com", "jp.api.openai.com"]) {
@@ -123,7 +123,9 @@ describe("a custom provider's description", () => {
 
   it("refuses xAI's account management on its management host, even when listed", () => {
     expect(knownHostOwner("https://management-api.x.ai/")?.type).toBe("xai");
-    const matcher = new ProviderMatcher(customDescription({ baseUrl: "https://management-api.x.ai/", auth: AUTH, paths: [] }));
+    const custom = customDescription({ baseUrl: "https://management-api.x.ai/", auth: AUTH, paths: [] });
+    const matcher = new ProviderMatcher(custom);
+    const route = upstreamRoute(custom, { baseUrl: "https://management-api.x.ai/", cloudflareGateway: null });
     for (const [method, path] of [
       ["POST", "auth/teams/t1/api-keys"],
       ["GET", "auth/teams/t1/api-keys"],
@@ -132,10 +134,12 @@ describe("a custom provider's description", () => {
       ["GET", "auth/management-keys/validation"],
       ["GET", "audit/teams/t1/events"],
       ["POST", "v1/billing/teams/t1/usage"],
+      // Every path there manages the account, not only these.
+      ["GET", "v1/models"],
     ] as const) {
       const passthrough = compilePassthrough([{ method, path }]);
-      expect(matcher.match(method, path, { passthrough }), `${method} ${path}`).toMatchObject({ kind: "refused", reason: "refused_path" });
-      expect(matcher.refusedCovering(passthrough[0]!), `${method} ${path}`).not.toBeNull();
+      expect(matcher.match(method, path, { passthrough, route }), `${method} ${path}`).toMatchObject({ kind: "refused", reason: "refused_path" });
+      expect(matcher.refusedCovering(passthrough[0]!, route), `${method} ${path}`).not.toBeNull();
     }
   });
 

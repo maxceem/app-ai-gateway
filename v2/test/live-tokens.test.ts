@@ -180,7 +180,7 @@ describe("matching a live-session token path", () => {
     // The management host: key creation stays refused.
     const management = upstreamRoute(description, { baseUrl: "https://management-api.x.ai/", cloudflareGateway: null });
     const create = compilePassthrough([{ method: "POST", path: "auth/teams/{teamId}/api-keys" }]);
-    expect(matcher.refusedCovering(create[0]!, management)).toBe("auth/*");
+    expect(matcher.refusedCovering(create[0]!, management)).toBe("*");
     expect(matcher.match("POST", "auth/teams/t1/api-keys", { passthrough: create, route: management })).toMatchObject({ kind: "refused", reason: "refused_path" });
     expect(matcher.match("GET", "auth/health", { passthrough: health, route: management })).toMatchObject({ kind: "refused", reason: "refused_path" });
   });
@@ -227,12 +227,16 @@ describe("matching a live-session token path", () => {
   it("gives a custom provider on a known host that provider's token paths, and none elsewhere", async () => {
     const { customDescription } = await import("../src/providers/custom.ts");
     const auth = { header: "authorization", format: "Bearer {key}" };
-    const onOpenAi = new ProviderMatcher(customDescription({ baseUrl: "https://api.openai.com/", auth, paths: [] }));
+    const routed = (baseUrl: string) => {
+      const description = customDescription({ baseUrl, auth, paths: [] });
+      return { matcher: new ProviderMatcher(description), route: upstreamRoute(description, { baseUrl, cloudflareGateway: null }) };
+    };
+    const onOpenAi = routed("https://api.openai.com/");
     const listed = (liveToken: boolean) => compilePassthrough([{ method: "POST", path: "v1/realtime/client_secrets", ...(liveToken ? { liveToken: true as const } : {}) }]);
-    expect(onOpenAi.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false) })).toMatchObject({ kind: "refused" });
-    expect(onOpenAi.match("POST", "v1/realtime/client_secrets", { passthrough: listed(true) })).toMatchObject({ kind: "passthrough" });
-    const elsewhere = new ProviderMatcher(customDescription({ baseUrl: "https://llm.example.com/", auth, paths: [] }));
-    expect(elsewhere.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false) })).toMatchObject({ kind: "passthrough", liveToken: null });
+    expect(onOpenAi.matcher.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false), route: onOpenAi.route })).toMatchObject({ kind: "refused" });
+    expect(onOpenAi.matcher.match("POST", "v1/realtime/client_secrets", { passthrough: listed(true), route: onOpenAi.route })).toMatchObject({ kind: "passthrough" });
+    const elsewhere = routed("https://llm.example.com/");
+    expect(elsewhere.matcher.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false), route: elsewhere.route })).toMatchObject({ kind: "passthrough", liveToken: null });
   });
 });
 
@@ -273,7 +277,6 @@ describe("locking a mint's window", () => {
   it.each([
     [one("expires_after", { window: "expires_after", anchor: true }), "expires_after", { anchor: "created_at", seconds: 60 }],
     [one("expires_after", { window: "expires_after" }), "expires_after", { seconds: 60 }],
-    [one("ttl_seconds", { window: "seconds" }), "ttl_seconds", 60],
     [one("newSessionExpireTime", { window: "time" }), "newSessionExpireTime", "2026-11-21T10:01:00.000Z"],
     [one("uses", { fixed: 1 }), "uses", 1],
   ] as const)("writes %j over whatever the client sent", (forced, field, value) => {
@@ -307,7 +310,7 @@ describe("locking a mint's window", () => {
   });
 
   it("leaves a mint that forces no body field as it is, and calls a body that is not a JSON object unreadable", () => {
-    const forced = one("ttl_seconds", { window: "seconds" });
+    const forced = one("uses", { fixed: 1 });
     expect(lockedLiveTokenBody({ query: [{ name: "include_conversation_id", value: "true" }] }, new TextEncoder().encode("anything"), 0)).toEqual({ kind: "same" });
     for (const body of ["[1]", "7", "not json", "\"text\""]) {
       expect(lockedLiveTokenBody(forced, new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
@@ -317,9 +320,9 @@ describe("locking a mint's window", () => {
 
   it("reads a JSON null body as an empty one, and adds the forced fields", () => {
     // ElevenLabs' realtime client-secret mint accepts a null body.
-    const forced = one("ttl_seconds", { window: "seconds" });
-    expect(decode(lockedLiveTokenBody(forced, encode(null), 0))).toEqual({ ttl_seconds: 60 });
-    expect(decode(lockedLiveTokenBody(forced, new TextEncoder().encode(" null "), 0))).toEqual({ ttl_seconds: 60 });
+    const forced = one("uses", { fixed: 1 });
+    expect(decode(lockedLiveTokenBody(forced, encode(null), 0))).toEqual({ uses: 1 });
+    expect(decode(lockedLiveTokenBody(forced, new TextEncoder().encode(" null "), 0))).toEqual({ uses: 1 });
   });
 });
 
