@@ -864,6 +864,24 @@ export async function sendAttempts(
   /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
   otherKeyHeaders: readonly string[] = [],
 ): Promise<Response> {
+  // A job the provider may accept is accounted for even if the app goes away: from the
+  // moment its submit is sent, the request is kept alive (`waitUntil`) until its answer
+  // is built, by then with its estimate written or its loss recorded.
+  const job = { release: (): void => undefined };
+  try {
+    return await sendAttemptsKeptFor(c, stripped, attempts, otherKeyHeaders, job);
+  } finally {
+    job.release();
+  }
+}
+
+async function sendAttemptsKeptFor(
+  c: ProxyContext,
+  stripped: readonly string[],
+  attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
+  otherKeyHeaders: readonly string[],
+  job: { release: () => void },
+): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
   let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController } | null = null;
@@ -977,6 +995,7 @@ export async function sendAttempts(
         redirect: "manual",
         signal: controller.signal,
       });
+      if (prepared.operation.lifecycle === "job") keepAliveUntilReleased(c, job);
     } catch (error) {
       if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
       throw error;
@@ -1204,6 +1223,24 @@ async function answerJobSubmit(
   headers.delete("content-encoding");
   headers.set("content-type", "application/json");
   return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, spec, links, jobId)), { status: upstream.status, headers });
+}
+
+/**
+ * Keeps the request alive (`waitUntil`) until `job.release` runs: a job
+ * submit's answer, its estimate and its check are then written even when the
+ * app went away while the provider's answer was on its way.
+ */
+function keepAliveUntilReleased(c: ProxyContext, job: { release: () => void }): void {
+  const before = job.release;
+  let release!: () => void;
+  const kept = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  job.release = () => {
+    before();
+    release();
+  };
+  c.executionCtx.waitUntil(kept);
 }
 
 /** How long the body of an accepted job submission may take to arrive. */

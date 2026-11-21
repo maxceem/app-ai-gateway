@@ -1456,15 +1456,16 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     expect(logged("job_submission_lost")).toBe(true);
   });
 
-  it("passes a status answer over the read limit through as it came, as a stream", async () => {
+  it("never holds a status answer over the read limit whole: the gateway answers with its own links", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const jobId = String((await submit(appId, slug, key)).json!.request_id);
     const big = JSON.stringify({ status: "IN_PROGRESS", logs: "y".repeat(BODY_READ_LIMIT) });
     falAnswers({ status: () => new Response(big, { status: 200, headers: { "content-type": "application/json" } }) });
-    const { response, text } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    const { response, json } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
     expect(response.status).toBe(200);
-    expect(text).toBe(big);
+    expect(response.headers.get("x-agw-status-trimmed")).toBe("body");
+    expect(json).toMatchObject({ request_id: jobId });
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
@@ -1600,5 +1601,114 @@ describe("Fable's review fixes", () => {
     await fetchJob(env, context, "result", claims, null);
     await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS * 2);
     expect(sent!.aborted).toBe(false);
+  });
+});
+
+describe("disconnects, stalled bodies and oversized status answers (review fixes, Astra round 1)", () => {
+  const encoder = new TextEncoder();
+
+  it("writes an accepted job's estimate even when the app goes away while its answer is on its way", async () => {
+    const { appId, slug, key } = await setup();
+    let finish: (() => void) | null = null;
+    falAnswers({
+      submit: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode('{"request_id":'));
+              finish = () => {
+                controller.enqueue(encoder.encode('"req-1","status":"IN_QUEUE"}'));
+                controller.close();
+              };
+            },
+          }),
+          { status: 200 },
+        ),
+    });
+    const ctx = createExecutionContext();
+    // The app's answer is never read: the app went away.
+    void worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/queue/fal-ai/flux/dev`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "a cat", num_images: 2 }),
+      }),
+      env,
+      ctx,
+    );
+    await vi.waitFor(() => expect(finish).not.toBeNull());
+    // From the moment the submit was sent, the request is kept alive.
+    let settled = false;
+    const waiting = waitOnExecutionContext(ctx).then(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    finish!();
+    await waiting;
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect((await openWork(appId)).length).toBe(1);
+  });
+
+  it("applies a final units header when the result body stalls past the read deadline", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    falAnswers({
+      result: () =>
+        new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200, headers: { "x-fal-billable-units": "4" } }),
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`, { headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1" } }),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    await vi.advanceTimersByTimeAsync(JOB_BODY_READ_DEADLINE_MS + 1);
+    vi.useRealTimers();
+    await waitOnExecutionContext(ctx);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    // Four units at $0.025 against an estimate of two: +$0.05.
+    expect(rows[1]).toMatchObject({ cost_nano: 50_000_000 });
+  });
+
+  it("never passes on a status answer too large to rewrite: it asks again without logs, then answers with its own links", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    const huge = {
+      status: "IN_PROGRESS",
+      request_id: "req-1",
+      status_url: "https://queue.fal.run/fal-ai/flux/requests/req-1/status",
+      response_url: "https://queue.fal.run/fal-ai/flux/requests/req-1",
+      cancel_url: "https://queue.fal.run/fal-ai/flux/requests/req-1/cancel",
+      logs: [{ message: "x".repeat(BODY_READ_LIMIT + 10) }],
+    };
+    const urls: string[] = [];
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      const { logs: _logs, ...small } = huge;
+      return Response.json(String(input).includes("logs=1") ? huge : small);
+    });
+    const withLogs = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status?logs=1`, key);
+    expect(withLogs.response.status).toBe(200);
+    expect(withLogs.response.headers.get("x-agw-status-trimmed")).toBe("query");
+    expect(withLogs.json).toMatchObject({ status: "IN_PROGRESS", status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status` });
+    expect(withLogs.text).not.toContain("queue.fal.run");
+    expect(urls).toHaveLength(2);
+
+    // Still too large without its query: the gateway's own links and the job id only.
+    fetchSpy.mockImplementation(async () => Response.json(huge));
+    const without = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    expect(without.response.headers.get("x-agw-status-trimmed")).toBe("body");
+    expect(without.json).toEqual({
+      request_id: jobId,
+      status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
+      response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+    });
+    expect(without.text).not.toContain("queue.fal.run");
   });
 });

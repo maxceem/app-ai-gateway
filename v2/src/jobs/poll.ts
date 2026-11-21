@@ -13,6 +13,10 @@
  * - The provider's answer goes back as it came: binary bodies and bodiless
  *   answers too. Only a status answer's links are rewritten, and no cache may
  *   keep either answer (`Cache-Control: no-store`).
+ * - A status answer too large to rewrite is never passed on as it came, since
+ *   its links point at the provider: it is asked for again without the
+ *   optional query fields (fal's `logs`), and if that is still too large the
+ *   gateway answers with its own links only (`x-agw-status-trimmed`).
  */
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
@@ -21,7 +25,17 @@ import { connectionDescription, loadConnection } from "../providers/connections.
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { applyFinalResult, boundedJson, fetchJob, gatewayLinks, jobContext, jobStatusQuery, readResultFacts, withGatewayLinks } from "./jobs.ts";
+import {
+  applyFinalResult,
+  boundedJson,
+  fetchJob,
+  gatewayLinks,
+  JOB_BODY_READ_DEADLINE_MS,
+  jobContext,
+  jobStatusQuery,
+  readResultFacts,
+  withGatewayLinks,
+} from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -86,7 +100,9 @@ export function jobPollHandler(which: "status" | "result") {
             const now = Date.now();
             c.executionCtx.waitUntil(
               (async () => {
-                const read = copy === null ? null : await boundedJson(copy);
+                // The copy gets the sweep's body deadline: a body that stalls after a final
+                // units header must not hold the count back, so the header is applied then.
+                const read = copy === null ? null : await boundedJson(copy, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
                 // The units header is applied even when the copy breaks. Whether the body is
                 // still needed is decided with the estimate's rate; the job's check stays open.
                 const facts = readResultFacts(context.spec, response, read);
@@ -96,22 +112,46 @@ export function jobPollHandler(which: "status" | "result") {
           }
           return new Response(bodiless ? null : response.body, { status: response.status, headers });
         }
-        // A status answer's links point at the gateway, as the submit answer's do. One past the
-        // read limit is passed through as it came, as a stream: never held whole.
-        const read = bodiless || response.body === null ? null : await readBounded(response.body);
-        if (read !== null && read.kind === "too_large") return new Response(read.stream, { status: response.status, headers });
+        // A status answer's links point at the gateway, as the submit answer's do.
+        const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
+        let answer = response;
+        let answerHeaders = headers;
+        let read = bodiless || response.body === null ? null : await readBounded(response.body);
+        if (read !== null && read.kind === "too_large" && query !== "") {
+          // Too large to rewrite, so never passed on with the provider's links in it.
+          // Asked once more without the optional query fields (fal's `logs`).
+          void read.stream.cancel().catch(() => undefined);
+          const again = await fetchJob(c.env, context, "status", claims, caller.identity.userId);
+          answer = again.response;
+          answerHeaders = clientResponseHeaders(answer.headers, again.keyHeader);
+          answerHeaders.delete("content-length");
+          answerHeaders.delete("content-encoding");
+          noStore(answerHeaders);
+          answerHeaders.set("x-agw-status-trimmed", "query");
+          read = NULL_BODY_STATUSES.has(answer.status) || answer.body === null ? null : await readBounded(answer.body);
+        }
+        if (read !== null && read.kind === "too_large") {
+          // Still too large: the gateway answers with its own links and the job id only.
+          void read.stream.cancel().catch(() => undefined);
+          answerHeaders.set("content-type", "application/json");
+          answerHeaders.set("x-agw-status-trimmed", "body");
+          const named = context.spec.links ?? {};
+          const minimal: Record<string, unknown> = { [context.spec.requestIdField]: jobId };
+          if (named.status !== undefined) minimal[named.status] = links.status;
+          if (named.result !== undefined) minimal[named.result] = links.result;
+          return new Response(JSON.stringify(minimal), { status: answer.status, headers: answerHeaders });
+        }
         if (read !== null && read.kind === "read_error") throw read.error;
         const bytes = read !== null && read.kind === "whole" ? read.bytes : null;
         const body = bytes === null ? null : (parseJson(bytes) ?? null);
         if (typeof body === "object" && body !== null && !Array.isArray(body)) {
-          const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
-          headers.set("content-type", "application/json");
+          answerHeaders.set("content-type", "application/json");
           return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, context.spec, links, jobId)), {
-            status: response.status,
-            headers,
+            status: answer.status,
+            headers: answerHeaders,
           });
         }
-        return new Response(bytes, { status: response.status, headers });
+        return new Response(bytes, { status: answer.status, headers: answerHeaders });
       },
     );
   };
