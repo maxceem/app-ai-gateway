@@ -13,6 +13,7 @@ import { CallBudget, RETENTION_CURSOR, runConversationRetention } from "../src/c
 import { planIncludes } from "../src/billing/access.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
+import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -580,6 +581,44 @@ describe("conversation storage through the gateway", () => {
     expect(stored).not.toContain("sk-test-provider-key-5678");
     expect(stored).not.toContain(key);
     expect(record!.response).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+    expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
+  });
+
+  it("never stores the verified credential, whatever header carried it (Sol round 2)", async () => {
+    const slug = await connection();
+    // The issuer's token header is the end-user header name: a credential in a header the
+    // gateway otherwise reads identity from, and never sends upstream.
+    const { appId } = await appWith({
+      authentication: {
+        type: "api_key",
+        end_user: {
+          source: "issuer",
+          issuer: {
+            jwks_url: "https://issuer.test/jwks.json",
+            issuer: "https://issuer.test/",
+            audience: "aud",
+            user_id_claim: "sub",
+            required_claims: [],
+            max_token_lifetime_seconds: 3600,
+            token_header: "x-end-user-id",
+          },
+        },
+      },
+      routing: { providers: { [slug]: { operations: ["openai.responses"], models: ["gpt-4o-mini"] } } },
+      conversations: { store: true },
+    });
+    const appKey = await seedAppKey(appId);
+    const { token } = await issueGatewayToken(env.JWT_SECRET, { appId, userId: "person-1", authMethod: "api_key", apiKeyId: appKey.id });
+    providerAnswers();
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, {
+      method: "POST",
+      headers: { "x-end-user-id": token, "x-app-version": "1.0", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", input: `my token is ${token}` }),
+    });
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    const [record] = await storedRecords(appId);
+    expect(JSON.stringify(record)).not.toContain(token);
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 

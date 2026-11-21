@@ -59,7 +59,7 @@ import {
   refusal,
   sendAttempts,
   serveCaller,
-  strippedHeaders,
+  clientSide,
   type Caller,
   type OutgoingBody,
   type PreparedAttempt,
@@ -390,7 +390,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         refuse: refusal,
       });
-      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest], keyHeaders);
+      return await sendAttempts(c, clientSide(app, caller), [head, ...rest], keyHeaders);
     },
   );
 }

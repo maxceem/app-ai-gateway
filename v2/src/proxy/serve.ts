@@ -134,6 +134,8 @@ export interface Caller {
   readonly identity: GatewayIdentity;
   /** The header the caller's credential came in, never sent to a provider. */
   readonly credentialHeader: string;
+  /** The credential authentication verified (app key or gateway token): never stored in a conversation, whatever header carried it. */
+  readonly credentialToken: string;
   readonly appVersion: string | null;
   readonly clientTraceId: string | null;
   /** The request body, read once, 20 MiB at most. */
@@ -225,7 +227,7 @@ export async function serveCaller(
       throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
     }
     const conversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null ? app.conversations.keep : null;
-    return await serve({ identity, credentialHeader: credential.headerName, appVersion, clientTraceId, readBody, facts, conversation });
+    return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, conversation });
   } catch (error) {
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
@@ -416,7 +418,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
-      return await sendAttempts(c, strippedHeaders(app, caller), [
+      return await sendAttempts(c, clientSide(app, caller), [
         {
           connection,
           description,
@@ -505,7 +507,7 @@ async function servePassthrough(
     clientTraceId: caller.clientTraceId,
     ...facts,
   };
-  return await sendAttempts(c, strippedHeaders(app, caller), [
+  return await sendAttempts(c, clientSide(app, caller), [
     {
       connection,
       description,
@@ -776,9 +778,19 @@ export function sanitizedQuery(url: URL): string {
   return copy.search;
 }
 
-/** Client headers that never reach a provider, even if allowlisted: the gateway's own credentials and end-user ids. */
-export function strippedHeaders(app: AppRecord, caller: Caller): readonly string[] {
-  return [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER];
+/**
+ * What of the client's request never reaches a provider or a stored conversation:
+ * the headers that carry the gateway's own credentials and end-user ids (never
+ * sent upstream, even if allowlisted), and the credential authentication verified.
+ */
+export interface ClientSide {
+  readonly stripped: readonly string[];
+  /** The verified credential, masked from stored conversations whatever header carried it. */
+  readonly credential: string;
+}
+
+export function clientSide(app: AppRecord, caller: Caller): ClientSide {
+  return { stripped: [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER], credential: caller.credentialToken };
 }
 
 /** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
@@ -889,7 +901,7 @@ function clientGone(c: ProxyContext): boolean {
  */
 export async function sendAttempts(
   c: ProxyContext,
-  stripped: readonly string[],
+  client: ClientSide,
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
   /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
   otherKeyHeaders: readonly string[] = [],
@@ -899,7 +911,7 @@ export async function sendAttempts(
   // is built, by then with its estimate written or its loss recorded.
   const job = { release: (): void => undefined };
   try {
-    return await sendAttemptsKeptFor(c, stripped, attempts, otherKeyHeaders, job);
+    return await sendAttemptsKeptFor(c, client, attempts, otherKeyHeaders, job);
   } finally {
     job.release();
   }
@@ -907,7 +919,7 @@ export async function sendAttempts(
 
 async function sendAttemptsKeptFor(
   c: ProxyContext,
-  stripped: readonly string[],
+  client: ClientSide,
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
   otherKeyHeaders: readonly string[],
   job: { release: () => void },
@@ -915,16 +927,21 @@ async function sendAttemptsKeptFor(
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
   let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController; sent: SentAttempt } | null = null;
-  // The gateway credentials the app sent (not its end-user id): a stored conversation that
-  // contains one of them is never written with that body (`storeConversation`).
-  const clientSecrets = stripped
-    .filter((name) => name.toLowerCase() !== DEFAULT_END_USER_HEADER)
-    .flatMap((name) => {
-      const value = c.req.header(name);
-      if (value === undefined) return [];
-      const token = value.replace(/^bearer\s+/iu, "");
-      return token === value ? [value] : [value, token];
-    });
+  const stripped = client.stripped;
+  // The gateway credentials the app sent: the one authentication verified, whatever
+  // header carried it, and any other credential header the app sent (not its end-user
+  // id). A stored conversation that contains one of them is never written with that body.
+  const clientSecrets = [
+    client.credential,
+    ...stripped
+      .filter((name) => name.toLowerCase() !== DEFAULT_END_USER_HEADER)
+      .flatMap((name) => {
+        const value = c.req.header(name);
+        if (value === undefined) return [];
+        const token = value.replace(/^bearer\s+/iu, "");
+        return token === value ? [value] : [value, token];
+      }),
+  ];
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
