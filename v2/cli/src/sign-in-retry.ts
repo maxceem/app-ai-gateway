@@ -52,9 +52,13 @@ export class SignInRetry {
     return "Run the same command again for a new code.";
   }
 
-  /** For a gateway that offers no sign-in with a code. */
-  onBrowserMachine(): string {
-    return "Sign in from a machine with a browser using the same command, without --device or --no-open.";
+  /**
+   * For a gateway that offers no sign-in with a code. Another machine has no
+   * stored gateway, so the hint names it: the address is on its own line, as
+   * plain text, rather than inside a command that would need quoting.
+   */
+  onBrowserMachine(url: string): string {
+    return `On a machine with a browser, run agw deployment connect --url with this gateway's address:\n${url}`;
   }
 }
 
@@ -69,9 +73,17 @@ export const ACCOUNT_LOGIN = new SignInRetry();
  */
 export function signInFailure(error: unknown): unknown {
   if (!(error instanceof CliError)) return error;
+  const status = error.details?.status;
   let next: string | null = null;
   if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";
   else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
+  else if (error.code === "invalid_state" || error.code === "unsafe_storage")
+    next = "Move the connection state file aside, then run the same command again.";
+  // Picked from the status, whatever the body was: an HTML page from a proxy
+  // in front of the gateway says as much as the gateway's own JSON.
+  else if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
+  else if (typeof status === "number" && status >= 500)
+    next = "Wait until the gateway is available, then run the same command again.";
   else if (/agw account login|agw --help/.test(error.nextAction)) next = AGAIN;
   if (next === null) return error;
   const replaced = new CliError(error.code, error.message, next, error.exitCode, error.details);

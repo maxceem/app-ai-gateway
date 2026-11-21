@@ -257,6 +257,15 @@ test("every failed sign-in says to run the same command again, and never names a
   const unauthorized = (): never => {
     throw new CliError("unauthorized", "The gateway refused the request (HTTP 401).", "Run agw account login.", 3, { status: 401 });
   };
+  // A proxy's HTML page in front of the gateway: no JSON, only the status.
+  const htmlUnauthorized = (): never => {
+    throw new CliError("invalid_response", "The gateway returned an invalid JSON response.", "Check the gateway URL and its release.", 3, { status: 401 });
+  };
+  const unavailable = (): never => {
+    throw new CliError("http_503", "The gateway refused the request (HTTP 503).", "Review command configuration and account status.", 3, { status: 503 });
+  };
+  const ACCESS = "Fix access to the gateway, then run the same command again.";
+  const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
     status: 200,
     data: { device_code: "dc", user_code: "AAAA-BBBB", verification_uri: "%ORIGIN%/v2/device", expires_in: 30, interval: 5, ...extra },
@@ -284,16 +293,21 @@ test("every failed sign-in says to run the same command again, and never names a
       const error = await start.run(ctx).then(() => assert.fail(`${start.name}: expected a failure`), (caught: unknown) => caught);
       assert.ok(error instanceof CliError, start.name);
       assert.equal(store.held.active, null, start.name);
-      assert.doesNotMatch(error.nextAction, /agw (account|deployment)|--url/, start.name);
+      // Only the hint for another machine names a command, and it names this
+      // gateway's address on a line of its own.
+      if (error.code !== "device_flow_unavailable") assert.doesNotMatch(error.nextAction, /agw (account|deployment)|--url/, start.name);
+      assert.doesNotMatch(error.nextAction, /agw account login/, start.name);
       return error;
     };
     const browser = (answer: Callback) => handLoopback(() => answer);
     const noBrowser = usesBrowser ? { browserAvailable: () => false } : {};
     // Failures around the sign-in itself, whichever flow it takes.
     const around: [string, Promise<CliError>, string][] = [
-      ["discovery 401", failure(() => tokens(1), noBrowser, true, unauthorized), AGAIN],
+      ["discovery 401", failure(() => tokens(1), noBrowser, true, unauthorized), ACCESS],
+      ["discovery HTML 401", failure(() => tokens(1), noBrowser, true, htmlUnauthorized), ACCESS],
+      ["discovery JSON 503", failure(() => tokens(1), noBrowser, true, unavailable), WAIT],
       ["discovery unreachable", failure(() => tokens(1), noBrowser, true, unreachable), "Check connectivity and the URL, then run the same command again."],
-      ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), AGAIN],
+      ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), ACCESS],
       ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
     ];
     for (const [what, pending, expected] of around) assert.equal((await pending).nextAction, expected, `${start.name}: ${what}`);
@@ -320,10 +334,26 @@ test("every failed sign-in says to run the same command again, and never names a
       ["declined", failure(device({ status: 400, data: { error: "access_denied" } }), noBrowser), "Run the same command again to start over."],
       ["start refused", failure(device(tokens(1), { status: 400, data: { error: "invalid_client" } }), noBrowser), AGAIN],
       ["poll redirected", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : refusal(path)), noBrowser), "Fix the gateway's address, then run the same command again."],
-      ["no code endpoint", failure(() => tokens(1), noBrowser, false), "Sign in from a machine with a browser using the same command, without --device or --no-open."],
+      ["no code endpoint", failure(() => tokens(1), noBrowser, false), `On a machine with a browser, run agw deployment connect --url with this gateway's address:\n${target}`],
     ];
     for (const [what, pending, expected] of deviceCases) assert.equal((await pending).nextAction, expected, `${start.name}: device ${what}`);
   }
+});
+
+test("a sign-in whose state file cannot be saved says to move it aside and run the same command again", async () => {
+  const transport = fakeTransport(
+    (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : path === "/v2/admin/session" ? { data: SESSION } : notFound()),
+    (path) => (path === "/v2/oauth/device_authorization" ? { status: 200, data: { device_code: "dc", user_code: "AAAA-BBBB", verification_uri: `${URL_}/v2/device`, expires_in: 30, interval: 5 } } : tokens(1)),
+  );
+  const store = memoryStore();
+  store.update = async () => {
+    throw new CliError("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", "Move the file aside and sign in again with agw account login.", 4);
+  };
+  const ctx = new Context(store, store.held, transport, { device: true }, { stderr: sinks().stderr, env: {}, browserAvailable: () => true, clock: fakeClock() });
+  const error = await ctx.connect(URL_).then(() => assert.fail("expected a failure"), (caught: unknown) => caught);
+  assert.ok(error instanceof CliError);
+  assert.equal(error.code, "unsafe_storage");
+  assert.equal(error.nextAction, "Move the connection state file aside, then run the same command again.");
 });
 
 test("without a browser, sign-in uses the device flow and shows its code on stderr", async () => {

@@ -230,7 +230,7 @@ export async function deviceLogin(
 ): Promise<OAuthLogin> {
   const retry = given.withDevice(server.device !== null).asCode();
   if (!server.device)
-    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", retry.onBrowserMachine(), 3);
+    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", retry.onBrowserMachine(url), 3);
   const opened = await transport.postForm(url, server.device, { client_id: CLI_CLIENT_ID, scope: grant, resource: server.issuer });
   const data = opened.data;
   const deviceCode = data["device_code"];
