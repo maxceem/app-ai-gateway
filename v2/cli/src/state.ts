@@ -111,7 +111,11 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
   return true;
 }
 
-const RECOVER_STATE = "Move the file aside and sign in again with agw account login.";
+// The file that held the selected gateway cannot be read, so its address is
+// unknown here: the hint covers both kinds of gateway rather than sending a
+// self-hosted user to the hosted one.
+const RECOVER_STATE =
+  "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
 
 /** A failure of this machine's own storage, tagged so sign-in hints can tell it from a gateway's answer. */
 function stateFail(code: string, message: string, nextAction?: string, exitCode?: number): never {

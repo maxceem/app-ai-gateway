@@ -24,7 +24,7 @@ import {
   type OAuthTransport,
 } from "./oauth.ts";
 import type { Flags } from "./parser.ts";
-import { SignInRetry, signInFailure } from "./sign-in-retry.ts";
+import { AGAIN, AGAIN_OR_CODE, signInFailure, START_OVER } from "./sign-in-retry.ts";
 import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
 
@@ -338,9 +338,8 @@ export class Context {
     let who: Omit<LoginResult, "connected" | "url" | "credential">;
     try {
       const server = await discover(this.transport, target);
-      const retry = new SignInRetry(Boolean(this.flags.device || this.flags["no-open"]), server.device !== null);
       const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-      login = useBrowser ? await this.browserLogin(target, server, retry) : await this.deviceSignIn(target, server, retry);
+      login = useBrowser ? await this.browserLogin(target, server) : await this.deviceSignIn(target, server);
       who = await this.whoAmI(target, login.accessToken);
     } catch (error) {
       // Every failure says to run the same command again, never a command
@@ -365,7 +364,7 @@ export class Context {
   /**
    * The authorization code with PKCE, back to a listener on this machine.
    */
-  private async browserLogin(url: string, server: OAuthServer, retry: SignInRetry): Promise<OAuthLogin> {
+  private async browserLogin(url: string, server: OAuthServer): Promise<OAuthLogin> {
     const { verifier, challenge } = pkce();
     const state = randomBytes(24).toString("base64url");
     const loopback = await this.io.listen(state);
@@ -375,7 +374,7 @@ export class Context {
         // Only a browser here could finish this one, so a code takes its place.
         this.say("The browser could not be opened, so sign in with a code instead.");
         await loopback.close();
-        return await this.deviceSignIn(url, server, retry);
+        return await this.deviceSignIn(url, server);
       }
       this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
       const deadline = this.io.loginDeadline(LOGIN_TIMEOUT_MS);
@@ -385,22 +384,22 @@ export class Context {
       } catch {
         // Exit 5: this CLI stopped waiting for the browser (v1's wait timeout).
         // A browser sign-in cannot be picked up again: it starts over.
-        fail("login_expired", "The sign-in was not approved in time.", retry.againOrCode(), 5);
+        fail("login_expired", "The sign-in was not approved in time.", server.device ? AGAIN_OR_CODE : AGAIN, 5);
       } finally {
         deadline.cancel();
       }
       if ("error" in answer) {
         loopback.answer(false);
-        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", retry.startOver(), 4);
-        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, retry.again(), 3);
+        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", START_OVER, 4);
+        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, AGAIN, 3);
       }
       // RFC 9207: an answer naming another issuer is not this gateway's.
       if (answer.iss !== null && answer.iss !== server.issuer) {
         loopback.answer(false);
-        fail("login_failed", "The sign-in came back from another issuer than this gateway.", retry.again(), 3);
+        fail("login_failed", "The sign-in came back from another issuer than this gateway.", AGAIN, 3);
       }
       try {
-        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now(), retry);
+        const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now());
         loopback.answer(true);
         return login;
       } catch (error) {
@@ -413,7 +412,7 @@ export class Context {
   }
 
   /** The device flow, with its code shown on stderr. */
-  private deviceSignIn(url: string, server: OAuthServer, retry: SignInRetry): Promise<OAuthLogin> {
+  private deviceSignIn(url: string, server: OAuthServer): Promise<OAuthLogin> {
     const style = styleFor(this.io.stderr);
     return deviceLogin(
       this.transport,
@@ -431,7 +430,6 @@ export class Context {
         );
       },
       this.io.clock,
-      retry,
     );
   }
 

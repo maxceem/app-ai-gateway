@@ -13,9 +13,9 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { CliError, fail } from "./common.ts";
+import { CliError, CLOUD, fail } from "./common.ts";
 import type { OAuthLogin } from "./state.ts";
-import { ACCOUNT_LOGIN, type SignInRetry } from "./sign-in-retry.ts";
+import { AGAIN, NEW_CODE, onBrowserMachine, START_OVER } from "./sign-in-retry.ts";
 import type { FormResponse, Transport } from "./transport.ts";
 
 /** The CLI's client id; the gateway registers it as a built-in public client. */
@@ -78,10 +78,11 @@ export async function discover(transport: OAuthTransport, url: string): Promise<
     fail("invalid_response", "The gateway's sign-in metadata names another issuer.", "Check the gateway URL.", 3);
   return {
     issuer,
-    authorize: pathOn(url, meta["authorization_endpoint"], "authorization endpoint"),
-    token: pathOn(url, meta["token_endpoint"], "token endpoint"),
-    revoke: pathOn(url, meta["revocation_endpoint"], "revocation endpoint"),
-    device: meta["device_authorization_endpoint"] === undefined ? null : pathOn(url, meta["device_authorization_endpoint"], "device endpoint"),
+    authorize: pathOn(url, meta["authorization_endpoint"], "authorization endpoint", AGAIN),
+    token: pathOn(url, meta["token_endpoint"], "token endpoint", AGAIN),
+    revoke: pathOn(url, meta["revocation_endpoint"], "revocation endpoint", AGAIN),
+    device:
+      meta["device_authorization_endpoint"] === undefined ? null : pathOn(url, meta["device_authorization_endpoint"], "device endpoint", AGAIN),
   };
 }
 
@@ -139,7 +140,7 @@ const GRANTS = new Set(["read", "manage"]);
 const newLoginId = (): string => randomBytes(12).toString("base64url");
 
 /** A token endpoint's success, as a stored sign-in; anything else is refused. */
-function loginFrom(answer: FormResponse, now: number, id: string, retry: SignInRetry = ACCOUNT_LOGIN): OAuthLogin {
+function loginFrom(answer: FormResponse, now: number, id: string, nextAction = AGAIN): OAuthLogin {
   const data = answer.data;
   const access = data["access_token"];
   const refresh = data["refresh_token"];
@@ -154,7 +155,7 @@ function loginFrom(answer: FormResponse, now: number, id: string, retry: SignInR
     typeof expiresIn !== "number" ||
     !(expiresIn > 0)
   )
-    fail("invalid_response", "The gateway answered the sign-in with an unusable token response.", retry.again(), 3);
+    fail("invalid_response", "The gateway answered the sign-in with an unusable token response.", nextAction, 3);
   return {
     id,
     clientId: CLI_CLIENT_ID,
@@ -166,13 +167,13 @@ function loginFrom(answer: FormResponse, now: number, id: string, retry: SignInR
 }
 
 /** A refusal from the token endpoint, with its OAuth error code. */
-function tokenRefusal(answer: FormResponse, what: string, retry: SignInRetry = ACCOUNT_LOGIN): never {
+function tokenRefusal(answer: FormResponse, what: string, nextAction = AGAIN): never {
   const code = typeof answer.data["error"] === "string" ? (answer.data["error"] as string) : `http_${answer.status}`;
   const description = typeof answer.data["error_description"] === "string" ? (answer.data["error_description"] as string) : "";
   fail(
     code === "invalid_grant" ? "login_failed" : code,
     `${what} was refused (${code})${description ? `: ${description.replace(/\p{C}/gu, " ").slice(0, 300)}` : "."}`,
-    retry.again(),
+    nextAction,
     3,
     { status: answer.status },
   );
@@ -185,7 +186,6 @@ export async function exchangeCode(
   server: OAuthServer,
   input: { code: string; redirect: string; verifier: string },
   now: () => number = Date.now,
-  retry: SignInRetry = ACCOUNT_LOGIN,
 ): Promise<OAuthLogin> {
   const answer = await transport.postForm(url, server.token, {
     grant_type: "authorization_code",
@@ -195,8 +195,8 @@ export async function exchangeCode(
     code_verifier: input.verifier,
     resource: server.issuer,
   });
-  if (answer.status !== 200) tokenRefusal(answer, "The sign-in", retry);
-  return loginFrom(answer, now(), newLoginId(), retry);
+  if (answer.status !== 200) tokenRefusal(answer, "The sign-in");
+  return loginFrom(answer, now(), newLoginId());
 }
 
 /** What the device flow shows the person. */
@@ -226,23 +226,21 @@ export async function deviceLogin(
   grant: "read" | "manage",
   show: (prompt: DevicePrompt) => void,
   clock: DeviceClock = realClock,
-  given: SignInRetry = ACCOUNT_LOGIN,
 ): Promise<OAuthLogin> {
-  const retry = given.withDevice(server.device !== null).asCode();
   if (!server.device)
-    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", retry.onBrowserMachine(url), 3);
+    fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", onBrowserMachine(url), 3);
   const opened = await transport.postForm(url, server.device, { client_id: CLI_CLIENT_ID, scope: grant, resource: server.issuer });
   const data = opened.data;
   const deviceCode = data["device_code"];
   const userCode = data["user_code"];
   const verification = data["verification_uri"];
-  if (opened.status !== 200) tokenRefusal(opened, "Starting the sign-in", retry);
+  if (opened.status !== 200) tokenRefusal(opened, "Starting the sign-in");
   if (typeof deviceCode !== "string" || typeof userCode !== "string" || typeof verification !== "string")
-    fail("invalid_response", "The gateway answered the sign-in request with an unusable body.", retry.again(), 3);
+    fail("invalid_response", "The gateway answered the sign-in request with an unusable body.", AGAIN, 3);
   // The person opens these, so they too must be on the gateway's own origin.
-  pathOn(url, verification, "sign-in page", retry.again());
+  pathOn(url, verification, "sign-in page", AGAIN);
   const complete = typeof data["verification_uri_complete"] === "string" ? (data["verification_uri_complete"] as string) : null;
-  if (complete) pathOn(url, complete, "sign-in page", retry.again());
+  if (complete) pathOn(url, complete, "sign-in page", AGAIN);
   const expiresIn = typeof data["expires_in"] === "number" ? (data["expires_in"] as number) : 600;
   let interval = typeof data["interval"] === "number" && (data["interval"] as number) > 0 ? (data["interval"] as number) : 5;
   show({ userCode, verificationUri: verification, verificationUriComplete: complete, expiresIn });
@@ -254,7 +252,7 @@ export async function deviceLogin(
       device_code: deviceCode,
       client_id: CLI_CLIENT_ID,
     });
-    if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId(), retry);
+    if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId());
     const error = answer.data["error"];
     if (error === "authorization_pending") continue;
     // RFC 8628 §3.5: every slow_down adds five seconds to the interval.
@@ -263,13 +261,13 @@ export async function deviceLogin(
       continue;
     }
     // The status comes first: a 403 or 5xx says more than the body's code.
-    if (answer.status === 403 || answer.status === 401 || answer.status >= 500) tokenRefusal(answer, "The sign-in", retry);
+    if (answer.status === 403 || answer.status === 401 || answer.status >= 500) tokenRefusal(answer, "The sign-in");
     if (error === "access_denied")
-      fail("login_denied", "The sign-in was declined in the browser.", retry.startOver(), 4, { status: answer.status });
+      fail("login_denied", "The sign-in was declined in the browser.", START_OVER, 4, { status: answer.status });
     if (error === "expired_token") break;
-    tokenRefusal(answer, "The sign-in", retry);
+    tokenRefusal(answer, "The sign-in");
   }
-  fail("login_expired", "The sign-in code expired before it was approved.", retry.newCode(), 4);
+  fail("login_expired", "The sign-in code expired before it was approved.", NEW_CODE, 4);
 }
 
 /**
@@ -289,9 +287,14 @@ export async function refresh(
     client_id: login.clientId,
     resource: url + V2_PATH,
   });
-  if (answer.status === 200) return loginFrom(answer, now(), login.id);
+  // Running the same command again would only renew the same way, so the
+  // hint signs in again. A self-hosted gateway is named: a bare
+  // `agw account login` could reach the hosted one instead.
+  const signInAgain =
+    url === CLOUD ? "Run agw account login again." : `Run agw deployment connect --url with this gateway's address:\n${url}`;
+  if (answer.status === 200) return loginFrom(answer, now(), login.id, signInAgain);
   if (answer.data["error"] === "invalid_grant") return null;
-  tokenRefusal(answer, "Renewing the sign-in");
+  tokenRefusal(answer, "Renewing the sign-in", signInAgain);
 }
 
 /** Revokes a sign-in (RFC 7009). True when the gateway accepted it. */

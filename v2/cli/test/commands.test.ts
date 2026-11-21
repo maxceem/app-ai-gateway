@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliError, LocalStateError } from "../src/common.ts";
+import { CliError } from "../src/common.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
@@ -265,29 +265,31 @@ test("deployment status at a v1 gateway with AGW_MANAGEMENT_KEY gets the agw 1.x
   assert.equal(JSON.parse(out.out.text).error.code, "gateway_v1");
 });
 
-test("a sign-in whose state file cannot be read never points at agw account login", async () => {
-  const unreadable = () => {
-    const store = memoryStore();
-    store.read = async () => {
-      throw new LocalStateError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
-    };
-    return store;
-  };
-  const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
-  const cases: [string[], string][] = [
-    [["deployment", "connect", "--url", URL_, "--json"], "Move the connection state file aside, then run the same command again."],
-    [
-      ["account", "login", "--json"],
-      "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.",
-    ],
-  ];
-  for (const [argv, expected] of cases) {
-    const out = sinks();
-    const code = await main(argv, { store: unreadable(), transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
-    assert.equal(code, 4, argv.join(" "));
-    const error = JSON.parse(out.out.text).error;
-    assert.equal(error.code, "invalid_state");
-    assert.equal(error.nextAction, expected, argv.join(" "));
+test("a state file that cannot be read never points at agw account login", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await store.update(() => {});
+    await writeFile(store.path, "not JSON");
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const BOTH =
+      "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
+    const cases: [string[], string][] = [
+      // The command names its gateway, so running it again finds that one.
+      [["deployment", "connect", "--url", URL_, "--json"], "Move the connection state file aside, then run the same command again."],
+      [["account", "login", "--json"], BOTH],
+      [["deployment", "status", "--json"], BOTH],
+    ];
+    for (const [argv, expected] of cases) {
+      const out = sinks();
+      const code = await main(argv, { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+      assert.equal(code, 4, argv.join(" "));
+      const error = JSON.parse(out.out.text).error;
+      assert.equal(error.code, "invalid_state", argv.join(" "));
+      assert.equal(error.nextAction, expected, argv.join(" "));
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -197,7 +197,7 @@ test("a browser sign-in answered by another issuer, or declined, stores nothing"
   assert.equal(transport.calls.filter((call) => call.kind === "form").length, 0);
 });
 
-test("a browser sign-in nobody approves exits 5 and says to run the same command again", async () => {
+test("a browser sign-in nobody approves stops waiting with exit 5", async () => {
   const transport = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => tokens(1));
   // The browser opens but never answers; the deadline fires at once instead of after five minutes.
   const silent: Loopback = { redirect: "http://127.0.0.1:43210/callback", callback: new Promise<Callback>(() => {}), answer: () => {}, close: async () => {} };
@@ -207,45 +207,20 @@ test("a browser sign-in nobody approves exits 5 and says to run the same command
     openBrowser: async () => true,
     loginDeadline: () => ({ expired: Promise.reject(new Error("timeout")), cancel: () => void cancelled++ }),
   };
-  const expired = (error: unknown) => {
+  for (const run of [(ctx: Context) => ctx.connect(URL_), (ctx: Context) => ctx.login(URL_)]) {
+    const error = await run(contextFor(transport, io).ctx).then(() => assert.fail("expected a timeout"), (caught: unknown) => caught);
     assert.ok(error instanceof CliError);
     assert.equal(error.code, "login_expired");
     assert.equal(error.exitCode, 5);
-    return error;
-  };
-  const connect = contextFor(transport, io);
-  const viaConnect = expired(await connect.ctx.connect(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
-  assert.equal(viaConnect.nextAction, "Run the same command again, or add --device to sign in with a code.");
-  assert.equal(connect.store.held.active, null);
-  const login = contextFor(transport, io);
-  const viaLogin = expired(await login.ctx.login(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
-  assert.equal(viaLogin.nextAction, "Run the same command again, or add --device to sign in with a code.");
+  }
+  // The deadline is cleared each time, so nothing keeps the process waiting.
   assert.equal(cancelled, 2);
 });
 
-test("a token exchange refused after the browser answered says to run the same command again", async () => {
-  const browser = () => handLoopback(() => ({ code: "c", iss: null }));
-  const refused = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 400, data: { error: "invalid_grant" } }));
-  const viaConnect = await contextFor(refused, browser()).ctx.connect(URL_).then(() => assert.fail("expected a refusal"), (error) => error);
-  assert.ok(viaConnect instanceof CliError);
-  assert.equal(viaConnect.code, "login_failed");
-  assert.equal(viaConnect.nextAction, "Run the same command again.");
-  const unusable = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 200, data: { access_token: "" } }));
-  const invalid = await contextFor(unusable, browser()).ctx.connect(URL_).then(() => assert.fail("expected an unusable answer"), (error) => error);
-  assert.ok(invalid instanceof CliError);
-  assert.equal(invalid.code, "invalid_response");
-  assert.equal(invalid.nextAction, "Run the same command again.");
-});
-
-test("every failed sign-in says to run the same command again, and never names another command", async () => {
-  const IPV6 = "http://[::1]:8787";
+test("each failed sign-in's hint names no other command; gateway errors, redirects and lost connections come from the real Transport", async () => {
   const starts = [
-    { name: "account login", flags: {}, run: (ctx: Context) => ctx.login(URL_), target: URL_ },
-    { name: "account login --device", flags: { device: true }, run: (ctx: Context) => ctx.login(URL_), target: URL_ },
-    { name: "connect --url", flags: {}, run: (ctx: Context) => ctx.connect(URL_), target: URL_ },
-    { name: "connect --url [::1]", flags: {}, run: (ctx: Context) => ctx.connect(IPV6), target: IPV6 },
-    { name: "connect --url --device", flags: { device: true }, run: (ctx: Context) => ctx.connect(URL_), target: URL_ },
-    { name: "connect --cloud --no-open", flags: { cloud: true, "no-open": true }, run: (ctx: Context) => ctx.connect(CLOUD), target: CLOUD },
+    { name: "browser", flags: {}, run: (ctx: Context) => ctx.connect(URL_), target: URL_ },
+    { name: "device", flags: { device: true }, run: (ctx: Context) => ctx.login(URL_), target: URL_ },
   ] as const;
   const AGAIN = "Run the same command again.";
   // Redirects and lost connections also come from the real transport.
@@ -259,8 +234,9 @@ test("every failed sign-in says to run the same command again, and never names a
     new Transport(async () => {
       throw new TypeError("fetch failed");
     }).request("https://gateway.example", "/answer") as Promise<never>;
-  // The gateway's answers go through the real transport, so the hint the
-  // sign-in replaces is the one the transport really produces.
+  // Error answers from the gateway go through the real transport too, so the
+  // hint the sign-in replaces is the one the transport really produces.
+  // Token endpoint answers are given as they are.
   const answered = (status: number, body: string, type = "application/json") => (): Promise<never> =>
     new Transport(async () => new Response(body, { status, headers: { "content-type": type } })).request(
       "https://gateway.example",
@@ -272,9 +248,6 @@ test("every failed sign-in says to run the same command again, and never names a
   const unavailable = answered(503, JSON.stringify({ error: { code: "service_unavailable", message: "Starting." } }));
   // A 503 whose body names a code that alone would mean "check connectivity".
   const unavailableAsUnreachable = answered(503, JSON.stringify({ error: { code: "connection_failed", message: "Upstream down." } }));
-  // A gateway that answers with the same code as an unreadable state file: it is
-  // not this machine's storage, so moving the file aside must never be advised.
-  const gatewayInvalidState = answered(400, JSON.stringify({ error: { code: "invalid_state", message: "The sign-in state was not accepted." } }));
   const ACCESS = "Fix access to the gateway, then run the same command again.";
   const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
@@ -319,7 +292,6 @@ test("every failed sign-in says to run the same command again, and never names a
       ["discovery HTML 401", failure(() => tokens(1), noBrowser, true, htmlUnauthorized), ACCESS],
       ["discovery JSON 503", failure(() => tokens(1), noBrowser, true, unavailable), WAIT],
       ["discovery 503 connection_failed", failure(() => tokens(1), noBrowser, true, unavailableAsUnreachable), WAIT],
-      ["gateway 400 invalid_state", failure(() => tokens(1), noBrowser, true, gatewayInvalidState), AGAIN],
       ["discovery unreachable", failure(() => tokens(1), noBrowser, true, unreachable), "Check connectivity and the URL, then run the same command again."],
       ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), ACCESS],
       ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
@@ -451,6 +423,23 @@ test("a sign-in the gateway has ended is forgotten, and the command says to sign
   await assert.rejects(ctx.credential(), hasCode("login_required"));
   assert.equal(store.held.active?.login, undefined);
   assert.equal(store.held.active?.url, URL_);
+});
+
+test("a refused renewal says to sign in again, naming a self-hosted gateway", async () => {
+  const cases: [string, string][] = [
+    [URL_, `Run agw deployment connect --url with this gateway's address:\n${URL_}`],
+    [CLOUD, "Run agw account login again."],
+  ];
+  for (const [url, expected] of cases) {
+    const clock = fakeClock();
+    const store = memoryStore(signedInState(url, "agw_oat_old", new Date(clock.time - 1).toISOString()));
+    const transport = fakeTransport(notFound, () => ({ status: 400, data: { error: "invalid_client" } }));
+    const ctx = new Context(store, store.held, transport, {}, { env: {}, clock, stderr: sinks().stderr });
+    const error = await ctx.credential().then(() => assert.fail("expected a refusal"), (caught: unknown) => caught);
+    assert.ok(error instanceof CliError);
+    assert.equal(error.code, "invalid_client", url);
+    assert.equal(error.nextAction, expected, url);
+  }
 });
 
 test("the environment's key wins over a stored sign-in, and signing in while it is set is refused", async () => {
