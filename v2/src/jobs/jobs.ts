@@ -322,6 +322,15 @@ export function countNeedsBody(spec: JobSpec): boolean {
   return spec.outputsField !== undefined;
 }
 
+const STOPPED = Symbol("stopped");
+
+/**
+ * How long the sweep reads a result body for counting: well under the
+ * sweep's item time limit, so the decision that follows a slow body still
+ * lands while the item runs.
+ */
+export const JOB_BODY_READ_DEADLINE_MS = 2_000;
+
 /** A body read for counting: parsed, larger than the limit, cut off while reading, empty, or not whole JSON. */
 export type BodyRead =
   | { readonly kind: "parsed"; readonly value: unknown }
@@ -337,14 +346,32 @@ export type BodyRead =
  * is empty, and one that is not whole JSON (truncated JSON that closed
  * normally, for one) is unparseable. All three leave the outputs unread.
  */
-export async function boundedJson(response: Response, limit: number = OUTPUTS_READ_LIMIT): Promise<BodyRead> {
+export async function boundedJson(
+  response: Response,
+  limit: number = OUTPUTS_READ_LIMIT,
+  options: { readonly deadlineMs?: number; readonly signal?: AbortSignal } = {},
+): Promise<BodyRead> {
   if (response.body === null) return { kind: "empty" };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+  // A body that stalls past the deadline, or once the caller gives up, is a read error: read again later.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<typeof STOPPED>((resolve) => {
+    if (options.deadlineMs !== undefined) timer = setTimeout(() => resolve(STOPPED), options.deadlineMs);
+    if (options.signal !== undefined) {
+      if (options.signal.aborted) resolve(STOPPED);
+      else options.signal.addEventListener("abort", () => resolve(STOPPED), { once: true });
+    }
+  });
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const next = await Promise.race([reader.read(), stopped]);
+      if (next === STOPPED) {
+        void reader.cancel().catch(() => undefined);
+        return { kind: "read_error" };
+      }
+      const { done, value } = next;
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
@@ -355,6 +382,8 @@ export async function boundedJson(response: Response, limit: number = OUTPUTS_RE
     }
   } catch {
     return { kind: "read_error" };
+  } finally {
+    clearTimeout(timer);
   }
   const bytes = new Uint8Array(size);
   let at = 0;
@@ -397,6 +426,25 @@ function unreadSuccess(facts: JobResultFacts): boolean {
  */
 function bodyCouldHelp(estimate: ChargeRow, facts: JobResultFacts): boolean {
   return unreadSuccess(facts) && jobFinalFigure(estimate, { ...facts, outputs: facts.outputs ?? 1 }) !== null;
+}
+
+/**
+ * Whether the sweep should read a result's body before deciding: when the
+ * estimate is not in the ledger yet (its rate is not known), or when its rate
+ * needs an output count the headers do not give. A rate per billed unit with
+ * no units header gets nothing from the body, so it is not read at all.
+ */
+async function bodyNeeded(env: Env, job: string, headerFacts: JobResultFacts): Promise<boolean> {
+  let estimate: ChargeRow | null = null;
+  try {
+    estimate = await withDeadline(jobEstimateCharge(env.DB, job), FIGURE_D1_DEADLINE_MS, "reading the estimate");
+  } catch {
+    return true;
+  }
+  if (estimate === null) return true;
+  const succeeded = headerFacts.status >= 200 && headerFacts.status < 300;
+  if (!succeeded || jobFinalFigure(estimate, headerFacts) !== null) return false;
+  return jobFinalFigure(estimate, { ...headerFacts, outputs: 1 }) !== null;
 }
 
 /** Whether a result gives any count at all. One with none is never saved: it can never settle. */
@@ -691,16 +739,32 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
   }
   if (context.connection.status === "disabled") return retry("the job's connection is disabled");
   const status = await fetchJob(env, context, "status", claims, null, signal);
-  const statusBody = await jsonOf(status.response);
+  const statusRead = await boundedJson(status.response, OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS, ...(signal ? { signal } : {}) });
+  const statusBody = statusRead.kind === "parsed" ? statusRead.value : null;
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   const result = await fetchJob(env, context, "result", claims, null, signal);
-  let read: BodyRead | null = null;
-  if (countNeedsBody(context.spec)) read = await boundedJson(result.response);
-  else void result.response.body?.cancel().catch(() => undefined);
-  const facts = readResultFacts(context.spec, result.response, read);
-  if (facts === null) return retry(`result not final (${result.response.status})`);
-  // From here the provider's figure is in hand: finish keeping it even if the item's time runs out.
-  const applying = applyFinalResult(env, ref, facts, now);
+  const headerFacts = readResultFacts(context.spec, result.response, null);
+  if (headerFacts === null) {
+    void result.response.body?.cancel().catch(() => undefined);
+    return retry(`result not final (${result.response.status})`);
+  }
+  // From here the provider's final answer is in hand: finish deciding even if the item's time runs out.
+  // A final decision also ends this check itself, so it holds even when the sweep has moved on.
+  const applying = (async () => {
+    // The body is read only when the decision may need it, and never for longer than its deadline.
+    let read: BodyRead | null = null;
+    if (countNeedsBody(context.spec) && (await bodyNeeded(env, ref.job, headerFacts))) {
+      read = await boundedJson(result.response, OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
+    } else {
+      void result.response.body?.cancel().catch(() => undefined);
+    }
+    const facts = read === null ? headerFacts : readResultFacts(context.spec, result.response, read)!;
+    const outcome = await applyFinalResult(env, ref, facts, now);
+    if (outcome === "done" || outcome === "estimate_kept") {
+      await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run().catch(() => undefined);
+    }
+    return outcome;
+  })();
   keepAlive?.(applying);
   const applied = await applying;
   // A body not read, when the rate needs its outputs or is not known yet: the result may read whole on the next check.

@@ -142,15 +142,21 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
   ON CONFLICT(id) DO NOTHING`;
 
 /**
- * An open-work row is written once: a row already there is never changed. A
- * job's row is not written once the job is settled (its `settle:job:<job>`
- * correction exists), so a late retry of the submit batch from the
- * failed-write store cannot bring back a check the settlement removed.
+ * An open-work row is written once: a row already there is never changed.
+ *
+ * - Work attached to a charge is written only with that charge's first
+ *   insert: its statement runs before the charge's, in the same batch, and
+ *   only while the charge is not there yet. So a replay of a batch that
+ *   committed (a lost reply, retried from the failed-write store) never
+ *   brings back work the sweep or a settlement has since ended.
+ * - A job's row is not written once the job is settled (its
+ *   `settle:job:<job>` correction exists).
  */
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?
   WHERE NOT (?5 = 'job' AND EXISTS (SELECT 1 FROM charge WHERE id = 'settle:job:' || ?6))
+    AND (?7 IS NULL OR NOT EXISTS (SELECT 1 FROM charge WHERE id = ?7))
   ON CONFLICT(id) DO NOTHING`;
 
 /** The statement that writes one open-work row, once: a row already there is never changed. */
@@ -181,8 +187,9 @@ export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]
 export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const { charge, openWork } of entries) {
-    statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
+    // The work first: it is written only while its charge is not there yet (see INSERT_OPEN_WORK).
     for (const work of openWork) statements.push(openWorkStatement(db, work));
+    statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
   }
   return statements;
 }

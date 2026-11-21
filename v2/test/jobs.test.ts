@@ -8,11 +8,13 @@ import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext }
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
-import { applyFinalResult, boundedJson, checkJob, countNeedsBody, FIGURE_D1_DEADLINE_MS, figureWork, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
+import { applyFinalResult, boundedJson, checkJob, countNeedsBody, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
+import { STATUS_READ_LIMIT } from "../src/jobs/poll.ts";
+import { JOB_SUBMIT_BODY_LIMIT } from "../src/proxy/serve.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
-import { readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
+import { chargeFromRow, readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
 import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
@@ -1353,5 +1355,107 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     const rewrites = { "fal-ai/flux/dev": "fal-ai/flux/schnell" };
     expect(rewrittenModel(run, "fal-ai/flux/dev", rewrites)).toBe("fal-ai/flux/schnell");
     expect(rewrittenModel(QUEUE, "fal-ai/flux/dev", rewrites)).toBe("fal-ai/flux/dev");
+  });
+});
+
+describe("deciding before reading, replays and reply sizes (review fixes, round 8)", () => {
+  const PER_IMAGE = { "fal-ai/flux/dev": { per_image: 10_000_000 } };
+  /** A body that never sends a byte and never ends. */
+  const stalling = () => new ReadableStream<Uint8Array>({ start() {} });
+  const itemOf = (row: Record<string, unknown>) => ({
+    id: String(row.id),
+    kind: "job_check" as const,
+    accountId: ACCOUNT_ID,
+    appId: String(row.app_id),
+    ownerType: "job" as const,
+    ownerId: String(row.owner_id),
+    chargeId: String(row.charge_id),
+    detail: JSON.parse(String(row.detail_json)) as Record<string, unknown>,
+    dueAt: 0,
+    tries: 0,
+  });
+
+  async function submittedCheck(rates: Record<string, unknown> | null = null) {
+    const ids = await setup(rates);
+    falAnswers({});
+    await submit(ids.appId, ids.slug, ids.key);
+    await onlyThisApp(ids.appId);
+    const [check] = await openWork(ids.appId);
+    return { ...ids, check: check! };
+  }
+
+  it("ends a per-unit job's check without reading its body when no units header came, even a body that stalls", async () => {
+    const { appId, check } = await submittedCheck();
+    falAnswers({ result: () => new Response(stalling(), { status: 200 }) });
+    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await openWork(appId)).toEqual([]);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+  });
+
+  it("stops reading a body that stalls past its deadline: a read error, to read again later", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const reading = boundedJson(new Response(stalling()), OUTPUTS_READ_LIMIT, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
+    await vi.advanceTimersByTimeAsync(JOB_BODY_READ_DEADLINE_MS + 1);
+    expect(await reading).toEqual({ kind: "read_error" });
+  });
+
+  it("ends its own check on a final decision, so the decision holds even after the sweep moved on", async () => {
+    const { appId, check } = await submittedCheck(PER_IMAGE);
+    // A whole success that counts nothing: the estimate stays, and the handler itself ends the check.
+    falAnswers({ result: () => Response.json({}) });
+    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("never brings back a check when a committed submit batch is replayed", async () => {
+    const { appId, check } = await submittedCheck();
+    const estimateRow = (await env.DB.prepare("SELECT * FROM charge WHERE id = ?").bind(String(check.charge_id)).first<Record<string, unknown>>())!;
+    const entry = {
+      charge: chargeFromRow(estimateRow),
+      openWork: [
+        {
+          id: String(check.id),
+          kind: "job_check" as const,
+          accountId: ACCOUNT_ID,
+          appId,
+          ownerType: "job" as const,
+          ownerId: String(check.owner_id),
+          chargeId: String(check.charge_id),
+          detail: JSON.parse(String(check.detail_json)) as Record<string, unknown>,
+          dueAt: Number(check.due_at),
+          createdAt: Number(check.created_at),
+        },
+      ],
+    };
+    // The sweep ends the check: a whole result, no units header, a rate per billed unit.
+    falAnswers({ result: () => Response.json({ images: [{}] }) });
+    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await openWork(appId)).toEqual([]);
+    // The failed-write store replays the submit batch that had committed.
+    await writeToLedger(env.DB, [entry]);
+    expect(await openWork(appId)).toEqual([]);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+  });
+
+  it("treats an accepted submission whose answer is over the read limit as lost: the estimate stays", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({ submit: () => Response.json({ request_id: "req-1", status: "IN_QUEUE", padding: "x".repeat(JOB_SUBMIT_BODY_LIMIT) }) });
+    const { response } = await submit(appId, slug, key);
+    expect(response.status).toBe(502);
+    expect(await charges(appId)).toMatchObject([{ kind: "estimate", cost_nano: 50_000_000 }]);
+    expect(await openWork(appId)).toEqual([]);
+    expect(logged("job_submission_lost")).toBe(true);
+  });
+
+  it("passes a status answer over the read limit through as it came, as a stream", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    const big = JSON.stringify({ status: "IN_PROGRESS", logs: "y".repeat(STATUS_READ_LIMIT) });
+    falAnswers({ status: () => new Response(big, { status: 200, headers: { "content-type": "application/json" } }) });
+    const { response, text } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    expect(response.status).toBe(200);
+    expect(text).toBe(big);
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });

@@ -1200,9 +1200,12 @@ const fetchControllers = new WeakMap<Response, AbortController>();
 /** How long the body of an accepted job submission may take to arrive. */
 export const JOB_SUBMIT_BODY_TIMEOUT_MS = 30_000;
 
+/** The most of an accepted job submission's answer the gateway reads. A bigger one is a lost submission: its estimate stays. */
+export const JOB_SUBMIT_BODY_LIMIT = 1024 * 1024;
+
 /**
- * A response's JSON body, or null when it does not parse, fails, or does not
- * arrive in time. At the deadline the fetch is aborted and the answer returns
+ * A response's JSON body, or null when it does not parse, fails, is larger
+ * than `JOB_SUBMIT_BODY_LIMIT`, or does not arrive in time. At the deadline the fetch is aborted and the answer returns
  * at once: nothing waits on the stream's own cleanup, which can hang.
  */
 async function jsonWithin(response: Response, ms: number, fetchController: AbortController | undefined): Promise<unknown> {
@@ -1212,11 +1215,15 @@ async function jsonWithin(response: Response, ms: number, fetchController: Abort
   const late = new Promise<typeof LATE>((resolve) => {
     timer = setTimeout(() => resolve(LATE), ms);
   });
-  const reading = (async (): Promise<Uint8Array[] | null> => {
+  const reading = (async (): Promise<Uint8Array[] | typeof LATE | null> => {
     const chunks: Uint8Array[] = [];
+    let size = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return chunks;
+      size += value.byteLength;
+      // Bytes are counted as they arrive: an answer past the limit is never held whole.
+      if (size > JOB_SUBMIT_BODY_LIMIT) return LATE;
       chunks.push(value);
     }
   })().catch(() => null);
