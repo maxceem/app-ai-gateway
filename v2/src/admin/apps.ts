@@ -844,7 +844,9 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const body = await parseBody(c, AppValidateRequestSchema);
   const current = await appRow(c.env.DB, actor.accountId, c.req.param("app")!);
   const against = judgedAgainst(current, body.status);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
+  // Judged as an update would be: storage needs the bucket and a plan that includes it.
+  await checkConversations(c.env, actor.accountId, config, storedConfig(current));
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 
@@ -852,7 +854,9 @@ export async function validateApp(c: AdminContext): Promise<Response> {
 export async function validateAppDraft(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const body = await parseBody(c, AppValidateRequestSchema);
-  await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
+  // Judged as a create would be.
+  await checkConversations(c.env, actor.accountId, config, null);
   return c.json({ valid: true } satisfies OperationResponse<"validateAppDraft">);
 }
 

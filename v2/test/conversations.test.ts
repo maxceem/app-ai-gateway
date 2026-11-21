@@ -661,6 +661,29 @@ describe("turning conversation storage on", () => {
     expect(refused.body).toMatchObject({ error: { code: "invalid_request" } });
   });
 
+  it("validates a draft and an edit the way saving judges them (Sol round 1)", async () => {
+    const withoutBucket = new Proxy(env, {
+      get: (target, property, receiver) => (property === "CONVERSATIONS" ? undefined : Reflect.get(target, property, receiver)),
+    });
+    const key = await seedManagementKey();
+    const config = { authentication: { type: "api_key", end_user: { source: "none" } }, conversations: { store: true } };
+    const draft = await call("/v2/admin/app-drafts/validate", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "draft", config }),
+    }, withoutBucket);
+    expect(draft.response.status).toBe(400);
+
+    const stored = await save({});
+    const appId = (stored.body as { app: { id: string } }).app.id;
+    const edit = await call(`/v2/admin/apps/${appId}/validate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "edit", config }),
+    }, withoutBucket);
+    expect(edit.response.status).toBe(400);
+  });
+
   it("needs a plan that includes it; with no list, a plan includes everything", () => {
     const plan = (limits: unknown) => ({ state: "billed" as const, plan: { planKey: "p", planName: "P", isDefault: false, limits }, subscription: null });
     expect(planIncludes({ state: "self_hosted" }, "conversationStorage")).toBe(true);
