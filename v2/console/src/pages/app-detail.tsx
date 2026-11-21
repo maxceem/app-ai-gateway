@@ -27,6 +27,7 @@ import { operationsOf, providerLabel } from "@/lib/providers";
 import {
   useApp,
   useAppCheck,
+  useAppJobs,
   useAppKeys,
   useAppUsers,
   useCreateAppKey,
@@ -37,7 +38,7 @@ import {
   useUserAction,
   useValidateApp,
 } from "@/lib/queries";
-import type { App, AppConfig, CreatedAppKey } from "@/lib/types";
+import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 
@@ -53,6 +54,7 @@ const TABS: Tab[] = [
   { slug: "providers", label: "Providers" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
+  { slug: "jobs", label: "Jobs" },
   { slug: "keys", label: "Keys", shown: (app) => app.config.authentication.type === "api_key" },
   { slug: "settings", label: "Settings" },
 ];
@@ -153,6 +155,7 @@ export function AppDetailPage() {
       {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
       {active.slug === "limits" ? <LimitsTab app={data} /> : null}
       {active.slug === "users" ? <UsersTab app={data} /> : null}
+      {active.slug === "jobs" ? <JobsTab app={data} /> : null}
       {active.slug === "keys" ? <KeysTab app={data} /> : null}
       {active.slug === "settings" ? <SettingsTab app={data} /> : null}
     </div>
@@ -642,6 +645,106 @@ function UsersTab({ app }: { app: App }) {
                         )}
                       </RowActions>
                     )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+      {total > PAGE ? (
+        <div className="flex items-center justify-end gap-2 text-sm">
+          <span className="text-muted-foreground">
+            {offset + 1}–{Math.min(offset + PAGE, total)} of {total}
+          </span>
+          <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+            Previous
+          </Button>
+          <Button size="sm" variant="outline" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>
+            Next
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Jobs
+
+/** A job's state, in words. */
+const JOB_STATE_TEXT: Record<JobSummary["state"], string> = {
+  settled: "Settled",
+  checking: "Checking",
+  estimate_kept: "Estimate kept",
+  gave_up: "Gave up",
+};
+
+/** A cost in nano-dollars, or a dash when there is none. */
+function jobCost(nano: number | null): string {
+  return nano === null ? "—" : formatCost(nanoToDollars(nano));
+}
+
+function JobsTab({ app }: { app: App }) {
+  const [offset, setOffset] = useState(0);
+  const jobs = useAppJobs(app.id, { limit: PAGE, offset });
+  const list = jobs.data?.jobs ?? [];
+  const total = jobs.data?.total ?? 0;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Jobs the app submitted, such as image and video jobs, newest first. Each is charged an estimate when it is submitted, and corrected to what
+        the provider billed once its result is read. A job cancelled while it was still queued costs nothing; one that was already running is
+        usually charged in full.
+      </p>
+      <Card className="overflow-hidden py-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Model</TableHead>
+              <TableHead>State</TableHead>
+              <TableHead className="text-right">Estimate</TableHead>
+              <TableHead className="text-right">Correction</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead>Submitted</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {jobs.isPending ? (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <Skeleton className="h-5 w-full" />
+                </TableCell>
+              </TableRow>
+            ) : jobs.isError ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
+                  Could not load the jobs. {jobs.error instanceof Error ? jobs.error.message : ""}
+                </TableCell>
+              </TableRow>
+            ) : list.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                  No jobs yet.
+                </TableCell>
+              </TableRow>
+            ) : (
+              list.map((job) => (
+                <TableRow key={job.id}>
+                  <TableCell className="max-w-72 text-xs break-all">
+                    <span className="font-mono">{job.model ?? "—"}</span>
+                    {job.provider_slug ? <span className="block text-muted-foreground">{job.provider_slug}</span> : null}
+                  </TableCell>
+                  <TableCell>
+                    {JOB_STATE_TEXT[job.state]}
+                    {job.state === "settled" ? null : <span className="block text-xs text-muted-foreground">Estimate</span>}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.estimate_nano)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.correction_nano)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.total_nano)}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime value={job.submitted_at} />
                   </TableCell>
                 </TableRow>
               ))

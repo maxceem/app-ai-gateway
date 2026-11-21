@@ -23,6 +23,7 @@ export const keys = {
   /** Every page of one app's users, for an invalidation that is about all of them. */
   usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
+  jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
 };
@@ -233,6 +234,15 @@ export function useAppUsers(appId: string, query: UserQuery) {
   return useQuery({
     queryKey: keys.users(appId, query),
     queryFn: () => call("listAppUsers", { params: { app: appId }, query }),
+  });
+}
+
+export type JobQuery = OperationQuery<"listAppJobs">;
+
+export function useAppJobs(appId: string, query: JobQuery) {
+  return useQuery({
+    queryKey: keys.jobs(appId, query),
+    queryFn: () => call("listAppJobs", { params: { app: appId }, query }),
   });
 }
 

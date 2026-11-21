@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { parsePathLines, pathLine, ProvidersPage, testResultText } from "./providers";
+import { parsePathLines, parsePricesText, pathLine, pricesText, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
 
@@ -98,6 +98,32 @@ describe("ProvidersPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /turn off/i }));
     await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, status: "disabled" }));
+  });
+
+  it("saves the connection's own prices, such as a flat price per job for a model off our list", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+    const fetchMock = stub([fal]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    expect((box as HTMLTextAreaElement).value).toContain("fal-ai/old");
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/some-model": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-fal", "PUT")).toEqual({ revision: 3, pricing: { "fal-ai/some-model": { per_request: 0.02 } } }),
+    );
+  });
+
+  it("reads the prices text as JSON, and empty as no prices of your own", () => {
+    expect(pricesText(null)).toBe("");
+    expect(parsePricesText("")).toEqual({ pricing: null });
+    expect(parsePricesText("{}")).toEqual({ pricing: null });
+    expect(parsePricesText('{"m": {"per_video": 0.02}}')).toEqual({ pricing: { m: { per_video: 0.02 } } });
+    expect(parsePricesText("[1]")).toHaveProperty("problem");
+    expect(parsePricesText("{not json")).toHaveProperty("problem");
   });
 
   it("reloads the list when a remove is refused, as the connection may already be gone", async () => {

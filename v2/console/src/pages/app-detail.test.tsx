@@ -149,6 +149,30 @@ describe("AppDetailPage", () => {
     );
   });
 
+  it("lists the app's jobs with their estimate, correction, total and state", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: {
+          app_id: "my-app",
+          total: 2,
+          limit: 50,
+          offset: 0,
+          jobs: [
+            { id: "job-1", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T00:00:00.000Z", estimate_nano: 50_000_000, correction_nano: 50_000_000, total_nano: 100_000_000, measured: "estimated", price_source: "list_rate", state: "settled", settled_at: "2026-11-01T00:01:00.000Z" },
+            { id: "job-2", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/ltx-video", end_user_id: "u", submitted_at: "2026-11-01T00:00:00.000Z", estimate_nano: 20_000_000, correction_nano: null, total_nano: 20_000_000, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null },
+          ],
+        },
+      },
+    });
+    renderTab("jobs");
+    const settledRow = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+    expect(within(settledRow).getByText("Settled")).toBeTruthy();
+    expect(within(settledRow).getByText("$0.10")).toBeTruthy();
+    const checkingRow = screen.getByText("fal-ai/ltx-video").closest("tr")!;
+    expect(within(checkingRow).getByText("Checking")).toBeTruthy();
+    expect(within(checkingRow).getByText("—")).toBeTruthy();
+  });
+
   it("creates an app key and shows it once", async () => {
     stub({
       "GET /v2/admin/apps/my-app/keys": { body: { app_id: "my-app", keys: [] } },

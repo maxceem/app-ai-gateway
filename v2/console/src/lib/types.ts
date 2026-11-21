@@ -39,6 +39,7 @@ export type AppKey = OperationResponse<"listAppKeys">["keys"][number];
 export type CreatedApp = OperationResponse<"createApp">;
 export type CreatedAppKey = OperationResponse<"createAppKey">;
 export type EndUser = OperationResponse<"listAppUsers">["users"][number];
+export type JobSummary = OperationResponse<"listAppJobs">["jobs"][number];
 export type ProviderConnection = OperationResponse<"listProviders">["providers"][number];
 export type ProviderTestResult = OperationResponse<"testProvider">;
 export type PriceList = OperationResponse<"listModelPrices">["prices"];
