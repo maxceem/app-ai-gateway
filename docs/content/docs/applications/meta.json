@@ -9,6 +9,7 @@
     "limits",
     "users",
     "usage",
+    "jobs",
     "conversations",
     "auth-events",
     "settings"

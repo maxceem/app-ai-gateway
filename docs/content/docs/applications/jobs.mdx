@@ -1,0 +1,84 @@
+---
+title: Jobs
+description: Submit, check and cancel long-running jobs, such as image and video generation, through the gateway.
+---
+
+Some providers run work in the background: you submit a job, then check on
+it until its result is ready. fal's queue works this way for image and video
+models. The gateway handles these jobs from start to end, so your app never
+talks to the provider directly.
+
+## How a job runs
+
+1. **Submit.** Your app sends the request to the provider's queue path
+   through the gateway, such as
+   `POST /v2/apps/{app}/proxy/{provider}/queue/fal-ai/flux/dev`. The gateway
+   checks who is calling and the app's limits, as for any request. The answer
+   carries a job id that the gateway made, and links that point at the
+   gateway, not at the provider.
+2. **Check the status.** `GET /v2/apps/{app}/jobs/{job}/status` answers with
+   the provider's own status. For fal, add `?logs=1` to get the job's logs.
+3. **Read the result.** `GET /v2/apps/{app}/jobs/{job}` answers with the
+   provider's result, passed on as it is.
+4. **Cancel, if you need to.** `PUT /v2/apps/{app}/jobs/{job}/cancel` asks the
+   provider to cancel the job.
+
+Use the links in the gateway's answers rather than building them yourself.
+A job id only works for the app and the end user that submitted it.
+
+## Checking is free
+
+Status checks, result reads and cancels count toward no request limit, and
+they add no charge. Check as often as you need.
+
+## What a job costs
+
+- **When you submit,** the job is charged an estimate at once, worked out
+  from the request: for an image model, the images and their size; for a
+  video model priced per second, the frames over the frame rate. Your
+  budgets count it right away.
+- **When the result is ready,** the gateway corrects the charge to what the
+  provider actually billed. This happens when your app reads the result, or
+  in the background within a few minutes if it never does.
+- **A failed job** costs nothing when the provider reports that it billed
+  nothing for it.
+- **If the provider gives no figure** the gateway can use, the estimate
+  stays, and the charge is marked as an estimate.
+
+The console's **Jobs** tab on each app shows every job, with its estimate,
+the correction, the total, and whether it is settled yet. `agw app job list`
+shows the same.
+
+## Cancelling
+
+- **A job cancelled while it is still queued** costs nothing. Its charge is
+  corrected to zero once the provider confirms the cancel.
+- **A job that is already running** usually finishes anyway, and is charged
+  in full. fal's own docs say a running job may still complete after a
+  cancel.
+
+## How long results stay readable
+
+The provider keeps a job's result for a limited time. fal keeps results for
+about an hour, and large results for less. Read the result soon after the
+job finishes. The gateway reads it in the background too, so the charge
+settles even if your app never reads it.
+
+## Models that are not on our price list
+
+A model our price list does not have works once you give it a price of your
+own, on the provider connection under **Your prices** in the console, or
+with `agw provider update`. For example, a flat price per job:
+
+```json
+{ "fal-ai/some-model": { "per_request": 0.02 } }
+```
+
+Or a price per unit the provider reports (fal's billed units), per image, or
+per video:
+
+```json
+{ "fal-ai/other-model": { "per_unit": 0.01 } }
+```
+
+A model with no price at all is refused.
