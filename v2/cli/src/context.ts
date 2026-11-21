@@ -24,7 +24,7 @@ import {
   type OAuthTransport,
 } from "./oauth.ts";
 import type { Flags } from "./parser.ts";
-import { SignInRetry, type SignInStart } from "./sign-in-retry.ts";
+import { SignInRetry, signInFailure } from "./sign-in-retry.ts";
 import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
 
@@ -331,18 +331,22 @@ export class Context {
    * there is one; otherwise, or with `--device`, a link and a short code that
    * any browser can approve.
    */
-  async login(url: string = this.url, command: Pick<SignInStart, "command" | "url" | "cloud"> = { command: "account login" }): Promise<LoginResult> {
+  async login(url: string = this.url): Promise<LoginResult> {
     this.assertNoEnvironmentKey();
     const target = origin(url);
-    const server = await discover(this.transport, target);
-    // Every hint a failed sign-in gives names this command, with its flags.
-    const retry = new SignInRetry(
-      { ...command, ...(this.flags.device ? { device: true } : {}), ...(this.flags["no-open"] ? { noOpen: true } : {}) },
-      server.device !== null,
-    );
-    const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-    const login = useBrowser ? await this.browserLogin(target, server, retry) : await this.deviceSignIn(target, server, retry);
-    const who = await this.whoAmI(target, login.accessToken);
+    let login: OAuthLogin;
+    let who: Omit<LoginResult, "connected" | "url" | "credential">;
+    try {
+      const server = await discover(this.transport, target);
+      const retry = new SignInRetry(Boolean(this.flags.device || this.flags["no-open"]), server.device !== null);
+      const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
+      login = useBrowser ? await this.browserLogin(target, server, retry) : await this.deviceSignIn(target, server, retry);
+      who = await this.whoAmI(target, login.accessToken);
+    } catch (error) {
+      // Every failure says to run the same command again, never a command
+      // that could reach another gateway.
+      throw signInFailure(error);
+    }
     const { state } = await this.store.update((disk) => {
       disk.active = { url: target, login, account: who.account };
     });
@@ -352,7 +356,6 @@ export class Context {
 
   /**
    * The authorization code with PKCE, back to a listener on this machine.
-   * `retry` names the command that started this sign-in in every hint.
    */
   private async browserLogin(url: string, server: OAuthServer, retry: SignInRetry): Promise<OAuthLogin> {
     const { verifier, challenge } = pkce();
@@ -430,7 +433,7 @@ export class Context {
    */
   async connect(url: string): Promise<LoginResult> {
     const target = origin(url);
-    if (!this.environmentKey) return this.login(target, target === CLOUD ? { command: "deployment connect", cloud: true } : { command: "deployment connect", url: target });
+    if (!this.environmentKey) return this.login(target);
     const who = await this.whoAmI(target, this.environmentKey);
     const { state } = await this.store.update((disk) => {
       // A sign-in already stored for this gateway is kept: the environment's

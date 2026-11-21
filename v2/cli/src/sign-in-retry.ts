@@ -1,114 +1,80 @@
 /**
- * What a failed sign-in tells the person to run next.
+ * What a failed sign-in tells the person to do next.
  *
- * Until a sign-in succeeds, its target gateway is not stored. So the hint
- * names the exact command that started the sign-in, with its own flags:
- * a plain `agw account login` could reach another gateway than the one
- * `agw deployment connect --url …` was signing in to.
+ * Every hint says to run the same command again, in those words. It never
+ * rebuilds the command: until a sign-in succeeds its gateway is not stored,
+ * so a rebuilt `agw account login` could reach another gateway than the one
+ * `agw deployment connect --url …` was signing in to, and quoting a URL that
+ * pastes the same in every shell is not possible.
  */
 
-/** The command that started a sign-in, and the flags it was run with. */
-export interface SignInStart {
-  command: "account login" | "deployment connect";
-  /** `deployment connect` only: the gateway's origin. */
-  url?: string;
-  /** `deployment connect --cloud`. */
-  cloud?: boolean;
-  /** `--device` was given. */
-  device?: boolean;
-  /** `--no-open` was given. */
-  noOpen?: boolean;
-}
+import { CliError } from "./common.ts";
 
-/**
- * A value pasted into a shell as one word. A value with only characters no
- * shell treats specially is left as it is. Anything else is put in double
- * quotes, which zsh, bash and Windows `cmd.exe` all read the same way, so a
- * URL such as `http://[::1]:8787` is not read as a pattern. A value holding a
- * character double quotes don't protect everywhere (`" $ \` ! %`) falls back
- * to POSIX single quotes; a gateway origin never holds one.
- */
-export function shellWord(value: string): string {
-  if (/^[A-Za-z0-9_@+=:,./-]+$/.test(value)) return value;
-  if (!/["$\\`!%]/.test(value)) return `"${value}"`;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
+/** Run the same command again. */
+export const AGAIN = "Run the same command again.";
 
-/**
- * The command as it was run. `browser` drops `--device` and `--no-open`, for a
- * gateway that offers no sign-in with a code.
- */
-function commandLine(start: SignInStart, browser = false): string {
-  const words = ["agw", start.command];
-  if (start.command === "deployment connect") {
-    if (start.cloud) words.push("--cloud");
-    else if (start.url) words.push("--url", shellWord(start.url));
-  }
-  if (!browser && start.device) words.push("--device");
-  if (!browser && start.noOpen) words.push("--no-open");
-  return words.join(" ");
-}
-
-/** The hints one sign-in gives, all naming the command that started it. */
+/** The hints one sign-in gives. */
 export class SignInRetry {
-  readonly start: SignInStart;
+  /** The person asked for a code (`--device` or `--no-open`). */
+  private readonly usedCode: boolean;
   /** Whether the gateway offers sign-in with a code; unknown counts as yes. */
   private readonly deviceAvailable: boolean;
 
-  constructor(start: SignInStart, deviceAvailable = true) {
-    this.start = start;
+  constructor(usedCode = false, deviceAvailable = true) {
+    this.usedCode = usedCode;
     this.deviceAvailable = deviceAvailable;
   }
 
   /** The same sign-in, for a gateway whose code endpoint is now known. */
   withDevice(available: boolean): SignInRetry {
-    return new SignInRetry(this.start, available);
+    return new SignInRetry(this.usedCode, available);
   }
 
-  /**
-   * The same sign-in as a sign-in with a code, for the hints of the device
-   * flow: it keeps `--device` or `--no-open`, or adds `--device`, so running
-   * the hint again asks for a new code instead of opening a browser.
-   */
+  /** The same sign-in, now with a code: `--device` is no longer offered. */
   asCode(): SignInRetry {
-    const device = this.start.device || !this.start.noOpen;
-    return new SignInRetry({ ...this.start, device }, this.deviceAvailable);
+    return new SignInRetry(true, this.deviceAvailable);
   }
 
-  /** The command as it was run. */
-  get command(): string {
-    return commandLine(this.start);
-  }
-
-  /** Rerun the same command. */
   again(): string {
-    return `Run ${this.command} again.`;
+    return AGAIN;
   }
 
-  /** Rerun the same command, from the start. */
   startOver(): string {
-    return `Run ${this.command} again to start over.`;
+    return "Run the same command again to start over.";
   }
 
-  /**
-   * Rerun the same command, offering `--device` where it would help: the
-   * gateway has a code endpoint and the person did not already ask for it.
-   */
+  /** Run it again, offering `--device` where the gateway has it and it was not used. */
   againOrCode(): string {
-    const offer = this.deviceAvailable && !this.start.device && !this.start.noOpen;
-    return offer ? `Run ${this.command} again, or add --device to sign in with a code.` : this.again();
+    return this.deviceAvailable && !this.usedCode ? "Run the same command again, or add --device to sign in with a code." : AGAIN;
   }
 
-  /** Rerun the same command, for a new code. */
   newCode(): string {
-    return `Run ${this.command} again for a new code.`;
+    return "Run the same command again for a new code.";
   }
 
-  /** Rerun in a browser, for a gateway that offers no sign-in with a code. */
+  /** For a gateway that offers no sign-in with a code. */
   onBrowserMachine(): string {
-    return `Run ${commandLine(this.start, true)} on a machine with a browser.`;
+    return "Sign in from a machine with a browser using the same command, without --device or --no-open.";
   }
 }
 
-/** The default for code that starts a sign-in on its own: `agw account login`. */
-export const ACCOUNT_LOGIN = new SignInRetry({ command: "account login" });
+/** The default for code that starts a sign-in on its own. */
+export const ACCOUNT_LOGIN = new SignInRetry();
+
+/**
+ * A failure during a sign-in, with a next step that never sends the person to
+ * another gateway. Specific guidance (a v1 gateway, a wrong URL) is kept; a
+ * generic one, or one that names `agw account login`, becomes "run the same
+ * command again".
+ */
+export function signInFailure(error: unknown): unknown {
+  if (!(error instanceof CliError)) return error;
+  let next: string | null = null;
+  if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";
+  else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
+  else if (/agw account login|agw --help/.test(error.nextAction)) next = AGAIN;
+  if (next === null) return error;
+  const replaced = new CliError(error.code, error.message, next, error.exitCode, error.details);
+  if (error.headers) replaced.headers = error.headers;
+  return replaced;
+}

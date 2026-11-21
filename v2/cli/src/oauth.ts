@@ -165,21 +165,6 @@ function loginFrom(answer: FormResponse, now: number, id: string, retry: SignInR
   };
 }
 
-/**
- * A form post made for a sign-in. The transport refuses a redirect, which
- * keeps credentials on their origin; the refusal then names the command that
- * started this sign-in, to run again once the gateway is fixed.
- */
-async function signInPost(transport: OAuthTransport, url: string, path: string, fields: Record<string, string>, retry: SignInRetry): Promise<FormResponse> {
-  try {
-    return await transport.postForm(url, path, fields);
-  } catch (error) {
-    if (error instanceof CliError && error.code === "redirect_refused")
-      throw new CliError(error.code, "The gateway redirected a sign-in request, which agw refuses so credentials stay on the gateway's origin.", `Fix the gateway's address, then ${retry.again().replace(/^Run/, "run")}`, error.exitCode, error.details);
-    throw error;
-  }
-}
-
 /** A refusal from the token endpoint, with its OAuth error code. */
 function tokenRefusal(answer: FormResponse, what: string, retry: SignInRetry = ACCOUNT_LOGIN): never {
   const code = typeof answer.data["error"] === "string" ? (answer.data["error"] as string) : `http_${answer.status}`;
@@ -202,14 +187,14 @@ export async function exchangeCode(
   now: () => number = Date.now,
   retry: SignInRetry = ACCOUNT_LOGIN,
 ): Promise<OAuthLogin> {
-  const answer = await signInPost(transport, url, server.token, {
+  const answer = await transport.postForm(url, server.token, {
     grant_type: "authorization_code",
     code: input.code,
     redirect_uri: input.redirect,
     client_id: CLI_CLIENT_ID,
     code_verifier: input.verifier,
     resource: server.issuer,
-  }, retry);
+  });
   if (answer.status !== 200) tokenRefusal(answer, "The sign-in", retry);
   return loginFrom(answer, now(), newLoginId(), retry);
 }
@@ -246,7 +231,7 @@ export async function deviceLogin(
   const retry = given.withDevice(server.device !== null).asCode();
   if (!server.device)
     fail("device_flow_unavailable", "This gateway does not offer sign-in with a code.", retry.onBrowserMachine(), 3);
-  const opened = await signInPost(transport, url, server.device, { client_id: CLI_CLIENT_ID, scope: grant, resource: server.issuer }, retry);
+  const opened = await transport.postForm(url, server.device, { client_id: CLI_CLIENT_ID, scope: grant, resource: server.issuer });
   const data = opened.data;
   const deviceCode = data["device_code"];
   const userCode = data["user_code"];
@@ -264,11 +249,11 @@ export async function deviceLogin(
   const deadline = clock.now() + expiresIn * 1000;
   while (clock.now() < deadline) {
     await clock.sleep(interval * 1000);
-    const answer = await signInPost(transport, url, server.token, {
+    const answer = await transport.postForm(url, server.token, {
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       device_code: deviceCode,
       client_id: CLI_CLIENT_ID,
-    }, retry);
+    });
     if (answer.status === 200) return loginFrom(answer, clock.now(), newLoginId(), retry);
     const error = answer.data["error"];
     if (error === "authorization_pending") continue;

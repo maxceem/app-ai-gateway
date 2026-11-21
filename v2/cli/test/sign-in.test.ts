@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { CliError, CLOUD } from "../src/common.ts";
 import { Context, launch } from "../src/context.ts";
-import { shellWord } from "../src/sign-in-retry.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
 import type { FormResponse } from "../src/transport.ts";
@@ -198,7 +197,7 @@ test("a browser sign-in answered by another issuer, or declined, stores nothing"
   assert.equal(transport.calls.filter((call) => call.kind === "form").length, 0);
 });
 
-test("a browser sign-in nobody approves exits 5 and says to rerun the command that started it", async () => {
+test("a browser sign-in nobody approves exits 5 and says to run the same command again", async () => {
   const transport = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => tokens(1));
   // The browser opens but never answers; the deadline fires at once instead of after five minutes.
   const silent: Loopback = { redirect: "http://127.0.0.1:43210/callback", callback: new Promise<Callback>(() => {}), answer: () => {}, close: async () => {} };
@@ -216,55 +215,54 @@ test("a browser sign-in nobody approves exits 5 and says to rerun the command th
   };
   const connect = contextFor(transport, io);
   const viaConnect = expired(await connect.ctx.connect(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
-  assert.match(viaConnect.nextAction, new RegExp(`agw deployment connect --url ${URL_.replace(/[.]/g, "\\.")} again, or add --device`));
-  assert.doesNotMatch(viaConnect.nextAction, /agw account login/);
+  assert.equal(viaConnect.nextAction, "Run the same command again, or add --device to sign in with a code.");
   assert.equal(connect.store.held.active, null);
   const login = contextFor(transport, io);
   const viaLogin = expired(await login.ctx.login(URL_).then(() => assert.fail("expected a timeout"), (error) => error));
-  assert.match(viaLogin.nextAction, /Run agw account login again, or add --device/);
+  assert.equal(viaLogin.nextAction, "Run the same command again, or add --device to sign in with a code.");
   assert.equal(cancelled, 2);
 });
 
-test("a token exchange refused after the browser answered says to rerun the command that started it", async () => {
+test("a token exchange refused after the browser answered says to run the same command again", async () => {
   const browser = () => handLoopback(() => ({ code: "c", iss: null }));
   const refused = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 400, data: { error: "invalid_grant" } }));
   const viaConnect = await contextFor(refused, browser()).ctx.connect(URL_).then(() => assert.fail("expected a refusal"), (error) => error);
   assert.ok(viaConnect instanceof CliError);
   assert.equal(viaConnect.code, "login_failed");
-  assert.match(viaConnect.nextAction, new RegExp(`Run agw deployment connect --url ${URL_.replace(/[.]/g, "\\.")} again`));
-  assert.doesNotMatch(viaConnect.nextAction, /agw account login/);
+  assert.equal(viaConnect.nextAction, "Run the same command again.");
   const unusable = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: METADATA } : notFound()), () => ({ status: 200, data: { access_token: "" } }));
   const invalid = await contextFor(unusable, browser()).ctx.connect(URL_).then(() => assert.fail("expected an unusable answer"), (error) => error);
   assert.ok(invalid instanceof CliError);
   assert.equal(invalid.code, "invalid_response");
-  assert.doesNotMatch(invalid.nextAction, /agw account login/);
+  assert.equal(invalid.nextAction, "Run the same command again.");
 });
 
-test("a retry command quotes a URL so zsh, bash and Windows cmd.exe read it as one word", () => {
-  assert.equal(shellWord("https://gateway.example.com"), "https://gateway.example.com");
-  assert.equal(shellWord("http://[::1]:8787"), '"http://[::1]:8787"');
-  assert.equal(shellWord("https://x.example/a$b"), "'https://x.example/a$b'");
-});
-
-test("every failed sign-in names the command that started it, with its flags, quoted for any shell", async () => {
+test("every failed sign-in says to run the same command again, and never names another command", async () => {
   const IPV6 = "http://[::1]:8787";
   const starts = [
-    { name: "account login", flags: {}, run: (ctx: Context) => ctx.login(URL_), command: "agw account login" },
-    { name: "account login --device", flags: { device: true }, run: (ctx: Context) => ctx.login(URL_), command: "agw account login --device" },
-    { name: "connect --url", flags: {}, run: (ctx: Context) => ctx.connect(URL_), command: `agw deployment connect --url ${URL_}` },
-    { name: "connect --url [::1]", flags: {}, run: (ctx: Context) => ctx.connect(IPV6), command: `agw deployment connect --url "${IPV6}"` },
-    { name: "connect --url --device", flags: { device: true }, run: (ctx: Context) => ctx.connect(URL_), command: `agw deployment connect --url ${URL_} --device` },
-    { name: "connect --cloud --no-open", flags: { cloud: true, "no-open": true }, run: (ctx: Context) => ctx.connect(CLOUD), command: "agw deployment connect --cloud --no-open" },
+    { name: "account login", flags: {}, run: (ctx: Context) => ctx.login(URL_), target: URL_ },
+    { name: "account login --device", flags: { device: true }, run: (ctx: Context) => ctx.login(URL_), target: URL_ },
+    { name: "connect --url", flags: {}, run: (ctx: Context) => ctx.connect(URL_), target: URL_ },
+    { name: "connect --url [::1]", flags: {}, run: (ctx: Context) => ctx.connect(IPV6), target: IPV6 },
+    { name: "connect --url --device", flags: { device: true }, run: (ctx: Context) => ctx.connect(URL_), target: URL_ },
+    { name: "connect --cloud --no-open", flags: { cloud: true, "no-open": true }, run: (ctx: Context) => ctx.connect(CLOUD), target: CLOUD },
   ] as const;
+  const AGAIN = "Run the same command again.";
   const refusal = (path: string): FormResponse | never => {
     throw new CliError("redirect_refused", `redirected ${path}`, "Connect explicitly to the intended gateway.", 3);
+  };
+  const unreachable = (): FormResponse | never => {
+    throw new CliError("connection_failed", "Could not reach the selected gateway.", "Check connectivity and the selected URL.", 3);
+  };
+  const unauthorized = (): never => {
+    throw new CliError("unauthorized", "The gateway refused the request (HTTP 401).", "Run agw account login.", 3, { status: 401 });
   };
   const deviceOpened = (extra: object = {}): FormResponse => ({
     status: 200,
     data: { device_code: "dc", user_code: "AAAA-BBBB", verification_uri: "%ORIGIN%/v2/device", expires_in: 30, interval: 5, ...extra },
   });
   for (const start of starts) {
-    const target = start.command.includes(IPV6) ? IPV6 : start.command.includes("--cloud") ? CLOUD : URL_;
+    const target = start.target;
     const issuer = `${target}/v2`;
     const metadata = (device = true) => ({
       issuer,
@@ -274,48 +272,55 @@ test("every failed sign-in names the command that started it, with its flags, qu
       ...(device ? { device_authorization_endpoint: `${issuer}/oauth/device_authorization` } : {}),
     });
     const usesBrowser = !("device" in start.flags) && !("no-open" in start.flags);
-    // A sign-in with a code is rerun as one: --device kept, or --no-open kept, or --device added.
-    const codeCommand = start.command.includes("--device") || start.command.includes("--no-open") ? start.command : `${start.command} --device`;
-    const browserCommand = start.command.replace(/ --device| --no-open/g, "");
-    const failure = async (form: (path: string) => FormResponse, io: object = {}, device = true) => {
-      const transport = fakeTransport((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata(device) } : notFound()), (path) => {
-        const answer = form(path);
-        return JSON.parse(JSON.stringify(answer).replaceAll("%ORIGIN%", target)) as FormResponse;
-      });
+    type Get = (path: string) => { data: unknown } | never;
+    const failure = async (form: (path: string) => FormResponse, io: object = {}, device = true, get?: Get) => {
+      const transport = fakeTransport(
+        get ?? ((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata(device) } : notFound())),
+        (path) => JSON.parse(JSON.stringify(form(path)).replaceAll("%ORIGIN%", target)) as FormResponse,
+      );
       const out = sinks();
       const store = memoryStore();
       const ctx = new Context(store, store.held, transport, start.flags, { stderr: out.stderr, env: {}, browserAvailable: () => true, clock: fakeClock(), ...io });
       const error = await start.run(ctx).then(() => assert.fail(`${start.name}: expected a failure`), (caught: unknown) => caught);
       assert.ok(error instanceof CliError, start.name);
       assert.equal(store.held.active, null, start.name);
+      assert.doesNotMatch(error.nextAction, /agw (account|deployment)|--url/, start.name);
       return error;
     };
     const browser = (answer: Callback) => handLoopback(() => answer);
+    const noBrowser = usesBrowser ? { browserAvailable: () => false } : {};
+    // Failures around the sign-in itself, whichever flow it takes.
+    const around: [string, Promise<CliError>, string][] = [
+      ["discovery 401", failure(() => tokens(1), noBrowser, true, unauthorized), AGAIN],
+      ["discovery unreachable", failure(() => tokens(1), noBrowser, true, unreachable), "Check connectivity and the URL, then run the same command again."],
+      ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), AGAIN],
+      ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
+    ];
+    for (const [what, pending, expected] of around) assert.equal((await pending).nextAction, expected, `${start.name}: ${what}`);
     if (usesBrowser) {
       const silent: Loopback = { redirect: "http://127.0.0.1:43210/callback", callback: new Promise<Callback>(() => {}), answer: () => {}, close: async () => {} };
       const timeout = { listen: async () => silent, openBrowser: async () => true, loginDeadline: () => ({ expired: Promise.reject(new Error("timeout")), cancel: () => {} }) };
       const cases: [string, Promise<CliError>, string][] = [
-        ["timeout", failure(() => tokens(1), timeout), `Run ${start.command} again, or add --device to sign in with a code.`],
-        ["timeout, no code endpoint", failure(() => tokens(1), timeout, false), `Run ${start.command} again.`],
-        ["declined", failure(() => tokens(1), browser({ error: "access_denied", description: null })), `Run ${start.command} again to start over.`],
-        ["refused", failure(() => tokens(1), browser({ error: "server_error", description: null })), `Run ${start.command} again.`],
-        ["token refused", failure(() => ({ status: 400, data: { error: "invalid_grant" } }), browser({ code: "c", iss: null })), `Run ${start.command} again.`],
-        ["token unusable", failure(() => ({ status: 200, data: { access_token: "" } }), browser({ code: "c", iss: null })), `Run ${start.command} again.`],
-        ["token redirected", failure(refusal, browser({ code: "c", iss: null })), `Fix the gateway's address, then run ${start.command} again.`],
+        ["timeout", failure(() => tokens(1), timeout), "Run the same command again, or add --device to sign in with a code."],
+        ["timeout, no code endpoint", failure(() => tokens(1), timeout, false), AGAIN],
+        ["declined", failure(() => tokens(1), browser({ error: "access_denied", description: null })), "Run the same command again to start over."],
+        ["refused", failure(() => tokens(1), browser({ error: "server_error", description: null })), AGAIN],
+        ["token refused", failure(() => ({ status: 400, data: { error: "invalid_grant" } }), browser({ code: "c", iss: null })), AGAIN],
+        ["token unusable", failure(() => ({ status: 200, data: { access_token: "" } }), browser({ code: "c", iss: null })), AGAIN],
+        ["token redirected", failure(refusal, browser({ code: "c", iss: null })), "Fix the gateway's address, then run the same command again."],
       ];
       for (const [what, pending, expected] of cases) assert.equal((await pending).nextAction, expected, `${start.name}: ${what}`);
     }
     // The device flow: chosen by the flags, or because this machine has no browser.
-    const noBrowser = usesBrowser ? { browserAvailable: () => false } : {};
     const device = (answer: FormResponse, first = deviceOpened()) => (path: string) => (path === "/v2/oauth/device_authorization" ? first : answer);
     const deviceCases: [string, Promise<CliError>, string][] = [
-      ["unusable body", failure(device(tokens(1), { status: 200, data: {} }), noBrowser), `Run ${codeCommand} again.`],
-      ["sign-in page off the origin", failure(device(tokens(1), deviceOpened({ verification_uri: "https://evil.example/device" })), noBrowser), `Run ${codeCommand} again.`],
-      ["code expired", failure(device({ status: 400, data: { error: "expired_token" } }), noBrowser), `Run ${codeCommand} again for a new code.`],
-      ["declined", failure(device({ status: 400, data: { error: "access_denied" } }), noBrowser), `Run ${codeCommand} again to start over.`],
-      ["start refused", failure(device(tokens(1), { status: 400, data: { error: "invalid_client" } }), noBrowser), `Run ${codeCommand} again.`],
-      ["poll redirected", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : refusal(path)), noBrowser), `Fix the gateway's address, then run ${codeCommand} again.`],
-      ["no code endpoint", failure(() => tokens(1), noBrowser, false), `Run ${browserCommand} on a machine with a browser.`],
+      ["unusable body", failure(device(tokens(1), { status: 200, data: {} }), noBrowser), AGAIN],
+      ["sign-in page off the origin", failure(device(tokens(1), deviceOpened({ verification_uri: "https://evil.example/device" })), noBrowser), AGAIN],
+      ["code expired", failure(device({ status: 400, data: { error: "expired_token" } }), noBrowser), "Run the same command again for a new code."],
+      ["declined", failure(device({ status: 400, data: { error: "access_denied" } }), noBrowser), "Run the same command again to start over."],
+      ["start refused", failure(device(tokens(1), { status: 400, data: { error: "invalid_client" } }), noBrowser), AGAIN],
+      ["poll redirected", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : refusal(path)), noBrowser), "Fix the gateway's address, then run the same command again."],
+      ["no code endpoint", failure(() => tokens(1), noBrowser, false), "Sign in from a machine with a browser using the same command, without --device or --no-open."],
     ];
     for (const [what, pending, expected] of deviceCases) assert.equal((await pending).nextAction, expected, `${start.name}: device ${what}`);
   }
