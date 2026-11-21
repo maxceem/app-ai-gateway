@@ -519,6 +519,30 @@ describe("conversation records", () => {
     expect(await record(KEEP_ALL)).toContain("UklGRiQAAABX");
   });
 
+  it("reads a media type by its base type, so one with parameters is still audio (Fable round 2)", async () => {
+    const noAudio = { images: true, audio: false, files: true };
+    const body = JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: "UklGRiQAAABXQVZF" } }] } }] });
+    const gemini = await conversationRecord(capture({
+      keep: noAudio,
+      response: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length, aborted: false },
+    }));
+    expect(gemini.media).toHaveLength(0);
+    expect(gemini.line).not.toContain("UklGRiQAAABXQVZF");
+    expect(gemini.line).toContain("agw-omitted:audio/l16;12");
+
+    const form = new FormData();
+    form.append("model", "whisper-1");
+    form.append("file", new File([new Uint8Array([26, 69, 223, 163])], "clip.webm", { type: "audio/webm;codecs=opus" }));
+    const sent = new Request("https://example.test", { method: "POST", body: form });
+    const bytes = new Uint8Array(await sent.arrayBuffer());
+    const request = { contentType: sent.headers.get("content-type")!, bytes, totalBytes: bytes.byteLength };
+    const left = await conversationRecord(capture({ keep: noAudio, request }));
+    expect(left.media).toHaveLength(0);
+    const kept = await conversationRecord(capture({ keep: { images: false, audio: true, files: false }, request }));
+    expect(kept.media).toHaveLength(1);
+    expect(kept.media[0]!.mime).toBe("audio/webm");
+  });
+
   it("treats a declared audio upload field as audio, whatever its file was named or typed (Sol round 3)", async () => {
     const form = new FormData();
     form.append("model", "whisper-1");
@@ -735,6 +759,22 @@ describe("ConversationLog", () => {
     // Nothing pending writes nothing.
     await log.flush();
     expect((await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects).toHaveLength(1);
+  });
+});
+
+describe("ConversationLog clears leftover batch rows (Fable round 2)", () => {
+  it("names a new batch even when rows of an older one were left behind", async () => {
+    const appId = `log-${crypto.randomUUID().slice(0, 8)}`;
+    const log = env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId));
+    await log.append(capture({ appId, eventId: "left" }));
+    // An older instance's chosen rows, with no named batch: the state a deploy can leave.
+    await runInDurableObject(log, (_instance, state) => {
+      const id = state.storage.sql.exec<{ id: number }>("SELECT id FROM pending").toArray()[0]!.id;
+      state.storage.sql.exec("INSERT INTO batch_row (pending_id) VALUES (?)", id);
+    });
+    await log.flush();
+    expect(await log.pendingCount()).toBe(0);
+    expect((await storedRecords(appId)).map((record) => record.event_id)).toEqual(["left"]);
   });
 });
 

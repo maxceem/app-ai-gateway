@@ -120,9 +120,15 @@ const UNKNOWN_AUDIO = "audio";
 /** A media type a body may name: `type/subtype` of token characters only. */
 const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
-/** The media type a body named, where it is a real one; anything else is just bytes. */
+/**
+ * The base media type a body named, where it is a real one; anything else is
+ * just bytes. Parameters such as `;codecs=opus` or `;rate=24000` are dropped, so
+ * `audio/L16;codec=pcm;rate=24000` still counts as audio.
+ */
 function safeMime(mime: string): string {
-  return mime === UNKNOWN_AUDIO || MEDIA_TYPE.test(mime) ? mime : "application/octet-stream";
+  if (mime === UNKNOWN_AUDIO) return mime;
+  const base = mime.split(";")[0]!.trim();
+  return MEDIA_TYPE.test(base) ? base : "application/octet-stream";
 }
 
 function mediaKind(mime: string): keyof KeptMedia {

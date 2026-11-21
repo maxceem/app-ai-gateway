@@ -173,6 +173,9 @@ export class ConversationLog extends DurableObject<Env> {
       // Named from its earliest record: every record in it shares that record's UTC day.
       const named = batchKey(next.accountId, next.appId, next.earliest, batchId);
       this.ctx.storage.transactionSync(() => {
+        // With no named batch, any row left here is a leftover (an older
+        // instance's batch): clear it, or the inserts below fail on its ids.
+        sql.exec("DELETE FROM batch_row");
         sql.exec("INSERT INTO batch_file (id, key) VALUES (1, ?)", named);
         for (const id of next.ids) sql.exec("INSERT INTO batch_row (pending_id) VALUES (?)", id);
       });
