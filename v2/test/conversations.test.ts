@@ -944,6 +944,17 @@ describe("conversation storage through the gateway", () => {
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
+  it("leaves out a stored field that holds the app key, such as a trace id (Sol round 9)", async () => {
+    const { slug, appId, key } = await storingApp();
+    providerAnswers();
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key, { "x-client-trace-id": key }));
+    expect(response.status).toBe(200);
+    await env.CONVERSATION_LOG.getByName(appId).flush();
+    const [record] = await storedRecords(appId);
+    expect(JSON.stringify(record)).not.toContain(key);
+    expect(record!.trace_id).toBeNull();
+  });
+
   it("ends the app's answer before the stored copy of it is put together (Sol round 1)", async () => {
     const { slug, appId, key } = await storingApp();
     providerAnswers();
@@ -1212,6 +1223,12 @@ describe("reading stored conversations", () => {
     expect((await get(file, env, "member")).response.status).toBe(403);
   });
 
+  it("answers a member's request for a missing app with 404, as v1 did, before the role check (Sol round 9)", async () => {
+    const missing = await get(`/v2/admin/apps/app_missing_${crypto.randomUUID().slice(0, 8)}/conversations`, env, "member");
+    expect(missing.response.status).toBe(404);
+    expect(json(missing.bytes)).toMatchObject({ error: { code: "app_not_found" } });
+  });
+
   it("lists nothing where the deployment has no bucket", async () => {
     const appId = await storedFiles();
     const withoutBucket = new Proxy(env, {
@@ -1243,6 +1260,40 @@ describe("conversation retention", () => {
     expect(left).toContain(`conversations/${appId}/${today}/000000-bbbbbbbb.jsonl.gz`);
     expect(left).not.toContain(`conversations/${appId}/2020-01-01/000000-aaaaaaaa.jsonl.gz`);
     expect(left.some((key) => key.startsWith("conversations/conversation-deleted-app/"))).toBe(false);
+  });
+
+  it("keeps the records of an app made while the sweep runs, and of one it cannot look up (Sol round 9)", async () => {
+    const store = bucket();
+    const late = "conversation-late-app";
+    const unreadable = "conversation-unreadable-app";
+    await store.put(`conversations/${late}/2020-01-01/000000-aaaaaaaa.jsonl.gz`, "made late");
+    await store.put(`conversations/${unreadable}/2020-01-01/000000-bbbbbbbb.jsonl.gz`, "lookup fails");
+    // The sweep's first read sees neither app; looked up again before deleting, one now exists
+    // and the other cannot be read.
+    const db = {
+      prepare(sql: string) {
+        let bound: unknown[] = [];
+        return {
+          bind(...values: unknown[]) {
+            bound = values;
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+          async first() {
+            if (!sql.includes("FROM app WHERE id = ?")) return null;
+            if (bound[0] === unreadable) throw new Error("D1 unavailable");
+            return bound[0] === late ? { present: 1, config_json: "{}" } : null;
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    await runConversationRetention(store, db, Date.now(), new CallBudget(500));
+    const left = (await store.list({ prefix: "conversations/conversation-" })).objects.map((object) => object.key);
+    expect(left).toContain(`conversations/${late}/2020-01-01/000000-aaaaaaaa.jsonl.gz`);
+    expect(left).toContain(`conversations/${unreadable}/2020-01-01/000000-bbbbbbbb.jsonl.gz`);
   });
 
   it("deletes a whole expired day folder in bulk, unread, across runs within each run's allowance (Sol round 3)", async () => {

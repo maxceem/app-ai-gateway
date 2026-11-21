@@ -114,6 +114,21 @@ function withoutCredentials(
   return { contentType: "application/json", bytes: OMITTED };
 }
 
+/**
+ * A stored metadata field (the trace id, the user id, ...) that holds a credential
+ * used on the call is left out of the record, the same check as for bodies.
+ */
+/** Stands in for a required metadata field that held a credential. */
+const OMITTED_FIELD = "agw-omitted:credential";
+
+function metadataWithoutCredentials(input: CaptureInput, field: string, value: string | null): string | null {
+  if (value === null) return null;
+  const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
+  if (!secrets.some((secret) => value.includes(secret))) return value;
+  log("warn", "conversation_field_omitted", { app: input.appId, chargeId: input.chargeId, field, reason: "credential" });
+  return null;
+}
+
 async function capture(env: Env, input: CaptureInput): Promise<void> {
   if (conversationsBucket(env) === null) return;
   // An app that turned storage on under a plan that included it keeps its
@@ -135,14 +150,14 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     eventId: input.chargeId,
     createdAt: new Date(input.startedAt).toISOString(),
     appId: input.appId,
-    userId: input.identity.userId,
-    installId: input.identity.installId,
-    appVersion: input.appVersion,
-    clientTraceId: input.clientTraceId,
-    endpointSlug: input.preset,
-    route: input.route,
+    userId: metadataWithoutCredentials(input, "user_id", input.identity.userId),
+    installId: metadataWithoutCredentials(input, "install_id", input.identity.installId),
+    appVersion: metadataWithoutCredentials(input, "app_version", input.appVersion),
+    clientTraceId: metadataWithoutCredentials(input, "trace_id", input.clientTraceId),
+    endpointSlug: metadataWithoutCredentials(input, "endpoint", input.preset),
+    route: metadataWithoutCredentials(input, "route", input.route) ?? OMITTED_FIELD,
     provider: input.provider,
-    model: input.model,
+    model: metadataWithoutCredentials(input, "model", input.model) ?? OMITTED_FIELD,
     status: input.status,
     httpStatus: input.httpStatus,
     latencyMs: input.latencyMs,

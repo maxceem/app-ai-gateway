@@ -90,6 +90,19 @@ async function currentRetention(db: D1Database, appId: string): Promise<number |
 }
 
 /**
+ * Whether the app is still gone, read just before a removed app's page is deleted, so an app made
+ * while the sweep runs keeps its records. False when it exists or the read fails: the folder waits.
+ */
+async function appStillAbsent(db: D1Database, appId: string): Promise<boolean> {
+  try {
+    const row = await db.prepare("SELECT 1 AS present FROM app WHERE id = ?").bind(appId).first<{ present: number }>();
+    return row === null;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Every key under `prefix`, deleted a page at a time. Where `stillExpired` is
  * given, it is asked after each page is listed and right before that page is
  * deleted; when it answers false, deleting stops and `stopped` is true.
@@ -170,8 +183,11 @@ export async function runConversationRetention(
           current = folder;
           const days = retention.get(appId);
           if (days === undefined) {
-            result.deletedObjects += (await deleteAll(bucket, folder, work, pageSize)).deleted;
-            result.removedApps += 1;
+            // The app was missing when the sweep began; it is looked up again before each page,
+            // so an app made since then keeps what it has written.
+            const outcome = await deleteAll(bucket, folder, work, pageSize, () => appStillAbsent(db, appId));
+            result.deletedObjects += outcome.deleted;
+            if (!outcome.stopped) result.removedApps += 1;
           } else {
             const prefix = appPrefix(appId);
             for (const day of await folders(bucket, prefix, work, pageSize)) {

@@ -21,11 +21,13 @@ const LIST_PAGE = 1000;
 
 /** The app, if it is the caller's account's: stored conversations are reached through it only. */
 async function ownApp(c: AdminContext): Promise<string> {
-  // v1 kept stored prompts and media to owners and admins; a member reads neither.
-  requireAdminRole(c.get("actor"));
   const appId = c.req.param("app")!;
+  // The app is looked up within the caller's account first, as v1 did: a missing
+  // app, or another account's, is 404 to anyone.
   const found = await c.env.DB.prepare("SELECT 1 AS found FROM app WHERE id = ? AND account_id = ?").bind(appId, c.get("actor").accountId).first();
   if (found === null) throw new GatewayError(404, "app_not_found", "App is not registered");
+  // v1 kept stored prompts and media to owners and admins; a member reads neither.
+  requireAdminRole(c.get("actor"));
   return appId;
 }
 
