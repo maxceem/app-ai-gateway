@@ -1847,6 +1847,42 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
     expect(await openWork(appId)).toEqual([]);
   });
 
+  it("never passes an accepted submit's Location on: this job's status becomes the gateway's link, anything else is dropped", async () => {
+    const { appId, slug, key } = await setup();
+    const accepted = (location: string) => () =>
+      Response.json(
+        {
+          request_id: "req-1",
+          status: "IN_QUEUE",
+          status_url: "https://queue.fal.run/fal-ai/flux/requests/req-1/status",
+          response_url: "https://queue.fal.run/fal-ai/flux/requests/req-1",
+        },
+        { status: 202, headers: { location } },
+      );
+    falAnswers({ submit: accepted("https://queue.fal.run/fal-ai/flux/requests/req-1/status") });
+    const pointed = await submit(appId, slug, key);
+    expect(pointed.response.status).toBe(202);
+    const jobId = String(pointed.json!.request_id);
+    expect(pointed.response.headers.get("location")).toBe(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`);
+
+    falAnswers({ submit: accepted("https://elsewhere.example.com/fal-ai/flux/requests/req-1/status") });
+    const elsewhere = await submit(appId, slug, key);
+    expect(elsewhere.response.status).toBe(202);
+    expect(elsewhere.response.headers.get("location")).toBeNull();
+  });
+
+  it("never passes a status answer's own Location on to the app", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const jobId = String((await submit(appId, slug, key)).json!.request_id);
+    falAnswers({
+      status: () => Response.json({ status: "IN_PROGRESS" }, { status: 202, headers: { location: "https://elsewhere.example.com/x" } }),
+    });
+    const polled = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
+    expect(polled.response.status).toBe(202);
+    expect(polled.response.headers.get("location")).toBeNull();
+  });
+
   it("settles from the result when the app never polls and the status redirects to this job's result", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});

@@ -67,7 +67,7 @@ import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, ser
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 import { jobSigningReady, jobSigningUnavailable, routeDigest, signJobId } from "../jobs/job-id.ts";
-import { gatewayLinks, jobEstimate, providerRedirect, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
+import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRedirect, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -1229,6 +1229,10 @@ async function answerJobSubmit(
   c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
   const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
   const headers = clientResponseHeaders(upstream.headers, keyHeader);
+  // The provider's own `Location` (fal can send one with a 202) never reaches the app: when it
+  // points exactly at this job's status or result, the gateway's link takes its place.
+  const targets = jobRedirectTargets({ connection, description: prepared.description, operation, spec }, { model: attempt.model, requestId });
+  jobLocation(headers, upstream.headers, upstream.url, targets, links);
   headers.delete("content-length");
   headers.delete("content-encoding");
   headers.set("content-type", "application/json");

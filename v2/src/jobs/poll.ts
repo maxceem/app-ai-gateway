@@ -37,6 +37,8 @@ import {
   JOB_BODY_READ_DEADLINE_MS,
   JOB_POLL_TIMEOUT_MS,
   jobContext,
+  jobLocation,
+  jobRedirectTargets,
   jobStatusQuery,
   readResultFacts,
   withGatewayLinks,
@@ -91,6 +93,7 @@ export function jobPollHandler(which: "status" | "result") {
         const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
         const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
         const headers = clientResponseHeaders(response.headers, keyHeader);
+        jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
         headers.delete("content-length");
         headers.delete("content-encoding");
         // A job's answer is the caller's own: no cache may keep it.
@@ -131,6 +134,7 @@ export function jobPollHandler(which: "status" | "result") {
           const again = await fetchJob(c.env, context, "status", claims, caller.identity.userId);
           answer = again.response;
           answerHeaders = clientResponseHeaders(answer.headers, again.keyHeader);
+          jobLocation(answerHeaders, answer.headers, again.url, jobRedirectTargets(context, claims), links);
           answerHeaders.delete("content-length");
           answerHeaders.delete("content-encoding");
           noStore(answerHeaders);

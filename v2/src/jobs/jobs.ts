@@ -197,26 +197,54 @@ export function providerRedirect(
 ): JobEndpoint | null {
   if (response.status < 300 || response.status > 399) return null;
   void response.body?.cancel().catch(() => undefined);
-  const location = response.headers.get("location");
-  let target: URL | null = null;
-  try {
-    target = location === null ? null : new URL(location, requestUrl);
-  } catch {
-    target = null;
-  }
-  if (target !== null) {
-    const where = `${target.origin}${target.pathname}`;
-    for (const [which, url] of allowed) {
-      const expected = new URL(url);
-      if (where === `${expected.origin}${expected.pathname}`) return which;
-    }
-  }
+  const which = endpointAt(response.headers.get("location"), requestUrl, allowed);
+  if (which !== null) return which;
   log("warn", event, { ...facts, status: response.status });
   throw new GatewayError(502, "provider_error", "The provider answered with a redirect the gateway cannot follow");
 }
 
+/**
+ * Which of `allowed` a provider's `Location` points at exactly (the same
+ * origin and path); null for none, a missing or unreadable `Location`
+ * included. A relative `Location` needs `requestUrl` to resolve; without one
+ * it matches nothing.
+ */
+function endpointAt(location: string | null, requestUrl: string, allowed: ReadonlyArray<readonly [JobEndpoint, string]>): JobEndpoint | null {
+  if (location === null) return null;
+  let target: URL;
+  try {
+    target = requestUrl === "" ? new URL(location) : new URL(location, requestUrl);
+  } catch {
+    return null;
+  }
+  const where = `${target.origin}${target.pathname}`;
+  for (const [which, url] of allowed) {
+    const expected = new URL(url);
+    if (where === `${expected.origin}${expected.pathname}`) return which;
+  }
+  return null;
+}
+
+/**
+ * The `Location` a job answer that is not a redirect (a submit's 202, a
+ * status or result answer) carries to the app. The provider's own never goes
+ * on; when it pointed exactly at one of `allowed`, the gateway's link for that
+ * endpoint takes its place.
+ */
+export function jobLocation(
+  headers: Headers,
+  upstream: Headers,
+  requestUrl: string,
+  allowed: ReadonlyArray<readonly [JobEndpoint, string]>,
+  links: GatewayLinks,
+): void {
+  const which = endpointAt(upstream.get("location"), requestUrl, allowed);
+  headers.delete("location");
+  if (which !== null) headers.set("location", links[which]);
+}
+
 /** This job's status and result URLs, the only places a poll's redirect may point. */
-export function jobRedirectTargets(context: JobContext, claims: JobClaims): ReadonlyArray<readonly [JobEndpoint, string]> {
+export function jobRedirectTargets(context: JobContext, claims: Pick<JobClaims, "model" | "requestId">): ReadonlyArray<readonly [JobEndpoint, string]> {
   return (["status", "result"] as const).map((which) => [which, jobEndpointUrl(context, which, claims)] as const);
 }
 
