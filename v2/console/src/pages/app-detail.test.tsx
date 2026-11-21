@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
-import { AppDetailPage, routingOf, scopeOf } from "./app-detail";
+import { AppDetailPage, JOB_CHECK_OVERDUE_MS, jobCheckOverdue, routingOf, scopeOf } from "./app-detail";
 import { testApp } from "@/test/fixtures";
 import { renderAuthenticated, settled } from "@/test/render";
 
@@ -147,6 +147,139 @@ describe("AppDetailPage", () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([input, init]) => String(input) === "/v2/admin/apps/my-app/users/user-a/block" && init?.method === "POST")).toBe(true),
     );
+  });
+
+  it("lists the app's jobs with their estimate, correction, total and state", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: {
+          app_id: "my-app",
+          total: 2,
+          limit: 50,
+          offset: 0,
+          jobs: [
+            { id: "job-1", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T00:00:00.000Z", estimate_nano: 50_000_000, correction_nano: 50_000_000, total_nano: 100_000_000, measured: "estimated", price_source: "list_rate", state: "settled", settled_at: "2026-11-01T00:01:00.000Z" },
+            { id: "job-2", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/ltx-video", end_user_id: "u", submitted_at: "2026-11-01T00:00:00.000Z", estimate_nano: 20_000_000, correction_nano: null, total_nano: 20_000_000, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null },
+          ],
+        },
+      },
+    });
+    renderTab("jobs");
+    const settledRow = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+    expect(within(settledRow).getByText("Settled")).toBeTruthy();
+    expect(within(settledRow).getByText("$0.10")).toBeTruthy();
+    const checkingRow = screen.getByText("fal-ai/ltx-video").closest("tr")!;
+    expect(within(checkingRow).getByText("Checking")).toBeTruthy();
+    expect(within(checkingRow).getByText("—")).toBeTruthy();
+  });
+
+  it("flags a job check that is well past its due time as overdue", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: {
+          app_id: "my-app",
+          total: 2,
+          limit: 50,
+          offset: 0,
+          jobs: [
+            { id: "late", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2020-01-01T00:00:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2020-01-01T00:02:00.000Z" },
+            { id: "on-time", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/ltx-video", end_user_id: "u", submitted_at: "2020-01-01T00:00:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2999-01-01T00:00:00.000Z" },
+          ],
+        },
+      },
+    });
+    renderTab("jobs");
+    const lateRow = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+    expect(within(lateRow).getByText(/overdue/i)).toBeTruthy();
+    const onTimeRow = screen.getByText("fal-ai/ltx-video").closest("tr")!;
+    expect(within(onTimeRow).queryByText(/overdue/i)).toBeNull();
+  });
+
+  it("marks a check overdue while the tab stays open, and asks for the jobs again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.parse("2026-11-01T12:00:00.000Z") });
+    try {
+      const fetchMock = stub({
+        "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+          body: {
+            app_id: "my-app",
+            total: 1,
+            limit: 50,
+            offset: 0,
+            jobs: [
+              { id: "soon", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2026-11-01T12:01:00.000Z" },
+            ],
+          },
+        },
+      });
+      renderTab("jobs");
+      const row = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+      expect(within(row).queryByText(/overdue/i)).toBeNull();
+      const jobCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/v2/admin/apps/my-app/jobs")).length;
+      const before = jobCalls();
+      await vi.advanceTimersByTimeAsync(7 * 60_000);
+      await waitFor(() => expect(within(screen.getByText("fal-ai/flux/dev").closest("tr")!).getByText(/overdue/i)).toBeTruthy());
+      expect(jobCalls()).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the last jobs and their warnings when a background refresh fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.parse("2026-11-01T12:10:00.000Z") });
+    try {
+      const routes: Record<string, Answer> = {
+        "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+          body: {
+            app_id: "my-app",
+            total: 1,
+            limit: 50,
+            offset: 0,
+            jobs: [
+              { id: "late", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2026-11-01T12:01:00.000Z" },
+            ],
+          },
+        },
+      };
+      stub(routes);
+      renderTab("jobs");
+      const row = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+      expect(within(row).getByText(/overdue/i)).toBeTruthy();
+      routes["GET /v2/admin/apps/my-app/jobs?limit=50&offset=0"] = { status: 503, body: { error: { code: "unavailable", message: "Try again" } } };
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await waitFor(() => expect(screen.getByText(/could not refresh the jobs/i)).toBeTruthy());
+      expect(within(screen.getByText("fal-ai/flux/dev").closest("tr")!).getByText(/overdue/i)).toBeTruthy();
+      expect(screen.queryByText(/could not load the jobs/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Previous while the next page loads or fails", async () => {
+    const job = (id: string) => ({ id, provider_slug: "fal", operation: "fal.queue", model: `model-${id}`, end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "settled", settled_at: "2026-11-01T12:00:00.000Z" });
+    stub({
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+        body: { app_id: "my-app", total: 51, limit: 50, offset: 0, jobs: Array.from({ length: 50 }, (_, i) => job(`j${i}`)) },
+      },
+      "GET /v2/admin/apps/my-app/jobs?limit=50&offset=50": { status: 503, body: { error: { code: "unavailable", message: "Try again" } } },
+    });
+    renderTab("jobs");
+    await screen.findByText("model-j0");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(screen.getByText(/could not load the jobs/i)).toBeTruthy());
+    const previous = screen.getByRole("button", { name: "Previous" }) as HTMLButtonElement;
+    expect(previous.disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(previous);
+    expect(await screen.findByText("model-j0")).toBeTruthy();
+  });
+
+  it("calls a check overdue only once it is more than five minutes late", () => {
+    const due = Date.parse("2026-11-01T00:00:00.000Z");
+    const job = { state: "checking" as const, next_check_at: new Date(due).toISOString() };
+    expect(jobCheckOverdue(job, due + JOB_CHECK_OVERDUE_MS)).toBe(false);
+    expect(jobCheckOverdue(job, due + JOB_CHECK_OVERDUE_MS + 1)).toBe(true);
+    expect(jobCheckOverdue({ ...job, state: "settled" }, due + 10 * JOB_CHECK_OVERDUE_MS)).toBe(false);
+    expect(jobCheckOverdue({ state: "checking", next_check_at: undefined }, due)).toBe(false);
   });
 
   it("creates an app key and shows it once", async () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { parsePathLines, pathLine, ProvidersPage, testResultText } from "./providers";
+import { parsePathLines, parsePricesText, pathLine, pricesText, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
 
@@ -98,6 +98,32 @@ describe("ProvidersPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /turn off/i }));
     await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, status: "disabled" }));
+  });
+
+  it("saves the connection's own prices, such as a flat price per job for a model off our list", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+    const fetchMock = stub([fal]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    expect((box as HTMLTextAreaElement).value).toContain("fal-ai/old");
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/some-model": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-fal", "PUT")).toEqual({ revision: 3, pricing: { "fal-ai/some-model": { per_request: 0.02 } } }),
+    );
+  });
+
+  it("reads the prices text as JSON, and empty as no prices of your own", () => {
+    expect(pricesText(null)).toBe("");
+    expect(parsePricesText("")).toEqual({ pricing: null });
+    expect(parsePricesText("{}")).toEqual({ pricing: null });
+    expect(parsePricesText('{"m": {"per_video": 0.02}}')).toEqual({ pricing: { m: { per_video: 0.02 } } });
+    expect(parsePricesText("[1]")).toHaveProperty("problem");
+    expect(parsePricesText("{not json")).toHaveProperty("problem");
   });
 
   it("reloads the list when a remove is refused, as the connection may already be gone", async () => {
@@ -352,6 +378,180 @@ describe("PathsDialog after a conflict", () => {
     expect(((await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement).value).toBe("GET v1/files\nGET v1/batches");
     await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
     await waitFor(() => expect(puts_()[1]).toMatchObject({ revision: 4, passthrough: [{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/batches" }] }));
+  });
+});
+
+describe("PricesDialog after a conflict", () => {
+  it("keeps the revision it was opened at, shows the conflict, and saves only after a reload", async () => {
+    const opened = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+    const changed = { ...opened, revision: 4, pricing: { "fal-ai/old": { per_unit: 0.01 }, "fal-ai/theirs": { per_request: 0.05 } } };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? opened : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const puts_ = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/mine": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    expect(await screen.findByText(/these prices changed since you opened them/i)).toBeTruthy();
+    expect(puts_()[0]).toMatchObject({ revision: 3 });
+    // The list has reloaded at revision 4 by now; the draft is still from 3, so saving it is held back.
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    expect(((await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs");
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() => expect(puts_()[1]).toMatchObject({ revision: 4, pricing: changed.pricing }));
+  });
+});
+
+describe("PricesDialog reload after a conflict", () => {
+  const opened = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: { "fal-ai/old": { per_unit: 0.01 } } };
+  const changed = { ...opened, revision: 4, pricing: { "fal-ai/old": { per_unit: 0.01 }, "fal-ai/theirs": { per_request: 0.05 } } };
+
+  /** Opens the dialog, types a draft and saves it into a 409. */
+  async function intoConflict() {
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const box = await screen.findByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"fal-ai/mine": {"per_request": 0.02}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    expect(await screen.findByText(/these prices changed since you opened them/i)).toBeTruthy();
+  }
+
+  it("waits for the fresh list before it drops the draft, even when clicked while the list still loads", async () => {
+    let lists = 0;
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        // The refresh after the conflict is held until the test lets it go.
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return new Response(JSON.stringify({ providers: [changed] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    // Still loading: the draft stays and saving stays held back.
+    const box = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    expect(box.value).toContain("fal-ai/mine");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    release!();
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs"));
+    expect(screen.queryByText(/these prices changed since you opened them/i)).toBeNull();
+  });
+
+  it("makes the editor read-only while a reload is pending, so nothing typed is lost to its answer", async () => {
+    let lists = 0;
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return new Response(JSON.stringify({ providers: [changed] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    const box = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.readOnly).toBe(true));
+    await userEvent.click(box);
+    await userEvent.paste("typed while loading");
+    expect(box.value).not.toContain("typed while loading");
+    release!();
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/theirs"));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).readOnly).toBe(false);
+  });
+
+  it("keeps the draft and the notice when the fresh read fails", async () => {
+    let lists = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        lists += 1;
+        if (lists === 1) return new Response(JSON.stringify({ providers: [opened] }));
+        return new Response(JSON.stringify({ error: { code: "unavailable", message: "down" } }), { status: 503 });
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await intoConflict();
+    await userEvent.click(screen.getByRole("button", { name: /reload prices/i }));
+    await waitFor(() => expect(lists).toBeGreaterThan(2));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/mine");
+    expect(screen.getByText(/these prices changed since you opened them/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("PricesDialog closed while its save is pending", () => {
+  it("lets a late save close nothing, so another provider's open dialog keeps its draft", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", pricing: null };
+    const other = { ...PROVIDER, id: "prov-other", type: "fal", slug: "fal-two", name: "fal-two", pricing: null };
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          // The first provider's save is held until the test lets it go.
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return new Response(JSON.stringify({ provider: fal }));
+        }
+        return new Response(JSON.stringify({ providers: [fal, other] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const first = await screen.findByLabelText(/prices by model/i);
+    await userEvent.click(first);
+    await userEvent.paste('{"fal-ai/a": {"per_request": 0.01}}');
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByLabelText(/prices by model/i)).toBeNull());
+
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal-two" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const second = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
+    await userEvent.click(second);
+    await userEvent.paste('{"fal-ai/b": {"per_request": 0.02}}');
+    release!();
+    // The first provider's save has finished; the second dialog is still open with its draft.
+    await waitFor(() => expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/b"));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(((screen.getByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain("fal-ai/b");
   });
 });
 

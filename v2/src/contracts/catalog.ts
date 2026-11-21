@@ -31,6 +31,8 @@ import {
   CreatedAppResponseSchema,
   EndUserBlockResponseSchema,
   EndUserListQuerySchema,
+  JobListQuerySchema,
+  JobListResponseSchema,
   EndUserListResponseSchema,
   EndUserQuerySchema,
   EndUserResponseSchema,
@@ -349,6 +351,21 @@ export const CATALOG = {
     security: "management",
     response: EndUserBlockResponseSchema,
     responseDescription: "The user's new block state.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppJobs: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/jobs",
+    params: APP_PARAM,
+    tags: ["Admin jobs"],
+    summary: "List an app's jobs",
+    description:
+      "Jobs the app submitted through the gateway, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands.",
+    security: "management",
+    query: JobListQuerySchema,
+    response: JobListResponseSchema,
+    responseDescription: "One page of jobs.",
     errors: ADMIN_ERRORS,
   },
 

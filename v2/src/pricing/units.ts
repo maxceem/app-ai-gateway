@@ -51,6 +51,7 @@ export const UNIT_RATES: readonly UnitRate[] = [
   { field: "per_hour", units: TIME_UNITS, per: 3600 * MILLI_SCALE },
   { field: "per_second", units: TIME_UNITS, per: MILLI_SCALE },
   { field: "per_image", units: ["images"], per: 1 },
+  { field: "per_video", units: ["videos"], per: 1 },
   { field: "per_megapixel", units: ["megapixels"], per: MILLI_SCALE },
   { field: "per_million_characters", units: ["characters"], per: 1_000_000 },
   { field: "per_credit", units: ["credits"], per: MILLI_SCALE },

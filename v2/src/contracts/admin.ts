@@ -496,6 +496,50 @@ export const EndUserBlockResponseSchema = z
   .object({ app_id: z.string(), user_id: z.string(), blocked: z.boolean() })
   .meta({ id: "EndUserBlockResponse" });
 
+export const JobListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50),
+  offset: z.coerce.number().int().min(0, { error: "offset must be 0 or more" }).default(0),
+});
+
+/** Where a job's charge stands. */
+export const JOB_STATES = ["settled", "checking", "estimate_kept", "gave_up"] as const;
+
+export const JobSummarySchema = z
+  .object({
+    id: z.string().meta({ description: "The job's id in the ledger." }),
+    provider_slug: z.string().nullable(),
+    operation: z.string(),
+    model: z.string().nullable(),
+    end_user_id: z.string().nullable(),
+    submitted_at: z.string().meta({ description: "When the job was submitted, ISO 8601." }),
+    estimate_nano: z.number().int().nullable().meta({ description: "The estimate charged at submit, in nano-dollars; null when it has no price yet." }),
+    correction_nano: z.number().int().nullable().meta({ description: "What the job's corrections added or removed, in nano-dollars; null when it has none." }),
+    total_nano: z.number().int().nullable().meta({ description: "The estimate and its corrections together, in nano-dollars." }),
+    measured: z.string().meta({ description: "How complete the usage is: the estimate's label until the job settles, then the settlement's." }),
+    price_source: z.string(),
+    state: z.enum(JOB_STATES).meta({
+      description:
+        "`settled`: corrected to the provider's final figure. `checking`: the gateway still checks the job. `estimate_kept`: the provider gave no figure the price can use, so the estimate stays. `gave_up`: the job's result could not be read in time; the estimate stays.",
+    }),
+    settled_at: z.string().nullable().meta({ description: "When the job was settled, ISO 8601." }),
+    next_check_at: z
+      .string()
+      .nullable()
+      .optional()
+      .meta({ description: "While `checking`: when the gateway next checks the job, ISO 8601. A time well in the past means the check is overdue." }),
+  })
+  .meta({ id: "JobSummary" });
+
+export const JobListResponseSchema = z
+  .object({
+    app_id: z.string(),
+    total: z.number().int(),
+    limit: z.number().int(),
+    offset: z.number().int(),
+    jobs: z.array(JobSummarySchema),
+  })
+  .meta({ id: "JobListResponse" });
+
 /** The price file as it is: dollars per million units, keyed by provider type and model. */
 export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })

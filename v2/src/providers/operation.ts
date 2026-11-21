@@ -121,6 +121,8 @@ export const UNITS = [
   "images",
   "megapixels",
   "video_seconds",
+  /** Whole videos a job made, for a model priced per video (fal's `ltx-video`). */
+  "videos",
   "requests",
   /** A model's own billed unit, such as fal's `x-fal-billable-units`. Named per model in the price file. */
   "model_units",
@@ -135,6 +137,22 @@ export type RequestMeasure =
   | { readonly measure: "requested_seconds"; readonly field: string; readonly default?: number }
   /** How many images the request asks for. */
   | { readonly measure: "image_count"; readonly field: string; readonly default?: number }
+  /**
+   * Always one: one request, or one output a request always makes (a video
+   * model's one video). Lets a price per request or per output bill a job's
+   * estimate.
+   */
+  | { readonly measure: "one" }
+  /**
+   * A video's length the request asks for, in seconds: the frame count in
+   * `field` divided by the frame rate in `fps` (fal's `num_frames` and
+   * `frame_rate`). Given only when the request names the frame count, so an
+   * image request never gets it. A missing frame rate uses `defaultFps`.
+   * With `forKind`, only a model whose price says it is that kind (our price
+   * list's `kind: "video"`) gets it: an image model keeps its own estimate,
+   * whatever video fields its request names.
+   */
+  | { readonly measure: "frames_seconds"; readonly field: string; readonly fps: string; readonly defaultFps: number; readonly forKind?: string }
   /**
    * The megapixels of the images the request asks for, as fal bills them:
    * per image, width × height in units of 1024 × 1024 pixels, rounded up,
@@ -438,11 +456,23 @@ export interface JobSpec {
    */
   readonly statusQuery?: readonly string[];
   /**
-   * The result field with the job's outputs, such as `images`: counted for a
-   * model priced per output whose provider sends no units (T15's
-   * `ltx-video`). An array counts its items; anything else counts one.
+   * The result fields with the job's outputs, and the unit each counts in,
+   * such as `images` in images and `video` in videos: counted for a model
+   * priced per output whose provider sends no units (T15's `ltx-video`).
+   * For each unit, the first of its fields the result has counts; an array
+   * counts its items, anything else counts one.
    */
-  readonly outputsField?: string;
+  readonly outputs?: readonly { readonly field: string; readonly unit: Unit }[];
+  /**
+   * How a result confirms the job was cancelled: its status, and a header
+   * naming the cancel (fal's `499` with `x-fal-error-type: client_cancelled`,
+   * T15); the status alone is not enough. It is the provider's final answer,
+   * whether the cancel came through the gateway or was sent to the provider
+   * directly. Billed units, when reported, settle it as any result (a job
+   * cancelled while running); with none, the provider billed nothing, and
+   * the job is free (a job cancelled while queued).
+   */
+  readonly cancelled?: { readonly status: number; readonly header: { readonly name: string; readonly value: string } };
   /**
    * How often the sweep checks a job no client polled, so a result is read
    * before the provider drops it. Default: every minute.

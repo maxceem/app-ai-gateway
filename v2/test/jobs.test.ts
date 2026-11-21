@@ -5,7 +5,7 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
@@ -14,12 +14,13 @@ import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { chargeFromRow, readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
+import { assertModesSelectable, ratesFromPricing } from "../src/admin/providers.ts";
 import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -84,9 +85,11 @@ function falAnswers(answers: {
   submit?: () => Response | Promise<Response>;
   status?: () => Response;
   result?: () => Response;
+  cancel?: () => Response;
 }): void {
   fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.endsWith("/cancel")) return (answers.cancel ?? (() => Response.json({ status: "CANCELLATION_REQUESTED" }, { status: 202 })))();
     if (url.endsWith("/status")) return (answers.status ?? (() => Response.json({ status: "COMPLETED" })))();
     if (url.includes("/requests/")) return (answers.result ?? (() => Response.json({ images: [{ url: "https://fal.media/a.png" }] })))();
     return (
@@ -196,8 +199,8 @@ describe("submitting a job", () => {
     expect(jobId.startsWith("j1.")).toBe(true);
     expect(json!.status_url).toBe(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`);
     expect(json!.response_url).toBe(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`);
-    // Cancels come in step 6b: no provider link is passed on.
-    expect(json).not.toHaveProperty("cancel_url");
+    // The cancel link is the gateway's own too.
+    expect(json!.cancel_url).toBe(`${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/cancel`);
     expect(JSON.stringify(json)).not.toContain("queue.fal.run");
     // Two images of one megapixel at $0.025, as an estimate.
     const [estimate] = await charges(appId);
@@ -486,7 +489,7 @@ describe("the sweep and the four failure cases", () => {
     const { appId } = await setup();
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
-    const facts = { status: 200, units: 3, outputs: 0 };
+    const facts = { status: 200, units: 3, outputs: { images: 0 } };
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("waiting");
     await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("settled");
@@ -498,7 +501,7 @@ describe("the sweep and the four failure cases", () => {
     const job = `job_${crypto.randomUUID()}`;
     await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
-    const facts = { status: 200, units: 4, outputs: 0 };
+    const facts = { status: 200, units: 4, outputs: { images: 0 } };
     expect(await Promise.all([settleFigure(env, ref, facts, 3_000), settleFigure(env, ref, facts, 3_001)])).toEqual(["settled", "settled"]);
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
@@ -667,7 +670,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     ["estimate", 50_000_000],
     ["correction", 50_000_000],
   ];
-  const FOUR = { status: 200, units: 4, outputs: 2 };
+  const FOUR = { status: 200, units: 4, outputs: { images: 2 } };
 
   async function fresh() {
     const { appId } = await setup();
@@ -708,7 +711,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
     expect(await openWork(appId)).toEqual([]);
     // A count the estimate's rate cannot use: the estimate stays, and the row is not kept.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_000)).toBe("estimate_kept");
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_000)).toBe("estimate_kept");
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
     expect(await openWork(appId)).toEqual([]);
@@ -717,10 +720,10 @@ describe("a figure is its own row, written once and never changed (review fixes,
   it("a later poll with no units header never replaces a saved figure, before or after the estimate lands", async () => {
     const { appId, job, ref } = await fresh();
     expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_100)).toBe("done");
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_100)).toBe("done");
     await writeToLedger(env.DB, [estimateOf(appId, job)]);
     // The rate bills units: this result cannot settle it, and leaves the saved 4 alone.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: 2 }, 3_200)).toBe("estimate_kept");
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_200)).toBe("estimate_kept");
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
     expect(await openWork(appId)).toEqual([]);
@@ -868,11 +871,11 @@ describe("a figure is its own row, written once and never changed (review fixes,
   });
 
   // Review fixes, round 7: the decision is made with the estimate's rate.
-  type Case = readonly [name: string, facts: { status: number; units: number | null; outputs: number | null; unread?: true }, outcome: string];
+  type Case = readonly [name: string, facts: { status: number; units: number | null; outputs: { images?: number } | null; unread?: true }, outcome: string];
   const PER_UNIT_CASES: readonly Case[] = [
-    ["200, header, whole body", { status: 200, units: 4, outputs: 2 }, "done"],
+    ["200, header, whole body", { status: 200, units: 4, outputs: { images: 2 } }, "done"],
     ["200, header, body unread", { status: 200, units: 4, outputs: null, unread: true }, "done"],
-    ["200, no header, whole body", { status: 200, units: null, outputs: 2 }, "estimate_kept"],
+    ["200, no header, whole body", { status: 200, units: null, outputs: { images: 2 } }, "estimate_kept"],
     ["200, no header, body unread", { status: 200, units: null, outputs: null, unread: true }, "estimate_kept"],
     ["200, no header, no outputs", { status: 200, units: null, outputs: null }, "estimate_kept"],
     ["422, header 0, body unread", { status: 422, units: 0, outputs: null, unread: true }, "done"],
@@ -880,9 +883,9 @@ describe("a figure is its own row, written once and never changed (review fixes,
     ["422, no header, whole body", { status: 422, units: null, outputs: null }, "estimate_kept"],
   ];
   const PER_IMAGE_CASES: readonly Case[] = [
-    ["200, header, whole body", { status: 200, units: 4, outputs: 2 }, "done"],
+    ["200, header, whole body", { status: 200, units: 4, outputs: { images: 2 } }, "done"],
     ["200, header, body unread", { status: 200, units: 4, outputs: null, unread: true }, "retry"],
-    ["200, no header, whole body", { status: 200, units: null, outputs: 3 }, "done"],
+    ["200, no header, whole body", { status: 200, units: null, outputs: { images: 3 } }, "done"],
     ["200, no header, body unread", { status: 200, units: null, outputs: null, unread: true }, "retry"],
     ["200, no header, no outputs", { status: 200, units: null, outputs: null }, "estimate_kept"],
     ["422, header 0, body unread", { status: 422, units: 0, outputs: null, unread: true }, "done"],
@@ -1029,13 +1032,13 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     await onlyThisApp(appId);
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId };
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const applying = applyFinalResult({ ...env, DB: slowD1(new Promise(() => undefined), true) } as Env, ref, { status: 200, units: 4, outputs: 2 }, 3_000);
+    const applying = applyFinalResult({ ...env, DB: slowD1(new Promise(() => undefined), true) } as Env, ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000);
     await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // the settlement read times out
     await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // then the D1 figure write
     expect(await applying).toBe("done");
     vi.useRealTimers();
     await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId));
-    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${ref.job}:200:4:2`]);
+    expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${ref.job}:200:4:2images`]);
   });
 
   it("does not bring back a settled job's check when the store retries its submit batch", async () => {
@@ -1070,7 +1073,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     await writeToLedger(env.DB, [entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);
-    expect(await settleFigure(env, ref, { status: 200, units: 4, outputs: 2 }, 3_000)).toBe("settled");
+    expect(await settleFigure(env, ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000)).toBe("settled");
     await runDurableObjectAlarm(store);
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
@@ -1316,9 +1319,11 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     expect(await rows()).toEqual([`job_figure:${ref.job}:200:4:-`]);
     // Nothing usable at all: nothing saved, still read again.
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
-    // A whole result with no count: no rate can ever settle it.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
-    expect(await rows()).toEqual([`job_figure:${ref.job}:200:4:-`]);
+    // A whole success with no other count is still one job, which a price per request settles: kept for the sweep.
+    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("done");
+    expect(await rows()).toEqual([`job_figure:${ref.job}:200:-:-`, `job_figure:${ref.job}:200:4:-`]);
+    // A whole failure with no count: no rate can ever settle it.
+    expect(await applyFinalResult(env, ref, { status: 422, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
   });
 
   it("reads a result again when its body is empty, while the rate needs the outputs (review fixes, round 7)", async () => {
@@ -1709,6 +1714,7 @@ describe("disconnects, stalled bodies and oversized status answers (review fixes
       request_id: jobId,
       status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
       response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+      cancel_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/cancel`,
     });
     expect(without.text).not.toContain("queue.fal.run");
   });
@@ -1785,6 +1791,7 @@ describe("disconnects, stalled retries and redirects (review fixes, Astra round 
       request_id: jobId,
       status_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/status`,
       response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}`,
+      cancel_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}/cancel`,
     });
     await waitOnExecutionContext(ctx);
   });
@@ -1914,5 +1921,376 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
     // 1 unit: the $0.05 estimate comes down to $0.025.
     expect(rows[1]).toMatchObject({ cost_nano: -25_000_000 });
     expect(await openWork(appId)).toEqual([]);
+  });
+});
+
+describe("cancels, unlisted and video models (step 6b)", () => {
+  // The job list is a management route: its code loads once, here, not inside a test's time.
+  beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+
+  /** Submits one job for `model` with `body`, and answers its gateway job id. */
+  async function submitModel(appId: string, slug: string, key: string, model: string, body: Record<string, unknown>) {
+    const { response, json } = await call("POST", `/v2/apps/${appId}/proxy/${slug}/queue/${model}`, key, { body: JSON.stringify(body) });
+    return { response, jobId: json === null ? null : String(json.request_id) };
+  }
+
+  const total = async (appId: string) => (await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano ?? 0), 0);
+
+  /** fal's answer for a job cancelled while queued (T15's `54_cq_result`). */
+  const cancelledResult = () =>
+    Response.json({ detail: "Request cancelled by the client." }, { status: 499, headers: { "x-fal-error-type": "client_cancelled" } });
+
+  it("cancels through the gateway, free, and settles a job cancelled while queued to zero", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    expect(await total(appId)).toBe(50_000_000);
+    fetchSpy.mockClear();
+    const { response, json } = await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
+    expect(response.status).toBe(202);
+    expect(json).toEqual({ status: "CANCELLATION_REQUESTED" });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    // The cancel is only forwarded: one call, and nothing written.
+    expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual(["https://queue.fal.run/fal-ai/flux/requests/req-1/cancel"]);
+    expect(fetchSpy.mock.calls[0]![1]?.method).toBe("PUT");
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect((await openWork(appId)).filter((row) => String(row.id).includes("cancel"))).toEqual([]);
+    // fal confirms it: status COMPLETED, then the result's 499 with client_cancelled.
+    falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
+    await onlyThisApp(appId);
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect(await total(appId)).toBe(0);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("settles a confirmed cancel from fal's units when fal reports them", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
+    // A 499 that still reports 3 billed units: the units win, at $0.025 each.
+    falAnswers({
+      result: () =>
+        Response.json({ detail: "cancelled" }, { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "3" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(75_000_000);
+  });
+
+  it("settles a job cancelled at fal directly to zero, read by the sweep alone", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    expect(await total(appId)).toBe(50_000_000);
+    // The gateway never saw the cancel: fal's 499 with client_cancelled and no units is its final word.
+    falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
+    await onlyThisApp(appId);
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect(await total(appId)).toBe(0);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("charges a running job that finishes despite its cancel in full, from fal's units (T15)", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key);
+    falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(100_000_000);
+  });
+
+  it("does not read a 499 without fal's client_cancelled header as a free cancel", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    falAnswers({ result: () => Response.json({ detail: "closed" }, { status: 499 }) });
+    await onlyThisApp(appId);
+    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await total(appId)).toBe(50_000_000);
+  });
+
+  it("answers another user's cancel as an unknown job, and asks fal nothing", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
+    fetchSpy.mockClear();
+    const { response } = await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key, { user: "user-2" });
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("the four failure cases on a cancel: a lost provider answer, a repeat, a restart before delivery, a duplicate completion", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    // A lost provider answer: a provider error, and no charge.
+    fetchSpy.mockRejectedValueOnce(new TypeError("network"));
+    expect((await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key)).response.status).toBe(502);
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    // Sent again while the job is still queued: fal takes it.
+    falAnswers({});
+    expect((await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key)).response.status).toBe(202);
+    // A repeat after the job finished: fal's own answer, passed on.
+    falAnswers({ cancel: () => Response.json({ detail: "ALREADY_COMPLETED" }, { status: 400 }) });
+    expect((await call("PUT", `/v2/apps/${appId}/jobs/${jobId}/cancel`, key)).response.status).toBe(400);
+    // A restart before delivery, then a duplicate completion: polls and the sweep settle the zero once.
+    falAnswers({ result: cancelledResult });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    await onlyThisApp(appId);
+    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(await total(appId)).toBe(0);
+  });
+
+  it("serves a model off the price list at the customer's flat price per job", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { response, jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    expect(response.status).toBe(200);
+    expect(await total(appId)).toBe(20_000_000);
+    // A success is one job: the estimate was right.
+    falAnswers({ result: () => Response.json({ images: [{}] }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(20_000_000);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("refunds a flat-priced job only when fal reports 0 billed units", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    falAnswers({ result: () => Response.json({ detail: "bad input" }, { status: 422, headers: { "x-fal-billable-units": "0" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(0);
+  });
+
+  it("serves a model off the price list at the customer's rate per reported unit", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_unit: 10_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    expect(await total(appId)).toBe(10_000_000);
+    falAnswers({ result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "3" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(30_000_000);
+  });
+
+  it("refuses to save a job model priced with two unit rates, and leaves a stored one alone", () => {
+    // Fable round 1: a job settles from the one rate its estimate stored, so per unit plus per job could settle on the wrong one.
+    const two = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01, per_request: 0.02 } } as Parameters<typeof ratesFromPricing>[0], "fal", fal.operations);
+    expect(() => assertModesSelectable(fal, null, two, null)).toThrow(/a job model takes one rate/);
+    expect(() => assertModesSelectable(fal, null, two, two)).not.toThrow();
+    const one = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01 } } as Parameters<typeof ratesFromPricing>[0], "fal", fal.operations);
+    expect(() => assertModesSelectable(fal, null, one, null)).not.toThrow();
+  });
+
+  it("refuses a model with no price at all, and asks fal nothing", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    fetchSpy.mockClear();
+    const { response } = await submitModel(appId, slug, key, "fal-ai/not-priced", { prompt: "x" });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await charges(appId)).toEqual([]);
+  });
+
+  it("estimates a video priced per second from its frames over its frame rate, and settles from fal's units", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    // T15: 65 frames at 24 fps is 2.708 s at $0.02.
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/ltxv-13b-098-distilled", { prompt: "x", num_frames: 65, frame_rate: 24 });
+    expect(await total(appId)).toBe(54_180_000);
+    falAnswers({ result: () => Response.json({ video: { url: "https://fal.media/v.mp4" } }, { headers: { "x-fal-billable-units": "2.7083333333333335" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(54_180_000);
+  });
+
+  it("keeps an image model's megapixel estimate when its request also names video fields", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    // fal-ai/flux/dev is $0.025 per megapixel: two 1440 × 1440 images are 2 × 2 units, so $0.10.
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", {
+      prompt: "x",
+      num_images: 2,
+      image_size: { width: 1440, height: 1440 },
+      num_frames: 1,
+      frame_rate: 24,
+    });
+    expect(await total(appId)).toBe(100_000_000);
+  });
+
+  it("estimates a video with no frame count as one unit, and corrects it from fal's units", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/ltxv-13b-098-distilled", { prompt: "x" });
+    expect(await total(appId)).toBe(20_000_000);
+    falAnswers({ result: () => Response.json({ video: {} }, { headers: { "x-fal-billable-units": "5.0416666666666667" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(100_840_000);
+  });
+
+  it("settles a video model with no units header by counting its video", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    // ltx-video: $0.02 per video, and fal sends no units header for it (T15).
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/ltx-video", { prompt: "x" });
+    expect(await total(appId)).toBe(20_000_000);
+    falAnswers({ result: () => Response.json({ video: { url: "https://fal.media/v.mp4" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(20_000_000);
+    expect(await openWork(appId)).toEqual([]);
+  });
+
+  it("counts a result's videos for a customer's price per video", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/many-videos": { per_video: 30_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/many-videos", { prompt: "x" });
+    expect(await total(appId)).toBe(30_000_000);
+    falAnswers({ result: () => Response.json({ videos: [{}, {}] }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(60_000_000);
+  });
+
+  it("keeps a figure's output unit when it is saved for the sweep", async () => {
+    const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId: "app_videos" };
+    const facts = { status: 200, units: null, outputs: { videos: 2 } };
+    expect(await applyFinalResult(env, ref, facts, 1_000)).toBe("done");
+    const row = await env.DB.prepare("SELECT id, detail_json FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ id: string; detail_json: string }>();
+    expect(row!.id).toBe(`job_figure:${ref.job}:200:-:2videos`);
+    expect(JSON.parse(row!.detail_json).result).toMatchObject({ outputs: { videos: 2 } });
+  });
+
+  it("lists an app's jobs with their estimate, correction, total and state, read-only", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const settled = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
+    falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "4" } }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${settled.jobId}`, key);
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a dog" });
+    const management = await seedManagementKey({ grant: "read" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/jobs`, { headers: { authorization: `Bearer ${management}` } }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { total: number; jobs: Record<string, unknown>[] };
+    expect(body.total).toBe(2);
+    const byState = Object.fromEntries(body.jobs.map((job) => [job.state, job]));
+    expect(byState.settled).toMatchObject({
+      provider_slug: slug,
+      operation: "fal.queue",
+      model: "fal-ai/flux/dev",
+      estimate_nano: 50_000_000,
+      correction_nano: 50_000_000,
+      total_nano: 100_000_000,
+    });
+    // Once settled, the label is the settlement row's, not the estimate's.
+    const settlement = await env.DB.prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${String(byState.settled!.id)}`).first<{ measured: string }>();
+    expect(settlement!.measured).not.toBe("estimated");
+    expect(byState.settled!.measured).toBe(settlement!.measured);
+    expect(byState.settled!.settled_at).not.toBeNull();
+    expect(byState.settled).not.toHaveProperty("next_check_at");
+    expect(byState.checking).toMatchObject({ estimate_nano: 25_000_000, correction_nano: null, total_nano: 25_000_000, settled_at: null, measured: "estimated" });
+    // A job still being checked says when its next check is due.
+    expect(Number.isFinite(Date.parse(String(byState.checking!.next_check_at)))).toBe(true);
+  });
+
+  it("lists only the caller's account's jobs when another account's deleted app left rows under the same app id", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
+    // Another account once owned this app id: its ledger rows stay after the app is deleted.
+    const own = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'").bind(appId).first<Record<string, unknown>>();
+    const copy: Record<string, unknown> = { ...own!, id: `other:${String(own!.id)}`, account_id: "acc_other_account", owner_id: "other-job", end_user_id: "someone-else" };
+    const columns = Object.keys(copy);
+    await env.DB.prepare(`INSERT INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+      .bind(...columns.map((column) => copy[column] ?? null))
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, created_at)
+       VALUES ('other:work', 'job_check', 'acc_other_account', ?, 'job', 'other-job', 0, 0)`,
+    ).bind(appId).run();
+    const management = await seedManagementKey({ grant: "read" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/jobs`, { headers: { authorization: `Bearer ${management}` } }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await response.json()) as { total: number; jobs: Record<string, unknown>[] };
+    expect(body.total).toBe(1);
+    expect(body.jobs.map((job) => job.end_user_id)).not.toContain("someone-else");
+    expect(body.jobs.map((job) => job.id)).not.toContain("other-job");
+    await env.DB.prepare("DELETE FROM open_work WHERE id = 'other:work'").run();
+  });
+
+  it("reads fal's confirmed cancel as final, with its units when fal reports them, and nothing else", () => {
+    const headers = new Headers({ "x-fal-error-type": "client_cancelled" });
+    expect(readResultFacts(SPEC, { status: 499, headers }, null)).toEqual({ status: 499, units: null, outputs: null, cancelled: true });
+    const billed = new Headers({ "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "3" });
+    expect(readResultFacts(SPEC, { status: 499, headers: billed }, null)).toEqual({ status: 499, units: 3, outputs: null, cancelled: true });
+    // A units header that is there but cannot be read is not a free cancel: the estimate stays.
+    const garbled = new Headers({ "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" });
+    expect(readResultFacts(SPEC, { status: 499, headers: garbled }, null)).toEqual({ status: 499, units: null, outputs: null });
+    expect(readResultFacts(SPEC, { status: 499, headers: new Headers() }, null)).toBeNull();
+  });
+
+  it("keeps the estimate when a confirmed cancel's units header cannot be read, and logs the raw value", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
+    const before = await total(appId);
+    const warn = vi.spyOn(console, "warn");
+    falAnswers({
+      status: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" } }),
+      result: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4, 4" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(before);
+    expect(warn.mock.calls.some((args) => String(args[0]).includes("job_units_unreadable") && String(args[0]).includes("4, 4"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("settles a cancel fal billed at a flat price per job as one job", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    falAnswers({
+      result: () => new Response(JSON.stringify({ detail: "cancelled" }), { status: 499, headers: { "x-fal-error-type": "client_cancelled", "x-fal-billable-units": "4" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(await total(appId)).toBe(20_000_000);
+  });
+
+  it("settles a failure fal billed at a flat price per job as one job", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_request: 20_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    falAnswers({
+      result: () => new Response(JSON.stringify({ detail: "bad input" }), { status: 422, headers: { "x-fal-billable-units": "3" } }),
+    });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    const rows = await charges(appId);
+    expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
+    expect(await total(appId)).toBe(20_000_000);
+  });
+
+  it("counts a result's outputs by unit, so a price per video bills its videos beside an empty image list", async () => {
+    const { appId, slug, key } = await setup({ "fal-ai/some-model": { per_video: 30_000_000 } });
+    falAnswers({});
+    const { jobId } = await submitModel(appId, slug, key, "fal-ai/some-model", { prompt: "x" });
+    expect(await total(appId)).toBe(30_000_000);
+    falAnswers({ result: () => Response.json({ images: [], videos: [{}, {}] }) });
+    await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(await total(appId)).toBe(60_000_000);
   });
 });

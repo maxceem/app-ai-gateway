@@ -51,6 +51,7 @@ import {
 import { listModelPrices } from "../admin/prices.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
+import { listAppJobs } from "../admin/jobs.ts";
 import { CATALOG, type OperationName } from "../contracts/catalog.ts";
 import { honoPath } from "../contracts/client-catalog.ts";
 import { consoleRoutes } from "./console-routes.ts";
@@ -84,6 +85,7 @@ admin.get(path("listAppKeys"), listAppKeys);
 admin.post(path("createAppKey"), createAppKey);
 admin.post(path("revokeAppKey"), revokeAppKey);
 admin.get(path("listAppUsers"), listAppUsers);
+admin.get(path("listAppJobs"), listAppJobs);
 admin.get(path("getAppUser"), getAppUser);
 admin.post(path("blockAppUser"), blockAppUser);
 admin.post(path("unblockAppUser"), unblockAppUser);

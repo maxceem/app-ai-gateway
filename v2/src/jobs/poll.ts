@@ -1,6 +1,7 @@
 /**
  * Polling a job through the gateway (plan D9): `GET /v2/apps/{app}/jobs/{job}/status`
- * and `GET /v2/apps/{app}/jobs/{job}` for its result.
+ * and `GET /v2/apps/{app}/jobs/{job}` for its result, and cancelling it with
+ * `PUT /v2/apps/{app}/jobs/{job}/cancel`.
  *
  * - The caller is checked as for any request, but a poll is free: it is not
  *   admitted, so it uses no request limit and no plan allowance, and writes
@@ -10,6 +11,12 @@
  *   unknown, so it says nothing about other apps' jobs.
  * - The upstream URL is built from the signed id, never from the path.
  * - A result call that is final settles the job, after the answer is sent.
+ * - A cancel is free too: it is only forwarded, writes nothing and settles
+ *   nothing itself. The job settles on its status or result as any other. A
+ *   result that confirms the cancel (`JobSpec.cancelled`) is final: billed
+ *   units, when reported, settle it at the saved rate, and none means it cost
+ *   nothing. A job cancelled while running usually finishes and is charged in
+ *   full (T15).
  * - The provider's answer goes back as it came: binary bodies and bodiless
  *   answers too. Only a status answer's links are rewritten, and no cache may
  *   keep either answer (`Cache-Control: no-store`).
@@ -31,14 +38,17 @@ import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
 import {
   applyFinalResult,
   boundedJson,
+  countsOutputs,
   fetchJob,
   gatewayLinks,
   gatewayRedirect,
+  isFinalResult,
   JOB_BODY_READ_DEADLINE_MS,
   JOB_POLL_TIMEOUT_MS,
   jobContext,
   jobLocation,
   jobRedirectTargets,
+  jobRequestFor,
   jobStatusQuery,
   readResultFacts,
   withGatewayLinks,
@@ -56,8 +66,8 @@ async function ownedBy(claims: JobClaims, app: { readonly id: string; readonly a
   return claims.appId === app.id && claims.accountId === app.accountId && claims.userDigest === (await userDigest(userId));
 }
 
-/** The handler for one kind of poll. */
-export function jobPollHandler(which: "status" | "result") {
+/** The handler for one kind of poll, or a cancel. */
+export function jobPollHandler(which: "status" | "result" | "cancel") {
   return async (c: ProxyContext): Promise<Response> => {
     const startedAt = Date.now();
     const appId = c.req.param("app");
@@ -88,9 +98,11 @@ export function jobPollHandler(which: "status" | "result") {
         if (context.connection.status === "disabled") {
           throw new GatewayError(502, "provider_disabled", `Provider connection ${claims.slug} is disabled`);
         }
+        jobRequestFor(context.spec, which);
         // Only the query fields the operation lists go upstream, and only on a status poll.
         const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
         const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
+        // A cancel is only forwarded: the job settles on its status or result as any other.
         const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
@@ -102,11 +114,11 @@ export function jobPollHandler(which: "status" | "result") {
         if (redirect !== null) return redirect;
         const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
-          if (context.spec.finalStatuses.includes(response.status)) {
+          if (isFinalResult(context.spec, response)) {
             // When the operation counts outputs, a copy of the body is read to count
             // them, at most BODY_READ_LIMIT bytes, in the background: the app gets
             // the body itself, untouched, and never waits on the count.
-            const copy = !bodiless && context.spec.outputsField !== undefined ? response.clone() : null;
+            const copy = !bodiless && countsOutputs(context.spec) ? response.clone() : null;
             const ref = { job: claims.job, accountId: claims.accountId, appId: claims.appId };
             const now = Date.now();
             c.executionCtx.waitUntil(
@@ -156,6 +168,7 @@ export function jobPollHandler(which: "status" | "result") {
           const minimal: Record<string, unknown> = { [context.spec.requestIdField]: jobId };
           if (named.status !== undefined) minimal[named.status] = links.status;
           if (named.result !== undefined) minimal[named.result] = links.result;
+          if (named.cancel !== undefined && context.spec.cancel !== undefined) minimal[named.cancel] = links.cancel;
           return new Response(JSON.stringify(minimal), { status: answer.status, headers: answerHeaders });
         }
         if (read !== null && read.kind === "read_error") throw read.error;
@@ -208,4 +221,5 @@ export const pollNoStore = async (c: { res: Response }, next: () => Promise<void
 };
 
 export const jobStatusHandler = jobPollHandler("status");
+export const jobCancelHandler = jobPollHandler("cancel");
 export const jobResultHandler = jobPollHandler("result");

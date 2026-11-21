@@ -365,6 +365,11 @@ export const charge = sqliteTable(
     index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),
     index("charge_owner").on(table.ownerType, table.ownerId),
     index("charge_corrects").on(table.correctsChargeId),
+    // An app's jobs, newest first (the management API's job list), without
+    // scanning the app's call charges.
+    index("charge_job_estimates")
+      .on(table.accountId, table.appId, sql`${table.usedAt} DESC`, table.ownerId)
+      .where(sql`owner_type = 'job' AND kind = 'estimate'`),
     check("charge_kind", oneOf(table.kind, CHARGE_KINDS)),
     check("charge_owner_type", oneOf(table.ownerType, OWNER_TYPES)),
     check("charge_measured", oneOf(table.measured, MEASURED)),

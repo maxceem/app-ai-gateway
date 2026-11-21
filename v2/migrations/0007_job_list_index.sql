@@ -1,0 +1,1 @@
+CREATE INDEX `charge_job_estimates` ON `charge` (`account_id`,`app_id`,"used_at" DESC,`owner_id`) WHERE owner_type = 'job' AND kind = 'estimate';

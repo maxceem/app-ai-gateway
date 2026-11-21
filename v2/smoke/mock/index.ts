@@ -27,9 +27,12 @@
  *   query names, and in French with `detect_language=true`.
  * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
  *   `x-fal-billable-units`, or none with `mock_no_units: true`.
- * - `POST /queue/fal-ai/...`, then `GET .../requests/<id>/status` and
- *   `GET .../requests/<id>`: fal's queue, stateless; `mock_fail: true` makes
- *   the job fail with 422 and `0` units.
+ * - `POST /queue/fal-ai/...`, then `GET .../requests/<id>/status`,
+ *   `GET .../requests/<id>` and `PUT .../requests/<id>/cancel`: fal's queue,
+ *   stateless; `mock_fail: true` makes the job fail with 422 and `0` units,
+ *   `mock_cancelled: true` answers its result as a job cancelled while
+ *   queued (499, `client_cancelled`), and `mock_video: true` answers one
+ *   `video` with no units header, as `ltx-video` does.
  *
  * Each reads the whole body, counting its bytes, and answers JSON, or a
  * stream when the body has `"stream": true` (Gemini: the streaming path). A
@@ -296,14 +299,16 @@ const falRun: Answer = ({ body }) => {
 };
 
 /**
- * fal's queue (step 6a), stateless: what the job will answer is written into
- * its request id, `mock-<images>-<s|f|n>-<random>` (succeed, fail with 422 and
- * `0` units, succeed with no units header). Reached under the connection's
+ * fal's queue (steps 6a and 6b), stateless: what the job will answer is
+ * written into its request id, `mock-<images>-<s|f|n|c|v>-<random>` (succeed,
+ * fail with 422 and `0` units, succeed with no units header, cancelled while
+ * queued, one video with no units header). Reached under the connection's
  * base URL at `queue/`, as the gateway sends a non-main host there.
  */
 const falQueueSubmit: Answer = ({ body, path }) => {
   const count = typeof body.num_images === "number" && Number.isSafeInteger(body.num_images) && body.num_images > 0 ? body.num_images : 1;
-  const outcome = body.mock_fail === true ? "f" : body.mock_no_units === true ? "n" : "s";
+  const outcome =
+    body.mock_fail === true ? "f" : body.mock_cancelled === true ? "c" : body.mock_video === true ? "v" : body.mock_no_units === true ? "n" : "s";
   const requestId = `mock-${count}-${outcome}-${crypto.randomUUID().slice(0, 8)}`;
   const model = path.replace(/^\/queue\//u, "").split("/").slice(0, 2).join("/");
   // fal's own links, as fal sends them: the gateway replaces them with its own.
@@ -311,11 +316,14 @@ const falQueueSubmit: Answer = ({ body, path }) => {
   return Response.json({ request_id: requestId, status: "IN_QUEUE", status_url: `${base}/status`, response_url: base, cancel_url: `${base}/cancel` });
 };
 
-const FAL_QUEUE_STATUS = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-[0-9]+-[sfn]-[0-9a-f]+)\/status$/u;
-const FAL_QUEUE_RESULT = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-([0-9]+)-([sfn])-[0-9a-f]+)$/u;
+const FAL_QUEUE_STATUS = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-[0-9]+-[sfncv]-[0-9a-f]+)\/status$/u;
+const FAL_QUEUE_RESULT = /^\/queue\/[^/]+\/[^/]+\/requests\/(mock-([0-9]+)-([sfncv])-[0-9a-f]+)$/u;
+const FAL_QUEUE_CANCEL = /^\/queue\/[^/]+\/[^/]+\/requests\/mock-[0-9]+-[sfncv]-[0-9a-f]+\/cancel$/u;
 
 /** A queue job's status or result, from what its request id says. Null for another path. */
 function falQueueFollowUp(request: Request, url: URL): Response | null {
+  // fal answers a cancel 202, whatever the job then does (T15).
+  if (request.method === "PUT" && FAL_QUEUE_CANCEL.test(url.pathname)) return Response.json({ status: "CANCELLATION_REQUESTED" }, { status: 202 });
   if (request.method !== "GET") return null;
   const status = FAL_QUEUE_STATUS.exec(url.pathname);
   if (status !== null) return Response.json({ status: "COMPLETED", request_id: status[1], response_url: `https://queue.fal.run${url.pathname.replace(/^\/queue/u, "").replace(/\/status$/u, "")}` });
@@ -323,6 +331,8 @@ function falQueueFollowUp(request: Request, url: URL): Response | null {
   if (result === null) return null;
   const count = Number(result[2]);
   if (result[3] === "f") return Response.json({ detail: [{ msg: "mock failure" }] }, { status: 422, headers: { "x-fal-billable-units": "0" } });
+  if (result[3] === "c") return Response.json({ detail: "Request cancelled by the client." }, { status: 499, headers: { "x-fal-error-type": "client_cancelled" } });
+  if (result[3] === "v") return Response.json({ video: { url: "https://fal.media/mock.mp4" } });
   const headers: Record<string, string> = {};
   if (result[3] === "s") headers["x-fal-billable-units"] = String(count);
   return Response.json({ images: Array.from({ length: count }, (_, index) => ({ url: `https://fal.media/mock-${index}.png` })) }, { headers });

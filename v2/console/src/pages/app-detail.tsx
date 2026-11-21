@@ -27,6 +27,8 @@ import { operationsOf, providerLabel } from "@/lib/providers";
 import {
   useApp,
   useAppCheck,
+  useAppJobs,
+  JOBS_REFRESH_MS,
   useAppKeys,
   useAppUsers,
   useCreateAppKey,
@@ -37,7 +39,7 @@ import {
   useUserAction,
   useValidateApp,
 } from "@/lib/queries";
-import type { App, AppConfig, CreatedAppKey } from "@/lib/types";
+import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 
@@ -53,6 +55,7 @@ const TABS: Tab[] = [
   { slug: "providers", label: "Providers" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
+  { slug: "jobs", label: "Jobs" },
   { slug: "keys", label: "Keys", shown: (app) => app.config.authentication.type === "api_key" },
   { slug: "settings", label: "Settings" },
 ];
@@ -153,6 +156,7 @@ export function AppDetailPage() {
       {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
       {active.slug === "limits" ? <LimitsTab app={data} /> : null}
       {active.slug === "users" ? <UsersTab app={data} /> : null}
+      {active.slug === "jobs" ? <JobsTab app={data} /> : null}
       {active.slug === "keys" ? <KeysTab app={data} /> : null}
       {active.slug === "settings" ? <SettingsTab app={data} /> : null}
     </div>
@@ -658,6 +662,150 @@ function UsersTab({ app }: { app: App }) {
             Previous
           </Button>
           <Button size="sm" variant="outline" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>
+            Next
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Jobs
+
+/** A job's state, in words. */
+const JOB_STATE_TEXT: Record<JobSummary["state"], string> = {
+  settled: "Settled",
+  checking: "Checking",
+  estimate_kept: "Estimate kept",
+  gave_up: "Gave up",
+};
+
+/** How late a check may run before the Jobs tab calls it overdue (plan section 4.2). */
+export const JOB_CHECK_OVERDUE_MS = 5 * 60_000;
+
+/** Whether a job's next check is well past its due time. */
+export function jobCheckOverdue(job: Pick<JobSummary, "state" | "next_check_at">, now: number): boolean {
+  if (job.state !== "checking" || job.next_check_at === undefined || job.next_check_at === null) return false;
+  const due = Date.parse(job.next_check_at);
+  return Number.isFinite(due) && now - due > JOB_CHECK_OVERDUE_MS;
+}
+
+/** A cost in nano-dollars, or a dash when there is none. */
+function jobCost(nano: number | null): string {
+  return nano === null ? "—" : formatCost(nanoToDollars(nano));
+}
+
+/** The current time, moved on every `everyMs`, so a check that becomes late shows "Overdue" on its own. */
+function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), everyMs);
+    return () => clearInterval(timer);
+  }, [everyMs]);
+  return now;
+}
+
+function JobsTab({ app }: { app: App }) {
+  const [offset, setOffset] = useState(0);
+  const jobs = useAppJobs(app.id, { limit: PAGE, offset });
+  const now = useNow(JOBS_REFRESH_MS);
+  const list = jobs.data?.jobs ?? [];
+  // The last total seen stays while another page loads or fails, so the pager, and with it the
+  // way back to a page already seen, never disappears.
+  const [lastTotal, setLastTotal] = useState(0);
+  const loadedTotal = jobs.data?.total;
+  useEffect(() => {
+    if (loadedTotal !== undefined) setLastTotal(loadedTotal);
+  }, [loadedTotal]);
+  const total = loadedTotal ?? lastTotal;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Jobs the app submitted, such as image and video jobs, newest first. Each is charged an estimate when it is submitted, and corrected to what
+        the provider billed once its result is read. A cancelled job ends in one of three ways, whether it was cancelled here or at the provider: a
+        queued job the provider confirms with no billed units is free; a cancel or failure the provider bills is charged at the job's saved rate
+        (by the reported units, or one job for a flat price per job); and if the provider's billed units cannot be read, the estimate stays.
+      </p>
+      {jobs.isError && jobs.data !== undefined ? (
+        // A failed background refresh keeps the last rows and their warnings.
+        <p role="status" className="text-sm text-destructive">
+          Could not refresh the jobs; showing the last list. {jobs.error instanceof Error ? jobs.error.message : ""}
+        </p>
+      ) : null}
+      <Card className="overflow-hidden py-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Model</TableHead>
+              <TableHead>State</TableHead>
+              <TableHead className="text-right">Estimate</TableHead>
+              <TableHead className="text-right">Correction</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead>Submitted</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {jobs.isPending ? (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <Skeleton className="h-5 w-full" />
+                </TableCell>
+              </TableRow>
+            ) : jobs.isError && jobs.data === undefined ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-destructive">
+                  Could not load the jobs. {jobs.error instanceof Error ? jobs.error.message : ""}
+                </TableCell>
+              </TableRow>
+            ) : list.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                  No jobs yet.
+                </TableCell>
+              </TableRow>
+            ) : (
+              list.map((job) => (
+                <TableRow key={job.id}>
+                  <TableCell className="max-w-72 text-xs break-all">
+                    <span className="font-mono">{job.model ?? "—"}</span>
+                    {job.provider_slug ? <span className="block text-muted-foreground">{job.provider_slug}</span> : null}
+                  </TableCell>
+                  <TableCell>
+                    {JOB_STATE_TEXT[job.state]}
+                    {jobCheckOverdue(job, now) ? (
+                      <span className="block text-xs text-destructive">Overdue: the check is late</span>
+                    ) : job.state === "settled" ? null : (
+                      <span className="block text-xs text-muted-foreground">Estimate</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.estimate_nano)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.correction_nano)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{jobCost(job.total_nano)}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime value={job.submitted_at} />
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+      {total > PAGE || offset > 0 ? (
+        <div className="flex items-center justify-end gap-2 text-sm">
+          <span className="text-muted-foreground">
+            {offset + 1}–{Math.min(offset + PAGE, Math.max(total, offset + 1))} of {total}
+          </span>
+          <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+            Previous
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={jobs.data === undefined || offset + PAGE >= total}
+            onClick={() => setOffset(offset + PAGE)}
+          >
             Next
           </Button>
         </div>

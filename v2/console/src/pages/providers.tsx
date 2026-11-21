@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, Cloud, KeyRound, ListTree, Plus, Power, Trash2 } from "lucide-react";
+import { AlertCircle, Ban, CheckCircle2, Cloud, DollarSign, KeyRound, ListTree, Plus, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
-import { useCreateProvider, useDeleteProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
+import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -49,6 +49,8 @@ export function ProvidersPage() {
   // By id too, for the same reason.
   const [pathsId, setPathsId] = useState<string | null>(null);
   const listing = list.data?.providers.find((provider) => provider.id === pathsId) ?? null;
+  const [pricesId, setPricesId] = useState<string | null>(null);
+  const pricing = list.data?.providers.find((provider) => provider.id === pricesId) ?? null;
   useEffect(() => {
     if (pathsId !== null && list.data && listing === null) setPathsId(null);
   }, [pathsId, list.data, listing]);
@@ -149,6 +151,10 @@ export function ProvidersPage() {
                         <ListTree />
                         {provider.type === "custom" ? "Paths" : "Passthrough paths"}
                       </RowAction>
+                      <RowAction onSelect={() => setPricesId(provider.id)}>
+                        <DollarSign />
+                        Your prices
+                      </RowAction>
                       {cloudflareCapable(provider.type) ? (
                         <RowAction onSelect={() => setCloudflareId(provider.id)}>
                           <Cloud />
@@ -177,6 +183,7 @@ export function ProvidersPage() {
       <ReplaceKeyDialog key={rotatingId ?? "none"} provider={rotating} onClose={() => setRotatingId(null)} />
       <CloudflareDialog key={`cf-${cloudflareId ?? "none"}`} provider={routing} onClose={() => setCloudflareId(null)} />
       <PathsDialog key={`paths-${pathsId ?? "none"}`} provider={listing} onClose={() => setPathsId(null)} />
+      <PricesDialog key={`prices-${pricesId ?? "none"}`} provider={pricing} onClose={() => setPricesId(null)} />
 
       <ConfirmDialog
         open={removing !== null}
@@ -1077,6 +1084,143 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
           Stop using Cloudflare AI Gateway
         </Button>
       ) : null}
+    </FormDialog>
+  );
+}
+
+/**
+ * The prices text a person edits: the connection's own prices as JSON, or
+ * empty when it has none.
+ */
+export function pricesText(pricing: ProviderConnection["pricing"]): string {
+  return pricing === null || Object.keys(pricing).length === 0 ? "" : JSON.stringify(pricing, null, 2);
+}
+
+/** What the prices text saves: null for none, the prices, or a problem to show. */
+export function parsePricesText(text: string): { pricing: NonNullable<ProviderConnection["pricing"]> | null } | { problem: string } {
+  if (text.trim() === "") return { pricing: null };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { problem: "Write the prices as JSON: an object with one entry per model." };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { problem: "Write the prices as an object with one entry per model." };
+  // The server checks every price; the console only checks the shape.
+  return { pricing: Object.keys(value).length === 0 ? null : (value as NonNullable<ProviderConnection["pricing"]>) };
+}
+
+/**
+ * A connection's own prices, in dollars: for a model our price list does not
+ * have, such as a fal model priced per job, or to replace a listed price. The
+ * server checks every price when it is saved.
+ */
+function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const fresh = useFreshProvider();
+  // The version the draft was made from: it is saved at that revision, never at a newer one the list
+  // loaded since, so another admin's change is never quietly overwritten.
+  const [revision, setRevision] = useState(provider?.revision ?? 0);
+  const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const parsed = parsePricesText(text);
+  // A save or reload that ends after this dialog closed must not touch the page: closing it
+  // remounts the dialog, so a late answer would otherwise close the next provider's dialog
+  // and throw away its draft.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  /**
+   * Starts again from the provider as the server has it now, read fresh, not
+   * from a list that may still be the old one. The draft is dropped only once
+   * that read succeeds; if it fails, the draft and the conflict notice stay.
+   */
+  const reload = async () => {
+    if (!provider) return;
+    setReloading(true);
+    try {
+      const latest = await fresh(provider.id);
+      if (!mounted.current) return;
+      if (latest === null) {
+        toast.error("This provider was deleted");
+        onClose();
+        return;
+      }
+      setRevision(latest.revision);
+      setText(pricesText(latest.pricing));
+      setConflict(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reload the prices");
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  const submit = async () => {
+    if (!provider || "problem" in parsed) return;
+    try {
+      await update.mutateAsync({ id: provider.id, body: { revision, pricing: parsed.pricing } });
+      toast.success(parsed.pricing === null ? "Your prices removed" : "Your prices saved");
+      if (mounted.current) onClose();
+    } catch (error) {
+      if (!mounted.current) return;
+      if (error instanceof ApiError && error.status === 409) setConflict(true);
+      else toast.error(error instanceof Error ? error.message : "Could not save the prices");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Your prices"
+      description="Your own prices for this connection's models, in dollars. Use them for a model our price list does not have, or to replace a listed price."
+      submitLabel="Save prices"
+      pending={update.isPending}
+      disabled={conflict || "problem" in parsed}
+      onSubmit={() => void submit()}
+    >
+      {conflict ? (
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>These prices changed since you opened them</AlertTitle>
+          <AlertDescription>
+            <p>Someone else saved this provider. Reload to see their prices, then make your change again.</p>
+            <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={() => void reload()}>
+              Reload prices
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <Field
+        label="Prices by model"
+        htmlFor="provider-prices"
+        hint={
+          'One entry per model. Tokens are per million; other rates are per their unit: per_request (a job or call), per_image, per_video, per_unit (the provider\'s own billed unit), per_second, per_minute. For example: {"fal-ai/some-model": {"per_request": 0.02}}. Leave it empty to use only our price list.'
+        }
+      >
+        <Textarea
+          id="provider-prices"
+          className="min-h-40 font-mono text-xs"
+          value={text}
+          spellCheck={false}
+          // While a reload is reading the server's prices, nothing typed can be lost to its answer.
+          readOnly={reloading}
+          aria-busy={reloading}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </Field>
+      {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
     </FormDialog>
   );
 }

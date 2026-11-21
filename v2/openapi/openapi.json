@@ -1703,6 +1703,137 @@
           "blocked"
         ]
       },
+      "JobListResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobSummary"
+            }
+          }
+        },
+        "required": [
+          "app_id",
+          "total",
+          "limit",
+          "offset",
+          "jobs"
+        ]
+      },
+      "JobSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The job's id in the ledger."
+          },
+          "provider_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": "string",
+            "description": "When the job was submitted, ISO 8601."
+          },
+          "estimate_nano": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The estimate charged at submit, in nano-dollars; null when it has no price yet."
+          },
+          "correction_nano": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "What the job's corrections added or removed, in nano-dollars; null when it has none."
+          },
+          "total_nano": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The estimate and its corrections together, in nano-dollars."
+          },
+          "measured": {
+            "type": "string",
+            "description": "How complete the usage is: the estimate's label until the job settles, then the settlement's."
+          },
+          "price_source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "settled",
+              "checking",
+              "estimate_kept",
+              "gave_up"
+            ],
+            "description": "`settled`: corrected to the provider's final figure. `checking`: the gateway still checks the job. `estimate_kept`: the provider gave no figure the price can use, so the estimate stays. `gave_up`: the job's result could not be read in time; the estimate stays."
+          },
+          "settled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the job was settled, ISO 8601."
+          },
+          "next_check_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "While `checking`: when the gateway next checks the job, ISO 8601. A time well in the past means the check is overdue."
+          }
+        },
+        "required": [
+          "id",
+          "provider_slug",
+          "operation",
+          "model",
+          "end_user_id",
+          "submitted_at",
+          "estimate_nano",
+          "correction_nano",
+          "total_nano",
+          "measured",
+          "price_source",
+          "state",
+          "settled_at"
+        ]
+      },
       "PriceListResponse": {
         "type": "object",
         "properties": {
@@ -1924,6 +2055,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -2065,6 +2200,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -2201,6 +2340,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -2566,6 +2709,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -2707,6 +2854,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -2843,6 +2994,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -3152,6 +3307,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -3293,6 +3452,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -3429,6 +3592,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -3657,6 +3824,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "per_video": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "per_megapixel": {
                   "type": "number",
                   "minimum": 0
@@ -3798,6 +3969,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "per_video": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "per_megapixel": {
                         "type": "number",
                         "minimum": 0
@@ -3934,6 +4109,10 @@
                           "minimum": 0
                         },
                         "per_image": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "per_video": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -5879,6 +6058,105 @@
         }
       }
     },
+    "/v2/apps/{app}/jobs/{job}/cancel": {
+      "put": {
+        "tags": [
+          "Jobs"
+        ],
+        "operationId": "cancelJob",
+        "summary": "Cancel a job",
+        "description": "Asks the provider to cancel a job submitted through the gateway, and passes its answer on. A cancelled job ends in one of three ways, whether it is cancelled here or at the provider directly: a queued job the provider confirms with no billed units costs nothing; a cancel or failure the provider bills is charged at the job's saved rate, by the reported units or as one job for a flat price per job; and if the provider's billed units cannot be read, the estimate stays. Free: it uses no request limit and no plan allowance.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The job id the gateway returned when the job was submitted."
+            },
+            "required": true,
+            "description": "The job id the gateway returned when the job was submitted.",
+            "name": "job",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider's answer to the cancel, passed on with its status code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, the user is blocked, or the app is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist, no job with this id belongs to this app and user, or its provider cannot cancel jobs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not be reached, or its connection is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/admin/apps": {
       "get": {
         "tags": [
@@ -7359,6 +7637,112 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndUserBlockResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/jobs": {
+      "get": {
+        "tags": [
+          "Admin jobs"
+        ],
+        "operationId": "listAppJobs",
+        "summary": "List an app's jobs",
+        "description": "Jobs the app submitted through the gateway, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of jobs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobListResponse"
                 }
               }
             }

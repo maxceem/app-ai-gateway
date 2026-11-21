@@ -23,6 +23,7 @@ export const keys = {
   /** Every page of one app's users, for an invalidation that is about all of them. */
   usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
+  jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
 };
@@ -236,6 +237,19 @@ export function useAppUsers(appId: string, query: UserQuery) {
   });
 }
 
+export type JobQuery = OperationQuery<"listAppJobs">;
+
+/** How often an open Jobs tab asks again, so a settled or late check shows without a reload. */
+export const JOBS_REFRESH_MS = 30_000;
+
+export function useAppJobs(appId: string, query: JobQuery) {
+  return useQuery({
+    queryKey: keys.jobs(appId, query),
+    queryFn: () => call("listAppJobs", { params: { app: appId }, query }),
+    refetchInterval: JOBS_REFRESH_MS,
+  });
+}
+
 export function useUserAction(appId: string) {
   const client = useQueryClient();
   return useMutation({
@@ -250,6 +264,19 @@ export function useUserAction(appId: string) {
 
 export function useProviders() {
   return useQuery({ queryKey: keys.providers, queryFn: () => call("listProviders") });
+}
+
+/**
+ * Reads one connection fresh from the server, not from the cached list, and
+ * stores the new list. For a dialog that must restart from the server's own
+ * latest version, such as after a conflict. Throws when the read fails.
+ */
+export function useFreshProvider() {
+  const client = useQueryClient();
+  return async (id: string) => {
+    const list = await client.fetchQuery({ queryKey: keys.providers, queryFn: () => call("listProviders"), staleTime: 0 });
+    return list.providers.find((provider) => provider.id === id) ?? null;
+  };
 }
 
 /**

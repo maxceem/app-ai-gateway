@@ -32,9 +32,13 @@ const textOrNull = (value: unknown): string | null => (typeof value === "string"
 
 /** Prices that are not per million units, with the unit each is in. */
 const OTHER_RATES = [
+  ["per_second", "second"],
   ["per_minute", "minute"],
   ["per_hour", "hour"],
   ["per_image", "image"],
+  ["per_video", "video"],
+  ["per_request", "request"],
+  ["per_unit", "billed unit"],
 ] as const;
 
 function otherRates(entry: Record<string, unknown>): string[] {
@@ -106,7 +110,7 @@ export function PricesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Prices"
-        description="What each model costs. Input and output are in dollars per million units: tokens for text models, and the model's own unit for the rest. Some models charge a higher rate once a request's input passes a number of tokens; those show both. Other rates are per minute, hour or image."
+        description="What each model costs. Input and output are in dollars per million units: tokens for text models, and the model's own unit for the rest. Some models charge a higher rate once a request's input passes a number of tokens; those show both. Other rates are per second, minute, hour, image, video, request, or the provider's own billed unit."
         action={
           <Input
             aria-label="Filter models"
