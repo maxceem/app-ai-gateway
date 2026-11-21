@@ -621,9 +621,11 @@ export interface ProviderDescription {
   readonly otherHosts?: readonly string[];
   /**
    * The provider's API prefixes beyond the common ones (`COMMON_API_PREFIXES`
-   * in `./matcher.ts`): the leading segments its paths start with before an
-   * endpoint's name, such as Gemini's `v1beta`. The named-part rule counts
-   * fixed segments after the longest prefix a listing starts with, so a
+   * in `./matcher.ts`) that are more than version segments: the leading
+   * segments its paths start with before an endpoint's name, such as
+   * Perplexity's `router/v1` or DeepSeek's `beta`. Version segments (`v1`,
+   * `v2`, `v1beta`) always count, so they are not declared. The named-part
+   * rule counts fixed segments after the prefix a listing starts with, so a
    * `{name}` part never stands where an endpoint's name is (plan 4.5).
    */
   readonly apiPrefixes?: readonly string[];

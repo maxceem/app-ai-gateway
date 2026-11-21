@@ -80,6 +80,7 @@ describe("the named-part rule", () => {
     ["bytedance", "files/{id}"],
     ["bytedance", "responses/{response_id}"],
     ["groq", "openai/v1/files/{file_id}"],
+    ["elevenlabs", "v2/voices/{voice_id}"],
   ])("allows %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).toBeNull());
 
   it.each([
@@ -92,11 +93,23 @@ describe("the named-part rule", () => {
     ["gemini", "v1beta/openai/{endpoint}"],
     ["gemini", "v1alpha/{endpoint}"],
     ["bytedance", "{endpoint}/x"],
+    // Any leading version segment is the prefix, declared or not.
+    ["elevenlabs", "v2/{endpoint}"],
+    ["deepgram", "v2/{endpoint}"],
+    ["together", "v2/{endpoint}"],
   ])("refuses %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).not.toBeNull());
 
-  it("counts a custom provider's first segment as its prefix", () => {
-    expect(namedPartProblem(parseTemplate("api/items/{id}"), "first_segment")).toBeNull();
-    expect(namedPartProblem(parseTemplate("api/{id}"), "first_segment")).not.toBeNull();
+  it("reads a custom provider's listing after its base URL, counting only version segments as its prefix", () => {
+    // At `https://api.replicate.com/v1/` the base URL already holds the version.
+    expect(namedPartProblem(parseTemplate("predictions/{id}"), [])).toBeNull();
+    expect(namedPartProblem(parseTemplate("api/items/{id}"), [])).toBeNull();
+    expect(namedPartProblem(parseTemplate("v1/{endpoint}"), [])).not.toBeNull();
+    expect(namedPartProblem(parseTemplate("{endpoint}/x"), [])).not.toBeNull();
+  });
+
+  it("suggests an endpoint under the prefix the listing starts with", () => {
+    expect(namedPartProblem(parseTemplate("v2/{endpoint}"), [])).toContain("such as v2/files/{file_id}");
+    expect(namedPartProblem(parseTemplate("{endpoint}/x"), [])).toContain("such as files/{file_id}");
   });
 
   it("never refuses a built-in provider's own declared paths", () => {

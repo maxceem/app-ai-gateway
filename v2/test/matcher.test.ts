@@ -202,6 +202,16 @@ describe("listings that can match one request", () => {
       expect(matcher.match("GET", "v1/files/file-1", { passthrough: order })).toMatchObject({ kind: "passthrough", listed: { path: "v1/files/{file_id}" } });
     }
   });
+
+  it("breaks a tie between parts with fixed text the same way in either order", () => {
+    const tied = compilePassthrough([
+      { method: "GET", path: "v1/files/file-{id}" },
+      { method: "GET", path: "v1/files/{name}.json" },
+    ]);
+    const served = [tied, [...tied].reverse()].map((order) => matcher.match("GET", "v1/files/file-1.json", { passthrough: order }));
+    expect(served[0]).toMatchObject({ kind: "passthrough" });
+    expect(served[1]).toEqual(served[0]);
+  });
 });
 
 describe("known paths behind a base URL with a path", () => {

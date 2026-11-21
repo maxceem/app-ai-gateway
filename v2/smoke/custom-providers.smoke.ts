@@ -139,7 +139,8 @@ test("saving refuses a {name} part where an endpoint's name is, and addresses th
   const attempt = (fields: Record<string, unknown>) =>
     admin("POST", "/v2/admin/providers", { type: "custom", name: "Smoke refused", slug: `smoke-custom-no-${run}`, secret: "sk-mock-smoke-custom-key", auth: AUTH, ...fields });
   for (const fields of [
-    { baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] },
+    // The base URL holds `v1`, so a part right after it stands where an endpoint's name is.
+    { baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "{thing}/details" }] },
     { baseUrl: "http://llm.example.com/" },
     { baseUrl: "https://10.0.0.8/" },
     { baseUrl: "https://localhost/" },

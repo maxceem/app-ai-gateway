@@ -50,7 +50,6 @@ function embed(version: "v1" | "v1beta") {
 
 export const gemini = defineProvider({
   type: "gemini",
-  apiPrefixes: ["v1beta", "v1alpha"],
   label: "Gemini",
   hosts: { main: "generativelanguage.googleapis.com" },
   auth: { header: "x-goog-api-key", format: "{key}" },

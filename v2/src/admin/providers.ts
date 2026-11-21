@@ -458,7 +458,7 @@ function passthroughJson(
     }
     const isNew = !known.has(listingKey(compiled));
     if (isNew) {
-      const problem = namedPartProblem(compiled.template, subject.kind === "custom" ? "first_segment" : apiPrefixesOf(subject.description));
+      const problem = namedPartProblem(compiled.template, subject.kind === "custom" ? [] : apiPrefixesOf(subject.description));
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.path: ${problem}`);
     }
     // First listed with no settings of its own: the provider's safe defaults, written in so the customer sees them.

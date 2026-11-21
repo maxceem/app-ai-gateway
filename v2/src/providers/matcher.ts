@@ -486,15 +486,34 @@ export function listingShape(method: string, template: Template): string {
 }
 
 /**
- * The API prefixes every built-in provider's paths may start with: `v1`, and
- * the OpenAI-compatible layouts every provider is reached at (`./llm.ts`). A
- * provider adds its own (`apiPrefixes`).
+ * A version segment, such as `v1`, `v2`, `v1beta` or `v1alpha`. Leading
+ * version segments always count as the API prefix, so providers declare only
+ * the other parts of theirs (`apiPrefixes`).
  */
-export const COMMON_API_PREFIXES: readonly string[] = ["v1", "openai/v1", "inference/v1", "v1beta/openai"];
+const VERSION_SEGMENT = /^v\d+[a-z]*$/i;
 
-/** A built-in provider's API prefixes, in segments: the common ones and its own. */
+/**
+ * The OpenAI-compatible layouts built-in providers are reached at
+ * (`./llm.ts`), such as Groq's `openai/v1`. A provider adds its own
+ * (`apiPrefixes`).
+ */
+export const COMMON_API_PREFIXES: readonly string[] = ["openai/v1", "inference/v1", "v1beta/openai"];
+
+/** A built-in provider's declared API prefixes, in segments: the common ones and its own. */
 export function apiPrefixesOf(description: ProviderDescription): readonly (readonly string[])[] {
   return [...COMMON_API_PREFIXES, ...(description.apiPrefixes ?? [])].map((prefix) => prefix.split("/"));
+}
+
+/** How many leading segments of `segments` are the API prefix: the longest declared prefix they start with, or their leading version segments. */
+function apiPrefixLength(segments: readonly TemplateSegment[], prefixes: readonly (readonly string[])[]): number {
+  const literalAt = (index: number) => {
+    const segment = segments[index];
+    return segment !== undefined && segment.kind === "literal" ? segment.value : undefined;
+  };
+  const declared = prefixes.filter((prefix) => prefix.every((value, index) => literalAt(index) === value)).map((prefix) => prefix.length);
+  let versions = 0;
+  while (VERSION_SEGMENT.test(literalAt(versions) ?? "")) versions++;
+  return Math.max(versions, ...declared);
 }
 
 /**
@@ -502,25 +521,25 @@ export function apiPrefixesOf(description: ProviderDescription): readonly (reado
  * 4.5), or null: a `{name}` part may stand only where an id is, never where
  * an endpoint's name is. So, after the API prefix the listing starts with,
  * one fixed segment comes before the first part, and no two parts stand next
- * to each other. On OpenAI `v1/files/{file_id}` and
- * `v1/threads/{thread_id}/messages/{message_id}` are allowed, `v1/{a}/{b}`
- * and `v1/threads/{id}/{x}` are not; on Groq `openai/v1/{endpoint}` is not.
- * `prefixes` are a built-in provider's (`apiPrefixesOf`); a custom provider
- * (`"first_segment"`) counts its first segment as its prefix. Judged when
- * saved only, so a listing stored before keeps working.
+ * to each other. The prefix is the listing's leading version segments (`v1`,
+ * `v2`, `v1beta`), or a longer declared one such as Groq's `openai/v1`. A
+ * listing is relative to the connection's base URL, so a custom provider at
+ * `https://api.replicate.com/v1/` may list `predictions/{id}`. On OpenAI
+ * `v1/files/{file_id}` and `v1/threads/{thread_id}/messages/{message_id}` are
+ * allowed, `v1/{a}/{b}` and `v1/threads/{id}/{x}` are not; on Groq
+ * `openai/v1/{endpoint}` is not. `prefixes` are a built-in provider's
+ * (`apiPrefixesOf`), or none for a custom provider. Judged when saved only, so
+ * a listing stored before keeps working.
  */
-export function namedPartProblem(template: Template, prefixes: readonly (readonly string[])[] | "first_segment"): string | null {
+export function namedPartProblem(template: Template, prefixes: readonly (readonly string[])[]): string | null {
   const segments = template.segments;
   const first = segments.findIndex((segment) => segment.kind !== "literal");
   if (first === -1) return null;
-  const starts = (prefix: readonly string[]) =>
-    prefix.every((value, index) => {
-      const segment = segments[index];
-      return segment !== undefined && segment.kind === "literal" && segment.value === value;
-    });
-  const prefixLength = prefixes === "first_segment" ? 1 : Math.max(0, ...prefixes.filter(starts).map((prefix) => prefix.length));
+  const prefixLength = apiPrefixLength(segments, prefixes);
   if (first < prefixLength + 1) {
-    return "a {name} part may stand only where an id is, after the API version and an endpoint's fixed name; list the exact endpoint, such as v1/files/{file_id}";
+    const prefix = segments.slice(0, prefixLength).map((segment) => (segment as Extract<TemplateSegment, { kind: "literal" }>).value);
+    const example = [...prefix, "files", "{file_id}"].join("/");
+    return `a {name} part may stand only where an id is, after the API version and an endpoint's fixed name; list the exact endpoint, such as ${example}`;
   }
   for (let index = first; index < segments.length - 1; index++) {
     if (segments[index]!.kind !== "literal" && segments[index + 1]!.kind !== "literal") {
@@ -534,7 +553,9 @@ export function namedPartProblem(template: Template, prefixes: readonly (readonl
  * Whether listed path `a` is more specific than `b`, both matching one
  * request: at the first segment where they differ, a fixed segment beats a
  * `{name}` part, and a part with fixed text around it beats a bare one. So
- * `v1/files/search` serves its own requests before `v1/files/{id}` does.
+ * `v1/files/search` serves its own requests before `v1/files/{id}` does. A
+ * tie goes to more fixed text, then to the template that sorts first, so the
+ * order the listings are saved in never decides.
  */
 function moreSpecific(a: Template, b: Template): boolean {
   const rank = (segment: TemplateSegment) =>
@@ -543,7 +564,14 @@ function moreSpecific(a: Template, b: Template): boolean {
     const difference = rank(a.segments[index]!) - rank(b.segments[index]!);
     if (difference !== 0) return difference < 0;
   }
-  return false;
+  const fixedText = (template: Template) =>
+    template.segments.reduce(
+      (sum, segment) => sum + (segment.kind === "literal" ? segment.value.length : segment.kind === "part" ? segment.prefix.length + segment.suffix.length : 0),
+      0,
+    );
+  const difference = fixedText(a) - fixedText(b);
+  if (difference !== 0) return difference > 0;
+  return a.source < b.source;
 }
 
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */
