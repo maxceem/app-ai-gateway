@@ -10,28 +10,34 @@
  * Shared by saving an app (strict) and serving a preset (forgiving), so the
  * two never disagree on what a preset can be.
  */
+import { CUSTOM_OPERATIONS } from "./custom.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { ProviderMatcher } from "./matcher.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "./operation.ts";
 
-const matchers = new Map<string, ProviderMatcher>();
+/** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
+const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
 
 function matcherOf(description: ProviderDescription): ProviderMatcher {
-  let matcher = matchers.get(description.type);
+  let matcher = matchers.get(description);
   if (matcher === undefined) {
     matcher = new ProviderMatcher(description);
-    matchers.set(description.type, matcher);
+    matchers.set(description, matcher);
   }
   return matcher;
 }
 
-/** A declared operation by its name, which is unique across all providers. */
+/**
+ * A declared operation by its name, which is unique across all providers: a
+ * built-in one, or a custom provider's operation of an API style
+ * (`./custom.ts`), whatever path a connection lists it at.
+ */
 export function declaredOperation(name: string): OperationDescription | null {
   for (const description of Object.values(BUILT_IN_PROVIDERS)) {
     const found = description.operations.find((operation) => operation.name === name);
     if (found !== undefined) return found;
   }
-  return null;
+  return CUSTOM_OPERATIONS.find((operation) => operation.name === name) ?? null;
 }
 
 /** Why `operation` of `description` cannot serve a preset, or null when it can. */

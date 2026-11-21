@@ -45,7 +45,8 @@ import {
   type UpstreamCredentials,
 } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
-import { attemptCopy, declaredOperation, presetUpstream } from "../providers/presets.ts";
+import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
+import { keyAuth } from "../providers/route.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -89,9 +90,9 @@ export function deepMerge(base: Record<string, unknown>, overlay: Record<string,
 /** The request as read once: a JSON body with the preset's parameters in, or an upload. */
 type PresetBody = { readonly kind: "json"; readonly body: Record<string, unknown> } | { readonly kind: "form"; readonly form: FormData };
 
-/** Whether an operation's API takes an upload besides JSON: an image edit. Only these accept a form (transcription always takes one). */
+/** Whether the operation's request may be an upload besides JSON (`uploads`), as an image edit is. Transcription always takes one. */
 function takesUpload(operation: OperationDescription): boolean {
-  return operation.style === "openai-images" && operation.match.path.endsWith("images/edits");
+  return operation.uploads === true;
 }
 
 async function presetBody(caller: Caller, contentType: string, preset: Preset, style: ApiStyle, operation: OperationDescription): Promise<PresetBody> {
@@ -228,7 +229,7 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
       return { form, contentType: null };
     };
   }
-  const mode = requestedServiceMode(description, connection.baseUrl, fields, model);
+  const mode = requestedServiceMode(description, operation, connection.baseUrl, fields, model);
   // What the meter takes from the request, and the values its rates depend on, as on the proxy.
   // A preset sends no client query.
   const facts = requestFacts(operation, { body: fields, query: new URLSearchParams() }, price?.price ?? null, input.caller.facts);
@@ -298,7 +299,9 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       if (declared === null || style === undefined) {
         throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
       }
-      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, declared);
+      // The body is read as the first target's own operation reads it, never as the name's stand-in.
+      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation)) ?? declared;
+      const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, resolved);
       const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
       const requestId = timeOrderedId(startedAt);
 
@@ -308,6 +311,8 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
       ];
       const connections = new Map<string, ConnectionRecord | null>([[preset.provider, first]]);
       const attempts: PreparedAttempt[] = [];
+      // Every target's key header, a skipped one's too: no client value in any of them reaches any attempt.
+      const keyHeaders: string[] = [];
       let paused: GatewayError | null = null;
       for (const [index, target] of targets.entries()) {
         const primary = index === 0;
@@ -323,6 +328,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
               new GatewayError(502, "provider_not_configured", `No provider connection ${target.provider} is set up for this app`),
             );
           }
+          keyHeaders.push(description.auth.header, keyAuth(connection, description, style).header);
           if (connection.status === "disabled") {
             const error = new GatewayError(502, "provider_disabled", `Provider connection ${target.provider} is disabled`);
             // Disabling is a deliberate pause: the chain goes on to its fallbacks.
@@ -382,7 +388,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         refuse: refusal,
       });
-      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest]);
+      return await sendAttempts(c, strippedHeaders(app, caller), [head, ...rest], keyHeaders);
     },
   );
 }

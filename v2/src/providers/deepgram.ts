@@ -70,6 +70,8 @@ export const deepgram = defineProvider({
   type: "deepgram",
   label: "Deepgram",
   hosts: { main: "api.deepgram.com" },
+  // Its EU host.
+  otherHosts: ["api.eu.deepgram.com"],
   auth: { header: "authorization", format: "Token {key}" },
   // Deepgram has no service modes on this API.
   serviceModes: [],

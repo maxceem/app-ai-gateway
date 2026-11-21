@@ -11,8 +11,8 @@
  *   values.
  */
 import { builtInProvider } from "../providers/index.ts";
-import { listedAs } from "../providers/listing.ts";
-import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { listedIn } from "../providers/listing.ts";
+import { readingRules, type ApiStyle, type OperationDescription, type ProviderDescription, type ReadingRules } from "../providers/operation.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { fromDollars } from "../money.ts";
 import { log } from "../core/log.ts";
@@ -51,12 +51,13 @@ function baseUrlRegion(description: ProviderDescription, baseUrl: string | null)
  */
 function fieldsFor(
   description: ProviderDescription,
+  rules: ReadingRules,
   fields: readonly ServiceModeField[],
   model: string | undefined,
   native: boolean,
 ): readonly ServiceModeField[] {
-  if (description.modelNamespaces === undefined) return fields;
-  const listed = model === undefined ? null : listedAs(description.type, model);
+  if (rules.modelNamespaces === undefined) return fields;
+  const listed = model === undefined ? null : listedIn(rules.modelNamespaces, description.type, model);
   // A provider's own options are read for that provider's models only.
   const own = fields.filter((field) => field.forProvider === undefined || field.forProvider === listed?.type);
   const target = listed === null || listed.type === description.type ? null : builtInProvider(listed.type);
@@ -79,17 +80,50 @@ function fieldsFor(
  */
 export function requestedServiceMode(
   description: ProviderDescription,
+  operation: OperationDescription | undefined,
   baseUrl: string | null,
   body: Record<string, unknown>,
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const reading = readServiceMode(fieldsFor(description, description.serviceModes, model, true), (name) =>
+  const rules = readingRules(description, operation);
+  const reading = readServiceMode(fieldsFor(description, rules, rules.serviceModes, model, true), (name) =>
     Object.hasOwn(body, name) ? body[name] : undefined,
   );
   const region = baseUrlRegion(description, baseUrl);
   const mode: ServiceMode =
     reading.mode.region === "global" && region !== "global" ? { tier: reading.mode.tier, region } : reading.mode;
   return reading.unknown ? { mode, unknown: reading.unknown } : { mode };
+}
+
+/**
+ * Every service mode a call of `operation` on a connection at `baseUrl` can
+ * be billed in: each tier and region its request and answer can name, read
+ * with the same tables and the base URL's region as `requestedServiceMode`
+ * and `servedServiceMode`. A request that names no region is in the base
+ * URL's. Saving judges a mode rate against these (`unusedModeRate`).
+ */
+export function selectableModes(
+  description: ProviderDescription,
+  operation: OperationDescription | undefined,
+  baseUrl: string | null,
+  model?: string,
+): ServiceMode[] {
+  const rules = readingRules(description, operation);
+  const base = baseUrlRegion(description, baseUrl);
+  const tiers = new Set<ServiceMode["tier"]>(["standard"]);
+  const regions = new Set<ServiceRegion>([base]);
+  const add = (fields: readonly ServiceModeField[], asked: boolean) => {
+    for (const field of fields) {
+      for (const value of Object.values(field.values)) {
+        if (field.axis === "tier") tiers.add(value as ServiceMode["tier"]);
+        // As `requestedServiceMode`: a request read as global is in the base URL's region.
+        else regions.add(asked && value === "global" ? base : (value as ServiceRegion));
+      }
+    }
+  };
+  add(fieldsFor(description, rules, rules.serviceModes, model, true), true);
+  add(fieldsFor(description, rules, rules.servedModes ?? rules.serviceModes, model, false), false);
+  return [...tiers].flatMap((tier) => [...regions].map((region) => ({ tier, region })));
 }
 
 /**
@@ -100,12 +134,14 @@ export function requestedServiceMode(
  */
 export function servedServiceMode(
   description: ProviderDescription,
+  operation: OperationDescription | undefined,
   requested: ServiceMode,
   usage: UsageObservation | null,
   headers: Headers,
   model?: string,
 ): { mode: ServiceMode; unknown?: ServiceModeValue } {
-  const fields = fieldsFor(description, description.servedModes ?? description.serviceModes, model, false);
+  const rules = readingRules(description, operation);
+  const fields = fieldsFor(description, rules, rules.servedModes ?? rules.serviceModes, model, false);
   const header = (name: string) => (name.startsWith("header:") ? (headers.get(name.slice("header:".length)) ?? undefined) : undefined);
   const reported = usage?.reportedModes;
   const read = (name: string) => header(name) ?? (reported && Object.hasOwn(reported, name) ? reported[name] : undefined);
@@ -214,7 +250,7 @@ export function responseReader(
   const style: ApiStyle | undefined = usageStyle ?? operation.style;
   if (style === undefined) return null;
   const body: BodyReader = bodyReader(contentType, style, {
-    counted: description.countedInputModalities,
+    counted: readingRules(description, operation).countedInputModalities,
     maxEvents: budget.documents,
     ...(meter.kind === "response_json" && meter.providerCost !== undefined ? { providerCost: meter.providerCost } : {}),
   });
@@ -241,7 +277,7 @@ export function responseReader(
       if (body.stopped) stop("budget");
     },
     finish(headers, clean) {
-      const unread = { usage: null, providerCostUsd: null, closed: null, ...(description.alternativeModels ? { servedModel: null } : {}) };
+      const unread = { usage: null, providerCostUsd: null, closed: null, ...(readingRules(description, operation).alternativeModels ? { servedModel: null } : {}) };
       if (stopped !== null) return unread;
       let reading;
       try {
@@ -257,9 +293,9 @@ export function responseReader(
         return unread;
       }
       if (reading.overflow) log("warn", "usage_value_too_large", facts);
-      const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, description.type, style);
+      const usage = !metered || reading.usage === null ? null : withHeaderVariants(reading.usage, headers, contentType, meter.kind === "response_json" ? (meter.usageHeaders ?? []) : []);
       const base = { usage, providerCostUsd: metered ? reading.providerCostUsd : null, closed: reading.closed };
-      return description.alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
+      return readingRules(description, operation).alternativeModels === undefined ? base : { ...base, servedModel: reading.servedModel };
     },
   };
 }

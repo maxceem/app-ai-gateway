@@ -174,6 +174,19 @@ export type Meter =
        */
       readonly units?: readonly Unit[];
       /**
+       * Token counts the provider reports in a response header rather than its
+       * body, each a share of a bucket (`../usage/token-rates.ts`): Kimi's Chat
+       * Completions sends its one-hour cache writes this way. Read only from an
+       * answer that does not stream.
+       */
+      readonly usageHeaders?: readonly UsageHeader[];
+      /**
+       * Its answers may report only the provider's own cost (`providerCost`),
+       * with no usage at all: xAI's images. A path that bills at the customer's
+       * rates cannot meter it (`../providers/custom.ts`).
+       */
+      readonly costOnly?: true;
+      /**
        * A flag that has the provider bill the audio once per channel
        * (Deepgram's `multichannel`): then the reported length is multiplied
        * by the channels the answer names (`audioChannels`). Otherwise it is
@@ -239,6 +252,13 @@ export type Meter =
   | { readonly kind: "wall_clock" }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
   | { readonly kind: "provider_event"; readonly adapter: string };
+
+/** A token count a response header carries: the header (lowercase), and the bucket share it is. */
+export interface UsageHeader {
+  readonly header: string;
+  readonly bucket: "cached_input" | "cache_write";
+  readonly name: "audio" | "1h" | "12h";
+}
 
 /**
  * Where an app's output cap (`max_output_tokens`) is enforced, by the field
@@ -466,6 +486,47 @@ export interface OperationDescription {
   readonly responseDeadlineMs?: number;
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
+  /**
+   * How this operation's requests and answers are read, over its provider's
+   * (`readingRules`): a custom provider's path of an API style carries the
+   * rules of the built-in provider its definition comes from (`./custom.ts`),
+   * so one connection may list styles of different providers.
+   */
+  readonly rules?: ReadingRules;
+  /**
+   * Its request may also be a multipart upload, as an image edit is; it is
+   * JSON otherwise. A preset reads an upload only for such an operation.
+   */
+  readonly uploads?: true;
+  /**
+   * Any model's answer may come with no usage (a plain audio answer, an
+   * answer that reports only a cost), beside the way it reports: each of its
+   * ways holds that answer too (`meterCases`), so a price must bill it as
+   * well, at save and at serve. A custom provider's path, which has no list
+   * price or provider report to fall back on (`../providers/custom.ts`).
+   */
+  readonly pricedEveryWay?: true;
+}
+
+/**
+ * The rules a provider states once for reading its operations' requests and
+ * answers: its service modes, the modes its answers name, the transcription
+ * formats that carry a measure, the input modalities its usage counts, the
+ * other models a request may name and which provider each model's tables
+ * are read with.
+ */
+export type ReadingRules = Pick<
+  ProviderDescription,
+  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "modelNamespaces"
+>;
+
+/**
+ * The reading rules for `operation` of `description`: its own when it carries
+ * them, else its provider's. The one place they are chosen, so every reader
+ * of modes, formats and counted modalities agrees.
+ */
+export function readingRules(description: ProviderDescription, operation: OperationDescription | undefined): ReadingRules {
+  return operation?.rules ?? description;
 }
 
 /** How the provider's key is sent. */
@@ -492,6 +553,15 @@ export interface ProviderDescription {
    * upstream path is sent under.
    */
   readonly hosts: { readonly main: string } & Readonly<Record<string, string>>;
+  /**
+   * Every other host name the provider serves the same API on: regional,
+   * data-residency or older names. With `hosts`, the one declared list of
+   * the provider's hosts, apart from what any of them costs
+   * (`regionalOrigins`). A base URL on any of them is this provider's, and
+   * gets its refused paths (`./custom.ts`). `*.` names every host under
+   * one, as `*.api.openai.com` does OpenAI's data residency hosts.
+   */
+  readonly otherHosts?: readonly string[];
   readonly auth: ProviderAuth;
   /**
    * The request fields this provider reads a service mode from, such as a
@@ -594,6 +664,13 @@ export interface ProviderDescription {
    * them: client headers are an allowlist (`src/proxy/headers.ts`).
    */
   readonly attributionHeaders?: (context: { readonly appId: string; readonly userId: string | null }) => Readonly<Record<string, string>>;
+  /**
+   * Its operations are paths a customer listed (a custom provider,
+   * `./custom.ts`), not paths the gateway declares: refused paths are judged
+   * on every way the connection's base URL may be read, as they are for a
+   * listed passthrough path.
+   */
+  readonly customerPaths?: true;
   /** Checked in this order. The first match wins, so declare the more specific first. */
   readonly operations: readonly OperationDescription[];
   /**

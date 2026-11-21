@@ -1,3 +1,4 @@
+import { customDescription } from "../src/providers/custom.ts";
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderDescriptionError, ProviderMatcher } from "../src/providers/matcher.ts";
@@ -139,16 +140,8 @@ describe("passthrough paths", () => {
   });
 
   it("gives a custom provider on a built-in host that provider's refused paths", () => {
-    const custom = defineProvider({
-      type: "custom",
-      label: "Custom",
-      serviceModes: [],
-      hosts: { main: "api.openai.com" },
-      auth: { header: "authorization", format: "Bearer {key}" },
-      refused: [],
-      operations: [],
-    });
-    const customMatcher = new ProviderMatcher(custom, openai.refused);
+    const custom = customDescription({ baseUrl: "https://api.openai.com/", auth: { header: "authorization", format: "Bearer {key}" }, paths: [] });
+    const customMatcher = new ProviderMatcher(custom);
     const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
     expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed })).toMatchObject({
       reason: "refused_path",

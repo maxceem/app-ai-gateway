@@ -39,6 +39,12 @@ export interface PassthroughPath {
   readonly path: string;
   /** A flat price per request, in nano-dollars. Without it, the charge is `not_priced`. */
   readonly priceNano?: number;
+  /**
+   * On a custom provider only: the built-in API style the path speaks
+   * (`./custom.ts`). The path is then an operation of that style, metered by
+   * its usage reader at the connection's rates, not a passthrough path.
+   */
+  readonly style?: string;
 }
 
 /** Where the request goes: a key of the provider's `hosts`, and the encoded path. */
@@ -274,13 +280,10 @@ export class ProviderMatcher {
   /**
    * Compiles every template once. Throws on a broken description, so a test
    * that builds every provider's matcher catches it before deploy.
-   *
-   * `extraRefused` adds another provider's refused paths, for a custom
-   * provider whose host belongs to a built-in one.
    */
-  constructor(provider: ProviderDescription, extraRefused: ProviderDescription["refused"] = []) {
+  constructor(provider: ProviderDescription) {
     this.provider = provider;
-    this.refused = [...provider.refused, ...extraRefused].map((entry) =>
+    this.refused = provider.refused.map((entry) =>
       typeof entry === "string"
         ? { template: parseTemplate(entry, { rest: true }), methods: null }
         : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods) },
@@ -362,9 +365,11 @@ export class ProviderMatcher {
       // A declared operation is never a refused path: only how its route adds
       // a prefix is judged, not each way a base URL may be mounted. A base
       // URL whose own path looks like a refused one (`.../user/42/`) still
-      // serves every operation, as it always did.
+      // serves every operation, as it always did. A custom provider's
+      // operations are paths its customer listed, judged as listings are.
       const sent = normalizePath(path);
-      const refused = sent.ok ? this.refusedAt(method, upstreamTargets({ ...route, basePath: null }, compiled.host, sent.segments.map(literal))) : null;
+      const judged = this.provider.customerPaths === true ? route : { ...route, basePath: null };
+      const refused = sent.ok ? this.refusedAt(method, upstreamTargets(judged, compiled.host, sent.segments.map(literal))) : null;
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
@@ -416,20 +421,27 @@ export class ProviderMatcher {
    * priced-models list through any value.
    */
   overlappingOperation(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
+    return this.overlappingOperations(listed, route)[0] ?? null;
+  }
+
+  /** Every declared operation a listed path could also take on `route`, in declared order (`overlappingOperation`). */
+  overlappingOperations(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): readonly string[] {
     const mine = listed.template.segments as readonly SegmentPattern[];
     const sent = upstreamTargets(route, "main", mine);
+    const found: string[] = [];
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== listed.listed.method) continue;
-      if (templatesMeet(mine, compiled.template.segments, compiled.closedLists)) return compiled.operation.name;
+      if (templatesMeet(mine, compiled.template.segments, compiled.closedLists)) {
+        found.push(compiled.operation.name);
+        continue;
+      }
       const theirs = upstreamTargets(route, compiled.host, (compiled.upstream ?? compiled.template).segments);
       if (sent === null || theirs === null || theirs.host !== sent.host) continue;
-      for (const path of sent.paths) {
-        if (theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists))) {
-          return compiled.operation.name;
-        }
+      if (sent.paths.some((path) => theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
+        found.push(compiled.operation.name);
       }
     }
-    return null;
+    return found;
   }
 
   /**

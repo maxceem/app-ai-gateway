@@ -540,8 +540,21 @@ async function rejections(appId: string) {
   return results;
 }
 
+/**
+ * Holds the clock still at the middle of the current minute, so requests a
+ * per-minute limit counts together all land in one minute, however long the
+ * test takes. Only `Date` is faked: admission reads the time there and passes
+ * it to the limiters. `afterEach` restores the real clock.
+ */
+function pinClockMidMinute(): void {
+  const minute = Math.floor(Date.now() / 60_000) * 60_000;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(minute + 30_000);
+}
+
 describe("limits on the proxy path", () => {
   it("refuses over a user's rate limit with v1's code, scope and Retry-After, and records it", async () => {
+    pinClockMidMinute();
     const target = await routedApp({ per_user: { requests: { per_minute: 1 } } });
     expect((await chat(target)).status).toBe(200);
     const refused = await chat(target);
@@ -563,6 +576,7 @@ describe("limits on the proxy path", () => {
   });
 
   it("counts the plan allowance only for admitted requests, and refuses with v1's code and data once it is used up", async () => {
+    pinClockMidMinute();
     const accountId = `acc_plan_${crypto.randomUUID().slice(0, 8)}`;
     const target = await routedApp({ per_app: { requests: { per_minute: 2 } } }, accountId);
     const hosted = { ...env, BILLING: billing({ maxRequestsPerMonth: 3 }) } as unknown as Env;

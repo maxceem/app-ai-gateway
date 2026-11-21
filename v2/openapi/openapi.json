@@ -1800,6 +1800,9 @@
               "$ref": "#/components/schemas/PassthroughPath"
             }
           },
+          "auth": {
+            "$ref": "#/components/schemas/CustomProviderAuth"
+          },
           "pricing": {
             "type": [
               "object",
@@ -2271,11 +2274,44 @@
           "per_request": {
             "type": "number",
             "minimum": 0
+          },
+          "style": {
+            "type": "string",
+            "enum": [
+              "openai-chat",
+              "openai-completions",
+              "openai-responses",
+              "anthropic-messages",
+              "openai-embeddings",
+              "openai-images",
+              "openai-transcription",
+              "openai-speech"
+            ]
           }
         },
         "required": [
           "method",
           "path"
+        ],
+        "additionalProperties": false
+      },
+      "CustomProviderAuth": {
+        "type": "object",
+        "properties": {
+          "header": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "format": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "header",
+          "format"
         ],
         "additionalProperties": false
       },
@@ -2355,6 +2391,9 @@
               "$ref": "#/components/schemas/PassthroughPath"
             },
             "maxItems": 100
+          },
+          "auth": {
+            "$ref": "#/components/schemas/CustomProviderAuth"
           },
           "pricing": {
             "type": "object",
@@ -2850,6 +2889,9 @@
               "token"
             ],
             "additionalProperties": false
+          },
+          "auth": {
+            "$ref": "#/components/schemas/CustomProviderAuth"
           }
         },
         "required": [
@@ -2932,6 +2974,9 @@
               "$ref": "#/components/schemas/PassthroughPath"
             },
             "maxItems": 100
+          },
+          "auth": {
+            "$ref": "#/components/schemas/CustomProviderAuth"
           },
           "pricing": {
             "type": [
@@ -3437,6 +3482,9 @@
           },
           "baseUrl": {
             "type": "string"
+          },
+          "auth": {
+            "$ref": "#/components/schemas/CustomProviderAuth"
           },
           "pricing": {
             "type": "object",

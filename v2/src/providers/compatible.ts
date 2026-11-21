@@ -88,6 +88,7 @@ export const mistral = defineProvider({
   type: "mistral",
   label: "Mistral",
   hosts: { main: "api.mistral.ai" },
+  otherHosts: ["api.eu.mistral.ai", "api.us.mistral.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "v1/models" },
@@ -112,6 +113,7 @@ export const together = defineProvider({
   label: "Together AI",
   // `api.together.ai`, not the `.xyz` host older SDKs default to.
   hosts: { main: "api.together.ai" },
+  otherHosts: ["us-api.together.ai", "api.together.xyz"],
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "v1/models" },
@@ -165,17 +167,24 @@ export const cerebras = defineProvider({
   operations: withV1Paths("cerebras", [chat("cerebras.chat", "v1/chat/completions"), completions("cerebras.completions", "v1/completions")]),
 });
 
+/** Kimi's Chat Completions body has only the total cache write; its one-hour share is in a header of an answer that does not stream. */
+const KIMI_CHAT = { usageHeaders: [{ header: "msh-usage-cache-write-tokens-1h", bucket: "cache_write", name: "1h" }] } as const;
+
 export const moonshot = defineProvider({
   type: "moonshot",
   label: "Moonshot AI",
   // The international host. `api.moonshot.cn` is a separate platform.
   hosts: { main: "api.moonshot.ai" },
+  // The China platform speaks the same API.
+  otherHosts: ["api.moonshot.cn"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // The account's balance.
   refused: ["v1/users/*"],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
-  operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions"), messages("moonshot.messages", "anthropic/v1/messages")]),
+  operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions", KIMI_CHAT), messages("moonshot.messages", "anthropic/v1/messages")], {
+    chat: KIMI_CHAT,
+  }),
 });
 
 export const huggingface = defineProvider({

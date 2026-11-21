@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ProvidersPage, testResultText } from "./providers";
+import { parsePathLines, pathLine, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
 
@@ -233,5 +233,156 @@ describe("testResultText", () => {
     expect(testResultText({ validated: false, reason: "rejected", status: 401 }).ok).toBe(false);
     expect(testResultText({ validated: false, reason: "no_probe" }).ok).toBe(true);
     expect(testResultText({ validated: false, reason: "unexpected_status", status: 403 }).text).toMatch(/403/);
+  });
+
+  it("adds a custom provider only once the trust choice is made, with its base URL and key header", async () => {
+    const fetchMock = stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(screen.getByRole("combobox", { name: /provider/i }));
+    await userEvent.click(await screen.findByRole("option", { name: "Custom provider" }));
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("My LLM");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://llm.example.com/v1/");
+    await userEvent.clear(screen.getByLabelText(/key header/i));
+    await userEvent.click(screen.getByLabelText(/key header/i));
+    await userEvent.paste("X-Api-Key");
+    await userEvent.click(screen.getByLabelText(/api key/i));
+    await userEvent.paste(SECRET);
+    // What passing paths through gives up is in view, and the choice is needed.
+    expect(screen.getByText(/budgets do not limit it/i)).toBeTruthy();
+    const add = screen.getByRole("button", { name: /^add provider$/i, hidden: false }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /i understand, and want to add this provider/i }));
+    expect(add.disabled).toBe(false);
+    await userEvent.click(add);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({
+        type: "custom",
+        name: "My LLM",
+        secret: SECRET,
+        baseUrl: "https://llm.example.com/v1/",
+        auth: { header: "x-api-key", format: "Bearer {key}" },
+      }),
+    );
+  });
+
+  it("lists a built-in provider's first passthrough paths only once the trust choice is made", async () => {
+    const fetchMock = stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    await userEvent.click(await screen.findByLabelText(/one path per line/i));
+    await userEvent.paste("get v1/files/{file_id} $0.001\nPOST v1/moderations");
+    const save = screen.getByRole("button", { name: /save paths/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /i understand/i }));
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [
+          { method: "GET", path: "v1/files/{file_id}", per_request: 0.001 },
+          { method: "POST", path: "v1/moderations" },
+        ],
+      }),
+    );
+  });
+
+  it("edits a custom provider's paths with their API styles, the choice made when it was added", async () => {
+    const custom = {
+      ...PROVIDER,
+      type: "custom",
+      name: "My LLM",
+      baseUrl: "https://llm.example.com/v1/",
+      auth: { header: "x-api-key", format: "{key}" },
+      passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
+    };
+    const fetchMock = stub([custom]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for My LLM" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^paths$/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    expect(box.value).toBe("POST chat/completions openai-chat");
+    expect(screen.queryByRole("checkbox", { name: /i understand/i })).toBeNull();
+    await userEvent.click(box);
+    await userEvent.paste("\nGET models");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "GET", path: "models" }],
+      }),
+    );
+  });
+});
+
+describe("PathsDialog after a conflict", () => {
+  it("keeps the revision it was opened at, shows the conflict, and saves only after a reload", async () => {
+    const opened = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
+    const changed = { ...PROVIDER, revision: 4, passthrough: [{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/batches" }] };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? opened : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const puts_ = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    await userEvent.click(box);
+    await userEvent.paste("\nPOST v1/moderations");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    expect(await screen.findByText(/these paths changed since you opened them/i)).toBeTruthy();
+    expect(puts_()[0]).toMatchObject({ revision: 3 });
+    // The list has reloaded at revision 4 by now; the draft is still from 3, so saving it is held back.
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    expect((screen.getByRole("button", { name: /save paths/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /reload paths/i }));
+    expect(((await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement).value).toBe("GET v1/files\nGET v1/batches");
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    await waitFor(() => expect(puts_()[1]).toMatchObject({ revision: 4, passthrough: [{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/batches" }] }));
+  });
+});
+
+describe("listed path lines", () => {
+  it("read a method, a path, a price and, on a custom provider, an API style", () => {
+    expect(parsePathLines("get v1/files/{id} $0.5\n\n  POST  chat/completions  openai-chat ", true)).toEqual({
+      paths: [
+        { method: "GET", path: "v1/files/{id}", per_request: 0.5 },
+        { method: "POST", path: "chat/completions", style: "openai-chat" },
+      ],
+    });
+    expect(parsePathLines("", false)).toEqual({ paths: [] });
+  });
+
+  it.each([
+    ["HEAD v1/files", false, "Line 1: start with GET"],
+    ["GET", false, "add the path"],
+    ["GET v1/files $", false, "a price is $"],
+    ["GET v1/files $-1", false, "a price is $"],
+    ["POST chat openai-chat", false, "is not a price"],
+    ["POST chat speakers", true, "not a price or an API style"],
+  ])("say what is wrong with %j", (text, custom, problem) => {
+    const parsed = parsePathLines(text, custom);
+    expect("problem" in parsed && parsed.problem).toContain(problem);
+  });
+
+  it("write a listed path back as the line it reads from", () => {
+    for (const path of [
+      { method: "GET" as const, path: "v1/files/{id}", per_request: 0.001 },
+      { method: "POST" as const, path: "chat/completions", style: "openai-chat" as const },
+    ]) {
+      expect(parsePathLines(pathLine(path), true)).toEqual({ paths: [path] });
+    }
   });
 });

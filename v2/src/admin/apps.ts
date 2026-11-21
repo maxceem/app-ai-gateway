@@ -14,6 +14,7 @@ import {
   AppPatchRequestSchema,
   AppUpdateRequestSchema,
   AppValidateRequestSchema,
+  CUSTOM_PROVIDER_TYPE,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { AppConfigSchema, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
@@ -33,7 +34,10 @@ import {
   type Gap,
 } from "../pricing/billability.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../providers/index.ts";
-import { PASSTHROUGH } from "../providers/passthrough.ts";
+import { describeConnection } from "../providers/connections.ts";
+import { CUSTOM_OPERATIONS } from "../providers/custom.ts";
+import type { ProviderDescription } from "../providers/operation.ts";
+import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -123,6 +127,17 @@ interface ConnectionRow {
   type: string;
   rates_json: string | null;
   base_url: string | null;
+  passthrough_json: string | null;
+}
+
+/** A connection row's description: its built-in type's, or a custom provider's own (`describeConnection`). */
+function rowDescription(row: ConnectionRow): ProviderDescription | null {
+  return describeConnection({
+    type: row.type,
+    baseUrl: row.base_url,
+    passthrough: readPassthrough(row.passthrough_json),
+    customAuth: readCustomAuth(row.passthrough_json),
+  });
 }
 
 /**
@@ -185,7 +200,7 @@ export async function checkAppConfig(
       rows.set(
         slug,
         await db
-          .prepare("SELECT type, rates_json, base_url FROM provider_connection WHERE account_id = ? AND slug = ?")
+          .prepare("SELECT type, rates_json, base_url, passthrough_json FROM provider_connection WHERE account_id = ? AND slug = ?")
           .bind(accountId, slug)
           .first<ConnectionRow>(),
       );
@@ -206,13 +221,17 @@ export async function checkAppConfig(
       if (!changed.routing(slug)) continue;
       throw invalid(`config.routing.providers.${slug}: no provider connection with this slug exists`, { slug });
     }
-    const description = builtInProvider(connection.type);
+    const description = rowDescription(connection);
     if (description === null) {
       throw invalid(`config.routing.providers.${slug}: provider type ${connection.type} is not supported`, { slug });
     }
     for (const operation of routing.operations) {
       // `passthrough` reaches the paths the connection lists (plan section 4.5): each was checked when the connection was saved.
       if (operation === PASSTHROUGH) continue;
+      // Unchanged, a route may keep an operation its connection no longer has (a
+      // custom provider's path removed since): its requests are refused, as for
+      // a deleted connection, and another edit of the app still saves.
+      if (!changed.routing(slug)) continue;
       if (!description.operations.some((declared) => declared.name === operation)) {
         throw invalid(`config.routing.providers.${slug}.operations: ${operation} is not an operation of ${connection.type}`, {
           slug,
@@ -234,7 +253,7 @@ export async function checkAppConfig(
   const views = new Map<string, ConnectionView | null>();
   for (const slug of slugs) {
     const row = await connectionRow(slug);
-    const description = row === null ? null : builtInProvider(row.type);
+    const description = row === null ? null : rowDescription(row);
     // Rates are read only when a call is judged, so an unchanged route whose connection has unreadable rates does not stop a rename.
     views.set(slug, row === null || description === null ? null : { sources: priceSources(row), description, baseUrl: row.base_url });
   }
@@ -379,35 +398,82 @@ function callRefused(config: AppConfig, call: AppCall, gap: Gap): GatewayError {
   );
 }
 
+/** A connection whose apps are judged: its description is its built-in type's unless given (a custom provider's). */
+export interface JudgedConnection {
+  readonly slug: string;
+  readonly type: string;
+  readonly baseUrl: string | null;
+  readonly description?: ProviderDescription;
+}
+
+/** What a connection is, as far as which calls it serves and at what price: before or after a save. */
+export interface ConnectionState {
+  readonly description: ProviderDescription;
+  readonly baseUrl: string | null;
+  readonly rates: CustomerRates | null;
+}
+
 /**
- * A connection's rates are about to change: each active app that routes to
- * it is judged on the calls the change can affect, at every entry point
- * (`reachableCalls`), by the same rule as an app save (`callGap`), so a rate
- * added after an app was saved cannot leave its calls charged only partly.
- * Only models whose rates are new, changed or deleted are judged, so deleting
- * a rate no call needs still saves. A disabled app is judged in full when it
- * is turned on again.
+ * A connection is about to change, or to be created: each active app that
+ * routes to it is judged by the same rule as an app save (`callGap`), at every
+ * entry point (`reachableCalls`), presets and their fallbacks included. One
+ * rule for every change that affects which calls it serves or their price:
+ * its rates, its paths, a custom provider's API styles, its base URL.
+ *
+ * A call is judged when the change makes it reachable (it is not among the
+ * calls `before` serves: a new connection's are all new), or when its model's
+ * rate is new, changed or deleted. A call that was served before at an
+ * unchanged rate is not judged again, so a save never starts failing on what
+ * already worked.
  *
  * A preset fallback the new rates could no longer bill is judged too:
  * serving would leave it out of its chain without a word. A proxy call or a
- * fallback model the new rates no longer let through is not: serving refuses
- * it openly, so deleting or renaming a rate it needed still saves.
+ * fallback model the change no longer lets through is not: serving refuses
+ * it openly, so deleting a rate or a path it needed still saves. A disabled
+ * app is judged in full when it is turned on again.
  */
-export async function checkConnectionRates(
+export async function checkConnectionChange(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
-  before: CustomerRates | null,
-  after: CustomerRates | null,
+  connection: { readonly slug: string; readonly type: string },
+  before: ConnectionState | null,
+  after: ConnectionState,
 ): Promise<void> {
-  // New, changed and deleted rates alike: a deleted rate can drop a call that worked.
-  const was = before ?? {};
-  const now = after ?? {};
-  const models = new Set(
+  const was = before?.rates ?? {};
+  const now = after.rates ?? {};
+  const repriced = new Set(
     [...Object.keys(was), ...Object.keys(now)].filter((model) => Object.hasOwn(was, model) !== Object.hasOwn(now, model) || !sameJson(was[model], now[model])),
   );
-  if (models.size === 0) return;
-  await judgeConnectionApps(db, accountId, connection, after, { models });
+  const view = (state: ConnectionState): ConnectionView => ({
+    sources: priceSources({ type: connection.type, rates: state.rates }),
+    description: state.description,
+    baseUrl: state.baseUrl,
+  });
+  const only = (one: ConnectionView) => (slug: string) => (slug === connection.slug ? one : null);
+  const next = view(after);
+  const previous = before === null ? null : view(before);
+  const { results } = await db
+    .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
+    .bind(accountId)
+    .all<{ name: string; status: string; config_json: string }>();
+  for (const app of results) {
+    if (app.status !== "active") continue;
+    let config: AppCallConfig | null;
+    try {
+      config = storedCallConfig(storedRouting({ config_json: app.config_json } as AppRow));
+    } catch {
+      continue;
+    }
+    if (config === null) continue;
+    if (!Object.hasOwn(config.routing.providers, connection.slug) && !Object.values(config.presets ?? {}).some((preset) =>
+      [preset.provider, ...(preset.fallback ?? []).map((one) => one.provider)].includes(connection.slug))) continue;
+    const served = previous === null ? new Set<string>() : new Set(reachableCalls(config, only(previous)).calls.map(callKey));
+    for (const call of reachableCalls(config, only(next)).calls) {
+      if (served.has(callKey(call)) && !repriced.has(call.model)) continue;
+      const gap = callGap(call);
+      if (gap !== null) throw ratesRefused(call, app.name, connection.slug, gap);
+    }
+  }
 }
 
 /**
@@ -418,45 +484,12 @@ export async function checkConnectionRates(
 export async function checkNewConnection(
   db: D1Database,
   accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
+  connection: JudgedConnection,
   rates: CustomerRates | null,
 ): Promise<void> {
-  await judgeConnectionApps(db, accountId, connection, rates, null);
-}
-
-/** Judges each active app's calls on one connection with `after` rates: all of them, or, with `change`, those on the models it changes. */
-async function judgeConnectionApps(
-  db: D1Database,
-  accountId: string,
-  connection: { readonly slug: string; readonly type: string; readonly baseUrl: string | null },
-  after: CustomerRates | null,
-  change: { readonly models: ReadonlySet<string> } | null,
-): Promise<void> {
-  const description = builtInProvider(connection.type);
+  const description = connection.description ?? builtInProvider(connection.type);
   if (description === null) return;
-  const { results } = await db
-    .prepare("SELECT name, status, config_json FROM app WHERE account_id = ?")
-    .bind(accountId)
-    .all<{ name: string; status: string; config_json: string }>();
-  const next: ConnectionView = { sources: priceSources({ type: connection.type, rates: after }), description, baseUrl: connection.baseUrl };
-  const only = (view: ConnectionView) => (slug: string) => (slug === connection.slug ? view : null);
-  for (const app of results) {
-    if (app.status !== "active") continue;
-    let config: AppCallConfig | null;
-    try {
-      config = storedCallConfig(storedRouting({ config_json: app.config_json } as AppRow));
-    } catch {
-      continue;
-    }
-    if (config === null) continue;
-    // Every preset target is among the calls, a fallback the new rates could no longer bill included (`reachableCalls`).
-    const judged = reachableCalls(config, only(next)).calls;
-    for (const call of judged) {
-      if (change !== null && !change.models.has(call.model)) continue;
-      const gap = callGap(call);
-      if (gap !== null) throw ratesRefused(call, app.name, connection.slug, gap);
-    }
-  }
+  await checkConnectionChange(db, accountId, connection, null, { description, baseUrl: connection.baseUrl, rates });
 }
 
 function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): GatewayError {
@@ -468,7 +501,7 @@ function ratesRefused(call: AppCall, app: string, slug: string, gap: Gap): Gatew
     `pricing.${model}: the app ${app} routes ${model} to ${slug}, and ${
       gap.selectedMode
         ? `a preset selects the ${gap.mode} service mode, which this price lacks; give it a rate in that mode`
-        : `${operation} could bill ${call.bill.price === null ? "no price of it" : "this price only partly"}; give it a rate for every way it answers`
+        : `${operation} could bill ${call.bill.price === null ? "no price of it" : "this price only partly"}; give it a rate for every way it answers${gap.measure === undefined ? "" : `, including ${gap.measure}`}`
     }`,
     undefined,
     { data: { model, slug, app, operation } },
@@ -485,7 +518,8 @@ async function checkRewrites(db: D1Database, accountId: string, targets: readonl
   // Each connection's rates are read only if the search reaches it, so one
   // with unreadable rates cannot block a target the catalog alone allows.
   const connections = results.map(priceSources);
-  const operationsOf = (type: string) => builtInProvider(type)?.operations ?? [];
+  // A custom provider's operations by their names alone, wherever its connection lists them.
+  const operationsOf = (type: string) => (type === CUSTOM_PROVIDER_TYPE ? CUSTOM_OPERATIONS : (builtInProvider(type)?.operations ?? []));
   for (const [source, target] of targets) {
     if (!rewriteTargetBillable(target, connections, Object.keys(BUILT_IN_PROVIDERS), operationsOf)) {
       throw new GatewayError(
@@ -530,7 +564,7 @@ async function checkPreset(
     if (connection === null) {
       throw invalid(`${target.label}.provider: no provider connection ${target.provider} exists`, { slug });
     }
-    const description = builtInProvider(connection.type);
+    const description = rowDescription(connection);
     if (description === null) {
       throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
     }
@@ -569,7 +603,7 @@ async function checkPreset(
     // Naming a service mode in the parameters chooses it for every target, so
     // each must know it. Its price is judged with the target's call (`callGap`).
     if (preset.params !== undefined) {
-      const mode = requestedServiceMode(description, connection.base_url, preset.params, target.model);
+      const mode = requestedServiceMode(description, operation, connection.base_url, preset.params, target.model);
       if (mode.unknown !== undefined) {
         throw invalid(`${where}.params.${mode.unknown.field}: ${connection.type} has no service mode ${String(mode.unknown.value)}`, { slug });
       }

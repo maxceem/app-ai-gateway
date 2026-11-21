@@ -35,15 +35,16 @@
  * guards it).
  */
 import { listedAs, type ListedModel } from "../providers/listing.ts";
-import { rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
-import { isStandardMode, serviceModeName, type ServiceMode } from "../usage/service-modes.ts";
+import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
 import { PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
+  customerPrice,
   effectivePrices,
   keyCandidates,
   listPrice,
@@ -214,6 +215,23 @@ function reach(operation: OperationDescription, price: ModelPrice, mode: Service
   return some ? "partial" : "none";
 }
 
+/**
+ * The first measure `operation` produces that `price` cannot price, in the
+ * way that comes closest, as words for a message: `characters`, `tokens`.
+ * Null when some way prices every usage in it.
+ */
+export function missingMeasure(operation: OperationDescription, price: ModelPrice, mode: ServiceMode = STANDARD_MODE): string | null {
+  let missing: string | null = null;
+  for (const way of meterCases(operation)) {
+    const unpriced = way.find((usage) => !pricesUsage(price, usage, mode));
+    if (unpriced === undefined) return null;
+    const units = Object.keys(unpriced.units ?? {}).map((unit) => unit.replace(/_/gu, " "));
+    const measure = units.length > 0 ? units.join(" or ") : unpriced.noTokens === true ? "an answer with no usage" : "tokens";
+    if (missing === null || way.length > 1) missing = measure;
+  }
+  return missing;
+}
+
 /** Where a price falls short: the key values and mode at which it does, and the operation, when one reaches it only partly. */
 export interface Gap {
   readonly values: Readonly<Record<string, string>>;
@@ -221,6 +239,8 @@ export interface Gap {
   readonly operation?: string;
   /** The gap is the mode the call selects (`ReachableCall.mode`), which its price lacks. */
   readonly selectedMode?: true;
+  /** The measure the price has no rate for (`missingMeasure`), when one operation is short of it. */
+  readonly measure?: string;
 }
 
 /**
@@ -251,7 +271,13 @@ function chargeGap(operation: OperationDescription, price: ModelPrice): Gap | nu
     for (const mode of servedModes(price)) {
       const answer = reachOf(operation, mode, candidate.values);
       if (answer !== "full") {
-        return { values: candidate.values, mode: serviceModeName(mode), ...(answer === "partial" ? { operation: operation.name } : {}) };
+        const measure = missingMeasure(operation, price, mode);
+        return {
+          values: candidate.values,
+          mode: serviceModeName(mode),
+          ...(answer === "partial" ? { operation: operation.name } : {}),
+          ...(measure !== null ? { measure } : {}),
+        };
       }
     }
   }
@@ -279,7 +305,11 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
 
 /** Whether `operation` can bill `price`, by the check asked for. */
 function operationBillable(operation: OperationDescription, price: ModelPrice, check: BillingCheck): boolean {
-  return check === "serve" ? servable(operation, price) : chargeGap(operation, price) === null;
+  if (check === "save") return chargeGap(operation, price) === null;
+  // A custom provider's path is never served on a price that cannot bill some way of its in full: one rule
+  // for serving and saving, so a model priced for another style is `wrong_unit` there, as whisper-1 is on chat.
+  if (operation.pricedEveryWay === true) return reach(operation, price, STANDARD_MODE, undefined) === "full";
+  return servable(operation, price);
 }
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about, by the check asked for. */
@@ -485,7 +515,7 @@ export function resolvePresetTarget(
   const bill = billing(operation, sources, model);
   if (bill.problem !== null && !options.primary) return { kind: "refused", reason: "unbillable", operation, model, bill };
   const select = options.select;
-  const mode = select === undefined ? undefined : requestedServiceMode(description, select.baseUrl, select.params as Record<string, unknown>, model).mode;
+  const mode = select === undefined ? undefined : requestedServiceMode(description, operation, select.baseUrl, select.params as Record<string, unknown>, model).mode;
   return { kind: "admitted", operation, requested: model, model, bill, ...(mode !== undefined && !isStandardMode(mode) ? { mode } : {}) };
 }
 
@@ -613,7 +643,7 @@ export function reachableCalls(
           const call = resolveCall(route, rewrites, view.sources, operation, requested, listed, SAVING);
           if (call.kind === "admitted") found.push({ ...call, slug, entry: "proxy" });
         }
-        if (view.description.alternativeModels === undefined) continue;
+        if (readingRules(view.description, operation).alternativeModels === undefined) continue;
         for (const other of names) {
           RESOLVED_CALLS.count += 1;
           const call = resolveAlternative(operation, view.sources, other, listed, SAVING);
@@ -753,7 +783,14 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "bills_nothing"; readonly values: Readonly<Record<string, string>>; readonly mode: string; readonly operation?: string }
+  | {
+      readonly kind: "bills_nothing";
+      readonly values: Readonly<Record<string, string>>;
+      readonly mode: string;
+      readonly operation?: string;
+      /** The measure the price has no rate for, when one operation is short of it. */
+      readonly measure?: string;
+    }
   | null {
   const resolved = resolve(priceSources({ type: providerType, rates: stored }), model);
   if (resolved === null) return null;
@@ -774,9 +811,12 @@ export function savedPriceProblem(
   }
   // The connection does not know which operations an app will enable: its own rates must charge some
   // operation fully, at every key value and mode. The apps that route to it are judged call by call when
-  // its rates are saved (`../admin/apps.ts`, `checkConnectionRates`).
+  // its rates are saved (`../admin/apps.ts`, `checkConnectionChange`).
   const gap = ownRatesGap(operations, price);
-  return gap === null ? null : { kind: "bills_nothing", ...gap };
+  if (gap === null) return null;
+  const named = operations.find((operation) => operation.name === gap.operation) ?? (operations.length === 1 ? operations[0] : undefined);
+  const measure = named === undefined ? null : missingMeasure(named, price);
+  return { kind: "bills_nothing", ...gap, ...(measure !== null ? { measure } : {}) };
 }
 
 /**
@@ -804,6 +844,61 @@ function ownRatesGap(operations: readonly OperationDescription[], price: ModelPr
  * or null when the list has no rate for it. Only a comparison: a cross-check
  * header is judged by it (`src/proxy/meter.ts`), and nothing is billed by it.
  */
+/** One operation a model's calls can take, and every service mode it can be billed in (`selectableModes`). */
+export interface ModeCalls {
+  readonly operation: OperationDescription;
+  readonly modes: readonly ServiceMode[];
+}
+
+/**
+ * A mode rate this save adds or changes that can never bill, or null: the
+ * one rule for whether a rate entry is ever used. Each call the model can
+ * take is priced by the one charge function (`priceInServedMode`), in every
+ * mode it can be billed in, over every usage its meter can produce
+ * (`meterCases`, and each above every long-context threshold the rates name),
+ * fallbacks included, once with the entry and once without
+ * it. An entry whose absence changes no charge is never used. Entries that
+ * are unchanged from `before` are not judged again.
+ */
+export function unusedModeRate(
+  after: CustomerRates,
+  before: CustomerRates | null,
+  model: string,
+  calls: readonly ModeCalls[],
+): string | null {
+  const modes = (after[model] as { modes?: Record<string, unknown> } | undefined)?.modes;
+  if (modes === undefined) return null;
+  const stored = (before?.[model] as { modes?: Record<string, unknown> } | undefined)?.modes;
+  const changed = Object.keys(modes).filter((name) => stored === undefined || !Object.hasOwn(stored, name) || JSON.stringify(stored[name]) !== JSON.stringify(modes[name]));
+  if (changed.length === 0) return null;
+  // The usages each call's meter can produce, and each with its input just over every long-context threshold the
+  // model's rates name, so a long rate is probed where it bills.
+  const entry = after[model] as { long_context_threshold?: unknown; modes?: Record<string, { long_context_threshold?: unknown }> };
+  const thresholds = [entry.long_context_threshold, ...Object.values(entry.modes ?? {}).map((one) => one?.long_context_threshold)].filter(
+    (value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+  );
+  const usagesOf = (operation: OperationDescription) =>
+    meterCases(operation)
+      .flat()
+      .flatMap((usage) => [usage, ...(usage.noTokens === true ? [] : thresholds.map((threshold) => ({ ...usage, inputTokens: threshold + 1 })))]);
+  const charges = (rates: CustomerRates): string[] => {
+    const price = customerPrice(rates, model);
+    if (price === null) return [];
+    return calls.flatMap(({ operation, modes: selectable }) =>
+      usagesOf(operation).flatMap((usage) =>
+        selectable.map((mode) => JSON.stringify(priceInServedMode(price, usage, mode), (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value))),
+      ),
+    );
+  };
+  const withEntry = charges(after);
+  for (const name of changed) {
+    const { [name]: _dropped, ...rest } = modes;
+    const without = charges({ ...after, [model]: { ...after[model], modes: rest } });
+    if (without.every((charge, index) => charge === withEntry[index])) return name;
+  }
+  return null;
+}
+
 export function listedUnitRate(providerType: string, model: string, unit: Unit): number | null {
   const price = listPrice(providerType, model);
   if (price === null) return null;

@@ -439,16 +439,29 @@ function withModePrice(price: ModelPrice, entry: ModePrice): ModelPrice {
  * there, so on top of a tier only its factor applies.
  */
 export function priceInMode(price: ModelPrice, mode: ServiceMode): ModelPrice | undefined {
-  if (isStandardMode(mode)) return price;
+  const names = modeEntries(price, mode);
+  if (names === null) return undefined;
+  const modes = price.modes ?? {};
+  const [first, second] = names;
+  if (first === undefined) return price;
+  if (second === undefined) return withModePrice(price, modes[first]!);
+  return withModePrice(withModePrice(price, modes[first]!), { factor: modes[second]!.factor ?? 1 });
+}
+
+/**
+ * The entries of a price's `modes` that bill `mode` (`priceInMode`): none for
+ * the standard mode, the exact key, or the tier's then the region's; null
+ * when the price has no rate in that mode.
+ */
+function modeEntries(price: ModelPrice, mode: ServiceMode): readonly string[] | null {
+  if (isStandardMode(mode)) return [];
   const modes = price.modes;
-  if (modes === undefined) return undefined;
-  const entry = (name: string) => (Object.hasOwn(modes, name) ? modes[name] : undefined);
-  const exact = entry(serviceModeName(mode));
-  if (exact) return withModePrice(price, exact);
-  if (mode.tier === "standard" || mode.region === "global") return undefined;
-  const tier = entry(mode.tier);
-  const region = entry(mode.region);
-  return tier && region ? withModePrice(withModePrice(price, tier), { factor: region.factor ?? 1 }) : undefined;
+  if (modes === undefined) return null;
+  const has = (name: string) => Object.hasOwn(modes, name);
+  const exact = serviceModeName(mode);
+  if (has(exact)) return [exact];
+  if (mode.tier === "standard" || mode.region === "global") return null;
+  return has(mode.tier) && has(mode.region) ? [mode.tier, mode.region] : null;
 }
 
 /** The modes a price lists on their own (not inside a pair): what an estimate may search. */

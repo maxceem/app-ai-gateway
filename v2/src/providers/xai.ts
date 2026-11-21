@@ -12,6 +12,7 @@ export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
+  otherHosts: ["us.api.x.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // Key management lives on a separate host the gateway never calls. The
   // key's own details, and the short-lived secrets for live sessions, refused
@@ -32,8 +33,9 @@ export const xai = defineProvider({
       messages("xai.messages", "v1/messages"),
       // A form with only the audio is served, as v1: xAI transcribes it with grok-transcribe.
       transcription("xai.transcription", "v1/stt", { defaultModel: "grok-transcribe" }),
-      images("xai.images", "v1/images/generations", { providerCost: "xai" }),
-      images("xai.images.edits", "v1/images/edits", { providerCost: "xai" }),
+      // Its answers report only the cost, no usage.
+      images("xai.images", "v1/images/generations", { providerCost: "xai", costOnly: true }),
+      images("xai.images.edits", "v1/images/edits", { providerCost: "xai", costOnly: true, uploads: true }),
       embeddings("xai.embeddings", "v1/embeddings"),
     ],
     { chat: { providerCost: "xai" }, responses: { providerCost: "xai" } },

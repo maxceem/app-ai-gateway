@@ -19,8 +19,9 @@ import type { CustomerRates } from "../pricing/prices.ts";
 import { openSecret } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
-import type { ProviderDescription } from "./operation.ts";
-import { readPassthrough } from "./passthrough.ts";
+import { CUSTOM_PROVIDER_TYPE, customDescription } from "./custom.ts";
+import type { ProviderAuth, ProviderDescription } from "./operation.ts";
+import { readCustomAuth, readPassthrough } from "./passthrough.ts";
 
 /** A connection's Cloudflare AI Gateway setting, as stored (D13). The token is sealed. */
 export interface CloudflareGatewaySetting {
@@ -45,6 +46,8 @@ export interface ConnectionRecord {
   readonly servingProviders: readonly string[] | null;
   /** The paths it lists for passthrough (`./passthrough.ts`). None when left out. */
   readonly passthrough?: readonly PassthroughPath[];
+  /** A custom provider's key header and format (`./custom.ts`). Null or left out for a built-in provider. */
+  readonly customAuth?: ProviderAuth | null;
 }
 
 /**
@@ -109,6 +112,7 @@ export async function loadConnection(env: Env, accountId: string, slug: string):
             cloudflareGateway: readCloudflareGateway(row.cloudflareGateway),
             servingProviders: Array.isArray(row.servingProviders) ? row.servingProviders : null,
             passthrough: readPassthrough(row.passthrough),
+            customAuth: readCustomAuth(row.passthrough),
           };
     connectionCache.set(key, value, { storedAt: startedAt });
     return value;
@@ -120,9 +124,33 @@ export function invalidateConnection(accountId: string, slug: string): void {
   connectionCache.delete(cacheKey(accountId, slug));
 }
 
-/** The built-in description for a connection's type, or null for a type this build does not know. */
+const CUSTOM_DESCRIPTIONS = new WeakMap<object, ProviderDescription>();
+
+/**
+ * A connection's description: the built-in one for its type, or, for a
+ * custom provider, the one built from what it stores (`./custom.ts`). Null
+ * for a type this build does not know, or a custom provider stored without a
+ * base URL or key header, which saving never allows.
+ */
+export function describeConnection(connection: {
+  readonly type: string;
+  readonly baseUrl: string | null;
+  readonly passthrough?: readonly PassthroughPath[];
+  readonly customAuth?: ProviderAuth | null;
+}): ProviderDescription | null {
+  if (connection.type !== CUSTOM_PROVIDER_TYPE) return builtInProvider(connection.type);
+  if (connection.baseUrl === null || connection.customAuth === undefined || connection.customAuth === null) return null;
+  return customDescription({ baseUrl: connection.baseUrl, auth: connection.customAuth, paths: connection.passthrough ?? [] });
+}
+
+/** A loaded connection's description (`describeConnection`), built once per loaded record. */
 export function connectionDescription(connection: ConnectionRecord): ProviderDescription | null {
-  return builtInProvider(connection.type);
+  if (connection.type !== CUSTOM_PROVIDER_TYPE) return builtInProvider(connection.type);
+  const cached = CUSTOM_DESCRIPTIONS.get(connection);
+  if (cached !== undefined) return cached;
+  const description = describeConnection(connection);
+  if (description !== null) CUSTOM_DESCRIPTIONS.set(connection, description);
+  return description;
 }
 
 /** Where Cloudflare AI Gateway lives. Only a test deployment's own build moves it (`./route.ts`). */

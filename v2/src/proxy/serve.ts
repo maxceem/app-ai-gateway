@@ -55,8 +55,8 @@ import {
 import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
 import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
-import { upstreamRequest } from "../providers/route.ts";
-import type { OperationDescription, ProviderDescription } from "../providers/operation.ts";
+import { keyAuth, upstreamRequest } from "../providers/route.ts";
+import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -76,7 +76,8 @@ function responseDeadlineMs(operation: OperationDescription): number {
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 
-const matchers = new Map<string, ProviderMatcher>();
+/** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
+const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
 
 const ROUTES = new WeakMap<ConnectionRecord, UpstreamRoute>();
 
@@ -91,10 +92,10 @@ function routeOf(description: ProviderDescription, connection: ConnectionRecord)
 }
 
 export function matcherFor(description: ProviderDescription): ProviderMatcher {
-  let matcher = matchers.get(description.type);
+  let matcher = matchers.get(description);
   if (matcher === undefined) {
     matcher = new ProviderMatcher(description);
-    matchers.set(description.type, matcher);
+    matchers.set(description, matcher);
   }
   return matcher;
 }
@@ -328,7 +329,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         }
       }
       // Read, never judged: a service mode is never refused (`./meter.ts`).
-      const mode = requestedServiceMode(description, connection.baseUrl, body, model);
+      const mode = requestedServiceMode(description, operation, connection.baseUrl, body, model);
       // What the meter takes from the request, and the values its rates depend on.
       const fields = { body, query: url.searchParams };
       const facts = requestFacts(operation, fields, price?.price ?? null, caller.facts);
@@ -570,7 +571,7 @@ export async function requestBody(
     }
     const boundary = multipartBoundary(contentType);
     const modelField = location.in === "body" || location.in === "form" ? location.field : null;
-    const wanted = new Set(["response_format", ...description.serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
+    const wanted = new Set(["response_format", ...readingRules(description, operation).serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
     if (modelField !== null) wanted.add(modelField);
     let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };
     try {
@@ -587,7 +588,7 @@ export async function requestBody(
   }
   // An operation that takes raw bytes (audio) reads a body only when it says it is JSON.
   if (operation.rawBody === true && !isJson(contentType)) return { kind: "raw" };
-  if (operation.style === "openai-transcription" && description.transcriptionFormats !== undefined) {
+  if (operation.style === "openai-transcription" && readingRules(description, operation).transcriptionFormats !== undefined) {
     throw new GatewayError(400, "invalid_request", "A transcription is sent as a multipart/form-data upload");
   }
   return { kind: "json", body: jsonBody(bytes) };
@@ -655,7 +656,7 @@ export function meteredTranscriptionFormat(
   description: ProviderDescription,
   fields: ReadonlyMap<string, readonly FieldValue[]>,
 ): string | null {
-  const formats = description.transcriptionFormats;
+  const formats = readingRules(description, operation).transcriptionFormats;
   if (operation.style !== "openai-transcription" || formats === undefined) return null;
   const requested = fields.get("response_format") ?? [];
   const named = requested[0];
@@ -853,10 +854,12 @@ export async function sendAttempts(
   c: ProxyContext,
   stripped: readonly string[],
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
+  /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
+  otherKeyHeaders: readonly string[] = [],
 ): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string } | null = null;
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -866,6 +869,13 @@ export async function sendAttempts(
     });
     return new GatewayError(504, "provider_error", "Provider did not respond in time");
   };
+  // The header each connection's key is sent in belongs to the gateway alone: a client's value in any of
+  // them, for any connection of the chain, never reaches any attempt. Its answers never pass it back
+  // either (`clientResponseHeaders` in `answer`).
+  const keyHeaders = [
+    ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
+    ...otherKeyHeaders,
+  ].map((name) => name.toLowerCase());
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
@@ -875,7 +885,7 @@ export async function sendAttempts(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
       }
       throw budgetExhausted(index);
     }
@@ -898,11 +908,12 @@ export async function sendAttempts(
     let controller: AbortController;
     let timer: ReturnType<typeof setTimeout>;
     let providerStart: number;
+    let keyHeader = description.auth.header.toLowerCase();
     try {
       const body = prepared.body();
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
-      const client = withoutHeaders(c.req.raw.headers, stripped);
+      const client = withoutHeaders(c.req.raw.headers, [...stripped, ...keyHeaders]);
       // A listed passthrough path also forwards the headers its provider declares for one.
       const headers = upstreamHeaders(client, isPassthrough(prepared.operation) ? (description.passthroughHeaders ?? []) : []);
       for (const [name, value] of Object.entries(prepared.defaultHeaders ?? {})) {
@@ -926,6 +937,7 @@ export async function sendAttempts(
       });
       for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
       const url = target.url;
+      keyHeader = target.keyHeader;
 
       // Checked just before each fetch: nothing is sent for an app that went
       // away. The app's own signal is never passed to the provider, so an
@@ -950,7 +962,7 @@ export async function sendAttempts(
         signal: controller.signal,
       });
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -990,14 +1002,14 @@ export async function sendAttempts(
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs };
+      previous = { prepared, upstream, latencyMs, keyHeader };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs);
+    return answer(c, prepared, upstream, latencyMs, keyHeader);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1035,9 +1047,10 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
 }
 
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
-function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number): Response {
+/** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
+function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
   const { description, operation, attempt } = prepared;
-  const responseHeaders = clientResponseHeaders(upstream.headers);
+  const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 
@@ -1079,7 +1092,7 @@ function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, 
         // A passthrough answer is not read, so it names no mode: it is billed as asked, at its flat price.
         const served: ReturnType<typeof servedServiceMode> = isPassthrough(operation)
           ? { mode: charged.requestedMode }
-          : servedServiceMode(description, charged.requestedMode, usage, upstream.headers, charged.model);
+          : servedServiceMode(description, operation, charged.requestedMode, usage, upstream.headers, charged.model);
         const outcome: AttemptOutcome = ok
           ? {
               // A stream the provider broke, or ended early, is a failed attempt, not one the app left.

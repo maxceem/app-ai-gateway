@@ -17,12 +17,24 @@
  * - Passthrough paths (plan section 4.5) are checked when saved: each must be
  *   a valid template, and a newly listed one must not be one the provider
  *   always refuses, nor overlap a declared operation (`passthroughJson`).
+ * - A custom provider (type `custom`, `../providers/custom.ts`) needs its
+ *   base URL and the header its key is sent in. Its listed paths are its
+ *   whole API; one that names an API style is an operation of that style,
+ *   priced at the connection's rates. It takes neither Cloudflare AI Gateway
+ *   nor serving providers. Only a person or key with the manage grant can
+ *   save one, as any base URL.
+ * - A base URL's path is normalized as request paths are (`checkedBaseUrl`).
+ * - Every change that affects which calls a connection serves or their price
+ *   (rates, paths, API styles, base URL) is judged against the apps that
+ *   route to it by one rule (`checkConnectionChange`).
  */
 import type { Context } from "hono";
 import {
+  CUSTOM_PROVIDER_TYPE,
   ProviderCreateRequestSchema,
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
+  type CustomAuthSchema,
   type ModelPricingSchema,
   type PassthroughPathSchema,
 } from "../contracts/admin.ts";
@@ -30,14 +42,25 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
+import { selectableModes } from "../proxy/meter.ts";
 import {
+  describeConnection,
   keyOrigin,
   readCloudflareGateway,
   invalidateConnection,
   type CloudflareGatewaySetting,
 } from "../providers/connections.ts";
+import {
+  CLOUDFLARE_AI_GATEWAY_HOST,
+  customAuthProblem,
+  customDescription,
+  customOperationName,
+  customStyleProblem,
+  isCustomStyle,
+  knownHostOwner,
+} from "../providers/custom.ts";
 import { builtInProvider } from "../providers/index.ts";
 import {
   compilePassthrough,
@@ -47,13 +70,13 @@ import {
   type PassthroughPath,
   type UpstreamRoute,
 } from "../providers/matcher.ts";
-import type { ProviderDescription } from "../providers/operation.ts";
-import { readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
-import { TemplateError } from "../providers/path.ts";
+import type { OperationDescription, ProviderAuth, ProviderDescription } from "../providers/operation.ts";
+import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
+import { normalizePath, TemplateError, type PathRefusal } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
-import { checkConnectionRates, checkNewConnection, parseBody } from "./apps.ts";
+import { checkConnectionChange, checkNewConnection, parseBody } from "./apps.ts";
 import { planCap } from "./plan-caps.ts";
 import { probeProviderKey } from "./provider-test.ts";
 import type { z } from "zod";
@@ -126,8 +149,14 @@ function mapTables(
  * no operation of the connection can charge (the one charge function decides,
  * `savedPriceProblem`), or that holds a rate too large to store.
  */
-function assertEffectivePrices(stored: CustomerRates, model: string, providerType: string, where: string): void {
-  const problem = savedPriceProblem(stored, model, providerType, builtInProvider(providerType)?.operations ?? []);
+function assertEffectivePrices(
+  stored: CustomerRates,
+  model: string,
+  providerType: string,
+  operations: readonly OperationDescription[],
+  where: string,
+): void {
+  const problem = savedPriceProblem(stored, model, providerType, operations);
   if (problem === null) return;
   if (problem.kind === "too_many_combinations") {
     throw new GatewayError(
@@ -138,11 +167,23 @@ function assertEffectivePrices(stored: CustomerRates, model: string, providerTyp
   }
   if (problem.kind === "too_large") throw new GatewayError(400, "invalid_request", `${where}: a rate is too large once a service mode's factor applies`);
   const named = Object.entries(problem.values).map(([key, value]) => `${key} ${value}`).join(", ");
-  throw new GatewayError(400, "invalid_request", `${where}: the price${named === "" ? "" : ` for ${named}`} in ${problem.mode} has no rate that bills`);
+  throw new GatewayError(
+    400,
+    "invalid_request",
+    `${where}: the price${named === "" ? "" : ` for ${named}`} in ${problem.mode} has no rate that bills${problem.measure === undefined ? "" : `; it needs a rate for ${problem.measure}`}`,
+  );
 }
 
-/** Dollars to stored rates: each rate to whole nano-dollars per its amount, modes and price keys too. */
-export function ratesFromPricing(pricing: DollarPricing, providerType: string): CustomerRates {
+/**
+ * Dollars to stored rates: each rate to whole nano-dollars per its amount,
+ * modes and price keys too. Each price is judged against `operations`, the
+ * connection's: its built-in type's by default, a custom provider's own.
+ */
+export function ratesFromPricing(
+  pricing: DollarPricing,
+  providerType: string,
+  operations: readonly OperationDescription[] = builtInProvider(providerType)?.operations ?? [],
+): CustomerRates {
   const rates: Record<string, Record<string, unknown>> = {};
   for (const [model, price] of Object.entries(pricing)) {
     const where = `pricing.${model}`;
@@ -155,7 +196,7 @@ export function ratesFromPricing(pricing: DollarPricing, providerType: string): 
     }
     rates[model] = entry;
   }
-  for (const model of Object.keys(rates)) assertEffectivePrices(rates, model, providerType, `pricing.${model}`);
+  for (const model of Object.keys(rates)) assertEffectivePrices(rates, model, providerType, operations, `pricing.${model}`);
   return rates;
 }
 
@@ -191,7 +232,19 @@ function passthroughView(stored: string | null): z.output<typeof PassthroughPath
     method: listed.method,
     path: listed.path,
     ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
+    ...(listed.style !== undefined && isCustomStyle(listed.style) ? { style: listed.style } : {}),
   }));
+}
+
+/** What a connection's listed paths are judged against: a built-in provider, or a custom one's base URL and key header. */
+type ListingSubject =
+  | { readonly kind: "builtIn"; readonly description: ProviderDescription; readonly cloudflareGateway: object | null; readonly baseUrl: string | null }
+  | { readonly kind: "custom"; readonly baseUrl: string; readonly auth: ProviderAuth };
+
+/** A connection's listed paths, checked: what to store, and the description they make (a custom provider's operations). */
+interface CheckedListing {
+  readonly stored: string | null;
+  readonly description: ProviderDescription;
 }
 
 /**
@@ -204,30 +257,42 @@ function passthroughView(stored: string | null): z.output<typeof PassthroughPath
  * - a path not listed before must not be one the provider always refuses
  *   (it could never be reached), nor overlap a declared operation (listed
  *   paths are matched first, so it would take that operation's requests
- *   unmetered). Both are judged on the connection's `route` too: where the
+ *   unmetered). Both are judged on the connection's route too: where the
  *   provider reads the path through a base URL or Cloudflare AI Gateway
  *   (`upstreamTargets`). Paths listed before on the same route are not
  *   judged again, so a later release that refuses or declares one never
  *   stops a save. A new route judges them all (`before` is then empty).
+ * - a custom provider's path may name an API style (`../providers/custom.ts`):
+ *   a POST, with no flat price (its models' rates price it), one per style.
+ *   It is then one of the provider's operations, so no plain listing may
+ *   overlap it, nor another style's path.
  */
 function passthroughJson(
-  description: ProviderDescription,
-  route: UpstreamRoute,
+  subject: ListingSubject,
   asked: readonly z.output<typeof PassthroughPathSchema>[],
   before: readonly PassthroughPath[],
-): string | null {
-  const matcher = new ProviderMatcher(description);
+): CheckedListing {
   const known = new Set(before.flatMap((listed) => {
     try {
-      return [listingShape(compilePassthrough([listed])[0]!)];
+      return [listingKey(compilePassthrough([listed])[0]!)];
     } catch {
       return [];
     }
   }));
   const seen = new Set<string>();
-  const paths: PassthroughPath[] = asked.map((entry, index) => {
+  const styles = new Set<string>();
+  const checked = asked.map((entry, index) => {
     const where = `passthrough.${index}`;
     const key = `${entry.method} ${entry.path}`;
+    if (entry.style !== undefined) {
+      if (subject.kind !== "custom") throw new GatewayError(400, "invalid_request", `${where}.style: only a custom provider's path names an API style`);
+      if (entry.method !== "POST") throw new GatewayError(400, "invalid_request", `${where}.method: a path of the ${entry.style} style is a POST`);
+      if (entry.per_request !== undefined) {
+        throw new GatewayError(400, "invalid_request", `${where}.per_request: a path of an API style is priced by its models' rates, not per request`);
+      }
+      if (styles.has(entry.style)) throw new GatewayError(400, "invalid_request", `${where}.style: list one path per API style; ${entry.style} has one already`);
+      styles.add(entry.style);
+    }
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
       try {
@@ -237,7 +302,12 @@ function passthroughJson(
         throw new GatewayError(400, "invalid_request", `${where}.per_request: the price is too large`);
       }
     }
-    const listed: PassthroughPath = { method: entry.method, path: entry.path, ...(priceNano !== undefined ? { priceNano } : {}) };
+    const listed: PassthroughPath = {
+      method: entry.method,
+      path: entry.path,
+      ...(priceNano !== undefined ? { priceNano } : {}),
+      ...(entry.style !== undefined ? { style: entry.style } : {}),
+    };
     let compiled: CompiledPassthrough;
     try {
       [compiled] = compilePassthrough([listed]) as [CompiledPassthrough];
@@ -252,28 +322,117 @@ function passthroughJson(
     if (callGap(resolvePassthrough(listed)) !== null) {
       throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
-    if (!known.has(shape)) {
-      if (matcher.refusedCovering(compiled, route) !== null) {
-        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
-      }
-      // Listed paths are matched before declared operations, so a listing that
-      // could match any of an operation's paths would take its requests unmetered.
-      const operation = matcher.overlappingOperation(compiled, route);
-      if (operation !== null) {
-        // Only through the base URL's path: the listing itself is not the operation's path.
-        const throughBase = route.basePath !== null && matcher.overlappingOperation(compiled, { ...route, basePath: null }) === null;
+    return { where, key, listed, compiled, isNew: !known.has(listingKey(compiled)) };
+  });
+  const paths = checked.map((one) => one.listed);
+  const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;
+  const route = upstreamRoute(description, subject.kind === "custom" ? { baseUrl: subject.baseUrl, cloudflareGateway: null } : subject);
+  const matcher = new ProviderMatcher(description);
+  // A new API-style path is an operation the plain listings could now overlap: they are judged against it again.
+  const styleAdded = checked.some((one) => one.listed.style !== undefined && one.isNew);
+  // A custom provider on a known provider's host: that provider's declared operations, where its paths are read.
+  const owner = subject.kind === "custom" ? knownHostOwner(subject.baseUrl) : null;
+  const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
+  const ownerRoute = owner === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
+  for (const { where, key, listed, compiled, isNew } of checked) {
+    if (isNew && matcher.refusedCovering(compiled, route) !== null) {
+      throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+    }
+    // A path new or changed in this save is judged for its style: one already listed keeps working.
+    if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
+      const problem = customStyleProblem(listed.style, subject.baseUrl);
+      if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
+      // On a known provider's host, a path its declared operation serves speaks that operation's style:
+      // another style's reader would miss what its answers report.
+      // Every operation it could take, not only the first: each must speak its style.
+      const overlapped = ownerMatcher === null || ownerRoute === null ? [] : ownerMatcher.overlappingOperations(compiled, ownerRoute);
+      const styleOf = (name: string) => owner!.operations.find((operation) => operation.name === name)?.style;
+      const declared = overlapped.find((name) => styleOf(name) !== listed.style) ?? null;
+      const declaredStyle = declared === null ? undefined : styleOf(declared);
+      if (declared !== null) {
         throw new GatewayError(
           400,
           "invalid_request",
-          throughBase
-            ? `${where}.path: behind this connection's base URL, ${key} can reach the provider path of the ${operation} operation; list a path the provider does not serve as an operation, or change the base URL`
-            : `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
+          declaredStyle !== undefined && isCustomStyle(declaredStyle)
+            ? `${where}.style: ${key} is ${owner!.label}'s ${declared} operation, which speaks ${declaredStyle}; list it with the style ${declaredStyle}`
+            : `${where}.style: ${key} is ${owner!.label}'s ${declared} operation, which a custom path cannot meter; use a ${owner!.label} connection for it`,
         );
       }
     }
-    return listed;
-  });
-  return storedPassthrough(paths);
+    // As on a built-in connection (5a): a plain path newly listed on a known provider's host may not take
+    // one of that provider's declared operations, which would pass it through unmetered.
+    if (isNew && listed.style === undefined && ownerMatcher !== null && ownerRoute !== null) {
+      const declared = ownerMatcher.overlappingOperation(compiled, ownerRoute);
+      if (declared !== null) {
+        const style = owner!.operations.find((operation) => operation.name === declared)?.style;
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          style !== undefined && isCustomStyle(style)
+            ? `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation; list it with the style ${style}, which meters and prices it`
+            : `${where}.path: ${key} can match ${owner!.label}'s ${declared} operation, which a custom path cannot meter; use a ${owner!.label} connection for it`,
+        );
+      }
+    }
+    if (listed.style !== undefined && isCustomStyle(listed.style)) {
+      // Its own operation aside, no other style's path may take its requests.
+      const name = customOperationName(listed.style);
+      const others = new ProviderMatcher({ ...description, operations: description.operations.filter((operation) => operation.name !== name) });
+      const other = others.overlappingOperation(compiled, route);
+      if (other !== null) throw new GatewayError(400, "invalid_request", `${where}.path: ${key} can match the requests of the ${other} path; list paths that do not overlap`);
+      continue;
+    }
+    if (!isNew && !styleAdded) continue;
+    // Listed paths are matched before declared operations, so a listing that
+    // could match any of an operation's paths would take its requests unmetered.
+    const operation = matcher.overlappingOperation(compiled, route);
+    if (operation !== null) {
+      // Only through the base URL's path: the listing itself is not the operation's path.
+      const throughBase = route.basePath !== null && matcher.overlappingOperation(compiled, { ...route, basePath: null }) === null;
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        subject.kind === "custom"
+          ? `${where}.path: ${key} can match the requests of the ${operation} path; list paths that do not overlap`
+          : throughBase
+            ? `${where}.path: behind this connection's base URL, ${key} can reach the provider path of the ${operation} operation; list a path the provider does not serve as an operation, or change the base URL`
+            : `${where}.path: ${key} can match a path of the ${operation} operation; list a narrower path, or enable ${operation} on the app, which meters and prices it`,
+      );
+    }
+  }
+  return { stored: storedPassthrough(paths, subject.kind === "custom" ? subject.auth : null), description };
+}
+
+/**
+ * A rate in a service mode that no call on the connection can ever bill:
+ * refused when this save adds or changes it. Which modes a call can be
+ * billed in is read by the code that reads them when serving
+ * (`selectableModes`), for the connection's base URL and each operation; and
+ * whether a rate entry is ever used, by the one charge function, fallbacks
+ * included (`unusedModeRate`). Every save of rates runs it: a direct create
+ * or update, and a hand-off.
+ */
+export function assertModesSelectable(
+  description: ProviderDescription,
+  baseUrl: string | null,
+  rates: CustomerRates | null,
+  before: CustomerRates | null,
+): void {
+  for (const model of Object.keys(rates ?? {})) {
+    const calls = description.operations.map((operation) => ({ operation, modes: selectableModes(description, operation, baseUrl, model) }));
+    const unused = unusedModeRate(rates!, before, model, calls);
+    if (unused === null) continue;
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `pricing.${model}.modes.${unused}: no call on this connection is ever billed at this rate; price the mode its calls are served in instead`,
+    );
+  }
+}
+
+/** A listing's shape and, for a custom provider's path, its API style: what makes it the same listing as before. */
+function listingKey(compiled: CompiledPassthrough): string {
+  return `${listingShape(compiled)}\u0000${compiled.listed.style ?? ""}`;
 }
 
 /** A listing's method and the requests it matches: a leading `/` and the names of its parts make no difference. */
@@ -293,6 +452,7 @@ function sameRoute(a: UpstreamRoute, b: UpstreamRoute): boolean {
 
 export function providerView(row: ConnectionRow) {
   const passthrough = passthroughView(row.passthrough_json);
+  const auth = row.type === CUSTOM_PROVIDER_TYPE ? readCustomAuth(row.passthrough_json) : null;
   return {
     id: row.id,
     type: row.type,
@@ -304,6 +464,7 @@ export function providerView(row: ConnectionRow) {
     cloudflareGateway: cloudflareView(readCloudflareGateway(row.cloudflare_gateway_json)),
     servingProviders: row.serving_providers_json === null ? null : (JSON.parse(row.serving_providers_json) as string[]),
     ...(passthrough !== undefined ? { passthrough } : {}),
+    ...(auth !== null ? { auth } : {}),
     pricing: row.rates_json === null ? null : pricingFromRates(JSON.parse(row.rates_json) as CustomerRates),
     revision: row.revision,
     createdAt: iso(row.created_at),
@@ -364,9 +525,76 @@ function keyNeeded(): GatewayError {
   return new GatewayError(400, "invalid_request", "secret: a connection needs the provider's key, unless it goes through Cloudflare AI Gateway");
 }
 
-export function checkedBaseUrl(raw: string): string {
+/**
+ * A custom provider's key header and base URL, checked when saved. Its base
+ * URL passed the origin guard. It may not be Cloudflare AI Gateway's host,
+ * which reaches every provider: a built-in connection's own setting goes
+ * there instead, with that provider's refused paths.
+ */
+function checkedCustom(
+  baseUrl: string | null,
+  auth: z.output<typeof CustomAuthSchema> | undefined | null,
+  stored: { readonly baseUrl: string | null; readonly auth: ProviderAuth | null } | null = null,
+): { baseUrl: string; auth: ProviderAuth } {
+  if (baseUrl === null) throw new GatewayError(400, "invalid_request", "baseUrl: a custom provider needs its base URL");
+  if (auth === undefined || auth === null) throw new GatewayError(400, "invalid_request", "auth: a custom provider needs the header its key is sent in");
+  // Only what this save sets or changes is judged: a stricter rule in a later release never stops a save that keeps them.
+  const sameAuth = stored?.auth !== null && stored?.auth !== undefined && stored.auth.header === auth.header && stored.auth.format === auth.format;
+  const problem = sameAuth ? null : customAuthProblem(auth);
+  if (problem !== null) throw new GatewayError(400, "invalid_request", problem);
+  if (baseUrl !== stored?.baseUrl && new URL(baseUrl).hostname === CLOUDFLARE_AI_GATEWAY_HOST) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "baseUrl: Cloudflare AI Gateway is not a custom provider; add the provider itself and turn on its Cloudflare AI Gateway setting",
+    );
+  }
+  return { baseUrl, auth: { header: auth.header, format: auth.format } };
+}
+
+/** Fields a custom provider does not take, and the ones only it takes. */
+function assertFieldsFit(
+  type: string,
+  body: { readonly auth?: unknown; readonly cloudflareGateway?: unknown; readonly servingProviders?: unknown },
+): void {
+  if (type === CUSTOM_PROVIDER_TYPE) {
+    if (body.cloudflareGateway !== undefined && body.cloudflareGateway !== null) {
+      throw new GatewayError(400, "invalid_request", "cloudflareGateway: a custom provider is reached at its base URL only");
+    }
+    if (body.servingProviders !== undefined && body.servingProviders !== null) {
+      throw new GatewayError(400, "invalid_request", "servingProviders: a custom provider takes no serving providers");
+    }
+  } else if (body.auth !== undefined) {
+    throw new GatewayError(400, "invalid_request", "auth: only a custom provider sets how its key is sent");
+  }
+}
+
+/** Why a base URL's path could reach another path at the provider than the one judged, in words. */
+const BASE_PATH_PROBLEMS: Readonly<Record<PathRefusal, string>> = {
+  bad_encoding: "has broken percent-encoding",
+  dot_segment: "has a . or .. segment",
+  encoded_separator: "has an encoded / or \\",
+  control_character: "has a control character",
+};
+
+/**
+ * A base URL, checked when saved: the origin guard, then its path through
+ * the same normalization request paths get (`normalizePath`). Refused paths
+ * are judged on its segments (`upstreamTargets`), so an encoded slash, a
+ * backslash, a dot segment, broken encoding or an empty segment, which the
+ * provider could read as other segments, is refused. A stored base URL sent
+ * back unchanged (`unchanged`) is not judged again.
+ */
+export function checkedBaseUrl(raw: string, unchanged: string | null = null): string {
   const checked = checkOperatorBaseUrl(raw);
   if (!checked.ok) throw new GatewayError(400, "invalid_request", `baseUrl: ${checked.message}`);
+  if (checked.baseUrl === unchanged) return checked.baseUrl;
+  const pathname = new URL(checked.baseUrl).pathname;
+  const normalized = normalizePath(pathname);
+  if (!normalized.ok) throw new GatewayError(400, "invalid_request", `baseUrl: its path ${BASE_PATH_PROBLEMS[normalized.reason]}`);
+  if (pathname.length > 1 && pathname.slice(1, -1).split("/").includes("")) {
+    throw new GatewayError(400, "invalid_request", "baseUrl: its path has an empty segment (//)");
+  }
   return checked.baseUrl;
 }
 
@@ -399,25 +627,41 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   requireManage(actor);
   const body = await parseBody(c, ProviderCreateRequestSchema);
-  const description = builtInProvider(body.type);
-  if (description === null) {
+  const custom = body.type === CUSTOM_PROVIDER_TYPE;
+  const builtIn = builtInProvider(body.type);
+  if (builtIn === null && !custom) {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
   }
+  assertFieldsFit(body.type, body);
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
-  checkRoute(description, baseUrl, cloudflare);
+  const customSetting = custom ? checkedCustom(baseUrl, body.auth) : null;
+  if (builtIn !== null) checkRoute(builtIn, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   const id = newConnectionId();
   const origin = keyOrigin({ baseUrl, cloudflareGateway: cloudflare });
   const blob = body.secret === undefined ? null : await sealSecret(c.env, "providerKey", [actor.accountId, id, body.type, origin], body.secret);
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
-  const servingJson = servingProvidersJson(description, body.servingProviders);
-  const passthroughStored =
-    body.passthrough === undefined ? null : passthroughJson(description, upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare }), body.passthrough, []);
-  const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type);
+  const servingJson = builtIn === null ? null : servingProvidersJson(builtIn, body.servingProviders);
+  // A custom provider always stores its key header, so its paths are judged even when it lists none yet.
+  const listing =
+    customSetting !== null
+      ? passthroughJson({ kind: "custom", ...customSetting }, body.passthrough ?? [], [])
+      : body.passthrough === undefined
+        ? null
+        : passthroughJson({ kind: "builtIn", description: builtIn!, baseUrl, cloudflareGateway: cloudflare }, body.passthrough, []);
+  const passthroughStored = listing?.stored ?? null;
+  const operations = listing?.description.operations ?? builtIn!.operations;
+  const newRates = body.pricing === undefined ? null : ratesFromPricing(body.pricing, body.type, operations);
+  assertModesSelectable(listing?.description ?? builtIn!, baseUrl, newRates, null);
   // Apps may already route to the slug (a connection deleted and made again): their calls are judged on the new rates.
-  await checkNewConnection(c.env.DB, actor.accountId, { slug, type: body.type, baseUrl }, newRates);
+  await checkNewConnection(
+    c.env.DB,
+    actor.accountId,
+    { slug, type: body.type, baseUrl, ...(listing !== null && custom ? { description: listing.description } : {}) },
+    newRates,
+  );
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "provider");
   const now = Date.now();
   let written: D1Result;
@@ -466,8 +710,12 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, ProviderUpdateRequestSchema);
   const current = await connectionRow(c.env.DB, actor.accountId, c.req.param("id")!);
+  const custom = current.type === CUSTOM_PROVIDER_TYPE;
   const description = builtInProvider(current.type);
-  const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl);
+  assertFieldsFit(current.type, body);
+  const baseUrl = body.baseUrl === undefined ? current.base_url : body.baseUrl === null ? null : checkedBaseUrl(body.baseUrl, current.base_url);
+  const storedAuth = custom ? readCustomAuth(current.passthrough_json) : null;
+  const customSetting = custom ? checkedCustom(baseUrl, body.auth ?? storedAuth, { baseUrl: current.base_url, auth: storedAuth }) : null;
 
   // Cloudflare AI Gateway: kept, removed, or set. A new account or gateway needs a token for it.
   const storedCloudflareSetting = readCloudflareGateway(current.cloudflare_gateway_json);
@@ -550,33 +798,62 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   // changes where the provider reads a path (a base URL's path, or going
   // through Cloudflare or not) judges every listed path again, kept or sent.
   // Another Cloudflare gateway, or another host with the same path, does not.
+  // A custom provider's base URL moving to another known provider's host
+  // brings other refused paths: every path is judged again then too.
   let passthroughStored = current.passthrough_json;
+  const storedPaths = readPassthrough(current.passthrough_json);
+  const oldDescription = describeConnection({ type: current.type, baseUrl: current.base_url, passthrough: storedPaths, customAuth: storedAuth });
+  const newDescription = customSetting !== null ? customDescription({ ...customSetting, paths: storedPaths }) : description;
   const routeMoved =
-    description !== null &&
-    !sameRoute(
-      upstreamRoute(description, { baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting }),
-      upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare }),
-    );
-  const kept = body.passthrough === undefined && routeMoved ? passthroughView(current.passthrough_json) : undefined;
-  const listing = body.passthrough === null ? null : (body.passthrough ?? kept);
-  if (listing === null) passthroughStored = null;
-  else if (listing !== undefined) {
-    if (description === null) throw new GatewayError(400, "invalid_request", `passthrough: provider type ${current.type} is not supported`);
-    const route = upstreamRoute(description, { baseUrl, cloudflareGateway: cloudflare });
-    passthroughStored = passthroughJson(description, route, listing, routeMoved ? [] : readPassthrough(current.passthrough_json));
+    oldDescription !== null &&
+    newDescription !== null &&
+    (!sameRoute(
+      upstreamRoute(oldDescription, { baseUrl: current.base_url, cloudflareGateway: storedCloudflareSetting }),
+      upstreamRoute(newDescription, { baseUrl, cloudflareGateway: cloudflare }),
+    ) ||
+      (custom && current.base_url !== null && baseUrl !== null && knownHostOwner(current.base_url)?.type !== knownHostOwner(baseUrl)?.type));
+  const authMoved = customSetting !== null && (storedAuth?.header !== customSetting.auth.header || storedAuth?.format !== customSetting.auth.format);
+  const kept = body.passthrough === undefined && (routeMoved || authMoved) ? (passthroughView(current.passthrough_json) ?? []) : undefined;
+  const askedPaths = body.passthrough === null ? (custom ? [] : null) : (body.passthrough ?? kept);
+  // The description the connection has once saved: its paths decide a custom provider's operations.
+  let operationsDescription: ProviderDescription | null = custom ? newDescription : description;
+  if (askedPaths === null) passthroughStored = null;
+  else if (askedPaths !== undefined) {
+    const priorPaths = routeMoved ? [] : storedPaths;
+    let checked: CheckedListing;
+    if (customSetting !== null) checked = passthroughJson({ kind: "custom", ...customSetting }, askedPaths, priorPaths);
+    else {
+      if (description === null) throw new GatewayError(400, "invalid_request", `passthrough: provider type ${current.type} is not supported`);
+      checked = passthroughJson({ kind: "builtIn", description, baseUrl, cloudflareGateway: cloudflare }, askedPaths, priorPaths);
+    }
+    passthroughStored = checked.stored;
+    operationsDescription = checked.description;
   }
-  const newRates = body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type);
-  if (body.pricing !== undefined) {
-    // Every change of rates, whatever its shape (a replacement, a deletion inside it, or `null`, every
-    // model's rate deleted), is judged against the apps that route to this connection.
-    const before = (() => {
-      try {
-        return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
-      } catch {
-        return null;
-      }
-    })();
-    await checkConnectionRates(c.env.DB, actor.accountId, { slug: current.slug, type: current.type, baseUrl }, before, newRates);
+  const newRates =
+    body.pricing === undefined || body.pricing === null ? null : ratesFromPricing(body.pricing, current.type, operationsDescription?.operations ?? []);
+  // The stored rates, read once: unreadable ones count as none.
+  const oldRates = (() => {
+    try {
+      return current.rates_json === null ? null : (JSON.parse(current.rates_json) as CustomerRates);
+    } catch {
+      return null;
+    }
+  })();
+  if (operationsDescription !== null && body.pricing !== undefined) assertModesSelectable(operationsDescription, baseUrl, newRates, oldRates);
+  // Every change that affects which calls the connection serves, or their price, is judged against the
+  // apps that route to it, by one rule (`checkConnectionChange`): its rates (a replacement, a deletion
+  // inside it, or `null`), its paths and a custom provider's API styles, its base URL.
+  if (body.pricing !== undefined || askedPaths !== undefined || baseUrl !== current.base_url) {
+    const finalRates = body.pricing === undefined ? oldRates : newRates;
+    if (oldDescription !== null && operationsDescription !== null) {
+      await checkConnectionChange(
+        c.env.DB,
+        actor.accountId,
+        { slug: current.slug, type: current.type },
+        { description: oldDescription, baseUrl: current.base_url, rates: oldRates },
+        { description: operationsDescription, baseUrl, rates: finalRates },
+      );
+    }
   }
   const rates = body.pricing === undefined ? current.rates_json : newRates === null ? null : JSON.stringify(newRates);
   const result = await c.env.DB.prepare(
@@ -624,10 +901,17 @@ export async function deleteProvider(c: AdminContext): Promise<Response> {
 export async function testProvider(c: AdminContext): Promise<Response> {
   requireManage(c.get("actor"));
   const body = await parseBody(c, ProviderTestRequestSchema);
+  if (body.type === CUSTOM_PROVIDER_TYPE) {
+    // A custom provider has no call known to be free: nothing is sent. Its base URL and key header are still checked.
+    assertFieldsFit(body.type, body);
+    checkedCustom(body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl), body.auth ?? { header: "authorization", format: "Bearer {key}" });
+    return c.json({ validated: false, reason: "no_probe" } satisfies OperationResponse<"testProvider">);
+  }
   const description = builtInProvider(body.type);
   if (description === null) {
     throw new GatewayError(400, "invalid_request", `type: ${body.type} is not a supported provider type`);
   }
+  assertFieldsFit(body.type, body);
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
   checkRoute(description, baseUrl, cloudflare);

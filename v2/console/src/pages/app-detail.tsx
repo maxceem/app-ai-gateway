@@ -314,7 +314,7 @@ function ProvidersTab({ app }: { app: App }) {
       </p>
       {connections.map((connection) => {
         const draft = draftFor(connection.slug);
-        const operations = operationsOf(connection.type);
+        const operations = operationsOf(connection);
         return (
           <Card key={connection.id}>
             <CardContent className="space-y-3">

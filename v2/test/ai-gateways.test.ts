@@ -150,6 +150,20 @@ describe("where a request goes (route.ts)", () => {
     expect(through("anthropic-messages").authorization).toBeUndefined();
   });
 
+  it("names the header the key was sent in, for each endpoint, with the request it builds", () => {
+    const anthropic = BUILT_IN_PROVIDERS.anthropic!;
+    const sent = (cloudflareGateway: typeof cloudflare | null, style: "openai-chat" | "anthropic-messages") =>
+      upstreamRequest(record({ type: "anthropic", cloudflareGateway }), anthropic, {
+        ...base,
+        path: "v1/chat/completions",
+        style,
+        credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      }).keyHeader;
+    expect(sent(cloudflare, "openai-chat")).toBe("authorization");
+    expect(sent(cloudflare, "anthropic-messages")).toBe("x-api-key");
+    expect(sent(null, "openai-chat")).toBe("x-api-key");
+  });
+
   it("sets Vercel's spend attribution, leaving out a user id it would refuse", () => {
     const vercel = BUILT_IN_PROVIDERS.vercel!;
     const plain = upstreamRequest(record({ type: "vercel" }), vercel, {
@@ -191,20 +205,20 @@ describe("Vercel's models, priced and read as their provider's", () => {
     const vercel = BUILT_IN_PROVIDERS.vercel!;
     const body = { providerOptions: { gateway: { serviceTier: "priority" } } };
     // `priority` is fast on OpenAI's models and priority on Gemini's.
-    expect(requestedServiceMode(vercel, null, body, "openai/gpt-4o-mini").mode.tier).toBe("fast");
-    expect(requestedServiceMode(vercel, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
+    expect(requestedServiceMode(vercel, undefined, null, body, "openai/gpt-4o-mini").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, body, "google/gemini-2.5-flash").mode.tier).toBe("priority");
     // The model's provider's own fields are read too, with its table (S5).
-    expect(requestedServiceMode(vercel, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, { service_tier: "priority" }, "openai/gpt-4o-mini").mode.tier).toBe("fast");
     // A provider's own options never carry to another provider's model (S9).
     const anthropicFast = { providerOptions: { anthropic: { speed: "fast" } } };
-    expect(requestedServiceMode(vercel, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
-    expect(requestedServiceMode(vercel, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
+    expect(requestedServiceMode(vercel, undefined, null, anthropicFast, "anthropic/claude-sonnet-5").mode.tier).toBe("fast");
+    expect(requestedServiceMode(vercel, undefined, null, anthropicFast, "google/gemini-4-neon").mode.tier).toBe("standard");
     // Only the model's provider's table counts, as v1: `fast` is no Gemini tier (F3).
-    const fast = requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "fast" } } }, "google/gemini-4-neon");
+    const fast = requestedServiceMode(vercel, undefined, null, { providerOptions: { gateway: { serviceTier: "fast" } } }, "google/gemini-4-neon");
     expect(fast.mode.tier).toBe("standard");
     expect(fast.unknown).toBeDefined();
     // A value the provider's table lacks is unknown, at the standard floor.
-    expect(requestedServiceMode(vercel, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
+    expect(requestedServiceMode(vercel, undefined, null, { providerOptions: { gateway: { serviceTier: "default" } } }, "google/gemini-2.5-flash").mode.tier).toBe(
       "standard",
     );
   });
@@ -374,6 +388,19 @@ describe("calls through the gateways, end to end", () => {
     expect(rows).toHaveLength(1);
     const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
     expect(Number(rows[0]!.cost_nano)).toBe(expected);
+  });
+
+  it("never passes back the header the key was sent in: Authorization for Anthropic's chat through Cloudflare", async () => {
+    const { appId, slug, appKey } = await routed(
+      { type: "anthropic", secret: PROVIDER_KEY, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } },
+      "anthropic.chat",
+      ["claude-sonnet-5"],
+    );
+    fetchSpy.mockResolvedValue(Response.json({ id: "c1", model: "claude-sonnet-5", choices: [], usage }, { headers: { authorization: `Bearer ${PROVIDER_KEY}` } }));
+    const response = await call(slug, appKey, appId, "v1/chat/completions", { model: "claude-sonnet-5", messages: [] });
+    expect(response.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe(`Bearer ${PROVIDER_KEY}`);
+    expect(response.headers.get("authorization")).toBeNull();
   });
 
   it("bills a Vercel call from our price list, under its model's provider", async () => {

@@ -10,7 +10,7 @@
  * with no usage, and the result and its cost arrive only on a later poll the
  * gateway does not serve.
  */
-import type { BackgroundOption, OperationDescription, OutputCap, ProviderCostReport } from "./operation.ts";
+import type { BackgroundOption, OperationDescription, OutputCap, ProviderCostReport, UsageHeader } from "./operation.ts";
 import { defineOperation } from "./operation.ts";
 
 /**
@@ -28,6 +28,12 @@ interface TextOptions {
   readonly cap?: OutputCap;
   /** The provider's own cost report, read from the same answer. */
   readonly providerCost?: ProviderCostReport;
+  /** Its answers may report only that cost, with no usage (`costOnly`). */
+  readonly costOnly?: true;
+  /** Token counts its answers report in headers (`usageHeaders`). */
+  readonly usageHeaders?: readonly UsageHeader[];
+  /** Its request may also be an upload (`uploads`), as an image edit is. */
+  readonly uploads?: true;
 }
 
 function meter(style: OperationDescription["style"] & string, options: TextOptions) {
@@ -35,6 +41,8 @@ function meter(style: OperationDescription["style"] & string, options: TextOptio
     kind: "response_json",
     style,
     ...(options.providerCost !== undefined ? { providerCost: options.providerCost } : {}),
+    ...(options.costOnly !== undefined ? { costOnly: options.costOnly } : {}),
+    ...(options.usageHeaders !== undefined ? { usageHeaders: options.usageHeaders } : {}),
   } as const;
 }
 
@@ -130,6 +138,7 @@ export function images(name: string, path: string, options: TextOptions = {}): O
     style: "openai-images",
     model: { in: "body", field: "model" },
     background: DETACHED,
+    ...(options.uploads !== undefined ? { uploads: options.uploads } : {}),
     meter: { ...meter("openai-images", options), units: ["images"] },
     // What an image's price varies by on the providers' own lists: its size and quality.
     priceKeys: [

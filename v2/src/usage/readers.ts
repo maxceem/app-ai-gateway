@@ -20,7 +20,7 @@
  * once, keeping only the values at `READ_PATHS`: a body of any size is read
  * whole, never from kept fragments.
  */
-import type { ApiStyle, ProviderCostReport } from "../providers/operation.ts";
+import type { ApiStyle, ProviderCostReport, UsageHeader } from "../providers/operation.ts";
 import { costReader } from "./cost-reports.ts";
 import { framer, isEventStream, type BodyDocument, type SseFrame } from "./frames.ts";
 import type { Modality, ModalityCounts, TokenVariants, UsageObservation } from "./observation.ts";
@@ -778,28 +778,26 @@ function headerCount(value: string | null): number | null {
 }
 
 /**
- * Adds the bucket shares a provider reports in its response headers rather
- * than its body: only that provider's headers, on that API, and only where
- * the body did not report the share. A streamed response is never read this
- * way: its headers are sent before the body, and Kimi documents that a
- * stream's split is not in them.
+ * Adds the bucket shares an operation's answers report in response headers
+ * rather than the body (its meter's `usageHeaders`), only where the body did
+ * not report the share. A streamed response is never read this way: its
+ * headers are sent before the body, and Kimi documents that a stream's split
+ * is not in them.
  */
 export function withHeaderVariants(
   usage: UsageObservation,
   headers: Headers,
   contentType: string,
-  providerType: string,
-  style: ApiStyle,
+  reported: readonly UsageHeader[],
 ): UsageObservation {
-  if (isEventStream(contentType)) return usage;
+  if (isEventStream(contentType) || reported.length === 0) return usage;
   let found = usage.tokenVariants as VariantCounts | undefined;
-  for (const variant of VARIANTS) {
-    const report = variant.reportedInHeader;
-    if (!report || report.provider !== providerType || report.style !== style) continue;
-    if (found?.[variant.bucket]?.[variant.name] !== undefined) continue;
+  for (const report of reported) {
+    if (!VARIANTS.some((variant) => variant.bucket === report.bucket && variant.name === report.name)) continue;
+    if (found?.[report.bucket]?.[report.name] !== undefined) continue;
     const count = headerCount(headers.get(report.header));
     if (!count) continue;
-    found = { ...found, [variant.bucket]: { ...found?.[variant.bucket], [variant.name]: count } };
+    found = { ...found, [report.bucket]: { ...found?.[report.bucket], [report.name]: count } };
   }
   return found === usage.tokenVariants ? usage : { ...usage, tokenVariants: found as TokenVariants };
 }
