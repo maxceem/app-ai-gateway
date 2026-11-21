@@ -113,6 +113,12 @@ describe("applying field settings", () => {
     expect(decode(applyFieldSettings(settings, encode(null), "", 0))).toEqual({ client_secret: { expires_after: { seconds: 60 } } });
   });
 
+  it("writes every field as the body's own, so a name such as __proto__ never reaches a prototype", () => {
+    const result = applyFieldSettings([{ in: "body", name: "__proto__.enabled", value: false }], encode({}), "", 0);
+    expect(new TextDecoder().decode((result.body as { bytes: Uint8Array }).bytes)).toBe('{"__proto__":{"enabled":false}}');
+    expect(({} as Record<string, unknown>).enabled).toBeUndefined();
+  });
+
   it("writes a time from now, in RFC 3339", () => {
     const now = Date.UTC(2026, 10, 21, 12, 0, 0);
     const result = applyFieldSettings([{ in: "body", name: "newSessionExpireTime", value: 60, as: "time_from_now", aliases: ["new_session_expire_time"] }], encode({ new_session_expire_time: "x", newSessionExpireTime: "y" }), "", now);
@@ -292,6 +298,7 @@ describe("saving a listing", () => {
     ["openai", "https://api.openai.com/v1/", "https://api.openai.com/"],
     ["openai", "https://eu.api.openai.com/v1/", "https://eu.api.openai.com/"],
     ["openrouter", "https://openrouter.ai/", "https://openrouter.ai/api/"],
+    ["elevenlabs", "https://api.elevenlabs.io/v1/", "https://api.elevenlabs.io/"],
   ])("takes only the plain address on %s's own host", async (type, wrong, plain) => {
     const refused = await create({ type, baseUrl: wrong });
     expect(refused.status).toBe(400);
@@ -327,6 +334,14 @@ describe("saving a listing", () => {
     const { status, body } = await create({ type: "openai", passthrough: [{ method: "POST", path: "v1/echo", set_fields }] });
     expect(status).toBe(400);
     expect(body.error.message).toContain(says);
+  });
+
+  it.each(["__proto__.enabled", "options.constructor", "prototype", "a.__proto__"])("refuses the reserved name %s, also as an alias", async (name) => {
+    for (const set_fields of [[{ in: "body", name, value: false }], [{ in: "body", name: "plain", value: false, aliases: [name] }]]) {
+      const { status, body } = await create({ type: "openai", passthrough: [{ method: "POST", path: "v1/echo", set_fields }] });
+      expect(status).toBe(400);
+      expect(body.error.message).toContain("reserved name");
+    }
   });
 
   it("refuses a body field on a GET listing, which is sent with no body, and keeps a query parameter there", async () => {

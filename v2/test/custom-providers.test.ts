@@ -374,6 +374,15 @@ describe("saving a custom provider", () => {
     expect(JSON.stringify(moved.body)).toContain("OpenAI's built-in openai.chat endpoint");
   });
 
+  it("refuses OpenRouter's built-in chat under its declared /api path on its plain origin: it would pass through unmetered", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://openrouter.ai/", passthrough: [{ method: "POST", path: "api/v1/chat/completions" }] });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain("OpenRouter's built-in openrouter.chat endpoint");
+    // Another of its paths is still listed.
+    expect((await createCustom(key, { baseUrl: "https://openrouter.ai/", passthrough: [{ method: "GET", path: "api/v1/credits" }] })).status).toBe(201);
+  });
+
   it("saves an admin path or a token mint on a known provider's host: the customer decides", async () => {
     const key = await seedManagementKey();
     const created = await createCustom(key, {

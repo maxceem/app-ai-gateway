@@ -293,6 +293,8 @@ function settingOf(field: FieldSetting): FieldSetting {
 
 /** The most seconds a `time_from_now` value may hold: 30 days. */
 const MAX_SECONDS_FROM_NOW = 30 * 24 * 60 * 60;
+/** Field names a JavaScript object treats specially (`set_fields`). */
+const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 /** A listing's field settings, checked: each names a field once, and its value fits where it goes. */
 function checkedFields(
@@ -317,6 +319,10 @@ function checkedFields(
       if (seen.has(key)) throw new GatewayError(400, "invalid_request", `${at}: ${name} is set twice`);
       seen.add(key);
       if (field.in === "body" && name.split(".").includes("")) throw new GatewayError(400, "invalid_request", `${at}: ${name} is not a field name`);
+      // Names a JavaScript object treats specially never reach a body as a plain field.
+      if (field.in === "body" && name.split(".").some((piece) => RESERVED_FIELD_NAMES.has(piece))) {
+        throw new GatewayError(400, "invalid_request", `${at}: ${name} uses a reserved name (__proto__, constructor or prototype)`);
+      }
     }
     if (field.in === "body") {
       for (const name of names) {

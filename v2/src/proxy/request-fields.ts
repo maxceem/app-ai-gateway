@@ -294,10 +294,15 @@ export function writeAt(body: Record<string, unknown>, path: string, value: unkn
   for (const key of keys) {
     const next = Object.hasOwn(level, key) ? level[key] : undefined;
     const object = typeof next === "object" && next !== null && !Array.isArray(next) ? (next as Record<string, unknown>) : {};
-    level[key] = object;
+    setOwn(level, key, object);
     level = object;
   }
-  level[last] = value;
+  setOwn(level, last, value);
+}
+
+/** Sets `key` as the object's own data property, so a name such as `__proto__` never reaches a prototype. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
 }
 
 /**

@@ -412,13 +412,25 @@ export class ProviderMatcher {
         found.push(compiled.operation.name);
         continue;
       }
-      const theirs = upstreamTargets(route, compiled.host, (compiled.upstream ?? compiled.template).segments);
+      const own = (compiled.upstream ?? compiled.template).segments;
+      const theirs = upstreamTargets(route, compiled.host, own);
       if (sent === null || theirs === null || theirs.host !== sent.host) continue;
-      if (sent.paths.some((path) => theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
+      // Through a base URL, a listing's path is read from the origin, where the
+      // operation sits under its host's declared path (OpenRouter's `api`).
+      const hostPath = route.basePath !== null ? this.hostPath(compiled.host) : [];
+      const others = hostPath.length === 0 ? theirs.paths : [...theirs.paths, [...hostPath.map(literal), ...own]];
+      if (sent.paths.some((path) => others.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
         found.push(compiled.operation.name);
       }
     }
     return found;
+  }
+
+  /** The path part of a declared host, in segments (`openrouter.ai/api` is `["api"]`). */
+  private hostPath(hostKey: string): readonly string[] {
+    const host = this.provider.hosts[hostKey] ?? "";
+    const slash = host.indexOf("/");
+    return slash < 0 ? [] : host.slice(slash + 1).split("/").filter((piece) => piece !== "");
   }
 
   /**
