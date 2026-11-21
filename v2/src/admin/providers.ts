@@ -50,6 +50,7 @@ import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
+import { UNIT_RATE_FIELDS } from "../pricing/units.ts";
 import { selectableModes } from "../proxy/meter.ts";
 import {
   CLOUDFLARE_AI_GATEWAY_ORIGIN,
@@ -558,6 +559,7 @@ export function assertModesSelectable(
   rates: CustomerRates | null,
   before: CustomerRates | null,
 ): void {
+  assertOneJobRate(description, rates, before);
   for (const model of Object.keys(rates ?? {})) {
     const calls = description.operations.map((operation) => ({ operation, modes: selectableModes(description, operation, baseUrl, model) }));
     const unused = unusedModeRate(rates!, before, model, calls);
@@ -567,6 +569,25 @@ export function assertModesSelectable(
       "invalid_request",
       `pricing.${model}.modes.${unused}: no call on this connection is ever billed at this rate; price the mode its calls are served in instead`,
     );
+  }
+}
+
+/**
+ * A job settles from the one rate its estimate stored, so a model a job can
+ * serve takes exactly one unit rate: a price with two (say per unit and per
+ * job) could settle on the wrong one. Judged only for prices this save adds
+ * or changes, so a stored price keeps working.
+ */
+function assertOneJobRate(description: ProviderDescription, rates: CustomerRates | null, before: CustomerRates | null): void {
+  if (rates === null || !description.operations.some((operation) => operation.lifecycle === "job")) return;
+  const unitRates = (table: Readonly<Record<string, unknown>>) => UNIT_RATE_FIELDS.filter((field) => typeof table[field] === "number");
+  for (const [model, entry] of Object.entries(rates)) {
+    if (before !== null && JSON.stringify(before[model]) === JSON.stringify(entry)) continue;
+    const { by, modes: _modes, ...flat } = entry as Record<string, unknown> & { by?: Record<string, Record<string, Record<string, unknown>>> };
+    const tables = [flat, ...Object.values(by ?? {}).flatMap((values) => Object.values(values))];
+    if (tables.some((table) => unitRates(table).length > 1)) {
+      throw new GatewayError(400, "invalid_request", `pricing.${model}: a job model takes one rate: per job, per unit, per image or per video`);
+    }
   }
 }
 

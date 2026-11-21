@@ -14,6 +14,7 @@ import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { chargeFromRow, readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
+import { assertModesSelectable, ratesFromPricing } from "../src/admin/providers.ts";
 import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
@@ -2071,6 +2072,15 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     falAnswers({ result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "3" } }) });
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     expect(await total(appId)).toBe(30_000_000);
+  });
+
+  it("refuses to save a job model priced with two unit rates, and leaves a stored one alone", () => {
+    // Fable round 1: a job settles from the one rate its estimate stored, so per unit plus per job could settle on the wrong one.
+    const two = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01, per_request: 0.02 } }, "fal", fal.operations);
+    expect(() => assertModesSelectable(fal, null, two, null)).toThrow(/a job model takes one rate/);
+    expect(() => assertModesSelectable(fal, null, two, two)).not.toThrow();
+    const one = ratesFromPricing({ "fal-ai/some-model": { per_unit: 0.01 } }, "fal", fal.operations);
+    expect(() => assertModesSelectable(fal, null, one, null)).not.toThrow();
   });
 
   it("refuses a model with no price at all, and asks fal nothing", async () => {
