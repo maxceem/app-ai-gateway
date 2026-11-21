@@ -282,7 +282,11 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
 function sseEvents(text: string): { events: string[][]; lastComplete: boolean } {
   const events: string[][] = [];
   let current: string[] = [];
-  for (const line of text.split(/\r\n|\r|\n/)) {
+  const lines = text.split(/\r\n|\r|\n/);
+  // The empty piece after a final line break is not a blank line: only a
+  // line break followed by another ends an event.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) {
     if (line === "") {
       if (current.length > 0) events.push(current);
       current = [];
@@ -430,8 +434,8 @@ async function storedBody(
     const mime = type.startsWith("audio/") ? type : UNKNOWN_AUDIO;
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, mime) };
   }
-  // Declared newline-delimited JSON is read as such even when sent as `application/json`.
-  const asJsonLines = isJsonLines(type) || (jsonLines && (isJson(type) || type === ""));
+  // Declared newline-delimited JSON is read as such whatever type it was sent with.
+  const asJsonLines = isJsonLines(type) || jsonLines;
   if (type !== "" && !type.startsWith("text/") && !isJson(type) && !asJsonLines) {
     return { kind: "media", content_type: contentType, bytes: body.totalBytes, content: await shelf.place(body.bytes, type) };
   }

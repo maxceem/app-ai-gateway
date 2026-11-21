@@ -89,17 +89,28 @@ async function currentRetention(db: D1Database, appId: string): Promise<number |
   }
 }
 
-/** Every key under `prefix`, deleted a page at a time. */
-async function deleteAll(bucket: R2Bucket, prefix: string, budget: CallBudget, pageSize: number): Promise<number> {
+/**
+ * Every key under `prefix`, deleted a page at a time. Where `stillExpired` is
+ * given, it is asked after each page is listed and right before that page is
+ * deleted; when it answers false, deleting stops and `stopped` is true.
+ */
+async function deleteAll(
+  bucket: R2Bucket,
+  prefix: string,
+  budget: CallBudget,
+  pageSize: number,
+  stillExpired?: () => Promise<boolean>,
+): Promise<{ deleted: number; stopped: boolean }> {
   let deleted = 0;
   for (;;) {
     budget.charge(1);
     const page = await bucket.list({ prefix, limit: pageSize });
-    if (page.objects.length === 0) return deleted;
+    if (page.objects.length === 0) return { deleted, stopped: false };
+    if (stillExpired !== undefined && !(await stillExpired())) return { deleted, stopped: true };
     budget.charge(1);
     await bucket.delete(page.objects.map((object) => object.key));
     deleted += page.objects.length;
-    if (!page.truncated) return deleted;
+    if (!page.truncated) return { deleted, stopped: false };
   }
 }
 
@@ -159,7 +170,7 @@ export async function runConversationRetention(
           current = folder;
           const days = retention.get(appId);
           if (days === undefined) {
-            result.deletedObjects += await deleteAll(bucket, folder, work, pageSize);
+            result.deletedObjects += (await deleteAll(bucket, folder, work, pageSize)).deleted;
             result.removedApps += 1;
           } else {
             const prefix = appPrefix(appId);
@@ -167,11 +178,16 @@ export async function runConversationRetention(
               const match = DAY_FOLDER.exec(day.slice(prefix.length));
               // Day folders sort oldest first, so the first one kept ends the app.
               if (match === null || match[1]! >= dayBefore(now, days)) break;
-              // Read the retention again right before deleting: a retention raised since the sweep began is
-              // honoured, and a failed read leaves the folder for a later run.
-              const fresh = await currentRetention(db, appId);
-              if (fresh === null || match[1]! >= dayBefore(now, fresh)) break;
-              result.deletedObjects += await deleteAll(bucket, day, work, pageSize);
+              // The retention is read again after each page is listed, right before that page is deleted:
+              // a retention raised since the sweep began is honoured, and a failed read leaves the folder
+              // for a later run.
+              const dayName = match[1]!;
+              const outcome = await deleteAll(bucket, day, work, pageSize, async () => {
+                const fresh = await currentRetention(db, appId);
+                return fresh !== null && dayName < dayBefore(now, fresh);
+              });
+              result.deletedObjects += outcome.deleted;
+              if (outcome.stopped) break;
             }
           }
           finished = folder;

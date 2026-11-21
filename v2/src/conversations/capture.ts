@@ -4,7 +4,8 @@
  *
  * Runs in `waitUntil`, after the app has its answer, and does as little as it
  * can here: it waits for the answer to end, checks the plan still includes
- * conversation storage, then passes the raw bytes on. Parsing them, decoding
+ * conversation storage and that the app's saved setting (read fresh, not from
+ * the cache) still stores, then passes the raw bytes on. Parsing them, decoding
  * media and writing to R2 all happen in the log (`../do/ConversationLog.ts`).
  *
  * A capture that fails is logged and dropped. Conversation storage is a record
@@ -12,6 +13,7 @@
  * conversation is never worth failing or delaying a served request for
  * (`AGENTS.md`).
  */
+import { readSavedConversations } from "../apps/app-records.ts";
 import { getBillingAccess, planIncludes } from "../billing/access.ts";
 import type { KeptMedia } from "../contracts/app-config.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -35,7 +37,7 @@ export type SentBody =
 export interface CaptureInput {
   readonly accountId: string;
   readonly appId: string;
-  /** The app's `conversations.keep`. */
+  /** The app's `conversations.keep` as cached when the call was served. The saved setting, read fresh, is what is written. */
   readonly keep: KeptMedia;
   /** Answer fields that hold a recording in base64 (`OperationDescription.storedAudio`). */
   readonly audio?: { readonly fields: readonly string[]; readonly mime: string };
@@ -116,6 +118,10 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   // setting, and stores nothing while its plan does not (v1). Read in the
   // background, so the plan is never waited on by the call.
   if (!planIncludes(await getBillingAccess(env, input.accountId), "conversationStorage")) return;
+  // The app's saved setting, read fresh: an isolate that cached the app before
+  // storage was turned off must not store. Its media policy is the one used.
+  const keep = await readSavedConversations(env, input.appId);
+  if (keep === null) return;
   const sentRequest = await sentBytes(input.sent);
   const requestBytes = sentRequest.bytes.byteLength > CAPTURE_MAX_BYTES ? null : sentRequest.bytes;
   const request = withoutCredentials(input, "request", { contentType: sentRequest.contentType, bytes: requestBytes });
@@ -138,7 +144,7 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
     status: input.status,
     httpStatus: input.httpStatus,
     latencyMs: input.latencyMs,
-    keep: input.keep,
+    keep,
     ...(input.audio !== undefined ? { audio: { fields: [...input.audio.fields], mime: input.audio.mime } } : {}),
     ...(input.rawAudio === true ? { rawAudioRequest: true } : {}),
     ...(input.audioFormFields !== undefined && input.audioFormFields.length > 0 ? { audioFormFields: [...input.audioFormFields] } : {}),

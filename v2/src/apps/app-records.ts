@@ -9,6 +9,7 @@ import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
+import type { KeptMedia } from "../contracts/app-config.ts";
 import type { AppRecord } from "../core/types.ts";
 import { database } from "../db/index.ts";
 import { app } from "../db/schema.ts";
@@ -62,6 +63,20 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
   };
   if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
   return value;
+}
+
+/**
+ * The app's saved conversation storage setting, read from D1 and never from
+ * the isolate cache: what it keeps, or null when storage is off or the app is
+ * not active. Capture calls it in the background before writing, so a call
+ * served from a stale cache never stores after storage was turned off. A
+ * failed read throws, and the capture is dropped.
+ */
+export async function readSavedConversations(env: Env, appId: string): Promise<KeptMedia | null> {
+  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId), columns: { status: true, config: true } });
+  if (!row || row.status !== "active") return null;
+  const conversations = parseServedAppConfig(row.config).config.conversations;
+  return conversations?.store === true ? conversations.keep : null;
 }
 
 /** Forgets a cached app, after its settings change. */

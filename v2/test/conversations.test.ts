@@ -493,6 +493,16 @@ describe("conversation records", () => {
     expect(await stored('data: {"a":1}\n\ndata: [DO')).toBe('data: {"a":1}\n\ndata: [DO');
   });
 
+  it("counts an event complete only when a blank line ends it, not a single final line break (Sol round 5)", async () => {
+    const stored = async (stream: string) => (JSON.parse((await conversationRecord(capture({
+      response: { contentType: "text/event-stream", bytes: encoder.encode(stream), totalBytes: stream.length, aborted: true },
+    }))).line) as { response: { text: string } }).response.text;
+    expect(await stored('data: {"a":1}\n')).toBe('data: {"a":1}');
+    expect(await stored('data: {"a":1}\r\n')).toBe('data: {"a":1}');
+    expect(await stored('data: {"a":1}\n\ndata: {"b":2}\n')).toBe('data: {"a":1}\n\ndata: {"b":2}');
+    expect(await stored('data: {"a":1}\n\n')).toBe('data: {"a":1}\n\n');
+  });
+
   it("reads a declared newline-delimited answer a line at a time even when sent as JSON, and always notes a cut line (Sol round 4)", async () => {
     const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
     const lines = [JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }), '{"audio_base64":"SUQz'].join("\n");
@@ -509,6 +519,21 @@ describe("conversation records", () => {
         expect(value[1]).toMatch(/^agw-omitted:unreadable;\d+$/);
       }
     }
+  });
+
+  it("reads a declared newline-delimited answer by line even when labelled text/plain (Sol round 5)", async () => {
+    const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
+    const lines = [JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }), '{"audio_base64":"SUQz'].join("\n");
+    const record = await conversationRecord(capture({
+      keep: { images: true, audio: false, files: true },
+      audio,
+      responseJsonLines: true,
+      response: { contentType: "text/plain; charset=utf-8", bytes: encoder.encode(lines), totalBytes: lines.length, aborted: true },
+    }));
+    expect(record.line).not.toContain("SUQzBAAAAAAA");
+    const value = JSON.parse(record.line).response.value as unknown[];
+    expect(value[0]).toMatchObject({ alignment: { characters: ["h"] } });
+    expect(value[1]).toMatch(/^agw-omitted:unreadable;\d+$/);
   });
 
   it("keeps a spoken reply as media", async () => {
@@ -683,6 +708,19 @@ describe("conversation storage through the gateway", () => {
     const served = await call(`/v2/apps/${plain.appId}/proxy/${plain.slug}/v1/responses`, responsesRequest(plain.key));
     expect(served.response.status).toBe(200);
     expect(await env.CONVERSATION_LOG.getByName(plain.appId).pendingCount()).toBe(0);
+  });
+
+  it("stores nothing once storage is turned off, even through an isolate that cached the app with it on (Sol round 5)", async () => {
+    const { slug, appId, key } = await storingApp();
+    providerAnswers();
+    // The first call warms this isolate's app cache with storage on.
+    await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
+    const before = await env.CONVERSATION_LOG.getByName(appId).pendingCount();
+    // Another isolate saves storage off: this one's cache still says on.
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.store', json('false')) WHERE id = ?").bind(appId).run();
+    const served = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));
+    expect(served.response.status).toBe(200);
+    expect(await env.CONVERSATION_LOG.getByName(appId).pendingCount()).toBe(before);
   });
 
   it("refuses a storage header it cannot read", async () => {
@@ -1094,6 +1132,30 @@ describe("conversation retention", () => {
         await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.retention_days', 30) WHERE id = ?").bind(appId).run();
       }
       return list(options);
+    });
+    try {
+      await runConversationRetention(store, env.DB, now, new CallBudget(50));
+    } finally {
+      listed.mockRestore();
+    }
+    expect(await store.head(key)).not.toBeNull();
+  });
+
+  it("reads the retention again after each page is listed, right before deleting it (Sol round 5)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const key = `conversations/${appId}/2026-11-20/000000-0123456789abcdef.jsonl.gz`;
+    await store.put(key, "inside the new window");
+    // The owner raises retention to 30 days while R2 lists the day folder's objects.
+    const list = store.list.bind(store);
+    const listed = vi.spyOn(store, "list").mockImplementation(async (options) => {
+      const page = await list(options);
+      if (options?.prefix === `conversations/${appId}/2026-11-20/` && options.delimiter === undefined) {
+        await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.conversations.retention_days', 30) WHERE id = ?").bind(appId).run();
+      }
+      return page;
     });
     try {
       await runConversationRetention(store, env.DB, now, new CallBudget(50));
