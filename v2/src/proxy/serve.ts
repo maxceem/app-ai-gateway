@@ -970,8 +970,8 @@ async function sendAttemptsKeptFor(
   const clientSecrets = [
     client.credential,
     ...secretHeaders.flatMap((name) => {
-      const value = c.req.header(name);
-      if (value === undefined) return [];
+      const value = c.req.raw.headers.get(name);
+      if (value === null) return [];
       const token = value.replace(/^bearer\s+/iu, "");
       return token === value ? [value] : [value, token];
     }),
