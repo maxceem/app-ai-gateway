@@ -166,8 +166,23 @@ describe("a base URL on another provider's host, stored before saving refused it
     expect(own.matcher.match("GET", "v1/credits", { passthrough: compilePassthrough([listing("GET", "v1/credits")]), route: own.route })).toMatchObject({ kind: "refused" });
   });
 
+  it("refuses every path on xAI's management host, a declared operation's included", () => {
+    const { matcher, route } = routed("xai", "https://management-api.x.ai/");
+    for (const [method, path] of [["GET", "v1/models"], ["POST", "v1/chat/completions"], ["GET", "anything/at/all"]] as const) {
+      expect(matcher.match(method, path, { passthrough: compilePassthrough([listing(method, path)]), route }), path).toMatchObject({ kind: "refused" });
+    }
+    // On xAI's own API host, its declared operations are served as always.
+    const direct = routed("xai", "https://api.x.ai/");
+    expect(direct.matcher.match("POST", "v1/chat/completions", { route: direct.route })).toMatchObject({ kind: "operation" });
+  });
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("a stored connection on another provider's host, served end to end", () => {
+  beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+
   it("refuses OpenRouter's credits on a stored Mistral connection at openrouter.ai, and sends nothing", async () => {
-    await loadManagement();
     clearCaches();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ data: { total_credits: 1 } }));
     await seedAccount();
@@ -197,19 +212,8 @@ describe("a base URL on another provider's host, stored before saving refused it
     expect(response.status).toBe(403);
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("openrouter.ai"))).toBe(false);
   });
-
-  it("refuses every path on xAI's management host, a declared operation's included", () => {
-    const { matcher, route } = routed("xai", "https://management-api.x.ai/");
-    for (const [method, path] of [["GET", "v1/models"], ["POST", "v1/chat/completions"], ["GET", "anything/at/all"]] as const) {
-      expect(matcher.match(method, path, { passthrough: compilePassthrough([listing(method, path)]), route }), path).toMatchObject({ kind: "refused" });
-    }
-    // On xAI's own API host, its declared operations are served as always.
-    const direct = routed("xai", "https://api.x.ai/");
-    expect(direct.matcher.match("POST", "v1/chat/completions", { route: direct.route })).toMatchObject({ kind: "operation" });
-  });
 });
 
-afterEach(() => vi.restoreAllMocks());
 
 describe("saving a built-in connection's base URL", () => {
   it.each([
