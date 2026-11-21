@@ -65,28 +65,55 @@ export class SignInRetry {
 /** The default for code that starts a sign-in on its own. */
 export const ACCOUNT_LOGIN = new SignInRetry();
 
+/** Moving an unreadable or unsafe connection state file aside, then signing in again. */
+export function recoverState(gateway: string | null, savedGateway = false): string {
+  if (gateway)
+    return `Move the connection state file aside, then run agw deployment connect --url with this gateway's address:\n${gateway}`;
+  // The file that held the gateway cannot be read, so its address is unknown:
+  // the same command would fall back to the hosted gateway.
+  if (savedGateway)
+    return "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
+  return "Move the connection state file aside, then run the same command again.";
+}
+
 /**
  * A failure during a sign-in, with a next step that never sends the person to
  * another gateway. Specific guidance (a v1 gateway, a wrong URL) is kept; a
  * generic one, or one that names `agw account login`, becomes "run the same
  * command again".
+ *
+ * The HTTP status decides first, whatever the body said: a 403 with
+ * `access_denied` is still about access, a 503 with `connection_failed` still
+ * means the gateway is not available yet. Only without a deciding status do
+ * the codes from the body count.
+ *
+ * `gateway` is the self-hosted gateway the sign-in was for, when it is known:
+ * after the state file is moved aside, the same command would no longer find
+ * it, so the hint names it.
  */
-export function signInFailure(error: unknown): unknown {
+export function signInFailure(error: unknown, gateway: string | null = null): unknown {
   if (!(error instanceof CliError)) return error;
   const status = error.details?.status;
   let next: string | null = null;
-  if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";
-  else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
-  else if (error.code === "invalid_state" || error.code === "unsafe_storage")
-    next = "Move the connection state file aside, then run the same command again.";
-  // Picked from the status, whatever the body was: an HTML page from a proxy
-  // in front of the gateway says as much as the gateway's own JSON.
-  else if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
+  if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
   else if (typeof status === "number" && status >= 500)
     next = "Wait until the gateway is available, then run the same command again.";
+  else if (error.code === "connection_failed") next = "Check connectivity and the URL, then run the same command again.";
+  else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
+  else if (error.code === "invalid_state" || error.code === "unsafe_storage") next = recoverState(gateway);
   else if (/agw account login|agw --help/.test(error.nextAction)) next = AGAIN;
   if (next === null) return error;
   const replaced = new CliError(error.code, error.message, next, error.exitCode, error.details);
   if (error.headers) replaced.headers = error.headers;
   return replaced;
+}
+
+/**
+ * `agw account login` with a state file it cannot read. The file is what held
+ * the selected gateway, so its address is unknown; the hint covers both cases
+ * rather than sending a self-hosted user to the hosted gateway.
+ */
+export function signInStateFailure(error: unknown): unknown {
+  if (!(error instanceof CliError) || (error.code !== "invalid_state" && error.code !== "unsafe_storage")) return error;
+  return new CliError(error.code, error.message, recoverState(null, true), error.exitCode, error.details);
 }

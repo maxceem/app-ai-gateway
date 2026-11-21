@@ -23,6 +23,7 @@ import {
 } from "./gateway-commands.ts";
 import { humanResult, type OutputContext } from "./human.ts";
 import { refuseOlderGateway } from "./oauth.ts";
+import { signInFailure, signInStateFailure } from "./sign-in-retry.ts";
 import {
   builtInEntries,
   builtInHelp,
@@ -246,7 +247,14 @@ export async function main(
       await write(stdout, await helpFor(parsed.scope, context && catalogFor(context, cache), styleFor(stdout)));
       return 0;
     }
-    ctx = await open();
+    ctx = await open().catch((error: unknown) => {
+      // A sign-in that cannot read the state file still gets a next step that
+      // never sends the person to another gateway.
+      const command = "command" in parsed ? parsed.command : undefined;
+      if (command === "deployment connect") throw signInFailure(error);
+      if (command === "account login") throw signInStateFailure(error);
+      throw error;
+    });
     if (parsed.words) {
       const catalog = catalogFor(ctx, cache);
       const { tool: resolved } = await resolveTool(catalog, parsed.words);

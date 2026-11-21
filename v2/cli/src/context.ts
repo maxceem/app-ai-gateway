@@ -353,9 +353,10 @@ export class Context {
         disk.active = { url: target, login, account: who.account };
       }));
     } catch (error) {
-      // An unreadable or unsafe state file: move it aside and sign in again
-      // with the same command, never one that could reach another gateway.
-      throw signInFailure(error);
+      // An unreadable or unsafe state file: move it aside and sign in again.
+      // A self-hosted gateway is named, because the same command would no
+      // longer find it once the file is gone.
+      throw signInFailure(error, target === CLOUD ? null : target);
     }
     this.state = state;
     return { connected: true, url: target, credential: "oauth", ...who };

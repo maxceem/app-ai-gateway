@@ -264,6 +264,10 @@ test("every failed sign-in says to run the same command again, and never names a
   const unavailable = (): never => {
     throw new CliError("http_503", "The gateway refused the request (HTTP 503).", "Review command configuration and account status.", 3, { status: 503 });
   };
+  // A 503 whose body names a code that alone would mean "check connectivity".
+  const unavailableAsUnreachable = (): never => {
+    throw new CliError("connection_failed", "The gateway is not available (HTTP 503).", "Check connectivity and the selected URL.", 3, { status: 503 });
+  };
   const ACCESS = "Fix access to the gateway, then run the same command again.";
   const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
@@ -306,6 +310,7 @@ test("every failed sign-in says to run the same command again, and never names a
       ["discovery 401", failure(() => tokens(1), noBrowser, true, unauthorized), ACCESS],
       ["discovery HTML 401", failure(() => tokens(1), noBrowser, true, htmlUnauthorized), ACCESS],
       ["discovery JSON 503", failure(() => tokens(1), noBrowser, true, unavailable), WAIT],
+      ["discovery 503 connection_failed", failure(() => tokens(1), noBrowser, true, unavailableAsUnreachable), WAIT],
       ["discovery unreachable", failure(() => tokens(1), noBrowser, true, unreachable), "Check connectivity and the URL, then run the same command again."],
       ["session check 401", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : tokens(1)), noBrowser, true, (path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata() } : unauthorized())), ACCESS],
       ["token exchange unreachable", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : unreachable()), noBrowser), "Check connectivity and the URL, then run the same command again."],
@@ -332,6 +337,9 @@ test("every failed sign-in says to run the same command again, and never names a
       ["sign-in page off the origin", failure(device(tokens(1), deviceOpened({ verification_uri: "https://evil.example/device" })), noBrowser), AGAIN],
       ["code expired", failure(device({ status: 400, data: { error: "expired_token" } }), noBrowser), "Run the same command again for a new code."],
       ["declined", failure(device({ status: 400, data: { error: "access_denied" } }), noBrowser), "Run the same command again to start over."],
+      // The status decides before the body's code.
+      ["poll 403 access_denied", failure(device({ status: 403, data: { error: "access_denied" } }), noBrowser), ACCESS],
+      ["poll 503", failure(device({ status: 503, data: { error: "temporarily_unavailable" } }), noBrowser), WAIT],
       ["start refused", failure(device(tokens(1), { status: 400, data: { error: "invalid_client" } }), noBrowser), AGAIN],
       ["poll redirected", failure((path) => (path === "/v2/oauth/device_authorization" ? deviceOpened() : refusal(path)), noBrowser), "Fix the gateway's address, then run the same command again."],
       ["no code endpoint", failure(() => tokens(1), noBrowser, false), `On a machine with a browser, run agw deployment connect --url with this gateway's address:\n${target}`],
@@ -353,6 +361,28 @@ test("a sign-in whose state file cannot be saved says to move it aside and run t
   const error = await ctx.connect(URL_).then(() => assert.fail("expected a failure"), (caught: unknown) => caught);
   assert.ok(error instanceof CliError);
   assert.equal(error.code, "unsafe_storage");
+  // A self-hosted gateway is named: once the file is gone, the same command would not find it.
+  assert.equal(error.nextAction, `Move the connection state file aside, then run agw deployment connect --url with this gateway's address:\n${URL_}`);
+});
+
+test("a hosted sign-in whose state file cannot be saved says to run the same command again", async () => {
+  const issuer = `${CLOUD}/v2`;
+  const transport = fakeTransport(
+    (path) =>
+      path === "/.well-known/oauth-authorization-server/v2"
+        ? { data: { issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`, revocation_endpoint: `${issuer}/oauth/revoke`, device_authorization_endpoint: `${issuer}/oauth/device_authorization` } }
+        : path === "/v2/admin/session"
+          ? { data: SESSION }
+          : notFound(),
+    (path) => (path === "/v2/oauth/device_authorization" ? { status: 200, data: { device_code: "dc", user_code: "AAAA-BBBB", verification_uri: `${CLOUD}/v2/device`, expires_in: 30, interval: 5 } } : tokens(1)),
+  );
+  const store = memoryStore();
+  store.update = async () => {
+    throw new CliError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
+  };
+  const ctx = new Context(store, store.held, transport, { device: true }, { stderr: sinks().stderr, env: {}, browserAvailable: () => true, clock: fakeClock() });
+  const error = await ctx.login(CLOUD).then(() => assert.fail("expected a failure"), (caught: unknown) => caught);
+  assert.ok(error instanceof CliError);
   assert.equal(error.nextAction, "Move the connection state file aside, then run the same command again.");
 });
 

@@ -262,7 +262,10 @@ export async function deviceLogin(
       interval += 5;
       continue;
     }
-    if (error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", retry.startOver(), 4);
+    // The status comes first: a 403 or 5xx says more than the body's code.
+    if (answer.status === 403 || answer.status === 401 || answer.status >= 500) tokenRefusal(answer, "The sign-in", retry);
+    if (error === "access_denied")
+      fail("login_denied", "The sign-in was declined in the browser.", retry.startOver(), 4, { status: answer.status });
     if (error === "expired_token") break;
     tokenRefusal(answer, "The sign-in", retry);
   }

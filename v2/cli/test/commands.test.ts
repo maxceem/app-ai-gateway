@@ -265,6 +265,32 @@ test("deployment status at a v1 gateway with AGW_MANAGEMENT_KEY gets the agw 1.x
   assert.equal(JSON.parse(out.out.text).error.code, "gateway_v1");
 });
 
+test("a sign-in whose state file cannot be read never points at agw account login", async () => {
+  const unreadable = () => {
+    const store = memoryStore();
+    store.read = async () => {
+      throw new CliError("invalid_state", "The connection state is not readable JSON.", "Move the file aside and sign in again with agw account login.", 4);
+    };
+    return store;
+  };
+  const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+  const cases: [string[], string][] = [
+    [["deployment", "connect", "--url", URL_, "--json"], "Move the connection state file aside, then run the same command again."],
+    [
+      ["account", "login", "--json"],
+      "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.",
+    ],
+  ];
+  for (const [argv, expected] of cases) {
+    const out = sinks();
+    const code = await main(argv, { store: unreadable(), transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 4, argv.join(" "));
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "invalid_state");
+    assert.equal(error.nextAction, expected, argv.join(" "));
+  }
+});
+
 /** One `main` run with the store, transport and environment given. */
 async function runWith(argv: string[], options: { store: ReturnType<typeof memoryStore>; handler: (path: string) => unknown; env?: Record<string, string>; openBrowser?: () => Promise<boolean> }) {
   const out = sinks();
