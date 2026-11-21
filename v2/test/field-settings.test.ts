@@ -11,7 +11,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, namedPartProblem, ProviderMatcher } from "../src/providers/matcher.ts";
+import { apiPrefixesOf, compilePassthrough, namedPartProblem, ProviderMatcher } from "../src/providers/matcher.ts";
 import { LIVE_TOKEN_WINDOW_SECONDS, type FieldSetting } from "../src/providers/operation.ts";
 import { applyFieldSettings, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { parseTemplate } from "../src/providers/path.ts";
@@ -44,8 +44,10 @@ describe("matching", () => {
       const matcher = new ProviderMatcher(description);
       for (const suggested of description.suggestedPaths ?? []) {
         expect(matcher.match(suggested.method, suggested.path)).toMatchObject({ kind: "refused", reason: "not_declared" });
-        const listed = matcher.match(suggested.method, suggested.path, { passthrough: compilePassthrough([{ method: suggested.method, path: suggested.path }]) });
-        expect(listed, `${description.type} ${suggested.path}`).toMatchObject({ kind: "passthrough", suggested });
+        const [compiled] = compilePassthrough([{ method: suggested.method, path: suggested.path }]);
+        const listed = matcher.match(suggested.method, suggested.path, { passthrough: [compiled!] });
+        expect(listed, `${description.type} ${suggested.path}`).toMatchObject({ kind: "passthrough" });
+        expect(matcher.suggestionFor(compiled!)).toEqual(suggested);
       }
     }
   });
@@ -59,18 +61,51 @@ describe("matching", () => {
   ] as const)("serves %s %s %s once listed: there are no refused paths", (type, method, path) => {
     const matcher = new ProviderMatcher(describedAs(type));
     expect(matcher.match(method, path)).toMatchObject({ kind: "refused", reason: "not_declared" });
-    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ kind: "passthrough", suggested: null });
+    const [compiled] = compilePassthrough([{ method, path }]);
+    expect(matcher.match(method, path, { passthrough: [compiled!] })).toMatchObject({ kind: "passthrough" });
+    expect(matcher.suggestionFor(compiled!)).toBeNull();
   });
 });
 
 describe("the named-part rule", () => {
-  it.each(["v1/files/{file_id}", "v1/threads/{thread_id}/messages/{message_id}", "v1/convai/conversations/{id}", "v1beta/models/{model}:countTokens", "v1/realtime/client_secrets"])(
-    "allows %s",
-    (path) => expect(namedPartProblem(parseTemplate(path))).toBeNull(),
-  );
+  const prefixes = (type: string) => apiPrefixesOf(describedAs(type));
 
-  it.each(["{a}/b/c", "v1/{a}", "v1/{a}/{b}", "v1/threads/{id}/{x}"])("refuses %s", (path) => {
-    expect(namedPartProblem(parseTemplate(path))).not.toBeNull();
+  it.each([
+    ["openai", "v1/files/{file_id}"],
+    ["openai", "v1/threads/{thread_id}/messages/{message_id}"],
+    ["elevenlabs", "v1/convai/conversations/{id}"],
+    ["gemini", "v1beta/models/{model}:countTokens"],
+    ["openai", "v1/realtime/client_secrets"],
+    // BytePlus paths have no prefix: its base URL holds `api/v3`.
+    ["bytedance", "files/{id}"],
+    ["bytedance", "responses/{response_id}"],
+    ["groq", "openai/v1/files/{file_id}"],
+  ])("allows %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).toBeNull());
+
+  it.each([
+    ["openai", "{a}/b/c"],
+    ["openai", "v1/{a}"],
+    ["openai", "v1/{a}/{b}"],
+    ["openai", "v1/threads/{id}/{x}"],
+    // The part would stand where an endpoint's name is, after a longer API prefix.
+    ["groq", "openai/v1/{endpoint}"],
+    ["gemini", "v1beta/openai/{endpoint}"],
+    ["gemini", "v1alpha/{endpoint}"],
+    ["bytedance", "{endpoint}/x"],
+  ])("refuses %s %s", (type, path) => expect(namedPartProblem(parseTemplate(path), prefixes(type))).not.toBeNull());
+
+  it("counts a custom provider's first segment as its prefix", () => {
+    expect(namedPartProblem(parseTemplate("api/items/{id}"), "first_segment")).toBeNull();
+    expect(namedPartProblem(parseTemplate("api/{id}"), "first_segment")).not.toBeNull();
+  });
+
+  it("never refuses a built-in provider's own declared paths", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const operation of description.operations) {
+        const template = parseTemplate(operation.match.path, { multi: true });
+        expect(namedPartProblem(template, apiPrefixesOf(description)), `${description.type} ${operation.match.path}`).toBeNull();
+      }
+    }
   });
 });
 
@@ -250,7 +285,7 @@ describe("saving a listing", () => {
   });
 
   it.each([
-    ["v1/{a}/{b}", "two fixed segments"],
+    ["v1/{a}/{b}", "only where an id is"],
     ["v1/threads/{id}/{x}", "next to each other"],
   ])("refuses %s by the named-part rule", async (path, says) => {
     const { status, body } = await create({ type: "openai", passthrough: [{ method: "GET", path }] });
@@ -318,12 +353,11 @@ describe("saving a listing", () => {
   it.each([
     [[{ method: "POST", path: "v1/realtime/{action}" }, { method: "POST", path: "v1/realtime/client_secrets" }]],
     [[{ method: "POST", path: "v1/realtime/client_secrets" }, { method: "POST", path: "v1/realtime/{action}" }]],
-  ])("refuses two listings that could match the same request, in either order: %j", async (passthrough) => {
+  ])("keeps two listings that can match one request, in either order, and the exact one keeps its defaults: %j", async (passthrough) => {
     const { status, body } = await create({ type: "openai", passthrough });
-    expect(status).toBe(400);
-    expect(body.error.message).toContain("can match the same requests as");
-    // Other methods never meet.
-    expect((await create({ type: "openai", passthrough: [{ method: "GET", path: "v1/realtime/{action}" }, { method: "POST", path: "v1/realtime/client_secrets" }] })).status).toBe(201);
+    expect(status).toBe(201);
+    const exact = body.provider.passthrough.find((entry: { path: string }) => entry.path === "v1/realtime/client_secrets");
+    expect(exact.set_fields?.[0]).toMatchObject({ suggested_value: expect.anything() });
   });
 
   it.each([

@@ -129,12 +129,11 @@ describe("judging a listing where the provider reads it", () => {
     expect(fal.overlappingOperation(compiled("POST", "fal-ai/{a}/{b}"))).toBe("fal.run");
   });
 
-  it("routes Cloudflare's prefix: a path may or may not start with it", () => {
+  it("routes Cloudflare's prefix: added to a path that does not start with it", () => {
     const route = upstreamRoute(openai, CLOUDFLARE);
     const lit = (value: string) => ({ kind: "literal", value }) as const;
     expect(upstreamTargets(route, "main", [lit("v1"), lit("files")])).toEqual({ host: "main", paths: [[lit("v1"), lit("files")]] });
     expect(upstreamTargets(route, "main", [lit("files")])).toEqual({ host: "main", paths: [[lit("v1"), lit("files")]] });
-    expect(upstreamTargets(route, "main", compiled("GET", "{x}/files").template.segments)?.paths).toHaveLength(2);
     expect(upstreamTargets(route, "queue", [lit("x")])).toBeNull();
     expect(upstreamTargets(upstreamRoute(openai, BASE_V1), "main", [lit("files")])?.paths).toEqual([[lit("v1"), lit("files")], [lit("files")]]);
   });
@@ -637,7 +636,7 @@ describe("saving a listed path", () => {
     [[{ method: "GET", path: "v1/files", live_token: true }], "live_token"],
     [[{ method: "POST", path: "v1/chat/completions" }], "is built in as the openai.chat operation; turn it on for the app instead"],
     [[{ method: "POST", path: "v1/chat/{what}" }], "is built in as the openai.chat operation"],
-    [[{ method: "POST", path: "v1/{endpoint}" }], "two fixed segments"],
+    [[{ method: "POST", path: "v1/{endpoint}" }], "only where an id is"],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
     [[{ method: "GET", path: "v1/files/%2e%2e" }], "path"],
     [[{ method: "GET", path: "v1/files" }, { method: "GET", path: "v1/files" }], "matches the same requests"],

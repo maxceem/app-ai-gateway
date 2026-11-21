@@ -318,7 +318,7 @@ describe("saving a custom provider", () => {
       { passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }, { method: "POST", path: "v1/chat/{x}", style: "openai-responses" }], pricing: PRICING },
       "can match the requests of the custom.",
     ],
-    [{ passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "two fixed segments"],
+    [{ passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "only where an id is"],
     // It could take openai.transcription, and openai.speech, whose answers the transcription reader would misread.
     [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/audio/{operation}", style: "openai-transcription" }], pricing: PRICING }, "openai.speech operation"],
     [{ baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/images/generations", style: "openai-images" }] }, "can report only their cost"],

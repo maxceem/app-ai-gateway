@@ -143,7 +143,16 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
       path,
       ...(typeof priceNano === "number" ? { priceNano } : {}),
       ...(typeof style === "string" ? { style } : {}),
-      ...(Array.isArray(setFields) ? { setFields: setFields.flatMap((field) => readField(field) ?? []) } : {}),
+      ...(Array.isArray(setFields)
+        ? {
+            setFields: setFields.flatMap((field) => {
+              const one = readField(field);
+              // Its request then goes without this setting: a default the customer expects is missing.
+              if (one === null) log("warn", "passthrough_unreadable", { reason: "field" });
+              return one ?? [];
+            }),
+          }
+        : {}),
     });
   }
   return read;

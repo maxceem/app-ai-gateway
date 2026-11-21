@@ -884,7 +884,7 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         hint={
           custom
             ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} stands for an id, after two fixed parts, such as v1/files/{file_id}."
-            : "Method and path, then a price such as $0.002 if you want one. {name} stands for an id, after two fixed parts, such as v1/files/{file_id}."
+            : "Method and path, then a price such as $0.002 if you want one. {name} stands for an id, after the API version and an endpoint's name, such as v1/files/{file_id}."
         }
       >
         <Textarea

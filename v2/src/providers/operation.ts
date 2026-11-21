@@ -619,6 +619,14 @@ export interface ProviderDescription {
    * hosts.
    */
   readonly otherHosts?: readonly string[];
+  /**
+   * The provider's API prefixes beyond the common ones (`COMMON_API_PREFIXES`
+   * in `./matcher.ts`): the leading segments its paths start with before an
+   * endpoint's name, such as Gemini's `v1beta`. The named-part rule counts
+   * fixed segments after the longest prefix a listing starts with, so a
+   * `{name}` part never stands where an endpoint's name is (plan 4.5).
+   */
+  readonly apiPrefixes?: readonly string[];
   readonly auth: ProviderAuth;
   /**
    * The request fields this provider reads a service mode from, such as a

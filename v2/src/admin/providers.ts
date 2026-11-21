@@ -52,7 +52,7 @@ import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProb
 import type { CustomerRates } from "../pricing/prices.ts";
 import { selectableModes } from "../proxy/meter.ts";
 import {
-  CLOUDFLARE_AI_GATEWAY_HOST,
+  CLOUDFLARE_AI_GATEWAY_ORIGIN,
   describeConnection,
   keyOrigin,
   readCloudflareGateway,
@@ -74,7 +74,7 @@ import {
   compilePassthrough,
   DIRECT_ROUTE,
   listingShape,
-  listingsOverlap,
+  apiPrefixesOf,
   namedPartProblem,
   ProviderMatcher,
   upstreamRoute,
@@ -249,11 +249,15 @@ function passthroughView(
 ): z.output<typeof PassthroughPathSchema>[] | undefined {
   const paths = readPassthrough(stored);
   if (paths.length === 0) return undefined;
-  const matcher = description === null ? null : new ProviderMatcher(description);
+  // Only a listing with field settings needs the matcher, for their labels and reasons.
+  let matcher: ProviderMatcher | null = null;
   return paths.map((listed) => {
     let suggested: SuggestedPath | null = null;
     try {
-      suggested = matcher?.suggestionFor(compilePassthrough([listed])[0]!, route) ?? null;
+      if (description !== null && listed.setFields !== undefined && listed.setFields.length > 0) {
+        matcher ??= new ProviderMatcher(description);
+        suggested = matcher.suggestionFor(compilePassthrough([listed])[0]!, route);
+      }
     } catch {
       // A path that no longer compiles still shows as stored.
     }
@@ -401,8 +405,9 @@ function passthroughJson(
     }));
   const known = shapesOf(before);
   const kept = shapesOf(stored);
+  // A built-in connection's matcher and route, built once: which provider path a listing reaches decides
+  // its suggestion (through Cloudflare, the setting's prefix) and whether it is a built-in endpoint.
   const builtInMatcher = subject.kind === "builtIn" ? new ProviderMatcher(subject.description) : null;
-  // Which provider path a listing reaches decides its suggestion: through Cloudflare, the setting's prefix.
   const builtInRoute = subject.kind === "builtIn" ? upstreamRoute(subject.description, subject) : DIRECT_ROUTE;
   const seen = new Set<string>();
   const styles = new Set<string>();
@@ -453,7 +458,7 @@ function passthroughJson(
     }
     const isNew = !known.has(listingKey(compiled));
     if (isNew) {
-      const problem = namedPartProblem(compiled.template);
+      const problem = namedPartProblem(compiled.template, subject.kind === "custom" ? "first_segment" : apiPrefixesOf(subject.description));
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.path: ${problem}`);
     }
     // First listed with no settings of its own: the provider's safe defaults, written in so the customer sees them.
@@ -463,25 +468,17 @@ function passthroughJson(
     const listed: PassthroughPath = { ...bare, ...(fields.length > 0 ? { setFields: fields } : {}) };
     return { where, key, listed, compiled: { listed, template: compiled.template }, isNew };
   });
-  // Listed paths are tried in order: two that could match the same request would let the order decide
-  // which price and field settings apply. A pair is judged when either is new, so a stored pair keeps working.
-  for (let later = 0; later < checked.length; later++) {
-    for (let earlier = 0; earlier < later; earlier++) {
-      const [a, b] = [checked[earlier]!, checked[later]!];
-      if (!a.isNew && !b.isNew) continue;
-      if (a.listed.style !== undefined || b.listed.style !== undefined) continue;
-      if (listingsOverlap(a.compiled, b.compiled)) {
-        throw new GatewayError(400, "invalid_request", `${b.where}.path: ${b.key} can match the same requests as ${a.key}; list exact paths that do not overlap`);
-      }
-    }
-  }
+  // Two listings that can match one request need no refusal: the more specific one serves it (`moreSpecific`).
   const paths = checked.map((one) => one.listed);
+  // A custom provider's description holds its API-style paths as operations, so it is built from this save.
   const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;
-  const route = upstreamRoute(description, subject.kind === "custom" ? { baseUrl: subject.baseUrl, cloudflareGateway: null } : subject);
-  const matcher = new ProviderMatcher(description);
+  const route = builtInMatcher !== null ? builtInRoute : upstreamRoute(description, { baseUrl: subject.kind === "custom" ? subject.baseUrl : null, cloudflareGateway: null });
+  const matcher = builtInMatcher ?? new ProviderMatcher(description);
   // A new API-style path is an operation the plain listings could now overlap: they are judged against it again.
   const styleAdded = checked.some((one) => one.listed.style !== undefined && one.isNew);
-  // A custom provider on a built-in provider's host: that provider's declared operations, where its paths are read.
+  // A custom provider on a built-in provider's host takes only two things from that provider (plan 4.5): its
+  // built-in endpoints are never listed as plain paths, which would serve them unmetered, and an API-style path
+  // reads answers by that provider's rules (`./providers/custom.ts`). Nothing else: no prices, regions or headers.
   const owner = subject.kind === "custom" ? knownHostOwner(subject.baseUrl) : null;
   const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
   const ownerRoute = owner === null || subject.baseUrl === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
@@ -662,10 +659,13 @@ function checkRoute(
  *
  * Any other host, such as a self-hosted server, is the customer's own.
  */
+/** Cloudflare AI Gateway's host name (`CLOUDFLARE_AI_GATEWAY_ORIGIN`). */
+const CLOUDFLARE_AI_GATEWAY_HOSTNAME = new URL(CLOUDFLARE_AI_GATEWAY_ORIGIN).hostname;
+
 function baseUrlProblem(description: ProviderDescription, baseUrl: string): string | null {
   const url = new URL(baseUrl);
   const host = url.hostname.toLowerCase();
-  if (host === CLOUDFLARE_AI_GATEWAY_HOST) {
+  if (host === CLOUDFLARE_AI_GATEWAY_HOSTNAME) {
     return "Cloudflare AI Gateway is reached through the connection's cloudflareGateway setting, not a base URL";
   }
   // Another built-in provider's host: its endpoints would be reached under this provider's rules and prices.
@@ -675,7 +675,7 @@ function baseUrlProblem(description: ProviderDescription, baseUrl: string): stri
   }
   const declared = Object.values(description.hosts).find((entry) => entry.split("/")[0]!.toLowerCase() === host);
   const plain = declared !== undefined ? `/${declared.slice(declared.split("/")[0]!.length + 1)}`.replace(/\/?$/u, "/") : "/";
-  const own = declared !== undefined || declaredHostNames(description).some((name) => hostMatches(name, host));
+  const own = declaredHostNames(description).some((name) => hostMatches(name, host));
   if (own && url.pathname !== plain) return `on ${description.label}'s own host the base URL is its plain address: https://${url.host}${plain}`;
   return null;
 }
@@ -730,7 +730,7 @@ function checkedCustom(
   const sameAuth = stored?.auth !== null && stored?.auth !== undefined && stored.auth.header === auth.header && stored.auth.format === auth.format;
   const problem = sameAuth ? null : customAuthProblem(auth);
   if (problem !== null) throw new GatewayError(400, "invalid_request", problem);
-  if (baseUrl !== stored?.baseUrl && new URL(baseUrl).hostname === CLOUDFLARE_AI_GATEWAY_HOST) {
+  if (baseUrl !== stored?.baseUrl && new URL(baseUrl).hostname === CLOUDFLARE_AI_GATEWAY_HOSTNAME) {
     throw new GatewayError(
       400,
       "invalid_request",

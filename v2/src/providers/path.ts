@@ -145,17 +145,15 @@ export function matchTemplate(
   options: MatchOptions = {},
 ): Parts | null {
   const parts: Record<string, string> = {};
-  const same = (a: string, b: string) => a === b;
-
   const one = (pattern: TemplateSegment, value: string): boolean => {
     switch (pattern.kind) {
       case "literal":
-        return same(pattern.value, value);
+        return pattern.value === value;
       case "part": {
         const { prefix, suffix } = pattern;
         if (value.length <= prefix.length + suffix.length) return false;
-        if (!same(value.slice(0, prefix.length), prefix)) return false;
-        if (!same(value.slice(value.length - suffix.length), suffix)) return false;
+        if (value.slice(0, prefix.length) !== prefix) return false;
+        if (value.slice(value.length - suffix.length) !== suffix) return false;
         parts[pattern.name] = value.slice(prefix.length, value.length - suffix.length);
         return true;
       }

@@ -201,8 +201,9 @@ export const FieldSettingSchema = z
  * A path a provider connection lists for passthrough (plan section 4.5): a
  * path of the provider the gateway does not declare, forwarded as it is to
  * apps that enable `passthrough`. `{name}` parts match exactly one segment,
- * and stand only where an id is: two fixed segments come before the first,
- * and no two stand next to each other.
+ * and stand only where an id is: after the provider's API prefix (such as
+ * `v1`) one fixed segment comes before the first, and no two stand next to
+ * each other.
  */
 export const PassthroughPathSchema = z
   .object({

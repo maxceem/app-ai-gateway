@@ -93,7 +93,6 @@ describe("passthrough paths", () => {
       listed: { method: "GET", path: "v1/files/{file_id}" },
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
-      suggested: null,
       liveTokenMint: false,
     });
   });
@@ -186,6 +185,22 @@ describe("broken descriptions are caught when compiled", () => {
     const op = defineOperation({ ...base, name: "t.dup", match: { method: "GET", path: "v1/x" }, model: { in: "fixed", model: "m" } });
     const twice = defineProvider({ type: "test", label: "Test", serviceModes: [], hosts: { main: "example.com" }, auth: { header: "x", format: "{key}" }, refused: [], operations: [op, op] });
     expect(() => new ProviderMatcher(twice)).toThrow(/declared twice/);
+  });
+});
+
+describe("listings that can match one request", () => {
+  const matcher = new ProviderMatcher(openai);
+  const passthrough = compilePassthrough([
+    { method: "GET", path: "v1/files/{file_id}" },
+    { method: "GET", path: "v1/files/search", priceNano: 1_000 },
+    { method: "GET", path: "v1/files/{file_id}/content" },
+  ]);
+
+  it("serves a request with the most specific listing, whatever the order", () => {
+    for (const order of [passthrough, [...passthrough].reverse()]) {
+      expect(matcher.match("GET", "v1/files/search", { passthrough: order })).toMatchObject({ kind: "passthrough", listed: { path: "v1/files/search" } });
+      expect(matcher.match("GET", "v1/files/file-1", { passthrough: order })).toMatchObject({ kind: "passthrough", listed: { path: "v1/files/{file_id}" } });
+    }
   });
 });
 

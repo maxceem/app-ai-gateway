@@ -11,6 +11,8 @@
  *    for a listed path never switches it on its own: the customer makes
  *    that switch (plan section 4.5). Saving refuses a listing a declared
  *    operation serves (`overlappingOperation`), so the two never meet.
+ *    Of the listed paths that match, the most specific serves
+ *    (`moreSpecific`), so the order they are listed in never decides.
  * 3. Declared operations, in the order the provider lists them.
  * 4. Everything else is refused.
  *
@@ -71,13 +73,11 @@ export type MatchResult =
       readonly listed: PassthroughPath;
       readonly parts: Parts;
       readonly upstream: UpstreamTarget;
-      /** The provider's suggested path the listing is, or null (`SuggestedPath`): a live-session token mint, for one. */
-      readonly suggested: SuggestedPath | null;
       /**
        * Whether this request is a live-session token mint the provider names
        * (plan D4), judged on the path the provider reads, whatever template
        * the listing used. It decides the cache rules only; suggested defaults
-       * stay with exact listings (`suggested`).
+       * stay with exact listings (`suggestionFor`, when saved).
        */
       readonly liveTokenMint: boolean;
     }
@@ -223,8 +223,8 @@ const literal = (value: string): TemplateSegment => ({ kind: "literal", value })
  *   URL mounts the provider is not known, so each way of reading it is a
  *   target: the whole base path, then without its first segment, and so on.
  * - Cloudflare AI Gateway (main host only): Cloudflare's provider name adds
- *   back its prefix (`cloudflarePrefix`). A path that may or may not start
- *   with it (a `{name}` part there) has both targets.
+ *   back its prefix (`cloudflarePrefix`) to a path that does not start
+ *   with it.
  *
  * Null for a host Cloudflare does not serve: nothing is sent there.
  */
@@ -237,10 +237,9 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
     const head = path.slice(0, prefix.length);
     const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
     if (starts) return { host: "main", paths: [path] };
-    const may =
-      head.length === prefix.length &&
-      head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: prefix[index]! }));
-    return { host: "main", paths: may ? [path, added] : [added] };
+    // A `{name}` part where the prefix would be cannot be listed (the named-part rule), and no declared
+    // operation starts with one, so a path either starts with the prefix or does not.
+    return { host: "main", paths: [added] };
   }
   const base = route.basePath;
   if (base === null) return { host: "main", paths: [path] };
@@ -256,7 +255,8 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
  * request or listing is; saving and serving both use it.
  */
 function providerReads(route: UpstreamRoute, path: readonly TemplateSegment[]): readonly (readonly TemplateSegment[])[] {
-  return upstreamTargets(route, "main", path)?.paths ?? [path];
+  // On the main host there is always a target (`upstreamTargets`).
+  return upstreamTargets(route, "main", path)!.paths;
 }
 
 export interface MatchContext {
@@ -336,16 +336,20 @@ export class ProviderMatcher {
     if (!normalized.ok) return { kind: "refused", reason: "bad_path", detail: normalized.reason };
     const { segments } = normalized;
 
+    // Of the listed paths that match, the most specific serves: the order they are listed in never decides.
+    let best: { readonly listed: CompiledPassthrough; readonly parts: Parts } | null = null;
     for (const listed of context.passthrough ?? []) {
       if (listed.listed.method !== method) continue;
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
+      if (best === null || moreSpecific(listed.template, best.listed.template)) best = { listed, parts };
+    }
+    if (best !== null) {
       return {
         kind: "passthrough",
-        listed: listed.listed,
-        parts,
+        listed: best.listed.listed,
+        parts: best.parts,
         upstream: { host: "main", path: joinSegments(segments) },
-        suggested: this.suggestionFor(listed, context.route),
         liveTokenMint: this.isLiveTokenMint(method, segments, context.route),
       };
     }
@@ -482,19 +486,42 @@ export function listingShape(method: string, template: Template): string {
 }
 
 /**
+ * The API prefixes every built-in provider's paths may start with: `v1`, and
+ * the OpenAI-compatible layouts every provider is reached at (`./llm.ts`). A
+ * provider adds its own (`apiPrefixes`).
+ */
+export const COMMON_API_PREFIXES: readonly string[] = ["v1", "openai/v1", "inference/v1", "v1beta/openai"];
+
+/** A built-in provider's API prefixes, in segments: the common ones and its own. */
+export function apiPrefixesOf(description: ProviderDescription): readonly (readonly string[])[] {
+  return [...COMMON_API_PREFIXES, ...(description.apiPrefixes ?? [])].map((prefix) => prefix.split("/"));
+}
+
+/**
  * Why a newly listed path is refused by the named-part rule (plan section
  * 4.5), or null: a `{name}` part may stand only where an id is, never where
- * an endpoint's name is. So two fixed segments come before the first part,
- * and no two parts stand next to each other: `v1/files/{file_id}` and
+ * an endpoint's name is. So, after the API prefix the listing starts with,
+ * one fixed segment comes before the first part, and no two parts stand next
+ * to each other. On OpenAI `v1/files/{file_id}` and
  * `v1/threads/{thread_id}/messages/{message_id}` are allowed, `v1/{a}/{b}`
- * and `v1/threads/{id}/{x}` are not. Judged when saved only, so a listing
- * stored before keeps working.
+ * and `v1/threads/{id}/{x}` are not; on Groq `openai/v1/{endpoint}` is not.
+ * `prefixes` are a built-in provider's (`apiPrefixesOf`); a custom provider
+ * (`"first_segment"`) counts its first segment as its prefix. Judged when
+ * saved only, so a listing stored before keeps working.
  */
-export function namedPartProblem(template: Template): string | null {
+export function namedPartProblem(template: Template, prefixes: readonly (readonly string[])[] | "first_segment"): string | null {
   const segments = template.segments;
   const first = segments.findIndex((segment) => segment.kind !== "literal");
   if (first === -1) return null;
-  if (first < 2) return "a {name} part may come only after two fixed segments, where an id is; list the exact endpoint, such as v1/files/{file_id}";
+  const starts = (prefix: readonly string[]) =>
+    prefix.every((value, index) => {
+      const segment = segments[index];
+      return segment !== undefined && segment.kind === "literal" && segment.value === value;
+    });
+  const prefixLength = prefixes === "first_segment" ? 1 : Math.max(0, ...prefixes.filter(starts).map((prefix) => prefix.length));
+  if (first < prefixLength + 1) {
+    return "a {name} part may stand only where an id is, after the API version and an endpoint's fixed name; list the exact endpoint, such as v1/files/{file_id}";
+  }
   for (let index = first; index < segments.length - 1; index++) {
     if (segments[index]!.kind !== "literal" && segments[index + 1]!.kind !== "literal") {
       return "two {name} parts may not stand next to each other; list the exact endpoint, such as v1/threads/{thread_id}/messages/{message_id}";
@@ -504,13 +531,19 @@ export function namedPartProblem(template: Template): string | null {
 }
 
 /**
- * Whether two listed paths of one method could match the same request.
- * Listed paths are tried in order, so saving refuses such a pair: which one
- * serves a request, with its price and field settings, never depends on the
- * order (plan section 4.5).
+ * Whether listed path `a` is more specific than `b`, both matching one
+ * request: at the first segment where they differ, a fixed segment beats a
+ * `{name}` part, and a part with fixed text around it beats a bare one. So
+ * `v1/files/search` serves its own requests before `v1/files/{id}` does.
  */
-export function listingsOverlap(a: CompiledPassthrough, b: CompiledPassthrough): boolean {
-  return a.listed.method === b.listed.method && templatesMeet(a.template.segments as readonly SegmentPattern[], b.template.segments, {});
+function moreSpecific(a: Template, b: Template): boolean {
+  const rank = (segment: TemplateSegment) =>
+    segment.kind === "literal" ? 0 : segment.kind === "part" && (segment.prefix !== "" || segment.suffix !== "") ? 1 : 2;
+  for (let index = 0; index < Math.min(a.segments.length, b.segments.length); index++) {
+    const difference = rank(a.segments[index]!) - rank(b.segments[index]!);
+    if (difference !== 0) return difference < 0;
+  }
+  return false;
 }
 
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */
