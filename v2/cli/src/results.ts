@@ -7,6 +7,7 @@ import type {
   ProviderResult,
 } from "./commands.ts";
 import type { LoginResult, LogoutResult } from "./context.ts";
+import type { ConversationsExportResult } from "./conversations.ts";
 
 /** What `agw deployment status` reports about the selected gateway. */
 export interface DeploymentStatusResult {
@@ -33,4 +34,5 @@ export type CommandResult =
   | AppValidateResult
   | AppKeyAddResult
   | AppUpdateResult
+  | ConversationsExportResult
   | OperationStatus;

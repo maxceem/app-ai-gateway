@@ -547,6 +547,45 @@ export interface OperationDescription {
   readonly job?: JobSpec;
   readonly session?: SessionSpec;
   /**
+   * JSON fields of its answer that hold a recording in bare base64, such as
+   * ElevenLabs' `audio_base64` beside its timestamps. A stored conversation
+   * treats them as audio: kept as media, or left out where an app keeps no
+   * audio (`../conversations/record.ts`).
+   */
+  readonly storedAudio?: StoredAudio;
+  /**
+   * Its request body is a recording sent as raw bytes (`rawBody`), such as
+   * Deepgram's upload, whatever type the app named it: a stored conversation
+   * treats it as audio, so it is left out where an app keeps no audio.
+   */
+  readonly rawAudio?: true;
+  /**
+   * A successful answer that is neither JSON, events nor JSON lines is a
+   * recording, whatever type it was sent with, such as speech returned as
+   * `application/octet-stream`: a stored conversation treats it as audio, so it
+   * is left out where an app keeps no audio.
+   */
+  readonly rawAudioResponse?: true;
+  /**
+   * Form fields of its request that carry a recording, such as a transcription's
+   * `file`: a stored conversation treats them as audio whatever type or name the
+   * upload gave them, so they are left out where an app keeps no audio.
+   */
+  readonly audioFormFields?: readonly string[];
+  /**
+   * Form fields of its request that carry an image, such as an image edit's
+   * `image`, `image[]` and `mask`: a stored conversation treats them as images
+   * whatever type or name the upload gave them (a browser often sends
+   * `application/octet-stream` named `blob`).
+   */
+  readonly imageFormFields?: readonly string[];
+  /**
+   * Its answer is newline-delimited JSON, whatever content type it is sent
+   * with, such as ElevenLabs' streamed speech with timestamps: a stored
+   * conversation keeps it a line at a time (`../conversations/record.ts`).
+   */
+  readonly responseJsonLines?: true;
+  /**
    * How this operation's requests and answers are read, over its provider's
    * (`readingRules`): a custom provider's path of an API style carries the
    * rules of the built-in provider its definition comes from (`./custom.ts`),
@@ -887,4 +926,25 @@ export function requestMeasuresOf(meter: Meter): readonly (RequestMeasure & { re
   }
   if (meter.kind === "response_json") return meter.requestMeasure === undefined ? [] : [meter.requestMeasure];
   return [];
+}
+
+/**
+ * JSON fields of an answer that hold a recording in bare base64, and its
+ * media type. Where the request names the format in its query, such as
+ * ElevenLabs' `output_format=pcm_16000`, `format` gives the type for each
+ * format prefix, and `mime` is the type when the query names none.
+ */
+export interface StoredAudio {
+  readonly fields: readonly string[];
+  readonly mime: string;
+  readonly format?: { readonly query: string; readonly byPrefix: Readonly<Record<string, string>> };
+}
+
+/** The media type of a stored recording for a request sent with `query`. */
+export function storedAudioType(audio: StoredAudio, query: string): string {
+  if (audio.format === undefined) return audio.mime;
+  const named = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query).get(audio.format.query);
+  if (named === null || named === "") return audio.mime;
+  for (const [prefix, mime] of Object.entries(audio.format.byPrefix)) if (named.toLowerCase().startsWith(prefix)) return mime;
+  return audio.mime;
 }

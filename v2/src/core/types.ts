@@ -1,4 +1,4 @@
-import type { AuthenticationConfig, LimitsConfig, PresetsConfig, RoutingConfig } from "../contracts/app-config.ts";
+import type { AuthenticationConfig, ConversationsConfig, LimitsConfig, PresetsConfig, RoutingConfig } from "../contracts/app-config.ts";
 
 /** How the client first proved itself. A gateway token carries this over from its exchange. */
 export type AuthMethod = "attest" | "api_key";
@@ -16,6 +16,8 @@ export interface AppRecord {
   limits: LimitsConfig;
   /** The app's presets, by slug (plan section 4.4). */
   presets: PresetsConfig;
+  /** Conversation storage, where the app turned it on (`conversations.store`); null otherwise. */
+  conversations: ConversationsConfig | null;
 }
 
 interface GatewayIdentityFields {

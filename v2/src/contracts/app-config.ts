@@ -5,8 +5,8 @@
  * `routing` says which provider connections an app may call, which of their
  * declared operations, which models, an output cap, and model rewrites (v1's
  * `routing.model_rewrites`). `presets` are v1's custom endpoints (plan
- * section 4.4), each with its fallback chain. Conversation storage comes in
- * a later step, as a new optional key.
+ * section 4.4), each with its fallback chain. `conversations` is v1's
+ * conversation storage (step 7), an optional key.
  *
  * Plain `zod`, so the console and the CLI can import it.
  */
@@ -420,12 +420,67 @@ export function configuredBudgetScope(authentication: AuthenticationConfig, limi
   return limits.per_user.spending.scope ?? (authentication.type === "apple_app_attest" ? "apple_account" : "user");
 }
 
+/** How long stored conversations are kept, in days: the default, and the bounds an app may set (v1's). */
+export const CONVERSATION_RETENTION_DAYS = { default: 180, min: 1, max: 400 } as const;
+
+const keptMedia = (field: string, what: string) =>
+  z.boolean({ error: `conversations.keep.${field} must be true or false` }).default(true).meta({
+    description: `Keep ${what} beside the conversation. Off, each is recorded by its type and size alone.`,
+  });
+
+/**
+ * Which attachments a stored conversation keeps: all of them unless the
+ * customer leaves a kind out. The conversation itself (messages,
+ * instructions, tool calls) is always kept.
+ */
+const ConversationKeepSchema = z
+  .object({
+    images: keptMedia("images", "images"),
+    audio: keptMedia("audio", "audio: recordings sent for transcription, audio in a request, spoken replies"),
+    files: keptMedia("files", "every other attached file, such as a PDF or a text document"),
+  })
+  .strict();
+
+/**
+ * Whether the gateway keeps a copy of this app's calls, and for how long
+ * (v1's `conversations`, plan D13 and step 7). Off unless the customer turns
+ * it on: what an app's users send is theirs, and keeping it is the
+ * customer's decision. Calls only: never a passthrough path, a job or a live
+ * session.
+ */
+export const ConversationsConfigSchema = z
+  .object({
+    store: z.boolean({ error: "conversations.store must be true or false" }).default(false).meta({
+      description: "Keep a copy of every call this app sends through the gateway, request and response, with the media `keep` allows.",
+    }),
+    keep: ConversationKeepSchema.prefault({}),
+    retention_days: z
+      .number({ error: "conversations.retention_days must be a whole number of days" })
+      .int({ error: "conversations.retention_days must be a whole number of days" })
+      .min(CONVERSATION_RETENTION_DAYS.min, { error: `conversations.retention_days must be at least ${CONVERSATION_RETENTION_DAYS.min}` })
+      .max(CONVERSATION_RETENTION_DAYS.max, { error: `conversations.retention_days must be at most ${CONVERSATION_RETENTION_DAYS.max}` })
+      .default(CONVERSATION_RETENTION_DAYS.default)
+      .meta({ description: "Days a stored conversation is kept before it is deleted." }),
+  })
+  .strict();
+
+export type ConversationsConfig = z.output<typeof ConversationsConfigSchema>;
+export type KeptMedia = ConversationsConfig["keep"];
+
+/** Whether a stored `conversations` says nothing its defaults do not, so it is not written (`AGENTS.md`). */
+export function conversationsAreDefault(conversations: ConversationsConfig): boolean {
+  const { store, keep, retention_days } = conversations;
+  return !store && keep.images && keep.audio && keep.files && retention_days === CONVERSATION_RETENTION_DAYS.default;
+}
+
 export const AppConfigSchema = z
   .object({
     authentication: AuthenticationConfigSchema,
     routing: RoutingConfigSchema.prefault({}),
     limits: LimitsConfigSchema.prefault({}),
     presets: PresetsConfigSchema.optional(),
+    /** Conversation storage (step 7). Written only when it differs from its defaults. */
+    conversations: ConversationsConfigSchema.optional(),
   })
   .strict()
   .superRefine((config, context) => {

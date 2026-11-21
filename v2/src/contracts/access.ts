@@ -100,6 +100,8 @@ export const ConsoleCapabilitiesSchema = z
     googleAuth: z.boolean(),
     /** Whether the CLI and MCP clients can sign in (the deployment set CONSOLE_ORIGIN). */
     oauth: z.boolean(),
+    /** Whether apps can store their conversations here (the deployment has a CONVERSATIONS bucket). */
+    conversationStorage: z.boolean().optional(),
     termsOfServiceUrl: z.string().optional(),
     privacyPolicyUrl: z.string().optional(),
   })

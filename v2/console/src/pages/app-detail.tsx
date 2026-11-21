@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
@@ -42,6 +43,7 @@ import {
 import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
+import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
 
 interface Tab {
   slug: string;
@@ -1096,6 +1098,8 @@ function SettingsTab({ app }: { app: App }) {
         </CardContent>
       </Card>
 
+      <ConversationStorage app={app} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Configuration</CardTitle>
@@ -1151,5 +1155,124 @@ function SettingsTab({ app }: { app: App }) {
         onConfirm={() => void confirmDelete()}
       />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history (v1's setting, ported)
+
+const MEDIA_KINDS = [
+  ["images", "Images"],
+  ["audio", "Audio"],
+  ["files", "Files"],
+] as const;
+
+type KeptMedia = Record<(typeof MEDIA_KINDS)[number][0], boolean>;
+
+/**
+ * Whether the gateway keeps a copy of this app's requests and responses, and
+ * for how long. Shown on every deployment, but only switchable on where the
+ * deployment has a bucket to keep them in, so one without learns why it is
+ * off. A plan that does not include it is refused on save, with the reason.
+ * An app storing them can always switch it off.
+ */
+function ConversationStorage({ app }: { app: App }) {
+  const { readOnly, capabilities } = useConsoleSession();
+  const { save, pending } = useSaveApp(app);
+  const available = capabilities.conversationStorage === true;
+  const stored = app.config.conversations;
+  const draftOf = () => ({
+    store: stored?.store ?? false,
+    keep: {
+      images: stored?.keep?.images ?? true,
+      audio: stored?.keep?.audio ?? true,
+      files: stored?.keep?.files ?? true,
+    } satisfies KeptMedia,
+    days: String(stored?.retention_days ?? CONVERSATION_RETENTION_DAYS.default),
+  });
+  const [draft, setDraft] = useState(draftOf);
+  // Follows the saved setting each time the app is saved.
+  useEffect(() => setDraft(draftOf()), [app.revision]);
+
+  const days = Number(draft.days);
+  const daysValid = Number.isInteger(days) && days >= CONVERSATION_RETENTION_DAYS.min && days <= CONVERSATION_RETENTION_DAYS.max;
+  const saved = draftOf();
+  const changed = draft.store !== saved.store || (draft.store && (draft.days !== saved.days || MEDIA_KINDS.some(([kind]) => draft.keep[kind] !== saved.keep[kind])));
+
+  const submit = async () => {
+    const conversations = { store: draft.store, keep: draft.keep, retention_days: draft.store ? days : (stored?.retention_days ?? CONVERSATION_RETENTION_DAYS.default) };
+    await save({ config: { ...app.config, conversations } }, draft.store ? "Conversation history is on" : "Conversation history is off");
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Conversation history</CardTitle>
+        <CardDescription>
+          {available ? (
+            <>
+              Keeps a copy of each request and response. Download them with <code>agw app conversations</code>.
+            </>
+          ) : (
+            "Not set up on this deployment: it needs a CONVERSATIONS bucket."
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex max-w-md items-center justify-between gap-4">
+          <Label htmlFor="conversation-store">Store conversations</Label>
+          <Switch
+            id="conversation-store"
+            checked={draft.store}
+            disabled={readOnly || pending || (!available && !draft.store)}
+            onCheckedChange={(checked) => setDraft({ ...draft, store: checked })}
+          />
+        </div>
+        {draft.store ? (
+          <>
+            <Field label="Keep">
+              <div className="space-y-2">
+                {MEDIA_KINDS.map(([kind, label]) => (
+                  <div key={kind} className="flex max-w-64 items-center justify-between gap-4">
+                    <span className="text-sm">{label}</span>
+                    <Switch
+                      aria-label={label}
+                      checked={draft.keep[kind]}
+                      disabled={readOnly || pending}
+                      onCheckedChange={(checked) => setDraft({ ...draft, keep: { ...draft.keep, [kind]: checked } })}
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">Messages are always kept.</p>
+            </Field>
+            <Field label="Keep for (days)" htmlFor="conversation-retention">
+              <Input
+                id="conversation-retention"
+                type="number"
+                inputMode="numeric"
+                min={CONVERSATION_RETENTION_DAYS.min}
+                max={CONVERSATION_RETENTION_DAYS.max}
+                value={draft.days}
+                disabled={readOnly || pending}
+                className="max-w-32"
+                onChange={(event) => setDraft({ ...draft, days: event.target.value })}
+              />
+              {daysValid ? (
+                <p className="text-xs text-muted-foreground">Stored days older than this are deleted once a day.</p>
+              ) : (
+                <p className="text-sm text-destructive">
+                  Use a whole number from {CONVERSATION_RETENTION_DAYS.min} to {CONVERSATION_RETENTION_DAYS.max}.
+                </p>
+              )}
+            </Field>
+          </>
+        ) : null}
+        <GuardedButton disabled={!changed || (draft.store && !daysValid) || pending} onClick={() => void submit()}>
+          {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+          Save conversation history
+        </GuardedButton>
+      </CardContent>
+    </Card>
   );
 }

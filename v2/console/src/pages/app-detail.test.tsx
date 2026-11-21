@@ -47,12 +47,12 @@ const putBody = (fetchMock: ReturnType<typeof stub>) => {
   return found ? JSON.parse(String(found[1]!.body)) : undefined;
 };
 
-function renderTab(tab: string) {
+function renderTab(tab: string, capabilities: { conversationStorage?: boolean } = {}) {
   return renderAuthenticated(
     <Routes>
       <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
     </Routes>,
-    { route: `/apps/my-app/${tab}` },
+    { route: `/apps/my-app/${tab}`, capabilities },
   );
 }
 
@@ -557,5 +557,49 @@ describe("AppDetailPage", () => {
     await userEvent.type(editor, '{{"authentication":{{"type":"api_key","end_user":{{"source":"none"}}}');
     await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
     await waitFor(() => expect(putBody(fetchMock)?.config).toEqual({ authentication: { type: "api_key", end_user: { source: "none" } } }));
+  });
+
+  it("turns conversation history on with the kept media and days, keeping the rest of the configuration", async () => {
+    const fetchMock = stub({ [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
+    renderTab("settings", { conversationStorage: true });
+
+    await userEvent.click(await screen.findByRole("switch", { name: "Store conversations" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Audio" }));
+    const days = screen.getByLabelText("Keep for (days)");
+    await userEvent.clear(days);
+    await userEvent.type(days, "30");
+    await userEvent.click(screen.getByRole("button", { name: /save conversation history/i }));
+
+    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
+    const { config } = putBody(fetchMock);
+    expect(config.conversations).toEqual({ store: true, keep: { images: true, audio: false, files: true }, retention_days: 30 });
+    expect(config.routing).toEqual(testApp().config.routing);
+  });
+
+  it("refuses days out of range before saving", async () => {
+    stub();
+    renderTab("settings", { conversationStorage: true });
+    await userEvent.click(await screen.findByRole("switch", { name: "Store conversations" }));
+    const days = screen.getByLabelText("Keep for (days)");
+    await userEvent.clear(days);
+    await userEvent.type(days, "401");
+    expect(screen.getByText(/whole number from 1 to 400/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save conversation history/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("cannot turn conversation history on where the deployment has no bucket", async () => {
+    stub();
+    renderTab("settings");
+    expect(((await screen.findByRole("switch", { name: "Store conversations" })) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/not set up on this deployment/i)).toBeTruthy();
+  });
+
+  it("can still turn conversation history off where the deployment has no bucket", async () => {
+    const storing = testApp({ config: { ...testApp().config, conversations: { store: true, keep: { images: true, audio: true, files: true }, retention_days: 180 } } });
+    const fetchMock = stub({ [`GET ${APP_URL}`]: { body: { app: storing } }, [`PUT ${APP_URL}`]: { body: { app: testApp({ revision: 3 }) } } });
+    renderTab("settings");
+    await userEvent.click(await screen.findByRole("switch", { name: "Store conversations" }));
+    await userEvent.click(screen.getByRole("button", { name: /save conversation history/i }));
+    await waitFor(() => expect(putBody(fetchMock)?.config.conversations).toEqual({ store: false, keep: { images: true, audio: true, files: true }, retention_days: 180 }));
   });
 });

@@ -86,6 +86,8 @@ export const deepgram = defineProvider({
       model: { in: "query", name: "model", default: "base-general", answeredWhen: DETECT_LANGUAGE, servedAs: SERVED_AS },
       modelKinds: ["transcription"],
       rawBody: true,
+      // The upload is the recording, often sent as `application/octet-stream`.
+      rawAudio: true,
       priceKeys: [
         { name: "language", from: { in: "query", field: "language" }, default: "en", answeredWhen: DETECT_LANGUAGE },
         ...PER_MINUTE_EXTRAS.map((name) => {

@@ -147,6 +147,16 @@ export class GatewayClient {
     }
   }
 
+  /** A file an operation answers with (`file: true` in the catalog), as its bytes. */
+  async download<K extends OperationName>(name: K, { params, query }: Pick<CallOptions<K>, "params" | "query"> = {}): Promise<Uint8Array> {
+    const wire = await this.transport.request(
+      this.source.url(),
+      pathFor(name, params as Record<string, string> | undefined, query as object | undefined),
+      { method: CATALOG[name].method, key: await this.credential(), binary: true },
+    );
+    return wire.data as Uint8Array;
+  }
+
   /** The current credential, or the refusal that names the way back. */
   private async credential(): Promise<string> {
     const token = await this.source.credential();

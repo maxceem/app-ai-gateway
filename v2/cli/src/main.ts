@@ -9,6 +9,7 @@ import {
   type CliTool,
 } from "./catalog.ts";
 import { appAdd, appKeyAdd, appUpdate, providerAdd, providerRotateKey, waitFor } from "./commands.ts";
+import { conversationsCommand } from "./conversations.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context, type ContextIo, type Notice } from "./context.ts";
@@ -113,6 +114,8 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
       return appAdd(ctx, flags);
     case "app key add":
       return appKeyAdd(ctx, first(args), flags);
+    case "app conversations":
+      return conversationsCommand(ctx, first(args), flags);
     case "app update":
       return appUpdate(ctx, first(args), flags);
     case "operation wait": {

@@ -25,15 +25,19 @@
  * JSON, or a multipart form (an upload), read by its content type. The app's
  * model rewrites apply here. Presets, with their fallback chains, are in
  * `./presets.ts`, and share the caller checks and the attempt loop.
- * Conversation storage comes in a later step.
+ * Each call's conversation is stored after its answer, where the app turned
+ * conversation storage on (`storeConversation`, `../conversations/capture.ts`).
  */
 import type { Context } from "hono";
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
+import { PROOF_HEADER } from "../client-auth/request-proof.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { cachedAppUserBlocked } from "../client-auth/user-status.ts";
 import { DEFAULT_END_USER_HEADER, PROVIDER_SLUG_PATTERN } from "../contracts/app-config.ts";
+import { CAPTURE_MAX_BYTES, captureConversation, captureHints, type SentBody } from "../conversations/capture.ts";
+import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -59,7 +63,7 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
-import { safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
+import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
@@ -131,12 +135,20 @@ export interface Caller {
   readonly identity: GatewayIdentity;
   /** The header the caller's credential came in, never sent to a provider. */
   readonly credentialHeader: string;
+  /** The credential authentication verified (app key or gateway token): never stored in a conversation, whatever header carried it. */
+  readonly credentialToken: string;
   readonly appVersion: string | null;
   readonly clientTraceId: string | null;
   /** The request body, read once, 20 MiB at most. */
   readonly readBody: () => Promise<Uint8Array>;
   /** Set as the request is understood, for the rejection event of a refusal. */
   readonly facts: { operation: string | null; model: string | null };
+  /**
+   * Whether this request's call is stored: the app turned storage on, the
+   * deployment has a bucket, and the client did not opt the request out. What
+   * is kept is read fresh when the conversation is written.
+   */
+  readonly storesConversation: boolean;
 }
 
 /**
@@ -208,7 +220,15 @@ export async function serveCaller(
         "X-Client-Trace-Id must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
       );
     }
-    return await serve({ identity, credentialHeader: credential.headerName, appVersion, clientTraceId, readBody, facts });
+    // `X-Conversation-Storage: off` opts this request out (v1). A value it
+    // cannot read is refused rather than ignored: storing what a user asked
+    // not to be stored is worse than a clear error.
+    const storage = c.req.header("x-conversation-storage");
+    if (storage !== undefined && storage.trim().toLowerCase() !== "off") {
+      throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
+    }
+    const storesConversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null;
+    return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, storesConversation });
   } catch (error) {
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
@@ -399,7 +419,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       };
       const kept = (outbound.query ?? (queryModelChanged ? sentQuery : null))?.toString();
       const query = kept === undefined ? sanitizedQuery(url) : kept === "" ? "" : `?${kept}`;
-      return await sendAttempts(c, strippedHeaders(app, caller), [
+      return await sendAttempts(c, clientSide(app, caller), [
         {
           connection,
           description,
@@ -410,6 +430,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
           credentials: () => Promise.resolve(credentials),
           body: () => sent,
           attempt,
+          ...(caller.storesConversation && operation.lifecycle === "call" ? { storesConversation: true as const } : {}),
         },
       ]);
     },
@@ -487,7 +508,7 @@ async function servePassthrough(
     clientTraceId: caller.clientTraceId,
     ...facts,
   };
-  return await sendAttempts(c, strippedHeaders(app, caller), [
+  return await sendAttempts(c, clientSide(app, caller), [
     {
       connection,
       description,
@@ -531,6 +552,12 @@ export type ParsedBody =
     };
 
 /** What is sent upstream: the bytes with their content type, or a form fetch encodes itself. */
+/** What an attempt sent: its body, and the credentials it carried, for its stored conversation. */
+interface SentAttempt {
+  readonly body: OutgoingBody;
+  readonly secrets: readonly (string | null)[];
+}
+
 export type OutgoingBody =
   | { readonly bytes: Uint8Array; readonly contentType: string | null; readonly form?: undefined }
   | { readonly form: FormData; readonly contentType: null; readonly bytes?: undefined };
@@ -752,9 +779,35 @@ export function sanitizedQuery(url: URL): string {
   return copy.search;
 }
 
-/** Client headers that never reach a provider, even if allowlisted: the gateway's own credentials and end-user ids. */
-export function strippedHeaders(app: AppRecord, caller: Caller): readonly string[] {
-  return [caller.credentialHeader, ...clientAuth(app).consumedHeaders, DEFAULT_END_USER_HEADER];
+/**
+ * What of the client's request never reaches a provider or a stored conversation:
+ * the headers that carry the gateway's own credentials and end-user ids (never
+ * sent upstream, even if allowlisted), and the credential authentication verified.
+ */
+export interface ClientSide {
+  readonly stripped: readonly string[];
+  /** The verified credential, masked from stored conversations whatever header carried it. */
+  readonly credential: string;
+  /**
+   * The headers that carry the app's credentials: the one the credential came in,
+   * the app's issuer token header and the App Attest proof. A stored conversation
+   * never holds their values. End-user id headers are not among them.
+   */
+  readonly credentialHeaders: readonly string[];
+  /** The headers that carry end-user ids (lowercase). Never a credential, even when a provider key header has the same name. */
+  readonly identityHeaders: readonly string[];
+}
+
+export function clientSide(app: AppRecord, caller: Caller): ClientSide {
+  const auth = clientAuth(app);
+  return {
+    stripped: [caller.credentialHeader, ...auth.consumedHeaders, DEFAULT_END_USER_HEADER],
+    credential: caller.credentialToken,
+    credentialHeaders: [caller.credentialHeader, ...(auth.tokenHeader !== undefined ? [auth.tokenHeader] : []), PROOF_HEADER],
+    identityHeaders: [...auth.identityHeaders, DEFAULT_END_USER_HEADER]
+      .map((name) => name.toLowerCase())
+      .filter((name) => name !== PROOF_HEADER.toLowerCase()),
+  };
 }
 
 /** One upstream attempt, ready to send: where to, with what body, and the charge it writes. */
@@ -778,6 +831,11 @@ export interface PreparedAttempt {
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   /** A live-session mint (plan D4): never served from a cache, whatever its destination. */
   readonly liveTokenMint?: true;
+  /**
+   * This attempt's call is stored (`Caller.storesConversation`). Calls only:
+   * never a passthrough path, a job or a live-token mint, as v1 stored model calls alone.
+   */
+  readonly storesConversation?: true;
 }
 
 /** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
@@ -859,7 +917,7 @@ function clientGone(c: ProxyContext): boolean {
  */
 export async function sendAttempts(
   c: ProxyContext,
-  stripped: readonly string[],
+  client: ClientSide,
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
   /** The key headers of a chain's targets that are not attempts here (a disabled preset target): dropped too. */
   otherKeyHeaders: readonly string[] = [],
@@ -869,7 +927,7 @@ export async function sendAttempts(
   // is built, by then with its estimate written or its loss recorded.
   const job = { release: (): void => undefined };
   try {
-    return await sendAttemptsKeptFor(c, stripped, attempts, otherKeyHeaders, job);
+    return await sendAttemptsKeptFor(c, client, attempts, otherKeyHeaders, job);
   } finally {
     job.release();
   }
@@ -877,14 +935,15 @@ export async function sendAttempts(
 
 async function sendAttemptsKeptFor(
   c: ProxyContext,
-  stripped: readonly string[],
+  client: ClientSide,
   attempts: readonly [PreparedAttempt, ...PreparedAttempt[]],
   otherKeyHeaders: readonly string[],
   job: { release: () => void },
 ): Promise<Response> {
   let deadline: number | undefined;
   /** A failed answer kept until another attempt is really sent, so it can be passed on if none is. */
-  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController } | null = null;
+  let previous: { prepared: PreparedAttempt; upstream: Response; latencyMs: number; keyHeader: string; controller: AbortController; sent: SentAttempt } | null = null;
+  const stripped = client.stripped;
   /** The error of an attempt that got no answer, for when nothing usable follows it. */
   let failure: GatewayError | null = null;
   const budgetExhausted = (index: number): GatewayError => {
@@ -901,6 +960,28 @@ async function sendAttemptsKeptFor(
     ...attempts.flatMap((one) => [one.description.auth.header, keyAuth(one.connection, one.description, one.operation.style).header]),
     ...otherKeyHeaders,
   ].map((name) => name.toLowerCase());
+  // The credentials the app sent: the one authentication verified, whatever header
+  // carried it, the values of the headers that carry the app's credentials, and any
+  // value the client put in a provider key header (stripped above, never sent on).
+  // A provider key header the gateway worked out is skipped when the app reads an
+  // end-user id from it; a header the app configured for its own credentials always
+  // counts, whatever its name. A stored conversation that contains one of them is
+  // never written with that body.
+  const secretHeaders = [
+    ...new Set([
+      ...keyHeaders.filter((name) => !client.identityHeaders.includes(name)),
+      ...client.credentialHeaders.map((name) => name.toLowerCase()),
+    ]),
+  ];
+  const clientSecrets = [
+    client.credential,
+    ...secretHeaders.flatMap((name) => {
+      const value = c.req.raw.headers.get(name);
+      if (value === null) return [];
+      const token = value.replace(/^bearer\s+/iu, "");
+      return token === value ? [value] : [value, token];
+    }),
+  ];
   for (const [index, prepared] of attempts.entries()) {
     const last = index === attempts.length - 1;
     const { connection, description, attempt } = prepared;
@@ -910,7 +991,7 @@ async function sendAttemptsKeptFor(
     if (deadline !== undefined && deadline - Date.now() <= 0) {
       if (previous !== null) {
         budgetExhausted(index);
-        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+        return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
       }
       throw budgetExhausted(index);
     }
@@ -934,8 +1015,10 @@ async function sendAttemptsKeptFor(
     let timer: ReturnType<typeof setTimeout>;
     let providerStart: number;
     let keyHeader = description.auth.header.toLowerCase();
+    let sent!: SentAttempt;
     try {
       const body = prepared.body();
+      sent = { body, secrets: [credentials.providerKey, credentials.cloudflareToken, ...clientSecrets] };
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
       const client = withoutHeaders(c.req.raw.headers, [...stripped, ...keyHeaders]);
@@ -1000,7 +1083,7 @@ async function sendAttemptsKeptFor(
         cutOnDisconnect(c, controller);
       }
     } catch (error) {
-      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+      if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
       throw error;
     }
     // The fallback is under way: the failed answer before it is charged and let go.
@@ -1046,14 +1129,14 @@ async function sendAttemptsKeptFor(
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
-      previous = { prepared, upstream, latencyMs, keyHeader, controller };
+      previous = { prepared, upstream, latencyMs, keyHeader, controller, sent };
       failure = null;
       continue;
     }
-    return answer(c, prepared, upstream, latencyMs, keyHeader, controller);
+    return answer(c, prepared, upstream, latencyMs, keyHeader, controller, sent);
   }
   // Every later attempt was skipped: the last failed answer is passed on as it is.
-  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller);
+  if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
   throw failure ?? new GatewayError(502, "provider_error", "Provider request failed");
 }
 
@@ -1100,6 +1183,8 @@ function answer(
   keyHeader: string,
   /** The attempt's fetch controller, so a job submit's body read that runs out of time can stop the fetch itself. */
   controller?: AbortController,
+  /** The body the attempt sent and the credentials it used, for its stored conversation. */
+  sent?: SentAttempt,
 ): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
   // A job submit the provider redirected was not accepted: nothing is charged, and its
@@ -1134,6 +1219,8 @@ function answer(
       cut: false,
       latencyMs,
     });
+    // After the charge is scheduled, and apart from it.
+    storeConversation(c, prepared, sent, { httpStatus: upstream.status, latencyMs, contentType, whole: [], totalBytes: 0, aborted: false, providerCut: false });
     return new Response(null, { status: upstream.status, headers: responseHeaders });
   }
 
@@ -1144,18 +1231,25 @@ function answer(
   const { stream, observed } = observeBody(upstream.body, {
     ...(reader !== null ? { onChunk: (chunk: Uint8Array) => reader.push(chunk) } : {}),
     keepHead: !ok,
+    ...(prepared.storesConversation === true ? { keepWhole: CAPTURE_MAX_BYTES } : {}),
+  });
+  // The meter reads the finished answer once. The charge and the stored
+  // conversation both take what it decided, so they never disagree on
+  // whether the answer was whole.
+  const metered = observed.then((body) => {
+    const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
+    // A stream is whole once its style's closing event arrived, even if the
+    // app went away right after. One that ended without it was cut short,
+    // however it ended. A style with no closing event, and an answer that
+    // is not a stream, are whole when they were read to the end.
+    const closed = reading?.closed ?? null;
+    const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
+    return { body, reading, cut };
   });
   c.executionCtx.waitUntil(
-    observed.then(
-      (body) => {
-        const reading = reader?.finish(upstream.headers, !body.clientAborted && !body.upstreamFailed) ?? null;
+    metered.then(
+      ({ body, reading, cut }) => {
         const usage = ok ? attemptUsage(operation, { ...attempt, listedRate: (unit) => listedUnitRate(attempt.providerType, attempt.model, unit) }, reading?.usage ?? null, upstream.headers) : null;
-        // A stream is whole once its style's closing event arrived, even if the
-        // app went away right after. One that ended without it was cut short,
-        // however it ended. A style with no closing event, and an answer that
-        // is not a stream, are whole when they were read to the end.
-        const closed = reading?.closed ?? null;
-        const cut = closed === true ? false : closed === false || body.clientAborted || body.upstreamFailed;
         // Charged as the model that served it, when the request named another it could be served with:
         // its price, and the mode the request asked of its provider, which the served mode starts from.
         const charged = ok ? chargedAs(attempt, reading?.servedModel ?? null) : attempt;
@@ -1189,7 +1283,66 @@ function answer(
       (error: unknown) => log("error", "usage_observe_failed", { app: attempt.appId, error: errorFacts(error) }),
     ),
   );
+  // The stored conversation is scheduled on its own, after the charge's: neither waits on the other.
+  if (prepared.storesConversation === true) {
+    c.executionCtx.waitUntil(
+      metered.then(({ body, cut }) =>
+        storeConversation(c, prepared, sent, {
+          httpStatus: upstream.status,
+          latencyMs,
+          contentType,
+          whole: body.whole,
+          totalBytes: body.totalBytes,
+          aborted: body.clientAborted,
+          // Cut short by the provider, not by the app: the meter's own decision,
+          // so a stream that ended without its closing event counts too.
+          providerCut: cut && !body.clientAborted,
+        })),
+    );
+  }
   return new Response(stream, { status: upstream.status, headers: responseHeaders });
+}
+
+/**
+ * Stores the conversation of an attempt whose answer went to the app, where
+ * its call is stored (`PreparedAttempt.storesConversation`), after the answer ended.
+ * Never part of the answer, and never able to fail it (`../conversations/capture.ts`).
+ */
+function storeConversation(
+  c: ProxyContext,
+  prepared: PreparedAttempt,
+  sentAttempt: SentAttempt | undefined,
+  answer: { httpStatus: number; latencyMs: number; contentType: string; whole: readonly Uint8Array[] | null; totalBytes: number; aborted: boolean; providerCut: boolean },
+): void {
+  if (prepared.storesConversation !== true || sentAttempt === undefined) return;
+  const { attempt } = prepared;
+  // The body already sent, never built again: encoding it is left to the capture, in the background.
+  const outgoing = sentAttempt.body;
+  const sent: SentBody = outgoing.form !== undefined ? { form: outgoing.form } : { bytes: outgoing.bytes ?? new Uint8Array(0), contentType: outgoing.contentType };
+  c.executionCtx.waitUntil(
+    captureConversation(c.env, {
+      accountId: attempt.accountId,
+      appId: attempt.appId,
+      hints: captureHints(prepared.operation, prepared.query),
+      startedAt: attempt.startedAt,
+      chargeId: chargeId(attempt.requestId, attempt.seq),
+      identity: attempt.identity,
+      appVersion: attempt.appVersion,
+      clientTraceId: attempt.clientTraceId,
+      preset: attempt.preset ?? null,
+      route: `${attempt.providerSlug}/${prepared.path.replace(/^\//u, "")}`,
+      provider: attempt.providerType,
+      model: attempt.model,
+      // An answer the provider broke off, or ended without its closing event, after a
+      // good status is a provider error, not a success: the stored answer is only its first part.
+      status: answer.httpStatus >= 200 && answer.httpStatus < 300 && !answer.providerCut ? "ok" : "provider_error",
+      httpStatus: answer.httpStatus,
+      latencyMs: answer.latencyMs,
+      sent,
+      secrets: sentAttempt.secrets.filter((secret): secret is string => secret !== null),
+      response: { contentType: answer.contentType, pieces: answer.whole, totalBytes: answer.totalBytes, aborted: answer.aborted },
+    }),
+  );
 }
 
 /**

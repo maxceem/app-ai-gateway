@@ -9,6 +9,8 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          // The optional conversation bucket (step 7), so conversation storage can be tested.
+          r2Buckets: ["CONVERSATIONS"],
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-32-bytes",

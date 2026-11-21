@@ -121,6 +121,7 @@ export function transcription(name: string, path: string, options: { readonly de
     transport: "upload",
     style: "openai-transcription",
     model: { in: "form", field: "model", ...(options.defaultModel !== undefined ? { default: options.defaultModel } : {}) },
+    audioFormFields: ["file"],
     meter: { kind: "response_json", style: "openai-transcription", units: ["audio_seconds"] },
   });
 }
@@ -138,7 +139,7 @@ export function images(name: string, path: string, options: TextOptions = {}): O
     style: "openai-images",
     model: { in: "body", field: "model" },
     background: DETACHED,
-    ...(options.uploads !== undefined ? { uploads: options.uploads } : {}),
+    ...(options.uploads !== undefined ? { uploads: options.uploads, imageFormFields: ["image", "image[]", "mask"] } : {}),
     meter: { ...meter("openai-images", options), units: ["images"] },
     // What an image's price varies by on the providers' own lists: its size and quality.
     priceKeys: [
@@ -178,6 +179,10 @@ export function speech(name: string, path: string): OperationDescription {
     style: "openai-speech",
     model: { in: "body", field: "model" },
     background: DETACHED,
+    // Its streamed events (`speech.audio.delta`) carry the recording under `audio`.
+    storedAudio: { fields: ["audio"], mime: "audio/mpeg" },
+    // Without `stream_format: "sse"`, its answer is the recording itself.
+    rawAudioResponse: true,
     meter: { kind: "response_json", style: "openai-speech", requestMeasure: { measure: "characters", field: "input", unit: "characters" } },
   });
 }

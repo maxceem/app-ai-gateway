@@ -3,12 +3,13 @@
  * or failing, the last known record is served (and `known_record_served` is
  * logged), as in v1.
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
+import type { KeptMedia } from "../contracts/app-config.ts";
 import type { AppRecord } from "../core/types.ts";
 import { database } from "../db/index.ts";
 import { app } from "../db/schema.ts";
@@ -58,9 +59,27 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     routing: config.routing,
     limits: config.limits,
     presets: config.presets ?? {},
+    conversations: config.conversations?.store === true ? config.conversations : null,
   };
   if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
   return value;
+}
+
+/**
+ * The app's saved conversation storage setting, read from D1 and never from
+ * the isolate cache: what it keeps, or null when storage is off or the app is
+ * not active. Capture calls it in the background before writing, so a call
+ * served from a stale cache never stores after storage was turned off. A
+ * failed read throws, and the capture is dropped.
+ */
+export async function readSavedConversations(env: Env, accountId: string, appId: string): Promise<KeptMedia | null> {
+  const row = await database(env.DB).query.app.findFirst({
+    where: and(eq(app.id, appId), eq(app.accountId, accountId)),
+    columns: { status: true, config: true },
+  });
+  if (!row || row.status !== "active") return null;
+  const conversations = parseServedAppConfig(row.config).config.conversations;
+  return conversations?.store === true ? conversations.keep : null;
 }
 
 /** Forgets a cached app, after its settings change. */

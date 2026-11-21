@@ -42,6 +42,11 @@ export const commands = {
     summary: "Add an iOS or server app; a server app's key goes to a private file",
   },
   "app key add": { args: 1, flags: "name key-output", summary: "Create a server app key, written to a private file" },
+  "app conversations": {
+    args: 1,
+    flags: "from to output media!",
+    summary: "Download an app's stored conversations into a folder",
+  },
   "app update": {
     args: 1,
     flags: "name status operations revision",
@@ -83,6 +88,10 @@ export interface Flags {
   operations?: string;
   revision?: string;
   timeout?: string;
+  from?: string;
+  to?: string;
+  output?: string;
+  media?: true;
 }
 
 export type ParseResult =
