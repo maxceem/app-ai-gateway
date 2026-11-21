@@ -247,7 +247,7 @@ export function upstreamRoute(
     const baseHost = url?.hostname.toLowerCase() ?? null;
     const cloudflareBase =
       baseHost === CLOUDFLARE_AI_GATEWAY_HOST
-        ? { type: description.type, slug: description.cloudflareGateway?.slug ?? null, prefix: cloudflarePrefix }
+        ? { type: description.type, slug: description.cloudflareEndpoint?.slug ?? null, prefix: cloudflarePrefix }
         : undefined;
     // Another provider's host: its rules judge where these requests go.
     const owner = baseHost === null ? null : hostOwner(baseHost);
@@ -363,7 +363,7 @@ export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: rea
     if (endpoint !== undefined && after.length > 0) {
       if (cloudflare.slug !== null && namesEndpoint(endpoint, cloudflare.slug)) paths.push(...cloudflareReadings(cloudflare.prefix, after));
       for (const other of CLOUDFLARE_PROVIDERS) {
-        if (other.type === cloudflare.type || !namesEndpoint(endpoint, other.cloudflareGateway!.slug)) continue;
+        if (other.type === cloudflare.type || !namesEndpoint(endpoint, other.cloudflareEndpoint!.slug)) continue;
         paths.push(...cloudflareReadings(cloudflarePrefixOf(other), after));
         reached.push(other);
       }

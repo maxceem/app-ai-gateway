@@ -536,7 +536,7 @@ function checkRoute(
   cloudflare: { readonly accountId: string; readonly gatewayId: string } | null,
 ): void {
   if (cloudflare === null) return;
-  if (description.cloudflareGateway === undefined) {
+  if (description.cloudflareGateway === undefined || description.cloudflareEndpoint === undefined) {
     throw new GatewayError(400, "invalid_request", `cloudflareGateway: ${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
   if (baseUrl !== null) {

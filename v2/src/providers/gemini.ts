@@ -77,7 +77,8 @@ export const gemini = defineProvider({
   probe: { path: "v1beta/models" },
   // The Files API's resumable uploads (`upload/v1beta/files`), once listed.
   passthroughHeaders: ["x-goog-upload-"],
-  cloudflareGateway: { slug: "google-ai-studio" },
+  cloudflareEndpoint: { slug: "google-ai-studio" },
+  cloudflareGateway: {},
   // Gemini's REST surface accepts both spellings of a field.
   serviceModes: [
     { names: ["service_tier", "serviceTier"], axis: "tier", values: { standard: "standard", flex: "flex", priority: "priority" } },

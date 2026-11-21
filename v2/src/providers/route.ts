@@ -124,8 +124,8 @@ export function upstreamRequest(
       keyHeader: description.auth.header.toLowerCase(),
     };
   }
-  const route = description.cloudflareGateway;
-  if (route === undefined || input.credentials.cloudflareToken === null) {
+  const route = description.cloudflareEndpoint;
+  if (description.cloudflareGateway === undefined || route === undefined || input.credentials.cloudflareToken === null) {
     throw new GatewayError(502, "provider_unavailable", `${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
   // Cloudflare serves a provider's main API only.

@@ -329,7 +329,7 @@ describe("judging a listing where the provider reads it", () => {
     const segments = new URL(url).pathname.split("/").filter((piece) => piece !== "").map((piece) => decodeURIComponent(piece));
     if (connection.cloudflareGateway !== null) {
       // `/v1/<account>/<gateway>/<slug>/<rest>`: Cloudflare's endpoint for the provider adds its prefix back.
-      const prefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+      const prefix = (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
       return [[...prefix, ...segments.slice(4)]];
     }
     if (connection.baseUrl !== null) {
@@ -371,7 +371,7 @@ describe("judging a listing where the provider reads it", () => {
         }));
       for (const connection of routesOf(description)) {
         const route = upstreamRoute(description, connection);
-        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
+        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
         // Each operation's paths as the provider reads them on this route, worked out once.
         const readings = operations.map(({ op, template, lists }) => ({
           op,

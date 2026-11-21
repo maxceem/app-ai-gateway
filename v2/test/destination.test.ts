@@ -63,6 +63,82 @@ describe("a Cloudflare base URL, wherever it ends", () => {
   });
 });
 
+describe("every provider Cloudflare AI Gateway reaches, through a short base URL", () => {
+  const SHORT = "https://gateway.ai.cloudflare.com/v1/acct/gw/";
+  const reached = Object.values(BUILT_IN_PROVIDERS).filter((description) => description.cloudflareEndpoint !== undefined);
+  const strip = (description: (typeof reached)[number], path: string) => {
+    const prefix = description.cloudflareEndpoint!.stripPathPrefix ?? "";
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  };
+  const concrete = (template: string) => template.replace(/\/\*$/, "/x").replace(/\{[^}]+\}/g, "x");
+
+  it("knows an endpoint for every provider a connection may send through the Cloudflare setting", () => {
+    for (const description of Object.values(BUILT_IN_PROVIDERS)) {
+      if (description.cloudflareGateway !== undefined) expect(description.cloudflareEndpoint, description.type).toBeDefined();
+    }
+  });
+
+  it("keeps each one's refused paths refused, and its token paths behind the opt-in, whatever the connection's type", () => {
+    for (const target of reached) {
+      const slug = target.cloudflareEndpoint!.slug;
+      // The provider's own type, and a type whose rules differ.
+      for (const type of [target.type, target.type === "openai" ? "anthropic" : "openai"]) {
+        const { matcher, route } = routed(type, SHORT);
+        for (const entry of target.refused) {
+          const rule = typeof entry === "string" ? { path: entry, methods: undefined, hosts: undefined } : entry;
+          if (rule.hosts !== undefined) continue;
+          const method = rule.methods?.[0] ?? "GET";
+          const sent = `${slug}/${strip(target, concrete(rule.path))}`;
+          for (const liveToken of [false, true]) {
+            const listed = compilePassthrough([listing(method, sent, liveToken)]);
+            expect(matcher.match(method, sent, { passthrough: listed, route }), `${type} ${method} ${sent}`).toMatchObject({ kind: "refused" });
+          }
+        }
+        for (const token of target.liveTokens ?? []) {
+          const sent = `${slug}/${strip(target, token.mint ?? token.path.replace(/\/\*$/, ""))}`;
+          const plain = compilePassthrough([listing(token.method, sent)]);
+          expect(matcher.match(token.method, sent, { passthrough: plain, route }), `${type} ${token.method} ${sent}`).toMatchObject({ kind: "refused" });
+          const optedIn = compilePassthrough([listing(token.method, sent, true)]);
+          expect(matcher.match(token.method, sent, { passthrough: optedIn, route }), `${type} opted-in ${sent}`).toMatchObject({
+            kind: "passthrough",
+            liveToken: { method: token.method },
+          });
+        }
+      }
+    }
+  });
+
+  it("refuses the cases Fable named: ElevenLabs tokens and key creation, and Deepgram's grant", () => {
+    const cases = [
+      ["elevenlabs", "GET", "elevenlabs/v1/convai/conversation/token"],
+      ["elevenlabs", "POST", "elevenlabs/v1/service-accounts/a1/api-keys"],
+      ["openai", "POST", "deepgram/v1/auth/grant"],
+      ["openai", "GET", "elevenlabs/v1/convai/conversation/token"],
+    ] as const;
+    for (const [type, method, path] of cases) {
+      const { matcher, route } = routed(type, SHORT);
+      const listed = compilePassthrough([listing(method, path)]);
+      expect(matcher.match(method, path, { passthrough: listed, route }), `${type} ${path}`).toMatchObject({ kind: "refused" });
+      expect(matcher.listingVerdict(listed[0]!, route).kind, `${type} ${path}`).not.toBe("free");
+    }
+  });
+
+  it("serves ElevenLabs and Deepgram connections on their own Cloudflare endpoint, under their refusals", () => {
+    const eleven = routed("elevenlabs", `${SHORT}elevenlabs/`);
+    const keys = "v1/service-accounts/a1/api-keys";
+    expect(eleven.matcher.match("POST", keys, { passthrough: compilePassthrough([listing("POST", keys)]), route: eleven.route })).toMatchObject({ kind: "refused" });
+    const token = "v1/convai/conversation/token";
+    expect(eleven.matcher.match("GET", token, { passthrough: compilePassthrough([listing("GET", token)]), route: eleven.route })).toMatchObject({ kind: "refused" });
+    expect(eleven.matcher.match("GET", token, { passthrough: compilePassthrough([listing("GET", token, true)]), route: eleven.route })).toMatchObject({
+      kind: "passthrough",
+      liveToken: { method: "GET" },
+    });
+    const deepgram = routed("deepgram", `${SHORT}deepgram/`);
+    const grant = "v1/auth/grant";
+    expect(deepgram.matcher.match("POST", grant, { passthrough: compilePassthrough([listing("POST", grant, true)]), route: deepgram.route })).toMatchObject({ kind: "refused" });
+  });
+});
+
 describe("a base URL on another provider's host, stored before saving refused it", () => {
   it("is judged by the host owner's refused and token paths when serving", () => {
     const { matcher, route } = routed("mistral", "https://api.openai.com/");
@@ -98,6 +174,10 @@ describe("saving a built-in connection's base URL", () => {
     ["openai", "https://management-api.x.ai/", true],
     ["openai", "https://eu.api.openai.com/", false],
     ["openai", "https://llm.example.com/v1/", false],
+    // A provider with no Cloudflare setting still has its own endpoint there.
+    ["elevenlabs", "https://gateway.ai.cloudflare.com/v1/acct/gw/elevenlabs/", false],
+    ["deepgram", "https://gateway.ai.cloudflare.com/v1/acct/gw/deepgram/", false],
+    ["elevenlabs", "https://gateway.ai.cloudflare.com/v1/acct/gw/deepgram/", true],
   ] as const)("%s at %s is refused: %s", (type, baseUrl, refused) => {
     expect(baseUrlOwnerProblem(provider(type), baseUrl) !== null).toBe(refused);
   });

@@ -703,15 +703,25 @@ export interface ProviderDescription {
    */
   readonly liveTokens?: readonly LiveTokenPath[];
   /**
-   * This provider can be reached through Cloudflare AI Gateway (D13): the
-   * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's
-   * name already implies, which is taken off the request's path. Cloudflare
-   * returns the provider's own response, so metering and prices are the
-   * provider's. Without this, a connection of this type cannot use it.
+   * The endpoint through which Cloudflare AI Gateway reaches this provider:
+   * the provider's name in Cloudflare's URL space, and a path prefix that
+   * name already implies, which Cloudflare adds back (OpenAI's `v1/`). It
+   * answers "where does a request on Cloudflare's host go", for every
+   * provider Cloudflare serves, whether or not a connection may use the
+   * `cloudflareGateway` setting. Refused and live-session token paths follow
+   * it (`./destination.ts`). Absent when Cloudflare has no endpoint for it.
    */
-  readonly cloudflareGateway?: {
+  readonly cloudflareEndpoint?: {
     readonly slug: string;
     readonly stripPathPrefix?: string;
+  };
+  /**
+   * A connection of this type may use the Cloudflare AI Gateway setting
+   * (D13), sent to its `cloudflareEndpoint`. Cloudflare returns the
+   * provider's own response, so metering and prices are the provider's.
+   * Without this, a connection of this type cannot use the setting.
+   */
+  readonly cloudflareGateway?: {
     /**
      * How the provider's key is sent through Cloudflare for an API style whose
      * endpoint takes it differently from `auth`, as Cloudflare documents it:

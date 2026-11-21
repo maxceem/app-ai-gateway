@@ -49,14 +49,26 @@ export function knownHostOwner(baseUrl: string): ProviderDescription | null {
   return hostOwner(host);
 }
 
-/** The built-in providers Cloudflare AI Gateway reaches, each through its endpoint (`cloudflareGateway.slug`). */
+/**
+ * The built-in providers Cloudflare AI Gateway reaches, each through its
+ * endpoint (`cloudflareEndpoint`). This is where a request on Cloudflare's
+ * host goes, whether or not a connection of that type may use the
+ * `cloudflareGateway` setting. An endpoint name not here reaches nothing v2
+ * knows, so it gets no provider's rules, as a custom upstream would.
+ */
 export const CLOUDFLARE_PROVIDERS: readonly ProviderDescription[] = Object.values(BUILT_IN_PROVIDERS).filter(
-  (description) => description.cloudflareGateway !== undefined,
+  (description) => description.cloudflareEndpoint !== undefined,
 );
 
-/** The path prefix Cloudflare's endpoint for a provider adds back (`stripPathPrefix`), in segments. */
+/** The built-in provider Cloudflare AI Gateway's endpoint `slug` reaches, or null. */
+export function cloudflareEndpointOwner(slug: string): ProviderDescription | null {
+  const lower = slug.toLowerCase();
+  return CLOUDFLARE_PROVIDERS.find((description) => description.cloudflareEndpoint!.slug.toLowerCase() === lower) ?? null;
+}
+
+/** The path prefix Cloudflare's endpoint for a provider adds back (`cloudflareEndpoint.stripPathPrefix`), in segments. */
 export function cloudflarePrefixOf(description: ProviderDescription): readonly string[] {
-  return (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+  return (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
 }
 
 /**
@@ -78,10 +90,9 @@ export function baseUrlOwnerProblem(description: ProviderDescription, baseUrl: s
   if (host === CLOUDFLARE_AI_GATEWAY_HOST) {
     const endpoint = url.pathname.split("/").filter((piece) => piece !== "")[CLOUDFLARE_ENDPOINT_SEGMENTS - 1];
     if (endpoint === undefined) return null;
-    const own = description.cloudflareGateway?.slug;
-    if (own !== undefined && endpoint.toLowerCase() === own.toLowerCase()) return null;
-    const other = CLOUDFLARE_PROVIDERS.find((candidate) => candidate.cloudflareGateway!.slug.toLowerCase() === endpoint.toLowerCase());
-    return other === undefined
+    const other = cloudflareEndpointOwner(endpoint);
+    if (other !== null && other.type === description.type) return null;
+    return other === null
       ? `this base URL reaches Cloudflare AI Gateway's ${endpoint} endpoint, not ${description.label}'s; use ${description.label}'s own endpoint`
       : `this base URL reaches ${other.label} through Cloudflare AI Gateway; use a ${other.label} connection for it`;
   }

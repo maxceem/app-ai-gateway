@@ -151,11 +151,11 @@ describe("matching a live-session token path", () => {
 
   it("refuses every built-in provider's refused paths through a base URL on its Cloudflare AI Gateway endpoint", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
-      const slug = description.cloudflareGateway?.slug;
+      const slug = description.cloudflareEndpoint?.slug;
       if (slug === undefined) continue;
       const matcher = new ProviderMatcher(description);
       const route = upstreamRoute(description, { baseUrl: `https://gateway.ai.cloudflare.com/v1/acct/gw/${slug}/`, cloudflareGateway: null });
-      const strip = description.cloudflareGateway?.stripPathPrefix ?? "";
+      const strip = description.cloudflareEndpoint?.stripPathPrefix ?? "";
       for (const entry of description.refused) {
         const rule = typeof entry === "string" ? { path: entry, methods: undefined, hosts: undefined } : entry;
         if (rule.hosts !== undefined) continue;

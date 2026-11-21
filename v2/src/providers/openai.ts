@@ -44,7 +44,8 @@ export const openai = defineProvider({
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },
   // Cloudflare's `openai` name already implies the `v1/` prefix.
-  cloudflareGateway: { slug: "openai", stripPathPrefix: "v1/" },
+  cloudflareEndpoint: { slug: "openai", stripPathPrefix: "v1/" },
+  cloudflareGateway: {},
   // `text`, `srt` and `vtt` answers carry no usage, so they are refused (v1).
   transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
   // `priority` is the name Fast mode had until July 2026, and is still

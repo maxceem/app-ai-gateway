@@ -51,6 +51,7 @@ export const elevenlabs = defineProvider({
   type: "elevenlabs",
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
+  cloudflareEndpoint: { slug: "elevenlabs" },
   // Its US host and its data residency hosts.
   otherHosts: ["api.us.elevenlabs.io", "api.eu.residency.elevenlabs.io", "api.in.residency.elevenlabs.io", "api.sg.residency.elevenlabs.io"],
   auth: { header: "xi-api-key", format: "{key}" },

@@ -29,7 +29,8 @@ export const xai = defineProvider({
   liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
-  cloudflareGateway: { slug: "grok" },
+  cloudflareEndpoint: { slug: "grok" },
+  cloudflareGateway: {},
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } }],
   // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
   regionalOrigins: { "https://us.api.x.ai/": "us" },
