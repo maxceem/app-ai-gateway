@@ -506,6 +506,7 @@ async function servePassthrough(
       credentials: () => Promise.resolve(credentials),
       body: () => sent,
       attempt,
+      ...(input.liveToken !== null ? { liveTokenMint: true as const } : {}),
     },
   ]);
 }
@@ -783,6 +784,8 @@ export interface PreparedAttempt {
   readonly attempt: CallAttempt;
   /** Headers set when the client sent none, such as the API version a preset's provider needs. */
   readonly defaultHeaders?: Readonly<Record<string, string>>;
+  /** A live-session mint (plan D4): never served from Cloudflare AI Gateway's cache. */
+  readonly liveTokenMint?: true;
 }
 
 /** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
@@ -946,6 +949,7 @@ export async function sendAttempts(
         client,
         appId: attempt.appId,
         userId: attempt.identity.userId,
+        ...(prepared.liveTokenMint === true ? { liveTokenMint: true } : {}),
       });
       for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
       const url = target.url;

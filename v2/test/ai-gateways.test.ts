@@ -90,6 +90,30 @@ describe("where a request goes (route.ts)", () => {
     expect(target.headers).toEqual({ authorization: `Bearer ${PROVIDER_KEY}` });
   });
 
+  it("never lets Cloudflare cache a live-session mint, whatever the app asked", () => {
+    const client = new Headers({ "CF-AIG-Cache-TTL": "300", "cf-aig-skip-cache": "false", "cf-aig-max-attempts": "2" });
+    const mint = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
+      ...base,
+      path: "v1/realtime/client_secrets",
+      client,
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      liveTokenMint: true,
+    });
+    expect(mint.headers["cf-aig-skip-cache"]).toBe("true");
+    expect(mint.headers["cf-aig-cache-ttl"]).toBeUndefined();
+    // Other Cloudflare settings the app may send still pass.
+    expect(mint.headers["cf-aig-max-attempts"]).toBe("2");
+
+    const call = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
+      ...base,
+      path: "v1/chat/completions",
+      client,
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+    });
+    expect(call.headers["cf-aig-cache-ttl"]).toBe("300");
+    expect(call.headers["cf-aig-skip-cache"]).toBe("false");
+  });
+
   it("goes through Cloudflare with its token, the provider's name, and the key when there is one", () => {
     const client = new Headers({ "cf-aig-cache-ttl": "60", "cf-aig-authorization": "Bearer stolen", "cf-aig-metadata": "{}" });
     const withKey = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
