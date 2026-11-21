@@ -372,6 +372,19 @@ const mock = {
         forwarded: [...request.headers.keys()].filter((name) => name.startsWith("x-") || name === "openai-beta").sort(),
       });
     }
+    // OpenAI's live-session token path (step 5c): answers a made-up client
+    // secret and echoes the JSON body it received, so the smoke checks can see
+    // the window the gateway locked. Never the key.
+    if (request.method === "POST" && url.pathname === "/v1/realtime/client_secrets") {
+      const { text } = await readCounting(request);
+      let received: unknown = null;
+      try {
+        received = text === null || text === "" ? null : (JSON.parse(text) as unknown);
+      } catch {
+        received = "unreadable";
+      }
+      return Response.json({ value: "ek_mock_smoke", expires_at: Math.floor(Date.now() / 1000) + 60, received });
+    }
     const failing = /^\/fail-([45]\d\d)(\/.*)$/u.exec(url.pathname);
     if (failing !== null && request.method === "POST") {
       const { bytes } = await readCounting(request);

@@ -98,6 +98,33 @@ describe("adding a provider connection through a person", () => {
     expect(JSON.stringify(opened.body)).toContain("modes.eu: no call on this connection is ever billed at this rate");
   });
 
+  it("refuses a base URL on another provider's host, as a direct save does", async () => {
+    const { caller } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", {
+      type: "vercel",
+      name: "Vercel",
+      slug: "vercel-on-mistral",
+      baseUrl: "https://api.eu.mistral.ai/",
+    });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(400);
+    expect(JSON.stringify(opened.body)).toContain("baseUrl:");
+  });
+
+  it("judges the base URL again on approval, so a step opened before the check adds nothing", async () => {
+    const { caller } = await person();
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "vercel", name: "Vercel", slug: "vercel-stored" });
+    expect(opened.status).toBe(201);
+    // A step stored before the check existed: its reviewed base URL names another provider's host.
+    const row = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id = ?").bind(opened.body.id).first<{ payload: string }>();
+    const payload = JSON.parse(row!.payload) as { review: Record<string, unknown> };
+    payload.review.baseUrl = "https://api.eu.mistral.ai/";
+    await env.DB.prepare("UPDATE mgmt_operation SET payload = ? WHERE id = ?").bind(JSON.stringify(payload), opened.body.id).run();
+    const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof: proofOf(opened.body.url), secret: KEY });
+    expect(approved.status, approved.text).toBe(400);
+    expect(approved.text).not.toContain(KEY);
+    expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
+  });
+
   it("names every host a provider sends the key to", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "fal", name: "fal" });

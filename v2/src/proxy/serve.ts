@@ -53,10 +53,10 @@ import {
   type UpstreamCredentials,
 } from "../providers/connections.ts";
 import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
-import { compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
+import { compiledPassthrough, isPassthrough, lockedLiveTokenBody, lockedLiveTokenQuery, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { readingRules, type LiveTokenPath, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { callCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -276,7 +276,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // Refused paths are judged where the request really goes too: its base URL or Cloudflare.
       const match = matcher.match(c.req.method, target.path, { passthrough, route: routeOf(description, connection) });
       if (match.kind === "passthrough") {
-        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, upstream: match.upstream, url, startedAt });
+        return await servePassthrough(c, caller, { app, connection, description, listed: match.listed, liveToken: match.liveToken, upstream: match.upstream, url, startedAt });
       }
       if (match.kind !== "operation") {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
@@ -438,19 +438,31 @@ async function servePassthrough(
     readonly connection: ConnectionRecord;
     readonly description: ProviderDescription;
     readonly listed: PassthroughPath;
+    /** The live-session token path the listing opted in to, or null (plan D4). */
+    readonly liveToken: LiveTokenPath | null;
     readonly upstream: UpstreamTarget;
     readonly url: URL;
     readonly startedAt: number;
   },
 ): Promise<Response> {
   const { app, connection, description, url, startedAt } = input;
-  caller.facts.operation = PASSTHROUGH;
-  const call = resolvePassthrough(input.listed);
+  const call = resolvePassthrough(input.listed, input.liveToken !== null);
   const { operation, bill } = call;
+  caller.facts.operation = operation.name;
   const bytes = await caller.readBody();
   const contentType = c.req.header("content-type") ?? "";
   // Never read: the body goes as the client's own bytes. One with no type is sent with none.
-  const sent: OutgoingBody = { bytes, contentType: contentType === "" ? null : contentType };
+  let sent: OutgoingBody = { bytes, contentType: contentType === "" ? null : contentType };
+  // A live-session mint's window is locked where the request sets it, whatever the client sent (plan D4).
+  const forced = input.liveToken?.forced;
+  if (forced !== undefined) {
+    const locked = lockedLiveTokenBody(forced, bytes, startedAt);
+    if (locked.kind === "unreadable") {
+      const names = (forced.fields ?? []).map((field) => field.names[0]).join(", ");
+      throw new GatewayError(400, "invalid_request", `This request mints a live-session secret, so its body must be a JSON object: the gateway sets ${names} in it`);
+    }
+    if (locked.kind === "locked") sent = { bytes: locked.bytes, contentType: "application/json" };
+  }
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
   // The credentials are opened before admission: a request that cannot be sent must not spend anything.
   const credentials = await connectionCredentials(c.env, connection);
@@ -490,10 +502,11 @@ async function servePassthrough(
       operation,
       hostKey: input.upstream.host,
       path: input.upstream.path,
-      query: sanitizedQuery(url),
+      query: forced === undefined ? sanitizedQuery(url) : lockedLiveTokenQuery(forced, sanitizedQuery(url)),
       credentials: () => Promise.resolve(credentials),
       body: () => sent,
       attempt,
+      ...(input.liveToken !== null ? { liveTokenMint: true as const } : {}),
     },
   ]);
 }
@@ -771,6 +784,8 @@ export interface PreparedAttempt {
   readonly attempt: CallAttempt;
   /** Headers set when the client sent none, such as the API version a preset's provider needs. */
   readonly defaultHeaders?: Readonly<Record<string, string>>;
+  /** A live-session mint (plan D4): never served from a cache, whatever its destination. */
+  readonly liveTokenMint?: true;
 }
 
 /** A status a fallback moves on from: the provider is busy or broken (v1). Anything else is the answer. */
@@ -936,6 +951,14 @@ export async function sendAttempts(
         userId: attempt.identity.userId,
       });
       for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
+      // A live-session mint (plan D4) is never served from a cache, wherever it
+      // goes: a cached secret comes back expired and is charged again. Every
+      // mint gets Cloudflare AI Gateway's skip header, which other hosts ignore,
+      // so no destination has to be recognized; the app's own cache headers go.
+      if (prepared.liveTokenMint === true) {
+        headers.delete("cf-aig-cache-ttl");
+        headers.set("cf-aig-skip-cache", "true");
+      }
       const url = target.url;
       keyHeader = target.keyHeader;
 
@@ -1046,11 +1069,21 @@ function retire(c: ProxyContext, failed: { prepared: PreparedAttempt; upstream: 
   );
 }
 
+/** Cache directives aimed at CDNs alone, which some follow instead of `Cache-Control`. */
+const CDN_CACHE_HEADERS = ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"] as const;
+
 /** Pipes an attempt's answer to the app, and writes its charge once the answer is read. */
 /** `keyHeader`: the header the attempt's key was sent in (`UpstreamRequest.keyHeader`), never passed back. */
 function answer(c: ProxyContext, prepared: PreparedAttempt, upstream: Response, latencyMs: number, keyHeader: string): Response {
   const { description, operation, attempt } = prepared;
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
+  // A minted live-session credential is never kept by a cache between the gateway and the app,
+  // whatever the provider said: a cache could hand one caller's signed URL to another. A CDN may
+  // follow its own targeted directive over `Cache-Control`, so those are dropped too.
+  if (prepared.liveTokenMint === true) {
+    for (const name of CDN_CACHE_HEADERS) responseHeaders.delete(name);
+    responseHeaders.set("cache-control", "no-store");
+  }
   const contentType = upstream.headers.get("content-type") ?? "";
   const ok = upstream.status >= 200 && upstream.status < 300;
 

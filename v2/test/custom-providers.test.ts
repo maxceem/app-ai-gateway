@@ -29,7 +29,7 @@ import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
-import { ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
@@ -75,8 +75,10 @@ describe("a custom provider's description", () => {
     expect(knownHostOwner("https://api.eu.mistral.ai/")?.type).toBe("mistral");
     expect(knownHostOwner("https://openai.example.com/")).toBeNull();
     const description = customDescription({ baseUrl: "https://api.openai.com/v1/", auth: AUTH, paths: [] });
-    expect(description.refused).toBe(openai.refused);
+    // Its hosts are OpenAI's; OpenAI's rules judge it where its requests go, not from its own description.
+    expect(description.refused).toEqual([]);
     expect(description.hosts).toBe(openai.hosts);
+    expect(upstreamRoute(description, { baseUrl: "https://api.openai.com/v1/", cloudflareGateway: null }).owner).toBe(openai);
   });
 
   it("turns each API-style path into its operation, and leaves plain paths to passthrough", () => {
@@ -107,7 +109,9 @@ describe("a custom provider's description", () => {
       for (const name of description.otherHosts ?? []) {
         const host = name.startsWith("*.") ? `jp${name.slice(1)}` : name;
         expect(knownHostOwner(`https://${host}/`)?.type, host).toBe(description.type);
-        expect(customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] }).refused, host).toBe(description.refused);
+        // The owner judges every request here: its route names it (`upstreamRoute`).
+        const custom = customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] });
+        expect(upstreamRoute(custom, { baseUrl: `https://${host}/`, cloudflareGateway: null }).owner, host).toBe(description);
       }
     }
     for (const host of ["us.api.openai.com", "gb.api.openai.com", "eu.api.openai.com", "jp.api.openai.com"]) {
@@ -115,6 +119,28 @@ describe("a custom provider's description", () => {
     }
     // Only under it: a look-alike name is not OpenAI's.
     expect(knownHostOwner("https://api.openai.com.example.net/")).toBeNull();
+  });
+
+  it("refuses xAI's account management on its management host, even when listed", () => {
+    expect(knownHostOwner("https://management-api.x.ai/")?.type).toBe("xai");
+    const custom = customDescription({ baseUrl: "https://management-api.x.ai/", auth: AUTH, paths: [] });
+    const matcher = new ProviderMatcher(custom);
+    const route = upstreamRoute(custom, { baseUrl: "https://management-api.x.ai/", cloudflareGateway: null });
+    for (const [method, path] of [
+      ["POST", "auth/teams/t1/api-keys"],
+      ["GET", "auth/teams/t1/api-keys"],
+      ["PUT", "auth/api-keys/k1"],
+      ["DELETE", "auth/api-keys/k1"],
+      ["GET", "auth/management-keys/validation"],
+      ["GET", "audit/teams/t1/events"],
+      ["POST", "v1/billing/teams/t1/usage"],
+      // Every path there manages the account, not only these.
+      ["GET", "v1/models"],
+    ] as const) {
+      const passthrough = compilePassthrough([{ method, path }]);
+      expect(matcher.match(method, path, { passthrough, route }), `${method} ${path}`).toMatchObject({ kind: "refused", reason: "refused_path" });
+      expect(matcher.refusedCovering(passthrough[0]!, route), `${method} ${path}`).not.toBeNull();
+    }
   });
 
   it("builds an API-style path from a built-in definition, with that provider's rules for reading it", () => {
@@ -348,7 +374,9 @@ describe("saving a custom provider", () => {
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
       "modes.us: no call on this connection is ever billed at this rate",
     ],
-    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "never allows"],
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/organization/admin_api_keys" }] }, "never allows"],
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "set live_token to true"],
+    [{ baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] }, "live-session token paths"],
   ])("refuses %j", async (fields, message) => {
     const key = await seedManagementKey();
     const refused = await createCustom(key, fields);

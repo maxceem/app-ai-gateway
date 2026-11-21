@@ -8,19 +8,29 @@
 import { chat, completions, embeddings, images, messages, responses, transcription, withV1Paths } from "./llm.ts";
 import { defineProvider } from "./operation.ts";
 
+/** xAI's management API host: every path on it manages the account. */
+const XAI_MANAGEMENT_HOST = "management-api.x.ai";
+
 export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
-  otherHosts: ["us.api.x.ai"],
+  // `management-api.x.ai` is declared so a custom provider there gets the
+  // refused paths below: every path on it manages the account.
+  otherHosts: ["us.api.x.ai", XAI_MANAGEMENT_HOST],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Key management lives on a separate host the gateway never calls. The
-  // key's own details, and the short-lived secrets for live sessions, refused
-  // until a customer can opt in to them path by path (plan D4).
-  refused: ["v1/api-key/*", "v1/realtime/client_secrets/*"],
+  // The key's own details. And every path on the management host, which
+  // manages the account: API keys, teams, management keys, audit logs and
+  // billing. Elsewhere, such as an xAI-compatible server, its paths may be
+  // ordinary ones.
+  refused: ["v1/api-key/*", { path: "*", hosts: [XAI_MANAGEMENT_HOST] }],
+  // Short-lived secrets for live sessions, reached only by a listed path that
+  // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
+  liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
-  cloudflareGateway: { slug: "grok" },
+  cloudflareEndpoint: { slug: "grok" },
+  cloudflareGateway: {},
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } }],
   // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
   regionalOrigins: { "https://us.api.x.ai/": "us" },

@@ -51,6 +51,7 @@ export const elevenlabs = defineProvider({
   type: "elevenlabs",
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
+  cloudflareEndpoint: { slug: "elevenlabs" },
   // Its US host and its data residency hosts.
   otherHosts: ["api.us.elevenlabs.io", "api.eu.residency.elevenlabs.io", "api.in.residency.elevenlabs.io", "api.sg.residency.elevenlabs.io"],
   auth: { header: "xi-api-key", format: "{key}" },
@@ -62,6 +63,9 @@ export const elevenlabs = defineProvider({
   // `test/elevenlabs-refused.test.ts` checks every operation of ElevenLabs'
   // API against this set, both ways.
   refused: [
+    // A single-use token for a batch file transcription is not for a live
+    // session, so no opt-in reaches it (plan D4).
+    { path: "v1/single-use-token/batch_scribe", methods: ["POST"] },
     // The account and its admin: user, workspaces and their team, service
     // accounts and their API keys, usage, and billing actions.
     "v1/user/*",
@@ -81,17 +85,6 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/environment-variables/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
     // Deleting an environment removes its values from every environment variable.
     { path: "v1/convai/environments/{environment}", methods: ["DELETE"] },
-    // Tokens and signed URLs for live sessions, until a customer can opt in
-    // to them path by path (plan D4).
-    "v1/convai/conversation/token/*",
-    "v1/convai/conversation/get-signed-url/*",
-    "v1/convai/conversation/get_signed_url/*",
-    "v1/convai/realtime/client_secrets/*",
-    "v1/single-use-token/*",
-    // An agent's link answers with a conversation token. Agent reads may hold
-    // a `shareable_token` too; they stay allowed, since passthrough never
-    // changes a body and the customer turns sharing on themselves.
-    { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
     // From the research: deleting a voice (not a collection, a voice's place
     // in one, or a sample), and creating, changing or deleting agents and
     // their settings (not queries under an agent, such as `rag-query`).
@@ -102,6 +95,29 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/agents/{agent_id}/avatar", methods: ["POST"] },
     { path: "v1/convai/agents/{agent_id}/hold-audio", methods: ["POST", "DELETE"] },
     { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
+    // An agent's link answers with a shareable token that may never expire
+    // (`expiration_time_unix_secs` can be null): open-ended access, which no
+    // opt-in reaches (plan D4).
+    "v1/convai/agents/{agent_id}/link",
+  ],
+  // Tokens and signed URLs for live sessions, reached only by a listed path
+  // that opts in, and only the mint itself: its method on the exact path
+  // (plan D4). Only the Realtime client secret takes an expiry; the others
+  // last as ElevenLabs sets them (about 15 minutes, T13). A signed URL is
+  // single use only with `include_conversation_id=true` (T13), so the
+  // gateway sets it, replacing whatever the client sent.
+  // Agent reads may hold a `shareable_token`; they stay allowed, since
+  // passthrough never changes a body and the customer turns sharing on
+  // themselves.
+  liveTokens: [
+    { path: "v1/convai/conversation/token/*", method: "GET" },
+    { path: "v1/convai/conversation/get-signed-url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
+    { path: "v1/convai/conversation/get_signed_url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
+    { path: "v1/convai/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
+    // Everything under `v1/single-use-token` stays refused, opt-in or not,
+    // except the mints of the types that start a live session.
+    { path: "v1/single-use-token/*", mint: "v1/single-use-token/realtime_scribe", method: "POST" },
+    { path: "v1/single-use-token/*", mint: "v1/single-use-token/tts_websocket", method: "POST" },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

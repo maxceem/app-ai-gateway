@@ -90,6 +90,19 @@ describe("where a request goes (route.ts)", () => {
     expect(target.headers).toEqual({ authorization: `Bearer ${PROVIDER_KEY}` });
   });
 
+  it("passes the app's Cloudflare cache settings through unchanged", () => {
+    const client = new Headers({ "CF-AIG-Cache-TTL": "300", "cf-aig-skip-cache": "false", "cf-aig-max-attempts": "2" });
+    const call = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
+      ...base,
+      path: "v1/chat/completions",
+      client,
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+    });
+    expect(call.headers["cf-aig-cache-ttl"]).toBe("300");
+    expect(call.headers["cf-aig-skip-cache"]).toBe("false");
+    expect(call.headers["cf-aig-max-attempts"]).toBe("2");
+  });
+
   it("goes through Cloudflare with its token, the provider's name, and the key when there is one", () => {
     const client = new Headers({ "cf-aig-cache-ttl": "60", "cf-aig-authorization": "Bearer stolen", "cf-aig-metadata": "{}" });
     const withKey = upstreamRequest(record({ cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.openai!, {
@@ -180,6 +193,32 @@ describe("where a request goes (route.ts)", () => {
       credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
     });
     expect(odd.headers["ai-reporting-user"]).toBeUndefined();
+  });
+
+  it.each([
+    ["a short Cloudflare base URL, to Cloudflare's OpenAI endpoint", "https://gateway.ai.cloudflare.com/v1/acct/gw/", "openai/models"],
+    ["a Cloudflare endpoint v2 does not map", "https://gateway.ai.cloudflare.com/v1/acct/gw/workers-ai/", "v1/chat/completions"],
+    ["another provider's host, as stored before saving refused it", "https://api.eu.mistral.ai/", "v1/chat/completions"],
+  ])("sends Vercel's attribution only to Vercel, not through %s", (_where, baseUrl, path) => {
+    const sent = upstreamRequest(record({ type: "vercel", baseUrl }), BUILT_IN_PROVIDERS.vercel!, {
+      ...base,
+      userId: "user-42",
+      path,
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
+    });
+    expect(sent.url.startsWith(baseUrl)).toBe(true);
+    expect(sent.headers["ai-reporting-user"]).toBeUndefined();
+    expect(sent.headers["ai-reporting-tags"]).toBeUndefined();
+  });
+
+  it("keeps Vercel's attribution on a host no provider declares, such as a customer's own proxy", () => {
+    const sent = upstreamRequest(record({ type: "vercel", baseUrl: "https://vercel-proxy.example.net/" }), BUILT_IN_PROVIDERS.vercel!, {
+      ...base,
+      userId: "user-42",
+      path: "v1/chat/completions",
+      credentials: { providerKey: PROVIDER_KEY, cloudflareToken: null },
+    });
+    expect(sent.headers).toMatchObject({ "ai-reporting-user": "user-42", "ai-reporting-tags": "app:app_1" });
   });
 });
 

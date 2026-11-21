@@ -17,20 +17,35 @@ export const openai = defineProvider({
   otherHosts: ["us.api.openai.com", "eu.api.openai.com", "gb.api.openai.com", "*.api.openai.com"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // The admin API (keys, projects, users, usage and costs) lives under
-  // `v1/organization`. The others mint short-lived secrets for live sessions
-  // and ChatKit: refused until a customer can opt in to them path by path,
-  // with their expiry locked (plan D4).
-  refused: [
-    "v1/organization/*",
-    "v1/realtime/client_secrets/*",
-    "v1/realtime/sessions/*",
-    "v1/realtime/transcription_sessions/*",
-    "v1/chatkit/sessions/*",
+  // `v1/organization`.
+  refused: ["v1/organization/*"],
+  // Short-lived secrets for live sessions and ChatKit, reached only by a
+  // listed path that opts in, and only the mint itself: POST on the exact
+  // path. Anything under it, such as cancelling a ChatKit session, stays
+  // refused (plan D4). A client secret's expiry only limits when calls can
+  // start (T18), so it is locked to that window. The older Realtime sessions
+  // keep it inside `client_secret`: OpenAI's SDK names it `expires_after` for
+  // sessions and `expires_at` for transcription sessions, so both spellings
+  // are replaced on both.
+  liveTokens: [
+    { path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
+    {
+      path: "v1/realtime/sessions/*",
+      method: "POST",
+      forced: { fields: [{ names: ["client_secret.expires_after", "client_secret.expires_at"], value: { window: "expires_after", anchor: true } }] },
+    },
+    {
+      path: "v1/realtime/transcription_sessions/*",
+      method: "POST",
+      forced: { fields: [{ names: ["client_secret.expires_at", "client_secret.expires_after"], value: { window: "expires_after", anchor: true } }] },
+    },
+    { path: "v1/chatkit/sessions/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
   ],
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },
   // Cloudflare's `openai` name already implies the `v1/` prefix.
-  cloudflareGateway: { slug: "openai", stripPathPrefix: "v1/" },
+  cloudflareEndpoint: { slug: "openai", stripPathPrefix: "v1/" },
+  cloudflareGateway: {},
   // `text`, `srt` and `vtt` answers carry no usage, so they are refused (v1).
   transcriptionFormats: { metered: ["json", "verbose_json", "diarized_json"], default: "json" },
   // `priority` is the name Fast mode had until July 2026, and is still

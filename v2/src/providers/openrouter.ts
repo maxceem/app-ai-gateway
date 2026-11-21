@@ -11,6 +11,7 @@ export const openrouter = defineProvider({
   type: "openrouter",
   label: "OpenRouter",
   hosts: { main: "openrouter.ai/api" },
+  cloudflareEndpoint: { slug: "openrouter" },
   auth: { header: "authorization", format: "Bearer {key}" },
   // Key management (and the OAuth exchange that creates a key), the key's own
   // limits, the account's credits and activity, and its organization settings.

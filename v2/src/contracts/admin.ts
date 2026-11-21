@@ -184,6 +184,16 @@ export const PassthroughPathSchema = z
      * priced at the connection's rates for its models, not passed through.
      */
     style: z.enum(CUSTOM_PATH_STYLES).optional(),
+    /**
+     * Opts the path in to one of the provider's live-session token paths,
+     * which mint a short-lived secret for a live call (such as OpenAI's
+     * `v1/realtime/client_secrets`). Without it they are refused, even when
+     * listed. Such a mint is not metered and not capped: the call it starts
+     * goes straight to the provider. Where the provider lets the request set
+     * how long the secret may start a call, the gateway locks it to 60
+     * seconds. Shown only when true.
+     */
+    live_token: z.boolean().optional(),
   })
   .strict()
   .meta({ id: "PassthroughPath" });

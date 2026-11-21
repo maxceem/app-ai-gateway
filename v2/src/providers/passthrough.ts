@@ -4,7 +4,7 @@
  *
  * - The connection lists each method and path, and optionally a flat price
  *   per request. Stored in `provider_connection.passthrough_json` as
- *   `{ "paths": [{ "method", "path", "price_nano"?, "style"? }], "auth"? }`.
+ *   `{ "paths": [{ "method", "path", "price_nano"?, "style"?, "live_token"? }], "auth"? }`.
  *   A custom provider (`./custom.ts`) stores how its key is sent in `auth`
  *   (`{ "header", "format" }`), and may name an API style per path.
  * - An app reaches them only when its route for that connection enables the
@@ -13,11 +13,19 @@
  * - A request is forwarded as it is, with the provider's key in its header,
  *   and charged as one call of the `passthrough` operation: the flat price
  *   for each answer the provider accepts, or `not_priced` without a price.
+ * - A path that mints a secret for a live session (the provider's
+ *   `liveTokens`, plan D4) is refused unless its listing opts in
+ *   (`live_token: true`). It is charged as a `live_token` call instead, so
+ *   it can be shown as not metered and not capped, and the window its secret
+ *   may start a call in is locked where the provider lets the request set it.
+ *
+ * Migration (plan section 9.1): a v1 listing of a token path becomes a
+ * listing with `live_token: true`, since v1 served it once listed.
  */
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { compilePassthrough, type CompiledPassthrough, type PassthroughPath } from "./matcher.ts";
-import type { HttpMethod, OperationDescription, ProviderAuth } from "./operation.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced, type LiveTokenValue, type OperationDescription, type ProviderAuth } from "./operation.ts";
 
 /** The operation name an app's route enables passthrough with, and the one its charges carry. */
 export const PASSTHROUGH = "passthrough";
@@ -37,8 +45,14 @@ export const PASSTHROUGH_OPERATION: OperationDescription = {
   meter: { kind: "request_count" },
 };
 
+/** The operation name a live-session token mint's charges carry (plan D4). */
+export const LIVE_TOKEN = "live_token";
+
+/** The operation a mint through a live-session token path is charged as: a passthrough call by another name. */
+export const LIVE_TOKEN_OPERATION: OperationDescription = { ...PASSTHROUGH_OPERATION, name: LIVE_TOKEN };
+
 export function isPassthrough(operation: OperationDescription): boolean {
-  return operation === PASSTHROUGH_OPERATION;
+  return operation === PASSTHROUGH_OPERATION || operation === LIVE_TOKEN_OPERATION;
 }
 
 export const PASSTHROUGH_METHODS: readonly HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -52,6 +66,7 @@ export function storedPassthrough(paths: readonly PassthroughPath[], auth: Provi
       path: listed.path,
       ...(listed.priceNano !== undefined ? { price_nano: listed.priceNano } : {}),
       ...(listed.style !== undefined ? { style: listed.style } : {}),
+      ...(listed.liveToken === true ? { live_token: true } : {}),
     })),
     ...(auth === null ? {} : { auth: { header: auth.header, format: auth.format } }),
   });
@@ -89,7 +104,7 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
   if (!Array.isArray(paths)) return [];
   const read: PassthroughPath[] = [];
   for (const entry of paths as unknown[]) {
-    const { method, path, price_nano: priceNano, style } = (entry ?? {}) as Record<string, unknown>;
+    const { method, path, price_nano: priceNano, style, live_token: liveToken } = (entry ?? {}) as Record<string, unknown>;
     if (typeof method !== "string" || !(PASSTHROUGH_METHODS as readonly string[]).includes(method) || typeof path !== "string") {
       log("error", "passthrough_unreadable", { reason: "entry" });
       continue;
@@ -99,6 +114,7 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
       path,
       ...(typeof priceNano === "number" ? { priceNano } : {}),
       ...(typeof style === "string" ? { style } : {}),
+      ...(liveToken === true ? { liveToken: true as const } : {}),
     });
   }
   return read;
@@ -127,4 +143,87 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
   });
   COMPILED.set(paths, compiled);
   return compiled;
+}
+
+/**
+ * The body of a live-session mint, with every field `forced` names set as it
+ * says, whatever the client sent. Every spelling of a field is removed and
+ * only its first is written, so the provider reads one value; a nested
+ * spelling gets its parent objects when the body has none. A mint that
+ * forces no body field is sent as it is (`same`). An empty body, or JSON
+ * `null`, becomes an object holding only the forced fields. A body that is not a JSON object
+ * cannot carry them, so it is `unreadable`, and the gateway refuses to send
+ * it rather than mint a secret it could not limit.
+ */
+export function lockedLiveTokenBody(
+  forced: LiveTokenForced,
+  bytes: Uint8Array,
+  now: number,
+): { readonly kind: "same" } | { readonly kind: "locked"; readonly bytes: Uint8Array } | { readonly kind: "unreadable" } {
+  if (forced.fields === undefined) return { kind: "same" };
+  let body: unknown = {};
+  if (bytes.byteLength > 0) {
+    try {
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    } catch {
+      return { kind: "unreadable" };
+    }
+  }
+  // JSON `null` carries nothing, like an empty body (ElevenLabs' schema allows it).
+  if (body === null) body = {};
+  if (!isObject(body)) return { kind: "unreadable" };
+  const locked: Record<string, unknown> = { ...body };
+  for (const field of forced.fields) {
+    for (const name of field.names) removeField(locked, name.split("."));
+    writeField(locked, field.names[0].split("."), forcedValue(field.value, now));
+  }
+  return { kind: "locked", bytes: new TextEncoder().encode(JSON.stringify(locked)) };
+}
+
+/** The query of a live-session mint, with every parameter `forced` names holding only the gateway's value. */
+export function lockedLiveTokenQuery(forced: LiveTokenForced, search: string): string {
+  if (forced.query === undefined) return search;
+  const params = new URLSearchParams(search);
+  for (const { name, value } of forced.query) params.set(name, value);
+  const query = params.toString();
+  return query === "" ? "" : `?${query}`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Removes a nested field, copying each parent object on the way so the client's own objects are never changed. */
+function removeField(target: Record<string, unknown>, path: readonly string[]): void {
+  const [head, ...rest] = path;
+  if (head === undefined || !Object.hasOwn(target, head)) return;
+  if (rest.length === 0) {
+    delete target[head];
+    return;
+  }
+  const child = target[head];
+  if (!isObject(child)) return;
+  const copy = { ...child };
+  target[head] = copy;
+  removeField(copy, rest);
+}
+
+/** Writes a nested field, creating its parent objects, or replacing a parent that is not an object. */
+function writeField(target: Record<string, unknown>, path: readonly string[], value: unknown): void {
+  const [head, ...rest] = path;
+  if (head === undefined) return;
+  if (rest.length === 0) {
+    target[head] = value;
+    return;
+  }
+  const child = target[head];
+  const copy: Record<string, unknown> = isObject(child) ? { ...child } : {};
+  target[head] = copy;
+  writeField(copy, rest, value);
+}
+
+function forcedValue(value: LiveTokenValue, now: number): unknown {
+  if ("fixed" in value) return value.fixed;
+  if (value.window === "expires_after") return { ...(value.anchor === true ? { anchor: "created_at" } : {}), seconds: LIVE_TOKEN_WINDOW_SECONDS };
+  return new Date(now + LIVE_TOKEN_WINDOW_SECONDS * 1000).toISOString();
 }

@@ -329,7 +329,7 @@ describe("judging a listing where the provider reads it", () => {
     const segments = new URL(url).pathname.split("/").filter((piece) => piece !== "").map((piece) => decodeURIComponent(piece));
     if (connection.cloudflareGateway !== null) {
       // `/v1/<account>/<gateway>/<slug>/<rest>`: Cloudflare's endpoint for the provider adds its prefix back.
-      const prefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+      const prefix = (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
       return [[...prefix, ...segments.slice(4)]];
     }
     if (connection.baseUrl !== null) {
@@ -352,7 +352,9 @@ describe("judging a listing where the provider reads it", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       const matcher = new ProviderMatcher(description);
       const refused = description.refused.map((entry) =>
-        typeof entry === "string" ? { template: parseTemplate(entry, { rest: true }), methods: null } : { template: parseTemplate(entry.path, { rest: true }), methods: entry.methods as readonly string[] },
+        typeof entry === "string"
+          ? { template: parseTemplate(entry, { rest: true }), methods: null, hosts: null }
+          : { template: parseTemplate(entry.path, { rest: true }), methods: (entry.methods ?? null) as readonly string[] | null, hosts: entry.hosts ?? null },
       );
       const words = new Set(["v1", "x", "files", "chat"]);
       for (const source of [...description.refused.map((entry) => (typeof entry === "string" ? entry : entry.path)), ...description.operations.flatMap((op) => [op.match.path, op.upstream?.path ?? ""])]) {
@@ -369,7 +371,7 @@ describe("judging a listing where the provider reads it", () => {
         }));
       for (const connection of routesOf(description)) {
         const route = upstreamRoute(description, connection);
-        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
+        const prefix = connection.cloudflareGateway !== null ? (description.cloudflareEndpoint?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "") : [];
         // Each operation's paths as the provider reads them on this route, worked out once.
         const readings = operations.map(({ op, template, lists }) => ({
           op,
@@ -379,8 +381,15 @@ describe("judging a listing where the provider reads it", () => {
               ? [template, { source: "", segments: [...prefix.map((value) => ({ kind: "literal", value }) as const), ...template.segments] }]
               : [template],
         }));
-        // A listing drawn twice on one route is judged once.
+        // A listing drawn twice on one route is judged once, and a path the provider may read is worked out once.
         const drawn = new Set<string>();
+        const baseHost = connection.baseUrl === null ? null : new URL(connection.baseUrl).hostname;
+        const readCache = new Map<string, string[][]>();
+        const readOnce = (path: string) => {
+          let read = readCache.get(path);
+          if (read === undefined) readCache.set(path, (read = readAs(description, connection, path)));
+          return read;
+        };
         for (let round = 0; round < 60; round += 1) {
           const method = (["GET", "POST", "DELETE", "PATCH"] as const)[random(4)]!;
           const path = Array.from({ length: 1 + random(4) }, () => shapes[random(shapes.length)]!).join("/");
@@ -394,15 +403,20 @@ describe("judging a listing where the provider reads it", () => {
           }
           if (matcher.refusedCovering(listing, route) !== null || matcher.overlappingOperation(listing, route) !== null) continue;
           saved += 1;
+          // A path filled the same way twice is checked once.
+          const filled = new Set<string>();
           for (let fill = 0; fill < 6; fill += 1) {
             const concrete = listing.template.segments
               .map((segment) => (segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + vocabulary[random(vocabulary.length)]! + segment.suffix : "x"))
               .join("/");
+            if (filled.has(concrete)) continue;
+            filled.add(concrete);
             const match = matcher.match(method, concrete, { passthrough: [listing], route });
             if (match.kind !== "passthrough") continue;
-            for (const read of readAs(description, connection, match.upstream.path)) {
+            for (const read of readOnce(match.upstream.path)) {
               const where = () => `${description.type} ${JSON.stringify(connection)} ${method} ${path} as ${concrete}: ${read.join("/")}`;
-              for (const { template, methods } of refused) {
+              for (const { template, methods, hosts } of refused) {
+                if (hosts !== null && (baseHost === null || !hosts.includes(baseHost))) continue;
                 if ((methods === null || methods.includes(method)) && matchTemplate(template, read, { ignoreCase: true }) !== null) failures.push(`${where()} is refused by ${template.source}`);
               }
               for (const { op, lists, templates } of readings) {
@@ -788,7 +802,9 @@ describe("saving a listed path", () => {
 
   it.each([
     [[{ method: "GET", path: "v1/organization/{thing}" }], "always refused"],
-    [[{ method: "POST", path: "v1/realtime/client_secrets" }], "always refused"],
+    [[{ method: "POST", path: "v1/realtime/client_secrets" }], "set live_token to true"],
+    [[{ method: "GET", path: "v1/organization/{thing}", live_token: true }], "key, admin and account paths are always refused"],
+    [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
     [[{ method: "POST", path: "v1/chat/completions" }], "openai.chat"],
     [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
@@ -876,7 +892,7 @@ describe("saving a listed path", () => {
 
   it("judges kept listings again when the connection moves to a new route", async () => {
     const key = await seedManagementKey();
-    const created = await create(key, [{ method: "POST", path: "realtime/client_secrets" }]);
+    const created = await create(key, [{ method: "GET", path: "organization/{x}" }]);
     expect(created.status).toBe(201);
     const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://example.com/v1/", secret: "sk-live-secret-abcd" });
     expect(moved.status).toBe(400);

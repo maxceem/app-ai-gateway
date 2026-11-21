@@ -10,6 +10,7 @@
  *   provider's own cost report, where the operation has one, from the same
  *   values.
  */
+import { knownHostOwner } from "../providers/destination.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { listedIn } from "../providers/listing.ts";
 import { readingRules, type ApiStyle, type OperationDescription, type ProviderDescription, type ReadingRules } from "../providers/operation.ts";
@@ -28,10 +29,19 @@ import {
   type ServiceRegion,
 } from "../usage/service-modes.ts";
 
-/** The region a connection's base URL pins its requests to, or `global`. */
-function baseUrlRegion(description: ProviderDescription, baseUrl: string | null): ServiceRegion {
-  const regions = description.regionalOrigins;
-  if (baseUrl === null || regions === undefined) return "global";
+/**
+ * The region a connection's base URL pins its requests to, or `global`. It is
+ * read from the regional hosts of the provider that owns the base URL's host
+ * (`knownHostOwner`), not the connection's type: a request goes where its
+ * base URL points, so it is priced at that host's region, as its refused and
+ * token paths are judged there (`../providers/destination.ts`). A built-in
+ * connection on its own regional host is its own owner, so nothing changes
+ * for it. A host no built-in provider declares has no region.
+ */
+function baseUrlRegion(baseUrl: string | null): ServiceRegion {
+  if (baseUrl === null) return "global";
+  const regions = knownHostOwner(baseUrl)?.regionalOrigins;
+  if (regions === undefined) return "global";
   const origin = URL.canParse(baseUrl) ? `${new URL(baseUrl).origin}/` : baseUrl;
   return (Object.hasOwn(regions, origin) ? regions[origin] : undefined) ?? "global";
 }
@@ -89,7 +99,7 @@ export function requestedServiceMode(
   const reading = readServiceMode(fieldsFor(description, rules, rules.serviceModes, model, true), (name) =>
     Object.hasOwn(body, name) ? body[name] : undefined,
   );
-  const region = baseUrlRegion(description, baseUrl);
+  const region = baseUrlRegion(baseUrl);
   const mode: ServiceMode =
     reading.mode.region === "global" && region !== "global" ? { tier: reading.mode.tier, region } : reading.mode;
   return reading.unknown ? { mode, unknown: reading.unknown } : { mode };
@@ -109,7 +119,7 @@ export function selectableModes(
   model?: string,
 ): ServiceMode[] {
   const rules = readingRules(description, operation);
-  const base = baseUrlRegion(description, baseUrl);
+  const base = baseUrlRegion(baseUrl);
   const tiers = new Set<ServiceMode["tier"]>(["standard"]);
   const regions = new Set<ServiceRegion>([base]);
   const add = (fields: readonly ServiceModeField[], asked: boolean) => {

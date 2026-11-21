@@ -529,13 +529,90 @@ export function readingRules(description: ProviderDescription, operation: Operat
   return operation?.rules ?? description;
 }
 
-/** How the provider's key is sent. */
-/** A refused path for some methods only. */
+/** A refused path for some methods only, or only on some hosts. */
 export interface RefusedPath {
   readonly path: string;
-  readonly methods: readonly HttpMethod[];
+  /** Only these methods are refused there. Every method when left out. */
+  readonly methods?: readonly HttpMethod[];
+  /**
+   * Only on a base URL on one of these hosts (lower-case names). A path that
+   * means account management on one host may be an ordinary path on a
+   * compatible server elsewhere. Every route when left out.
+   */
+  readonly hosts?: readonly string[];
 }
 
+/**
+ * How long a minted live-session secret may start a call, in seconds (plan
+ * D4): the shortest window for starting one, not the session's length.
+ */
+export const LIVE_TOKEN_WINDOW_SECONDS = 60;
+
+/**
+ * The value the gateway writes into one forced field of a mint's body.
+ * - `{ window: "expires_after" }`: `{ seconds }` holding the window, with
+ *   `anchor: "created_at"` when `anchor` is set.
+ * - `{ window: "time" }`: an RFC 3339 time, the window from now.
+ * - `{ fixed }`: that value as it is, such as `uses: 1`.
+ */
+export type LiveTokenValue =
+  | { readonly window: "expires_after"; readonly anchor?: true }
+  | { readonly window: "time" }
+  | { readonly fixed: number | string | boolean };
+
+/**
+ * One field of a mint's JSON body that the gateway sets, whatever the client
+ * sent. `names` holds every spelling the provider reads, the one the gateway
+ * writes first: each is removed, and only the first is written. A name with
+ * dots is a nested field, such as `client_secret.expires_after`; its parent
+ * objects are created when the body has none.
+ */
+export interface LiveTokenField {
+  readonly names: readonly [string, ...string[]];
+  readonly value: LiveTokenValue;
+}
+
+/** One query parameter of a mint that the gateway sets: every value the client sent is replaced by this one. */
+export interface LiveTokenQueryParam {
+  readonly name: string;
+  readonly value: string;
+}
+
+/**
+ * What the gateway forces in a mint request so its secret can start a call
+ * only within `LIVE_TOKEN_WINDOW_SECONDS`, or only once (plan D4): the
+ * window, and any field that would let one secret start more calls, where
+ * the provider lets the request set them.
+ */
+export interface LiveTokenForced {
+  /** Body fields; a mint that forces any needs a JSON object body. */
+  readonly fields?: readonly [LiveTokenField, ...LiveTokenField[]];
+  readonly query?: readonly [LiveTokenQueryParam, ...LiveTokenQueryParam[]];
+}
+
+/**
+ * A path that mints a short-lived secret for one live session (plan D4).
+ * Every request under `path` is refused like a refused path. A listed path
+ * that opts in (`liveToken` on the listing) reaches only the mint itself:
+ * `method` on exactly `path`, without its trailing `*`. Anything else under
+ * it, such as cancelling a session, stays refused even with the opt-in.
+ */
+export interface LiveTokenPath {
+  /** A template, read as refused paths are: a trailing `*` refuses the rest too. */
+  readonly path: string;
+  /** The one method that mints. */
+  readonly method: HttpMethod;
+  /**
+   * The mint's exact path, when `path` is a wider namespace that stays
+   * refused around it, such as one token type of several. By default, `path`
+   * without its trailing `*`.
+   */
+  readonly mint?: string;
+  /** What the gateway sets in the mint, where the provider lets the request set it. */
+  readonly forced?: LiveTokenForced;
+}
+
+/** How the provider's key is sent. */
 export interface ProviderAuth {
   readonly header: string;
   /** `{key}` is replaced with the key, such as `Bearer {key}`. */
@@ -619,15 +696,32 @@ export interface ProviderDescription {
    */
   readonly refused: readonly (string | RefusedPath)[];
   /**
-   * This provider can be reached through Cloudflare AI Gateway (D13): the
-   * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's
-   * name already implies, which is taken off the request's path. Cloudflare
-   * returns the provider's own response, so metering and prices are the
-   * provider's. Without this, a connection of this type cannot use it.
+   * Paths that mint a short-lived secret for one live session (plan D4).
+   * Refused as refused paths are, unless the customer lists the path and
+   * opts in to it. Key creation, admin and account paths belong in
+   * `refused`, never here: those stay refused whatever is listed.
    */
-  readonly cloudflareGateway?: {
+  readonly liveTokens?: readonly LiveTokenPath[];
+  /**
+   * The endpoint through which Cloudflare AI Gateway reaches this provider:
+   * the provider's name in Cloudflare's URL space, and a path prefix that
+   * name already implies, which Cloudflare adds back (OpenAI's `v1/`). It
+   * answers "where does a request on Cloudflare's host go", for every
+   * provider Cloudflare serves, whether or not a connection may use the
+   * `cloudflareGateway` setting. Refused and live-session token paths follow
+   * it (`./destination.ts`). Absent when Cloudflare has no endpoint for it.
+   */
+  readonly cloudflareEndpoint?: {
     readonly slug: string;
     readonly stripPathPrefix?: string;
+  };
+  /**
+   * A connection of this type may use the Cloudflare AI Gateway setting
+   * (D13), sent to its `cloudflareEndpoint`. Cloudflare returns the
+   * provider's own response, so metering and prices are the provider's.
+   * Without this, a connection of this type cannot use the setting.
+   */
+  readonly cloudflareGateway?: {
     /**
      * How the provider's key is sent through Cloudflare for an API style whose
      * endpoint takes it differently from `auth`, as Cloudflare documents it:

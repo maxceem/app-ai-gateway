@@ -1,7 +1,7 @@
 import { customDescription } from "../src/providers/custom.ts";
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
-import { compilePassthrough, ProviderDescriptionError, ProviderMatcher } from "../src/providers/matcher.ts";
+import { compilePassthrough, ProviderDescriptionError, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { defineOperation, defineProvider } from "../src/providers/operation.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { fal } from "../src/providers/fal.ts";
@@ -99,6 +99,7 @@ describe("passthrough paths", () => {
       listed: { method: "GET", path: "v1/files/{file_id}" },
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
+      liveToken: null,
     });
   });
 
@@ -142,8 +143,9 @@ describe("passthrough paths", () => {
   it("gives a custom provider on a built-in host that provider's refused paths", () => {
     const custom = customDescription({ baseUrl: "https://api.openai.com/", auth: { header: "authorization", format: "Bearer {key}" }, paths: [] });
     const customMatcher = new ProviderMatcher(custom);
+    const route = upstreamRoute(custom, { baseUrl: "https://api.openai.com/", cloudflareGateway: null });
     const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
-    expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed })).toMatchObject({
+    expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed, route })).toMatchObject({
       reason: "refused_path",
     });
   });

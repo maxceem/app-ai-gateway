@@ -23,6 +23,7 @@ import {
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "./connections.ts";
+import { decorationOwner } from "./destination.ts";
 import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
 
 /** Cloudflare AI Gateway's own request headers that an app may send: caching and retries (v1). */
@@ -106,26 +107,40 @@ export function cloudflareOrigin(): string {
   return moved.endsWith("/") ? moved : `${moved}/`;
 }
 
+/**
+ * A provider's own request decoration (`attributionHeaders`), only for a
+ * request that really goes to that provider: the owner of the final URL
+ * (`decorationOwner`). A connection of one type whose request reaches
+ * another provider, through its host or a Cloudflare endpoint, never sends
+ * its type's headers there. A host no provider declares (a customer's own
+ * proxy, a test mock) keeps the connection type's.
+ */
+function attribution(url: string, description: ProviderDescription, input: UpstreamRequestInput): Record<string, string> {
+  const owner = decorationOwner(url);
+  const from = owner === undefined ? description : owner;
+  return { ...(from?.attributionHeaders?.({ appId: input.appId, userId: input.userId }) ?? {}) };
+}
+
 /** The URL and headers of one request to a connection's provider. */
 export function upstreamRequest(
   connection: ConnectionRecord,
   description: ProviderDescription,
   input: UpstreamRequestInput,
 ): UpstreamRequest {
-  const attribution = description.attributionHeaders?.({ appId: input.appId, userId: input.userId }) ?? {};
   const gateway = connection.cloudflareGateway;
   if (gateway === null) {
     if (input.credentials.providerKey === null) {
       throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
     }
+    const url = `${upstreamOrigin(connection, description, input.hostKey)}${input.path}${input.query}`;
     return {
-      url: `${upstreamOrigin(connection, description, input.hostKey)}${input.path}${input.query}`,
-      headers: { ...attribution, ...providerAuth(description.auth, input.credentials.providerKey) },
+      url,
+      headers: { ...attribution(url, description, input), ...providerAuth(description.auth, input.credentials.providerKey) },
       keyHeader: description.auth.header.toLowerCase(),
     };
   }
-  const route = description.cloudflareGateway;
-  if (route === undefined || input.credentials.cloudflareToken === null) {
+  const route = description.cloudflareEndpoint;
+  if (description.cloudflareGateway === undefined || route === undefined || input.credentials.cloudflareToken === null) {
     throw new GatewayError(502, "provider_unavailable", `${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
   // Cloudflare serves a provider's main API only.
@@ -138,7 +153,8 @@ export function upstreamRequest(
   input.client?.forEach((value, name) => {
     if (CLOUDFLARE_CLIENT_HEADERS.includes(name.toLowerCase())) headers[name.toLowerCase()] = value;
   });
-  Object.assign(headers, attribution, {
+  const url = `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`;
+  Object.assign(headers, attribution(url, description, input), {
     "cf-aig-authorization": `Bearer ${input.credentials.cloudflareToken}`,
     // Cloudflare's own logs, under the real app and user: set here alone.
     "cf-aig-metadata": asciiJson({ app_id: input.appId, ...(input.userId === null ? {} : { user_id: input.userId }) }),
@@ -146,7 +162,7 @@ export function upstreamRequest(
   const auth = keyAuth(connection, description, input.style);
   if (input.credentials.providerKey !== null) Object.assign(headers, providerAuth(auth, input.credentials.providerKey));
   return {
-    url: `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`,
+    url,
     headers,
     keyHeader: auth.header.toLowerCase(),
   };

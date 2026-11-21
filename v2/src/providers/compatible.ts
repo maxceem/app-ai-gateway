@@ -17,7 +17,8 @@ export const perplexity = defineProvider({
   // Creating and revoking API keys.
   refused: ["generate_auth_token/*", "revoke_auth_token/*", "v1/generate_auth_token/*", "v1/revoke_auth_token/*"],
   // No probe: Perplexity has no free call that needs a key.
-  cloudflareGateway: { slug: "perplexity-ai" },
+  cloudflareEndpoint: { slug: "perplexity-ai" },
+  cloudflareGateway: {},
   // `fast` is Perplexity's alias for priority.
   serviceModes: [
     {
@@ -44,6 +45,7 @@ export const deepseek = defineProvider({
   label: "DeepSeek",
   // DeepSeek's base URL has no `v1` segment; `v1/` is accepted as well.
   hosts: { main: "api.deepseek.com" },
+  cloudflareEndpoint: { slug: "deepseek" },
   auth: { header: "authorization", format: "Bearer {key}" },
   // The account's balance.
   refused: ["user/*", "v1/user/*"],
@@ -63,6 +65,7 @@ export const groq = defineProvider({
   label: "Groq",
   // Groq's OpenAI-compatible API lives under `openai/v1/`.
   hosts: { main: "api.groq.com" },
+  cloudflareEndpoint: { slug: "groq", stripPathPrefix: "openai/v1/" },
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "openai/v1/models" },
@@ -88,6 +91,7 @@ export const mistral = defineProvider({
   type: "mistral",
   label: "Mistral",
   hosts: { main: "api.mistral.ai" },
+  cloudflareEndpoint: { slug: "mistral" },
   otherHosts: ["api.eu.mistral.ai", "api.us.mistral.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
@@ -156,6 +160,7 @@ export const cerebras = defineProvider({
   type: "cerebras",
   label: "Cerebras",
   hosts: { main: "api.cerebras.ai" },
+  cloudflareEndpoint: { slug: "cerebras", stripPathPrefix: "v1/" },
   auth: { header: "authorization", format: "Bearer {key}" },
   refused: [],
   probe: { path: "v1/models" },
