@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { fail } from "./common.ts";
+import { CliError, fail } from "./common.ts";
 import type { Context } from "./context.ts";
 import type { Flags } from "./parser.ts";
 
@@ -23,6 +23,12 @@ export interface ConversationsExportResult {
   /** Media the batches name that this run downloaded, with --media. */
   media: number;
   bytes: number;
+  /**
+   * Media a record names that the gateway no longer holds, with --media. The
+   * export goes on without them. Present only when there is one: a prompt can
+   * also quote an `agw-media:` name that never was a file (Sol round 8).
+   */
+  missing_media?: string[];
 }
 
 /** Media a record names in place of its data. */
@@ -128,7 +134,14 @@ export async function conversationsCommand(ctx: Context, appId: string, flags: F
     for (const name of names) {
       const path = inside(output, name);
       if (await mediaIntact(path, name)) continue;
-      const bytes = await ctx.client.download("getAppConversationFile", { params: { app: appId }, query: { name } });
+      let bytes: Uint8Array;
+      try {
+        bytes = await ctx.client.download("getAppConversationFile", { params: { app: appId }, query: { name } });
+      } catch (error) {
+        if (!(error instanceof CliError) || error.details?.status !== 404) throw error;
+        (result.missing_media ??= []).push(name);
+        continue;
+      }
       await save(path, bytes);
       result.media += 1;
       result.bytes += bytes.byteLength;

@@ -11,7 +11,7 @@ import { ConversationFileQuerySchema, ConversationListQuerySchema } from "../con
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { appPrefix, CONVERSATION_FILE_NAME, conversationsBucket } from "../conversations/storage.ts";
-import type { AdminVariables } from "./actor.ts";
+import { requireAdminRole, type AdminVariables } from "./actor.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
@@ -21,6 +21,8 @@ const LIST_PAGE = 1000;
 
 /** The app, if it is the caller's account's: stored conversations are reached through it only. */
 async function ownApp(c: AdminContext): Promise<string> {
+  // v1 kept stored prompts and media to owners and admins; a member reads neither.
+  requireAdminRole(c.get("actor"));
   const appId = c.req.param("app")!;
   const found = await c.env.DB.prepare("SELECT 1 AS found FROM app WHERE id = ? AND account_id = ?").bind(appId, c.get("actor").accountId).first();
   if (found === null) throw new GatewayError(404, "app_not_found", "App is not registered");

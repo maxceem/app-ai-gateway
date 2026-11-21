@@ -193,6 +193,16 @@ export function requireManage(actor: AdminActor): void {
 }
 
 /**
+ * Refuses a member who is not an owner or admin, whatever the credential's
+ * grant. For reads v1 kept to owners and admins, such as stored conversations.
+ */
+export function requireAdminRole(actor: AdminActor): void {
+  if (actor.role !== "owner" && actor.role !== "admin") {
+    throw new GatewayError(403, "forbidden", "Only account owners and admins can do this");
+  }
+}
+
+/**
  * Refuses anything but a person signed in to the console. Management keys and
  * sign-ins are administered by a person: a key that could mint keys would
  * hand over more than itself.

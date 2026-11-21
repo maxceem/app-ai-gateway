@@ -5,11 +5,12 @@
  * `fetch`; no test waits on a real timer.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { conversationRecord, type ConversationCapture } from "../src/conversations/record.ts";
 import { CallBudget, RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
+import type { ConversationLog } from "../src/do/ConversationLog.ts";
 import { planIncludes } from "../src/billing/access.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
@@ -591,6 +592,40 @@ describe("conversation records", () => {
     expect(JSON.parse(record.line).response.value).toEqual({ detail: { status: "invalid_voice", message: "Voice not found" } });
   });
 
+  it("stores a JSON error sent as application/x-ndjson as one document (Sol round 8)", async () => {
+    const error = JSON.stringify({ detail: { status: "invalid_voice", message: "Voice not found" } }, null, 2);
+    const record = await conversationRecord(capture({
+      status: "provider_error",
+      httpStatus: 422,
+      response: { contentType: "application/x-ndjson", bytes: encoder.encode(error), totalBytes: error.length, aborted: false },
+    }));
+    expect(record.line).not.toContain("agw-omitted:unreadable");
+    expect(JSON.parse(record.line).response.value).toEqual({ detail: { status: "invalid_voice", message: "Voice not found" } });
+  });
+
+  it("keeps a __proto__ key in a stored JSON body and form (Sol round 8)", async () => {
+    const body = '{"metadata":{"__proto__":"saved","plain":1}}';
+    const json = await conversationRecord(capture({
+      request: { contentType: "application/json", bytes: encoder.encode(body), totalBytes: body.length },
+    }));
+    const stored = JSON.parse(json.line).request.value;
+    expect(Object.hasOwn(stored.metadata, "__proto__")).toBe(true);
+    expect(stored.metadata.__proto__).toBe("saved");
+    expect(stored.metadata.plain).toBe(1);
+
+    const form = new FormData();
+    form.append("__proto__", "saved");
+    form.append("model", "whisper-1");
+    const encoded = new Response(form);
+    const bytes = new Uint8Array(await encoded.arrayBuffer());
+    const formRecord = await conversationRecord(capture({
+      request: { contentType: encoded.headers.get("content-type")!, bytes, totalBytes: bytes.byteLength },
+    }));
+    const fields = JSON.parse(formRecord.line).request.fields;
+    expect(Object.hasOwn(fields, "__proto__")).toBe(true);
+    expect(fields.__proto__).toBe("saved");
+  });
+
   it("reads a declared newline-delimited answer by line even when labelled text/plain (Sol round 5)", async () => {
     const audio = { fields: ["audio_base64"], mime: "audio/mpeg" };
     const lines = [JSON.stringify({ audio_base64: "SUQzBAAAAAAA", alignment: { characters: ["h"] } }), '{"audio_base64":"SUQz'].join("\n");
@@ -666,6 +701,38 @@ describe("ConversationLog", () => {
     // Nothing pending writes nothing.
     await log.flush();
     expect((await bucket().list({ prefix: `conversations/${appId}/` })).objects).toHaveLength(1);
+  });
+});
+
+describe("ConversationLog retries a failed write (Sol round 8)", () => {
+  it("keeps retrying with a growing wait, at most an hour, and stops counting once a write succeeds", async () => {
+    const { retryDelay, FLUSH_INTERVAL_MS, MAX_RETRY_MS } = await import("../src/do/ConversationLog.ts");
+    expect(retryDelay(1)).toBe(FLUSH_INTERVAL_MS);
+    expect(retryDelay(2)).toBe(FLUSH_INTERVAL_MS * 2);
+    expect(retryDelay(30)).toBe(MAX_RETRY_MS);
+
+    const appId = `log-${crypto.randomUUID().slice(0, 8)}`;
+    const log = env.CONVERSATION_LOG.getByName(appId);
+    await log.append(capture({ appId, eventId: "held" }));
+    let failing = true;
+    await runInDurableObject(log, (object) => {
+      const instance = object as unknown as ConversationLog;
+      const real = instance.flush.bind(instance);
+      instance.flush = () => (failing ? Promise.reject(new Error("R2 is down")) : real());
+    });
+    for (const failures of [1, 2]) {
+      const before = Date.now();
+      expect(await runDurableObjectAlarm(log)).toBe(true);
+      const next = await runInDurableObject(log, (_instance, state) => state.storage.getAlarm());
+      // The alarm is set again, so the held record is not left waiting for another call.
+      expect(next).not.toBeNull();
+      expect(next! - before).toBeGreaterThanOrEqual(retryDelay(failures) - 1000);
+      expect(await log.pendingCount()).toBe(1);
+    }
+    failing = false;
+    expect(await runDurableObjectAlarm(log)).toBe(true);
+    expect(await log.pendingCount()).toBe(0);
+    expect(await runInDurableObject(log, (_instance, state) => state.storage.get("flush_failures"))).toBeUndefined();
   });
 });
 
@@ -1051,8 +1118,12 @@ describe("turning conversation storage on", () => {
 });
 
 describe("reading stored conversations", () => {
-  async function get(path: string, bindings: Env = env): Promise<{ response: Response; bytes: ArrayBuffer }> {
-    const key = await seedManagementKey({ grant: "read" });
+  async function get(
+    path: string,
+    bindings: Env = env,
+    role: "owner" | "admin" | "member" = "owner",
+  ): Promise<{ response: Response; bytes: ArrayBuffer }> {
+    const key = await seedManagementKey({ grant: "read", role });
     const ctx = createExecutionContext();
     const response = await worker.fetch(new Request(`${ORIGIN}${path}`, { headers: { authorization: `Bearer ${key}` } }), bindings, ctx);
     const bytes = await response.arrayBuffer();
@@ -1126,6 +1197,19 @@ describe("reading stored conversations", () => {
     const file = await get(`/v2/admin/apps/${otherApp}/conversations/file?name=${encodeURIComponent("2026-11-01/010203-aaaaaaaa.jsonl.gz")}`);
     expect(file.response.status).toBe(404);
     expect(json(file.bytes)).toMatchObject({ error: { code: "app_not_found" } });
+  });
+
+  it("lets owners and admins read stored conversations, and refuses a member, as v1 did", async () => {
+    const appId = await storedFiles();
+    const file = `/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent("2026-11-01/010203-aaaaaaaa.jsonl.gz")}`;
+    for (const role of ["owner", "admin"] as const) {
+      expect((await get(`/v2/admin/apps/${appId}/conversations?to=2026-11-30`, env, role)).response.status).toBe(200);
+      expect((await get(file, env, role)).response.status).toBe(200);
+    }
+    const list = await get(`/v2/admin/apps/${appId}/conversations?to=2026-11-30`, env, "member");
+    expect(list.response.status).toBe(403);
+    expect(json(list.bytes)).toMatchObject({ error: { code: "forbidden" } });
+    expect((await get(file, env, "member")).response.status).toBe(403);
   });
 
   it("lists nothing where the deployment has no bucket", async () => {

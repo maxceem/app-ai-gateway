@@ -464,6 +464,36 @@ test("app conversations downloads again a media file whose content does not matc
   }
 });
 
+test("app conversations keeps going past a media name the gateway does not hold, and lists it (Sol round 8)", async () => {
+  const { gzipSync } = await import("node:zlib");
+  const { createHash } = await import("node:crypto");
+  const good = new Uint8Array([1, 2, 3]);
+  const real = `2026-11-01/media/${createHash("sha256").update(good).digest("hex")}.png`;
+  // A prompt that quotes an example media name, which never was a file.
+  const quoted = `2026-11-01/media/${"b".repeat(64)}.png`;
+  const batch = gzipSync(`{"v":1,"request":{"text":"see agw-media:${quoted}","image":"agw-media:${real}"}}\n`);
+  const name = "2026-11-01/010203-aaaaaaaa.jsonl.gz";
+  const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
+  try {
+    const argv = ["app", "conversations", "app_1", "--from", "2026-11-01", "--to", "2026-11-02", "--output", output, "--media", "--json"];
+    const result = await run(argv, (path: string) => {
+      if (!path.startsWith("/v2/admin/apps/app_1/conversations/file")) {
+        return { app_id: "app_1", files: [{ name, size: batch.byteLength, records: 1, uploaded_at: "2026-11-01T01:02:03.000Z" }], next_cursor: null };
+      }
+      const file = new URL(path, URL_).searchParams.get("name");
+      if (file === name) return new Uint8Array(batch);
+      if (file === real) return good;
+      throw new CliError("not_found", "File not found", "Check the name.", 2, { status: 404 });
+    });
+    assert.equal(result.code, 0, result.err);
+    assert.equal(result.json().result.media, 1);
+    assert.deepEqual(result.json().result.missing_media, [quoted]);
+    assert.deepEqual(new Uint8Array(await readFile(join(output, real))), good);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
 test("app conversations refuses a file name that would land outside its folder, and a malformed day", async () => {
   const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
   try {

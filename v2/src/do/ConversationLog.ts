@@ -1,9 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
+import { errorFacts } from "../core/error-facts.ts";
+import { log } from "../core/log.ts";
 import { conversationRecord, type ConversationCapture } from "../conversations/record.ts";
 import { appPrefix, batchKey, conversationsBucket, recordDay } from "../conversations/storage.ts";
 
 /** How long a record waits for its batch to fill before it is written anyway. */
 export const FLUSH_INTERVAL_MS = 5 * 60_000;
+/** The longest wait between retries while R2 refuses writes: saved records reach R2 within it once R2 recovers. */
+export const MAX_RETRY_MS = 60 * 60_000;
+const FAILURES_KEY = "flush_failures";
 /** Pending text that is written at once rather than waiting for the interval. */
 export const FLUSH_CHARS = 4 * 1024 * 1024;
 /** The most text one batch file takes, so a backlog drains in bounded files. */
@@ -80,9 +85,23 @@ export class ConversationLog extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Writes what is pending. A failed write never ends the retries: the next
+   * alarm is set with a backoff that doubles up to `MAX_RETRY_MS`, so saved
+   * records reach R2 once it recovers, without waiting for another call.
+   */
   override async alarm(): Promise<void> {
-    await this.flush();
-    if (this.pendingCount() > 0) await this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
+    try {
+      await this.flush();
+      await this.ctx.storage.delete(FAILURES_KEY);
+      if (this.pendingCount() > 0) await this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
+    } catch (error) {
+      const failures = ((await this.ctx.storage.get<number>(FAILURES_KEY)) ?? 0) + 1;
+      await this.ctx.storage.put(FAILURES_KEY, failures);
+      const delay = retryDelay(failures);
+      log("warn", "conversation_flush_failed", { pending: this.pendingCount(), failures, retryInMs: delay, error: errorFacts(error) });
+      await this.ctx.storage.setAlarm(Date.now() + delay);
+    }
   }
 
   /** Writes what is pending as batches until nothing is. One flush at a time. */
@@ -181,4 +200,9 @@ export class ConversationLog extends DurableObject<Env> {
     });
     return true;
   }
+}
+
+/** The wait before retry number `failures`: one flush interval, doubling, at most `MAX_RETRY_MS`. */
+export function retryDelay(failures: number): number {
+  return Math.min(FLUSH_INTERVAL_MS * 2 ** Math.max(0, failures - 1), MAX_RETRY_MS);
 }

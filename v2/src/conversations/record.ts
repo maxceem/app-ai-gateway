@@ -247,7 +247,8 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
   }
   if (value !== null && typeof value === "object") {
     const object = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
+    // No prototype, so a `__proto__` key is kept as an ordinary field (Sol round 8).
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const media = bareMedia(object, key);
     const audioEvent = isAudioEvent(object);
     // Anthropic's custom-content document: an attachment written out as blocks.
@@ -388,6 +389,7 @@ async function storedBody(
   rawAudio = false,
   audioFormFields: readonly string[] = [],
   jsonLines = false,
+  failed = false,
 ): Promise<StoredBody> {
   const filtering = !keep.images || !keep.audio || !keep.files;
   const contentType = body.contentType;
@@ -398,10 +400,23 @@ async function storedBody(
   if (body.bytes.byteLength === 0) {
     return { kind: "omitted", content_type: contentType, reason: "empty", bytes: 0 };
   }
+  if (failed) {
+    // An error answer is read as one JSON document first, whatever type it
+    // was sent with: a 422 named `application/x-ndjson` keeps its `detail`.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(body.bytes));
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed !== undefined) {
+      return { kind: "json", content_type: contentType, value: await keptJson(parsed, { shelf, streamed: false, ...(audio ? { audio } : {}) }) };
+    }
+  }
   if (type.startsWith("multipart/form-data")) {
     try {
       const form = await new Response(body.bytes, { headers: { "content-type": contentType } }).formData();
-      const fields: Record<string, unknown> = {};
+      const fields: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [name, entry] of form.entries()) {
         let kept: unknown;
         if (typeof entry === "string") {
@@ -482,7 +497,7 @@ export async function conversationRecord(
   // succeeded: an error (a 422 with a pretty-printed `detail`) is one JSON
   // document, whatever the operation declares for its answers.
   const jsonLines = capture.responseJsonLines === true && capture.status === "ok";
-  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], jsonLines);
+  let response = await storedBody(capture.response, shelf, capture.keep, capture.audio, capture.rawAudioResponse === true, [], jsonLines, capture.status !== "ok");
   const render = () => JSON.stringify({
     v: 1,
     event_id: capture.eventId,
