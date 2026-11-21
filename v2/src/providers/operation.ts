@@ -459,17 +459,26 @@ export interface JobSpec {
    * The result fields with the job's outputs, and the unit each counts in,
    * such as `images` in images and `video` in videos: counted for a model
    * priced per output whose provider sends no units (T15's `ltx-video`).
-   * The first field the result has counts; an array counts its items,
-   * anything else counts one.
+   * For each unit, the first of its fields the result has counts; an array
+   * counts its items, anything else counts one.
    */
   readonly outputs?: readonly { readonly field: string; readonly unit: Unit }[];
   /**
    * How a result says the job was cancelled before it ran, which the provider
    * bills nothing for: its status, and a header naming the cancel (fal's
-   * `499` with `x-fal-error-type: client_cancelled` and no units header,
-   * T15). Read as a confirmed final zero; the status alone is not enough.
+   * `499` with `x-fal-error-type: client_cancelled`, T15); the status alone
+   * is not enough. Billed units, when reported, settle it as any result.
+   * With none, it is free only when the gateway saw the job still queued as
+   * it sent the cancel (`queuedWhen`); otherwise the estimate stays.
    */
   readonly cancelled?: { readonly status: number; readonly header: { readonly name: string; readonly value: string } };
+  /**
+   * The status answer's field, and its values, that say the job is still
+   * queued (fal's `IN_QUEUE`). Before the gateway sends a cancel, it asks the
+   * status; a job seen queued then is recorded, and only such a job's
+   * confirmed cancel with no billed units is free.
+   */
+  readonly queuedWhen?: { readonly field: string; readonly values: readonly string[] };
   /**
    * How often the sweep checks a job no client polled, so a result is read
    * before the provider drops it. Default: every minute.

@@ -388,15 +388,25 @@ export function countsOutputs(spec: JobSpec): boolean {
 /** The units a result's outputs can count in. */
 const OUTPUT_UNITS: ReadonlySet<Unit> = new Set<Unit>(["images", "videos"]);
 
-/** The outputs a result names, and their unit: the first output field it has. Null when it names none the gateway can count. */
-function outputCount(spec: JobSpec, body: unknown): { readonly count: number; readonly unit: Unit } | null {
+/** A result's outputs, counted by unit: images, videos. */
+export type OutputCounts = Readonly<Partial<Record<Unit, number>>>;
+
+/**
+ * The outputs a result names, counted in each unit: for each unit, the first
+ * output field of that unit the result has (fal answers `video` or `videos`).
+ * A result with `images: []` and two videos counts 0 images and 2 videos.
+ * Null when it names none the gateway can count.
+ */
+function outputCounts(spec: JobSpec, body: unknown): OutputCounts | null {
   if (typeof body !== "object" || body === null) return null;
+  const counts: Partial<Record<Unit, number>> = {};
   for (const { field, unit } of spec.outputs ?? []) {
+    if (counts[unit] !== undefined) continue;
     const outputs = (body as Record<string, unknown>)[field];
     if (outputs === undefined || outputs === null) continue;
-    return { count: Array.isArray(outputs) ? outputs.length : 1, unit };
+    counts[unit] = Array.isArray(outputs) ? outputs.length : 1;
   }
-  return null;
+  return Object.keys(counts).length === 0 ? null : counts;
 }
 
 /** What a final result says, kept small so a figure row can hold it. */
@@ -404,10 +414,20 @@ export interface JobResultFacts {
   readonly status: number;
   /** The billed units the provider reported, or null when it reported none. */
   readonly units: number | null;
-  /** The outputs in the result, or null when it names none the gateway can count. */
-  readonly outputs: number | null;
-  /** The unit the outputs count in (images, videos); left out or null, outputs count as images. */
-  readonly outputUnit?: Unit | null;
+  /** The outputs in the result, counted by unit, or null when it names none the gateway can count. */
+  readonly outputs: OutputCounts | null;
+  /**
+   * The result confirms the job was cancelled (`JobSpec.cancelled`), and the
+   * provider reported no billed units. Free only when the gateway saw the job
+   * still queued when it sent the cancel (`queuedCancel`); otherwise it may
+   * have run, and the estimate stays.
+   */
+  readonly cancelled?: true;
+  /**
+   * The gateway saw the job queued when it sent the cancel: its evidence row
+   * exists. Looked up when settling, never saved.
+   */
+  readonly queuedCancel?: true;
   /**
    * True when the body had to be read to count outputs, but could not be: cut
    * off, empty, or not whole JSON. Then a missing output count says nothing.
@@ -464,39 +484,62 @@ export async function boundedJson(
  * estimate's rate is never lost to a broken body.
  */
 export function readResultFacts(spec: JobSpec, response: Pick<Response, "status" | "headers">, read: BodyRead | null): JobResultFacts | null {
-  // A job cancelled before it ran is a confirmed final zero: the provider bills it nothing (T15).
+  const units = spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader));
+  // A confirmed cancel is final. Billed units, when reported, settle it as any
+  // result; without them it is free only if the job never started (`queuedCancel`).
   const cancelled = spec.cancelled;
   if (cancelled !== undefined && response.status === cancelled.status && response.headers.get(cancelled.header.name) === cancelled.header.value) {
-    return { status: response.status, units: 0, outputs: null, outputUnit: null };
+    return units !== null ? { status: response.status, units, outputs: null } : { status: response.status, units: null, outputs: null, cancelled: true };
   }
   if (!spec.finalStatuses.includes(response.status)) return null;
-  const outputs = read !== null && read.kind === "parsed" ? outputCount(spec, read.value) : null;
   const facts: JobResultFacts = {
     status: response.status,
-    units: spec.unitsHeader === undefined ? null : headerNumber(response.headers.get(spec.unitsHeader)),
-    outputs: outputs?.count ?? null,
-    outputUnit: outputs?.unit ?? null,
+    units,
+    outputs: read !== null && read.kind === "parsed" ? outputCounts(spec, read.value) : null,
   };
   const unread = read !== null && (read.kind === "read_error" || read.kind === "empty" || read.kind === "unparseable");
   return unread ? { ...facts, unread: true } : facts;
 }
 
 const succeeded = (facts: JobResultFacts) => facts.status >= 200 && facts.status < 300;
-/** A result that gives some count: billed units, outputs, or, on a success, the one job itself (a price per request). */
-const counted = (facts: JobResultFacts) => facts.units !== null || facts.outputs !== null || succeeded(facts);
+/**
+ * A result that gives some count: billed units, outputs, on a success the one
+ * job itself (a price per request), or a confirmed cancel, which may be free.
+ */
+const counted = (facts: JobResultFacts) => facts.units !== null || facts.outputs !== null || succeeded(facts) || facts.cancelled === true;
 
 /** Saved facts read back, or null when they are not facts. */
 function factsOf(value: unknown): JobResultFacts | null {
   if (typeof value !== "object" || value === null) return null;
   const facts = value as Record<string, unknown>;
   const count = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one) && one >= 0);
-  if (typeof facts.status !== "number" || !count(facts.units) || !count(facts.outputs)) return null;
-  const outputs = facts.outputs as number | null;
-  // A figure saved before output units were named counted images.
-  const unit = facts.outputUnit ?? (outputs === null ? null : "images");
-  if (unit !== null && !(typeof unit === "string" && (UNITS as readonly string[]).includes(unit))) return null;
-  // A saved figure was read whole: `unread` is never kept.
-  return { status: facts.status, units: facts.units as number | null, outputs, outputUnit: unit as Unit | null };
+  if (typeof facts.status !== "number" || !count(facts.units)) return null;
+  const outputs = savedOutputs(facts.outputs, facts.outputUnit);
+  if (outputs === undefined) return null;
+  // A saved figure was read whole: `unread` is never kept, nor is `queuedCancel`, which is looked up.
+  return { status: facts.status, units: facts.units as number | null, outputs, ...(facts.cancelled === true ? { cancelled: true as const } : {}) };
+}
+
+/**
+ * Saved output counts read back: by unit, or, as figures saved before counts
+ * were kept by unit wrote them, one number in `outputUnit` (images when left
+ * out). Undefined when they are not counts.
+ */
+function savedOutputs(value: unknown, legacyUnit: unknown): OutputCounts | null | undefined {
+  if (value === null || value === undefined) return null;
+  const unitName = (one: unknown): one is Unit => typeof one === "string" && (UNITS as readonly string[]).includes(one);
+  const countOf = (one: unknown) => typeof one === "number" && Number.isFinite(one) && one >= 0;
+  if (countOf(value)) {
+    const unit = legacyUnit ?? "images";
+    return unitName(unit) ? { [unit]: value as number } : undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const counts: Partial<Record<Unit, number>> = {};
+  for (const [unit, count] of Object.entries(value as Record<string, unknown>)) {
+    if (!unitName(unit) || !countOf(count)) return undefined;
+    counts[unit] = count as number;
+  }
+  return Object.keys(counts).length === 0 ? null : counts;
 }
 
 /**
@@ -513,8 +556,10 @@ function countsOf(facts: JobResultFacts): Partial<Record<Unit, number>> {
   }
   if (succeeded(facts)) {
     counts.requests = 1;
-    if (facts.outputs !== null) counts[facts.outputUnit ?? "images"] = facts.outputs;
-  } else if (facts.units === 0) {
+    for (const [unit, count] of Object.entries(facts.outputs ?? {})) counts[unit as Unit] = count;
+  } else if (facts.units === 0 || (facts.cancelled === true && facts.queuedCancel === true)) {
+    // Free: the provider reported 0 billed units, or the job was cancelled before it ran.
+    counts.model_units = 0;
     counts.requests = 0;
     for (const unit of OUTPUT_UNITS) counts[unit] = 0;
   }
@@ -590,8 +635,8 @@ const figurePart = (value: number | null) => (value === null ? "-" : String(valu
 
 /** The id of a figure row. The figure is part of the id, so a different figure is a different row: nothing to overwrite. */
 export function figureWorkId(job: string, facts: JobResultFacts): string {
-  const unit = facts.outputUnit ?? "images";
-  const outputs = facts.outputs === null ? "-" : `${facts.outputs}${unit === "images" ? "" : unit}`;
+  const entries = Object.entries(facts.outputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const outputs = entries.length === 0 ? "-" : entries.map(([unit, count]) => (unit === "images" ? `${count}` : `${count}${unit}`)).join("+");
   return `job_figure:${job}:${facts.status}:${figurePart(facts.units)}:${outputs}`;
 }
 
@@ -609,7 +654,10 @@ export function figureWork(ref: JobRef, facts: JobResultFacts, now: number): Ope
     ownerType: "job",
     ownerId: ref.job,
     chargeId: null,
-    detail: { result: { status: facts.status, units: facts.units, outputs: facts.outputs, outputUnit: facts.outputUnit ?? null }, maxTries: FIGURE_MAX_TRIES },
+    detail: {
+      result: { status: facts.status, units: facts.units, outputs: facts.outputs, ...(facts.cancelled === true ? { cancelled: true } : {}) },
+      maxTries: FIGURE_MAX_TRIES,
+    },
     dueAt: now,
     createdAt: now,
   };
@@ -641,8 +689,13 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
  * read (null: not in the ledger); when left out it is read here. Throws when
  * D1 cannot answer.
  */
-export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
+export async function settleFigure(env: Env, ref: JobRef, given: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
+  let facts = given;
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
+  // A cancel with no billed units is free only when the gateway saw the job still queued as it sent the cancel.
+  if (facts.cancelled === true && facts.units === null && facts.queuedCancel !== true && known !== null && (await queuedCancelRecorded(env.DB, ref.job))) {
+    facts = { ...facts, queuedCancel: true };
+  }
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
   if (known === null && !countless) return "waiting";
@@ -754,6 +807,62 @@ export function isFigureWork(id: string): boolean {
 }
 
 /**
+ * The id of a job's queued-cancel evidence: an open-work row written once,
+ * when the gateway sends a cancel for a job it just saw still queued. It is
+ * no work: the sweep only clears it once it is due, long after the result is
+ * read, and settling the job deletes it with the job's other rows.
+ */
+export function queuedCancelWorkId(job: string): string {
+  return `job_cancel_queued:${job}`;
+}
+
+/** How long queued-cancel evidence is kept: well past the time a result stays readable. */
+export const QUEUED_CANCEL_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Whether the gateway saw the job queued when it sent the job's cancel. */
+async function queuedCancelRecorded(db: D1Database, job: string): Promise<boolean> {
+  return (await db.prepare("SELECT 1 AS hit FROM open_work WHERE id = ?").bind(queuedCancelWorkId(job)).first()) !== null;
+}
+
+/**
+ * Records that the gateway sent a cancel for a job it saw still queued, the
+ * evidence a cancel with no billed units needs to be free. Written once, as
+ * a figure is: in D1, else the failed-write store, else logged. Never throws.
+ */
+export async function recordQueuedCancel(env: Env, ref: JobRef, now: number): Promise<void> {
+  const row: OpenWorkRow = {
+    id: queuedCancelWorkId(ref.job),
+    kind: "job_check",
+    accountId: ref.accountId,
+    appId: ref.appId,
+    ownerType: "job",
+    ownerId: ref.job,
+    chargeId: null,
+    detail: { queuedCancel: true },
+    dueAt: now + QUEUED_CANCEL_KEEP_MS,
+    createdAt: now,
+  };
+  try {
+    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the cancel evidence");
+    return;
+  } catch (error) {
+    log("warn", "job_cancel_evidence_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
+  }
+  try {
+    await env.CHARGE_STORE.getByName(ref.appId).keepWork([row]);
+  } catch (error) {
+    log("warn", "job_cancel_evidence_unrecorded", { app: ref.appId, job: ref.job, error: errorFacts(error) });
+  }
+}
+
+/** The status answer says the job is still queued (`JobSpec.queuedWhen`). */
+export function jobQueued(spec: JobSpec, body: unknown): boolean {
+  if (spec.queuedWhen === undefined || typeof body !== "object" || body === null) return false;
+  const value = (body as Record<string, unknown>)[spec.queuedWhen.field];
+  return typeof value === "string" && spec.queuedWhen.values.includes(value);
+}
+
+/**
  * The sweep's job work. Every provider's jobs go through this one handler.
  *
  * - **A figure row** is settled from the row alone: no signing key and no
@@ -772,6 +881,8 @@ export function isFigureWork(id: string): boolean {
 export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAlive }) => {
   const ref: JobRef = { job: item.ownerId, accountId: item.accountId, appId: item.appId };
   const detail = item.detail ?? {};
+  // Cancel evidence is no work: once due, long after the result could be read, it is cleared.
+  if (item.id === queuedCancelWorkId(item.ownerId)) return { done: true };
   if (isFigureWork(item.id)) {
     const facts = factsOf(detail.result);
     if (facts === null) {

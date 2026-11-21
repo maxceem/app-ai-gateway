@@ -11,9 +11,11 @@
  *   unknown, so it says nothing about other apps' jobs.
  * - The upstream URL is built from the signed id, never from the path.
  * - A result call that is final settles the job, after the answer is sent.
- * - A cancel is free too, and settles nothing itself: a job cancelled while
- *   queued settles to zero when its result confirms the cancel; a running one
- *   usually finishes and is charged in full (T15).
+ * - A cancel is free too, and settles nothing itself. Before sending it, the
+ *   gateway asks the job's status; a job seen still queued is recorded, and
+ *   settles to zero when its result confirms the cancel with no billed units.
+ *   Billed units, when fal reports them, always settle it. A job cancelled
+ *   while running usually finishes and is charged in full (T15).
  * - The provider's answer goes back as it came: binary bodies and bodiless
  *   answers too. Only a status answer's links are rewritten, and no cache may
  *   keep either answer (`Cache-Control: no-store`).
@@ -43,10 +45,13 @@ import {
   JOB_POLL_TIMEOUT_MS,
   jobContext,
   jobLocation,
+  jobQueued,
   jobRedirectTargets,
   jobStatusQuery,
   readResultFacts,
+  recordQueuedCancel,
   withGatewayLinks,
+  type JobContext,
 } from "./jobs.ts";
 
 /** Statuses whose answer can have no body. */
@@ -54,6 +59,27 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 
 function unknownJob(): GatewayError {
   return new GatewayError(404, "job_not_found", "No such job for this app");
+}
+
+/**
+ * Whether the job is still queued, as its status says just before a cancel
+ * is sent (`JobSpec.queuedWhen`). False when the operation says nothing about
+ * queuing, or the status cannot be read: then a cancel with no billed units
+ * keeps the estimate.
+ */
+async function seenQueued(env: Env, context: JobContext, claims: JobClaims, userId: string | null): Promise<boolean> {
+  if (context.spec.queuedWhen === undefined) return false;
+  try {
+    const { response } = await fetchJob(env, context, "status", claims, userId);
+    if (response.status < 200 || response.status > 299) {
+      void response.body?.cancel().catch(() => undefined);
+      return false;
+    }
+    const read = await boundedJson(response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
+    return read.kind === "parsed" && jobQueued(context.spec, read.value);
+  } catch {
+    return false;
+  }
 }
 
 /** Whether the claims name this app and this caller's end user, compared by digest. */
@@ -97,7 +123,14 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
         // Only the query fields the operation lists go upstream, and only on a status poll.
         const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
         const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
+        // A cancel asks the status first: a job seen still queued is recorded, so its
+        // confirmed cancel with no billed units can be free. Any other is charged as it ran.
+        const queued = which === "cancel" && (await seenQueued(c.env, context, claims, caller.identity.userId));
         const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
+        // Recorded before the answer goes back, so a result read right after the cancel already finds it.
+        if (queued && response.status >= 200 && response.status <= 299) {
+          await recordQueuedCancel(c.env, { job: claims.job, accountId: claims.accountId, appId: claims.appId }, Date.now());
+        }
         const headers = clientResponseHeaders(response.headers, keyHeader);
         jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
         headers.delete("content-length");
