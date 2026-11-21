@@ -178,9 +178,9 @@ export interface UpstreamRoute {
    */
   readonly cloudflarePrefix: readonly string[] | null;
   /**
-   * A base URL on one of the provider's own hosts (`https://openrouter.ai/`):
-   * that host's built-in path prefix (`api`), in segments, under which the
-   * provider reads its paths. Null otherwise.
+   * A base URL on a built-in provider's host (`https://openrouter.ai/`): that
+   * host's built-in path prefix (`api`), in segments, as the host's owner
+   * declares it, whatever the connection's type. Null otherwise.
    */
   readonly hostPrefix?: readonly string[] | null;
   /**
@@ -240,17 +240,19 @@ export function upstreamRoute(
       // A stored base URL passed the origin guard; one that does not read sends nothing anyway.
     }
     const basePath = pathSegments(url?.pathname ?? "/");
-    // On one of the provider's own hosts, its paths are read under that host's built-in prefix.
-    const own = Object.values(description.hosts)
+    const baseHost = url?.hostname.toLowerCase() ?? null;
+    // Another provider's host: its rules judge where these requests go.
+    const owner = baseHost === null ? null : hostOwner(baseHost);
+    // On a built-in host, that host's owner reads its paths under the host's
+    // built-in prefix (`https://openrouter.ai/` → `api`), whatever the
+    // connection's own type: the owner decides how its host reads a path.
+    const own = Object.values((owner ?? description).hosts)
       .map((host) => ({ name: host.split("/")[0]!.toLowerCase(), prefix: pathSegments(host.slice(host.split("/")[0]!.length)) }))
       .find((host) => host.name === url?.host.toLowerCase() && host.prefix.length > 0);
-    const baseHost = url?.hostname.toLowerCase() ?? null;
     const cloudflareBase =
       baseHost === CLOUDFLARE_AI_GATEWAY_HOST
         ? { type: description.type, slug: description.cloudflareEndpoint?.slug ?? null, prefix: cloudflarePrefix }
         : undefined;
-    // Another provider's host: its rules judge where these requests go.
-    const owner = baseHost === null ? null : hostOwner(baseHost);
     return {
       basePath,
       cloudflarePrefix: null,
