@@ -2179,7 +2179,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
       total_nano: 100_000_000,
     });
     // Once settled, the label is the settlement row's, not the estimate's.
-    const settlement = await env.DB.prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${settled.jobId}`).first<{ measured: string }>();
+    const settlement = await env.DB.prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${String(byState.settled!.id)}`).first<{ measured: string }>();
     expect(settlement!.measured).not.toBe("estimated");
     expect(byState.settled!.measured).toBe(settlement!.measured);
     expect(byState.settled!.settled_at).not.toBeNull();
