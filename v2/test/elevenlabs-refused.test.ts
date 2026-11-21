@@ -7,8 +7,10 @@
  * states it again, from the spec's own tags where they fit and from named
  * paths otherwise, so the two must agree on every operation, both ways: one
  * in the set that a listing reaches, and one outside it that is refused,
- * both fail. Each parameter with an enum is tried with every value. A
- * refused rule that matches no real request of any operation fails too.
+ * both fail. Live-session token paths (plan D4) are refused the same way,
+ * unless the listing opts in; then they, and only they, are reached. Each
+ * parameter with an enum is tried with every value. A refused or token rule
+ * that matches no real request of any operation fails too.
  */
 import { describe, expect, it } from "vitest";
 import operations from "./fixtures/elevenlabs-operations.json" with { type: "json" };
@@ -20,14 +22,15 @@ import { parseTemplate } from "../src/providers/path.ts";
 type Operation = readonly [method: string, path: string, tags: readonly string[], enums?: Readonly<Record<string, readonly string[]>>];
 const OPERATIONS = operations as unknown as readonly Operation[];
 
-/** Tags whose every operation is in the set: the account's admin, its history, its keys and single-use tokens. */
-const REFUSED_TAGS = new Set(["workspace", "api-key", "speech-history", "Single Use Token"]);
+/** Tags whose every operation is in the set: the account's admin, its history and its keys. */
+const REFUSED_TAGS = new Set(["workspace", "api-key", "speech-history"]);
 
 const PARAM = "\\{[^}/]+\\}";
 
 /** Whether an operation is in the closed set, worked out from the spec, not from the refused list. */
 function refusedBySet(method: string, path: string, tags: readonly string[]): boolean {
   if (tags.some((tag) => REFUSED_TAGS.has(tag))) return true;
+  if (liveTokenBySet(method, path, tags)) return false;
   const is = (pattern: string) => new RegExp(`^${pattern}$`, "u").test(path);
   const under = (prefix: string) => is(`${prefix}(/.*)?`);
   // The account and its admin (the team of a workspace too), and billing actions.
@@ -40,10 +43,6 @@ function refusedBySet(method: string, path: string, tags: readonly string[]): bo
   if (under("/v1/convai/secrets")) return true;
   if (method !== "GET" && under("/v1/convai/environment-variables")) return true;
   if (method === "DELETE" && is(`/v1/convai/environments/${PARAM}`)) return true;
-  // Live-session tokens, until step 5c: an agent's link answers with one too.
-  if (["/v1/convai/conversation/token", "/v1/convai/conversation/get-signed-url", "/v1/convai/conversation/get_signed_url", "/v1/convai/realtime/client_secrets"].some(is)) return true;
-  if (under("/v1/single-use-token")) return true;
-  if (method === "GET" && is(`/v1/convai/agents/${PARAM}/link`)) return true;
   // The research: deleting a voice, and writing agents and their settings.
   if (method === "DELETE" && is(`/v1/voices/${PARAM}`)) return true;
   if (is("/v1/convai/agents/create")) return true;
@@ -52,6 +51,14 @@ function refusedBySet(method: string, path: string, tags: readonly string[]): bo
   if (["PUT", "PATCH", "DELETE"].includes(method) && is(`/v1/convai/agents/${PARAM}`)) return true;
   if (method === "PATCH" && is(`/v1/reception/customer-facing-agents/${PARAM}`)) return true;
   return false;
+}
+
+/** Whether an operation mints a secret for a live session (plan D4): its single-use tokens, and an agent's link, which answers with one. */
+function liveTokenBySet(method: string, path: string, tags: readonly string[]): boolean {
+  const is = (pattern: string) => new RegExp(`^${pattern}$`, "u").test(path);
+  if (tags.includes("Single Use Token")) return true;
+  if (["/v1/convai/conversation/token", "/v1/convai/conversation/get-signed-url", "/v1/convai/conversation/get_signed_url", "/v1/convai/realtime/client_secrets"].some(is)) return true;
+  return method === "GET" && is(`/v1/convai/agents/${PARAM}/link`);
 }
 
 /**
@@ -73,9 +80,20 @@ function requestPaths(path: string, enums: Readonly<Record<string, readonly stri
   return paths;
 }
 
-type Rule = { readonly path: string; readonly methods: readonly string[] | null };
-const rulesOf = (refused: ProviderDescription["refused"]): Rule[] =>
-  refused.map((entry) => (typeof entry === "string" ? { path: entry, methods: null } : { path: entry.path, methods: entry.methods }));
+type Rule = { readonly path: string; readonly methods: readonly string[] | null; readonly token: boolean };
+/** A description's refused and live-session token paths, as one list of rules. */
+const rulesOf = (description: ProviderDescription): Rule[] => [
+  ...description.refused.map((entry) =>
+    typeof entry === "string" ? { path: entry, methods: null, token: false } : { path: entry.path, methods: entry.methods, token: false },
+  ),
+  ...(description.liveTokens ?? []).map((entry) => ({ path: entry.path, methods: entry.methods ?? null, token: true })),
+];
+/** The description with its refused and live-session token paths replaced by `rules`. */
+const withRules = (description: ProviderDescription, rules: readonly Rule[]): ProviderDescription => ({
+  ...description,
+  refused: rules.filter((rule) => !rule.token).map((rule) => (rule.methods === null ? rule.path : { path: rule.path, methods: rule.methods as HttpMethod[] })),
+  liveTokens: rules.filter((rule) => rule.token).map((rule) => (rule.methods === null ? { path: rule.path } : { path: rule.path, methods: rule.methods as HttpMethod[] })),
+});
 
 /**
  * Whether a refused rule can match a real request of a spec operation,
@@ -108,12 +126,20 @@ function ruleReaches(rule: Rule, method: string, path: string, enums: Readonly<R
   });
 }
 
-/** Every disagreement between a provider description's refused paths and the closed set, over the whole API, and every rule that reaches no operation. */
+/**
+ * Every disagreement between a provider description's refused and
+ * live-session token paths and the closed set, over the whole API, and every
+ * rule that reaches no operation. A plain listing must be refused exactly on
+ * the set and the token paths; a listing that opts in must reach exactly the
+ * token paths, and may opt in only there.
+ */
 function judge(description: ProviderDescription): { wrong: string[]; dead: string[] } {
   const matcher = new ProviderMatcher(description);
   const wrong: string[] = [];
   for (const [method, path, tags, enums] of OPERATIONS) {
-    const expected = refusedBySet(method, path, tags);
+    const refused = refusedBySet(method, path, tags);
+    const token = liveTokenBySet(method, path, tags);
+    const expected = refused || token;
     for (const sent of requestPaths(path, enums)) {
       const passthrough = compilePassthrough([{ method: method as HttpMethod, path: sent }]);
       const served = matcher.match(method, sent, { passthrough }).kind === "refused";
@@ -121,9 +147,16 @@ function judge(description: ProviderDescription): { wrong: string[]; dead: strin
       if (served !== expected || saved !== expected) {
         wrong.push(`${method} /${sent} [${tags.join(", ")}]: expected ${expected ? "refused" : "allowed"}, served ${served ? "refused" : "allowed"}, saved ${saved ? "refused" : "allowed"}`);
       }
+      const optedIn = compilePassthrough([{ method: method as HttpMethod, path: sent, liveToken: true }]);
+      const match = matcher.match(method, sent, { passthrough: optedIn });
+      const reached = match.kind === "passthrough" && match.liveToken !== null;
+      const mayOptIn = matcher.liveTokenCovering(optedIn[0]!) !== null;
+      if (reached !== token || mayOptIn !== token) {
+        wrong.push(`${method} /${sent} [${tags.join(", ")}] opted in: expected ${token ? "a live-session token" : "no token"}, served ${reached ? "reached" : "refused"}, opt-in ${mayOptIn ? "allowed" : "refused"}`);
+      }
     }
   }
-  const dead = rulesOf(description.refused)
+  const dead = rulesOf(description)
     .filter((rule) => !OPERATIONS.some(([method, path, , enums]) => ruleReaches(rule, method, path, enums)))
     .map((rule) => `${rule.methods?.join(",") ?? "*"} ${rule.path}`);
   return { wrong, dead };
@@ -150,8 +183,7 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
     ["an agent's link left out", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/convai/agents/{agent_id}/link")],
     ["voice deletion narrowed to ids with a prefix", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/p{voice_id}" } : rule))],
   ])("fails when the list has %s", (_, mutate) => {
-    const refused = mutate(rulesOf(elevenlabs.refused)).map((rule) => (rule.methods === null ? rule.path : { path: rule.path, methods: rule.methods as HttpMethod[] }));
-    const { wrong, dead } = judge({ ...elevenlabs, refused });
+    const { wrong, dead } = judge(withRules(elevenlabs, mutate(rulesOf(elevenlabs))));
     expect(wrong.length + dead.length).toBeGreaterThan(0);
   });
 

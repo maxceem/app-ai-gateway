@@ -7,7 +7,9 @@
  * 1. Normalize the path. A path that could mean something else upstream is
  *    refused.
  * 2. The provider's refused paths, ignoring case. These win even over a path
- *    the customer listed.
+ *    the customer listed. Its live-session token paths (`liveTokens`) are
+ *    refused the same way, except to a listed path that opts in to them
+ *    (plan D4).
  * 3. Passthrough paths the customer listed for this connection. They come
  *    before declared operations, so a release that declares an operation
  *    for a listed path never switches it on its own: the customer makes
@@ -17,7 +19,7 @@
  *
  * Which operations an app allows is decided after this, by the app's settings.
  */
-import type { HttpMethod, OperationDescription, ProviderDescription } from "./operation.ts";
+import type { HttpMethod, LiveTokenPath, OperationDescription, ProviderDescription } from "./operation.ts";
 import {
   fillTemplate,
   joinSegments,
@@ -45,6 +47,12 @@ export interface PassthroughPath {
    * its usage reader at the connection's rates, not a passthrough path.
    */
   readonly style?: string;
+  /**
+   * The path opts in to the provider's live-session token paths
+   * (`liveTokens`, plan D4): without it they stay refused, even when listed.
+   * Never written when false.
+   */
+  readonly liveToken?: true;
 }
 
 /** Where the request goes: a key of the provider's `hosts`, and the encoded path. */
@@ -65,6 +73,8 @@ export type MatchResult =
       readonly listed: PassthroughPath;
       readonly parts: Parts;
       readonly upstream: UpstreamTarget;
+      /** The live-session token path it reaches, through the listing's opt-in, or null. */
+      readonly liveToken: LiveTokenPath | null;
     }
   | { readonly kind: "refused"; readonly reason: "bad_path"; readonly detail: PathRefusal }
   | { readonly kind: "refused"; readonly reason: "refused_path"; readonly pattern: string }
@@ -271,10 +281,22 @@ export interface MatchContext {
   readonly route?: UpstreamRoute;
 }
 
+/** A refused or live-session token path, compiled: its template, and the methods it covers, or null for every method. */
+interface CompiledRule<Entry> {
+  readonly template: Template;
+  readonly methods: ReadonlySet<string> | null;
+  readonly entry: Entry;
+}
+
+/** What a rule reports a refusal as: its template, after its methods when it names some. */
+function ruleSource(rule: CompiledRule<unknown>): string {
+  return rule.methods === null ? rule.template.source : `${[...rule.methods].join(",")} ${rule.template.source}`;
+}
+
 export class ProviderMatcher {
   readonly provider: ProviderDescription;
-  /** Each refused path, with the methods it refuses, or null for every method. */
-  private readonly refused: readonly { readonly template: Template; readonly methods: ReadonlySet<string> | null }[];
+  private readonly refused: readonly CompiledRule<null>[];
+  private readonly liveTokens: readonly CompiledRule<LiveTokenPath>[];
   private readonly operations: readonly CompiledOperation[];
 
   /**
@@ -285,9 +307,14 @@ export class ProviderMatcher {
     this.provider = provider;
     this.refused = provider.refused.map((entry) =>
       typeof entry === "string"
-        ? { template: parseTemplate(entry, { rest: true }), methods: null }
-        : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods) },
+        ? { template: parseTemplate(entry, { rest: true }), methods: null, entry: null }
+        : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods), entry: null },
     );
+    this.liveTokens = (provider.liveTokens ?? []).map((entry) => ({
+      template: parseTemplate(entry.path, { rest: true }),
+      methods: entry.methods === undefined ? null : new Set(entry.methods),
+      entry,
+    }));
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
       if (names.has(operation.name)) {
@@ -342,8 +369,11 @@ export class ProviderMatcher {
     if (!normalized.ok) return { kind: "refused", reason: "bad_path", detail: normalized.reason };
     const { segments } = normalized;
 
-    const gateway = this.refusedAt(method, { host: "main", paths: [segments.map(literal)] });
+    const atGateway: UpstreamTargets = { host: "main", paths: [segments.map(literal)] };
+    const gateway = this.refusedAt(method, atGateway);
     if (gateway !== null) return { kind: "refused", reason: "refused_path", pattern: gateway };
+    // A live-session token path is refused like the others unless a listed path that opts in takes the request.
+    const gatewayToken = firstRule(this.liveTokens, method, atGateway);
 
     const route = context.route ?? DIRECT_ROUTE;
     for (const listed of context.passthrough ?? []) {
@@ -351,10 +381,20 @@ export class ProviderMatcher {
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
       // Refused paths are judged again where the request really goes.
-      const refused = this.refusedAt(method, upstreamTargets(route, "main", segments.map(literal)));
+      const sent = upstreamTargets(route, "main", segments.map(literal));
+      const refused = this.refusedAt(method, sent);
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
-      return { kind: "passthrough", listed: listed.listed, parts, upstream: { host: "main", path: joinSegments(segments) } };
+      const token = gatewayToken ?? firstRule(this.liveTokens, method, sent);
+      if (token !== null && listed.listed.liveToken !== true) return { kind: "refused", reason: "refused_path", pattern: ruleSource(token) };
+      return {
+        kind: "passthrough",
+        listed: listed.listed,
+        parts,
+        upstream: { host: "main", path: joinSegments(segments) },
+        liveToken: token === null ? null : token.entry,
+      };
     }
+    if (gatewayToken !== null) return { kind: "refused", reason: "refused_path", pattern: ruleSource(gatewayToken) };
 
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== method) continue;
@@ -369,7 +409,8 @@ export class ProviderMatcher {
       // operations are paths its customer listed, judged as listings are.
       const sent = normalizePath(path);
       const judged = this.provider.customerPaths === true ? route : { ...route, basePath: null };
-      const refused = sent.ok ? this.refusedAt(method, upstreamTargets(judged, compiled.host, sent.segments.map(literal))) : null;
+      const targets = sent.ok ? upstreamTargets(judged, compiled.host, sent.segments.map(literal)) : null;
+      const refused = this.refusedAt(method, targets) ?? this.liveTokenAt(method, targets);
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
@@ -383,17 +424,14 @@ export class ProviderMatcher {
    * refused paths: the others serve declared operations only.
    */
   private refusedAt(method: string, targets: UpstreamTargets | null): string | null {
-    if (targets === null || targets.host !== "main") return null;
-    for (const path of targets.paths) {
-      const segments = path.map((segment) =>
-        segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
-      );
-      for (const { template, methods } of this.refused) {
-        if (methods !== null && !methods.has(method)) continue;
-        if (matchTemplate(template, segments, { ignoreCase: true }) !== null) return methods === null ? template.source : `${[...methods].join(",")} ${template.source}`;
-      }
-    }
-    return null;
+    const rule = firstRule(this.refused, method, targets);
+    return rule === null ? null : ruleSource(rule);
+  }
+
+  /** The first live-session token path that takes every path of one of `targets`, as `refusedAt`, or null. */
+  private liveTokenAt(method: string, targets: UpstreamTargets | null): string | null {
+    const rule = firstRule(this.liveTokens, method, targets);
+    return rule === null ? null : ruleSource(rule);
   }
 
   /**
@@ -401,12 +439,29 @@ export class ProviderMatcher {
    * `route`, whatever its parts hold, at the gateway or where the request
    * goes, or null. Such a listing could never be reached: refused paths are
    * checked first, on both. One that takes only some of them is not
-   * reported, for the same reason.
+   * reported, for the same reason. A live-session token path counts too,
+   * unless the listing opts in to it.
    */
   refusedCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
     const { method } = listed.listed;
-    const gateway = this.refusedAt(method, { host: "main", paths: [listed.template.segments] });
-    return gateway ?? this.refusedAt(method, upstreamTargets(route, "main", listed.template.segments));
+    const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
+    const sent = upstreamTargets(route, "main", listed.template.segments);
+    const refused = this.refusedAt(method, atGateway) ?? this.refusedAt(method, sent);
+    if (refused !== null || listed.listed.liveToken === true) return refused;
+    return this.liveTokenAt(method, atGateway) ?? this.liveTokenAt(method, sent);
+  }
+
+  /**
+   * The live-session token path that takes every request a listed path could
+   * match on `route`, as `refusedCovering` judges it, or null. A listing may
+   * opt in to live-session tokens only when one takes all its requests.
+   */
+  liveTokenCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): LiveTokenPath | null {
+    const { method } = listed.listed;
+    const rule =
+      firstRule(this.liveTokens, method, { host: "main", paths: [listed.template.segments] }) ??
+      firstRule(this.liveTokens, method, upstreamTargets(route, "main", listed.template.segments));
+    return rule === null ? null : rule.entry;
   }
 
   /**
@@ -471,6 +526,26 @@ export class ProviderMatcher {
     if (compiled === undefined) return null;
     return compiled.template.segments.flatMap((segment) => (segment.kind === "part" || segment.kind === "multi" ? [segment.name] : []));
   }
+}
+
+/**
+ * The first rule that takes every path of one of `targets` (a `{name}` part
+ * stands for any value), ignoring case, or null. Only the main host has
+ * refused and live-session token paths: the others serve declared operations
+ * only.
+ */
+function firstRule<Entry>(rules: readonly CompiledRule<Entry>[], method: string, targets: UpstreamTargets | null): CompiledRule<Entry> | null {
+  if (targets === null || targets.host !== "main") return null;
+  for (const path of targets.paths) {
+    const segments = path.map((segment) =>
+      segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
+    );
+    for (const rule of rules) {
+      if (rule.methods !== null && !rule.methods.has(method)) continue;
+      if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) return rule;
+    }
+  }
+  return null;
 }
 
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */

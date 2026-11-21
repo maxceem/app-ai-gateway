@@ -529,12 +529,51 @@ export function readingRules(description: ProviderDescription, operation: Operat
   return operation?.rules ?? description;
 }
 
-/** How the provider's key is sent. */
 /** A refused path for some methods only. */
 export interface RefusedPath {
   readonly path: string;
   readonly methods: readonly HttpMethod[];
 }
+
+/**
+ * How long a minted live-session secret may start a call, in seconds (plan
+ * D4): the shortest window for starting one, not the session's length.
+ */
+export const LIVE_TOKEN_WINDOW_SECONDS = 60;
+
+/**
+ * Where a mint request sets how long its secret may start a call. The
+ * gateway writes it into the JSON body, whatever the client sent, so the
+ * window is always `LIVE_TOKEN_WINDOW_SECONDS`.
+ * - `seconds`: the field holds a number of seconds.
+ * - `expires_after`: the field holds `{ seconds }`, with `anchor:
+ *   "created_at"` when `anchor` is set.
+ * - `time`: the field holds an RFC 3339 time, the window from now.
+ */
+export interface LiveTokenExpiry {
+  /** Only requests of this method mint; others are sent as they are. */
+  readonly method: HttpMethod;
+  /** A top-level field of the JSON body. */
+  readonly field: string;
+  readonly as: "seconds" | "expires_after" | "time";
+  readonly anchor?: true;
+}
+
+/**
+ * A path that mints a short-lived secret for one live session (plan D4). It
+ * is refused like a refused path, unless the listed path that takes the
+ * request opts in to it (`liveToken` on the listing).
+ */
+export interface LiveTokenPath {
+  /** A template, read as refused paths are: a trailing `*` matches the rest. */
+  readonly path: string;
+  /** The methods it covers; every method when left out. */
+  readonly methods?: readonly HttpMethod[];
+  /** Where the request sets its window, if the provider lets it. */
+  readonly expiry?: LiveTokenExpiry;
+}
+
+/** How the provider's key is sent. */
 
 export interface ProviderAuth {
   readonly header: string;
@@ -618,6 +657,13 @@ export interface ProviderDescription {
    * such as deleting a voice while reading one stays allowed.
    */
   readonly refused: readonly (string | RefusedPath)[];
+  /**
+   * Paths that mint a short-lived secret for one live session (plan D4).
+   * Refused as refused paths are, unless the customer lists the path and
+   * opts in to it. Key creation, admin and account paths belong in
+   * `refused`, never here: those stay refused whatever is listed.
+   */
+  readonly liveTokens?: readonly LiveTokenPath[];
   /**
    * This provider can be reached through Cloudflare AI Gateway (D13): the
    * provider's name in Cloudflare's URL space, and a path prefix Cloudflare's

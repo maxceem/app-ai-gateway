@@ -1,0 +1,376 @@
+/**
+ * Live-session token endpoints (plan D4, step 5c): paths that mint a
+ * short-lived secret for one live call. They are refused like refused paths
+ * until a listed path opts in to them (`live_token`). Once opted in, a mint
+ * goes through auth and limits as any passthrough call, is charged as a
+ * `live_token` call, and its window for starting a call is locked to 60
+ * seconds where the request sets it. The provider is mocked at `fetch`.
+ */
+import { env } from "cloudflare:workers";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import worker from "../src/index.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
+import { compilePassthrough, ProviderMatcher } from "../src/providers/matcher.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenExpiry } from "../src/providers/operation.ts";
+import { lockedLiveTokenBody, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
+import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+
+const ORIGIN = "https://gateway.test";
+const SECRET = "sk-test-provider-key-4321";
+
+let fetchSpy: MockInstance<typeof fetch>;
+
+beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+
+beforeEach(() => {
+  clearCaches();
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  fetchSpy = vi.spyOn(globalThis, "fetch");
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+/** Each provider's live-session token endpoints, as a client calls them. */
+const TOKEN_ENDPOINTS: readonly (readonly [type: string, method: HttpMethod, path: string])[] = [
+  ["openai", "POST", "v1/realtime/client_secrets"],
+  ["openai", "POST", "v1/realtime/sessions"],
+  ["openai", "POST", "v1/realtime/transcription_sessions"],
+  ["openai", "POST", "v1/chatkit/sessions"],
+  ["xai", "POST", "v1/realtime/client_secrets"],
+  ["gemini", "POST", "v1alpha/auth_tokens"],
+  ["deepgram", "POST", "v1/auth/grant"],
+  ["elevenlabs", "POST", "v1/single-use-token/tts_websocket"],
+  ["elevenlabs", "GET", "v1/convai/conversation/token"],
+  ["elevenlabs", "GET", "v1/convai/conversation/get-signed-url"],
+  ["elevenlabs", "POST", "v1/convai/realtime/client_secrets"],
+  ["elevenlabs", "GET", "v1/convai/agents/agent_1/link"],
+];
+
+const describedAs = (type: string) => BUILT_IN_PROVIDERS[type]!;
+
+describe("matching a live-session token path", () => {
+  it.each(TOKEN_ENDPOINTS)("%s %s %s is refused when listed, and reached once the listing opts in", (type, method, path) => {
+    const matcher = new ProviderMatcher(describedAs(type));
+    expect(matcher.match(method, path)).toMatchObject({ kind: "refused", reason: "refused_path" });
+    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path }]) })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    const optedIn = matcher.match(method, path, { passthrough: compilePassthrough([{ method, path, liveToken: true }]) });
+    expect(optedIn).toMatchObject({ kind: "passthrough" });
+    expect(optedIn.kind === "passthrough" && optedIn.liveToken).not.toBeNull();
+  });
+
+  it.each([
+    ["openai", "POST", "v1/organization/admin_api_keys"],
+    ["xai", "GET", "v1/api-key"],
+    ["deepgram", "POST", "v1/projects/p1/keys"],
+    ["elevenlabs", "GET", "v1/user"],
+    ["elevenlabs", "DELETE", "v1/voices/v1"],
+  ] as const)("keeps %s %s %s refused, opt-in or not", (type, method, path) => {
+    const matcher = new ProviderMatcher(describedAs(type));
+    expect(matcher.match(method, path, { passthrough: compilePassthrough([{ method, path, liveToken: true }]) })).toMatchObject({ kind: "refused", reason: "refused_path" });
+  });
+
+  it("keeps the opt-in to the paths it was made for: case and encoding tricks reach only the token path itself", () => {
+    const matcher = new ProviderMatcher(describedAs("openai"));
+    const passthrough = compilePassthrough([{ method: "POST", path: "v1/realtime/client_secrets", liveToken: true }]);
+    // Token paths ignore case; a listing compares exactly, so it does not take this one.
+    expect(matcher.match("POST", "V1/REALTIME/client_secrets", { passthrough })).toMatchObject({ kind: "refused", reason: "refused_path" });
+    // Decoded, it is the same path: the opted-in listing takes it, as the token path it is.
+    expect(matcher.match("POST", "v1/realtime/%63lient_secrets", { passthrough })).toMatchObject({ kind: "passthrough", liveToken: { path: "v1/realtime/client_secrets/*" } });
+    expect(matcher.match("POST", "v1/realtime/client_secrets/../../organization/users", { passthrough })).toMatchObject({ kind: "refused", reason: "bad_path" });
+  });
+
+  it("gives a custom provider on a known host that provider's token paths, and none elsewhere", async () => {
+    const { customDescription } = await import("../src/providers/custom.ts");
+    const auth = { header: "authorization", format: "Bearer {key}" };
+    const onOpenAi = new ProviderMatcher(customDescription({ baseUrl: "https://api.openai.com/", auth, paths: [] }));
+    const listed = (liveToken: boolean) => compilePassthrough([{ method: "POST", path: "v1/realtime/client_secrets", ...(liveToken ? { liveToken: true as const } : {}) }]);
+    expect(onOpenAi.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false) })).toMatchObject({ kind: "refused" });
+    expect(onOpenAi.match("POST", "v1/realtime/client_secrets", { passthrough: listed(true) })).toMatchObject({ kind: "passthrough" });
+    const elsewhere = new ProviderMatcher(customDescription({ baseUrl: "https://llm.example.com/", auth, paths: [] }));
+    expect(elsewhere.match("POST", "v1/realtime/client_secrets", { passthrough: listed(false) })).toMatchObject({ kind: "passthrough", liveToken: null });
+  });
+});
+
+describe("locking a mint's window", () => {
+  const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+  const decode = (result: ReturnType<typeof lockedLiveTokenBody>) => (result.kind === "locked" ? JSON.parse(new TextDecoder().decode(result.bytes)) : result);
+  const NOW = Date.parse("2026-11-21T10:00:00.000Z");
+
+  it.each([
+    [{ method: "POST", field: "expires_after", as: "expires_after", anchor: true }, { anchor: "created_at", seconds: 60 }],
+    [{ method: "POST", field: "expires_after", as: "expires_after" }, { seconds: 60 }],
+    [{ method: "POST", field: "ttl_seconds", as: "seconds" }, 60],
+    [{ method: "POST", field: "newSessionExpireTime", as: "time" }, "2026-11-21T10:01:00.000Z"],
+  ] as const)("writes %j as 60 seconds, over whatever the client sent", (expiry, value) => {
+    expect(LIVE_TOKEN_WINDOW_SECONDS).toBe(60);
+    const sent = { session: { model: "m" }, [expiry.field]: expiry.as === "time" ? "2026-11-22T10:00:00Z" : 7200 };
+    expect(decode(lockedLiveTokenBody(expiry as LiveTokenExpiry, "POST", encode(sent), NOW))).toEqual({ session: { model: "m" }, [expiry.field]: value });
+    // Set when the client sent nothing.
+    expect(decode(lockedLiveTokenBody(expiry as LiveTokenExpiry, "POST", new Uint8Array(), NOW))).toEqual({ [expiry.field]: value });
+  });
+
+  it("leaves another method's request as it is, and calls a body that is not a JSON object unreadable", () => {
+    const expiry: LiveTokenExpiry = { method: "POST", field: "ttl_seconds", as: "seconds" };
+    expect(lockedLiveTokenBody(expiry, "GET", new Uint8Array(), 0)).toEqual({ kind: "same" });
+    for (const body of ["[1]", "null", "7", "not json", "\"text\""]) {
+      expect(lockedLiveTokenBody(expiry, "POST", new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
+    }
+    expect(lockedLiveTokenBody(expiry, "POST", new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
+  });
+});
+
+describe("storing the opt-in", () => {
+  it("writes `live_token` only when true, and reads it back", () => {
+    expect(storedPassthrough([{ method: "POST", path: "v1/realtime/client_secrets" }])).not.toContain("live_token");
+    const stored = storedPassthrough([{ method: "POST", path: "v1/realtime/client_secrets", liveToken: true }]);
+    expect(JSON.parse(stored!)).toEqual({ paths: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
+    expect(readPassthrough(stored)).toEqual([{ method: "POST", path: "v1/realtime/client_secrets", liveToken: true }]);
+    expect(readPassthrough(JSON.stringify({ paths: [{ method: "POST", path: "x", live_token: "yes" }] }))).toEqual([{ method: "POST", path: "x" }]);
+  });
+});
+
+async function admin(key: string, method: string, path: string, body?: unknown) {
+  const ctx = createExecutionContext();
+  const response = await worker.fetch(
+    new Request(`${ORIGIN}${path}`, {
+      method,
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
+    env,
+    ctx,
+  );
+  await waitOnExecutionContext(ctx);
+  return { status: response.status, body: (await response.json()) as Record<string, any> };
+}
+
+/** A connection made through the API, so its listing is saved as a customer would save it, and an app that enables passthrough on it. */
+async function connected(
+  fields: Record<string, unknown>,
+  limits?: Record<string, unknown>,
+): Promise<{ appId: string; slug: string; key: string }> {
+  const management = await seedManagementKey();
+  const type = String(fields.type);
+  const slug = `${type}-${crypto.randomUUID().slice(0, 6)}`;
+  const created = await admin(management, "POST", "/v2/admin/providers", { name: type, slug, secret: SECRET, ...fields });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const authentication = { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } };
+  const routing = { providers: { [slug]: { operations: ["passthrough"] } } };
+  const appId = await seedRoutedApp(authentication, routing);
+  if (limits !== undefined) {
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?").bind(JSON.stringify({ authentication, routing, limits }), appId).run();
+  }
+  const { key } = await seedAppKey(appId);
+  return { appId, slug, key };
+}
+
+async function send(method: string, path: string, key: string, body?: string) {
+  const ctx = createExecutionContext();
+  const response = await worker.fetch(
+    new Request(`${ORIGIN}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${key}`, "x-end-user-id": "user-1", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body }),
+    }),
+    env,
+    ctx,
+  );
+  const text = await response.text();
+  await waitOnExecutionContext(ctx);
+  return { status: response.status, text };
+}
+
+const sentBody = (call: number) => JSON.parse(new TextDecoder().decode(fetchSpy.mock.calls[call]![1]!.body as Uint8Array)) as Record<string, unknown>;
+
+async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
+  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  return results;
+}
+
+/** Pins `Date` to the middle of a minute, so two requests counted per minute land in the same one. */
+function pinClockMidMinute(): number {
+  const now = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now);
+  return now;
+}
+
+describe("saving a live-session token path", () => {
+  const create = (passthrough: unknown, type = "openai") =>
+    seedManagementKey().then((key) =>
+      admin(key, "POST", "/v2/admin/providers", { type, name: type, slug: `${type}-${crypto.randomUUID().slice(0, 6)}`, secret: SECRET, passthrough }),
+    );
+
+  it("refuses the path without the opt-in, saying how to opt in", async () => {
+    const refused = await create([{ method: "POST", path: "v1/realtime/client_secrets" }]);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.message).toContain("set live_token to true");
+  });
+
+  it("saves it with the opt-in, and shows the opt-in back", async () => {
+    const saved = await create([{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }]);
+    expect(saved.status, JSON.stringify(saved.body)).toBe(201);
+    expect(saved.body.provider.passthrough).toEqual([{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }]);
+    // `false` is the same as leaving it out, and is not shown.
+    const plain = await create([{ method: "GET", path: "v1/files/{id}", live_token: false }]);
+    expect(plain.body.provider.passthrough).toEqual([{ method: "GET", path: "v1/files/{id}" }]);
+  });
+
+  it.each([
+    [[{ method: "POST", path: "v1/organization/admin_api_keys", live_token: true }], "always refused"],
+    [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
+    // Only some of its requests are token paths: it cannot opt in, nor be listed without.
+    [[{ method: "POST", path: "v1/realtime/{thing}", live_token: true }], "not one of OpenAI's live-session token paths"],
+  ])("refuses %j", async (passthrough, message) => {
+    const refused = await create(passthrough);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.message).toContain(message);
+  });
+
+  it("refuses the opt-in on a custom provider's API-style path, and on a host with no token paths", async () => {
+    const key = await seedManagementKey();
+    const custom = (baseUrl: string, passthrough: unknown) =>
+      admin(key, "POST", "/v2/admin/providers", {
+        type: "custom",
+        name: "Mine",
+        slug: `mine-${crypto.randomUUID().slice(0, 6)}`,
+        secret: SECRET,
+        baseUrl,
+        auth: { header: "authorization", format: "Bearer {key}" },
+        passthrough,
+      });
+    const styled = await custom("https://llm.example.com/", [{ method: "POST", path: "chat/completions", style: "openai-chat", live_token: true }]);
+    expect(styled.body.error.message).toContain("not a live-session token path");
+    const unknown = await custom("https://llm.example.com/", [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }]);
+    expect(unknown.body.error.message).toContain("live-session token paths");
+    const onOpenAi = await custom("https://api.openai.com/", [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }]);
+    expect(onOpenAi.status, JSON.stringify(onOpenAi.body)).toBe(201);
+  });
+});
+
+describe("serving a live-session mint", () => {
+  it("refuses the mint when the stored listing does not opt in, and sends nothing", async () => {
+    const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "GET", path: "v1/files/{id}" }] });
+    // As if stored by an older release, without the opt-in.
+    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE slug = ?")
+      .bind(storedPassthrough([{ method: "POST", path: "v1/realtime/client_secrets" }]), slug)
+      .run();
+    clearCaches();
+    const { status } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "{}");
+    expect(status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("locks OpenAI's client secret to 60 seconds whatever the client asks, keeps the rest, and charges a `live_token` call", async () => {
+    const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
+    fetchSpy.mockImplementation(async () => Response.json({ value: "ek_minted", expires_at: 1 }));
+    const asked = JSON.stringify({ session: { type: "realtime", model: "gpt-realtime" }, expires_after: { anchor: "created_at", seconds: 7200 } });
+    const minted = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, asked);
+    expect(minted.status, minted.text).toBe(200);
+    expect(JSON.parse(minted.text)).toEqual({ value: "ek_minted", expires_at: 1 });
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toBe("https://api.openai.com/v1/realtime/client_secrets");
+    expect(new Headers(init!.headers).get("authorization")).toBe(`Bearer ${SECRET}`);
+    expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
+    expect(sentBody(0)).toEqual({ session: { type: "realtime", model: "gpt-realtime" }, expires_after: { anchor: "created_at", seconds: 60 } });
+    // Set when left out, and with no body at all.
+    await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, JSON.stringify({ session: { type: "realtime" } }));
+    expect(sentBody(1).expires_after).toEqual({ anchor: "created_at", seconds: 60 });
+    expect((await chargesOf(appId)).map((charge) => [charge.operation, charge.price_source, charge.cost_nano, charge.model])).toEqual([
+      ["live_token", "not_priced", null, null],
+      ["live_token", "not_priced", null, null],
+    ]);
+  });
+
+  it.each([
+    ["xai", "v1/realtime/client_secrets", { expires_after: { seconds: 3600 } }, (body: Record<string, unknown>) => expect(body.expires_after).toEqual({ seconds: 60 })],
+    ["deepgram", "v1/auth/grant", { ttl_seconds: 3600 }, (body: Record<string, unknown>) => expect(body.ttl_seconds).toBe(60)],
+    [
+      "gemini",
+      "v1alpha/auth_tokens",
+      { uses: 1, expireTime: "2026-11-21T12:00:00Z", newSessionExpireTime: "2026-11-21T12:00:00Z" },
+      (body: Record<string, unknown>, now: number) => {
+        expect(body.newSessionExpireTime).toBe(new Date(now + 60_000).toISOString());
+        // The session's own cap is the customer's to set.
+        expect(body.expireTime).toBe("2026-11-21T12:00:00Z");
+        expect(body.uses).toBe(1);
+      },
+    ],
+    ["elevenlabs", "v1/convai/realtime/client_secrets", { expires_after: { seconds: 900 } }, (body: Record<string, unknown>) => expect(body.expires_after).toEqual({ anchor: "created_at", seconds: 60 })],
+  ] as const)("locks %s's window at %s", async (type, path, asked, check) => {
+    const now = pinClockMidMinute();
+    const { appId, slug, key } = await connected({ type, passthrough: [{ method: "POST", path, live_token: true }] });
+    fetchSpy.mockImplementation(async () => Response.json({ token: "minted" }));
+    const { status, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/${path}`, key, JSON.stringify(asked));
+    expect(status, text).toBe(200);
+    check(sentBody(0), now);
+  });
+
+  it("sends an ElevenLabs mint with no expiry field as it is", async () => {
+    const { appId, slug, key } = await connected({
+      type: "elevenlabs",
+      passthrough: [
+        { method: "POST", path: "v1/single-use-token/{token_type}", live_token: true },
+        { method: "GET", path: "v1/convai/conversation/get-signed-url", live_token: true },
+      ],
+    });
+    fetchSpy.mockImplementation(async () => Response.json({ token: "minted" }));
+    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/single-use-token/realtime_scribe`, key, "{\"a\":1}")).status).toBe(200);
+    expect(new TextDecoder().decode(fetchSpy.mock.calls[0]![1]!.body as Uint8Array)).toBe("{\"a\":1}");
+    expect((await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/convai/conversation/get-signed-url?agent_id=a1`, key)).status).toBe(200);
+    expect(String(fetchSpy.mock.calls[1]![0])).toBe("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=a1");
+    expect((await chargesOf(appId)).map((charge) => charge.operation)).toEqual(["live_token", "live_token"]);
+  });
+
+  it("refuses a mint whose body cannot carry the window, before it spends anything or calls the provider", async () => {
+    const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
+    const { status, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "[]");
+    expect(status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "invalid_request" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await chargesOf(appId)).toEqual([]);
+  });
+
+  it("charges a flat price when the listing has one, and keeps request limits", async () => {
+    pinClockMidMinute();
+    const { appId, slug, key } = await connected(
+      { type: "deepgram", passthrough: [{ method: "POST", path: "v1/auth/grant", live_token: true, per_request: 0.001 }] },
+      { per_app: { requests: { per_minute: 1 } } },
+    );
+    fetchSpy.mockImplementation(async () => Response.json({ access_token: "jwt", expires_in: 60 }));
+    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/auth/grant`, key, "{}")).status).toBe(200);
+    const limited = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/auth/grant`, key, "{}");
+    expect(limited.status).toBe(429);
+    expect(JSON.parse(limited.text)).toMatchObject({ error: { code: "app_rate_limited" } });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(await chargesOf(appId)).toEqual([
+      expect.objectContaining({ operation: "live_token", price_source: "customer_rate", cost_nano: 1_000_000, unit: "requests", units: 1 }),
+    ]);
+  });
+
+  it("checks who is calling first: a mint needs a valid app key", async () => {
+    const { appId, slug } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] });
+    const { status } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, "agw_wrong", "{}");
+    expect(status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("serves a custom provider on OpenAI's host the same way", async () => {
+    const { appId, slug, key } = await connected({
+      type: "custom",
+      baseUrl: "https://api.openai.com/",
+      auth: { header: "authorization", format: "Bearer {key}" },
+      passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }],
+    });
+    fetchSpy.mockImplementation(async () => Response.json({ value: "ek_minted" }));
+    const { status, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, JSON.stringify({ expires_after: { seconds: 7200 } }));
+    expect(status, text).toBe(200);
+    expect(sentBody(0).expires_after).toEqual({ anchor: "created_at", seconds: 60 });
+    expect((await chargesOf(appId)).map((charge) => charge.operation)).toEqual(["live_token"]);
+  });
+});

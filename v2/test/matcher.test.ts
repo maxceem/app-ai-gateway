@@ -99,6 +99,7 @@ describe("passthrough paths", () => {
       listed: { method: "GET", path: "v1/files/{file_id}" },
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
+      liveToken: null,
     });
   });
 

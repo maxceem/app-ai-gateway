@@ -287,6 +287,7 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
     auth: setting.auth,
     serviceModes: NO_SERVICE_TIERS,
     refused: owner === null ? [] : owner.refused,
+    ...(owner?.liveTokens === undefined ? {} : { liveTokens: owner.liveTokens }),
     // Its reporting headers, as its own connections send them.
     ...(owner?.attributionHeaders !== undefined ? { attributionHeaders: owner.attributionHeaders } : {}),
     // A known provider's regional hosts serve at its regional prices, as for its own connections.

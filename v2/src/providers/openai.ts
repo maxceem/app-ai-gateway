@@ -17,15 +17,18 @@ export const openai = defineProvider({
   otherHosts: ["us.api.openai.com", "eu.api.openai.com", "gb.api.openai.com", "*.api.openai.com"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // The admin API (keys, projects, users, usage and costs) lives under
-  // `v1/organization`. The others mint short-lived secrets for live sessions
-  // and ChatKit: refused until a customer can opt in to them path by path,
-  // with their expiry locked (plan D4).
-  refused: [
-    "v1/organization/*",
-    "v1/realtime/client_secrets/*",
-    "v1/realtime/sessions/*",
-    "v1/realtime/transcription_sessions/*",
-    "v1/chatkit/sessions/*",
+  // `v1/organization`.
+  refused: ["v1/organization/*"],
+  // Short-lived secrets for live sessions and ChatKit, reached only by a
+  // listed path that opts in (plan D4). A client secret's `expires_after`
+  // only limits when calls can start (T18), so it is locked to that window.
+  // The older Realtime sessions and ChatKit sessions are sent as they are:
+  // their expiry field is not checked against OpenAI's reference here.
+  liveTokens: [
+    { path: "v1/realtime/client_secrets/*", expiry: { method: "POST", field: "expires_after", as: "expires_after", anchor: true } },
+    { path: "v1/realtime/sessions/*" },
+    { path: "v1/realtime/transcription_sessions/*" },
+    { path: "v1/chatkit/sessions/*" },
   ],
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },

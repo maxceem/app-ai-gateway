@@ -81,17 +81,6 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/environment-variables/*", methods: ["POST", "PUT", "PATCH", "DELETE"] },
     // Deleting an environment removes its values from every environment variable.
     { path: "v1/convai/environments/{environment}", methods: ["DELETE"] },
-    // Tokens and signed URLs for live sessions, until a customer can opt in
-    // to them path by path (plan D4).
-    "v1/convai/conversation/token/*",
-    "v1/convai/conversation/get-signed-url/*",
-    "v1/convai/conversation/get_signed_url/*",
-    "v1/convai/realtime/client_secrets/*",
-    "v1/single-use-token/*",
-    // An agent's link answers with a conversation token. Agent reads may hold
-    // a `shareable_token` too; they stay allowed, since passthrough never
-    // changes a body and the customer turns sharing on themselves.
-    { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
     // From the research: deleting a voice (not a collection, a voice's place
     // in one, or a sample), and creating, changing or deleting agents and
     // their settings (not queries under an agent, such as `rag-query`).
@@ -102,6 +91,20 @@ export const elevenlabs = defineProvider({
     { path: "v1/convai/agents/{agent_id}/avatar", methods: ["POST"] },
     { path: "v1/convai/agents/{agent_id}/hold-audio", methods: ["POST", "DELETE"] },
     { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
+  ],
+  // Tokens and signed URLs for live sessions, reached only by a listed path
+  // that opts in (plan D4). Only the Realtime client secret takes an expiry;
+  // the others last as ElevenLabs sets them (about 15 minutes, T13).
+  // An agent's link answers with a conversation token. Agent reads may hold
+  // a `shareable_token` too; they stay allowed, since passthrough never
+  // changes a body and the customer turns sharing on themselves.
+  liveTokens: [
+    { path: "v1/convai/conversation/token/*" },
+    { path: "v1/convai/conversation/get-signed-url/*" },
+    { path: "v1/convai/conversation/get_signed_url/*" },
+    { path: "v1/convai/realtime/client_secrets/*", expiry: { method: "POST", field: "expires_after", as: "expires_after", anchor: true } },
+    { path: "v1/single-use-token/*" },
+    { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

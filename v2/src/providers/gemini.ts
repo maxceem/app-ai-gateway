@@ -54,9 +54,12 @@ export const gemini = defineProvider({
   hosts: { main: "generativelanguage.googleapis.com" },
   auth: { header: "x-goog-api-key", format: "{key}" },
   // Tuned models belong to the key's project, not to a call, and can be
-  // shared with others; so can a corpus. Ephemeral tokens for the Live API
-  // are refused until a customer can opt in to them path by path (plan D4).
-  refused: ["{version}/tunedModels/*", "{version}/corpora/{corpus}/permissions/*", "{version}/auth_tokens/*"],
+  // shared with others; so can a corpus.
+  refused: ["{version}/tunedModels/*", "{version}/corpora/{corpus}/permissions/*"],
+  // Ephemeral tokens for the Live API, reached only by a listed path that
+  // opts in (plan D4). `newSessionExpireTime` is the window for starting a
+  // session; `expireTime` caps the session itself and is left as sent.
+  liveTokens: [{ path: "{version}/auth_tokens/*", expiry: { method: "POST", field: "newSessionExpireTime", as: "time" } }],
   probe: { path: "v1beta/models" },
   // The Files API's resumable uploads (`upload/v1beta/files`), once listed.
   passthroughHeaders: ["x-goog-upload-"],

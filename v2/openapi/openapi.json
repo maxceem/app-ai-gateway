@@ -2287,6 +2287,9 @@
               "openai-transcription",
               "openai-speech"
             ]
+          },
+          "live_token": {
+            "type": "boolean"
           }
         },
         "required": [

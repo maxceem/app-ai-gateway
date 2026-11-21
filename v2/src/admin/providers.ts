@@ -233,6 +233,7 @@ function passthroughView(stored: string | null): z.output<typeof PassthroughPath
     path: listed.path,
     ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
     ...(listed.style !== undefined && isCustomStyle(listed.style) ? { style: listed.style } : {}),
+    ...(listed.liveToken === true ? { live_token: true } : {}),
   }));
 }
 
@@ -266,6 +267,10 @@ interface CheckedListing {
  *   a POST, with no flat price (its models' rates price it), one per style.
  *   It is then one of the provider's operations, so no plain listing may
  *   overlap it, nor another style's path.
+ * - a path may opt in to the provider's live-session token paths
+ *   (`live_token`, plan D4) only when one of them takes every request it
+ *   could match; without the opt-in, such a path could never be reached.
+ *   Turning the opt-in on or off judges the path again.
  */
 function passthroughJson(
   subject: ListingSubject,
@@ -292,6 +297,7 @@ function passthroughJson(
       }
       if (styles.has(entry.style)) throw new GatewayError(400, "invalid_request", `${where}.style: list one path per API style; ${entry.style} has one already`);
       styles.add(entry.style);
+      if (entry.live_token === true) throw new GatewayError(400, "invalid_request", `${where}.live_token: a path of an API style is not a live-session token path`);
     }
     let priceNano: number | undefined;
     if (entry.per_request !== undefined) {
@@ -307,6 +313,7 @@ function passthroughJson(
       path: entry.path,
       ...(priceNano !== undefined ? { priceNano } : {}),
       ...(entry.style !== undefined ? { style: entry.style } : {}),
+      ...(entry.live_token === true ? { liveToken: true as const } : {}),
     };
     let compiled: CompiledPassthrough;
     try {
@@ -335,8 +342,23 @@ function passthroughJson(
   const ownerMatcher = owner === null ? null : new ProviderMatcher(owner);
   const ownerRoute = owner === null ? null : upstreamRoute(owner, { baseUrl: subject.baseUrl, cloudflareGateway: null });
   for (const { where, key, listed, compiled, isNew } of checked) {
-    if (isNew && matcher.refusedCovering(compiled, route) !== null) {
-      throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+    if (isNew) {
+      // Key, admin and account paths first: no opt-in reaches them.
+      const optedIn: CompiledPassthrough = { ...compiled, listed: { ...listed, liveToken: true } };
+      if (matcher.refusedCovering(optedIn, route) !== null) {
+        throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+      }
+      if (listed.liveToken === true && matcher.liveTokenCovering(compiled, route) === null) {
+        throw new GatewayError(400, "invalid_request", `${where}.live_token: ${key} is not one of ${description.label}'s live-session token paths; only those can opt in`);
+      }
+      // Refused only because it mints a live-session secret: the opt-in would reach it.
+      if (matcher.refusedCovering(compiled, route) !== null) {
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          `${where}.live_token: ${key} mints a live-session secret; set live_token to true to list it, knowing such calls are not metered and not capped`,
+        );
+      }
     }
     // A path new or changed in this save is judged for its style: one already listed keeps working.
     if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
@@ -432,7 +454,7 @@ export function assertModesSelectable(
 
 /** A listing's shape and, for a custom provider's path, its API style: what makes it the same listing as before. */
 function listingKey(compiled: CompiledPassthrough): string {
-  return `${listingShape(compiled)}\u0000${compiled.listed.style ?? ""}`;
+  return `${listingShape(compiled)}\u0000${compiled.listed.style ?? ""}\u0000${compiled.listed.liveToken === true ? "live_token" : ""}`;
 }
 
 /** A listing's method and the requests it matches: a leading `/` and the names of its parts make no difference. */

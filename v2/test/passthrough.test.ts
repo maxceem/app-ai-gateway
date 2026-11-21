@@ -788,7 +788,9 @@ describe("saving a listed path", () => {
 
   it.each([
     [[{ method: "GET", path: "v1/organization/{thing}" }], "always refused"],
-    [[{ method: "POST", path: "v1/realtime/client_secrets" }], "always refused"],
+    [[{ method: "POST", path: "v1/realtime/client_secrets" }], "set live_token to true"],
+    [[{ method: "GET", path: "v1/organization/{thing}", live_token: true }], "not one of OpenAI's live-session token paths"],
+    [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
     [[{ method: "POST", path: "v1/chat/completions" }], "openai.chat"],
     [[{ method: "POST", path: "v1/{endpoint}" }], "can match a path of the openai."],
     [[{ method: "GET", path: "v1/{rest...}" }], "path"],
@@ -876,7 +878,7 @@ describe("saving a listed path", () => {
 
   it("judges kept listings again when the connection moves to a new route", async () => {
     const key = await seedManagementKey();
-    const created = await create(key, [{ method: "POST", path: "realtime/client_secrets" }]);
+    const created = await create(key, [{ method: "GET", path: "organization/{x}" }]);
     expect(created.status).toBe(201);
     const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://example.com/v1/", secret: "sk-live-secret-abcd" });
     expect(moved.status).toBe(400);

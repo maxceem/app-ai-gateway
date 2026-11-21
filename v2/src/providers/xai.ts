@@ -15,9 +15,11 @@ export const xai = defineProvider({
   otherHosts: ["us.api.x.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // Key management lives on a separate host the gateway never calls. The
-  // key's own details, and the short-lived secrets for live sessions, refused
-  // until a customer can opt in to them path by path (plan D4).
-  refused: ["v1/api-key/*", "v1/realtime/client_secrets/*"],
+  // key's own details are refused.
+  refused: ["v1/api-key/*"],
+  // Short-lived secrets for live sessions, reached only by a listed path that
+  // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
+  liveTokens: [{ path: "v1/realtime/client_secrets/*", expiry: { method: "POST", field: "expires_after", as: "expires_after" } }],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
   cloudflareGateway: { slug: "grok" },

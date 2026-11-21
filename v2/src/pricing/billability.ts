@@ -41,7 +41,7 @@ import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
-import { PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
+import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   customerPrice,
@@ -447,14 +447,17 @@ export function resolveCall(
  * customer's rate; or, with no price, `not_priced`. It has no model, so no
  * model list or rewrite applies, and it is always admitted. Serving calls it
  * for each request, and saving a connection checks each listed price with it
- * (`callGap`), so the two cannot disagree.
+ * (`callGap`), so the two cannot disagree. A request that reaches a
+ * live-session token path (plan D4) is billed the same way, as a
+ * `live_token` call.
  */
-export function resolvePassthrough(listed: PassthroughPath): ReachableCall {
+export function resolvePassthrough(listed: PassthroughPath, liveToken = false): ReachableCall {
+  const operation = liveToken ? LIVE_TOKEN_OPERATION : PASSTHROUGH_OPERATION;
   const bill: Billing =
     listed.priceNano === undefined
       ? { price: null, reportsCost: false, problem: null, notPriced: true }
-      : billingAt(PASSTHROUGH_OPERATION, { price: { rates: { per_request: rate(listed.priceNano) }, raw: {} }, source: "customer_rate" });
-  return { kind: "admitted", operation: PASSTHROUGH_OPERATION, requested: "", model: "", bill };
+      : billingAt(operation, { price: { rates: { per_request: rate(listed.priceNano) }, raw: {} }, source: "customer_rate" });
+  return { kind: "admitted", operation, requested: "", model: "", bill };
 }
 
 /**

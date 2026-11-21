@@ -4,7 +4,7 @@
  *
  * - The connection lists each method and path, and optionally a flat price
  *   per request. Stored in `provider_connection.passthrough_json` as
- *   `{ "paths": [{ "method", "path", "price_nano"?, "style"? }], "auth"? }`.
+ *   `{ "paths": [{ "method", "path", "price_nano"?, "style"?, "live_token"? }], "auth"? }`.
  *   A custom provider (`./custom.ts`) stores how its key is sent in `auth`
  *   (`{ "header", "format" }`), and may name an API style per path.
  * - An app reaches them only when its route for that connection enables the
@@ -13,11 +13,19 @@
  * - A request is forwarded as it is, with the provider's key in its header,
  *   and charged as one call of the `passthrough` operation: the flat price
  *   for each answer the provider accepts, or `not_priced` without a price.
+ * - A path that mints a secret for a live session (the provider's
+ *   `liveTokens`, plan D4) is refused unless its listing opts in
+ *   (`live_token: true`). It is charged as a `live_token` call instead, so
+ *   it can be shown as not metered and not capped, and the window its secret
+ *   may start a call in is locked where the provider lets the request set it.
+ *
+ * Migration (plan section 9.1): a v1 listing of a token path becomes a
+ * listing with `live_token: true`, since v1 served it once listed.
  */
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { compilePassthrough, type CompiledPassthrough, type PassthroughPath } from "./matcher.ts";
-import type { HttpMethod, OperationDescription, ProviderAuth } from "./operation.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenExpiry, type OperationDescription, type ProviderAuth } from "./operation.ts";
 
 /** The operation name an app's route enables passthrough with, and the one its charges carry. */
 export const PASSTHROUGH = "passthrough";
@@ -37,8 +45,14 @@ export const PASSTHROUGH_OPERATION: OperationDescription = {
   meter: { kind: "request_count" },
 };
 
+/** The operation name a live-session token mint's charges carry (plan D4). */
+export const LIVE_TOKEN = "live_token";
+
+/** The operation a mint through a live-session token path is charged as: a passthrough call by another name. */
+export const LIVE_TOKEN_OPERATION: OperationDescription = { ...PASSTHROUGH_OPERATION, name: LIVE_TOKEN };
+
 export function isPassthrough(operation: OperationDescription): boolean {
-  return operation === PASSTHROUGH_OPERATION;
+  return operation === PASSTHROUGH_OPERATION || operation === LIVE_TOKEN_OPERATION;
 }
 
 export const PASSTHROUGH_METHODS: readonly HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -52,6 +66,7 @@ export function storedPassthrough(paths: readonly PassthroughPath[], auth: Provi
       path: listed.path,
       ...(listed.priceNano !== undefined ? { price_nano: listed.priceNano } : {}),
       ...(listed.style !== undefined ? { style: listed.style } : {}),
+      ...(listed.liveToken === true ? { live_token: true } : {}),
     })),
     ...(auth === null ? {} : { auth: { header: auth.header, format: auth.format } }),
   });
@@ -89,7 +104,7 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
   if (!Array.isArray(paths)) return [];
   const read: PassthroughPath[] = [];
   for (const entry of paths as unknown[]) {
-    const { method, path, price_nano: priceNano, style } = (entry ?? {}) as Record<string, unknown>;
+    const { method, path, price_nano: priceNano, style, live_token: liveToken } = (entry ?? {}) as Record<string, unknown>;
     if (typeof method !== "string" || !(PASSTHROUGH_METHODS as readonly string[]).includes(method) || typeof path !== "string") {
       log("error", "passthrough_unreadable", { reason: "entry" });
       continue;
@@ -99,6 +114,7 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
       path,
       ...(typeof priceNano === "number" ? { priceNano } : {}),
       ...(typeof style === "string" ? { style } : {}),
+      ...(liveToken === true ? { liveToken: true as const } : {}),
     });
   }
   return read;
@@ -127,4 +143,37 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
   });
   COMPILED.set(paths, compiled);
   return compiled;
+}
+
+/**
+ * A live-session mint's body with its window locked (plan D4): the field
+ * `expiry` names, set to `LIVE_TOKEN_WINDOW_SECONDS` from `now`, whatever
+ * the client sent. A request of another method is left as it is (`same`).
+ * An empty body becomes an object holding only the field. A body that is not
+ * a JSON object cannot carry it, so it is `unreadable`, and the gateway
+ * refuses to send it rather than mint a secret it could not limit.
+ */
+export function lockedLiveTokenBody(
+  expiry: LiveTokenExpiry,
+  method: string,
+  bytes: Uint8Array,
+  now: number,
+): { readonly kind: "same" } | { readonly kind: "locked"; readonly bytes: Uint8Array } | { readonly kind: "unreadable" } {
+  if (method !== expiry.method) return { kind: "same" };
+  let body: unknown = {};
+  if (bytes.byteLength > 0) {
+    try {
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    } catch {
+      return { kind: "unreadable" };
+    }
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return { kind: "unreadable" };
+  const value =
+    expiry.as === "seconds"
+      ? LIVE_TOKEN_WINDOW_SECONDS
+      : expiry.as === "expires_after"
+        ? { ...(expiry.anchor === true ? { anchor: "created_at" } : {}), seconds: LIVE_TOKEN_WINDOW_SECONDS }
+        : new Date(now + LIVE_TOKEN_WINDOW_SECONDS * 1000).toISOString();
+  return { kind: "locked", bytes: new TextEncoder().encode(JSON.stringify({ ...(body as Record<string, unknown>), [expiry.field]: value })) };
 }

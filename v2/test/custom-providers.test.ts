@@ -348,7 +348,9 @@ describe("saving a custom provider", () => {
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
       "modes.us: no call on this connection is ever billed at this rate",
     ],
-    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "never allows"],
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/organization/admin_api_keys" }] }, "never allows"],
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "set live_token to true"],
+    [{ baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] }, "live-session token paths"],
   ])("refuses %j", async (fields, message) => {
     const key = await seedManagementKey();
     const refused = await createCustom(key, fields);
