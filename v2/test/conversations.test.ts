@@ -1406,13 +1406,14 @@ describe("conversation retention", () => {
     const reads = vi.spyOn(store, "get");
     let runs = 0;
     while ((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects.length > 0 && runs < 10) {
-      // Pages of 50 keys. A run that comes round to the app again lists the apps twice, so each run pays for:
-      // the cursor read, two app lists, the day list, one page's list and delete, and the cursor write.
+      // Pages of 50 keys. A run that reaches the app pays for the cursor read, the app list, the day list,
+      // one page's list and delete, and the cursor write. A run that ran out in it leaves the cursor after it,
+      // so the next run reaches the end of the listing and clears the cursor, and the one after comes back.
       await runConversationRetention(store, env.DB, now, new CallBudget(7), 50);
       runs += 1;
     }
     expect((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects).toHaveLength(0);
-    expect(runs).toBe(3);
+    expect(runs).toBe(5);
     // Only the cursor was read, never a batch.
     expect(reads.mock.calls.every(([key]) => key === RETENTION_CURSOR)).toBe(true);
     const left = (await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects.map((object) => object.key).sort();
@@ -1506,7 +1507,7 @@ describe("conversation retention", () => {
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "conversation-budget-gone") })).objects).toHaveLength(1);
   });
 
-  it("starts each run after the app the last one finished", async () => {
+  it("starts each run after the app the last one finished, and from the first app once the listing ends", async () => {
     const store = bucket();
     await store.put(`${appPrefix(ACCOUNT_ID, "cursor-a")}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
     await store.put(`${appPrefix(ACCOUNT_ID, "cursor-b")}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "orphan");
@@ -1516,7 +1517,8 @@ describe("conversation retention", () => {
     await runConversationRetention(store, env.DB, Date.now(), budget);
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-b") })).objects).toHaveLength(0);
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-a") })).objects).toHaveLength(1);
-    expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe(appPrefix(ACCOUNT_ID, "cursor-b"));
+    // The pass reached the end of the listing: the cursor is cleared, so the next run starts from the first app.
+    expect(await store.get(RETENTION_CURSOR)).toBeNull();
   });
 });
 

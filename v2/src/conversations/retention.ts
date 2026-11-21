@@ -14,10 +14,12 @@
  * the run's allowance; each page of keys is deleted as soon as it is listed, so
  * a run that runs out keeps what it deleted and the next run goes on.
  *
- * App folders are listed a page at a time, starting after the last app the
- * previous run reached (kept in one small object), so a run always makes
- * progress, however many apps there are, and one busy app never holds up the
- * apps after it: the next run starts after it, and comes round to it again.
+ * App folders are listed a page at a time, in one pass from after the last app
+ * the previous run reached (kept in one small object) to the end of the
+ * listing, where the cursor is cleared and the next run starts from the first
+ * app again. So a run always makes progress, however many apps there are, and
+ * one busy app never holds up the apps after it: a run that runs out in it
+ * leaves the cursor after it, and a later pass comes back to it.
  *
  * Runs once a day, from the hourly cron (`../index.ts`).
  */
@@ -87,35 +89,23 @@ async function appRetention(db: D1Database): Promise<Map<string, number>> {
   return days;
 }
 
+/** An app as stored right now: its retention, gone, or unknown where it could not be read. */
+type AppNow = { state: "present"; days: number } | { state: "absent" } | { state: "unknown" };
+
 /**
- * The app's retention as stored right now, read just before a folder is deleted, so a retention raised
- * while the sweep runs is honoured. `null` when it can't be read or the app is gone: the folder waits.
+ * The app as stored right now, read just before a page is deleted: a retention
+ * raised, or an app made, while the sweep runs is honoured. A failed read is
+ * `unknown`, and the folder waits for a later run.
  */
-async function currentRetention(db: D1Database, accountId: string, appId: string): Promise<number | null> {
+async function appNow(db: D1Database, accountId: string, appId: string): Promise<AppNow> {
   try {
     const row = await db
       .prepare("SELECT config_json FROM app WHERE id = ? AND account_id = ?")
       .bind(appId, accountId)
       .first<{ config_json: string }>();
-    return row === null ? null : retentionOf(row.config_json);
+    return row === null ? { state: "absent" } : { state: "present", days: retentionOf(row.config_json) };
   } catch {
-    return null;
-  }
-}
-
-/**
- * Whether the app is still gone, read just before a removed app's page is deleted, so an app made
- * while the sweep runs keeps its records. False when it exists or the read fails: the folder waits.
- */
-async function appStillAbsent(db: D1Database, accountId: string, appId: string): Promise<boolean> {
-  try {
-    const row = await db
-      .prepare("SELECT 1 AS present FROM app WHERE id = ? AND account_id = ?")
-      .bind(appId, accountId)
-      .first<{ present: number }>();
-    return row === null;
-  } catch {
-    return false;
+    return { state: "unknown" };
   }
 }
 
@@ -166,55 +156,47 @@ export async function runConversationRetention(
   pageSize: number = R2_PAGE,
 ): Promise<ConversationRetentionResult> {
   const result: ConversationRetentionResult = { deletedObjects: 0, removedApps: 0 };
-  let finished: string | null = null;
+  /** Where the next run starts: after this app folder, or from the first where the pass reached the end (null). */
+  let resume: string | null = null;
   let last: string | null = null;
   /** The app folder being worked on: where the allowance runs out, the next run starts after it. */
   let current: string | null = null;
   try {
     budget.charge(1);
-    last = (await (await bucket.get(RETENTION_CURSOR))?.text()) ?? null;
+    last = (await (await bucket.get(RETENTION_CURSOR))?.text()) || null;
+    resume = last;
     const retention = await appRetention(db);
     // The cursor is written with the one call kept back for it.
     const work = new CallBudget(Math.max(0, budget.remaining - 1));
     try {
-      // A page at a time, starting after the app the last run finished, and coming round to it.
       let cursor: string | undefined;
-      let wrapped = last === null;
       for (;;) {
         work.charge(1);
         const page = await bucket.list({
           prefix: CONVERSATIONS_ROOT,
           delimiter: "/",
           limit: pageSize,
-          ...(cursor !== undefined ? { cursor } : !wrapped && last !== null ? { startAfter: last } : {}),
+          ...(cursor !== undefined ? { cursor } : last !== null ? { startAfter: last } : {}),
         });
-        let round = false;
         for (const folder of page.delimitedPrefixes) {
-          if (wrapped && last !== null && folder > last) {
-            round = true;
-            break;
-          }
           // `startAfter` names the folder, whose own keys sort after it: it comes back first.
-          if (!wrapped && last !== null && folder <= last) continue;
+          if (last !== null && folder <= last) continue;
+          resume = folder;
           const owner = parseAppFolderName(folder.slice(CONVERSATIONS_ROOT.length, -1));
-          if (owner === null) {
-            // Written before folders named their account: never served, never touched.
-            finished = folder;
-            continue;
-          }
+          // Written before folders named their account: never served, never touched.
+          if (owner === null) continue;
           const { accountId, appId } = owner;
           current = folder;
           const days = retention.get(appFolderName(accountId, appId));
           if (days === undefined) {
             // The app was missing when the sweep began; it is looked up again before each page,
             // so an app made since then keeps what it has written.
-            const outcome = await deleteAll(bucket, folder, work, pageSize, () => appStillAbsent(db, accountId, appId));
+            const outcome = await deleteAll(bucket, folder, work, pageSize, async () => (await appNow(db, accountId, appId)).state === "absent");
             result.deletedObjects += outcome.deleted;
             if (!outcome.stopped) result.removedApps += 1;
           } else {
-            const prefix = folder;
-            for (const day of await folders(bucket, prefix, work, pageSize)) {
-              const match = DAY_FOLDER.exec(day.slice(prefix.length));
+            for (const day of await folders(bucket, folder, work, pageSize)) {
+              const match = DAY_FOLDER.exec(day.slice(folder.length));
               // Day folders sort oldest first, so the first one kept ends the app.
               if (match === null || match[1]! >= dayBefore(now, days)) break;
               // The retention is read again after each page is listed, right before that page is deleted:
@@ -222,25 +204,21 @@ export async function runConversationRetention(
               // for a later run.
               const dayName = match[1]!;
               const outcome = await deleteAll(bucket, day, work, pageSize, async () => {
-                const fresh = await currentRetention(db, accountId, appId);
-                return fresh !== null && dayName < dayBefore(now, fresh);
+                const fresh = await appNow(db, accountId, appId);
+                return fresh.state === "present" && dayName < dayBefore(now, fresh.days);
               });
               result.deletedObjects += outcome.deleted;
               if (outcome.stopped) break;
             }
           }
-          finished = folder;
           current = null;
         }
-        if (round) break;
-        if (page.truncated) {
-          cursor = page.cursor;
-        } else if (!wrapped) {
-          wrapped = true;
-          cursor = undefined;
-        } else {
+        if (!page.truncated) {
+          // The end of the listing: the next run starts from the first app.
+          resume = null;
           break;
         }
+        cursor = page.cursor;
       }
     } finally {
       // What the work spent is the run's too (never more than it was given).
@@ -250,12 +228,13 @@ export async function runConversationRetention(
     // Out of allowance: what was deleted stays deleted, and the rest waits for the next run.
     if (!(error instanceof CallsExhausted)) throw error;
     // The next run starts after the app it ran out in, so one busy app never holds up
-    // those after it; the run that comes round to it again goes on where this one stopped.
-    if (current !== null) finished = current;
+    // those after it; a later pass comes back to it and goes on where this one stopped.
+    if (current !== null) resume = current;
   }
-  if (finished !== null && finished !== last && budget.affords(1)) {
+  if (resume !== last && budget.affords(1)) {
     budget.charge(1);
-    await bucket.put(RETENTION_CURSOR, finished);
+    if (resume === null) await bucket.delete(RETENTION_CURSOR);
+    else await bucket.put(RETENTION_CURSOR, resume);
   }
   return result;
 }

@@ -45,14 +45,13 @@ export class ConversationLog extends DurableObject<Env> {
         CREATE TABLE IF NOT EXISTS pending (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           app_id TEXT NOT NULL,
-          account_id TEXT NOT NULL DEFAULT '',
+          account_id TEXT NOT NULL,
           created_at TEXT NOT NULL,
           line TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS batch (
+        CREATE TABLE IF NOT EXISTS batch_file (
           id INTEGER PRIMARY KEY CHECK (id = 1),
-          key TEXT NOT NULL,
-          last_id INTEGER NOT NULL
+          key TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS batch_row (
           pending_id INTEGER PRIMARY KEY
@@ -166,40 +165,37 @@ export class ConversationLog extends DurableObject<Env> {
     const bucket = conversationsBucket(this.env);
     if (bucket === null) return false;
     const sql = this.ctx.storage.sql;
-    let batch = sql.exec<{ key: string; last_id: number }>("SELECT key, last_id FROM batch WHERE id = 1").toArray()[0];
-    if (batch === undefined) {
+    let key = sql.exec<{ key: string }>("SELECT key FROM batch_file WHERE id = 1").toArray()[0]?.key;
+    if (key === undefined) {
       const next = this.nextBatch();
       if (next === null) return false;
       const batchId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
       // Named from its earliest record: every record in it shares that record's UTC day.
-      batch = { key: batchKey(next.accountId, next.appId, next.earliest, batchId), last_id: Math.max(...next.ids) };
-      const named = batch;
+      const named = batchKey(next.accountId, next.appId, next.earliest, batchId);
       this.ctx.storage.transactionSync(() => {
-        sql.exec("INSERT INTO batch (id, key, last_id) VALUES (1, ?, ?)", named.key, named.last_id);
+        sql.exec("INSERT INTO batch_file (id, key) VALUES (1, ?)", named);
         for (const id of next.ids) sql.exec("INSERT INTO batch_row (pending_id) VALUES (?)", id);
       });
+      key = named;
     }
-    // A batch named before batch rows were kept (an older version's) is every row up to its last id.
-    const listed = sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM batch_row").one().count > 0;
-    const chosen = listed ? "id IN (SELECT pending_id FROM batch_row)" : "id <= ?";
-    const bindings = listed ? [] : [batch.last_id];
+    const chosen = "id IN (SELECT pending_id FROM batch_row)";
     const lines = sql
-      .exec<{ line: string }>(`SELECT line FROM pending WHERE ${chosen} ORDER BY id`, ...bindings)
+      .exec<{ line: string }>(`SELECT line FROM pending WHERE ${chosen} ORDER BY id`)
       .toArray()
       .map((row) => row.line);
     if (lines.length > 0) {
       const gzipped = await new Response(
         new Blob([`${lines.join("\n")}\n`]).stream().pipeThrough(new CompressionStream("gzip")),
       ).arrayBuffer();
-      await bucket.put(batch.key, gzipped, {
+      await bucket.put(key, gzipped, {
         httpMetadata: { contentType: "application/gzip" },
         customMetadata: { records: String(lines.length) },
       });
     }
     this.ctx.storage.transactionSync(() => {
-      sql.exec(`DELETE FROM pending WHERE ${chosen}`, ...bindings);
+      sql.exec(`DELETE FROM pending WHERE ${chosen}`);
       sql.exec("DELETE FROM batch_row");
-      sql.exec("DELETE FROM batch");
+      sql.exec("DELETE FROM batch_file");
     });
     return true;
   }
