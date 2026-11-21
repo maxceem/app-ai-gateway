@@ -119,6 +119,9 @@ describe("the named-part rule", () => {
     expect(namedPartProblem(parseTemplate("api/v1/{endpoint}"), [])).not.toBeNull();
     expect(namedPartProblem(parseTemplate("client/v4/{endpoint}"), [])).not.toBeNull();
     expect(namedPartProblem(parseTemplate("v1beta1/{endpoint}"), [])).not.toBeNull();
+    // A dotted version, such as Microsoft Graph's `v1.0`, counts too.
+    expect(namedPartProblem(parseTemplate("v1.0/{endpoint}"), [])).not.toBeNull();
+    expect(namedPartProblem(parseTemplate("v1.0/me/{id}"), [])).toBeNull();
     expect(namedPartProblem(parseTemplate("api/v1/items/{id}"), [])).toBeNull();
     // Known limit: on a bare host with no version segment, `api/{name}` saves.
     expect(namedPartProblem(parseTemplate("api/{endpoint}"), [])).toBeNull();

@@ -486,12 +486,13 @@ export function listingShape(method: string, template: Template): string {
 }
 
 /**
- * A version segment, such as `v1`, `v2`, `v1beta`, `v1alpha` or `v1beta1`.
+ * A version segment, such as `v1`, `v2`, `v1beta`, `v1alpha`, `v1beta1` or a
+ * dotted one such as `v1.0` or `v2.1`.
  * The API prefix runs through the last one among a listing's first two
  * segments, so `api/v1`, `client/v4` and Groq's `openai/v1` need no
  * declaration. Providers declare only prefixes this misses (`apiPrefixes`).
  */
-const VERSION_SEGMENT = /^v\d+[a-z0-9]*$/i;
+const VERSION_SEGMENT = /^v\d+(?:\.\d+)*[a-z0-9]*$/i;
 
 /** How many of a listing's first segments are searched for a version segment. */
 const VERSION_SEARCH = 2;
@@ -564,15 +565,15 @@ export function namedPartProblem(template: Template, prefixes: readonly (readonl
 
 /**
  * Whether listed path `a` is more specific than `b`, both matching one
- * request: at the first segment where they differ, a fixed segment beats a
- * `{name}` part, and a part with fixed text around it beats a bare one. So
- * `v1/files/search` serves its own requests before `v1/files/{id}` does. A
- * tie goes to more fixed text, then to the template that sorts first, so the
- * order the listings are saved in never decides.
+ * request: at the first segment where they differ, a fully fixed segment
+ * beats one holding a `{name}` part, with or without fixed text around it. So
+ * `v1/files/search` serves its own requests before `v1/files/{id}` does, and
+ * `v1/files/{id}/exports/pdf` before `v1/files/file-{id}/exports/{format}`.
+ * A tie goes to more fixed text, then to the template that sorts first, so
+ * the order the listings are saved in never decides.
  */
 function moreSpecific(a: Template, b: Template): boolean {
-  const rank = (segment: TemplateSegment) =>
-    segment.kind === "literal" ? 0 : segment.kind === "part" && (segment.prefix !== "" || segment.suffix !== "") ? 1 : 2;
+  const rank = (segment: TemplateSegment) => (segment.kind === "literal" ? 0 : 1);
   for (let index = 0; index < Math.min(a.segments.length, b.segments.length); index++) {
     const difference = rank(a.segments[index]!) - rank(b.segments[index]!);
     if (difference !== 0) return difference < 0;

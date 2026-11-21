@@ -212,6 +212,19 @@ describe("listings that can match one request", () => {
     expect(served[0]).toMatchObject({ kind: "passthrough" });
     expect(served[1]).toEqual(served[0]);
   });
+
+  it("prefers a fully fixed segment further on over fixed text inside an earlier part", () => {
+    const listed = compilePassthrough([
+      { method: "GET", path: "v1/files/{id}/exports/pdf", priceNano: 10_000_000 },
+      { method: "GET", path: "v1/files/file-{id}/exports/{format}" },
+    ]);
+    for (const order of [listed, [...listed].reverse()]) {
+      expect(matcher.match("GET", "v1/files/file-42/exports/pdf", { passthrough: order })).toMatchObject({
+        kind: "passthrough",
+        listed: { path: "v1/files/{id}/exports/pdf" },
+      });
+    }
+  });
 });
 
 describe("known paths behind a base URL with a path", () => {
