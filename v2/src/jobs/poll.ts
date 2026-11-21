@@ -10,6 +10,8 @@
  *   unknown, so it says nothing about other apps' jobs.
  * - The upstream URL is built from the signed id, never from the path.
  * - A result call that is final settles the job, after the answer is sent.
+ * - The provider's answer goes back as it came: binary bodies and bodiless
+ *   answers too. Only a status answer's links are rewritten.
  */
 import { assertAppActive, loadApp } from "../apps/app-records.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -17,7 +19,28 @@ import { connectionDescription, loadConnection } from "../providers/connections.
 import { clientResponseHeaders } from "../proxy/headers.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
-import { fetchJob, gatewayLinks, jobContext, settleJobFromResult, withGatewayLinks } from "./jobs.ts";
+import { applyFinalResult, fetchJob, gatewayLinks, jobContext, jobResultFacts, withGatewayLinks } from "./jobs.ts";
+
+/** Statuses whose answer can have no body. */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+
+/** Bytes read as JSON, or null when they are not JSON. */
+function jsonOf(bytes: ArrayBuffer): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** A response's JSON body, or null. */
+async function jsonOrNull(response: Response): Promise<unknown> {
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 function unknownJob(): GatewayError {
   return new GatewayError(404, "job_not_found", "No such job for this app");
@@ -62,33 +85,38 @@ export function jobPollHandler(which: "status" | "result") {
         }
         const { response, keyHeader } = await fetchJob(c.env, context, which, claims, caller.identity.userId);
         const headers = clientResponseHeaders(response.headers, keyHeader);
-        const text = await response.text();
-        let body: unknown = null;
-        try {
-          body = text === "" ? null : (JSON.parse(text) as unknown);
-        } catch {
-          body = null;
-        }
+        headers.delete("content-length");
+        headers.delete("content-encoding");
+        const bodiless = NULL_BODY_STATUSES.has(response.status);
         if (which === "result") {
-          const now = Date.now();
-          c.executionCtx.waitUntil(
-            settleJobFromResult(c.env, claims, jobId, context.spec, { status: response.status, headers: response.headers, body }, now),
-          );
+          if (context.spec.finalStatuses.includes(response.status)) {
+            // Settled from the headers, and from a copy of the body when outputs are counted;
+            // the app gets the body itself, untouched.
+            const copy = context.spec.outputsField !== undefined && !bodiless ? response.clone() : null;
+            const ref = { job: claims.job, accountId: claims.accountId, appId: claims.appId };
+            const now = Date.now();
+            c.executionCtx.waitUntil(
+              (async () => {
+                const body = copy === null ? null : await jsonOrNull(copy);
+                const facts = jobResultFacts(context.spec, { status: response.status, headers: response.headers, body });
+                if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
+              })(),
+            );
+          }
+          return new Response(bodiless ? null : response.body, { status: response.status, headers });
         }
         // A status answer's links point at the gateway, as the submit answer's do.
-        if (which === "status" && typeof body === "object" && body !== null && !Array.isArray(body)) {
+        const bytes = bodiless ? null : await response.arrayBuffer();
+        const body = bytes === null ? null : jsonOf(bytes);
+        if (typeof body === "object" && body !== null && !Array.isArray(body)) {
           const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
-          headers.delete("content-length");
-          headers.delete("content-encoding");
           headers.set("content-type", "application/json");
           return new Response(JSON.stringify(withGatewayLinks(body as Record<string, unknown>, context.spec, links, jobId)), {
             status: response.status,
             headers,
           });
         }
-        headers.delete("content-length");
-        headers.delete("content-encoding");
-        return new Response(text, { status: response.status, headers });
+        return new Response(bytes, { status: response.status, headers });
       },
     );
   };

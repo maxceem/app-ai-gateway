@@ -10,7 +10,7 @@
  *   in its detail: `retryEveryMs` (a fixed delay) and `maxTries`, for work
  *   that must be done soon, such as a job whose result expires.
  * - An item that runs out of time is aborted through its `signal`, so it
- *   starts no more provider calls and writes nothing.
+ *   starts no more provider calls. Its writes are safe whenever they land.
  * - After `SWEEP_MAX_TRIES` (or the row's `maxTries`), the row is marked given up and stays, and an
  *   error is logged, so the monitor alerts and the console can show it.
  * - Every handler is safe to run twice: settlement and pricing write one
@@ -206,22 +206,26 @@ export async function runSweep(
     const lastTry = item.tries + 1 >= pace.maxTries;
     try {
       if (result.done) {
-        // Only the row as it was read: facts saved on it meanwhile (a job's
-        // final figure, from a client poll) keep it for the next run.
-        const read = typeof row.detail_json === "string" ? row.detail_json : null;
-        await env.DB.prepare("DELETE FROM open_work WHERE id = ? AND detail_json IS ?").bind(item.id, read).run();
+        await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
         done += 1;
-      } else if (lastTry) {
-        await env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?")
-          .bind(result.reason, now, item.id)
-          .run();
-        log("error", "open_work_gave_up", { app: item.appId, work: item.id, kind: item.kind, tries: item.tries + 1, reason: result.reason });
-        gaveUp += 1;
       } else {
-        await env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?")
-          .bind(result.reason, now + pace.delay(item.tries + 1), item.id)
-          .run();
-        retried += 1;
+        const update = lastTry
+          ? env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?").bind(result.reason, now, item.id)
+          : env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?").bind(
+              result.reason,
+              now + pace.delay(item.tries + 1),
+              item.id,
+            );
+        const changed = (await update.run()).meta.changes ?? 0;
+        if (changed === 0) {
+          // The row is gone: its work was finished meanwhile (a job settled by a poll).
+          done += 1;
+        } else if (lastTry) {
+          log("error", "open_work_gave_up", { app: item.appId, work: item.id, kind: item.kind, tries: item.tries + 1, reason: result.reason });
+          gaveUp += 1;
+        } else {
+          retried += 1;
+        }
       }
     } catch (error) {
       // The row stays as it was; the next run takes it again. Every handler is safe to repeat.

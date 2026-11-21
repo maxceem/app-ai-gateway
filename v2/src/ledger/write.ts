@@ -149,32 +149,38 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-  ON CONFLICT(id) DO UPDATE SET
-    detail_json = json_set(COALESCE(open_work.detail_json, '{}'), '$.result', json(json_extract(excluded.detail_json, '$.result'))),
-    gave_up_at = NULL
-  WHERE json_extract(open_work.detail_json, '$.result') IS NULL AND json_extract(excluded.detail_json, '$.result') IS NOT NULL`;
+  ON CONFLICT(id) DO NOTHING`;
+
+/** The statement that writes one open-work row, once: a row already there is never changed. */
+function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStatement {
+  return db
+    .prepare(INSERT_OPEN_WORK)
+    .bind(
+      work.id,
+      work.kind,
+      work.accountId,
+      work.appId,
+      work.ownerType,
+      work.ownerId,
+      work.chargeId,
+      work.detail === null ? null : JSON.stringify(work.detail),
+      work.dueAt,
+      work.createdAt,
+    );
+}
+
+/** Writes open-work rows that have no charge (a job's saved figure). Throws when D1 cannot take them. */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  await db.batch(rows.map((row) => openWorkStatement(db, row)));
+}
 
 /** The statements that write some entries, in one batch. */
 export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const { charge, openWork } of entries) {
     statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
-    for (const work of openWork) {
-      statements.push(
-        db.prepare(INSERT_OPEN_WORK).bind(
-          work.id,
-          work.kind,
-          work.accountId,
-          work.appId,
-          work.ownerType,
-          work.ownerId,
-          work.chargeId,
-          work.detail === null ? null : JSON.stringify(work.detail),
-          work.dueAt,
-          work.createdAt,
-        ),
-      );
-    }
+    for (const work of openWork) statements.push(openWorkStatement(db, work));
   }
   return statements;
 }

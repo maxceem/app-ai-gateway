@@ -2,9 +2,10 @@
  * One store per app for ledger writes that failed (plan section 4.2).
  *
  * It is used only when a D1 write fails, so it is never on the normal request
- * path. It keeps the whole entries (charge and open work) and its alarm
- * retries them in batches, with the same `ON CONFLICT(id) DO NOTHING` write,
- * until D1 takes them. Writing one twice is harmless.
+ * path. It keeps the whole entries (charge and open work), and open-work rows
+ * that have no charge (a job's saved figure), and its alarm retries them in
+ * batches, with the same `ON CONFLICT(id) DO NOTHING` write, until D1 takes
+ * them. Writing one twice is harmless. Nothing kept here is ever edited.
  *
  * Limits (set in step 1c): it holds at most `MAX_PENDING` entries and keeps
  * one for at most `RETENTION_MS` after it arrived. Past either, the oldest
@@ -15,7 +16,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
-import { logLostEntry, writeToLedger, type LedgerEntry } from "../ledger/write.ts";
+import { logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
  * How many entries one store holds before the oldest go to the logs. One
@@ -44,6 +45,11 @@ export class ChargeStore extends DurableObject<Env> {
         stored_at INTEGER NOT NULL
       )`);
       ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS pending_stored ON pending (stored_at)");
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pending_work (
+        id TEXT PRIMARY KEY,
+        row TEXT NOT NULL,
+        stored_at INTEGER NOT NULL
+      )`);
       ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)");
     });
   }
@@ -65,35 +71,27 @@ export class ChargeStore extends DurableObject<Env> {
     }
   }
 
-  /**
-   * Keeps a job's final result with its estimate, when the estimate waits
-   * here: the result goes on the job's check row, so both are written
-   * together and the sweep settles the job from it. The first result kept
-   * wins; a later one never replaces it. False when no entry here is that
-   * job's estimate.
-   */
-  async keepJobResult(job: string, result: Readonly<Record<string, unknown>> | object): Promise<boolean> {
-    const rows = this.ctx.storage.sql.exec<{ id: string; entry: string }>("SELECT id, entry FROM pending").toArray();
+  /** Keeps open-work rows that have no charge, for retry. A row already kept is not kept twice, nor changed. */
+  async keepWork(rows: readonly OpenWorkRow[]): Promise<void> {
+    const now = Date.now();
     for (const row of rows) {
-      const entry = JSON.parse(row.entry) as LedgerEntry;
-      if (entry.charge.ownerType !== "job" || entry.charge.ownerId !== job || entry.charge.kind !== "estimate") continue;
-      let found = false;
-      const openWork = entry.openWork.map((work) => {
-        if (work.kind !== "job_check") return work;
-        found = true;
-        if (work.detail?.result !== undefined && work.detail.result !== null) return work;
-        return { ...work, detail: { ...(work.detail ?? {}), result } };
-      });
-      if (!found) return false;
-      this.ctx.storage.sql.exec("UPDATE pending SET entry = ? WHERE id = ?", JSON.stringify({ ...entry, openWork }), row.id);
-      return true;
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pending_work (id, row, stored_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        row.id,
+        JSON.stringify(row),
+        now,
+      );
     }
-    return false;
+    this.trim(now);
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(now + FIRST_RETRY_DELAY_MS);
+    }
   }
 
-  /** How many entries wait. For tests and diagnostics. */
+  /** How many entries and rows wait. For tests and diagnostics. */
   async pendingCount(): Promise<number> {
-    return this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending").one().n;
+    const entries = this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending").one().n;
+    return entries + this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending_work").one().n;
   }
 
   override async alarm(): Promise<void> {
@@ -102,24 +100,27 @@ export class ChargeStore extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec<{ id: string; entry: string }>("SELECT id, entry FROM pending ORDER BY stored_at, id LIMIT ?", RETRY_BATCH)
       .toArray();
-    if (rows.length === 0) {
+    // Estimates first: a figure row waits for its estimate anyway.
+    const work = this.ctx.storage.sql
+      .exec<{ id: string; row: string }>("SELECT id, row FROM pending_work ORDER BY stored_at, id LIMIT ?", Math.max(0, RETRY_BATCH - rows.length))
+      .toArray();
+    if (rows.length === 0 && work.length === 0) {
       this.setDelay(0);
       return;
     }
-    const entries = rows.map((row) => JSON.parse(row.entry) as LedgerEntry);
     try {
-      await writeToLedger(this.env.DB, entries);
+      await writeToLedger(this.env.DB, rows.map((row) => JSON.parse(row.entry) as LedgerEntry));
+      await writeOpenWork(this.env.DB, work.map((one) => JSON.parse(one.row) as OpenWorkRow));
     } catch (error) {
       const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(FIRST_RETRY_DELAY_MS, this.delay() * 2));
       this.setDelay(delay);
-      log("warn", "charge_store_retry_failed", { pending: rows.length, retryInMs: delay, error: errorFacts(error) });
+      log("warn", "charge_store_retry_failed", { pending: rows.length + work.length, retryInMs: delay, error: errorFacts(error) });
       await this.ctx.storage.setAlarm(now + delay);
       return;
     }
-    // Only an entry still as it was written: one a job's result was added to
-    // meanwhile (`keepJobResult`) stays, and is written again with it.
-    for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ? AND entry = ?", row.id, row.entry);
-    log("info", "charge_store_written", { written: rows.length });
+    for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
+    for (const one of work) this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
+    log("info", "charge_store_written", { written: rows.length + work.length });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());
@@ -145,6 +146,13 @@ export class ChargeStore extends DurableObject<Env> {
     for (const row of [...expired, ...overflow]) {
       logLostEntry(JSON.parse(row.entry) as LedgerEntry, new Error("The charge store gave up on this charge"));
       this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
+    }
+    const expiredWork = this.ctx.storage.sql
+      .exec<{ id: string; row: string }>("SELECT id, row FROM pending_work WHERE stored_at < ?", now - RETENTION_MS)
+      .toArray();
+    for (const one of expiredWork) {
+      log("error", "open_work_unrecorded", { work: one.id, row: JSON.parse(one.row) as Record<string, unknown> });
+      this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
     }
   }
 

@@ -15,7 +15,11 @@
  *    result call, priced with the rates stored on the estimate. One
  *    correction per job, with a stable id, so a client poll and the sweep
  *    never both add it, and only once the estimate is in the ledger.
- * 5. **The sweep** checks jobs no client polled, earliest due first.
+ *    A figure that cannot settle yet is its own open-work row, written once
+ *    and never changed (`figureWork`): nothing ever edits a saved figure, so
+ *    no reader can act on a stale one.
+ * 5. **The sweep** checks jobs no client polled, earliest due first, and
+ *    settles the saved figures.
  *
  * A submission whose answer was lost is never sent again: it keeps its
  * estimate, marked `estimated`, and is logged (T15).
@@ -26,11 +30,12 @@ import { log } from "../core/log.ts";
 import { settleJob, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
-import { chargeFromRow, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { chargeFromRow, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { connectionCredentials, connectionDescription, loadConnection, loadConnectionFresh, type ConnectionRecord } from "../providers/connections.ts";
 import type { JobRequest, JobSpec, OperationDescription, ProviderDescription, Unit } from "../providers/operation.ts";
+import { normalizePath } from "../providers/path.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { callCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
@@ -47,7 +52,7 @@ export const JOB_MAX_CHECKS = 60;
 /** How long a poll of the provider may take. */
 export const JOB_POLL_TIMEOUT_MS = 30_000;
 
-/** A provider's request id the gateway will put in a URL. */
+/** A provider's request id the gateway will put in a URL: one plain segment, never `.` or `..`. */
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/u;
 
 /** The open-work row that checks one job. */
@@ -59,7 +64,12 @@ export function jobCheckId(job: string): string {
 export function providerRequestId(spec: JobSpec, body: unknown): string | null {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
   const value = (body as Record<string, unknown>)[spec.requestIdField];
-  return typeof value === "string" && REQUEST_ID.test(value) ? value : null;
+  if (typeof value !== "string" || !REQUEST_ID.test(value) || value === "." || value === "..") return null;
+  // Every follow-up path it fills must pass the path rules, so the URL means what the gateway signed.
+  for (const request of [spec.status, spec.result]) {
+    if (!normalizePath(jobRequestPath(request, { model: "m", requestId: value })).ok) return null;
+  }
+  return value;
 }
 
 /**
@@ -206,6 +216,8 @@ export async function fetchJob(
   signal?: AbortSignal,
 ): Promise<{ readonly response: Response; readonly keyHeader: string }> {
   const request = context.spec[which];
+  // Once the sweep's time for the item is up, no more provider calls start.
+  signal?.throwIfAborted();
   const credentials = await connectionCredentials(env, context.connection);
   const target = upstreamRequest(context.connection, context.description, {
     hostKey: request.host ?? "main",
@@ -253,10 +265,7 @@ function outputCount(spec: JobSpec, body: unknown): number | null {
   return Array.isArray(outputs) ? outputs.length : 1;
 }
 
-/**
- * What a final result says, kept small so it can be saved when the estimate
- * is not in the ledger yet, and settled later from the same facts.
- */
+/** What a final result says, kept small so a figure row can hold it. */
 export interface JobResultFacts {
   readonly status: number;
   /** The billed units the provider reported, or null when it reported none. */
@@ -273,6 +282,11 @@ export function jobResultFacts(spec: JobSpec, result: JobResult): JobResultFacts
     units: spec.unitsHeader === undefined ? null : headerNumber(result.headers.get(spec.unitsHeader)),
     outputs: outputCount(spec, result.body),
   };
+}
+
+/** Whether a result gives any count at all. One with none is never saved: it can never settle. */
+export function hasCount(facts: JobResultFacts): boolean {
+  return facts.units !== null || facts.outputs !== null;
 }
 
 /** Saved facts read back, or null when they are not facts. */
@@ -330,157 +344,127 @@ async function jobEstimateCharge(db: D1Database, job: string): Promise<ChargeRow
   return row === null ? null : chargeFromRow(row);
 }
 
-export type JobSettlement =
-  /** The correction was written now, or had been already. */
-  | "settled"
-  /** The result is final but gives no count: the estimate stays, as it is labelled. */
-  | "estimate_kept"
-  /** The result is not final yet. */
-  | "not_final"
-  /** The estimate is not in the ledger yet: try again later. */
-  | "waiting"
-  /** The sweep's time for this item ran out before any write: try again later. */
-  | "aborted";
-
-/**
- * A job as its check row knows it. Settling a saved figure needs nothing
- * more: no signing key and no connection, since the rates are on the estimate.
- */
+/** A job as its rows know it: enough to save and settle a figure, with no key and no connection. */
 export interface JobRef {
   readonly job: string;
   readonly accountId: string;
   readonly appId: string;
-  /** The signed job id, kept on the check row for a later live check. */
-  readonly jobId: string;
-  readonly retryEveryMs: number;
-  readonly maxTries: number;
 }
 
-/** A job's reference from its signed claims. */
-export function jobRefOf(claims: JobClaims, jobId: string, spec: JobSpec): JobRef {
-  return { job: claims.job, accountId: claims.accountId, appId: claims.appId, jobId, ...checkPace(spec) };
-}
+/** How many times the sweep tries a saved figure: on its default backoff, longer than the failed-write store keeps an estimate. */
+export const FIGURE_MAX_TRIES = 40;
 
-/** The final figure saved on a job's check row, or null when it holds none. Throws when D1 cannot answer. */
-async function savedJobFacts(db: D1Database, job: string): Promise<JobResultFacts | null> {
-  const row = await db.prepare("SELECT detail_json FROM open_work WHERE id = ?").bind(jobCheckId(job)).first<{ detail_json: string | null }>();
-  if (row === null || row.detail_json === null) return null;
-  try {
-    return factsOf((JSON.parse(row.detail_json) as Record<string, unknown>).result);
-  } catch {
-    return null;
-  }
+const figurePart = (value: number | null) => (value === null ? "-" : String(value));
+
+/** The id of a figure row. The figure is part of the id, so a different figure is a different row: nothing to overwrite. */
+export function figureWorkId(job: string, facts: JobResultFacts): string {
+  return `job_figure:${job}:${facts.status}:${figurePart(facts.units)}:${figurePart(facts.outputs)}`;
 }
 
 /**
- * Saves a job's final figure where its estimate is, so it is settled later
- * from the same facts with the same correction id. Append-only: the first
- * figure saved wins, and nothing here removes one. It goes on the job's check
- * row in D1; while D1 cannot take it, on the estimate's entry in the
- * failed-write store, which writes both together. Only when neither works is
- * it logged in full, to be settled by hand.
+ * A job's final figure as its own open-work row, written once with
+ * `ON CONFLICT(id) DO NOTHING` and never changed. Kind `job_check`, which the
+ * sweep routes by id.
  */
-async function saveJobResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<void> {
-  const detail = JSON.stringify({ jobId: ref.jobId, result: facts, retryEveryMs: ref.retryEveryMs, maxTries: ref.maxTries });
-  try {
-    await env.DB.prepare(
-      `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
-       VALUES (?, 'job_check', ?, ?, 'job', ?, NULL, ?, ?, 0, ?)
-       ON CONFLICT(id) DO UPDATE SET detail_json = json_set(COALESCE(open_work.detail_json, '{}'), '$.result', json(?)),
-         due_at = MIN(open_work.due_at, excluded.due_at), gave_up_at = NULL
-       WHERE json_extract(open_work.detail_json, '$.result') IS NULL`,
-    )
-      .bind(jobCheckId(ref.job), ref.accountId, ref.appId, ref.job, detail, now, now, JSON.stringify(facts))
-      .run();
-    return;
-  } catch (error) {
-    log("warn", "job_result_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
-  }
-  try {
-    if (await env.CHARGE_STORE.getByName(ref.appId).keepJobResult(ref.job, { ...facts })) return;
-  } catch (error) {
-    log("warn", "job_result_store_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
-  }
-  log("error", "job_result_unrecorded", { app: ref.appId, job: ref.job, jobId: ref.jobId, result: facts as unknown as Record<string, unknown> });
+export function figureWork(ref: JobRef, facts: JobResultFacts, now: number): OpenWorkRow {
+  return {
+    id: figureWorkId(ref.job, facts),
+    kind: "job_check",
+    accountId: ref.accountId,
+    appId: ref.appId,
+    ownerType: "job",
+    ownerId: ref.job,
+    chargeId: null,
+    detail: { result: { ...facts }, maxTries: FIGURE_MAX_TRIES },
+    dueAt: now,
+    createdAt: now,
+  };
 }
 
+export type FigureSettlement =
+  /** The correction was written now, or had been already. */
+  | "settled"
+  /** The figure gives no count the estimate's rates can use: the estimate stays, as it is labelled. */
+  | "estimate_kept"
+  /** The estimate is not in the ledger yet: save the figure and try later. */
+  | "waiting";
+
 /**
- * Settles a job. The first final figure wins: one already saved on the job's
- * check is used over the one given, so a later answer with fewer facts (an
- * expired units header) never replaces it. Safe to call from a client poll
- * and the sweep at once: one correction results, and it removes the check in
- * the same write. While the estimate is not in the ledger, the figure is
- * saved and the answer is `waiting`. With `signal`, nothing is written once
- * the sweep's time for the item ran out. Never throws.
+ * Settles a job from a final figure. The one settle function: a client poll,
+ * the sweep's live check and the sweep's figure rows all call it, in any
+ * order, at once or again. It reads only what never changes (the estimate
+ * and the figure itself), and its only deletes come after the correction
+ * exists, or remove its own figure row, which can never become usable. So no
+ * caller can act on a stale read. Throws when D1 cannot answer.
  */
-export async function settleJobFacts(env: Env, ref: JobRef, facts: JobResultFacts, now: number, signal?: AbortSignal): Promise<JobSettlement> {
+export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<FigureSettlement> {
   const tags = { app: ref.appId, job: ref.job };
-  const checkDone = () => env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(jobCheckId(ref.job)).run();
-  let saved: JobResultFacts | null = null;
-  try {
-    saved = await savedJobFacts(env.DB, ref.job);
-    const first = saved ?? facts;
-    const estimate = await jobEstimateCharge(env.DB, ref.job);
-    if (signal?.aborted) return "aborted";
-    if (estimate === null) {
-      if (saved === null) await saveJobResult(env, ref, facts, now);
+  const estimate = await jobEstimateCharge(env.DB, ref.job);
+  if (estimate === null) return "waiting";
+  const dropFigure = () => env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
+  const final = jobFinalFigure(estimate, facts);
+  if (final === null) {
+    // Never read as 0: the estimate stays, already labelled an estimate.
+    log("warn", "job_units_missing", { ...tags, status: facts.status });
+    await dropFigure();
+    return "estimate_kept";
+  }
+  const settled = await settleJob(env.DB, { jobId: ref.job, final, now });
+  switch (settled.status) {
+    case "settled":
+    case "already":
+      return "settled";
+    case "charge_missing":
       return "waiting";
-    }
-    const final = jobFinalFigure(estimate, first);
-    if (final === null) {
-      // Never read as 0: the estimate stays, already labelled an estimate.
-      log("warn", "job_units_missing", { ...tags, status: first.status });
-      await checkDone();
+    case "no_rate":
+      log("error", "job_settle_no_rate", { ...tags, bucket: settled.bucket });
+      await dropFigure();
       return "estimate_kept";
-    }
-    const settled = await settleJob(env.DB, { jobId: ref.job, final, now, doneWork: jobCheckId(ref.job) });
-    switch (settled.status) {
-      case "settled":
-        return "settled";
-      case "already":
-        await checkDone();
-        return "settled";
-      case "charge_missing":
-        if (saved === null) await saveJobResult(env, ref, facts, now);
-        return "waiting";
-      case "no_rate":
-        log("error", "job_settle_no_rate", { ...tags, bucket: settled.bucket });
-        await checkDone();
-        return "estimate_kept";
-    }
-  } catch (error) {
-    log("warn", "job_settle_failed", { ...tags, error: errorFacts(error) });
-    if (saved === null && !signal?.aborted) await saveJobResult(env, ref, facts, now);
-    return signal?.aborted ? "aborted" : "waiting";
   }
 }
 
-/** Settles a job from a final result's facts, as `settleJobFacts`. */
-export function settleJobFromFacts(
-  env: Env,
-  claims: JobClaims,
-  jobId: string,
-  spec: JobSpec,
-  facts: JobResultFacts,
-  now: number,
-  signal?: AbortSignal,
-): Promise<JobSettlement> {
-  return settleJobFacts(env, jobRefOf(claims, jobId, spec), facts, now, signal);
+/**
+ * Keeps a figure that could not settle yet, for the sweep: as its own row in
+ * D1; while D1 cannot take it, in the failed-write store; when neither works,
+ * logged in full, to be settled by hand. True when it was kept somewhere the
+ * sweep will find it.
+ */
+export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
+  const row = figureWork(ref, facts, now);
+  try {
+    await writeOpenWork(env.DB, [row]);
+    return true;
+  } catch (error) {
+    log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
+  }
+  try {
+    await env.CHARGE_STORE.getByName(ref.appId).keepWork([row]);
+    return true;
+  } catch (error) {
+    log("warn", "job_figure_store_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
+  }
+  log("error", "job_result_unrecorded", { app: ref.appId, job: ref.job, result: facts as unknown as Record<string, unknown> });
+  return false;
 }
 
-/** Settles a job from a result call: `not_final` when its status is not final, else as `settleJobFacts`. */
-export async function settleJobFromResult(
-  env: Env,
-  claims: JobClaims,
-  jobId: string,
-  spec: JobSpec,
-  result: JobResult,
-  now: number,
-  signal?: AbortSignal,
-): Promise<JobSettlement> {
-  const facts = jobResultFacts(spec, result);
-  if (facts === null) return "not_final";
-  return settleJobFromFacts(env, claims, jobId, spec, facts, now, signal);
+/**
+ * What a final result means, as a client poll and the sweep's live check both
+ * apply it: a result with a count is settled, or kept for later when it cannot
+ * settle yet. One with no count is not saved (it can never settle). Never
+ * throws. The answer says whether the figure is settled or kept: then the job
+ * needs no more checking.
+ */
+export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<"done" | "no_count" | "not_kept"> {
+  if (!hasCount(facts)) {
+    log("warn", "job_units_missing", { app: ref.appId, job: ref.job, status: facts.status });
+    return "no_count";
+  }
+  try {
+    if ((await settleFigure(env, ref, facts, now)) !== "waiting") return "done";
+  } catch (error) {
+    log("warn", "job_settle_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
+  }
+  return (await keepFigure(env, ref, facts, now)) ? "done" : "not_kept";
 }
 
 /** The JSON body of an answer, or null. */
@@ -494,57 +478,50 @@ export async function jsonOf(response: Response): Promise<unknown> {
 
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
 
-/** What a settlement means for the sweep's row. */
-function sweepResult(settled: JobSettlement, status?: number): HandlerResult {
-  switch (settled) {
-    case "waiting":
-      return retry("estimate not in the ledger yet");
-    case "aborted":
-      return retry("timed out");
-    case "not_final":
-      return retry(`result not final (${status ?? "?"})`);
-    default:
-      return { done: true };
-  }
+/** Whether an open-work row is a saved figure, not a live check. */
+export function isFigureWork(id: string): boolean {
+  return id.startsWith("job_figure:");
 }
 
 /**
- * The sweep's check of one job. Every provider's jobs go through this one
- * handler.
+ * The sweep's job work. Every provider's jobs go through this one handler.
  *
- * - A saved final figure is settled as it is, from the row alone: no signing
- *   key and no connection are needed, so a configuration problem never loses
- *   it.
- * - Else the job is checked live: status first, then, once done, the result,
- *   settled as a client poll would. That needs the signing key (without one,
- *   the check waits) and the connection read fresh (a paused one's key is
- *   never opened; one gone or pointed elsewhere leaves the estimate, logged).
- * - The item's time limit is checked after each read and before any write.
+ * - **A figure row** is settled from the row alone: no signing key and no
+ *   connection, since the rates are on the estimate. It waits while the
+ *   estimate is not in the ledger.
+ * - **A check row** holds only the signed id and the pace. The job is checked
+ *   live: status first, then, once done, the result. A final result is applied
+ *   as a client poll applies it. A final result with no count, an id that
+ *   does not read, or a connection gone or pointed elsewhere ends the check:
+ *   the estimate stays, logged. Without a signing key the check waits; a
+ *   paused connection's key is never opened. `signal` only stops the provider
+ *   calls: every write here is safe whenever it lands.
  */
 export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
+  const ref: JobRef = { job: item.ownerId, accountId: item.accountId, appId: item.appId };
   const detail = item.detail ?? {};
-  const jobId = typeof detail.jobId === "string" ? detail.jobId : null;
-  const ref: JobRef = {
-    job: item.ownerId,
-    accountId: item.accountId,
-    appId: item.appId,
-    jobId: jobId ?? "",
-    retryEveryMs: typeof detail.retryEveryMs === "number" ? detail.retryEveryMs : JOB_CHECK_EVERY_MS,
-    maxTries: typeof detail.maxTries === "number" ? detail.maxTries : JOB_MAX_CHECKS,
-  };
-  const saved = factsOf(detail.result);
-  if (saved !== null) return sweepResult(await settleJobFacts(env, ref, saved, now, signal));
+  if (isFigureWork(item.id)) {
+    const facts = factsOf(detail.result);
+    if (facts === null) {
+      log("error", "job_figure_unreadable", { app: item.appId, work: item.id });
+      return { done: true };
+    }
+    return (await settleFigure(env, ref, facts, now)) === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
+  }
 
+  // A check whose job was settled meanwhile (by a poll, or a figure row) asks the provider nothing.
+  const still = await env.DB.prepare("SELECT 1 FROM open_work WHERE id = ?").bind(item.id).first();
+  if (still === null) return { done: true };
   if (!jobSigningReady(env.JWT_SECRET)) return retry("JWT_SECRET cannot verify job ids");
+  const jobId = typeof detail.jobId === "string" ? detail.jobId : null;
   const claims = jobId === null ? null : await readJobId(env.JWT_SECRET, jobId);
   if (claims === null || claims.job !== item.ownerId) {
     log("error", "job_check_unreadable", { app: item.appId, work: item.id });
     return { done: true };
   }
   const context = await jobContext(env, claims, { fresh: true });
-  if (signal?.aborted) return retry("timed out");
   if (context === null) {
-    // Gone, made again, or pointed at another backend: the estimate stays.
+    // Gone, made again, or pointed at another backend or key: the estimate stays.
     log("warn", "job_check_connection_changed", { app: claims.appId, job: claims.job, providerSlug: claims.slug });
     return { done: true };
   }
@@ -552,10 +529,10 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal }) => {
   const status = await fetchJob(env, context, "status", claims, null, signal);
   const statusBody = await jsonOf(status.response);
   if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
-  if (signal?.aborted) return retry("timed out");
   const result = await fetchJob(env, context, "result", claims, null, signal);
   const body = await jsonOf(result.response);
-  if (signal?.aborted) return retry("timed out");
-  const settled = await settleJobFromResult(env, claims, jobId!, context.spec, { status: result.response.status, headers: result.response.headers, body }, now, signal);
-  return sweepResult(settled, result.response.status);
+  const facts = jobResultFacts(context.spec, { status: result.response.status, headers: result.response.headers, body });
+  if (facts === null) return retry(`result not final (${result.response.status})`);
+  const applied = await applyFinalResult(env, ref, facts, now);
+  return applied === "not_kept" ? retry("figure not kept") : { done: true };
 };
