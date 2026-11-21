@@ -230,17 +230,26 @@ export async function fetchJob(
     appId: claims.appId,
     userId,
   });
+  // The caller's signal (the sweep item's time) stops the request only until its
+  // headers arrive. After that the answer is in hand, and its body is bounded by
+  // the reader's own deadline: an item that runs out of time never cuts off a
+  // final result it already has.
+  const untilHeaders = new AbortController();
+  const stop = () => untilHeaders.abort(signal?.reason);
+  signal?.addEventListener("abort", stop, { once: true });
   try {
     const response = await fetch(target.url, {
       method: request.method,
       headers: target.headers,
       redirect: "manual",
-      signal: signal === undefined ? AbortSignal.timeout(JOB_POLL_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(JOB_POLL_TIMEOUT_MS)]),
+      signal: AbortSignal.any([untilHeaders.signal, AbortSignal.timeout(JOB_POLL_TIMEOUT_MS)]),
     });
     return { response, keyHeader: target.keyHeader };
   } catch (error) {
     log("warn", "job_poll_failed", { app: claims.appId, providerSlug: claims.slug, which, error: errorFacts(error) });
     throw new GatewayError(502, "provider_error", "Provider request failed");
+  } finally {
+    signal?.removeEventListener("abort", stop);
   }
 }
 

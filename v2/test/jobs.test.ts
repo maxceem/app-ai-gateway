@@ -1459,3 +1459,67 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
+
+describe("a final result's body after the sweep item's time, and the provider's own host as base URL (review fixes, round 9)", () => {
+  const PER_IMAGE = { "fal-ai/flux/dev": { per_image: 10_000_000 } };
+
+  it("reads a final result's body to its own deadline, even when the sweep item's time runs out meanwhile", async () => {
+    const { appId, slug, key } = await setup(PER_IMAGE);
+    falAnswers({});
+    await submit(appId, slug, key);
+    await onlyThisApp(appId);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let resultAsked!: () => void;
+    const asked = new Promise<void>((resolve) => (resultAsked = resolve));
+    let sendHeaders!: () => void;
+    const headers = new Promise<void>((resolve) => (sendHeaders = resolve));
+    let bodyStream!: ReadableStreamDefaultController<Uint8Array>;
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/status")) return Response.json({ status: "COMPLETED" });
+      // The test sends the headers 4.8 s into the item and the body at 5.2 s: after the item's 5 s limit.
+      // Like a real fetch, the stream fails if its request is aborted.
+      resultAsked();
+      await headers;
+      const signal = init?.signal ?? null;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyStream = controller;
+          signal?.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const kept: Promise<unknown>[] = [];
+    const sweeping = runSweep(env, { now: Date.now() + 5 * 60_000, waitUntil: (work) => kept.push(work) });
+    await asked;
+    await vi.advanceTimersByTimeAsync(4_800);
+    sendHeaders();
+    await vi.advanceTimersByTimeAsync(400); // the item's 5 s limit passes
+    bodyStream.enqueue(new TextEncoder().encode(JSON.stringify({ images: [{}, {}, {}] })));
+    bodyStream.close();
+    await sweeping;
+    vi.useRealTimers();
+    await vi.waitFor(async () => {
+      await Promise.all(kept);
+      // Two images estimated at $0.01; three came back.
+      expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
+    });
+  });
+
+  it("sends a job to the provider's own declared host when the base URL is that host", async () => {
+    const { appId, slug, key } = await setup(null, "https://queue.fal.run/");
+    falAnswers({});
+    const submitted = await submit(appId, slug, key);
+    expect(submitted.response.status).toBe(200);
+    const urls = fetchSpy.mock.calls.map(([input]) => String(input));
+    expect(urls).toContain("https://queue.fal.run/fal-ai/flux/dev");
+    expect(urls.some((url) => url.includes("/queue/"))).toBe(false);
+  });
+
+  it("keeps sending other hosts under the base URL for a custom proxy", async () => {
+    const { appId, slug, key } = await setup(null, "https://proxy.example.net/fal/");
+    falAnswers({});
+    await submit(appId, slug, key);
+    expect(fetchSpy.mock.calls.map(([input]) => String(input))).toContain("https://proxy.example.net/fal/queue/fal-ai/flux/dev");
+  });
+});
