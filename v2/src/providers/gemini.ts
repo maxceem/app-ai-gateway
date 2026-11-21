@@ -65,8 +65,8 @@ export const gemini = defineProvider({
   liveTokens: [
     {
       path: "{version}/auth_tokens/*",
+      method: "POST",
       forced: {
-        method: "POST",
         fields: [
           { names: ["newSessionExpireTime", "new_session_expire_time"], value: { window: "time" } },
           { names: ["uses"], value: { fixed: 1 } },

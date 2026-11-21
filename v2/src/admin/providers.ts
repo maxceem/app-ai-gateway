@@ -351,8 +351,12 @@ function passthroughJson(
       if (listed.liveToken === true && matcher.liveTokenCovering(compiled, route) === null) {
         throw new GatewayError(400, "invalid_request", `${where}.live_token: ${key} is not one of ${description.label}'s live-session token paths; only those can opt in`);
       }
-      // Refused only because it mints a live-session secret: the opt-in would reach it.
       if (matcher.refusedCovering(compiled, route) !== null) {
+        // Under a token path but not its mint, such as cancelling a session: no opt-in reaches it.
+        if (matcher.liveTokenCovering(compiled, route) === null) {
+          throw new GatewayError(400, "invalid_request", `${where}.path: ${description.label} never allows ${key}; key, admin and account paths are always refused`);
+        }
+        // Refused only because it mints a live-session secret: the opt-in would reach it.
         throw new GatewayError(
           400,
           "invalid_request",

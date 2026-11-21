@@ -96,20 +96,23 @@ export const elevenlabs = defineProvider({
     { path: "v1/reception/customer-facing-agents/{agent_id}", methods: ["PATCH"] },
   ],
   // Tokens and signed URLs for live sessions, reached only by a listed path
-  // that opts in (plan D4). Only the Realtime client secret takes an expiry;
-  // the others last as ElevenLabs sets them (about 15 minutes, T13).
+  // that opts in, and only the mint itself: its method on the exact path
+  // (plan D4). Only the Realtime client secret takes an expiry; the others
+  // last as ElevenLabs sets them (about 15 minutes, T13). A signed URL is
+  // single use only with `include_conversation_id=true` (T13), so the
+  // gateway sets it, replacing whatever the client sent.
   // An agent's link answers with a conversation token. Agent reads may hold
   // a `shareable_token` too; they stay allowed, since passthrough never
   // changes a body and the customer turns sharing on themselves.
   liveTokens: [
-    { path: "v1/convai/conversation/token/*" },
-    { path: "v1/convai/conversation/get-signed-url/*" },
-    { path: "v1/convai/conversation/get_signed_url/*" },
-    { path: "v1/convai/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
+    { path: "v1/convai/conversation/token/*", method: "GET" },
+    { path: "v1/convai/conversation/get-signed-url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
+    { path: "v1/convai/conversation/get_signed_url/*", method: "GET", forced: { query: [{ name: "include_conversation_id", value: "true" }] } },
+    { path: "v1/convai/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
     // Only the types that start a live session: `batch_scribe` is refused.
-    { path: "v1/single-use-token/realtime_scribe" },
-    { path: "v1/single-use-token/tts_websocket" },
-    { path: "v1/convai/agents/{agent_id}/link", methods: ["GET"] },
+    { path: "v1/single-use-token/realtime_scribe", method: "POST" },
+    { path: "v1/single-use-token/tts_websocket", method: "POST" },
+    { path: "v1/convai/agents/{agent_id}/link", method: "GET" },
   ],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },

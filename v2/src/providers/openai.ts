@@ -20,16 +20,26 @@ export const openai = defineProvider({
   // `v1/organization`.
   refused: ["v1/organization/*"],
   // Short-lived secrets for live sessions and ChatKit, reached only by a
-  // listed path that opts in (plan D4). A client secret's `expires_after`
-  // only limits when calls can start (T18), so it is locked to that window.
-  // The older Realtime sessions are sent as they are: their window sits
-  // inside a nested `client_secret`, not checked against OpenAI's reference
-  // here. ChatKit sessions take `expires_after` as client secrets do.
+  // listed path that opts in, and only the mint itself: POST on the exact
+  // path. Anything under it, such as cancelling a ChatKit session, stays
+  // refused (plan D4). A client secret's expiry only limits when calls can
+  // start (T18), so it is locked to that window. The older Realtime sessions
+  // keep it inside `client_secret`: OpenAI's SDK names it `expires_after` for
+  // sessions and `expires_at` for transcription sessions, so both spellings
+  // are replaced on both.
   liveTokens: [
-    { path: "v1/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
-    { path: "v1/realtime/sessions/*" },
-    { path: "v1/realtime/transcription_sessions/*" },
-    { path: "v1/chatkit/sessions/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
+    { path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
+    {
+      path: "v1/realtime/sessions/*",
+      method: "POST",
+      forced: { fields: [{ names: ["client_secret.expires_after", "client_secret.expires_at"], value: { window: "expires_after", anchor: true } }] },
+    },
+    {
+      path: "v1/realtime/transcription_sessions/*",
+      method: "POST",
+      forced: { fields: [{ names: ["client_secret.expires_at", "client_secret.expires_after"], value: { window: "expires_after", anchor: true } }] },
+    },
+    { path: "v1/chatkit/sessions/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after", anchor: true } }] } },
   ],
   // Listing models is free and needs a valid key.
   probe: { path: "v1/models" },

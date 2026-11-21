@@ -12,8 +12,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderMatcher } from "../src/providers/matcher.ts";
-import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced } from "../src/providers/operation.ts";
-import { lockedLiveTokenBody, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
+import { LIVE_TOKEN_WINDOW_SECONDS, type HttpMethod, type LiveTokenForced, type LiveTokenValue } from "../src/providers/operation.ts";
+import { lockedLiveTokenBody, lockedLiveTokenQuery, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
@@ -43,7 +43,6 @@ const TOKEN_ENDPOINTS: readonly (readonly [type: string, method: HttpMethod, pat
   ["openai", "POST", "v1/chatkit/sessions"],
   ["xai", "POST", "v1/realtime/client_secrets"],
   ["gemini", "POST", "v1alpha/auth_tokens"],
-  ["deepgram", "POST", "v1/auth/grant"],
   ["elevenlabs", "POST", "v1/single-use-token/tts_websocket"],
   ["elevenlabs", "GET", "v1/convai/conversation/token"],
   ["elevenlabs", "GET", "v1/convai/conversation/get-signed-url"],
@@ -67,6 +66,13 @@ describe("matching a live-session token path", () => {
     ["openai", "POST", "v1/organization/admin_api_keys"],
     ["xai", "GET", "v1/api-key"],
     ["deepgram", "POST", "v1/projects/p1/keys"],
+    // Its token also allows ordinary transcription and speech, not just one live session.
+    ["deepgram", "POST", "v1/auth/grant"],
+    // Only the mint itself: managing what it made, or another method, stays refused.
+    ["openai", "POST", "v1/chatkit/sessions/cksess_1/cancel"],
+    ["openai", "GET", "v1/chatkit/sessions"],
+    ["openai", "DELETE", "v1/realtime/client_secrets"],
+    ["elevenlabs", "POST", "v1/convai/agents/agent_1/link"],
     ["elevenlabs", "GET", "v1/user"],
     ["elevenlabs", "DELETE", "v1/voices/v1"],
   ] as const)("keeps %s %s %s refused, opt-in or not", (type, method, path) => {
@@ -97,10 +103,38 @@ describe("matching a live-session token path", () => {
 });
 
 describe("locking a mint's window", () => {
+  it("replaces the nested expiry of OpenAI's older Realtime mints, under both spellings", () => {
+    const now = Date.parse("2026-11-21T10:00:00.000Z");
+    const encoded = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    for (const path of ["v1/realtime/sessions/*", "v1/realtime/transcription_sessions/*"]) {
+      const forced = describedAs("openai").liveTokens!.find((token) => token.path === path)!.forced!;
+      const sent = { model: "m", client_secret: { expires_after: { anchor: "created_at", seconds: 600 }, expires_at: { seconds: 600 }, other: 1 } };
+      const locked = lockedLiveTokenBody(forced, encoded(sent), now);
+      if (locked.kind !== "locked") throw new Error(`${path}: not locked`);
+      const body = JSON.parse(new TextDecoder().decode(locked.bytes)) as { client_secret: Record<string, unknown> };
+      const written = forced.fields![0].names[0].split(".")[1]!;
+      expect(body.client_secret, path).toEqual({ other: 1, [written]: { anchor: "created_at", seconds: 60 } });
+      // No `client_secret` sent: it is created.
+      const bare = lockedLiveTokenBody(forced, encoded({ model: "m" }), now);
+      expect(bare.kind === "locked" && JSON.parse(new TextDecoder().decode(bare.bytes)), path).toEqual({ model: "m", client_secret: { [written]: { anchor: "created_at", seconds: 60 } } });
+      // A `client_secret` that is not an object is replaced by one.
+      const odd = lockedLiveTokenBody(forced, encoded({ client_secret: "x" }), now);
+      expect(odd.kind === "locked" && JSON.parse(new TextDecoder().decode(odd.bytes)), path).toEqual({ client_secret: { [written]: { anchor: "created_at", seconds: 60 } } });
+    }
+  });
+
+  it("sets an ElevenLabs signed URL to single use, replacing every value the client sent", () => {
+    for (const path of ["v1/convai/conversation/get-signed-url/*", "v1/convai/conversation/get_signed_url/*"]) {
+      const forced = describedAs("elevenlabs").liveTokens!.find((token) => token.path === path)!.forced!;
+      expect(lockedLiveTokenQuery(forced, "?agent_id=a1&include_conversation_id=false&include_conversation_id=0")).toBe("?agent_id=a1&include_conversation_id=true");
+      expect(lockedLiveTokenQuery(forced, "")).toBe("?include_conversation_id=true");
+    }
+  });
+
   const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
   const decode = (result: ReturnType<typeof lockedLiveTokenBody>) => (result.kind === "locked" ? JSON.parse(new TextDecoder().decode(result.bytes)) : result);
   const NOW = Date.parse("2026-11-21T10:00:00.000Z");
-  const one = (name: string, value: LiveTokenForced["fields"][0]["value"]): LiveTokenForced => ({ method: "POST", fields: [{ names: [name], value }] });
+  const one = (name: string, value: LiveTokenValue): LiveTokenForced => ({ fields: [{ names: [name], value }] });
 
   it.each([
     [one("expires_after", { window: "expires_after", anchor: true }), "expires_after", { anchor: "created_at", seconds: 60 }],
@@ -111,41 +145,40 @@ describe("locking a mint's window", () => {
   ] as const)("writes %j over whatever the client sent", (forced, field, value) => {
     expect(LIVE_TOKEN_WINDOW_SECONDS).toBe(60);
     const sent = { session: { model: "m" }, [field]: 7200 };
-    expect(decode(lockedLiveTokenBody(forced, "POST", encode(sent), NOW))).toEqual({ session: { model: "m" }, [field]: value });
+    expect(decode(lockedLiveTokenBody(forced, encode(sent), NOW))).toEqual({ session: { model: "m" }, [field]: value });
     // Set when the client sent nothing.
-    expect(decode(lockedLiveTokenBody(forced, "POST", new Uint8Array(), NOW))).toEqual({ [field]: value });
+    expect(decode(lockedLiveTokenBody(forced, new Uint8Array(), NOW))).toEqual({ [field]: value });
   });
 
   it("removes every spelling of a forced field and writes only the first, so the provider reads one value", () => {
     const forced: LiveTokenForced = {
-      method: "POST",
       fields: [
         { names: ["newSessionExpireTime", "new_session_expire_time"], value: { window: "time" } },
         { names: ["uses"], value: { fixed: 1 } },
       ],
     };
     const sent = { new_session_expire_time: "2026-11-22T10:00:00Z", newSessionExpireTime: "2026-11-22T10:00:00Z", uses: 0, expireTime: "2026-11-21T10:30:00Z" };
-    expect(decode(lockedLiveTokenBody(forced, "POST", encode(sent), NOW))).toEqual({
+    expect(decode(lockedLiveTokenBody(forced, encode(sent), NOW))).toEqual({
       newSessionExpireTime: "2026-11-21T10:01:00.000Z",
       uses: 1,
       expireTime: "2026-11-21T10:30:00Z",
     });
     // Only the snake_case spelling sent: it is gone too.
-    expect(decode(lockedLiveTokenBody(forced, "POST", encode({ new_session_expire_time: "2027-01-01T00:00:00Z" }), NOW))).toEqual({
+    expect(decode(lockedLiveTokenBody(forced, encode({ new_session_expire_time: "2027-01-01T00:00:00Z" }), NOW))).toEqual({
       newSessionExpireTime: "2026-11-21T10:01:00.000Z",
       uses: 1,
     });
     // A key sent twice in the text is one key once read.
-    expect(decode(lockedLiveTokenBody(forced, "POST", new TextEncoder().encode('{"uses":0,"uses":0}'), NOW))).toEqual({ newSessionExpireTime: "2026-11-21T10:01:00.000Z", uses: 1 });
+    expect(decode(lockedLiveTokenBody(forced, new TextEncoder().encode('{"uses":0,"uses":0}'), NOW))).toEqual({ newSessionExpireTime: "2026-11-21T10:01:00.000Z", uses: 1 });
   });
 
-  it("leaves another method's request as it is, and calls a body that is not a JSON object unreadable", () => {
+  it("leaves a mint that forces no body field as it is, and calls a body that is not a JSON object unreadable", () => {
     const forced = one("ttl_seconds", { window: "seconds" });
-    expect(lockedLiveTokenBody(forced, "GET", new Uint8Array(), 0)).toEqual({ kind: "same" });
+    expect(lockedLiveTokenBody({ query: [{ name: "include_conversation_id", value: "true" }] }, new TextEncoder().encode("anything"), 0)).toEqual({ kind: "same" });
     for (const body of ["[1]", "null", "7", "not json", "\"text\""]) {
-      expect(lockedLiveTokenBody(forced, "POST", new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
+      expect(lockedLiveTokenBody(forced, new TextEncoder().encode(body), 0), body).toEqual({ kind: "unreadable" });
     }
-    expect(lockedLiveTokenBody(forced, "POST", new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
+    expect(lockedLiveTokenBody(forced, new Uint8Array([0xff, 0xfe]), 0)).toEqual({ kind: "unreadable" });
   });
 });
 
@@ -237,6 +270,12 @@ describe("saving a live-session token path", () => {
     expect(refused.body.error.message).toContain("set live_token to true");
   });
 
+  it("refuses a path under a token path that is not its mint, without suggesting the opt-in", async () => {
+    const refused = await create([{ method: "POST", path: "v1/chatkit/sessions/{session_id}/cancel" }]);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.message).toContain("always refused");
+  });
+
   it("saves it with the opt-in, and shows the opt-in back", async () => {
     const saved = await create([{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }]);
     expect(saved.status, JSON.stringify(saved.body)).toBe(201);
@@ -251,8 +290,13 @@ describe("saving a live-session token path", () => {
     [[{ method: "GET", path: "v1/files", live_token: true }], "not one of OpenAI's live-session token paths"],
     // Only some of its requests are token paths: it cannot opt in, nor be listed without.
     [[{ method: "POST", path: "v1/realtime/{thing}", live_token: true }], "not one of OpenAI's live-session token paths"],
-  ])("refuses %j", async (passthrough, message) => {
-    const refused = await create(passthrough);
+    // Only the mint itself opts in: cancelling a ChatKit session, or another method on a mint's path, does not.
+    [[{ method: "POST", path: "v1/chatkit/sessions/{session_id}/cancel", live_token: true }], "not one of OpenAI's live-session token paths"],
+    [[{ method: "GET", path: "v1/chatkit/sessions", live_token: true }], "not one of OpenAI's live-session token paths"],
+    // Deepgram's grant also allows ordinary transcription and speech.
+    [[{ method: "POST", path: "v1/auth/grant", live_token: true }], "always refused", "deepgram"],
+  ])("refuses %j", async (passthrough, message, type = "openai") => {
+    const refused = await create(passthrough, type);
     expect(refused.status).toBe(400);
     expect(refused.body.error.message).toContain(message);
   });
@@ -314,7 +358,18 @@ describe("serving a live-session mint", () => {
 
   it.each([
     ["xai", "v1/realtime/client_secrets", { expires_after: { seconds: 3600 } }, (body: Record<string, unknown>) => expect(body.expires_after).toEqual({ seconds: 60 })],
-    ["deepgram", "v1/auth/grant", { ttl_seconds: 3600 }, (body: Record<string, unknown>) => expect(body.ttl_seconds).toBe(60)],
+    [
+      "openai",
+      "v1/realtime/sessions",
+      { model: "m", client_secret: { expires_after: { anchor: "created_at", seconds: 600 } } },
+      (body: Record<string, unknown>) => expect(body.client_secret).toEqual({ expires_after: { anchor: "created_at", seconds: 60 } }),
+    ],
+    [
+      "openai",
+      "v1/realtime/transcription_sessions",
+      { client_secret: { expires_at: { seconds: 600 } } },
+      (body: Record<string, unknown>) => expect(body.client_secret).toEqual({ expires_at: { anchor: "created_at", seconds: 60 } }),
+    ],
     [
       "gemini",
       "v1alpha/auth_tokens",
@@ -359,7 +414,7 @@ describe("serving a live-session mint", () => {
     expect(created.status).toBe(400);
   });
 
-  it("sends an ElevenLabs mint with no expiry field as it is", async () => {
+  it("sends an ElevenLabs mint with no expiry field as it is, and makes its signed URL single use", async () => {
     const { appId, slug, key } = await connected({
       type: "elevenlabs",
       passthrough: [
@@ -370,8 +425,9 @@ describe("serving a live-session mint", () => {
     fetchSpy.mockImplementation(async () => Response.json({ token: "minted" }));
     expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/single-use-token/realtime_scribe`, key, "{\"a\":1}")).status).toBe(200);
     expect(new TextDecoder().decode(fetchSpy.mock.calls[0]![1]!.body as Uint8Array)).toBe("{\"a\":1}");
-    expect((await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/convai/conversation/get-signed-url?agent_id=a1`, key)).status).toBe(200);
-    expect(String(fetchSpy.mock.calls[1]![0])).toBe("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=a1");
+    // `include_conversation_id=true` makes the URL start one call only (T13), whatever the client asked.
+    expect((await send("GET", `/v2/apps/${appId}/proxy/${slug}/v1/convai/conversation/get-signed-url?agent_id=a1&include_conversation_id=false`, key)).status).toBe(200);
+    expect(String(fetchSpy.mock.calls[1]![0])).toBe("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=a1&include_conversation_id=true");
     expect((await chargesOf(appId)).map((charge) => charge.operation)).toEqual(["live_token", "live_token"]);
   });
 
@@ -387,12 +443,12 @@ describe("serving a live-session mint", () => {
   it("charges a flat price when the listing has one, and keeps request limits", async () => {
     pinClockMidMinute();
     const { appId, slug, key } = await connected(
-      { type: "deepgram", passthrough: [{ method: "POST", path: "v1/auth/grant", live_token: true, per_request: 0.001 }] },
+      { type: "xai", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true, per_request: 0.001 }] },
       { per_app: { requests: { per_minute: 1 } } },
     );
-    fetchSpy.mockImplementation(async () => Response.json({ access_token: "jwt", expires_in: 60 }));
-    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/auth/grant`, key, "{}")).status).toBe(200);
-    const limited = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/auth/grant`, key, "{}");
+    fetchSpy.mockImplementation(async () => Response.json({ value: "secret", expires_at: 60 }));
+    expect((await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "{}")).status).toBe(200);
+    const limited = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "{}");
     expect(limited.status).toBe(429);
     expect(JSON.parse(limited.text)).toMatchObject({ error: { code: "app_rate_limited" } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);

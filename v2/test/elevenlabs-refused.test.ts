@@ -89,19 +89,19 @@ function requestPaths(path: string, enums: Readonly<Record<string, readonly stri
   return paths;
 }
 
-type Rule = { readonly path: string; readonly methods: readonly string[] | null; readonly token: boolean };
+type Rule = { readonly path: string; readonly methods: readonly string[] | null; readonly token: boolean; readonly method?: HttpMethod };
 /** A description's refused and live-session token paths, as one list of rules. */
 const rulesOf = (description: ProviderDescription): Rule[] => [
   ...description.refused.map((entry) =>
     typeof entry === "string" ? { path: entry, methods: null, token: false } : { path: entry.path, methods: entry.methods, token: false },
   ),
-  ...(description.liveTokens ?? []).map((entry) => ({ path: entry.path, methods: entry.methods ?? null, token: true })),
+  ...(description.liveTokens ?? []).map((entry) => ({ path: entry.path, methods: null, token: true, method: entry.method })),
 ];
 /** The description with its refused and live-session token paths replaced by `rules`. */
 const withRules = (description: ProviderDescription, rules: readonly Rule[]): ProviderDescription => ({
   ...description,
   refused: rules.filter((rule) => !rule.token).map((rule) => (rule.methods === null ? rule.path : { path: rule.path, methods: rule.methods as HttpMethod[] })),
-  liveTokens: rules.filter((rule) => rule.token).map((rule) => (rule.methods === null ? { path: rule.path } : { path: rule.path, methods: rule.methods as HttpMethod[] })),
+  liveTokens: rules.filter((rule) => rule.token).map((rule) => ({ path: rule.path, method: rule.method ?? "POST" })),
 });
 
 /**
@@ -190,7 +190,7 @@ describe("ElevenLabs refused paths, over every operation of its API", () => {
   it.each([
     ["a rule narrowed to a value no request names", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/single-use-token/realtime_scribe" ? { ...rule, path: "v1/single-use-token/p1" } : rule))],
     ["the batch transcription token let through", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/single-use-token/batch_scribe")],
-    ["every single-use token type treated as live", (rules: Rule[]) => [...rules.filter((rule) => !rule.path.startsWith("v1/single-use-token/")), { path: "v1/single-use-token/*", methods: null, token: true }]],
+    ["every single-use token type treated as live", (rules: Rule[]) => [...rules.filter((rule) => !rule.path.startsWith("v1/single-use-token/")), { path: "v1/single-use-token/*", methods: null, token: true, method: "POST" as const }]],
     ["voice deletion widened to collections and samples", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/*" } : rule))],
     ["an agent's link left out", (rules: Rule[]) => rules.filter((rule) => rule.path !== "v1/convai/agents/{agent_id}/link")],
     ["voice deletion narrowed to ids with a prefix", (rules: Rule[]) => rules.map((rule) => (rule.path === "v1/voices/{voice_id}" ? { ...rule, path: "v1/voices/p{voice_id}" } : rule))],

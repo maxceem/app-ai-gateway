@@ -556,38 +556,48 @@ export type LiveTokenValue =
   | { readonly fixed: number | string | boolean };
 
 /**
- * One top-level field of a mint's JSON body that the gateway sets, whatever
- * the client sent. `names` holds every spelling the provider reads, the one
- * the gateway writes first: each is removed, and only the first is written.
+ * One field of a mint's JSON body that the gateway sets, whatever the client
+ * sent. `names` holds every spelling the provider reads, the one the gateway
+ * writes first: each is removed, and only the first is written. A name with
+ * dots is a nested field, such as `client_secret.expires_after`; its parent
+ * objects are created when the body has none.
  */
 export interface LiveTokenField {
   readonly names: readonly [string, ...string[]];
   readonly value: LiveTokenValue;
 }
 
-/**
- * What the gateway forces in a mint request so its secret can start a call
- * only within `LIVE_TOKEN_WINDOW_SECONDS` (plan D4): the window, and any
- * field that would let one secret start more calls, where the provider
- * lets the request set them.
- */
-export interface LiveTokenForced {
-  /** Only requests of this method mint; others are sent as they are. */
-  readonly method: HttpMethod;
-  readonly fields: readonly [LiveTokenField, ...LiveTokenField[]];
+/** One query parameter of a mint that the gateway sets: every value the client sent is replaced by this one. */
+export interface LiveTokenQueryParam {
+  readonly name: string;
+  readonly value: string;
 }
 
 /**
- * A path that mints a short-lived secret for one live session (plan D4). It
- * is refused like a refused path, unless the listed path that takes the
- * request opts in to it (`liveToken` on the listing).
+ * What the gateway forces in a mint request so its secret can start a call
+ * only within `LIVE_TOKEN_WINDOW_SECONDS`, or only once (plan D4): the
+ * window, and any field that would let one secret start more calls, where
+ * the provider lets the request set them.
+ */
+export interface LiveTokenForced {
+  /** Body fields; a mint that forces any needs a JSON object body. */
+  readonly fields?: readonly [LiveTokenField, ...LiveTokenField[]];
+  readonly query?: readonly [LiveTokenQueryParam, ...LiveTokenQueryParam[]];
+}
+
+/**
+ * A path that mints a short-lived secret for one live session (plan D4).
+ * Every request under `path` is refused like a refused path. A listed path
+ * that opts in (`liveToken` on the listing) reaches only the mint itself:
+ * `method` on exactly `path`, without its trailing `*`. Anything else under
+ * it, such as cancelling a session, stays refused even with the opt-in.
  */
 export interface LiveTokenPath {
-  /** A template, read as refused paths are: a trailing `*` matches the rest. */
+  /** A template, read as refused paths are: a trailing `*` refuses the rest too. */
   readonly path: string;
-  /** The methods it covers; every method when left out. */
-  readonly methods?: readonly HttpMethod[];
-  /** The body fields the gateway sets, where the provider lets the request set them. */
+  /** The one method that mints. */
+  readonly method: HttpMethod;
+  /** What the gateway sets in the mint, where the provider lets the request set it. */
   readonly forced?: LiveTokenForced;
 }
 

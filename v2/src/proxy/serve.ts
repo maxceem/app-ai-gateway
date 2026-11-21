@@ -53,7 +53,7 @@ import {
   type UpstreamCredentials,
 } from "../providers/connections.ts";
 import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamRoute, type UpstreamTarget } from "../providers/matcher.ts";
-import { compiledPassthrough, isPassthrough, lockedLiveTokenBody, PASSTHROUGH } from "../providers/passthrough.ts";
+import { compiledPassthrough, isPassthrough, lockedLiveTokenBody, lockedLiveTokenQuery, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { readingRules, type LiveTokenPath, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
@@ -456,9 +456,9 @@ async function servePassthrough(
   // A live-session mint's window is locked where the request sets it, whatever the client sent (plan D4).
   const forced = input.liveToken?.forced;
   if (forced !== undefined) {
-    const locked = lockedLiveTokenBody(forced, c.req.method, bytes, startedAt);
+    const locked = lockedLiveTokenBody(forced, bytes, startedAt);
     if (locked.kind === "unreadable") {
-      const names = forced.fields.map((field) => field.names[0]).join(", ");
+      const names = (forced.fields ?? []).map((field) => field.names[0]).join(", ");
       throw new GatewayError(400, "invalid_request", `This request mints a live-session secret, so its body must be a JSON object: the gateway sets ${names} in it`);
     }
     if (locked.kind === "locked") sent = { bytes: locked.bytes, contentType: "application/json" };
@@ -502,7 +502,7 @@ async function servePassthrough(
       operation,
       hostKey: input.upstream.host,
       path: input.upstream.path,
-      query: sanitizedQuery(url),
+      query: forced === undefined ? sanitizedQuery(url) : lockedLiveTokenQuery(forced, sanitizedQuery(url)),
       credentials: () => Promise.resolve(credentials),
       body: () => sent,
       attempt,

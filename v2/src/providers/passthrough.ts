@@ -148,19 +148,19 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
 /**
  * The body of a live-session mint, with every field `forced` names set as it
  * says, whatever the client sent. Every spelling of a field is removed and
- * only its first is written, so the provider reads one value. A request of
- * another method is left as it is (`same`). An empty body becomes an object
- * holding only the forced fields. A body that is not a JSON object cannot
- * carry them, so it is `unreadable`, and the gateway refuses to send it
- * rather than mint a secret it could not limit.
+ * only its first is written, so the provider reads one value; a nested
+ * spelling gets its parent objects when the body has none. A mint that
+ * forces no body field is sent as it is (`same`). An empty body becomes an
+ * object holding only the forced fields. A body that is not a JSON object
+ * cannot carry them, so it is `unreadable`, and the gateway refuses to send
+ * it rather than mint a secret it could not limit.
  */
 export function lockedLiveTokenBody(
   forced: LiveTokenForced,
-  method: string,
   bytes: Uint8Array,
   now: number,
 ): { readonly kind: "same" } | { readonly kind: "locked"; readonly bytes: Uint8Array } | { readonly kind: "unreadable" } {
-  if (method !== forced.method) return { kind: "same" };
+  if (forced.fields === undefined) return { kind: "same" };
   let body: unknown = {};
   if (bytes.byteLength > 0) {
     try {
@@ -169,13 +169,55 @@ export function lockedLiveTokenBody(
       return { kind: "unreadable" };
     }
   }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return { kind: "unreadable" };
-  const locked: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+  if (!isObject(body)) return { kind: "unreadable" };
+  const locked: Record<string, unknown> = { ...body };
   for (const field of forced.fields) {
-    for (const name of field.names) delete locked[name];
-    locked[field.names[0]] = forcedValue(field.value, now);
+    for (const name of field.names) removeField(locked, name.split("."));
+    writeField(locked, field.names[0].split("."), forcedValue(field.value, now));
   }
   return { kind: "locked", bytes: new TextEncoder().encode(JSON.stringify(locked)) };
+}
+
+/** The query of a live-session mint, with every parameter `forced` names holding only the gateway's value. */
+export function lockedLiveTokenQuery(forced: LiveTokenForced, search: string): string {
+  if (forced.query === undefined) return search;
+  const params = new URLSearchParams(search);
+  for (const { name, value } of forced.query) params.set(name, value);
+  const query = params.toString();
+  return query === "" ? "" : `?${query}`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Removes a nested field, copying each parent object on the way so the client's own objects are never changed. */
+function removeField(target: Record<string, unknown>, path: readonly string[]): void {
+  const [head, ...rest] = path;
+  if (head === undefined || !Object.hasOwn(target, head)) return;
+  if (rest.length === 0) {
+    delete target[head];
+    return;
+  }
+  const child = target[head];
+  if (!isObject(child)) return;
+  const copy = { ...child };
+  target[head] = copy;
+  removeField(copy, rest);
+}
+
+/** Writes a nested field, creating its parent objects, or replacing a parent that is not an object. */
+function writeField(target: Record<string, unknown>, path: readonly string[], value: unknown): void {
+  const [head, ...rest] = path;
+  if (head === undefined) return;
+  if (rest.length === 0) {
+    target[head] = value;
+    return;
+  }
+  const child = target[head];
+  const copy: Record<string, unknown> = isObject(child) ? { ...child } : {};
+  target[head] = copy;
+  writeField(copy, rest, value);
 }
 
 function forcedValue(value: LiveTokenValue, now: number): unknown {

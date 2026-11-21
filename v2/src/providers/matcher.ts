@@ -296,7 +296,7 @@ function ruleSource(rule: CompiledRule<unknown>): string {
 export class ProviderMatcher {
   readonly provider: ProviderDescription;
   private readonly refused: readonly CompiledRule<null>[];
-  private readonly liveTokens: readonly CompiledRule<LiveTokenPath>[];
+  private readonly liveTokens: readonly CompiledLiveToken[];
   private readonly operations: readonly CompiledOperation[];
 
   /**
@@ -310,10 +310,12 @@ export class ProviderMatcher {
         ? { template: parseTemplate(entry, { rest: true }), methods: null, entry: null }
         : { template: parseTemplate(entry.path, { rest: true }), methods: new Set(entry.methods), entry: null },
     );
+    // Every method under the path is refused; the opt-in reaches only the mint.
     this.liveTokens = (provider.liveTokens ?? []).map((entry) => ({
       template: parseTemplate(entry.path, { rest: true }),
-      methods: entry.methods === undefined ? null : new Set(entry.methods),
+      methods: null,
       entry,
+      mint: parseTemplate(entry.path.endsWith("/*") ? entry.path.slice(0, -2) : entry.path),
     }));
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
@@ -385,7 +387,10 @@ export class ProviderMatcher {
       const refused = this.refusedAt(method, sent);
       if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       const token = gatewayToken ?? firstRule(this.liveTokens, method, sent);
-      if (token !== null && listed.listed.liveToken !== true) return { kind: "refused", reason: "refused_path", pattern: ruleSource(token) };
+      // The opt-in reaches only the mint itself; anything else under a token path stays refused.
+      if (token !== null && (listed.listed.liveToken !== true || !(mints(token, method, atGateway) || mints(token, method, sent)))) {
+        return { kind: "refused", reason: "refused_path", pattern: ruleSource(token) };
+      }
       return {
         kind: "passthrough",
         listed: listed.listed,
@@ -458,10 +463,12 @@ export class ProviderMatcher {
    */
   liveTokenCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): LiveTokenPath | null {
     const { method } = listed.listed;
-    const rule =
-      firstRule(this.liveTokens, method, { host: "main", paths: [listed.template.segments] }) ??
-      firstRule(this.liveTokens, method, upstreamTargets(route, "main", listed.template.segments));
-    return rule === null ? null : rule.entry;
+    const atGateway: UpstreamTargets = { host: "main", paths: [listed.template.segments] };
+    const sent = upstreamTargets(route, "main", listed.template.segments);
+    const rule = firstRule(this.liveTokens, method, atGateway) ?? firstRule(this.liveTokens, method, sent);
+    // Only a listing of the mint itself may opt in: its method, on exactly the token path.
+    if (rule === null || !(mints(rule, method, atGateway) || mints(rule, method, sent))) return null;
+    return rule.entry;
   }
 
   /**
@@ -534,12 +541,32 @@ export class ProviderMatcher {
  * refused and live-session token paths: the others serve declared operations
  * only.
  */
-function firstRule<Entry>(rules: readonly CompiledRule<Entry>[], method: string, targets: UpstreamTargets | null): CompiledRule<Entry> | null {
+/** A live-session token path, with its mint: its method on exactly its path, without the trailing `*`. */
+interface CompiledLiveToken extends CompiledRule<LiveTokenPath> {
+  readonly mint: Template;
+}
+
+/**
+ * Whether every request of one of `targets` is the token path's mint: its
+ * method, on exactly its path. A `{name}` part of a listing must take only
+ * a value the mint's own part takes.
+ */
+function mints(rule: CompiledLiveToken, method: string, targets: UpstreamTargets | null): boolean {
+  if (targets === null || targets.host !== "main" || method !== rule.entry.method) return false;
+  return targets.paths.some((path) => matchTemplate(rule.mint, targetSegments(path), { ignoreCase: true }) !== null);
+}
+
+/** A target path as literal segments, a `{name}` part standing for any value. */
+function targetSegments(path: UpstreamTargets["paths"][number]): string[] {
+  return path.map((segment) =>
+    segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
+  );
+}
+
+function firstRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Rule | null {
   if (targets === null || targets.host !== "main") return null;
   for (const path of targets.paths) {
-    const segments = path.map((segment) =>
-      segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
-    );
+    const segments = targetSegments(path);
     for (const rule of rules) {
       if (rule.methods !== null && !rule.methods.has(method)) continue;
       if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) return rule;

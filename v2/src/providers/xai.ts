@@ -23,7 +23,7 @@ export const xai = defineProvider({
   refused: ["v1/api-key/*", "auth/*", "audit/*", "v1/billing/*"],
   // Short-lived secrets for live sessions, reached only by a listed path that
   // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
-  liveTokens: [{ path: "v1/realtime/client_secrets/*", forced: { method: "POST", fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],
+  liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
   cloudflareGateway: { slug: "grok" },
