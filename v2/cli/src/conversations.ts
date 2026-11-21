@@ -2,7 +2,8 @@
  * `agw app conversations`: downloads an app's stored conversations into a
  * folder (v1's command, ported).
  */
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { fail } from "./common.ts";
@@ -52,16 +53,41 @@ function inside(output: string, name: string): string {
   return path;
 }
 
+/**
+ * Writes a download to a temporary file beside its place, then renames it, so
+ * an interrupted export never leaves a partial file under the real name.
+ */
 async function save(path: string, bytes: Uint8Array): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, bytes);
+  const temporary = `${path}.${randomUUID()}.part`;
+  try {
+    await writeFile(temporary, bytes);
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** Whether a media file already there holds the bytes its name's SHA-256 names. */
+async function mediaIntact(path: string, name: string): Promise<boolean> {
+  const expected = /\/([0-9a-f]{64})\.[a-z0-9]{1,5}$/.exec(name)?.[1];
+  if (expected === undefined) return false;
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(path);
+  } catch {
+    return false;
+  }
+  return createHash("sha256").update(bytes).digest("hex") === expected;
 }
 
 /**
  * Downloads an app's stored conversations into a folder, laid out the way the
  * gateway stores them: `<day>/<batch>.jsonl.gz`, and with --media,
- * `<day>/media/<sha256>.<ext>`. A file already there at its listed size is
- * skipped, so running the same export again fetches only what is new.
+ * `<day>/media/<sha256>.<ext>`. A batch already there at its listed size, and
+ * a media file whose content matches the SHA-256 in its name, are skipped, so
+ * running the same export again fetches only what is new or was cut short.
  */
 export async function conversationsCommand(ctx: Context, appId: string, flags: Flags): Promise<ConversationsExportResult> {
   const from = flags.from === undefined ? null : day("from", flags.from);
@@ -101,7 +127,7 @@ export async function conversationsCommand(ctx: Context, appId: string, flags: F
     }
     for (const name of names) {
       const path = inside(output, name);
-      if ((await sizeOf(path)) !== null) continue;
+      if (await mediaIntact(path, name)) continue;
       const bytes = await ctx.client.download("getAppConversationFile", { params: { app: appId }, query: { name } });
       await save(path, bytes);
       result.media += 1;

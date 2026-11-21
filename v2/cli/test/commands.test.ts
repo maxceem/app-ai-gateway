@@ -384,7 +384,8 @@ test("after logout, no command names the signed-out account", async () => {
 
 test("app conversations downloads batches and the media they name, and skips what is already there", async () => {
   const { gzipSync } = await import("node:zlib");
-  const media = `2026-11-01/media/${"a".repeat(64)}.png`;
+  const { createHash } = await import("node:crypto");
+  const media = `2026-11-01/media/${createHash("sha256").update(new Uint8Array([1, 2, 3])).digest("hex")}.png`;
   const batch = gzipSync(`{"v":1,"request":{"image":"agw-media:${media}"}}\n`);
   const name = "2026-11-01/010203-aaaaaaaa.jsonl.gz";
   const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
@@ -414,6 +415,50 @@ test("app conversations downloads batches and the media they name, and skips wha
     assert.equal(again.json().result.downloaded, 0);
     assert.equal(again.json().result.media, 0);
     assert.equal(again.calls.filter((call) => call.path.includes("/conversations/file")).length, 0);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("app conversations downloads again a media file whose content does not match its name, and leaves nothing half-written (Sol round 7)", async () => {
+  const { gzipSync } = await import("node:zlib");
+  const { createHash } = await import("node:crypto");
+  const { mkdir, readdir } = await import("node:fs/promises");
+  const good = new Uint8Array([1, 2, 3]);
+  const media = `2026-11-01/media/${createHash("sha256").update(good).digest("hex")}.png`;
+  const batch = gzipSync(`{"v":1,"request":{"image":"agw-media:${media}"}}\n`);
+  const name = "2026-11-01/010203-aaaaaaaa.jsonl.gz";
+  const output = await mkdtemp(join(tmpdir(), "agw-conversations-"));
+  try {
+    const listing = (path: string) => {
+      assert.match(path, /^\/v2\/admin\/apps\/app_1\/conversations\?/);
+      return { app_id: "app_1", files: [{ name, size: batch.byteLength, records: 1, uploaded_at: "2026-11-01T01:02:03.000Z" }], next_cursor: null };
+    };
+    const argv = ["app", "conversations", "app_1", "--from", "2026-11-01", "--to", "2026-11-02", "--output", output, "--media", "--json"];
+
+    // An earlier export was cut short: a media file of the right name holds the wrong bytes.
+    await mkdir(join(output, "2026-11-01", "media"), { recursive: true });
+    await writeFile(join(output, media), new Uint8Array([1, 2]));
+    const repaired = await run(argv, (path: string) => {
+      if (!path.startsWith("/v2/admin/apps/app_1/conversations/file")) return listing(path);
+      const file = new URL(path, URL_).searchParams.get("name");
+      return file === name ? new Uint8Array(batch) : good;
+    });
+    assert.equal(repaired.code, 0, repaired.err);
+    assert.equal(repaired.json().result.media, 1);
+    assert.deepEqual(new Uint8Array(await readFile(join(output, media))), good);
+
+    // A download that fails part way leaves no file under the real name, and no temporary file.
+    await rm(join(output, media));
+    const failed = await run(argv, (path: string) => {
+      if (!path.startsWith("/v2/admin/apps/app_1/conversations/file")) return listing(path);
+      const file = new URL(path, URL_).searchParams.get("name");
+      if (file === name) return new Uint8Array(batch);
+      throw new CliError("network_error", "connection reset");
+    });
+    assert.notEqual(failed.code, 0);
+    await assert.rejects(stat(join(output, media)));
+    assert.deepEqual((await readdir(join(output, "2026-11-01", "media"))).filter((file) => file.endsWith(".part")), []);
   } finally {
     await rm(output, { recursive: true, force: true });
   }
