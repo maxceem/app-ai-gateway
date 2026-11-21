@@ -208,6 +208,28 @@ describe("conversation records", () => {
     expect(line).toContain("agw-omitted:audio/wav;12");
   });
 
+  it("treats the Responses API's generated images as images, by their declared format (Sol round 10)", async () => {
+    const body = JSON.stringify({
+      output: [{ type: "image_generation_call", id: "ig_1", status: "completed", output_format: "webp", result: PIXEL }],
+    });
+    const stream = `data: ${JSON.stringify({ type: "response.image_generation_call.partial_image", output_format: "jpeg", partial_image_b64: PIXEL })}\n\n`;
+    const reply = (images: boolean, text: string, contentType: string) => conversationRecord(capture({
+      keep: { images, audio: true, files: true },
+      response: { contentType, bytes: encoder.encode(text), totalBytes: text.length, aborted: false },
+    }));
+
+    const kept = await reply(true, body, "application/json");
+    expect(kept.media.map((item) => item.mime)).toEqual(["image/webp"]);
+    const left = await reply(false, body, "application/json");
+    expect(left.media).toHaveLength(0);
+    expect(left.line).not.toContain(PIXEL);
+    expect(left.line).toContain("agw-omitted:image/webp;");
+    const streamed = await reply(false, stream, "text/event-stream");
+    expect(streamed.media).toHaveLength(0);
+    expect(streamed.line).not.toContain(PIXEL);
+    expect(streamed.line).toContain("agw-omitted:image/jpeg;");
+  });
+
   it("treats Anthropic's sources as attachments, plain-text documents included", async () => {
     const body = JSON.stringify({
       messages: [{ role: "user", content: [

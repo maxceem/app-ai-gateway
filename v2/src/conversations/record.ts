@@ -200,6 +200,22 @@ async function keptString(value: string, key: string | undefined, walk: Walk): P
   return value;
 }
 
+/** The field holding a Responses API generated image, if `object` carries one; else null. */
+function generatedImageField(object: Record<string, unknown>): string | null {
+  if (object.type === "image_generation_call" && typeof object.result === "string") return "result";
+  if (object.type === "response.image_generation_call.partial_image" && typeof object.partial_image_b64 === "string") {
+    return "partial_image_b64";
+  }
+  return null;
+}
+
+/** The media type of a generated image from its declared `output_format`; PNG, the default, otherwise. */
+function imageMime(format: unknown): string {
+  if (format === "jpeg" || format === "jpg") return "image/jpeg";
+  if (format === "webp") return "image/webp";
+  return "image/png";
+}
+
 /**
  * A streamed audio event, such as `response.output_audio.delta`, whose `delta`
  * is a piece of recording in bare base64. Its transcript events are text.
@@ -253,6 +269,9 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
     const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const media = bareMedia(object, key);
     const audioEvent = isAudioEvent(object);
+    // The Responses API's generated image: bare base64 under `result`, or under
+    // `partial_image_b64` in its streamed partial images, in the declared `output_format`.
+    const imageField = generatedImageField(object);
     // Anthropic's custom-content document: an attachment written out as blocks.
     const attachedBlocks = key === "source" && object.type === "content" && Array.isArray(object.content);
     for (const [name, item] of Object.entries(object)) {
@@ -272,6 +291,8 @@ async function keptJson(value: unknown, walk: Walk, key?: string): Promise<unkno
           : walk.streamed && media.audio
             ? walk.shelf.piece(item as string, media.mime)
             : await walk.shelf.placeBase64(item as string, media.mime);
+      } else if (imageField !== null && name === imageField && typeof item === "string") {
+        out[name] = await walk.shelf.placeBase64(item, imageMime(object.output_format));
       } else if (audioEvent && name === "delta" && typeof item === "string") {
         out[name] = walk.shelf.piece(item);
       } else {
