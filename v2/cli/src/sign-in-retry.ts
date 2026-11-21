@@ -102,6 +102,9 @@ export function signInFailure(error: unknown, gateway: string | null = null): un
   else if (error.code === "redirect_refused") next = "Fix the gateway's address, then run the same command again.";
   // Only this machine's own storage: a gateway answering `invalid_state` gets the plain hint.
   else if (error instanceof LocalStateError) next = recoverState(gateway);
+  // The gateway refused the sign-in state it was sent: a fresh sign-in sends new
+  // state. The transport's generic hint for a 400 does not say so.
+  else if (error.code === "invalid_state") next = AGAIN;
   else if (/agw account login|agw --help/.test(error.nextAction)) next = AGAIN;
   if (next === null) return error;
   const replaced = new CliError(error.code, error.message, next, error.exitCode, error.details);

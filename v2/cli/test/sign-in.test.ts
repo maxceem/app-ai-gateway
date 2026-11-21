@@ -5,7 +5,7 @@ import { CliError, CLOUD, LocalStateError } from "../src/common.ts";
 import { Context, launch } from "../src/context.ts";
 import { listenLoopback, type Callback, type Loopback } from "../src/login.ts";
 import { deviceLogin, discover, type OAuthServer } from "../src/oauth.ts";
-import type { FormResponse } from "../src/transport.ts";
+import { Transport, type FormResponse } from "../src/transport.ts";
 import { fakeClock, fakeTransport, hasCode, memoryStore, signedInState, sinks } from "./helpers.ts";
 
 /**
@@ -248,31 +248,33 @@ test("every failed sign-in says to run the same command again, and never names a
     { name: "connect --cloud --no-open", flags: { cloud: true, "no-open": true }, run: (ctx: Context) => ctx.connect(CLOUD), target: CLOUD },
   ] as const;
   const AGAIN = "Run the same command again.";
-  const refusal = (path: string): FormResponse | never => {
-    throw new CliError("redirect_refused", `redirected ${path}`, "Connect explicitly to the intended gateway.", 3);
-  };
-  const unreachable = (): FormResponse | never => {
-    throw new CliError("connection_failed", "Could not reach the selected gateway.", "Check connectivity and the selected URL.", 3);
-  };
-  const unauthorized = (): never => {
-    throw new CliError("unauthorized", "The gateway refused the request (HTTP 401).", "Run agw account login.", 3, { status: 401 });
-  };
+  // Redirects and lost connections also come from the real transport.
+  const refusal = (_path: string): Promise<never> =>
+    new Transport(async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example/" } })).postForm(
+      "https://gateway.example",
+      "/answer",
+      {},
+    ) as Promise<never>;
+  const unreachable = (): Promise<never> =>
+    new Transport(async () => {
+      throw new TypeError("fetch failed");
+    }).request("https://gateway.example", "/answer") as Promise<never>;
+  // The gateway's answers go through the real transport, so the hint the
+  // sign-in replaces is the one the transport really produces.
+  const answered = (status: number, body: string, type = "application/json") => (): Promise<never> =>
+    new Transport(async () => new Response(body, { status, headers: { "content-type": type } })).request(
+      "https://gateway.example",
+      "/answer",
+    ) as Promise<never>;
+  const unauthorized = answered(401, JSON.stringify({ error: { code: "unauthorized", message: "No session." } }));
   // A proxy's HTML page in front of the gateway: no JSON, only the status.
-  const htmlUnauthorized = (): never => {
-    throw new CliError("invalid_response", "The gateway returned an invalid JSON response.", "Check the gateway URL and its release.", 3, { status: 401 });
-  };
-  const unavailable = (): never => {
-    throw new CliError("http_503", "The gateway refused the request (HTTP 503).", "Review command configuration and account status.", 3, { status: 503 });
-  };
+  const htmlUnauthorized = answered(401, "<html>401 Unauthorized</html>", "text/html");
+  const unavailable = answered(503, JSON.stringify({ error: { code: "service_unavailable", message: "Starting." } }));
   // A 503 whose body names a code that alone would mean "check connectivity".
-  const unavailableAsUnreachable = (): never => {
-    throw new CliError("connection_failed", "The gateway is not available (HTTP 503).", "Check connectivity and the selected URL.", 3, { status: 503 });
-  };
+  const unavailableAsUnreachable = answered(503, JSON.stringify({ error: { code: "connection_failed", message: "Upstream down." } }));
   // A gateway that answers with the same code as an unreadable state file: it is
   // not this machine's storage, so moving the file aside must never be advised.
-  const gatewayInvalidState = (): never => {
-    throw new CliError("invalid_state", "The sign-in state was not accepted.", "Run agw --help for usage.", 3, { status: 400 });
-  };
+  const gatewayInvalidState = answered(400, JSON.stringify({ error: { code: "invalid_state", message: "The sign-in state was not accepted." } }));
   const ACCESS = "Fix access to the gateway, then run the same command again.";
   const WAIT = "Wait until the gateway is available, then run the same command again.";
   const deviceOpened = (extra: object = {}): FormResponse => ({
@@ -290,11 +292,11 @@ test("every failed sign-in says to run the same command again, and never names a
       ...(device ? { device_authorization_endpoint: `${issuer}/oauth/device_authorization` } : {}),
     });
     const usesBrowser = !("device" in start.flags) && !("no-open" in start.flags);
-    type Get = (path: string) => { data: unknown } | never;
-    const failure = async (form: (path: string) => FormResponse, io: object = {}, device = true, get?: Get) => {
+    type Get = (path: string) => { data: unknown } | Promise<never> | never;
+    const failure = async (form: (path: string) => FormResponse | Promise<FormResponse>, io: object = {}, device = true, get?: Get) => {
       const transport = fakeTransport(
         get ?? ((path) => (path === "/.well-known/oauth-authorization-server/v2" ? { data: metadata(device) } : notFound())),
-        (path) => JSON.parse(JSON.stringify(form(path)).replaceAll("%ORIGIN%", target)) as FormResponse,
+        async (path) => JSON.parse(JSON.stringify(await form(path)).replaceAll("%ORIGIN%", target)) as FormResponse,
       );
       const out = sinks();
       const store = memoryStore();
