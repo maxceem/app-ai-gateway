@@ -257,14 +257,20 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
  * request there, never to the provider's own hosts, so its key goes only
  * where the customer pointed it: the main host at the base URL itself, any
  * other host (fal's `queue`) under a path named after it, such as
- * `<base URL>queue/`. A base URL that is one of the provider's own declared
- * hosts (fal's `https://queue.fal.run/`) is the same as none: each request
- * goes to its own declared host.
+ * `<base URL>queue/`. For a declared operation, a base URL that is one of
+ * the provider's own declared hosts (fal's `https://queue.fal.run/`) is the
+ * same as none: the operation goes to its own declared host. A listed
+ * passthrough path always goes to the base URL the customer set.
  */
-export function upstreamOrigin(connection: ConnectionRecord, description: ProviderDescription, hostKey: string): string {
+export function upstreamOrigin(
+  connection: ConnectionRecord,
+  description: ProviderDescription,
+  hostKey: string,
+  passthrough = false,
+): string {
   const host = description.hosts[hostKey];
   if (host === undefined) throw new GatewayError(500, "internal_error", "The provider description names an unknown host");
-  if (connection.baseUrl !== null && !isDeclaredHost(description, connection.baseUrl)) {
+  if (connection.baseUrl !== null && (passthrough || !isDeclaredHost(description, connection.baseUrl))) {
     return hostKey === "main" ? connection.baseUrl : `${connection.baseUrl}${hostKey}/`;
   }
   return `https://${host}/`;

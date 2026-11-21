@@ -53,6 +53,8 @@ export interface UpstreamRequestInput {
   readonly client?: Headers;
   readonly appId: string;
   readonly userId: string | null;
+  /** A listed passthrough path: it always goes to the connection's base URL, if one is set. */
+  readonly passthrough?: boolean;
 }
 
 export interface UpstreamRequest {
@@ -123,7 +125,7 @@ export function upstreamRequest(
     if (input.credentials.providerKey === null) {
       throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
     }
-    const url = `${upstreamOrigin(connection, description, input.hostKey)}${input.path}${input.query}`;
+    const url = `${upstreamOrigin(connection, description, input.hostKey, input.passthrough === true)}${input.path}${input.query}`;
     return {
       url,
       headers: { ...attribution(description, input), ...providerAuth(description.auth, input.credentials.providerKey) },

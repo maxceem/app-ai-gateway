@@ -8,7 +8,7 @@ import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext }
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
-import { applyFinalResult, boundedJson, checkJob, countNeedsBody, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
+import { applyFinalResult, boundedJson, checkJob, countNeedsBody, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, jobCheckId, jobEstimate, jobFinalFigure, jobResultFacts, OUTPUTS_READ_LIMIT, providerRequestId, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { STATUS_READ_LIMIT } from "../src/jobs/poll.ts";
 import { JOB_SUBMIT_BODY_LIMIT } from "../src/proxy/serve.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
@@ -1514,6 +1514,32 @@ describe("a final result's body after the sweep item's time, and the provider's 
     const urls = fetchSpy.mock.calls.map(([input]) => String(input));
     expect(urls).toContain("https://queue.fal.run/fal-ai/flux/dev");
     expect(urls.some((url) => url.includes("/queue/"))).toBe(false);
+  });
+
+  it("starts no provider request when the item's time runs out while the key is opened", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const submitted = await submit(appId, slug, key);
+    const claims = (await readJobId(env.JWT_SECRET, String(submitted.json!.request_id)))!;
+    const context = (await jobContext(env, claims))!;
+    fetchSpy.mockClear();
+    // Not yet out of time when fetchJob starts; out of time once the key is open.
+    let checks = 0;
+    const reason = new Error("the item's time is up");
+    const signal = {
+      get aborted() {
+        return checks > 1;
+      },
+      reason,
+      throwIfAborted() {
+        checks += 1;
+        if (checks > 1) throw reason;
+      },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } as unknown as AbortSignal;
+    await expect(fetchJob(env, context, "status", claims, null, signal)).rejects.toBe(reason);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("keeps sending other hosts under the base URL for a custom proxy", async () => {

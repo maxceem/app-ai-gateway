@@ -936,6 +936,7 @@ export async function sendAttempts(
       // Where it goes and what it carries: set last, so nothing a client sent can override it.
       const target = upstreamRequest(connection, description, {
         hostKey: prepared.hostKey,
+        passthrough: isPassthrough(prepared.operation),
         path: prepared.path.replace(/^\//u, ""),
         query: prepared.query,
         ...(prepared.operation.style !== undefined ? { style: prepared.operation.style } : {}),

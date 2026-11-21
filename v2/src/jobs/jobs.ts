@@ -237,6 +237,9 @@ export async function fetchJob(
   const untilHeaders = new AbortController();
   const stop = () => untilHeaders.abort(signal?.reason);
   signal?.addEventListener("abort", stop, { once: true });
+  // Opening the key can take long enough for the item's time to run out, and
+  // the listener above only sees an abort that happens after it was added.
+  signal?.throwIfAborted();
   try {
     const response = await fetch(target.url, {
       method: request.method,
