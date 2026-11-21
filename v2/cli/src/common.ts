@@ -54,6 +54,9 @@ export class CliError extends Error {
  */
 export class LocalStateError extends CliError {}
 
+/** A state directory this CLI will not use: not a real directory, or not the user's own. */
+export class LocalDirectoryError extends LocalStateError {}
+
 export function fail(
   code: string,
   message: string,

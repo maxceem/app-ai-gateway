@@ -611,6 +611,28 @@ test("logout revokes the refresh token, and forgets the sign-in only once the ga
   assert.equal(down.held.active?.login?.refreshToken, "agw_ort_test");
 });
 
+test("logout that cannot save the state asks to repair the file, or to revoke the sign-in under Access", async () => {
+  const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+  const broken = {
+    ...store,
+    path: "/home/me/.local/state/agw/v2/connection.json",
+    update: async () => {
+      throw new LocalStateError("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", "Move the connection state file aside.", 4);
+    },
+  };
+  const never = fakeTransport(notFound, () => assert.fail("nothing is revoked"));
+  const error = await new Context(broken, store.held, never, {}, { env: {}, stderr: sinks().stderr }).logout().then(
+    () => assert.fail("logout fails"),
+    (e: unknown) => e,
+  );
+  assert.ok(error instanceof LocalStateError);
+  assert.equal(error.code, "unsafe_storage");
+  assert.equal(error.exitCode, 4);
+  assert.match(error.nextAction ?? "", /chmod 600 \/home\/me\/\.local\/state\/agw\/v2\/connection\.json/);
+  assert.match(error.nextAction ?? "", /under Access/);
+  assert.doesNotMatch(error.nextAction ?? "", /Move/);
+});
+
 test("logout revokes the newest refresh token on disk, and leaves another sign-in stored meanwhile alone", async () => {
   const started = signedInState(URL_, "agw_oat_1");
   const store = memoryStore(started);

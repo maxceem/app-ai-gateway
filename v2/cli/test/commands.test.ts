@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliError } from "../src/common.ts";
+import { CliError, LocalDirectoryError } from "../src/common.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
+import { signInFailure } from "../src/sign-in-retry.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
 import { fakeClock, fakeTransport, memoryStore, signedInState, sinks } from "./helpers.ts";
@@ -288,6 +289,54 @@ test("a state file that cannot be read never points at agw account login", async
       assert.equal(error.code, "invalid_state", argv.join(" "));
       assert.equal(error.nextAction, expected, argv.join(" "));
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout with an unsafe state file asks to repair it, never to move the sign-in out of reach", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await store.update((state) => void Object.assign(state, signedInState(URL_, "agw_oat_1")));
+    await chmod(store.path, 0o644);
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 4);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(
+      error.nextAction,
+      `Restore the file's mode to 0600 (chmod 600 ${store.path}), then run agw account logout again. If the file cannot be recovered, revoke the sign-in in the console under Access.`,
+    );
+    // The sign-in is still where the repaired file can end it.
+    assert.equal(JSON.parse(await readFile(store.path, "utf8")).active.login.refreshToken, "agw_ort_test");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked state directory gets its own hint, which names the directory", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    await mkdir(join(dir, "real"));
+    const link = join(dir, "link");
+    await symlink(join(dir, "real"), link);
+    const store = new StateStore(link);
+    const expected = `Replace this directory with a private directory you own, then run the same command again:\n${link}`;
+    const error = await store.update(() => {}).then(
+      () => assert.fail("a symlinked directory is refused"),
+      (e: unknown) => e,
+    );
+    assert.ok(error instanceof LocalDirectoryError);
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(error.exitCode, 4);
+    assert.equal(error.nextAction, expected);
+    // Sign-in hints keep it rather than pointing at the state file.
+    const shown = signInFailure(error, URL_);
+    assert.ok(shown instanceof CliError);
+    assert.equal(shown.nextAction, expected);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

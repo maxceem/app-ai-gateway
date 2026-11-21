@@ -35,7 +35,7 @@ import {
   type ParseResult,
 } from "./parser.ts";
 import type { CommandResult, DeploymentStatusResult } from "./results.ts";
-import { StateStore } from "./state.ts";
+import { logoutStateFailure, StateStore } from "./state.ts";
 import { styleFor, type Style } from "./style.ts";
 import { clean, humanToolResult, mentions, toolHelp, usageLine } from "./tool-output.ts";
 import { Transport } from "./transport.ts";
@@ -252,6 +252,7 @@ export async function main(
       // never sends the person to another gateway.
       const command = "command" in parsed ? parsed.command : undefined;
       if (command === "deployment connect") throw signInFailure(error);
+      if (command === "account logout") throw logoutStateFailure(error, states);
       throw error;
     });
     if (parsed.words) {

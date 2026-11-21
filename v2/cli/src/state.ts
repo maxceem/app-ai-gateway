@@ -17,7 +17,7 @@ import { homedir, hostname, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { CliError, LocalStateError, fail, randomToken } from "./common.ts";
+import { CliError, LocalDirectoryError, LocalStateError, fail, randomToken } from "./common.ts";
 
 /** Whether POSIX ownership and mode bits mean anything here (not on Windows). */
 const posixPermissions = (): boolean => process.platform !== "win32";
@@ -70,9 +70,13 @@ export function cacheDirectory(): string {
 export async function protectedDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const s = await lstat(path);
-  if (!s.isDirectory() || s.isSymbolicLink()) stateFail("unsafe_storage", "CLI storage must be a real directory.");
+  // Moving the state file aside would not help here, so the hint names the directory itself.
+  const replace = `Replace this directory with a private directory you own, then run the same command again:\n${path}`;
+  if (!s.isDirectory() || s.isSymbolicLink())
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage must be a real directory.", replace, 4);
   if (!posixPermissions()) return;
-  if (process.getuid && s.uid !== process.getuid()) stateFail("unsafe_storage", "CLI storage belongs to another user.");
+  if (process.getuid && s.uid !== process.getuid())
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage belongs to another user.", replace, 4);
   await chmod(path, 0o700);
 }
 
@@ -116,6 +120,23 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
 // self-hosted user to the hosted one.
 const RECOVER_STATE =
   "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
+
+/**
+ * For `account logout`: moving the state file aside would hide its sign-in,
+ * which would then never be revoked. So the hint repairs the file, or ends
+ * the sign-in from the console. A directory failure keeps its own hint.
+ */
+export function logoutStateFailure(error: unknown, store: object): unknown {
+  if (!(error instanceof LocalStateError) || error instanceof LocalDirectoryError) return error;
+  const path = "path" in store && typeof store.path === "string" ? store.path : "the connection state file";
+  return new LocalStateError(
+    error.code,
+    error.message,
+    `Restore the file's mode to 0600 (chmod 600 ${path}), then run agw account logout again. If the file cannot be recovered, revoke the sign-in in the console under Access.`,
+    error.exitCode,
+    error.details,
+  );
+}
 
 /** A failure of this machine's own storage, tagged so sign-in hints can tell it from a gateway's answer. */
 function stateFail(code: string, message: string, nextAction?: string, exitCode?: number): never {

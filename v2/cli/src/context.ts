@@ -25,7 +25,7 @@ import {
 } from "./oauth.ts";
 import type { Flags } from "./parser.ts";
 import { AGAIN, AGAIN_OR_CODE, signInFailure, START_OVER } from "./sign-in-retry.ts";
-import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
+import { logoutStateFailure, type ActiveConnection, type CliState, type OAuthLogin, type StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
 
 export type { CallOptions, CallResult, OperationName };
@@ -478,6 +478,8 @@ export class Context {
         delete disk.active!.account;
       }
       return revoked;
+    }).catch((error: unknown) => {
+      throw logoutStateFailure(error, this.store);
     });
     this.state = state;
     if (result === "replaced") this.replaced();

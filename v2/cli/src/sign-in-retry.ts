@@ -8,7 +8,7 @@
  * pastes the same in every shell is not possible.
  */
 
-import { CliError, LocalStateError } from "./common.ts";
+import { CliError, LocalDirectoryError, LocalStateError } from "./common.ts";
 
 export const AGAIN = "Run the same command again.";
 export const START_OVER = "Run the same command again to start over.";
@@ -49,6 +49,8 @@ export function recoverState(gateway: string | null): string {
  */
 export function signInFailure(error: unknown, gateway: string | null = null): unknown {
   if (!(error instanceof CliError)) return error;
+  // A state directory that is not the person's own: its own hint names the directory.
+  if (error instanceof LocalDirectoryError) return error;
   const status = error.details?.status;
   let next: string | null = null;
   if (status === 401 || status === 403) next = "Fix access to the gateway, then run the same command again.";
