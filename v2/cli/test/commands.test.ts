@@ -513,3 +513,15 @@ test("app conversations refuses a file name that would land outside its folder, 
     await rm(output, { recursive: true, force: true });
   }
 });
+
+test("operation wait exits 5 when it stops waiting, and the step stays open", async () => {
+  const result = await run(["operation", "wait", "op_7", "--timeout", "4", "--json"], (path) => {
+    assert.equal(path, "/v2/admin/operations/op_7");
+    return { id: "op_7", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" };
+  });
+  assert.equal(result.code, 5);
+  const error = result.json().error;
+  assert.equal(error.code, "operation_pending");
+  assert.match(error.nextAction, /agw operation wait op_7/);
+});
+

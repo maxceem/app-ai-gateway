@@ -360,7 +360,8 @@ export class Context {
       try {
         answer = await Promise.race([loopback.callback, timeout]);
       } catch {
-        fail("login_expired", "The sign-in was not approved in time.", "Run agw account login again, or add --device to sign in with a code.", 4);
+        // Exit 5: this CLI stopped waiting for the browser (v1's wait timeout).
+        fail("login_expired", "The sign-in was not approved in time.", "Run agw account login again, or add --device to sign in with a code.", 5);
       } finally {
         clearTimeout(timer);
       }
