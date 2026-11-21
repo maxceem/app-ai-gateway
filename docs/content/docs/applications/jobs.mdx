@@ -57,9 +57,11 @@ provider directly.
 
 - **The provider confirms the cancel and reports no billed units.** This is
   a job cancelled while it was still queued. It costs nothing.
-- **The provider reports billed units.** This is usually a job that was
-  already running. It is charged by those units. fal's own docs say a
-  running job may still complete after a cancel.
+- **The provider bills the job.** This is usually a job that was already
+  running, or one that failed after it started. It is charged at the job's
+  saved rate: by the units the provider reported, or as one job if you set
+  a flat price per job. fal's own docs say a running job may still complete
+  after a cancel.
 - **The provider's billed units cannot be read.** The estimate stays, and
   the charge is marked as an estimate.
 

@@ -28,6 +28,7 @@ import {
   useApp,
   useAppCheck,
   useAppJobs,
+  JOBS_REFRESH_MS,
   useAppKeys,
   useAppUsers,
   useCreateAppKey,
@@ -695,9 +696,20 @@ function jobCost(nano: number | null): string {
   return nano === null ? "—" : formatCost(nanoToDollars(nano));
 }
 
+/** The current time, moved on every `everyMs`, so a check that becomes late shows "Overdue" on its own. */
+function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), everyMs);
+    return () => clearInterval(timer);
+  }, [everyMs]);
+  return now;
+}
+
 function JobsTab({ app }: { app: App }) {
   const [offset, setOffset] = useState(0);
   const jobs = useAppJobs(app.id, { limit: PAGE, offset });
+  const now = useNow(JOBS_REFRESH_MS);
   const list = jobs.data?.jobs ?? [];
   const total = jobs.data?.total ?? 0;
 
@@ -705,8 +717,9 @@ function JobsTab({ app }: { app: App }) {
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         Jobs the app submitted, such as image and video jobs, newest first. Each is charged an estimate when it is submitted, and corrected to what
-        the provider billed once its result is read. A job cancelled while it was still queued costs nothing; one that was already running is
-        charged in full, by the units the provider billed. Both hold whether it was cancelled here or at the provider.
+        the provider billed once its result is read. A cancelled job ends in one of three ways, whether it was cancelled here or at the provider: a
+        queued job the provider confirms with no billed units is free; a cancel or failure the provider bills is charged at the job's saved rate
+        (by the reported units, or one job for a flat price per job); and if the provider's billed units cannot be read, the estimate stays.
       </p>
       <Card className="overflow-hidden py-0">
         <Table>
@@ -748,7 +761,7 @@ function JobsTab({ app }: { app: App }) {
                   </TableCell>
                   <TableCell>
                     {JOB_STATE_TEXT[job.state]}
-                    {jobCheckOverdue(job, Date.now()) ? (
+                    {jobCheckOverdue(job, now) ? (
                       <span className="block text-xs text-destructive">Overdue: the check is late</span>
                     ) : job.state === "settled" ? null : (
                       <span className="block text-xs text-muted-foreground">Estimate</span>

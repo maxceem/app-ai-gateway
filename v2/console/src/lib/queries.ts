@@ -239,10 +239,14 @@ export function useAppUsers(appId: string, query: UserQuery) {
 
 export type JobQuery = OperationQuery<"listAppJobs">;
 
+/** How often an open Jobs tab asks again, so a settled or late check shows without a reload. */
+export const JOBS_REFRESH_MS = 30_000;
+
 export function useAppJobs(appId: string, query: JobQuery) {
   return useQuery({
     queryKey: keys.jobs(appId, query),
     queryFn: () => call("listAppJobs", { params: { app: appId }, query }),
+    refetchInterval: JOBS_REFRESH_MS,
   });
 }
 

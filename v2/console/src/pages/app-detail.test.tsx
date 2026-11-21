@@ -195,6 +195,35 @@ describe("AppDetailPage", () => {
     expect(within(onTimeRow).queryByText(/overdue/i)).toBeNull();
   });
 
+  it("marks a check overdue while the tab stays open, and asks for the jobs again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.parse("2026-11-01T12:00:00.000Z") });
+    try {
+      const fetchMock = stub({
+        "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
+          body: {
+            app_id: "my-app",
+            total: 1,
+            limit: 50,
+            offset: 0,
+            jobs: [
+              { id: "soon", provider_slug: "fal", operation: "fal.queue", model: "fal-ai/flux/dev", end_user_id: "u", submitted_at: "2026-11-01T11:59:00.000Z", estimate_nano: 1, correction_nano: null, total_nano: 1, measured: "estimated", price_source: "list_rate", state: "checking", settled_at: null, next_check_at: "2026-11-01T12:01:00.000Z" },
+            ],
+          },
+        },
+      });
+      renderTab("jobs");
+      const row = (await screen.findByText("fal-ai/flux/dev")).closest("tr")!;
+      expect(within(row).queryByText(/overdue/i)).toBeNull();
+      const jobCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/v2/admin/apps/my-app/jobs")).length;
+      const before = jobCalls();
+      await vi.advanceTimersByTimeAsync(7 * 60_000);
+      await waitFor(() => expect(within(screen.getByText("fal-ai/flux/dev").closest("tr")!).getByText(/overdue/i)).toBeTruthy());
+      expect(jobCalls()).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("calls a check overdue only once it is more than five minutes late", () => {
     const due = Date.parse("2026-11-01T00:00:00.000Z");
     const job = { state: "checking" as const, next_check_at: new Date(due).toISOString() };

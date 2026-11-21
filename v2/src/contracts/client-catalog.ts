@@ -168,7 +168,7 @@ export const CLIENT_CATALOG = {
     tags: ["Jobs"],
     summary: "Cancel a job",
     description:
-      "Asks the provider to cancel a job submitted through the gateway, and passes its answer on. A job cancelled while it is still queued costs nothing: its charge settles to zero once the provider confirms it. A job that is already running is charged in full, by the units the provider billed. Both hold whether the job is cancelled here or at the provider directly. Free: it uses no request limit and no plan allowance.",
+      "Asks the provider to cancel a job submitted through the gateway, and passes its answer on. A cancelled job ends in one of three ways, whether it is cancelled here or at the provider directly: a queued job the provider confirms with no billed units costs nothing; a cancel or failure the provider bills is charged at the job's saved rate, by the reported units or as one job for a flat price per job; and if the provider's billed units cannot be read, the estimate stays. Free: it uses no request limit and no plan allowance.",
     security: "gateway",
     response: JobAnswerSchema,
     responseDescription: "The provider's answer to the cancel, passed on with its status code.",
