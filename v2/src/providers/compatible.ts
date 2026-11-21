@@ -14,11 +14,8 @@ export const perplexity = defineProvider({
   label: "Perplexity",
   hosts: { main: "api.perplexity.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Creating and revoking API keys.
-  refused: ["generate_auth_token/*", "revoke_auth_token/*", "v1/generate_auth_token/*", "v1/revoke_auth_token/*"],
   // No probe: Perplexity has no free call that needs a key.
-  cloudflareEndpoint: { slug: "perplexity-ai" },
-  cloudflareGateway: {},
+  cloudflareGateway: { slug: "perplexity-ai" },
   // `fast` is Perplexity's alias for priority.
   serviceModes: [
     {
@@ -42,13 +39,11 @@ export const perplexity = defineProvider({
 
 export const deepseek = defineProvider({
   type: "deepseek",
+  apiPrefixes: ["beta"],
   label: "DeepSeek",
   // DeepSeek's base URL has no `v1` segment; `v1/` is accepted as well.
   hosts: { main: "api.deepseek.com" },
-  cloudflareEndpoint: { slug: "deepseek" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The account's balance.
-  refused: ["user/*", "v1/user/*"],
   probe: { path: "models" },
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("deepseek", [
@@ -65,9 +60,7 @@ export const groq = defineProvider({
   label: "Groq",
   // Groq's OpenAI-compatible API lives under `openai/v1/`.
   hosts: { main: "api.groq.com" },
-  cloudflareEndpoint: { slug: "groq", stripPathPrefix: "openai/v1/" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   probe: { path: "openai/v1/models" },
   // `performance`, and `auto` which may be served from it, draw on reserved
   // capacity bought by contract, so they bill as standard.
@@ -91,10 +84,8 @@ export const mistral = defineProvider({
   type: "mistral",
   label: "Mistral",
   hosts: { main: "api.mistral.ai" },
-  cloudflareEndpoint: { slug: "mistral" },
   otherHosts: ["api.eu.mistral.ai", "api.us.mistral.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   probe: { path: "v1/models" },
   // `auto` asks for the Priority Tier wherever the account may use it.
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { standard_only: "standard", auto: "priority" } }],
@@ -119,7 +110,6 @@ export const together = defineProvider({
   hosts: { main: "api.together.ai" },
   otherHosts: ["us-api.together.ai", "api.together.xyz"],
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
   // The US geo-pinned host, priced apart for the models it serves.
@@ -142,9 +132,6 @@ export const fireworks = defineProvider({
   // The inference plane is `inference/v1`; `v1` on the same host is the control plane.
   hosts: { main: "api.fireworks.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // Its control plane is `v1/accounts`: keys, users, deployments and secrets.
-  // The rest of `v1/` stays open: v1 served text paths there by their shape.
-  refused: ["v1/accounts/*"],
   // No probe: its list-models call needs the account id, which the key does not give.
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("fireworks", [
@@ -160,9 +147,7 @@ export const cerebras = defineProvider({
   type: "cerebras",
   label: "Cerebras",
   hosts: { main: "api.cerebras.ai" },
-  cloudflareEndpoint: { slug: "cerebras", stripPathPrefix: "v1/" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   probe: { path: "v1/models" },
   // Its `priority`, `auto` and `flex` tiers run only on dedicated endpoints,
   // paid for by contract, so they bill as standard.
@@ -183,8 +168,6 @@ export const moonshot = defineProvider({
   // The China platform speaks the same API.
   otherHosts: ["api.moonshot.cn"],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The account's balance.
-  refused: ["v1/users/*"],
   probe: { path: "v1/models" },
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("moonshot", [chat("moonshot.chat", "v1/chat/completions", KIMI_CHAT), messages("moonshot.messages", "anthropic/v1/messages")], {
@@ -200,7 +183,6 @@ export const huggingface = defineProvider({
   // prices the models they use.
   hosts: { main: "router.huggingface.co" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   // No probe: its model list is public and answers any token.
   serviceModes: NO_SERVICE_TIERS,
   operations: withV1Paths("huggingface", [chat("huggingface.chat", "v1/chat/completions")]),
@@ -212,7 +194,6 @@ export const baseten = defineProvider({
   // The Model APIs inference host. `api.baseten.co` is the management plane.
   hosts: { main: "inference.baseten.co" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   probe: { path: "v1/models" },
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", flex: "flex", priority: "priority" } }],
   operations: withV1Paths("baseten", [chat("baseten.chat", "v1/chat/completions")]),
@@ -226,7 +207,6 @@ export const bytedance = defineProvider({
   // base URL.
   hosts: { main: "ark.ap-southeast.bytepluses.com/api/v3" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  refused: [],
   // No probe: ModelArk has no list-models call, and answers every path with the same 401.
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", flex: "flex" } }],
   // The tier that served the request, which billing follows.

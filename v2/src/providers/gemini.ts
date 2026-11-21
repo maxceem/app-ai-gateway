@@ -4,7 +4,7 @@
  * carries image, speech and transcription models.
  */
 import { chat, DETACHED, withV1Paths } from "./llm.ts";
-import { defineOperation, defineProvider } from "./operation.ts";
+import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
 
 /** `generateContent` and its streaming twin, under one API version. */
 function generate(version: "v1" | "v1beta" | "v1alpha") {
@@ -53,32 +53,36 @@ export const gemini = defineProvider({
   label: "Gemini",
   hosts: { main: "generativelanguage.googleapis.com" },
   auth: { header: "x-goog-api-key", format: "{key}" },
-  // Tuned models belong to the key's project, not to a call, and can be
-  // shared with others; so can a corpus.
-  refused: ["{version}/tunedModels/*", "{version}/corpora/{corpus}/permissions/*"],
-  // Ephemeral tokens for the Live API, reached only by a listed path that
-  // opts in (plan D4). `newSessionExpireTime` is the window for starting a
-  // session; `expireTime` caps the session itself and is left as sent.
-  // A token may start new sessions only within the window, and only one:
-  // `uses: 0` would mean any number. Gemini's REST surface reads both
-  // spellings of a field, so both are removed and one is written.
-  liveTokens: [
-    {
-      path: "{version}/auth_tokens/*",
-      method: "POST",
-      forced: {
-        fields: [
-          { names: ["newSessionExpireTime", "new_session_expire_time"], value: { window: "time" } },
-          { names: ["uses"], value: { fixed: 1 } },
-        ],
+  // Ephemeral tokens for the Live API (plan D4). `newSessionExpireTime` is
+  // the window for starting a session; `expireTime` caps the session itself
+  // and is left as sent. A token may start new sessions only within the
+  // window, and only one: `uses: 0` would mean any number. Gemini's REST
+  // surface reads both spellings of a field, so the other is removed.
+  suggestedPaths: (["v1alpha", "v1beta"] as const).map((version) => ({
+    method: "POST" as const,
+    path: `${version}/auth_tokens`,
+    liveToken: true as const,
+    fields: [
+      liveTokenExpiry("Gemini", {
+        in: "body",
+        name: "newSessionExpireTime",
+        value: LIVE_TOKEN_WINDOW_SECONDS,
+        as: "time_from_now",
+        aliases: ["new_session_expire_time"],
+      }),
+      {
+        in: "body" as const,
+        name: "uses",
+        value: 1,
+        label: "Sessions per token",
+        reason: "With 1, the token can start only one live session. 0 would let it start any number of them, outside the gateway's limits.",
       },
-    },
-  ],
+    ],
+  })),
   probe: { path: "v1beta/models" },
   // The Files API's resumable uploads (`upload/v1beta/files`), once listed.
   passthroughHeaders: ["x-goog-upload-"],
-  cloudflareEndpoint: { slug: "google-ai-studio" },
-  cloudflareGateway: {},
+  cloudflareGateway: { slug: "google-ai-studio" },
   // Gemini's REST surface accepts both spellings of a field.
   serviceModes: [
     { names: ["service_tier", "serviceTier"], axis: "tier", values: { standard: "standard", flex: "flex", priority: "priority" } },

@@ -2288,13 +2288,63 @@
               "openai-speech"
             ]
           },
-          "live_token": {
-            "type": "boolean"
+          "set_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldSetting"
+            },
+            "maxItems": 20
           }
         },
         "required": [
           "method",
           "path"
+        ],
+        "additionalProperties": false
+      },
+      "FieldSetting": {
+        "type": "object",
+        "properties": {
+          "in": {
+            "type": "string",
+            "enum": [
+              "body",
+              "query"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "value": {},
+          "as": {
+            "type": "string",
+            "enum": [
+              "time_from_now"
+            ]
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "maxItems": 10
+          },
+          "label": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "suggested_value": {}
+        },
+        "required": [
+          "in",
+          "name",
+          "value"
         ],
         "additionalProperties": false
       },

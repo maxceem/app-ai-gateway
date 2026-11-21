@@ -1,34 +1,26 @@
 /**
- * Matches a request to a declared operation or a listed passthrough path.
+ * Matches a request to a listed passthrough path or a declared operation.
  * Closed by default: anything else is refused.
  *
  * The order is fixed (plan sections 4.1 and 4.5):
  *
  * 1. Normalize the path. A path that could mean something else upstream is
  *    refused.
- * 2. Refused paths, ignoring case: the provider's own, and those of every
- *    other provider the request reaches (`./destination.ts`: a base URL on
- *    its host, or its Cloudflare AI Gateway endpoint). These win even over a
- *    path the customer listed. Live-session token paths (`liveTokens`) are
- *    refused the same way, except to a listed path that opts in to them
- *    (plan D4).
- * 3. Passthrough paths the customer listed for this connection. They come
+ * 2. Passthrough paths the customer listed for this connection. They come
  *    before declared operations, so a release that declares an operation
  *    for a listed path never switches it on its own: the customer makes
- *    that switch (plan section 4.5).
- * 4. Declared operations, in the order the provider lists them.
- * 5. Everything else is refused.
+ *    that switch (plan section 4.5). Saving refuses a listing a declared
+ *    operation serves (`overlappingOperation`), so the two never meet.
+ *    Of the listed paths that match, the most specific serves
+ *    (`moreSpecific`), so the order they are listed in never decides.
+ * 3. Declared operations, in the order the provider lists them.
+ * 4. Everything else is refused.
  *
+ * There are no refused paths: a customer may list any path of a built-in
+ * provider, admin paths included (plan section 4.5, owner, 2026-11-21).
  * Which operations an app allows is decided after this, by the app's settings.
  */
-import {
-  CLOUDFLARE_AI_GATEWAY_HOST,
-  CLOUDFLARE_ENDPOINT_SEGMENTS,
-  CLOUDFLARE_PROVIDERS,
-  cloudflarePrefixOf,
-  hostOwner,
-} from "./destination.ts";
-import type { HttpMethod, LiveTokenPath, OperationDescription, ProviderDescription } from "./operation.ts";
+import type { FieldSetting, HttpMethod, OperationDescription, ProviderDescription, SuggestedPath } from "./operation.ts";
 import {
   fillTemplate,
   joinSegments,
@@ -57,11 +49,10 @@ export interface PassthroughPath {
    */
   readonly style?: string;
   /**
-   * The path opts in to the provider's live-session token paths
-   * (`liveTokens`, plan D4): without it they stay refused, even when listed.
-   * Never written when false.
+   * Request fields the gateway sets on every request to the path, over what
+   * the app sent (plan section 4.5, "Safe defaults"). Never written when empty.
    */
-  readonly liveToken?: true;
+  readonly setFields?: readonly FieldSetting[];
 }
 
 /** Where the request goes: a key of the provider's `hosts`, and the encoded path. */
@@ -82,11 +73,15 @@ export type MatchResult =
       readonly listed: PassthroughPath;
       readonly parts: Parts;
       readonly upstream: UpstreamTarget;
-      /** The live-session token path it reaches, through the listing's opt-in, or null. */
-      readonly liveToken: LiveTokenPath | null;
+      /**
+       * Whether this request is a live-session token mint the provider names
+       * (plan D4), judged on the path the provider reads, whatever template
+       * the listing used. It decides the cache rules only; suggested defaults
+       * stay with exact listings (`suggestionFor`, when saved).
+       */
+      readonly liveTokenMint: boolean;
     }
   | { readonly kind: "refused"; readonly reason: "bad_path"; readonly detail: PathRefusal }
-  | { readonly kind: "refused"; readonly reason: "refused_path"; readonly pattern: string }
   | { readonly kind: "refused"; readonly reason: "not_declared" };
 
 interface CompiledOperation {
@@ -135,13 +130,6 @@ export function compilePassthrough(paths: readonly PassthroughPath[]): readonly 
 /** The characters a listed path may hold: RFC 3986 `pchar` without `%` and `*`, plus `/`, `{` and `}`. */
 const LISTED_PATH = /^[A-Za-z0-9\-._~:@!$&'()+,;=/{}]+$/u;
 
-/**
- * A value no template literal can hold (a `{` always starts a part), standing
- * for any value of a listed path's part. If a pattern matches a path with it,
- * the pattern matches the path whatever the part holds.
- */
-const ANY_VALUE = "{}";
-
 /** One segment of a listed path, or of an operation's path outside its `{name...}` part. */
 type SegmentPattern = Extract<TemplateSegment, { kind: "literal" } | { kind: "part" }>;
 
@@ -163,50 +151,21 @@ function literalFits(value: string, part: Extract<TemplateSegment, { kind: "part
 
 /**
  * How a connection's requests reach its provider, as far as their paths go
- * (`upstreamRoute`). Refused paths and declared operations are written as the
- * provider reads its paths, so they are judged on the upstream target a
- * request reaches (`upstreamTargets`), not on the gateway path alone.
+ * (`upstreamRoute`). Declared operations are written as the provider reads
+ * its paths, so whether a listing could take an operation's requests is
+ * judged on the upstream target both reach (`upstreamTargets`).
  */
 export interface UpstreamRoute {
   /** The path of the connection's base URL, in segments, put before every path to the main host. Null without one. */
   readonly basePath: readonly string[] | null;
   /**
-   * Through Cloudflare AI Gateway: the path Cloudflare's endpoint for the
+   * Through Cloudflare AI Gateway: the path Cloudflare's name for the
    * provider stands for (`stripPathPrefix`, OpenAI's `v1`), in segments. A
    * path that starts with it is sent without it, and the provider reads it
    * back on; any other path is read with it added. Null when direct.
    */
   readonly cloudflarePrefix: readonly string[] | null;
-  /**
-   * A base URL on a built-in provider's host (`https://openrouter.ai/`): that
-   * host's built-in path prefix (`api`), in segments, as the host's owner
-   * declares it, whatever the connection's type. Null otherwise.
-   */
-  readonly hostPrefix?: readonly string[] | null;
-  /**
-   * A base URL on Cloudflare AI Gateway's host
-   * (`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/openai/`):
-   * Cloudflare reads the base URL's path and the request's together, and the
-   * fourth segment names the provider endpoint, wherever the base URL ends.
-   * What follows it is read as the `cloudflareGateway` setting reads it, by
-   * the provider that endpoint reaches (`upstreamTargets`). The connection's
-   * own type, endpoint and prefix are kept here. Absent otherwise.
-   */
-  readonly cloudflareBase?: { readonly type: string; readonly slug: string | null; readonly prefix: readonly string[] };
-  /**
-   * The lower-cased host name of the connection's base URL, when it has one.
-   * Refused paths that name hosts (`RefusedPath.hosts`) apply only there.
-   */
-  readonly baseHost?: string | null;
-  /**
-   * The built-in provider that owns the base URL's host
-   * (`./destination.ts`), when it is not the connection's own: its rules
-   * judge the connection's requests too, since they reach it.
-   */
-  readonly owner?: ProviderDescription;
 }
-
-export { CLOUDFLARE_AI_GATEWAY_HOST } from "./destination.ts";
 
 /** The provider's own hosts, with no base URL or Cloudflare. */
 export const DIRECT_ROUTE: UpstreamRoute = { basePath: null, cloudflarePrefix: null };
@@ -229,38 +188,18 @@ export function upstreamRoute(
   description: ProviderDescription,
   connection: { readonly baseUrl: string | null; readonly cloudflareGateway: object | null },
 ): UpstreamRoute {
-  // Cloudflare's provider endpoint adds this back: the one mapping, for the setting and for a base URL on its host.
-  const cloudflarePrefix = cloudflarePrefixOf(description);
-  if (connection.cloudflareGateway !== null) return { basePath: null, cloudflarePrefix };
+  if (connection.cloudflareGateway !== null) {
+    const prefix = (description.cloudflareGateway?.stripPathPrefix ?? "").split("/").filter((piece) => piece !== "");
+    return { basePath: null, cloudflarePrefix: prefix };
+  }
   if (connection.baseUrl !== null) {
-    let url: URL | null = null;
+    let pathname = "/";
     try {
-      url = new URL(connection.baseUrl);
+      pathname = new URL(connection.baseUrl).pathname;
     } catch {
       // A stored base URL passed the origin guard; one that does not read sends nothing anyway.
     }
-    const basePath = pathSegments(url?.pathname ?? "/");
-    const baseHost = url?.hostname.toLowerCase() ?? null;
-    // Another provider's host: its rules judge where these requests go.
-    const owner = baseHost === null ? null : hostOwner(baseHost);
-    // On a built-in host, that host's owner reads its paths under the host's
-    // built-in prefix (`https://openrouter.ai/` → `api`), whatever the
-    // connection's own type: the owner decides how its host reads a path.
-    const own = Object.values((owner ?? description).hosts)
-      .map((host) => ({ name: host.split("/")[0]!.toLowerCase(), prefix: pathSegments(host.slice(host.split("/")[0]!.length)) }))
-      .find((host) => host.name === url?.host.toLowerCase() && host.prefix.length > 0);
-    const cloudflareBase =
-      baseHost === CLOUDFLARE_AI_GATEWAY_HOST
-        ? { type: description.type, slug: description.cloudflareEndpoint?.slug ?? null, prefix: cloudflarePrefix }
-        : undefined;
-    return {
-      basePath,
-      cloudflarePrefix: null,
-      baseHost,
-      ...(own !== undefined ? { hostPrefix: own.prefix } : {}),
-      ...(cloudflareBase !== undefined ? { cloudflareBase } : {}),
-      ...(owner !== null && owner.type !== description.type ? { owner } : {}),
-    };
+    return { basePath: pathSegments(pathname), cloudflarePrefix: null };
   }
   return DIRECT_ROUTE;
 }
@@ -270,50 +209,6 @@ export interface UpstreamTargets {
   /** A key of the provider's `hosts`. The main host stands for the base URL or Cloudflare too. */
   readonly host: string;
   readonly paths: readonly (readonly TemplateSegment[])[];
-  /** The base URL's host name on the main host (`UpstreamRoute.baseHost`), for refused paths that name hosts. */
-  readonly baseHost?: string | null;
-  /**
-   * Built-in providers besides the connection's own that these paths reach
-   * (`./destination.ts`): the base URL host's owner, and the provider of a
-   * Cloudflare AI Gateway endpoint the path names. Their refused and
-   * live-session token paths judge the paths too.
-   */
-  readonly owners?: readonly ProviderDescription[];
-}
-
-/** The targets of `paths` on the main host of `route`, with its base URL's host and the providers they reach. */
-function mainTargets(route: UpstreamRoute, paths: readonly (readonly TemplateSegment[])[], reached: readonly ProviderDescription[] = []): UpstreamTargets {
-  const owners = route.owner === undefined ? reached : [route.owner, ...reached];
-  return {
-    host: "main",
-    paths,
-    ...(route.baseHost === undefined || route.baseHost === null ? {} : { baseHost: route.baseHost }),
-    ...(owners.length > 0 ? { owners } : {}),
-  };
-}
-
-/** Whether a path segment can name Cloudflare AI Gateway's endpoint `slug`. */
-function namesEndpoint(segment: TemplateSegment, slug: string): boolean {
-  if (segment.kind === "literal") return segment.value.toLowerCase() === slug.toLowerCase();
-  if (segment.kind === "part") return segmentsMeet({ ...segment, prefix: segment.prefix.toLowerCase(), suffix: segment.suffix.toLowerCase() }, { kind: "literal", value: slug.toLowerCase() });
-  return true;
-}
-
-/**
- * How Cloudflare AI Gateway's provider endpoint reads `path`: it adds back
- * `prefix` (`stripPathPrefix`); a path that may or may not start with it (a
- * `{name}` part there) is read both ways.
- */
-function cloudflareReadings(prefix: readonly string[], path: readonly TemplateSegment[]): (readonly TemplateSegment[])[] {
-  if (prefix.length === 0) return [path];
-  const added = [...prefix.map(literal), ...path];
-  const head = path.slice(0, prefix.length);
-  const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
-  if (starts) return [path];
-  const may =
-    head.length === prefix.length &&
-    head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: prefix[index]! }));
-  return may ? [path, added] : [added];
 }
 
 const literal = (value: string): TemplateSegment => ({ kind: "literal", value });
@@ -321,121 +216,63 @@ const literal = (value: string): TemplateSegment => ({ kind: "literal", value })
 /**
  * The upstream targets of `path` (decoded request segments as literals, or a
  * template) sent to `hostKey` on `route`, written as the provider reads its
- * paths. The one place this is worked out; saving and serving both use it.
+ * paths. The one place this is worked out; saving uses it.
  *
- * - Direct: the path itself, under the host's own path prefix.
+ * - Direct: the path itself.
  * - A base URL (main host only): its path, then the request's. Where the base
  *   URL mounts the provider is not known, so each way of reading it is a
  *   target: the whole base path, then without its first segment, and so on.
- * - Cloudflare AI Gateway (main host only): Cloudflare's provider endpoint
- *   adds back its prefix (`cloudflarePrefix`). A path that may or may not
- *   start with it (a `{name}` part there) has both targets.
+ * - Cloudflare AI Gateway (main host only): Cloudflare's provider name adds
+ *   back its prefix (`cloudflarePrefix`) to a path that does not start
+ *   with it.
  *
  * Null for a host Cloudflare does not serve: nothing is sent there.
  */
 export function upstreamTargets(route: UpstreamRoute, hostKey: string, path: readonly TemplateSegment[]): UpstreamTargets | null {
   if (hostKey !== "main") return route.cloudflarePrefix !== null ? null : { host: hostKey, paths: [path] };
   const prefix = route.cloudflarePrefix;
-  if (prefix !== null) return mainTargets(route, cloudflareReadings(prefix, path));
+  if (prefix !== null) {
+    if (prefix.length === 0) return { host: "main", paths: [path] };
+    const added = [...prefix.map(literal), ...path];
+    const head = path.slice(0, prefix.length);
+    const starts = head.length === prefix.length && head.every((segment, index) => segment.kind === "literal" && segment.value === prefix[index]);
+    if (starts) return { host: "main", paths: [path] };
+    // A `{name}` part where the prefix would be cannot be listed (the named-part rule), and no declared
+    // operation starts with one, so a path either starts with the prefix or does not.
+    return { host: "main", paths: [added] };
+  }
   const base = route.basePath;
-  if (base === null) return mainTargets(route, [path]);
+  if (base === null) return { host: "main", paths: [path] };
   const paths: (readonly TemplateSegment[])[] = base.map((_, from) => [...base.slice(from).map(literal), ...path]);
   paths.push(path);
-  // A base URL on the provider's own host: the provider reads the whole path
-  // under its built-in prefix, so that prefix is taken off where it may lead.
-  const own = route.hostPrefix ?? [];
-  if (own.length > 0) {
-    const whole = [...base.map(literal), ...path];
-    const head = whole.slice(0, own.length);
-    const may =
-      head.length === own.length &&
-      head.every((segment, index) => (segment.kind === "literal" || segment.kind === "part") && segmentsMeet(segment, { kind: "literal", value: own[index]! }));
-    if (may) paths.push(whole.slice(own.length));
-  }
-  // A base URL on Cloudflare AI Gateway's host: Cloudflare reads the base URL
-  // and the path as one, whose fourth segment names the endpoint, wherever the
-  // base URL ends. What follows it is read as the setting reads it, by each
-  // provider whose endpoint that segment can name.
-  const cloudflare = route.cloudflareBase;
-  const reached: ProviderDescription[] = [];
-  if (cloudflare !== undefined) {
-    const whole = [...base.map(literal), ...path];
-    const endpoint = whole[CLOUDFLARE_ENDPOINT_SEGMENTS - 1];
-    const after = whole.slice(CLOUDFLARE_ENDPOINT_SEGMENTS);
-    if (endpoint !== undefined && after.length > 0) {
-      if (cloudflare.slug !== null && namesEndpoint(endpoint, cloudflare.slug)) paths.push(...cloudflareReadings(cloudflare.prefix, after));
-      for (const other of CLOUDFLARE_PROVIDERS) {
-        if (other.type === cloudflare.type || !namesEndpoint(endpoint, other.cloudflareEndpoint!.slug)) continue;
-        paths.push(...cloudflareReadings(cloudflarePrefixOf(other), after));
-        reached.push(other);
-      }
-    }
-  }
-  return mainTargets(route, paths, reached);
+  return { host: "main", paths };
+}
+
+/**
+ * Every path the provider may read for a path sent on `route`: the base URL's
+ * path joined in front, and the Cloudflare setting's prefix (`upstreamTargets`).
+ * The one place that decides which known path, such as a live-token mint, a
+ * request or listing is; saving and serving both use it.
+ */
+function providerReads(route: UpstreamRoute, path: readonly TemplateSegment[]): readonly (readonly TemplateSegment[])[] {
+  // On the main host there is always a target (`upstreamTargets`).
+  return upstreamTargets(route, "main", path)!.paths;
 }
 
 export interface MatchContext {
   /** The connection's listed passthrough paths, from `compilePassthrough`. */
   readonly passthrough?: readonly CompiledPassthrough[];
-  /** The connection's route (`upstreamRoute`). Direct when left out. */
+  /** The connection's route (`upstreamRoute`): which provider path a listing reaches, for its suggestion. */
   readonly route?: UpstreamRoute;
-}
-
-/** A refused or live-session token path, compiled: its template, and the methods it covers, or null for every method. */
-interface CompiledRule<Entry> {
-  readonly template: Template;
-  readonly methods: ReadonlySet<string> | null;
-  /** The base URL hosts it applies on (`RefusedPath.hosts`), or null for every route. */
-  readonly hosts?: ReadonlySet<string> | null;
-  readonly entry: Entry;
-}
-
-/** What a rule reports a refusal as: its template, after its methods when it names some. */
-function ruleSource(rule: CompiledRule<unknown>): string {
-  return rule.methods === null ? rule.template.source : `${[...rule.methods].join(",")} ${rule.template.source}`;
-}
-
-/** A provider's refused and live-session token paths, compiled. */
-interface RuleSet {
-  readonly type: string;
-  readonly refused: readonly CompiledRule<null>[];
-  readonly liveTokens: readonly CompiledLiveToken[];
-}
-
-const RULE_SETS = new WeakMap<ProviderDescription, RuleSet>();
-
-/** A provider's rules, compiled once per description. */
-function rulesOf(provider: ProviderDescription): RuleSet {
-  const cached = RULE_SETS.get(provider);
-  if (cached !== undefined) return cached;
-  const set: RuleSet = {
-    type: provider.type,
-    refused: provider.refused.map((entry) =>
-      typeof entry === "string"
-        ? { template: parseTemplate(entry, { rest: true }), methods: null, entry: null }
-        : {
-            template: parseTemplate(entry.path, { rest: true }),
-            methods: entry.methods === undefined ? null : new Set(entry.methods),
-            hosts: entry.hosts === undefined ? null : new Set(entry.hosts.map((host) => host.toLowerCase())),
-            entry: null,
-          },
-    ),
-    // Every method under the path is refused; the opt-in reaches only the mint.
-    liveTokens: (provider.liveTokens ?? []).map((entry) => ({
-      template: parseTemplate(entry.path, { rest: true }),
-      methods: null,
-      entry,
-      mint: parseTemplate(entry.mint ?? (entry.path.endsWith("/*") ? entry.path.slice(0, -2) : entry.path)),
-    })),
-  };
-  RULE_SETS.set(provider, set);
-  return set;
 }
 
 export class ProviderMatcher {
   readonly provider: ProviderDescription;
-  private readonly own: RuleSet;
   private readonly operations: readonly CompiledOperation[];
+  /** The provider's suggested paths (`SuggestedPath`), by listing shape (`listingShape`). */
+  private readonly suggested: ReadonlyMap<string, SuggestedPath>;
+  /** The provider's live-session token mints, compiled, for judging a request's path (`isLiveTokenMint`). */
+  private readonly mints: readonly { readonly method: string; readonly template: Template }[];
 
   /**
    * Compiles every template once. Throws on a broken description, so a test
@@ -443,7 +280,8 @@ export class ProviderMatcher {
    */
   constructor(provider: ProviderDescription) {
     this.provider = provider;
-    this.own = rulesOf(provider);
+    this.suggested = new Map((provider.suggestedPaths ?? []).map((entry) => [listingShape(entry.method, parseTemplate(entry.path)), entry]));
+    this.mints = (provider.suggestedPaths ?? []).filter((entry) => entry.liveToken === true).map((entry) => ({ method: entry.method, template: parseTemplate(entry.path) }));
     const names = new Set<string>();
     this.operations = provider.operations.map((operation) => {
       if (names.has(operation.name)) {
@@ -498,40 +336,23 @@ export class ProviderMatcher {
     if (!normalized.ok) return { kind: "refused", reason: "bad_path", detail: normalized.reason };
     const { segments } = normalized;
 
-    const route = context.route ?? DIRECT_ROUTE;
-    const atGateway = mainTargets(route, [segments.map(literal)]);
-    const gateway = this.refusedAt(method, atGateway);
-    if (gateway !== null) return { kind: "refused", reason: "refused_path", pattern: gateway };
-    // A live-session token path is refused like the others unless a listed path that opts in takes the request.
-    const gatewayToken = firstRule(this.tokensFor(atGateway), method, atGateway);
-
-    // A token path a listing reached without opting in to its mint: refused,
-    // unless a later listing that opts in takes the request.
-    let tokenRefusal: string | null = null;
+    // Of the listed paths that match, the most specific serves: the order they are listed in never decides.
+    let best: { readonly listed: CompiledPassthrough; readonly parts: Parts } | null = null;
     for (const listed of context.passthrough ?? []) {
       if (listed.listed.method !== method) continue;
       const parts = matchTemplate(listed.template, segments);
       if (parts === null) continue;
-      // Refused paths are judged again where the request really goes.
-      const sent = upstreamTargets(route, "main", segments.map(literal));
-      const refused = this.refusedAt(method, sent);
-      if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
-      const token = this.tokenRule(method, atGateway, sent);
-      // The opt-in reaches only the mint itself; anything else under a token path stays refused.
-      if (token !== null && (listed.listed.liveToken !== true || !token.mint)) {
-        tokenRefusal ??= ruleSource(token.rule);
-        continue;
-      }
+      if (best === null || moreSpecific(listed.template, best.listed.template)) best = { listed, parts };
+    }
+    if (best !== null) {
       return {
         kind: "passthrough",
-        listed: listed.listed,
-        parts,
+        listed: best.listed.listed,
+        parts: best.parts,
         upstream: { host: "main", path: joinSegments(segments) },
-        liveToken: token === null ? null : token.rule.entry,
+        liveTokenMint: this.isLiveTokenMint(method, segments, context.route),
       };
     }
-    if (tokenRefusal !== null) return { kind: "refused", reason: "refused_path", pattern: tokenRefusal };
-    if (gatewayToken !== null) return { kind: "refused", reason: "refused_path", pattern: ruleSource(gatewayToken) };
 
     for (const compiled of this.operations) {
       if (compiled.operation.match.method !== method) continue;
@@ -539,16 +360,6 @@ export class ProviderMatcher {
       if (parts === null) continue;
       const path = compiled.upstream === null ? joinSegments(segments) : fillTemplate(compiled.upstream, parts);
       if (path === null) return { kind: "refused", reason: "bad_path", detail: "dot_segment" };
-      // A declared operation is never a refused path: only how its route adds
-      // a prefix is judged, not each way a base URL may be mounted. A base
-      // URL whose own path looks like a refused one (`.../user/42/`) still
-      // serves every operation, as it always did. A custom provider's
-      // operations are paths its customer listed, judged as listings are.
-      const sent = normalizePath(path);
-      const judged = this.provider.customerPaths === true ? route : { ...route, basePath: null };
-      const targets = sent.ok ? upstreamTargets(judged, compiled.host, sent.segments.map(literal)) : null;
-      const refused = this.refusedAt(method, targets) ?? this.liveTokenAt(method, targets);
-      if (refused !== null) return { kind: "refused", reason: "refused_path", pattern: refused };
       return { kind: "operation", operation: compiled.operation, parts, upstream: { host: compiled.host, path } };
     }
 
@@ -556,145 +367,36 @@ export class ProviderMatcher {
   }
 
   /**
-   * The rules that judge `targets`: this provider's, then those of every
-   * other provider they reach (`UpstreamTargets.owners`), each once.
+   * The provider's suggested path a listing is (`SuggestedPath`): the same
+   * method and the same requests, as the provider reads the path. Null for
+   * none. Judged on every path the provider may read for the listing
+   * (`providerReads`), so through OpenAI's Cloudflare endpoint
+   * `realtime/client_secrets` is the same mint as
+   * `v1/realtime/client_secrets`, and on a proxy whose base URL has a path
+   * that path counts too.
    */
-  private setsFor(...all: readonly (UpstreamTargets | null)[]): readonly RuleSet[] {
-    const sets: RuleSet[] = [this.own];
-    const seen = new Set([this.own.type]);
-    for (const targets of all) {
-      for (const owner of targets?.owners ?? []) {
-        if (seen.has(owner.type)) continue;
-        seen.add(owner.type);
-        sets.push(rulesOf(owner));
-      }
+  suggestionFor(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): SuggestedPath | null {
+    for (const segments of providerReads(route, listed.template.segments)) {
+      const found = this.suggested.get(listingShape(listed.listed.method, { source: "", segments }));
+      if (found !== undefined) return found;
     }
-    return sets;
-  }
-
-  /** Every live-session token path that judges `targets` (`setsFor`). */
-  private tokensFor(...all: readonly (UpstreamTargets | null)[]): readonly CompiledLiveToken[] {
-    return this.setsFor(...all).flatMap((set) => set.liveTokens);
+    return null;
   }
 
   /**
-   * The first refused path that takes every path of one of `targets` (a
-   * `{name}` part stands for any value), or null. Only the main host has
-   * refused paths: the others serve declared operations only.
+   * Whether a request is one of the provider's live-session token mints,
+   * judged on every path the provider may read for it (`providerReads`),
+   * so a listing such as `v1/realtime/{resource}` serving
+   * `v1/realtime/client_secrets` still gets the mint's cache rules, and so
+   * does `get-signed-url` behind a base URL ending in
+   * `v1/convai/conversation/`.
    */
-  private refusedAt(method: string, targets: UpstreamTargets | null): string | null {
-    const rule = firstRule(this.setsFor(targets).flatMap((set) => set.refused), method, targets);
-    return rule === null ? null : ruleSource(rule);
-  }
-
-  /**
-   * The live-session token path that takes a request at the gateway or where
-   * it is sent (`upstreamTargets`), or null, and whether the request is its
-   * mint. It is the mint only when every reading of its path that a token
-   * path takes is exactly that token path's mint: a base URL that puts the
-   * listed mint under the namespace (`v1/single-use-token/` with
-   * `v1/single-use-token/tts_websocket`) reaches another path there, which
-   * stays refused. Readings no token path takes do not count. Several token
-   * paths may share one namespace, each with its own mint.
-   */
-  private tokenRule(method: string, atGateway: UpstreamTargets | null, sent: UpstreamTargets | null): { readonly rule: CompiledLiveToken; readonly mint: boolean } | null {
-    const tokens = this.tokensFor(atGateway, sent);
-    let first: CompiledLiveToken | null = null;
-    let minted: CompiledLiveToken | null = null;
-    let every = true;
-    for (const targets of [atGateway, sent]) {
-      if (targets === null || targets.host !== "main") continue;
-      for (const path of targets.paths) {
-        const reading: UpstreamTargets = { ...targets, paths: [path] };
-        const taking = [...everyRule(tokens, method, reading)];
-        if (taking.length === 0) continue;
-        first ??= taking[0]!;
-        const mintOf = taking.find((rule) => mints(rule, method, reading));
-        if (mintOf === undefined) every = false;
-        else minted ??= mintOf;
-      }
-    }
-    if (first === null) return null;
-    return minted !== null && every ? { rule: minted, mint: true } : { rule: minted ?? first, mint: false };
-  }
-
-  /** The first live-session token path that takes every path of one of `targets`, as `refusedAt`, or null. */
-  private liveTokenAt(method: string, targets: UpstreamTargets | null): string | null {
-    const rule = firstRule(this.tokensFor(targets), method, targets);
-    return rule === null ? null : ruleSource(rule);
-  }
-
-  /**
-   * The refused path that takes every request a listed path could match on
-   * `route`, whatever its parts hold, at the gateway or where the request
-   * goes, or null. Such a listing could never be reached: refused paths are
-   * checked first, on both. One that takes only some of them is not
-   * reported, for the same reason. A live-session token path counts too,
-   * unless the listing opts in to it.
-   */
-  refusedCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): string | null {
-    const { method } = listed.listed;
-    const atGateway = mainTargets(route, [listed.template.segments]);
-    const sent = upstreamTargets(route, "main", listed.template.segments);
-    const refused = this.refusedAt(method, atGateway) ?? this.refusedAt(method, sent);
-    if (refused !== null || listed.listed.liveToken === true) return refused;
-    return this.liveTokenAt(method, atGateway) ?? this.liveTokenAt(method, sent);
-  }
-
-  /**
-   * The live-session token path that takes every request a listed path could
-   * match on `route`, as `refusedCovering` judges it, or null. A listing may
-   * opt in to live-session tokens only when one takes all its requests.
-   */
-  liveTokenCovering(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE): LiveTokenPath | null {
-    const { method } = listed.listed;
-    const atGateway = mainTargets(route, [listed.template.segments]);
-    const sent = upstreamTargets(route, "main", listed.template.segments);
-    const token = this.tokenRule(method, atGateway, sent);
-    // Only a listing of the mint itself may opt in: its method, on exactly the token path, wherever it is read.
-    if (token === null || !token.mint) return null;
-    // Nor may any request it matches, for some value of its parts, land
-    // under a token path elsewhere than that path's mint: serving refuses
-    // those (`tokenRule`), so the listing would save and then not work.
-    const tokens = this.tokensFor(atGateway, sent);
-    for (const targets of [atGateway, sent]) {
-      if (targets === null || targets.host !== "main") continue;
-      for (const path of targets.paths) {
-        const reading: UpstreamTargets = { ...targets, paths: [path] };
-        const meets = tokens.some((rule) => (rule.methods === null || rule.methods.has(method)) && appliesOn(rule, reading) && ruleMeets(path, rule.template));
-        // Token paths may share a namespace, each with its own mint.
-        if (meets && !tokens.some((rule) => mints(rule, method, reading))) return null;
-      }
-    }
-    return token.rule.entry;
-  }
-
-  /**
-   * What saving makes of a listed path on `route`, whether or not it opts in:
-   *
-   * - `refused`: a key, admin or account path takes every request it could
-   *   match; no opt-in reaches it.
-   * - `token_non_mint`: a live-session token path takes them all, but it is
-   *   not that path's mint (cancelling a session, another token type); no
-   *   opt-in reaches it either.
-   * - `token_mint`: it is exactly a live-session token mint; it is served
-   *   only when the listing opts in.
-   * - `free`: none of these.
-   */
-  listingVerdict(listed: CompiledPassthrough, route: UpstreamRoute = DIRECT_ROUTE):
-    | { readonly kind: "refused"; readonly pattern: string }
-    | { readonly kind: "token_non_mint"; readonly pattern: string }
-    | { readonly kind: "token_mint"; readonly token: LiveTokenPath }
-    | { readonly kind: "free" } {
-    const { method } = listed.listed;
-    const atGateway = mainTargets(route, [listed.template.segments]);
-    const sent = upstreamTargets(route, "main", listed.template.segments);
-    const refused = this.refusedAt(method, atGateway) ?? this.refusedAt(method, sent);
-    if (refused !== null) return { kind: "refused", pattern: refused };
-    const token = this.liveTokenCovering(listed, route);
-    if (token !== null) return { kind: "token_mint", token };
-    const covered = this.liveTokenAt(method, atGateway) ?? this.liveTokenAt(method, sent);
-    return covered === null ? { kind: "free" } : { kind: "token_non_mint", pattern: covered };
+  isLiveTokenMint(method: string, segments: readonly string[], route: UpstreamRoute = DIRECT_ROUTE): boolean {
+    if (this.mints.length === 0) return false;
+    return providerReads(route, segments.map(literal)).some((read) => {
+      const path = read.map((segment) => (segment.kind === "literal" ? segment.value : ""));
+      return this.mints.some((mint) => mint.method === method && matchTemplate(mint.template, path) !== null);
+    });
   }
 
   /**
@@ -723,13 +425,25 @@ export class ProviderMatcher {
         found.push(compiled.operation.name);
         continue;
       }
-      const theirs = upstreamTargets(route, compiled.host, (compiled.upstream ?? compiled.template).segments);
+      const own = (compiled.upstream ?? compiled.template).segments;
+      const theirs = upstreamTargets(route, compiled.host, own);
       if (sent === null || theirs === null || theirs.host !== sent.host) continue;
-      if (sent.paths.some((path) => theirs.paths.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
+      // Through a base URL, a listing's path is read from the origin, where the
+      // operation sits under its host's declared path (OpenRouter's `api`).
+      const hostPath = route.basePath !== null ? this.hostPath(compiled.host) : [];
+      const others = hostPath.length === 0 ? theirs.paths : [...theirs.paths, [...hostPath.map(literal), ...own]];
+      if (sent.paths.some((path) => others.some((other) => templatesMeet(path as readonly SegmentPattern[], other, compiled.closedLists)))) {
         found.push(compiled.operation.name);
       }
     }
     return found;
+  }
+
+  /** The path part of a declared host, in segments (`openrouter.ai/api` is `["api"]`). */
+  private hostPath(hostKey: string): readonly string[] {
+    const host = this.provider.hosts[hostKey] ?? "";
+    const slash = host.indexOf("/");
+    return slash < 0 ? [] : host.slice(slash + 1).split("/").filter((piece) => piece !== "");
   }
 
   /**
@@ -744,7 +458,6 @@ export class ProviderMatcher {
     if (compiled === undefined) return null;
     const template = compiled.upstream ?? compiled.template;
     for (const segment of template.segments) {
-      if (segment.kind === "rest") return null;
       if ((segment.kind === "part" || segment.kind === "multi") && !Object.hasOwn(parts, segment.name)) return null;
       // A `{name...}` value keeps its `/`s, but never an empty segment.
       if (segment.kind === "multi" && parts[segment.name]!.split("/").includes("")) return null;
@@ -761,96 +474,125 @@ export class ProviderMatcher {
   }
 }
 
-/** A live-session token path, with its mint: its method on exactly its path, without the trailing `*`. */
-interface CompiledLiveToken extends CompiledRule<LiveTokenPath> {
-  readonly mint: Template;
-}
-
 /**
- * Whether every request of one of `targets` is the token path's mint: its
- * method, on exactly its path. A `{name}` part of a listing must take only
- * a value the mint's own part takes.
+ * A listing's method and the requests it matches: a leading `/` and the
+ * names of its parts make no difference. Two listings of one shape are one.
  */
-function mints(rule: CompiledLiveToken, method: string, targets: UpstreamTargets | null): boolean {
-  if (targets === null || targets.host !== "main" || method !== rule.entry.method) return false;
-  return targets.paths.some((path) => matchTemplate(rule.mint, targetSegments(path), { ignoreCase: true }) !== null);
-}
-
-/**
- * Whether some request path matches both `path` (a listing's reading, whose
- * `{name}` parts take any value) and a refused or token rule's template,
- * which may end in `*` and is compared ignoring case.
- */
-function ruleMeets(path: readonly TemplateSegment[], template: Template): boolean {
-  const lower = (segment: TemplateSegment): TemplateSegment =>
-    segment.kind === "literal"
-      ? { kind: "literal", value: segment.value.toLowerCase() }
-      : segment.kind === "part"
-        ? { ...segment, prefix: segment.prefix.toLowerCase(), suffix: segment.suffix.toLowerCase() }
-        : segment;
-  const mine = path.map(lower);
-  const theirs = template.segments.map(lower);
-  const rest = theirs[theirs.length - 1]?.kind === "rest";
-  const fixed = rest ? theirs.slice(0, -1) : theirs;
-  if (rest ? mine.length < fixed.length : mine.length !== fixed.length) return false;
-  return fixed.every((segment, index) => {
-    const other = mine[index]!;
-    if (segment.kind !== "literal" && segment.kind !== "part") return false;
-    if (other.kind !== "literal" && other.kind !== "part") return true;
-    return segmentsMeet(other, segment);
-  });
-}
-
-/** A target path as literal segments, a `{name}` part standing for any value. */
-function targetSegments(path: UpstreamTargets["paths"][number]): string[] {
-  return path.map((segment) =>
-    segment.kind === "literal" ? segment.value : segment.kind === "part" ? segment.prefix + ANY_VALUE + segment.suffix : ANY_VALUE,
+export function listingShape(method: string, template: Template): string {
+  const segments = template.segments.map((segment) =>
+    segment.kind === "literal" ? `l:${segment.value}` : segment.kind === "part" ? `p:${segment.prefix}\u0000${segment.suffix}` : segment.kind,
   );
-}
-
-/** Every rule that takes every path of one of `targets`, in order, as `firstRule` finds them. */
-function* everyRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Generator<Rule> {
-  if (targets === null || targets.host !== "main") return;
-  for (const path of targets.paths) {
-    const segments = targetSegments(path);
-    for (const rule of rules) {
-      if (rule.methods !== null && !rule.methods.has(method)) continue;
-      if (!appliesOn(rule, targets)) continue;
-      if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) yield rule;
-    }
-  }
-}
-
-/** Whether a rule applies where `targets` go: a rule that names hosts only on a base URL on one of them. */
-function appliesOn(rule: CompiledRule<unknown>, targets: UpstreamTargets): boolean {
-  if (rule.hosts === undefined || rule.hosts === null) return true;
-  return targets.baseHost !== undefined && targets.baseHost !== null && rule.hosts.has(targets.baseHost);
+  return [method, ...segments].join("/");
 }
 
 /**
- * The first rule that takes every path of one of `targets` (a `{name}` part
- * stands for any value), ignoring case, or null. Only the main host has
- * refused and live-session token paths: the others serve declared operations
- * only.
+ * A version segment, such as `v1`, `v2`, `v1beta`, `v1alpha`, `v1beta1` or a
+ * dotted one such as `v1.0` or `v2.1`.
+ * The API prefix runs through the last one among a listing's first two
+ * segments, so `api/v1`, `client/v4` and Groq's `openai/v1` need no
+ * declaration. Providers declare only prefixes this misses (`apiPrefixes`).
  */
-function firstRule<Rule extends CompiledRule<unknown>>(rules: readonly Rule[], method: string, targets: UpstreamTargets | null): Rule | null {
-  if (targets === null || targets.host !== "main") return null;
-  for (const path of targets.paths) {
-    const segments = targetSegments(path);
-    for (const rule of rules) {
-      if (rule.methods !== null && !rule.methods.has(method)) continue;
-      if (!appliesOn(rule, targets)) continue;
-      if (matchTemplate(rule.template, segments, { ignoreCase: true }) !== null) return rule;
+const VERSION_SEGMENT = /^v\d+(?:\.\d+)*[a-z0-9]*$/i;
+
+/** How many of a listing's first segments are searched for a version segment. */
+const VERSION_SEARCH = 2;
+
+/**
+ * Declared prefixes the version rule misses, for every built-in provider:
+ * Gemini's OpenAI-compatible layout goes one segment past its version. A
+ * provider adds its own (`apiPrefixes`).
+ */
+export const COMMON_API_PREFIXES: readonly string[] = ["v1beta/openai"];
+
+/** A built-in provider's declared API prefixes, in segments: the common ones and its own. */
+export function apiPrefixesOf(description: ProviderDescription): readonly (readonly string[])[] {
+  return [...COMMON_API_PREFIXES, ...(description.apiPrefixes ?? [])].map((prefix) => prefix.split("/"));
+}
+
+/**
+ * How many leading segments of `segments` are the API prefix: through the last
+ * version segment among the first two, or the longest declared prefix they
+ * start with, whichever is longer.
+ *
+ * Known limit: a custom provider on a bare host whose API has no version
+ * segment, such as an Ollama-style `api/...`, has no prefix, so `api/{name}`
+ * saves there. Counting its first segment would refuse `files/{id}` on APIs
+ * with no prefix at all.
+ */
+function apiPrefixLength(segments: readonly TemplateSegment[], prefixes: readonly (readonly string[])[]): number {
+  const literalAt = (index: number) => {
+    const segment = segments[index];
+    return segment !== undefined && segment.kind === "literal" ? segment.value : undefined;
+  };
+  const declared = prefixes.filter((prefix) => prefix.every((value, index) => literalAt(index) === value)).map((prefix) => prefix.length);
+  let versions = 0;
+  for (let index = 0; index < VERSION_SEARCH; index++) if (VERSION_SEGMENT.test(literalAt(index) ?? "")) versions = index + 1;
+  return Math.max(versions, ...declared);
+}
+
+/**
+ * Why a newly listed path is refused by the named-part rule (plan section
+ * 4.5), or null: a `{name}` part may stand only where an id is, never where
+ * an endpoint's name is. So, after the API prefix the listing starts with,
+ * one fixed segment comes before the first part, and no two parts stand next
+ * to each other. The prefix runs through a version segment among the first
+ * two (`v1`, `v1beta`, Groq's `openai/v1`, `api/v1`), or a declared one. A
+ * listing is relative to the connection's base URL, so a custom provider at
+ * `https://api.replicate.com/v1/` may list `predictions/{id}`. On OpenAI
+ * `v1/files/{file_id}` and `v1/threads/{thread_id}/messages/{message_id}` are
+ * allowed, `v1/{a}/{b}` and `v1/threads/{id}/{x}` are not; on Groq
+ * `openai/v1/{endpoint}` is not. `prefixes` are a built-in provider's
+ * (`apiPrefixesOf`), or none for a custom provider. Judged when saved only, so
+ * a listing stored before keeps working.
+ */
+export function namedPartProblem(template: Template, prefixes: readonly (readonly string[])[]): string | null {
+  const segments = template.segments;
+  const first = segments.findIndex((segment) => segment.kind !== "literal");
+  if (first === -1) return null;
+  const prefixLength = apiPrefixLength(segments, prefixes);
+  if (first < prefixLength + 1) {
+    const prefix = segments.slice(0, prefixLength).map((segment) => (segment as Extract<TemplateSegment, { kind: "literal" }>).value);
+    const example = [...prefix, "files", "{file_id}"].join("/");
+    return `a {name} part may stand only where an id is, after the API version and an endpoint's fixed name; list the exact endpoint, such as ${example}`;
+  }
+  for (let index = first; index < segments.length - 1; index++) {
+    if (segments[index]!.kind !== "literal" && segments[index + 1]!.kind !== "literal") {
+      return "two {name} parts may not stand next to each other; list the exact endpoint, such as v1/threads/{thread_id}/messages/{message_id}";
     }
   }
   return null;
+}
+
+/**
+ * Whether listed path `a` is more specific than `b`, both matching one
+ * request: at the first segment where they differ, a fully fixed segment
+ * beats one holding a `{name}` part, with or without fixed text around it. So
+ * `v1/files/search` serves its own requests before `v1/files/{id}` does, and
+ * `v1/files/{id}/exports/pdf` before `v1/files/file-{id}/exports/{format}`.
+ * A tie goes to more fixed text, then to the template that sorts first, so
+ * the order the listings are saved in never decides.
+ */
+function moreSpecific(a: Template, b: Template): boolean {
+  const rank = (segment: TemplateSegment) => (segment.kind === "literal" ? 0 : 1);
+  for (let index = 0; index < Math.min(a.segments.length, b.segments.length); index++) {
+    const difference = rank(a.segments[index]!) - rank(b.segments[index]!);
+    if (difference !== 0) return difference < 0;
+  }
+  const fixedText = (template: Template) =>
+    template.segments.reduce(
+      (sum, segment) => sum + (segment.kind === "literal" ? segment.value.length : segment.kind === "part" ? segment.prefix.length + segment.suffix.length : 0),
+      0,
+    );
+  const difference = fixedText(a) - fixedText(b);
+  if (difference !== 0) return difference > 0;
+  return a.source < b.source;
 }
 
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */
 function templatesMeet(listed: readonly SegmentPattern[], pattern: readonly TemplateSegment[], closedLists: ClosedLists): boolean {
   const multiAt = pattern.findIndex((segment) => segment.kind === "multi");
   const meetAll = (theirs: readonly TemplateSegment[], at: number) =>
-    theirs.every((segment, index) => segment.kind !== "multi" && segment.kind !== "rest" && segmentsMeet(listed[at + index]!, segment));
+    theirs.every((segment, index) => segment.kind !== "multi" && segmentsMeet(listed[at + index]!, segment));
   if (multiAt === -1) return pattern.length === listed.length && meetAll(pattern, 0);
   const before = pattern.slice(0, multiAt);
   const after = pattern.slice(multiAt + 1);

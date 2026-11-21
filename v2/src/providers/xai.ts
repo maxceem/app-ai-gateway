@@ -6,31 +6,22 @@
  * embeddings answer in tokens, and transcription (`v1/stt`) with a duration.
  */
 import { chat, completions, embeddings, images, messages, responses, transcription, withV1Paths } from "./llm.ts";
-import { defineProvider } from "./operation.ts";
-
-/** xAI's management API host: every path on it manages the account. */
-const XAI_MANAGEMENT_HOST = "management-api.x.ai";
+import { defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
 
 export const xai = defineProvider({
   type: "xai",
   label: "xAI",
   hosts: { main: "api.x.ai" },
-  // `management-api.x.ai` is declared so a custom provider there gets the
-  // refused paths below: every path on it manages the account.
-  otherHosts: ["us.api.x.ai", XAI_MANAGEMENT_HOST],
+  otherHosts: ["us.api.x.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The key's own details. And every path on the management host, which
-  // manages the account: API keys, teams, management keys, audit logs and
-  // billing. Elsewhere, such as an xAI-compatible server, its paths may be
-  // ordinary ones.
-  refused: ["v1/api-key/*", { path: "*", hosts: [XAI_MANAGEMENT_HOST] }],
-  // Short-lived secrets for live sessions, reached only by a listed path that
-  // opts in (plan D4). Its guide says `expires_after` takes no `anchor`.
-  liveTokens: [{ path: "v1/realtime/client_secrets/*", method: "POST", forced: { fields: [{ names: ["expires_after"], value: { window: "expires_after" } }] } }],
+  // Short-lived secrets for live sessions (plan D4). Its guide says
+  // `expires_after` takes no `anchor`.
+  suggestedPaths: [
+    { method: "POST", path: "v1/realtime/client_secrets", liveToken: true, fields: [liveTokenExpiry("xAI", { in: "body", name: "expires_after", value: { seconds: LIVE_TOKEN_WINDOW_SECONDS } })] },
+  ],
   probe: { path: "v1/models" },
   // Cloudflare names xAI `grok`.
-  cloudflareEndpoint: { slug: "grok" },
-  cloudflareGateway: {},
+  cloudflareGateway: { slug: "grok" },
   serviceModes: [{ names: ["service_tier"], axis: "tier", values: { default: "standard", priority: "priority" } }],
   // `us.api.x.ai` bills 10% over the global host, in the cost xAI reports.
   regionalOrigins: { "https://us.api.x.ai/": "us" },

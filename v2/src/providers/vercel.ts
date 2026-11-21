@@ -32,8 +32,6 @@ export const vercel = defineProvider({
   label: "Vercel AI Gateway",
   hosts: { main: "ai-gateway.vercel.sh" },
   auth: { header: "authorization", format: "Bearer {key}" },
-  // The account's credits.
-  refused: ["v1/credits/*"],
   // An authenticated call on the gateway itself: `v1/models` is public, so it
   // would pass any token (v1).
   probe: { path: "v1/credits" },

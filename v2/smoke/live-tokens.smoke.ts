@@ -1,10 +1,12 @@
 /**
- * Live-session token paths through a live v2 deployment (plan step 5, D4):
- * a path that mints a short-lived secret for a live call is refused unless
- * the listing opts in (`live_token: true`). Once it does, each mint is sent
- * with its window locked to 60 seconds, whatever the client asked for, and
- * charged as a `live_token` call. Everything is made through the management
- * API and removed afterwards.
+ * Live-session token paths through a live v2 deployment (plan step 5, D4,
+ * changed in step 5d): a path that mints a short-lived secret for a live
+ * call works once listed. When first listed, the provider's safe defaults
+ * are written into it (`set_fields`), shown back with their label, reason
+ * and suggested value: a 60-second window here, which each mint is sent
+ * with, whatever the client asked for. The customer may change or remove
+ * them. Each mint is charged as a `live_token` call. Everything is made
+ * through the management API and removed afterwards.
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \
@@ -36,7 +38,7 @@ const run = Date.now().toString(36);
 const TOKEN_PATH = "v1/realtime/client_secrets";
 const providerIds: string[] = [];
 const appIds: string[] = [];
-/** A connection that opts its token path in, and one that lists only another path. */
+/** A connection that lists its token path as is, and one that removed its safe default. */
 const optedIn = { slug: `smoke-live-${run}`, appId: "", key: "" };
 const plain = { slug: `smoke-live-plain-${run}`, appId: "", key: "" };
 
@@ -56,10 +58,10 @@ async function newApp(slug: string): Promise<{ id: string; key: string }> {
 
 before(async () => {
   if (skip !== false) return;
-  const opted = await connection(optedIn.slug, [{ method: "POST", path: TOKEN_PATH, live_token: true }]);
+  const opted = await connection(optedIn.slug, [{ method: "POST", path: TOKEN_PATH }]);
   assert.equal(opted.status, 201, JSON.stringify(opted.body));
   providerIds.push(opted.body.provider.id);
-  const other = await connection(plain.slug, [{ method: "GET", path: "v1/echo/{id}" }]);
+  const other = await connection(plain.slug, [{ method: "POST", path: TOKEN_PATH, set_fields: [] }]);
   assert.equal(other.status, 201, JSON.stringify(other.body));
   providerIds.push(other.body.provider.id);
   ({ id: optedIn.appId, key: optedIn.key } = await newApp(optedIn.slug));
@@ -79,21 +81,27 @@ async function mint(target: { slug: string; appId: string; key: string }, user: 
   });
 }
 
-test("a token path is not saved without the opt-in, and the connection shows the opt-in back", { skip }, async () => {
-  const refused = await connection(`smoke-live-no-${run}`, [{ method: "POST", path: TOKEN_PATH }]);
-  assert.equal(refused.status, 400, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /live_token/u);
+test("a token path saves once listed, with its safe defaults written in and explained", { skip }, async () => {
   const read = await admin("GET", `/v2/admin/providers/${providerIds[0]}`);
   assert.equal(read.status, 200);
-  assert.deepEqual(read.body.provider.passthrough, [{ method: "POST", path: TOKEN_PATH, live_token: true }]);
+  const [listed] = read.body.provider.passthrough as { set_fields: Record<string, unknown>[] }[];
+  assert.equal(listed!.set_fields.length, 1);
+  const [field] = listed!.set_fields;
+  assert.deepEqual({ in: field!.in, name: field!.name, value: field!.value }, { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: 60 } });
+  assert.equal(field!.label, "Token expiry");
+  assert.equal(typeof field!.reason, "string");
+  assert.deepEqual(field!.suggested_value, { anchor: "created_at", seconds: 60 });
 });
 
-test("a token path a connection did not opt in to is refused before the provider", { skip }, async () => {
-  const response = await mint(plain, `smoke-live-refused-${run}`, "{}");
-  assert.equal(response.status, 403, await response.text());
+test("a token path whose safe default was removed sends what the client asked for", { skip }, async () => {
+  const asked = { expires_after: { anchor: "created_at", seconds: 3600 } };
+  const response = await mint(plain, `smoke-live-removed-${run}`, JSON.stringify(asked));
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  assert.deepEqual((JSON.parse(text) as { received: unknown }).received, asked);
 });
 
-test("a mint is sent with its window locked to 60 seconds, whatever the client asked for", { skip }, async () => {
+test("a mint is sent with its 60-second window, whatever the client asked for", { skip }, async () => {
   const asked = { expires_after: { anchor: "created_at", seconds: 3600 }, session: { type: "realtime", model: "gpt-realtime" } };
   const response = await mint(optedIn, `smoke-live-${run}`, JSON.stringify(asked));
   const text = await response.text();

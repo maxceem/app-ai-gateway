@@ -16,7 +16,7 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel } from "@/lib/providers";
+import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
@@ -585,26 +585,18 @@ function CustomFields({ draft, onChange }: { draft: CustomDraft; onChange: (draf
 
 type ListedPath = NonNullable<ProviderConnection["passthrough"]>[number];
 
-/** The word on a path's line that opts it in to a live-session token path (plan D4). */
-export const LIVE_TOKEN_WORD = "live-token";
+type FieldSetting = NonNullable<ListedPath["set_fields"]>[number];
 
-/** One listed path as a line: method, path, then a price in dollars, an API style, or `live-token`. */
+/** One listed path as a line: method, path, then a price in dollars or an API style. Its field settings are kept apart. */
 export function pathLine(path: ListedPath): string {
-  return [
-    path.method,
-    path.path,
-    ...(path.per_request !== undefined ? [`$${path.per_request}`] : []),
-    ...(path.style !== undefined ? [path.style] : []),
-    ...(path.live_token === true ? [LIVE_TOKEN_WORD] : []),
-  ].join(" ");
+  return [path.method, path.path, ...(path.per_request !== undefined ? [`$${path.per_request}`] : []), ...(path.style !== undefined ? [path.style] : [])].join(" ");
 }
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 /**
  * Lines back to listed paths. Each line is a method and a path, then
- * optionally `$<dollars>` per request, `live-token` to opt in to a path that
- * mints a live-session secret, or, on a custom provider, an API style.
+ * optionally `$<dollars>` per request or, on a custom provider, an API style.
  * Returns the paths, or the first problem with its line number.
  */
 export function parsePathLines(text: string, custom: boolean): { paths: ListedPath[] } | { problem: string } {
@@ -624,15 +616,13 @@ export function parsePathLines(text: string, custom: boolean): { paths: ListedPa
         const price = Number(token.slice(1));
         if (token.length === 1 || !Number.isFinite(price) || price < 0) return { problem: `${where}: a price is $ and a number, such as $0.002.` };
         entry.per_request = price;
-      } else if (token === LIVE_TOKEN_WORD) {
-        entry.live_token = true;
       } else if (custom && CUSTOM_STYLES.includes(token)) {
         entry.style = token as ListedPath["style"];
       } else {
         return {
           problem: custom
-            ? `${where}: ${token} is not a price, ${LIVE_TOKEN_WORD} or an API style (${CUSTOM_STYLES.join(", ")}).`
-            : `${where}: ${token} is not a price or ${LIVE_TOKEN_WORD}. Write a price as $0.002.`,
+            ? `${where}: ${token} is not a price or an API style (${CUSTOM_STYLES.join(", ")}).`
+            : `${where}: ${token} is not a price. Write a price as $0.002.`,
         };
       }
     }
@@ -641,15 +631,135 @@ export function parsePathLines(text: string, custom: boolean): { paths: ListedPa
   return { paths };
 }
 
-/** The listings this draft opts in to a live-session token path that the saved list did not. */
-export function newLiveTokenPaths(listed: readonly ListedPath[], saved: readonly ListedPath[]): ListedPath[] {
-  const before = new Set(saved.filter((path) => path.live_token === true).map((path) => `${path.method} ${path.path}`));
-  return listed.filter((path) => path.live_token === true && !before.has(`${path.method} ${path.path}`));
+/**
+ * The key a listed path's field settings are kept under while its line is
+ * edited: the method and the path, with each named part's name left out, so
+ * renaming `{file_id}` to `{id}` keeps the same settings.
+ */
+export const pathKey = (path: { method: string; path: string }) => `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}`;
+
+/** A field setting as a request sends it: without what an answer adds about it. */
+function settingOnly({ label: _label, reason: _reason, suggested_value: _suggested, ...setting }: FieldSetting): FieldSetting {
+  return setting;
 }
 
 /**
- * What opting a path in to a live-session token gives up (plan D4), said where
- * a person makes that choice. The known holes are named, not hidden.
+ * The paths to save: each line, with its field settings as they stand in
+ * the draft. A path the draft has no settings for is sent without any, so a
+ * newly listed one gets the provider's safe defaults and a kept one keeps
+ * none; an empty list sets none.
+ */
+export function pathsToSave(paths: readonly ListedPath[], fields: Readonly<Record<string, readonly FieldSetting[]>>): ListedPath[] {
+  return paths.map((path) => {
+    const set = fields[pathKey(path)];
+    return set === undefined ? path : { ...path, set_fields: set.map(settingOnly) };
+  });
+}
+
+/** What a field's value reads as: JSON, and a time from now in seconds. */
+function valueText(field: { value?: unknown; suggested_value?: unknown; as?: string }, value: unknown = field.value): string {
+  const text = JSON.stringify(value);
+  return field.as === "time_from_now" ? `${text} seconds from sending` : text;
+}
+
+/** The key a field's typed text is kept under in the dialog draft. */
+const textKey = (path: ListedPath, field: { in: string; name: string }) => `${pathKey(path)}|${field.in}:${field.name}`;
+
+/**
+ * The field settings shown for a listed path: its own, or for a newly listed
+ * path the provider's safe defaults that saving will write in.
+ */
+function shownFields(type: string, path: ListedPath, isNew: boolean, fields: readonly FieldSetting[] | undefined): FieldSetting[] {
+  const suggested = suggestedPath(type, path.method, path.path);
+  return fields !== undefined
+      ? [...fields]
+      : isNew && suggested !== null
+        ? suggested.fields.map((field) => ({
+            in: field.in,
+            name: field.name,
+            value: field.value,
+            ...(field.as !== undefined ? { as: field.as } : {}),
+            ...(field.aliases !== undefined ? { aliases: [...field.aliases] } : {}),
+            label: field.label,
+            reason: field.reason,
+            suggested_value: field.value,
+          }))
+        : [];
+}
+
+/**
+ * A listed path's field settings, and for a newly listed path the provider's
+ * safe defaults that saving will write in (plan section 4.5): each with its
+ * label, the reason, and its value, which a person can change or remove.
+ */
+function SafeDefaults({
+  type,
+  path,
+  isNew,
+  fields,
+  onChange,
+  textOf,
+  onText,
+}: {
+  type: string;
+  path: ListedPath;
+  isNew: boolean;
+  fields: readonly FieldSetting[] | undefined;
+  onChange: (fields: FieldSetting[]) => void;
+  /** A field's text as typed so far, kept in the dialog draft so it survives while a path line is briefly invalid. */
+  textOf: (key: string) => string | undefined;
+  onText: (key: string, text: string) => void;
+}) {
+  const shown = shownFields(type, path, isNew, fields);
+  if (shown.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-md border p-3 text-sm" data-testid="safe-defaults">
+      <p className="font-medium">
+        Safe defaults · {path.method} {path.path}
+      </p>
+      {fields === undefined ? <p className="text-muted-foreground">Set when you save. You can change or remove them.</p> : null}
+      {shown.map((field, index) => (
+        <div key={`${field.in}:${field.name}`} className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span>
+              <span className="font-medium">{field.label ?? field.name}</span>{" "}
+              <code className="text-xs text-muted-foreground">
+                {field.in} {field.name}
+              </code>
+            </span>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onChange(shown.filter((_, other) => other !== index))}>
+              Remove
+            </Button>
+          </div>
+          {field.reason !== undefined ? <p className="text-muted-foreground">{field.reason}</p> : null}
+          <Input
+            aria-label={`Value of ${field.label ?? field.name}`}
+            className="font-mono text-xs"
+            value={textOf(textKey(path, field)) ?? JSON.stringify(field.value)}
+            // The draft follows every keystroke, so pressing Enter saves the value shown, not the last one read on blur.
+            onChange={(event) => {
+              onText(textKey(path, field), event.target.value);
+              let value: unknown;
+              try {
+                value = JSON.parse(event.target.value) as unknown;
+              } catch {
+                return;
+              }
+              onChange(shown.map((other, at) => (at === index ? { ...other, value } : other)));
+            }}
+          />
+          {field.suggested_value !== undefined && JSON.stringify(field.suggested_value) !== JSON.stringify(field.value) ? (
+            <p className="text-xs text-muted-foreground">Suggested: {valueText(field, field.suggested_value)}</p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * What a live-session token path gives up (plan D4), said where a person
+ * lists one. The known holes are named, not hidden.
  */
 export function LiveTokenNotice() {
   return (
@@ -658,18 +768,20 @@ export function LiveTokenNotice() {
       <AlertTitle>Live-session tokens are not metered, not capped</AlertTitle>
       <AlertDescription>
         <ul className="list-disc space-y-1 pl-4">
-          <li>
-            A path marked {LIVE_TOKEN_WORD} mints a short-lived secret. The live call it starts goes straight to the provider, so the
-            gateway cannot count its cost or end it.
-          </li>
+          <li>A path here mints a short-lived secret. The live call it starts goes straight to the provider, so the gateway cannot count its cost or end it.</li>
           <li>Each mint still needs the app's sign-in and counts toward its request limits.</li>
-          <li>Where the provider lets the request set it, the secret can start a call for 60 seconds only.</li>
+          <li>Its safe defaults let the secret start a call for 60 seconds only, where the provider lets the request set it.</li>
           <li>ElevenLabs' token carries a link that can start more calls within about 15 minutes.</li>
           <li>One OpenAI client secret can start several calls before it expires.</li>
         </ul>
       </AlertDescription>
     </Alert>
   );
+}
+
+/** The field settings a saved list holds, by path. */
+function fieldsOf(listed: readonly ListedPath[]): Record<string, FieldSetting[]> {
+  return Object.fromEntries(listed.filter((path) => path.set_fields !== undefined).map((path) => [pathKey(path), [...path.set_fields!]]));
 }
 
 /**
@@ -685,28 +797,48 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
   const [base, setBase] = useState({ revision: provider?.revision ?? 0, listed: provider?.passthrough ?? [] });
   const [text, setText] = useState(base.listed.map(pathLine).join("\n"));
   const [trusted, setTrusted] = useState(false);
-  const [tokensAccepted, setTokensAccepted] = useState(false);
+  const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(base.listed));
   const [conflict, setConflict] = useState(false);
+  // Field values as typed so far, by path and field (`textKey`): saving checks the ones still shown.
+  const [texts, setTexts] = useState<Record<string, string>>({});
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
   const choosing = !custom && base.listed.length === 0;
   const paths = "paths" in parsed ? parsed.paths : null;
-  // Opting a path in to a live-session token is its own choice, apart from passing paths through.
-  const newTokens = paths === null ? [] : newLiveTokenPaths(paths, base.listed);
-  const anyTokens = paths !== null && paths.some((path) => path.live_token === true);
+  const type = provider?.type ?? "";
+  const saved = new Set(base.listed.map(pathKey));
+  const anyTokens = paths !== null && paths.some((path) => suggestedPath(type, path.method, path.path)?.liveToken === true);
 
   /** Starts again from the provider as it is now, dropping the draft. */
   const reload = () => {
     const listed = provider?.passthrough ?? [];
     setBase({ revision: provider?.revision ?? 0, listed });
     setText(listed.map(pathLine).join("\n"));
+    setFields(fieldsOf(listed));
+    setTexts({});
     setConflict(false);
   };
 
   const save = async () => {
     if (!provider || paths === null) return;
+    const unreadable = paths.some((path) =>
+      shownFields(type, path, !saved.has(pathKey(path)), fields[pathKey(path)]).some((field) => {
+        const typed = texts[textKey(path, field)];
+        if (typed === undefined) return false;
+        try {
+          JSON.parse(typed);
+          return false;
+        } catch {
+          return true;
+        }
+      }),
+    );
+    if (unreadable) {
+      toast.error("Write each value as JSON, such as 60 or \"true\".");
+      return;
+    }
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : paths } });
+      await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
       toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
       onClose();
     } catch (error) {
@@ -731,7 +863,7 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       }
       submitLabel="Save paths"
       pending={update.isPending}
-      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted) || (newTokens.length > 0 && !tokensAccepted)}
+      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted)}
       onSubmit={() => void save()}
     >
       {conflict ? (
@@ -751,8 +883,8 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         htmlFor="listed-paths"
         hint={
           custom
-            ? `Method and path, then a price such as $0.002, or an API style such as openai-chat. Add ${LIVE_TOKEN_WORD} to a path that mints a live-session secret. {name} matches one part of the path.`
-            : `Method and path, then a price such as $0.002 if you want one. Add ${LIVE_TOKEN_WORD} to a path that mints a live-session secret. {name} matches one part of the path.`
+            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} stands for an id, after two fixed parts, such as v1/files/{file_id}."
+            : "Method and path, then a price such as $0.002 if you want one. {name} stands for an id, after the API version and an endpoint's name, such as v1/files/{file_id}."
         }
       >
         <Textarea
@@ -776,13 +908,19 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
           I understand, and want these paths passed through
         </label>
       ) : null}
+      {paths?.map((path) => (
+        <SafeDefaults
+          key={pathKey(path)}
+          type={type}
+          path={path}
+          isNew={!saved.has(pathKey(path))}
+          fields={fields[pathKey(path)]}
+          onChange={(next) => setFields((current) => ({ ...current, [pathKey(path)]: next }))}
+          textOf={(key) => texts[key]}
+          onText={(key, typed) => setTexts((current) => ({ ...current, [key]: typed }))}
+        />
+      ))}
       {anyTokens ? <LiveTokenNotice /> : null}
-      {newTokens.length > 0 ? (
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <Checkbox checked={tokensAccepted} onCheckedChange={(checked) => setTokensAccepted(checked === true)} />
-          I understand these live-session tokens are not metered, not capped
-        </label>
-      ) : null}
     </FormDialog>
   );
 }

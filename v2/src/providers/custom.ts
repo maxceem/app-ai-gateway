@@ -11,16 +11,10 @@
  * provider exactly as it reads a built-in one.
  *
  * - **Its host.** The base URL is its only host. It passed the origin guard
- *   when saved (`../core/origin-guard.ts`).
- * - **A known host.** A base URL on a built-in provider's host gets that
- *   provider's hosts, and its refused paths judge the requests, since they
- *   reach it (`./destination.ts`), so a custom provider cannot reach
- *   the key, admin or account paths a built-in connection never can.
- *   Cloudflare AI Gateway's host is refused when saved: it reaches every
- *   provider, and a built-in connection's own setting goes there instead.
- * - **Its paths.** Refused paths are judged on every way its base URL may be
- *   read (`customerPaths`), for its API-style operations as for its plain
- *   listings: the customer, not the gateway, chose those paths.
+ *   when saved (`../core/origin-guard.ts`). Cloudflare AI Gateway's host is
+ *   refused when saved: a built-in connection's own setting goes there.
+ * - **Its paths.** Only the paths the customer lists are served, nothing
+ *   else (plan section 4.5).
  * - **Its styles.** An API-style path is a built-in provider's own operation
  *   of that style, at the listed path, with that provider's rules for reading
  *   it (`rules`: service modes, metered transcription formats): the base URL's
@@ -32,7 +26,6 @@ import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
 import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
 import type { PassthroughPath } from "./matcher.ts";
-import { knownHostOwner } from "./destination.ts";
 import { meterCases } from "../pricing/units.ts";
 import { hasMeasure } from "../usage/observation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
@@ -235,8 +228,28 @@ function hostOf(baseUrl: string): string | null {
   }
 }
 
-/** Cloudflare AI Gateway's host, and who owns a base URL's host: decided in one place (`./destination.ts`). */
-export { CLOUDFLARE_AI_GATEWAY_HOST, declaredHostNames, knownHostOwner } from "./destination.ts";
+/** A provider's declared host names, lower-cased: its `hosts` and its `otherHosts`. */
+export function declaredHostNames(description: ProviderDescription): readonly string[] {
+  return [
+    ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
+    ...(description.otherHosts ?? []).map((value) => value.toLowerCase()),
+  ];
+}
+
+/** Whether `host` is the declared `name`, or under it for a `*.` name. */
+export function hostMatches(name: string, host: string): boolean {
+  return name.startsWith("*.") ? host.endsWith(name.slice(1)) : host === name;
+}
+
+/**
+ * The built-in provider whose declared host a base URL is on, or null: whose
+ * API a custom path's style is read as there (`styleSource`).
+ */
+export function knownHostOwner(baseUrl: string): ProviderDescription | null {
+  const host = hostOf(baseUrl);
+  if (host === null) return null;
+  return Object.values(BUILT_IN_PROVIDERS).find((description) => declaredHostNames(description).some((name) => hostMatches(name, host))) ?? null;
+}
 
 /** What a custom provider connection stores, as its description is built from. */
 export interface CustomSetting {
@@ -247,9 +260,8 @@ export interface CustomSetting {
 
 /**
  * A custom connection's description: its API-style paths as operations, and
- * its base URL's host, or a known provider's hosts when the
- * base URL is on one. Its plain listed paths are passthrough paths, which the
- * description does not hold, as for a built-in provider.
+ * its base URL's host. Its plain listed paths are passthrough paths, which
+ * the description does not hold, as for a built-in provider.
  */
 export function customDescription(setting: CustomSetting): ProviderDescription {
   const owner = knownHostOwner(setting.baseUrl);
@@ -260,14 +272,9 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
   return {
     type: CUSTOM_PROVIDER_TYPE,
     label: CUSTOM_LABEL,
-    // A known provider's hosts, so its paths are read under its own host prefix (`upstreamRoute`).
-    hosts: owner === null ? { main: host } : owner.hosts,
+    hosts: { main: host },
     auth: setting.auth,
     serviceModes: NO_SERVICE_TIERS,
-    // None of its own: a known provider's refused and live-session token paths judge it where its requests go (`upstreamRoute`).
-    refused: [],
-    // No reporting headers of its own: a known provider's are added where its requests go (`decorationOwner`).
-    customerPaths: true,
     operations,
   };
 }

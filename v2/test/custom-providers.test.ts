@@ -29,7 +29,6 @@ import { hasMeasure } from "../src/usage/observation.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { readingRules, type OperationDescription } from "../src/providers/operation.ts";
 import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts";
-import { compilePassthrough, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
@@ -63,22 +62,19 @@ describe("a custom provider's description", () => {
     }
   });
 
-  it("has its base URL's host and no refused paths on a host the gateway does not know", () => {
+  it("has its base URL's host as its only host", () => {
     const description = customDescription({ baseUrl: BASE, auth: AUTH, paths: [] });
-    expect(description).toMatchObject({ type: "custom", hosts: { main: "llm.example.com" }, auth: AUTH, refused: [], operations: [] });
+    expect(description).toMatchObject({ type: "custom", hosts: { main: "llm.example.com" }, auth: AUTH, operations: [] });
   });
 
-  it("gets a known provider's hosts and refused paths on its host, a regional one included", () => {
+  it("knows a built-in provider's host, a regional one included, for the styles it reads there", () => {
     expect(knownHostOwner("https://api.openai.com/v1/")?.type).toBe("openai");
     expect(knownHostOwner("https://API.OPENAI.COM/")?.type).toBe("openai");
     expect(knownHostOwner("https://openrouter.ai/api/")?.type).toBe("openrouter");
     expect(knownHostOwner("https://api.eu.mistral.ai/")?.type).toBe("mistral");
     expect(knownHostOwner("https://openai.example.com/")).toBeNull();
-    const description = customDescription({ baseUrl: "https://api.openai.com/v1/", auth: AUTH, paths: [] });
-    // Its hosts are OpenAI's; OpenAI's rules judge it where its requests go, not from its own description.
-    expect(description.refused).toEqual([]);
-    expect(description.hosts).toBe(openai.hosts);
-    expect(upstreamRoute(description, { baseUrl: "https://api.openai.com/v1/", cloudflareGateway: null }).owner).toBe(openai);
+    // Only its base URL's host, wherever it is: it serves only the paths listed.
+    expect(customDescription({ baseUrl: "https://api.openai.com/v1/", auth: AUTH, paths: [] }).hosts).toEqual({ main: "api.openai.com" });
   });
 
   it("turns each API-style path into its operation, and leaves plain paths to passthrough", () => {
@@ -104,14 +100,11 @@ describe("a custom provider's description", () => {
     expect(knownHostOwner("https://api.eu.residency.elevenlabs.io/")?.type).toBe("elevenlabs");
   });
 
-  it("gives every host a provider declares, and every host under a `*.` one, that provider's refused paths", () => {
+  it("knows every host a provider declares, and every host under a `*.` one, as that provider's", () => {
     for (const description of Object.values(BUILT_IN_PROVIDERS)) {
       for (const name of description.otherHosts ?? []) {
         const host = name.startsWith("*.") ? `jp${name.slice(1)}` : name;
         expect(knownHostOwner(`https://${host}/`)?.type, host).toBe(description.type);
-        // The owner judges every request here: its route names it (`upstreamRoute`).
-        const custom = customDescription({ baseUrl: `https://${host}/`, auth: AUTH, paths: [] });
-        expect(upstreamRoute(custom, { baseUrl: `https://${host}/`, cloudflareGateway: null }).owner, host).toBe(description);
       }
     }
     for (const host of ["us.api.openai.com", "gb.api.openai.com", "eu.api.openai.com", "jp.api.openai.com"]) {
@@ -119,28 +112,6 @@ describe("a custom provider's description", () => {
     }
     // Only under it: a look-alike name is not OpenAI's.
     expect(knownHostOwner("https://api.openai.com.example.net/")).toBeNull();
-  });
-
-  it("refuses xAI's account management on its management host, even when listed", () => {
-    expect(knownHostOwner("https://management-api.x.ai/")?.type).toBe("xai");
-    const custom = customDescription({ baseUrl: "https://management-api.x.ai/", auth: AUTH, paths: [] });
-    const matcher = new ProviderMatcher(custom);
-    const route = upstreamRoute(custom, { baseUrl: "https://management-api.x.ai/", cloudflareGateway: null });
-    for (const [method, path] of [
-      ["POST", "auth/teams/t1/api-keys"],
-      ["GET", "auth/teams/t1/api-keys"],
-      ["PUT", "auth/api-keys/k1"],
-      ["DELETE", "auth/api-keys/k1"],
-      ["GET", "auth/management-keys/validation"],
-      ["GET", "audit/teams/t1/events"],
-      ["POST", "v1/billing/teams/t1/usage"],
-      // Every path there manages the account, not only these.
-      ["GET", "v1/models"],
-    ] as const) {
-      const passthrough = compilePassthrough([{ method, path }]);
-      expect(matcher.match(method, path, { passthrough, route }), `${method} ${path}`).toMatchObject({ kind: "refused", reason: "refused_path" });
-      expect(matcher.refusedCovering(passthrough[0]!, route), `${method} ${path}`).not.toBeNull();
-    }
   });
 
   it("builds an API-style path from a built-in definition, with that provider's rules for reading it", () => {
@@ -222,19 +193,6 @@ describe("a custom provider's description", () => {
   it("is null for a custom row without its base URL or key header, which no save stores", () => {
     expect(describeConnection({ type: "custom", baseUrl: null, customAuth: AUTH })).toBeNull();
     expect(describeConnection({ type: "custom", baseUrl: BASE, customAuth: null })).toBeNull();
-  });
-
-  it("judges a listed operation's refused paths on every way its base URL may be read, as listings are", () => {
-    const description = customDescription({
-      baseUrl: "https://api.openai.com/v1/",
-      auth: AUTH,
-      paths: [{ method: "POST", path: "{area}/chat", style: "openai-chat" }],
-    });
-    const matcher = new ProviderMatcher(description);
-    const route = upstreamRoute(description, { baseUrl: "https://api.openai.com/v1/", cloudflareGateway: null });
-    // Sent as `v1/organization/chat`, which OpenAI's refused paths take.
-    expect(matcher.match("POST", "organization/chat", { route })).toMatchObject({ kind: "refused", reason: "refused_path" });
-    expect(matcher.match("POST", "team/chat", { route })).toMatchObject({ kind: "operation", operation: { name: "custom.openai-chat" } });
   });
 
   it.each([
@@ -353,17 +311,17 @@ describe("saving a custom provider", () => {
       "one path per API style",
     ],
     [
-      { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "POST", path: "chat/{what}" }], pricing: PRICING },
+      { passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }, { method: "POST", path: "v1/chat/{what}" }], pricing: PRICING },
       "custom.openai-chat",
     ],
     [
-      { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "POST", path: "chat/{x}", style: "openai-responses" }], pricing: PRICING },
+      { passthrough: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }, { method: "POST", path: "v1/chat/{x}", style: "openai-responses" }], pricing: PRICING },
       "can match the requests of the custom.",
     ],
-    [{ baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
-    [{ baseUrl: "https://eu.api.openai.com/v1/", passthrough: [{ method: "GET", path: "organization/{thing}" }] }, "never allows"],
-    // It could take openai.responses, and openai.embeddings, whose answers the Responses reader would misread.
-    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/{operation}", style: "openai-responses" }], pricing: PRICING }, "openai.embeddings operation"],
+    // The base URL holds `v1`, so `organization/{thing}` is an id path; a part where the endpoint name stands is not.
+    [{ passthrough: [{ method: "GET", path: "{thing}/details" }] }, "only where an id is"],
+    // It could take openai.transcription, and openai.speech, whose answers the transcription reader would misread.
+    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/audio/{operation}", style: "openai-transcription" }], pricing: PRICING }, "openai.speech operation"],
     [{ baseUrl: "https://api.x.ai/", passthrough: [{ method: "POST", path: "v1/images/generations", style: "openai-images" }] }, "can report only their cost"],
     [{ baseUrl: "https://api.openai.com/v1%2Forganization/", passthrough: [{ method: "GET", path: "users" }] }, "encoded /"],
     [{ baseUrl: "https://llm.example.com/v1//chat/" }, "empty segment"],
@@ -374,9 +332,7 @@ describe("saving a custom provider", () => {
       { passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }], pricing: { "local-llm": { input: 1, output: 2, modes: { us: { input: 1.1, output: 2.2 } } } } },
       "modes.us: no call on this connection is ever billed at this rate",
     ],
-    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/organization/admin_api_keys" }] }, "never allows"],
-    [{ baseUrl: "https://api.openai.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets" }] }, "set live_token to true"],
-    [{ baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] }, "live-session token paths"],
+    [{ baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] }, "live_token"],
   ])("refuses %j", async (fields, message) => {
     const key = await seedManagementKey();
     const refused = await createCustom(key, fields);
@@ -403,11 +359,43 @@ describe("saving a custom provider", () => {
 
   it("judges its paths again when its base URL moves onto a known provider's host", async () => {
     const key = await seedManagementKey();
-    const created = await createCustom(key, { passthrough: [{ method: "GET", path: "organization/{thing}" }] });
+    const created = await createCustom(key, { passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
     expect(created.status).toBe(201);
-    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://api.openai.com/v1/", secret: SECRET });
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://api.openai.com/", secret: SECRET });
     expect(moved.status).toBe(400);
-    expect(JSON.stringify(moved.body)).toContain("never allows");
+    expect(JSON.stringify(moved.body)).toContain("OpenAI's built-in openai.chat endpoint");
+  });
+
+  it("judges its paths again when its base URL moves onto a known provider's host with the same path", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://llm.example.com/", passthrough: [{ method: "POST", path: "v1/chat/completions" }] });
+    expect(created.status).toBe(201);
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, baseUrl: "https://api.openai.com/", secret: SECRET });
+    expect(moved.status).toBe(400);
+    expect(JSON.stringify(moved.body)).toContain("OpenAI's built-in openai.chat endpoint");
+  });
+
+  it("refuses OpenRouter's built-in chat under its declared /api path on its plain origin: it would pass through unmetered", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, { baseUrl: "https://openrouter.ai/", passthrough: [{ method: "POST", path: "api/v1/chat/completions" }] });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain("OpenRouter's built-in openrouter.chat endpoint");
+    // Another of its paths is still listed.
+    expect((await createCustom(key, { baseUrl: "https://openrouter.ai/", passthrough: [{ method: "GET", path: "api/v1/credits" }] })).status).toBe(201);
+  });
+
+  it("saves an admin path or a token mint on a known provider's host: the customer decides", async () => {
+    const key = await seedManagementKey();
+    const created = await createCustom(key, {
+      baseUrl: "https://api.openai.com/",
+      passthrough: [{ method: "POST", path: "v1/organization/admin_api_keys" }, { method: "POST", path: "v1/realtime/client_secrets" }],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    // A custom provider has no suggested defaults: only what its customer sets.
+    expect(created.body.provider.passthrough).toEqual([
+      { method: "POST", path: "v1/organization/admin_api_keys" },
+      { method: "POST", path: "v1/realtime/client_secrets" },
+    ]);
   });
 
   it("needs the key again to move to another base URL: a key is never sent to a new origin", async () => {
@@ -813,19 +801,6 @@ describe("serving a custom provider", () => {
     expect(response.status).toBe(307);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0]![1]!.redirect).toBe("manual");
-  });
-
-  it("keeps a known host's refused paths refused, even when the stored list names them", async () => {
-    const { appId, slug, key } = await setup(
-      [{ method: "GET", path: "{area}/{what}" }, { method: "POST", path: "{area}/chat", style: "openai-chat" }],
-      ["passthrough", "custom.openai-chat"],
-      "https://api.openai.com/v1/",
-    );
-    for (const [method, path] of [["GET", "organization/users"], ["POST", "organization/chat"]] as const) {
-      const { response } = await send(method, `/v2/apps/${appId}/proxy/${slug}/${path}`, key, method === "POST" ? { body: "{}", headers: { "content-type": "application/json" } } : {});
-      expect(response.status, path).toBe(403);
-    }
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("bills the service tier the answer names, at the connection's rate in that mode", async () => {

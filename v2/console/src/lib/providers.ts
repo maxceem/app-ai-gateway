@@ -1,5 +1,6 @@
 import { CUSTOM_PATH_STYLES, CUSTOM_PROVIDER_TYPE } from "@contracts/admin";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
+import type { SuggestedPath } from "@providers/operation";
 
 /** What people call each built-in provider, and a custom one. A type this build does not know shows as itself. */
 export function providerLabel(type: string): string {
@@ -19,6 +20,13 @@ export const PROVIDER_TYPES: { type: string; label: string }[] = [
     .sort((a, b) => a.label.localeCompare(b.label)),
   { type: CUSTOM_PROVIDER_TYPE, label: providerLabel(CUSTOM_PROVIDER_TYPE) },
 ];
+
+/** A provider's suggested path for a listed method and path (plan section 4.5): its safe defaults, and whether it mints a live-session secret. */
+export function suggestedPath(type: string, method: string, path: string): SuggestedPath | null {
+  if (!Object.hasOwn(BUILT_IN_PROVIDERS, type)) return null;
+  const bare = path.replace(/^\/+/u, "");
+  return BUILT_IN_PROVIDERS[type]!.suggestedPaths?.find((entry) => entry.method === method && entry.path === bare) ?? null;
+}
 
 /** The API styles a custom provider's path may speak. */
 export const CUSTOM_STYLES: readonly string[] = CUSTOM_PATH_STYLES;

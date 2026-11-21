@@ -16,7 +16,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import type { OperationDescription, OutputCap, ProviderDescription } from "../providers/operation.ts";
-import { fieldAt } from "./request-fields.ts";
+import { fieldAt, writeAt } from "./request-fields.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -81,15 +81,7 @@ export function pinServingProviders(
 ): boolean {
   const field = description.servingProvidersField;
   if (field === undefined || pinned === null || pinned.length === 0) return false;
-  const path = field.split(".");
-  let level = body;
-  for (const key of path.slice(0, -1)) {
-    const next = Object.hasOwn(level, key) ? level[key] : undefined;
-    const object = typeof next === "object" && next !== null && !Array.isArray(next) ? (next as Record<string, unknown>) : {};
-    level[key] = object;
-    level = object;
-  }
-  level[path.at(-1)!] = [...pinned];
+  writeAt(body, field, [...pinned]);
   return true;
 }
 

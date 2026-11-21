@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { parsePathLines, pathLine, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
@@ -354,8 +355,10 @@ describe("PathsDialog after a conflict", () => {
   });
 });
 
-describe("live-session token paths", () => {
-  it("opts a path in only with its own choice, naming what is not metered or capped", async () => {
+describe("safe defaults on listed paths", () => {
+  const EXPIRY = { in: "body", name: "expires_after", value: { anchor: "created_at", seconds: 60 } };
+
+  it("shows a new token path's safe defaults and the warning, and lets the server write them in", async () => {
     const listed = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
     const fetchMock = stub([listed]);
     renderAuthenticated(<ProvidersPage />);
@@ -364,36 +367,55 @@ describe("live-session token paths", () => {
     const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
     expect(screen.queryByText(/not metered, not capped/i)).toBeNull();
     await userEvent.click(box);
-    await userEvent.paste("\nPOST v1/realtime/client_secrets live-token");
+    await userEvent.paste("\nPOST v1/realtime/client_secrets");
     expect(await screen.findByText(/^live-session tokens are not metered, not capped$/i)).toBeTruthy();
     expect(screen.getByText(/elevenlabs' token carries a link that can start more calls within about 15 minutes/i)).toBeTruthy();
     expect(screen.getByText(/one openai client secret can start several calls before it expires/i)).toBeTruthy();
-    const save = screen.getByRole("button", { name: /save paths/i }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
-    await userEvent.click(screen.getByRole("checkbox", { name: /live-session tokens are not metered, not capped/i }));
-    expect(save.disabled).toBe(false);
-    await userEvent.click(save);
+    expect(screen.getByText("Token expiry")).toBeTruthy();
+    expect(screen.getByText(/set when you save/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
     await waitFor(() =>
       expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
         revision: 3,
         passthrough: [
           { method: "GET", path: "v1/files" },
-          { method: "POST", path: "v1/realtime/client_secrets", live_token: true },
+          { method: "POST", path: "v1/realtime/client_secrets" },
         ],
       }),
     );
   });
 
-  it("keeps a path opted in before without asking again, and sends no opt-in for other paths", async () => {
-    const listed = { ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", live_token: true }] };
-    const fetchMock = stub([listed]);
+  it("removes a suggested default before it is ever set: the path is sent with none", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] }]);
     renderAuthenticated(<ProvidersPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
     const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
-    expect(box.value).toBe("POST v1/realtime/client_secrets live-token");
-    expect(screen.getByText(/live-session tokens are not metered, not capped/i)).toBeTruthy();
-    expect(screen.queryByRole("checkbox", { name: /live-session tokens/i })).toBeNull();
+    await userEvent.click(box);
+    await userEvent.paste("\nPOST v1/realtime/client_secrets");
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toMatchObject({
+        passthrough: [{ method: "GET", path: "v1/files" }, { method: "POST", path: "v1/realtime/client_secrets", set_fields: [] }],
+      }),
+    );
+  });
+
+  it("shows a saved path's settings with their reason, keeps them when other lines change, and changes a value", async () => {
+    const saved = { ...EXPIRY, value: { anchor: "created_at", seconds: 120 }, label: "Token expiry", reason: "A short expiry limits new calls.", suggested_value: EXPIRY.value };
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [saved] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const box = (await screen.findByLabelText(/one path per line/i)) as HTMLTextAreaElement;
+    expect(box.value).toBe("POST v1/realtime/client_secrets");
+    expect(screen.getByText("A short expiry limits new calls.")).toBeTruthy();
+    expect(screen.getByText(/suggested:/i)).toBeTruthy();
+    const value = screen.getByRole("textbox", { name: /value of token expiry/i }) as HTMLInputElement;
+    await userEvent.clear(value);
+    await userEvent.click(value);
+    await userEvent.paste('{"anchor":"created_at","seconds":30}');
     await userEvent.click(box);
     await userEvent.paste("\nGET v1/files");
     await userEvent.click(screen.getByRole("button", { name: /save paths/i }));
@@ -401,9 +423,103 @@ describe("live-session token paths", () => {
       expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
         revision: 3,
         passthrough: [
-          { method: "POST", path: "v1/realtime/client_secrets", live_token: true },
+          { method: "POST", path: "v1/realtime/client_secrets", set_fields: [{ ...EXPIRY, value: { anchor: "created_at", seconds: 30 } }] },
           { method: "GET", path: "v1/files" },
         ],
+      }),
+    );
+  });
+
+  it("saves the value shown when Enter is pressed while the value is still focused", async () => {
+    const saved = { ...EXPIRY, value: { anchor: "created_at", seconds: 120 }, label: "Token expiry", reason: "A short expiry limits new calls.", suggested_value: EXPIRY.value };
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [saved] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const value = (await screen.findByRole("textbox", { name: /value of token expiry/i })) as HTMLInputElement;
+    await userEvent.clear(value);
+    await userEvent.click(value);
+    await userEvent.paste('{"anchor":"created_at","seconds":30}');
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [{ ...EXPIRY, value: { anchor: "created_at", seconds: 30 } }] }],
+      }),
+    );
+  });
+
+  it("does not save while a value shown is not JSON", async () => {
+    const saved = { ...EXPIRY, value: { anchor: "created_at", seconds: 120 }, label: "Token expiry", reason: "A short expiry limits new calls.", suggested_value: EXPIRY.value };
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "POST", path: "v1/realtime/client_secrets", set_fields: [saved] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+    const value = (await screen.findByRole("textbox", { name: /value of token expiry/i })) as HTMLInputElement;
+    await userEvent.clear(value);
+    await userEvent.click(value);
+    const error = vi.spyOn(toast, "error");
+    await userEvent.paste("{seconds: 30");
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/write each value as json/i)));
+    expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toBeUndefined();
+    error.mockRestore();
+  });
+});
+
+describe("field settings while paths are edited", () => {
+  const LIMIT = { in: "query", name: "limit", value: 10 };
+  const open = async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /passthrough paths/i }));
+  };
+
+  it("keeps a path's settings when one of its named parts is renamed", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    const lines = await screen.findByRole("textbox", { name: /one path per line/i });
+    await userEvent.clear(lines);
+    await userEvent.type(lines, "GET v1/files/{{id}");
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "GET", path: "v1/files/{id}", set_fields: [LIMIT] }],
+      }),
+    );
+  });
+
+  it("keeps a value's unfinished text while a path line is briefly wrong, and still will not save it", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    const value = await screen.findByRole("textbox", { name: /value of limit/i });
+    await userEvent.clear(value);
+    await userEvent.type(value, "[[1,");
+    const lines = screen.getByRole("textbox", { name: /one path per line/i });
+    await userEvent.type(lines, "\nXX");
+    expect(screen.queryByRole("textbox", { name: /value of limit/i })).toBeNull();
+    await userEvent.type(lines, "{Backspace}{Backspace}{Backspace}");
+    expect(((await screen.findByRole("textbox", { name: /value of limit/i })) as HTMLInputElement).value).toBe("[1,");
+    const error = vi.spyOn(toast, "error");
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/write each value as json/i)));
+    expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toBeUndefined();
+    error.mockRestore();
+  });
+
+  it("saves once a value that does not read as JSON is removed", async () => {
+    const fetchMock = stub([{ ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [LIMIT] }] }]);
+    renderAuthenticated(<ProvidersPage />);
+    await open();
+    await userEvent.clear(await screen.findByRole("textbox", { name: /value of limit/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save paths" }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        passthrough: [{ method: "GET", path: "v1/files/{file_id}", set_fields: [] }],
       }),
     );
   });
@@ -425,8 +541,9 @@ describe("listed path lines", () => {
     ["GET", false, "add the path"],
     ["GET v1/files $", false, "a price is $"],
     ["GET v1/files $-1", false, "a price is $"],
-    ["POST chat openai-chat", false, "is not a price or live-token"],
-    ["POST chat speakers", true, "not a price, live-token or an API style"],
+    ["POST chat openai-chat", false, "is not a price"],
+    ["POST chat speakers", true, "not a price or an API style"],
+    ["POST v1/realtime/client_secrets live-token", false, "is not a price"],
   ])("say what is wrong with %j", (text, custom, problem) => {
     const parsed = parsePathLines(text, custom);
     expect("problem" in parsed && parsed.problem).toContain(problem);
@@ -436,7 +553,6 @@ describe("listed path lines", () => {
     for (const path of [
       { method: "GET" as const, path: "v1/files/{id}", per_request: 0.001 },
       { method: "POST" as const, path: "chat/completions", style: "openai-chat" as const },
-      { method: "POST" as const, path: "v1/realtime/client_secrets", live_token: true },
     ]) {
       expect(parsePathLines(pathLine(path), true)).toEqual({ paths: [path] });
     }

@@ -1,4 +1,3 @@
-import { customDescription } from "../src/providers/custom.ts";
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderDescriptionError, ProviderMatcher, upstreamRoute } from "../src/providers/matcher.ts";
@@ -74,15 +73,10 @@ describe("OpenAI", () => {
     });
   });
 
-  it("refuses the admin API, whatever the case, before anything else", () => {
+  it("refuses the admin API unless it is listed: there are no refused paths, only what is declared or listed", () => {
+    expect(matcher.match("GET", "v1/organization/admin_api_keys")).toEqual({ kind: "refused", reason: "not_declared" });
     const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
-    for (const path of ["v1/organization", "v1/organization/admin_api_keys", "V1/ORGANIZATION/projects"]) {
-      expect(matcher.match("GET", path, { passthrough: listed })).toEqual({
-        kind: "refused",
-        reason: "refused_path",
-        pattern: expect.stringMatching(/^v1\/organization/),
-      });
-    }
+    expect(matcher.match("GET", "v1/organization/admin_api_keys", { passthrough: listed })).toMatchObject({ kind: "passthrough" });
   });
 });
 
@@ -99,7 +93,7 @@ describe("passthrough paths", () => {
       listed: { method: "GET", path: "v1/files/{file_id}" },
       parts: { file_id: "file-abc" },
       upstream: { host: "main", path: "/v1/files/file-abc" },
-      liveToken: null,
+      liveTokenMint: false,
     });
   });
 
@@ -140,15 +134,6 @@ describe("passthrough paths", () => {
     expect(() => compilePassthrough([{ method: "GET", path: "v1/x", priceNano: -1 }])).toThrow();
   });
 
-  it("gives a custom provider on a built-in host that provider's refused paths", () => {
-    const custom = customDescription({ baseUrl: "https://api.openai.com/", auth: { header: "authorization", format: "Bearer {key}" }, paths: [] });
-    const customMatcher = new ProviderMatcher(custom);
-    const route = upstreamRoute(custom, { baseUrl: "https://api.openai.com/", cloudflareGateway: null });
-    const listed = compilePassthrough([{ method: "GET", path: "v1/organization/{thing}" }]);
-    expect(customMatcher.match("GET", "v1/organization/users", { passthrough: listed, route })).toMatchObject({
-      reason: "refused_path",
-    });
-  });
 });
 
 describe("upstream templates", () => {
@@ -158,7 +143,6 @@ describe("upstream templates", () => {
     serviceModes: [],
     hosts: { main: "example.com" },
     auth: { header: "x", format: "{key}" },
-    refused: [],
     operations: [
       defineOperation({
         name: "t.prefixed",
@@ -179,11 +163,6 @@ describe("upstream templates", () => {
     expect(matcher.match("GET", "v1/x.")).toEqual({ kind: "refused", reason: "bad_path", detail: "dot_segment" });
   });
 
-  it("still refuse such a value by a refused pattern, before a listed path can match it", () => {
-    const refusing = new ProviderMatcher({ ...provider, refused: ["v1/x{id}"] });
-    const passthrough = compilePassthrough([{ method: "GET", path: "v1/{segment}" }]);
-    expect(refusing.match("GET", "v1/x..", { passthrough })).toMatchObject({ reason: "refused_path" });
-  });
 });
 
 describe("broken descriptions are caught when compiled", () => {
@@ -206,5 +185,56 @@ describe("broken descriptions are caught when compiled", () => {
     const op = defineOperation({ ...base, name: "t.dup", match: { method: "GET", path: "v1/x" }, model: { in: "fixed", model: "m" } });
     const twice = defineProvider({ type: "test", label: "Test", serviceModes: [], hosts: { main: "example.com" }, auth: { header: "x", format: "{key}" }, refused: [], operations: [op, op] });
     expect(() => new ProviderMatcher(twice)).toThrow(/declared twice/);
+  });
+});
+
+describe("listings that can match one request", () => {
+  const matcher = new ProviderMatcher(openai);
+  const passthrough = compilePassthrough([
+    { method: "GET", path: "v1/files/{file_id}" },
+    { method: "GET", path: "v1/files/search", priceNano: 1_000 },
+    { method: "GET", path: "v1/files/{file_id}/content" },
+  ]);
+
+  it("serves a request with the most specific listing, whatever the order", () => {
+    for (const order of [passthrough, [...passthrough].reverse()]) {
+      expect(matcher.match("GET", "v1/files/search", { passthrough: order })).toMatchObject({ kind: "passthrough", listed: { path: "v1/files/search" } });
+      expect(matcher.match("GET", "v1/files/file-1", { passthrough: order })).toMatchObject({ kind: "passthrough", listed: { path: "v1/files/{file_id}" } });
+    }
+  });
+
+  it("breaks a tie between parts with fixed text the same way in either order", () => {
+    const tied = compilePassthrough([
+      { method: "GET", path: "v1/files/file-{id}" },
+      { method: "GET", path: "v1/files/{name}.json" },
+    ]);
+    const served = [tied, [...tied].reverse()].map((order) => matcher.match("GET", "v1/files/file-1.json", { passthrough: order }));
+    expect(served[0]).toMatchObject({ kind: "passthrough" });
+    expect(served[1]).toEqual(served[0]);
+  });
+
+  it("prefers a fully fixed segment further on over fixed text inside an earlier part", () => {
+    const listed = compilePassthrough([
+      { method: "GET", path: "v1/files/{id}/exports/pdf", priceNano: 10_000_000 },
+      { method: "GET", path: "v1/files/file-{id}/exports/{format}" },
+    ]);
+    for (const order of [listed, [...listed].reverse()]) {
+      expect(matcher.match("GET", "v1/files/file-42/exports/pdf", { passthrough: order })).toMatchObject({
+        kind: "passthrough",
+        listed: { path: "v1/files/{id}/exports/pdf" },
+      });
+    }
+  });
+});
+
+describe("known paths behind a base URL with a path", () => {
+  const matcher = new ProviderMatcher(elevenlabs);
+  const route = upstreamRoute(elevenlabs, { baseUrl: "https://voice-proxy.example.net/v1/convai/conversation/", cloudflareGateway: null });
+
+  it("finds the signed-URL mint the provider reads, for cache rules and for its suggested defaults", () => {
+    expect(matcher.isLiveTokenMint("GET", ["get-signed-url"], route)).toBe(true);
+    expect(matcher.isLiveTokenMint("GET", ["get-signed-url"])).toBe(false);
+    const [listed] = compilePassthrough([{ method: "GET", path: "get-signed-url" }]);
+    expect(matcher.suggestionFor(listed!, route)?.path).toBe("v1/convai/conversation/get-signed-url");
   });
 });

@@ -98,13 +98,13 @@ describe("adding a provider connection through a person", () => {
     expect(JSON.stringify(opened.body)).toContain("modes.eu: no call on this connection is ever billed at this rate");
   });
 
-  it("refuses a base URL on another provider's host, as a direct save does", async () => {
+  it("refuses a base URL a direct save refuses: Cloudflare AI Gateway's host", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", {
-      type: "vercel",
-      name: "Vercel",
-      slug: "vercel-on-mistral",
-      baseUrl: "https://api.eu.mistral.ai/",
+      type: "openai",
+      name: "OpenAI",
+      slug: "openai-on-cloudflare",
+      baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/openai/",
     });
     expect(opened.status, JSON.stringify(opened.body)).toBe(400);
     expect(JSON.stringify(opened.body)).toContain("baseUrl:");
@@ -112,12 +112,12 @@ describe("adding a provider connection through a person", () => {
 
   it("judges the base URL again on approval, so a step opened before the check adds nothing", async () => {
     const { caller } = await person();
-    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "vercel", name: "Vercel", slug: "vercel-stored" });
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "openai-stored" });
     expect(opened.status).toBe(201);
-    // A step stored before the check existed: its reviewed base URL names another provider's host.
+    // A step stored before the check existed: its reviewed base URL is OpenAI's own host with a path.
     const row = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id = ?").bind(opened.body.id).first<{ payload: string }>();
     const payload = JSON.parse(row!.payload) as { review: Record<string, unknown> };
-    payload.review.baseUrl = "https://api.eu.mistral.ai/";
+    payload.review.baseUrl = "https://api.openai.com/v1/";
     await env.DB.prepare("UPDATE mgmt_operation SET payload = ? WHERE id = ?").bind(JSON.stringify(payload), opened.body.id).run();
     const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof: proofOf(opened.body.url), secret: KEY });
     expect(approved.status, approved.text).toBe(400);

@@ -70,16 +70,11 @@ export const deepgram = defineProvider({
   type: "deepgram",
   label: "Deepgram",
   hosts: { main: "api.deepgram.com" },
-  cloudflareEndpoint: { slug: "deepgram" },
   // Its EU host.
   otherHosts: ["api.eu.deepgram.com"],
   auth: { header: "authorization", format: "Token {key}" },
   // Deepgram has no service modes on this API.
   serviceModes: [],
-  // Projects hold the keys, members, usage and balances. `v1/auth/grant`
-  // mints a token that also allows ordinary transcription and speech, not
-  // just one live session, so no opt-in reaches it (plan D4).
-  refused: ["v1/projects/*", "v1/keys/*", "v1/auth/*"],
   // Lists the models; needs a valid key.
   probe: { path: "v1/models" },
   operations: [
