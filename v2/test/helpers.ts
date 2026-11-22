@@ -254,11 +254,29 @@ export async function seedRoutedApp(
  * `role`. Returns the key's plain value.
  */
 export async function seedManagementKey(
-  options: { grant?: "read" | "manage"; role?: "owner" | "admin" | "member"; userId?: string } = {},
+  options: {
+    grant?: "read" | "manage";
+    role?: "owner" | "admin" | "member";
+    userId?: string;
+    /**
+     * An account of the test's own instead of the shared test account. Tests in
+     * one file share the database, so a test that reads totals across a whole
+     * account needs one nothing else writes to.
+     */
+    accountId?: string;
+  } = {},
 ): Promise<string> {
   await seedAccount();
+  const accountId = options.accountId ?? ACCOUNT_ID;
   const userId = options.userId ?? `usr_${crypto.randomUUID().slice(0, 8)}`;
   const now = Date.now();
+  if (accountId !== ACCOUNT_ID) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Own', 'usr_test', ?, ?)",
+    )
+      .bind(accountId, new Date(now).toISOString(), new Date(now).toISOString())
+      .run();
+  }
   const key = `agw_mgmt_${crypto.randomUUID().replaceAll("-", "")}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -269,11 +287,11 @@ export async function seedManagementKey(
     env.DB.prepare(
       `INSERT OR IGNORE INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at)
        VALUES (?, ?, ?, ?, 'active', ?)`,
-    ).bind(`mem_${userId}`, ACCOUNT_ID, userId, options.role ?? "owner", new Date(now).toISOString()),
+    ).bind(`mem_${userId}_${accountId}`, accountId, userId, options.role ?? "owner", new Date(now).toISOString()),
     env.DB.prepare(
       `INSERT INTO mgmt_api_key(id, user_id, organization_id, name, token_hash, token_hint, enabled, created_at, source, "grant", credential_type)
        VALUES (?, ?, ?, 'test', ?, ?, 1, ?, 'console', ?, 'apiKey')`,
-    ).bind(`mk_${crypto.randomUUID().slice(0, 8)}`, userId, ACCOUNT_ID, hash, key.slice(-4), now, options.grant ?? "manage"),
+    ).bind(`mk_${crypto.randomUUID().slice(0, 8)}`, userId, accountId, hash, key.slice(-4), now, options.grant ?? "manage"),
   ]);
   return key;
 }

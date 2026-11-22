@@ -135,25 +135,31 @@ async function monthRow(appId: string, month: string, values: { charges: number;
     .run();
 }
 
+/** An account of a test's own, for a test that asserts a whole account's totals. */
+const ownAccount = () => `acc_own_${crypto.randomUUID().slice(0, 8)}`;
+
 const at = (day: string, ms = 0) => Date.parse(`${day}T12:00:00Z`) + ms;
 
 describe("month totals", () => {
   it("add a month's folded total to the days of it still kept, for an app and for the whole account", async () => {
-    const key = await seedManagementKey();
+    // Its own account: the whole account's totals are asserted exactly, and every
+    // test in this file shares the database.
+    const accountId = ownAccount();
+    const key = await seedManagementKey({ accountId });
     const appId = await createApp(key);
     const gone = `gone-${crypto.randomUUID().slice(0, 8)}`;
     // March 2025: part already folded into its month total, part still in day totals.
-    await monthRow(appId, "2025-03", { charges: 40, cost: 40_000 });
-    await seed({ appId, usedAt: at("2025-03-30"), cost: 2_000 });
-    await seed({ appId, usedAt: at("2025-03-31"), cost: null, status: "timeout" });
-    await seed({ appId, usedAt: at("2025-03-31", 1), cost: 500, priceSource: "unresolved" });
+    await monthRow(appId, "2025-03", { charges: 40, cost: 40_000, accountId });
+    await seed({ appId, accountId, usedAt: at("2025-03-30"), cost: 2_000 });
+    await seed({ appId, accountId, usedAt: at("2025-03-31"), cost: null, status: "timeout" });
+    await seed({ appId, accountId, usedAt: at("2025-03-31", 1), cost: 500, priceSource: "unresolved" });
     // A correction changes the cost, never the count.
-    await seed({ appId, usedAt: at("2025-03-31", 2), kind: "correction", cost: -300 });
+    await seed({ appId, accountId, usedAt: at("2025-03-31", 2), kind: "correction", cost: -300 });
     // Outside the month, and in another account's app with the same id.
-    await seed({ appId, usedAt: at("2025-04-01"), cost: 7_000 });
+    await seed({ appId, accountId, usedAt: at("2025-04-01"), cost: 7_000 });
     await seed({ appId, usedAt: at("2025-03-15"), cost: 9_000_000, accountId: OTHER_ACCOUNT });
     // A deleted app keeps its usage in the account's month.
-    await seed({ appId: gone, usedAt: at("2025-03-10"), cost: 10_000 });
+    await seed({ appId: gone, accountId, usedAt: at("2025-03-10"), cost: 10_000 });
 
     const app = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-03`);
     expect(app.status).toBe(200);
@@ -525,9 +531,11 @@ describe("isolation", () => {
 
 describe("tools", () => {
   it("read usage for an app or the whole account, and charges, as MCP and the CLI call them", async () => {
-    const key = await seedManagementKey();
+    // Its own account: the whole account's apps are asserted exactly.
+    const accountId = ownAccount();
+    const key = await seedManagementKey({ accountId });
     const appId = await createApp(key);
-    await seed({ appId, usedAt: at("2025-09-03"), cost: 1_500_000 });
+    await seed({ appId, accountId, usedAt: at("2025-09-03"), cost: 1_500_000 });
 
     const forApp = await request(key, "POST", "/v2/cli/tools/get_usage", { app: appId, month: "2025-09" });
     expect(forApp.status).toBe(200);
@@ -552,13 +560,13 @@ describe("filters with no index", () => {
   it("read a trace inside at most 31 days, since a trace id has no index of its own (Fable 7b-3)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
-    await seed({ appId, usedAt: at("2025-08-05"), trace: "t-1" });
+    await seed({ appId, usedAt: at("2020-08-05"), trace: "t-1" });
     const get = (query: string) => request(key, "GET", `/v2/admin/apps/${appId}/charges?${query}`);
-    // No range: the last 30 days, where this old charge is not.
+    // No range: the last 30 days, where a charge from 2020 never is, whatever day the test runs.
     expect(await get("trace=t-1")).toMatchObject({ status: 200, body: { charges: [] } });
-    expect((await get("trace=t-1&from=2025-08-01")).status).toBe(400);
-    expect((await get("trace=t-1&from=2025-07-01&to=2025-08-05")).status).toBe(400);
-    const found = await get("trace=t-1&from=2025-08-01&to=2025-08-31");
+    expect((await get("trace=t-1&from=2020-08-01")).status).toBe(400);
+    expect((await get("trace=t-1&from=2020-07-01&to=2020-08-05")).status).toBe(400);
+    const found = await get("trace=t-1&from=2020-08-01&to=2020-08-31");
     expect(found.status).toBe(200);
     expect(found.body.charges).toHaveLength(1);
   });
