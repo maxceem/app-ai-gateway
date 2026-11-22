@@ -569,7 +569,8 @@ describe("sign-up", () => {
       },
     });
     // Nothing is verified here, and the mark cannot be cleared: the person is not made.
-    expect((await signUp({ ...deployment().env, DB: failing } as Env, email)).status).not.toBe(200);
+    // A retryable 503, not Better Auth's 422 for a person it could not make.
+    expect((await signUp({ ...deployment().env, DB: failing } as Env, email)).status).toBe(503);
     expect(await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?").bind(email).first()).toBeNull();
     // Once D1 answers, the same sign-up clears the mark and goes through.
     const created = await signUp(deployment().env, email);

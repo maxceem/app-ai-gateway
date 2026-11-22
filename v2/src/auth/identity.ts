@@ -135,7 +135,10 @@ async function settlePendingMark(db: D1Database, email: string, mark: boolean, v
   } catch (error) {
     log("warn", "email_pending_mark_failed", { error: errorFacts(error) });
     if (!mark && !verified) {
-      throw new GatewayError(503, "service_unavailable", "Sign-up could not finish; try again in a moment");
+      // Better Auth's own error, as `registrationDenied` throws: any other error
+      // inside its hook comes back as 422 FAILED_TO_CREATE_USER, not a retryable 503.
+      const { APIError } = await import("better-auth/api");
+      throw APIError.from("SERVICE_UNAVAILABLE", { code: "SIGN_UP_UNAVAILABLE", message: "Sign-up could not finish; try again in a moment" });
     }
   }
 }
