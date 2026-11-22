@@ -1629,10 +1629,18 @@ describe("conversation retention", () => {
       },
     } as unknown as D1Database;
 
+    const warned: { message: string; reads?: number }[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: unknown) => {
+      warned.push(JSON.parse(String(entry)) as { message: string; reads?: number });
+    });
     await runConversationRetention(store, db, Date.now(), new QueryBudget(500));
     const left = (await store.list({ prefix: `conversations/${ACCOUNT_ID}~conversation-` })).objects.map((object) => object.key);
     expect(left).toContain(`${appPrefix(ACCOUNT_ID, late)}2020-01-01/000000-aaaaaaaa.jsonl.gz`);
     expect(left).toContain(`${appPrefix(ACCOUNT_ID, unreadable)}2020-01-01/000000-bbbbbbbb.jsonl.gz`);
+    // The kept folder is not passed over quietly: one warning for the run (Astra 7b-2 round 1).
+    expect(warned.filter((entry) => entry.message === "conversation_retention_reads_failed")).toEqual([
+      expect.objectContaining({ reads: 1 }),
+    ]);
   });
 
   it("deletes a whole expired day folder in bulk, unread, across runs within each run's allowance (Sol round 3)", async () => {

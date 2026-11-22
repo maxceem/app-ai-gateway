@@ -176,6 +176,13 @@ export async function runConversationRetention(
   let beforeCurrent: string | null = null;
   /** What the run had deleted when it began `current`. */
   let deletedBeforeCurrent = 0;
+  /** Looks at an app that came back unreadable: its folder was kept, and the run says so once. */
+  let failedReads = 0;
+  const look = async (accountId: string, appId: string): Promise<AppNow> => {
+    const app = await appNow(db, accountId, appId);
+    if (app.state === "unknown") failedReads += 1;
+    return app;
+  };
   try {
     budget.charge(1);
     last = (await (await bucket.get(RETENTION_CURSOR))?.text()) || null;
@@ -215,7 +222,7 @@ export async function runConversationRetention(
             if (days === undefined) {
               // The app was missing when the sweep began; it is looked up again before each page,
               // so an app made since then keeps what it has written.
-              const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await appNow(db, accountId, appId)).state === "absent");
+              const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await look(accountId, appId)).state === "absent");
               if (!outcome.stopped) result.removedApps += 1;
             } else {
               for await (const day of folders(bucket, folder, work, pageSize)) {
@@ -227,7 +234,7 @@ export async function runConversationRetention(
                 // for a later run.
                 const dayName = match[1]!;
                 const outcome = await deleteAll(bucket, day, work, pageSize, result, async () => {
-                  const fresh = await appNow(db, accountId, appId);
+                  const fresh = await look(accountId, appId);
                   return fresh.state === "present" && dayName < dayBefore(now, fresh.days);
                 });
                 if (outcome.stopped) break;
@@ -262,6 +269,8 @@ export async function runConversationRetention(
       ranOutOf: error.budget === reads ? "d1_queries" : "r2_calls",
     });
   }
+  // So the monitor alerts: expired conversations were kept because the app could not be read.
+  if (failedReads > 0) log("warn", "conversation_retention_reads_failed", { reads: failedReads });
   if (resume !== last && budget.affords(1)) {
     budget.charge(1);
     if (resume === null) await bucket.delete(RETENTION_CURSOR);
