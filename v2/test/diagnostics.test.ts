@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
 import { appIds } from "../src/admin/apps.ts";
-import { CLAIM_WAIT_TOTALS, claimWaitAt, PENDING_USERS } from "../src/admin/diagnostics.ts";
+import { CLAIM_WAIT_TOTALS, claimWaitAt, FAILING_NETWORKS, PENDING_USERS } from "../src/admin/diagnostics.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -488,7 +488,7 @@ describe("query plans", () => {
     expect(await planOf("app_end_user", get("auth-events/summary"))).toContain("app_end_user_claim_pending");
   });
 
-  it("read every claim-wait figure from the covering index, with no sort and no table row (Sol 7b-4 round 2, Gemini Neon 7b-4)", async () => {
+  it("read every claim-wait figure from the covering index, with no sort and no table row, and the failing networks through the time index (Sol 7b-4 round 2, Gemini Neon 7b-4)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     await authEvent({ appId, at: at("2026-11-19"), claimDelayMs: 1_000 });
@@ -505,6 +505,14 @@ describe("query plans", () => {
     const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${PENDING_USERS}`).bind(appId, 0).all<{ detail: string }>();
     const searches = results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
     expect(searches).toEqual([expect.stringContaining("COVERING INDEX app_end_user_claim_pending")]);
+    // The failing networks: the window through the app's time index, never a scan of the table.
+    // Its two sorts (the grouping, and the order by count) are over the grouped networks
+    // only, never the events: an order by an aggregate always needs one.
+    const networks = await env.DB.prepare(`EXPLAIN QUERY PLAN ${FAILING_NETWORKS}`)
+      .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
+      .all<{ detail: string }>();
+    const reads = networks.results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
+    expect(reads).toEqual([expect.stringContaining("app_auth_event_app_account_created")]);
   });
 });
 
