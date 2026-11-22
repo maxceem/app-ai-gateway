@@ -124,11 +124,11 @@ waiting. The run stops when every pass is done, or when one of two allowances ru
   This allowance covers the retention passes only. The hourly clean-up of expired App Attest
   challenges is not counted in it: each hour it settles about one hour of challenges.
 
-At the defaults, a night deletes about 2,000 charges when charges are the only backlog, because
-each charge is counted as 10 row writes with its index entries. A deployment that serves more than about
-2,000 requests a day falls behind and logs `maintenance_backlog_left` every night. It should raise
+At the defaults, a night deletes about 1,800 charges when charges are the only backlog, because
+each charge is counted as 11 row writes with its index entries. A deployment that serves more than about
+1,800 requests a day falls behind and logs `maintenance_backlog_left` every night. It should raise
 `MAINTENANCE_ROW_BUDGET`. On the Free plan, the apps' own writes leave little room to do that, so
-past about 2,000 requests a day the Paid plan is the better fit.
+past about 1,800 requests a day the Paid plan is the better fit.
 
 A backlog left over is cleared over the next nights, and the run logs `maintenance_backlog_left` as
 a warning. On the Workers Paid plan, two optional Worker variables clear it faster:

@@ -169,12 +169,8 @@ const FOLD_STATEMENTS = 3;
 
 /**
  * The key of a month row: the day rollup's key, with the month for the day.
- * The month row names the account; the day rollup's key does not, as an app id
- * is unique across accounts (its name plus a random suffix, `newAppId`). Two
- * accounts could only share a day row if one deleted an app and another made
- * one with the same name and the same random suffix, on a day the old app
- * still had charges: about one chance in two billion. A v1 import must keep
- * app ids unique across accounts for the same reason.
+ * Both name the account (migration 0009), so an app id that comes back in
+ * another account never shares a row with the old app.
  */
 const MONTH_KEY = ["account_id", "app_id", "month", "provider_type", "provider_connection_id", "model", "outcome", "unit"] as const;
 

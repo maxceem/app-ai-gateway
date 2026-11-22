@@ -359,7 +359,14 @@ export const charge = sqliteTable(
     writtenAt: integer("written_at").notNull(),
   },
   (table) => [
-    index("charge_app_used").on(table.appId, table.usedAt),
+    // An app's charges by time, newest first (the management API's charge
+    // list and breakdowns), with the account named so a read never leaves it,
+    // and the id so a page position is found directly.
+    index("charge_app_account_used").on(table.appId, table.accountId, table.usedAt, table.id),
+    // A client's trace id, for the charge list's trace filter, newest first. Only rows that carry one.
+    index("charge_app_trace")
+      .on(table.appId, table.accountId, table.clientTraceId, table.usedAt, table.id)
+      .where(sql`client_trace_id IS NOT NULL`),
     index("charge_account_used").on(table.accountId, table.usedAt),
     // An app's end users and their usage in a month (the management API's user list).
     index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),
@@ -425,8 +432,11 @@ export const usageDay = sqliteTable(
     sessionMs: integer("session_ms").notNull().default(0),
   },
   (table) => [
+    // The account first: an app id can come back in another account after
+    // deletion, and its totals must never merge with the old app's.
     primaryKey({
       columns: [
+        table.accountId,
         table.appId,
         table.day,
         table.providerType,
