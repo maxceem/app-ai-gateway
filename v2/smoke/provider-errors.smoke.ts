@@ -21,7 +21,7 @@
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, uniqueSlug, send } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -32,7 +32,7 @@ const PROVIDER_KEY = "sk-mock-smoke-key";
 const MOCK_ERROR = { message: "Mock error", type: "mock_error", code: "mock_error" };
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -76,7 +76,7 @@ after(async () => {
 });
 
 function chat(app: { id: string; key: string }, trace: string, body: Record<string, unknown>): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${app.id}/proxy/${slug}/v1/chat/completions`, base), {
+  return send(`/v2/apps/${app.id}/proxy/${slug}/v1/chat/completions`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${app.key}`, "content-type": "application/json", "x-client-trace-id": trace },
     body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: trace }], ...body }),

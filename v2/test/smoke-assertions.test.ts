@@ -1,13 +1,18 @@
 /**
  * The smoke checks print nothing a deployment answered when they fail.
  *
- * The repository is public and its CI logs can be read by anyone, so a smoke
- * check's failure message is published. A direct `node:assert` call prints
- * the values it compares, and a message built from a variable prints whatever
- * that variable held: either can put an app key, a gateway token or a
- * provider key in the log. So the guarded files assert only through the
- * helpers in `smoke/support.ts`, each with a plain string for its message;
- * the helpers add a status and a listed error code at most.
+ * A smoke check's output goes into the reports of whoever runs it (the
+ * outside monitor after a release, or a person at a terminal), and those
+ * should never hold a key. A direct `node:assert` call prints the values it
+ * compares, a message built from a variable prints whatever that variable
+ * held, and Node's own request errors can quote a URL or a header: any of
+ * them can put an app key, a gateway token or a provider key in a report. So
+ * the guarded files assert, print and send only through the helpers in
+ * `smoke/support.ts`, each with a plain string for its message; the helpers
+ * add a status and a listed error code at most.
+ *
+ * This is a simple text scan, a convenience that catches the usual slips,
+ * not a proof: it does not follow aliases or namespaces.
  */
 import { describe, expect, it } from "vitest";
 
@@ -28,7 +33,7 @@ const GUARDED = [
 ];
 
 /** The helpers from `smoke/support.ts` whose last argument is the message. */
-const HELPERS = ["check", "same", "fail", "expectStatus", "expectResponse", "expectCode", "expectCli", "assertHolds"];
+const HELPERS = ["check", "same", "fail", "expectStatus", "expectResponse", "expectCode", "expectCli", "assertHolds", "note", "Error"];
 
 /** Skips a quoted string or a template starting at `index`; returns the index after it. */
 function skipString(text: string, index: number): number {
@@ -102,8 +107,9 @@ function violations(source: string): string[] {
   const found: string[] = [];
   const line = (index: number) => source.slice(0, index).split("\n").length;
   for (const match of source.matchAll(/["']node:assert(?:\/strict)?["']/gu)) found.push(`line ${line(match.index)}: imports node:assert`);
-  for (const match of source.matchAll(/\bassert\.\w+\(/gu)) found.push(`line ${line(match.index)}: calls ${match[0].slice(0, -1)}`);
-  for (const match of source.matchAll(new RegExp(`(?<![\\w.])(${HELPERS.join("|")})\\(`, "gu"))) {
+  for (const match of source.matchAll(/\b(assert|console)\.\w+\s*\(/gu)) found.push(`line ${line(match.index)}: calls ${match[0].slice(0, -1).trim()}`);
+  for (const match of source.matchAll(/(?<![\w.])fetch\s*\(/gu)) found.push(`line ${line(match.index)}: calls fetch, not send`);
+  for (const match of source.matchAll(new RegExp(`(?<![\\w.])(${HELPERS.join("|")})\\s*\\(`, "gu"))) {
     const args = argumentsAt(source, match.index + match[0].length);
     const message = args.at(-1) ?? "";
     if (!plainString(message)) found.push(`line ${line(match.index)}: ${match[1]} has a message that is not a plain string`);
@@ -127,6 +133,11 @@ describe("smoke checks print nothing a deployment answered", () => {
     expect(violations("same(a, b, message);")).toHaveLength(1);
     expect(violations("fail(String(body));")).toHaveLength(1);
     expect(violations('check(ok);')).toHaveLength(1);
-    expect(violations('check(f(a, "x"), "fixed");\nsame(a, { b: [1, 2] }, `fixed`);\nawait expectResponse(r, 200, "the call");')).toEqual([]);
+    expect(violations("check (ok, `got ${body}`);")).toHaveLength(1);
+    expect(violations("console.log(body);")).toHaveLength(1);
+    expect(violations("await fetch(url);")).toHaveLength(1);
+    expect(violations("throw new Error(`got ${body}`);")).toHaveLength(1);
+    expect(violations('note(String(storage));')).toHaveLength(1);
+    expect(violations('check(f(a, "x"), "fixed");\nsame(a, { b: [1, 2] }, `fixed`);\nawait expectResponse(r, 200, "the call");\nawait send("/x", base);\nthrow new Error("fixed");')).toEqual([]);
   });
 });

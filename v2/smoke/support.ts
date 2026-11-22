@@ -5,13 +5,14 @@
  * A failed check prints only what is safe to print: fixed text, a status,
  * and an error code from a fixed list. Never a response body, a value read
  * from one, or a field name, which can hold an app key, a gateway token or a
- * provider key. The repository is public and its CI logs can be read by
- * anyone, so a smoke check's failure message is published.
+ * provider key. The checks' output goes into the reports of whoever runs them
+ * (the outside monitor after a release, or a person at a terminal), and those
+ * reports should never hold a key either.
  *
  * So the checks assert only through the helpers below, each taking a fixed
- * message, and `test/smoke-assertions.test.ts` refuses anything else in the
- * files it guards: a direct `node:assert` call, or a message that is not a
- * plain string.
+ * message, and send requests only through `send`. `test/smoke-assertions.test.ts`
+ * refuses anything else in the files it guards: a direct `node:assert` call,
+ * `fetch` or `console`, or a message that is not a plain string.
  */
 import { AssertionError } from "node:assert";
 import { randomUUID } from "node:crypto";
@@ -63,9 +64,37 @@ export async function expectResponse(response: Response, status: number, what: s
   if (response.status !== status) fail(`${what} ${await responseOutcome(response)}`);
 }
 
-/** Fails unless a parsed body's error code is `code`, naming the code only when it is a listed one. */
+/** Fails unless a parsed body's error code is `code`, naming either code only when it is a listed one. */
 export function expectCode(body: unknown, code: string, what: string): void {
-  check(rawCode(body) === code, `${what}: expected ${code}, got ${errorCode(body)}`);
+  check(rawCode(body) === code, `${what}: expected ${listed(code)}, got ${errorCode(body)}`);
+}
+
+/** Prints `message`, which is fixed text. */
+export function note(message: string): void {
+  console.log(message);
+}
+
+/**
+ * A request to `path` on `base`. A request that cannot be made fails with
+ * fixed text: Node's own error can quote the URL or a header, and either
+ * can hold a key or a token.
+ */
+export async function send(path: string, base: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(new URL(path, base), init);
+  } catch {
+    fail("a request could not be sent");
+  }
+}
+
+/**
+ * `value` when it is shaped like an id the gateway makes, before it is put
+ * in a path or an `agw` argument; fails with fixed text otherwise, since a
+ * regression could put anything there.
+ */
+export function checkId(value: unknown, what: string): string {
+  check(typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value), `${what} is not shaped like an id`);
+  return value;
 }
 
 /** Fails unless an `agw --json` run exited 0. */
@@ -82,11 +111,16 @@ function rawCode(body: unknown): unknown {
   return (body as { error?: { code?: unknown } } | null)?.error?.code;
 }
 
+/** A code, when it is a listed one. */
+function listed(code: unknown): string {
+  return typeof code === "string" && KNOWN_CODES.has(code) ? code : "an unlisted error code";
+}
+
 /** The error code in a parsed body, when it is a listed one. */
 function errorCode(body: unknown): string {
   const code = rawCode(body);
   if (code === undefined || code === null) return "no error code";
-  return typeof code === "string" && KNOWN_CODES.has(code) ? code : "an unlisted error code";
+  return listed(code);
 }
 
 /** What a failed check may say about a parsed response: its status and error code. */
@@ -183,8 +217,8 @@ export async function cleanUp(steps: readonly (() => Promise<{ status: number }>
     try {
       const { status } = await step();
       if (!(status >= 200 && status < 300) && status !== 404) failed.push(`step ${index + 1} answered ${status}`);
-    } catch (error) {
-      failed.push(`step ${index + 1} threw ${error instanceof Error ? error.name : "an error"}`);
+    } catch {
+      failed.push(`step ${index + 1} threw`);
     }
   }
   check(failed.length === 0, `clean-up failed: ${failed.join(", ")}`);

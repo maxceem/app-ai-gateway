@@ -14,7 +14,7 @@
  * V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, uniqueSlug, send } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -23,7 +23,7 @@ const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEM
 const headers = { "content-type": "application/json", "x-app-version": "1.0.0" };
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -60,7 +60,7 @@ after(async () => {
 });
 
 function post(path: string, body?: unknown): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${appId}/${path}`, base), { method: "POST", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  return send(`/v2/apps/${appId}/${path}`, base, { method: "POST", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 }
 
 async function challenge(): Promise<{ challenge: string; expires_in: number; accepts_app_transaction?: boolean }> {

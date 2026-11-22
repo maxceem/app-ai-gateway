@@ -16,7 +16,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, uniqueSlug } from "./support.ts";
+import { check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, uniqueSlug, send } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -24,7 +24,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -82,7 +82,7 @@ after(async () => {
 });
 
 async function call(method: string, path: string, user: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/${path}`, base), {
+  return send(`/v2/apps/${appId}/proxy/${slug}/${path}`, base, {
     method,
     headers: { authorization: `Bearer ${appKey}`, "x-end-user-id": user, ...init.headers },
     ...(init.body === undefined ? {} : { body: init.body }),

@@ -19,14 +19,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertHolds, check, cleanUp, expectCli, expectStatus, readJson, same, uniqueSlug } from "./support.ts";
+import { assertHolds, check, checkId, cleanUp, expectCli, expectResponse, expectStatus, note, readJson, same, uniqueSlug, send } from "./support.ts";
 
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const skip = consoleUrl === "" || managementKey === "" ? "V2_CONSOLE_URL and V2_MANAGEMENT_KEY are needed" : false;
 const bin = fileURLToPath(new URL("../cli/src/bin.ts", import.meta.url));
 
-/** One `agw` run with `--json`, its document parsed. */
+/**
+ * One `agw` run with `--json`, its document parsed. A run that cannot start or
+ * prints no document fails with fixed text: never its arguments, which hold
+ * ids read from the deployment, or its output.
+ */
 function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, ...argv, "--json"], {
@@ -40,12 +44,12 @@ function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any
     });
     let out = "";
     child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
-    child.on("error", reject);
+    child.on("error", () => reject(new Error("agw could not start")));
     child.on("close", (code) => {
       try {
         resolve({ code: code ?? 1, json: JSON.parse(out) });
       } catch {
-        reject(new Error(`agw ${argv.join(" ")} printed no JSON document`));
+        reject(new Error("agw printed no JSON document"));
       }
     });
   });
@@ -65,7 +69,7 @@ test("agw 2 connects with a management key and manages an app", { skip }, async 
 
     const added = await agw(home, "app", "add", "--type", "ios", "--name", "agw smoke", "--team-id", "ABCDE12345", "--bundle-id", "com.example.agwsmoke");
     expectCli(added, "agw added");
-    created = added.json.result.app.id as string;
+    created = checkId(added.json.result?.app?.id, "the app agw added");
     // An iOS app has no app key: say so without ever printing one that came back.
     check(added.json.result.key === null, "agw app add returned an app key for an iOS app");
 
@@ -97,7 +101,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skipRoundTrip = skip !== false ? skip : base === "" || mockUrl === "" ? "V2_BASE_URL and V2_MOCK_URL are needed" : false;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -194,7 +198,7 @@ test("agw 2 renames an app with every option set, and writes its settings back i
   try {
     const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke CLI", slug, secret: "sk-mock-smoke-key", baseUrl: mock });
     expectStatus(provider, 201, "provider");
-    providerId = provider.body.provider.id;
+    providerId = checkId(provider.body.provider?.id, "the provider");
     const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
     expectCli(connected, "agw connected");
 
@@ -210,10 +214,18 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     // exercised where it is offered.
     // A deployment from before conversation storage has no capability field (or no capabilities
     // at all): the block is left out, since its schema refuses it.
-    const capabilities = await fetch(new URL("/v2/console/capabilities", base));
-    const offered = capabilities.status === 200 ? ((await readJson(capabilities)) as { conversationStorage?: unknown }).conversationStorage : undefined;
-    if (capabilities.status !== 200) await capabilities.body?.cancel();
-    let storage: Storage = typeof offered !== "boolean" ? "absent" : offered ? "on" : "off";
+    // Only a missing route (404) or a missing field means such a deployment: any other answer
+    // fails, so a broken endpoint never passes with less covered.
+    const capabilities = await send("/v2/console/capabilities", base);
+    let offered: unknown;
+    if (capabilities.status === 404) {
+      await capabilities.body?.cancel();
+    } else {
+      await expectResponse(capabilities, 200, "the capabilities");
+      offered = ((await readJson(capabilities)) as { conversationStorage?: unknown } | null)?.conversationStorage;
+      check(offered === undefined || typeof offered === "boolean", "the capabilities' conversationStorage is not a boolean");
+    }
+    let storage: Storage = offered === undefined ? "absent" : offered ? "on" : "off";
     for (const index of [0, 1]) {
       let config = everyOption(slug, mock, storage)[index]!;
       let app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
@@ -222,9 +234,13 @@ test("agw 2 renames an app with every option set, and writes its settings back i
         config = everyOption(slug, mock, storage)[index]!;
         app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
       }
-      if (index === 0) console.log(`conversation storage in the round trip: ${storage}`);
+      if (index === 0) {
+        if (storage === "on") note("conversation storage in the round trip: on");
+        else if (storage === "off") note("conversation storage in the round trip: off");
+        else note("conversation storage in the round trip: absent");
+      }
       expectStatus(app, 201, "app");
-      const id = app.body.app.id as string;
+      const id = checkId(app.body.app?.id, "the app");
       created.push(id);
       // The baseline: what the server saved, checked to hold every value the fixture set,
       // so a setting dropped on creation is not compared against itself below.

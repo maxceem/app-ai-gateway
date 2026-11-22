@@ -16,7 +16,7 @@
  */
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { check, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, uniqueSlug } from "./support.ts";
+import { check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, uniqueSlug, send } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -33,7 +33,7 @@ const AUDIENCE = "app-ai-gateway-smoke";
 const CLIENT_SDK = "app-ai-gateway-swift/1.7.0";
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -61,7 +61,7 @@ function userToken(subject: string, claims: Record<string, unknown> = { plan: "p
 }
 
 function exchange(issuerToken: string, headers: Record<string, string> = {}): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${appId}/auth/token`, base), {
+  return send(`/v2/apps/${appId}/auth/token`, base, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({ issuer_token: issuerToken, api_key: appKey }),
@@ -69,7 +69,7 @@ function exchange(issuerToken: string, headers: Record<string, string> = {}): Pr
 }
 
 function chat(key: string): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
+  return send(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-app-version": "1.0.0" },
     body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] }),
@@ -85,7 +85,7 @@ before(async () => {
   slug = uniqueSlug("smoke-signin");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke signed in", slug, secret: PROVIDER_KEY, baseUrl: mockUrl });
   expectStatus(provider, 201, "provider");
-  providerId = provider.body.provider.id;
+  providerId = checkId(provider.body.provider?.id, "the provider");
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke signed in",
@@ -114,7 +114,7 @@ before(async () => {
     },
   });
   expectStatus(app, 201, "app");
-  appId = app.body.app.id;
+  appId = checkId(app.body.app?.id, "the app");
   appKey = app.body.api_key.key;
 });
 
@@ -151,7 +151,7 @@ async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: str
   same(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"), "response.headers.get(\"x-mock-key\") is not keyMark(\"authorization\", \"fixture-smoke\")");
   await response.arrayBuffer();
 
-  const me = await fetch(new URL(`/v2/apps/${appId}/me`, base), { headers: { authorization: `Bearer ${token}` } });
+  const me = await send(`/v2/apps/${appId}/me`, base, { headers: { authorization: `Bearer ${token}` } });
   await expectResponse(me, 200, "me");
   const standing = (await readJson(me)) as { user_id: string; limits: Record<string, unknown> };
   return { user, standing, sameDay: utcDay() === day };
