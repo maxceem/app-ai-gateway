@@ -1824,6 +1824,33 @@ describe("conversation retention", () => {
     expect(await left(first)).toBe(0);
   });
 
+  it("lists an app's days only up to the first one it keeps, so an app with many kept days never holds up the next (Sol 7b-2 round 4)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const apps = [(await storingApp({ store: true, retention_days: 30 })).appId, (await storingApp({ store: true, retention_days: 30 })).appId];
+    const [first, second] = apps.map((appId) => appPrefix(ACCOUNT_ID, appId)).sort() as [string, string];
+    // The first app has eight days, all inside its 30 days; the second has one expired file.
+    const keptDays = Array.from({ length: 8 }, (_, index) => `2026-11-${String(14 + index).padStart(2, "0")}`);
+    for (const day of keptDays) {
+      await store.put(`${first}${day}/000000-0123456789abcdef.jsonl.gz`, "kept");
+    }
+    const expired = `${second}2026-09-01/000000-0123456789abcdef.jsonl.gz`;
+    await store.put(expired, "expired");
+
+    // Seven R2 calls a run, one folder per page: listing all eight of the first app's days
+    // would spend every call before anything is deleted, run after run, and the place
+    // would never move past it.
+    let runs = 0;
+    while ((await store.head(expired)) !== null && runs < 4) {
+      await runConversationRetention(store, env.DB, now, new QueryBudget(7), 1);
+      runs += 1;
+    }
+    expect(await store.head(expired)).toBeNull();
+    expect(runs).toBeLessThanOrEqual(2);
+    expect((await store.list({ prefix: first })).objects).toHaveLength(keptDays.length);
+  });
+
   it("stops when the run's allowance runs out", async () => {
     const store = bucket();
     await store.put(`${appPrefix(ACCOUNT_ID, "conversation-budget-gone")}2020-01-01/000000-eeeeeeee.jsonl.gz`, "orphan");

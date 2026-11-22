@@ -131,17 +131,20 @@ async function deleteAll(
   }
 }
 
-/** The folders directly under `prefix`, such as an app's day folders. */
-async function folders(bucket: R2Bucket, prefix: string, budget: QueryBudget, pageSize: number): Promise<string[]> {
-  const found: string[] = [];
+/**
+ * The folders directly under `prefix`, such as an app's day folders, a page at
+ * a time as they are listed. A caller that stops early lists no more pages: an
+ * app's day folders sort oldest first, so the sweep stops at the first day it
+ * keeps, and never spends its calls listing days it would keep anyway.
+ */
+async function* folders(bucket: R2Bucket, prefix: string, budget: QueryBudget, pageSize: number): AsyncGenerator<string> {
   let cursor: string | undefined;
   do {
     budget.charge(1);
     const page = await bucket.list({ prefix, delimiter: "/", limit: pageSize, ...(cursor ? { cursor } : {}) });
-    found.push(...page.delimitedPrefixes);
+    yield* page.delimitedPrefixes;
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor !== undefined);
-  return found;
 }
 
 export async function runConversationRetention(
@@ -200,7 +203,7 @@ export async function runConversationRetention(
             const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await appNow(db, accountId, appId)).state === "absent");
             if (!outcome.stopped) result.removedApps += 1;
           } else {
-            for (const day of await folders(bucket, folder, work, pageSize)) {
+            for await (const day of folders(bucket, folder, work, pageSize)) {
               const match = DAY_FOLDER.exec(day.slice(folder.length));
               // Day folders sort oldest first, so the first one kept ends the app.
               if (match === null || match[1]! >= dayBefore(now, days)) break;
