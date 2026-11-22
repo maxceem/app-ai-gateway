@@ -84,6 +84,17 @@ import {
   ReservedAppResponseSchema,
   RevealedOperationResponseSchema,
 } from "./handoffs.ts";
+import {
+  AccountUsageResponseSchema,
+  AppUsageResponseSchema,
+  ChargeListQuerySchema,
+  ChargeListResponseSchema,
+  UsageBreakdownQuerySchema,
+  UsageBreakdownResponseSchema,
+  UsageMonthQuerySchema,
+  UsageRangeQuerySchema,
+  UsageTimeseriesResponseSchema,
+} from "./usage.ts";
 import { CliToolCallRequestSchema, CliToolCallResponseSchema, CliToolCatalogResponseSchema } from "./cli.ts";
 import type { OperationSpec } from "./operation.ts";
 
@@ -369,6 +380,77 @@ export const CATALOG = {
     query: JobListQuerySchema,
     response: JobListResponseSchema,
     responseDescription: "One page of jobs.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAccountUsage: {
+    method: "GET",
+    path: "/v2/admin/usage",
+    tags: ["Admin usage"],
+    summary: "Get the account's usage for a month",
+    description:
+      "Totals for the whole account in one UTC month, and a line per app, deleted apps included: their usage is kept. `first_usage_day` is null when the account has never made a call.",
+    security: "management",
+    query: UsageMonthQuerySchema,
+    response: AccountUsageResponseSchema,
+    responseDescription: "The account's month.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsage: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage for a month",
+    description: "One UTC month's totals for one app, from the day totals (and month totals for days older than 400).",
+    security: "management",
+    query: UsageMonthQuerySchema,
+    response: AppUsageResponseSchema,
+    responseDescription: "The app's month.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsageTimeseries: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage/timeseries",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage per day",
+    description: "Totals per UTC day and provider type over a day range of at most 400 days.",
+    security: "management",
+    query: UsageRangeQuerySchema,
+    response: UsageTimeseriesResponseSchema,
+    responseDescription: "Daily buckets, oldest first.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsageBreakdown: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage/breakdown",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage by one dimension",
+    description: "Totals grouped by one dimension over a day range of at most 400 days, largest cost first.",
+    security: "management",
+    query: UsageBreakdownQuerySchema,
+    response: UsageBreakdownResponseSchema,
+    responseDescription: "One row per value.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppCharges: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/charges",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "List an app's charges",
+    description:
+      "The ledger's rows, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Charges are kept 90 days; older usage is only in the totals.",
+    security: "management",
+    query: ChargeListQuerySchema,
+    response: ChargeListResponseSchema,
+    responseDescription: "One page of charges.",
     errors: ADMIN_ERRORS,
   },
 

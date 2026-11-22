@@ -516,6 +516,9 @@ export const EndUserBlockResponseSchema = z
 export const JobListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50),
   offset: z.coerce.number().int().min(0, { error: "offset must be 0 or more" }).default(0),
+  settled: z.enum(["true", "false"]).optional().meta({
+    description: "false: only jobs not settled to the provider's final figure (still checking, estimate kept or given up), such as a result that came too late to count. true: only settled jobs.",
+  }),
 });
 
 /** Where a job's charge stands. */

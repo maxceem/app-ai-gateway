@@ -41,6 +41,10 @@
       "description": "Keys for server apps."
     },
     {
+      "name": "Admin usage",
+      "description": "What your apps used and cost: totals for a month, per day and by dimension from day totals kept 400 days, and the charges themselves, kept 90 days."
+    },
+    {
       "name": "Admin access",
       "description": "Who is calling, your accounts, management keys, and CLI and MCP sign-ins."
     },
@@ -1880,6 +1884,684 @@
           "price_source",
           "state",
           "settled_at"
+        ]
+      },
+      "AccountUsageResponse": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "app_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "deleted": {
+                  "type": "boolean"
+                },
+                "charges": {
+                  "type": "integer",
+                  "description": "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted."
+                },
+                "failed": {
+                  "type": "integer",
+                  "description": "Of those, attempts that did not end with success."
+                },
+                "unpriced": {
+                  "type": "integer",
+                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                },
+                "cost_nano": {
+                  "type": "integer",
+                  "description": "What it cost, in nano-dollars (1 = $0.000000001), corrections included."
+                },
+                "cost_usd": {
+                  "type": "number",
+                  "description": "The same cost in dollars, for display."
+                },
+                "input_tokens": {
+                  "type": "integer"
+                },
+                "cached_input_tokens": {
+                  "type": "integer"
+                },
+                "cache_write_tokens": {
+                  "type": "integer"
+                },
+                "output_tokens": {
+                  "type": "integer"
+                },
+                "session_ms": {
+                  "type": "integer",
+                  "description": "Connection time of live sessions, in milliseconds."
+                }
+              },
+              "required": [
+                "app_id",
+                "name",
+                "deleted",
+                "charges",
+                "failed",
+                "unpriced",
+                "cost_nano",
+                "cost_usd",
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_write_tokens",
+                "output_tokens",
+                "session_ms"
+              ]
+            },
+            "description": "Every app with usage in the month, largest cost first. A deleted app keeps its usage, with a null name."
+          },
+          "first_usage_day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The UTC day of the account's oldest usage still kept (YYYY-MM-DD, or YYYY-MM once it is only in month totals). Null when the account has never made a call."
+          }
+        },
+        "required": [
+          "month",
+          "totals",
+          "apps",
+          "first_usage_day"
+        ]
+      },
+      "UsageTotals": {
+        "type": "object",
+        "properties": {
+          "charges": {
+            "type": "integer",
+            "description": "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted."
+          },
+          "failed": {
+            "type": "integer",
+            "description": "Of those, attempts that did not end with success."
+          },
+          "unpriced": {
+            "type": "integer",
+            "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+          },
+          "cost_nano": {
+            "type": "integer",
+            "description": "What it cost, in nano-dollars (1 = $0.000000001), corrections included."
+          },
+          "cost_usd": {
+            "type": "number",
+            "description": "The same cost in dollars, for display."
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "cached_input_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "session_ms": {
+            "type": "integer",
+            "description": "Connection time of live sessions, in milliseconds."
+          }
+        },
+        "required": [
+          "charges",
+          "failed",
+          "unpriced",
+          "cost_nano",
+          "cost_usd",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "session_ms"
+        ]
+      },
+      "AppUsageResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "month": {
+            "type": "string"
+          },
+          "charges": {
+            "type": "integer",
+            "description": "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted."
+          },
+          "failed": {
+            "type": "integer",
+            "description": "Of those, attempts that did not end with success."
+          },
+          "unpriced": {
+            "type": "integer",
+            "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+          },
+          "cost_nano": {
+            "type": "integer",
+            "description": "What it cost, in nano-dollars (1 = $0.000000001), corrections included."
+          },
+          "cost_usd": {
+            "type": "number",
+            "description": "The same cost in dollars, for display."
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "cached_input_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "session_ms": {
+            "type": "integer",
+            "description": "Connection time of live sessions, in milliseconds."
+          }
+        },
+        "required": [
+          "app_id",
+          "month",
+          "charges",
+          "failed",
+          "unpriced",
+          "cost_nano",
+          "cost_usd",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "session_ms"
+        ]
+      },
+      "UsageTimeseriesResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "day": {
+                  "type": "string"
+                },
+                "provider_type": {
+                  "type": "string"
+                },
+                "charges": {
+                  "type": "integer",
+                  "description": "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted."
+                },
+                "failed": {
+                  "type": "integer",
+                  "description": "Of those, attempts that did not end with success."
+                },
+                "unpriced": {
+                  "type": "integer",
+                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                },
+                "cost_nano": {
+                  "type": "integer",
+                  "description": "What it cost, in nano-dollars (1 = $0.000000001), corrections included."
+                },
+                "cost_usd": {
+                  "type": "number",
+                  "description": "The same cost in dollars, for display."
+                },
+                "input_tokens": {
+                  "type": "integer"
+                },
+                "cached_input_tokens": {
+                  "type": "integer"
+                },
+                "cache_write_tokens": {
+                  "type": "integer"
+                },
+                "output_tokens": {
+                  "type": "integer"
+                },
+                "session_ms": {
+                  "type": "integer",
+                  "description": "Connection time of live sessions, in milliseconds."
+                }
+              },
+              "required": [
+                "day",
+                "provider_type",
+                "charges",
+                "failed",
+                "unpriced",
+                "cost_nano",
+                "cost_usd",
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_write_tokens",
+                "output_tokens",
+                "session_ms"
+              ]
+            },
+            "description": "One bucket per day and provider type with usage, oldest first. Days older than 400 are kept only as month totals, so they have no buckets."
+          }
+        },
+        "required": [
+          "app_id",
+          "from",
+          "to",
+          "buckets"
+        ]
+      },
+      "UsageBreakdownResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string",
+            "enum": [
+              "model",
+              "provider",
+              "connection",
+              "status",
+              "unit",
+              "user",
+              "install",
+              "operation",
+              "preset",
+              "price_source",
+              "measured",
+              "app_version"
+            ]
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The value grouped by; null where the charges name none."
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A readable name for the key where it has one: a connection's slug."
+                },
+                "charges": {
+                  "type": "integer",
+                  "description": "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted."
+                },
+                "failed": {
+                  "type": "integer",
+                  "description": "Of those, attempts that did not end with success."
+                },
+                "unpriced": {
+                  "type": "integer",
+                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                },
+                "cost_nano": {
+                  "type": "integer",
+                  "description": "What it cost, in nano-dollars (1 = $0.000000001), corrections included."
+                },
+                "cost_usd": {
+                  "type": "number",
+                  "description": "The same cost in dollars, for display."
+                },
+                "input_tokens": {
+                  "type": "integer"
+                },
+                "cached_input_tokens": {
+                  "type": "integer"
+                },
+                "cache_write_tokens": {
+                  "type": "integer"
+                },
+                "output_tokens": {
+                  "type": "integer"
+                },
+                "session_ms": {
+                  "type": "integer",
+                  "description": "Connection time of live sessions, in milliseconds."
+                }
+              },
+              "required": [
+                "key",
+                "charges",
+                "failed",
+                "unpriced",
+                "cost_nano",
+                "cost_usd",
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_write_tokens",
+                "output_tokens",
+                "session_ms"
+              ]
+            },
+            "description": "Largest cost first, then most charges."
+          }
+        },
+        "required": [
+          "app_id",
+          "by",
+          "from",
+          "to",
+          "rows"
+        ]
+      },
+      "ChargeListResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` for the next, older page; null on the last one."
+          },
+          "charges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Charge"
+            },
+            "description": "Newest first. Charges are kept 90 days."
+          }
+        },
+        "required": [
+          "app_id",
+          "limit",
+          "next_before",
+          "charges"
+        ]
+      },
+      "Charge": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "attempt",
+              "slice",
+              "estimate",
+              "correction"
+            ],
+            "description": "attempt (one upstream attempt of a call), slice (a session checkpoint), estimate (a job at submit) or correction."
+          },
+          "owner_type": {
+            "type": "string",
+            "enum": [
+              "call",
+              "session",
+              "job"
+            ]
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "The call, session or job the charge belongs to."
+          },
+          "corrects_charge_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a correction: the charge it corrects."
+          },
+          "correction_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a correction: units, dollars or pricing."
+          },
+          "status": {
+            "type": "string",
+            "description": "How the attempt ended: ok, provider_error, timeout, network_error or client_aborted. The list may grow."
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_type": {
+            "type": "string"
+          },
+          "provider_connection_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "install_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_nano": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "In nano-dollars. Null for a failed attempt that cost nothing, shown as —."
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "measured": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "estimated",
+              "pending"
+            ]
+          },
+          "price_source": {
+            "type": "string",
+            "enum": [
+              "provider_usd",
+              "list_rate",
+              "customer_rate",
+              "unresolved",
+              "not_priced"
+            ]
+          },
+          "price_is_estimate": {
+            "type": "boolean",
+            "description": "Priced at the closest known price, for a service mode with no exact one."
+          },
+          "input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cached_input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "units": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "session_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "used_at": {
+            "type": "string",
+            "description": "When the usage happened, ISO 8601."
+          },
+          "usage_day": {
+            "type": "string",
+            "description": "The UTC day the charge counts on."
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "owner_type",
+          "owner_id",
+          "corrects_charge_id",
+          "correction_kind",
+          "status",
+          "http_status",
+          "error_code",
+          "provider_type",
+          "provider_connection_id",
+          "operation",
+          "preset",
+          "model",
+          "end_user_id",
+          "install_id",
+          "cost_nano",
+          "cost_usd",
+          "measured",
+          "price_source",
+          "price_is_estimate",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "unit",
+          "units",
+          "session_ms",
+          "latency_ms",
+          "app_version",
+          "auth_method",
+          "client_trace_id",
+          "used_at",
+          "usage_day"
         ]
       },
       "ConversationFileList": {
@@ -7838,6 +8520,20 @@
             "required": false,
             "name": "offset",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "false: only jobs not settled to the provider's final figure (still checking, estimate kept or given up), such as a result that came too late to count. true: only settled jobs."
+            },
+            "required": false,
+            "description": "false: only jobs not settled to the provider's final figure (still checking, estimate kept or given up), such as a result that came too late to count. true: only settled jobs.",
+            "name": "settled",
+            "in": "query"
           }
         ],
         "responses": {
@@ -7847,6 +8543,697 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JobListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/usage": {
+      "get": {
+        "tags": [
+          "Admin usage"
+        ],
+        "operationId": "getAccountUsage",
+        "summary": "Get the account's usage for a month",
+        "description": "Totals for the whole account in one UTC month, and a line per app, deleted apps included: their usage is kept. `first_usage_day` is null when the account has never made a call.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountUsageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/usage": {
+      "get": {
+        "tags": [
+          "Admin usage"
+        ],
+        "operationId": "getAppUsage",
+        "summary": "Get an app's usage for a month",
+        "description": "One UTC month's totals for one app, from the day totals (and month totals for days older than 400).",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The app's month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppUsageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/usage/timeseries": {
+      "get": {
+        "tags": [
+          "Admin usage"
+        ],
+        "operationId": "getAppUsageTimeseries",
+        "summary": "Get an app's usage per day",
+        "description": "Totals per UTC day and provider type over a day range of at most 400 days.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daily buckets, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageTimeseriesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/usage/breakdown": {
+      "get": {
+        "tags": [
+          "Admin usage"
+        ],
+        "operationId": "getAppUsageBreakdown",
+        "summary": "Get an app's usage by one dimension",
+        "description": "Totals grouped by one dimension over a day range of at most 400 days, largest cost first.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "model",
+                "provider",
+                "connection",
+                "status",
+                "unit",
+                "user",
+                "install",
+                "operation",
+                "preset",
+                "price_source",
+                "measured",
+                "app_version"
+              ],
+              "default": "model",
+              "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, so a range further back shows only what is left."
+            },
+            "required": false,
+            "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, so a range further back shows only what is left.",
+            "name": "by",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One row per value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageBreakdownResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/charges": {
+      "get": {
+        "tags": [
+          "Admin usage"
+        ],
+        "operationId": "listAppCharges",
+        "summary": "List an app's charges",
+        "description": "The ledger's rows, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Charges are kept 90 days; older usage is only in the totals.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
+            },
+            "required": false,
+            "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
+            },
+            "required": false,
+            "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "The `next_before` of the page before."
+            },
+            "required": false,
+            "description": "The `next_before` of the page before.",
+            "name": "before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "attempt",
+                "slice",
+                "estimate",
+                "correction"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "provider_error",
+                "timeout",
+                "network_error",
+                "client_aborted",
+                "failed"
+              ],
+              "description": "A status, or failed for every status but ok."
+            },
+            "required": false,
+            "description": "A status, or failed for every status but ok.",
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "A provider type, such as openai."
+            },
+            "required": false,
+            "description": "A provider type, such as openai.",
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "A provider connection's id."
+            },
+            "required": false,
+            "description": "A provider connection's id.",
+            "name": "connection",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "model",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "An end user's id."
+            },
+            "required": false,
+            "description": "An end user's id.",
+            "name": "user",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "An install: an App Attest key id."
+            },
+            "required": false,
+            "description": "An install: an App Attest key id.",
+            "name": "install",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "operation",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "A call, session or job id: all its charges, corrections included."
+            },
+            "required": false,
+            "description": "A call, session or job id: all its charges, corrections included.",
+            "name": "owner",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "provider_usd",
+                "list_rate",
+                "customer_rate",
+                "unresolved",
+                "not_priced"
+              ]
+            },
+            "required": false,
+            "name": "price_source",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "partial",
+                "estimated",
+                "pending"
+              ]
+            },
+            "required": false,
+            "name": "measured",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "Only the requests the client sent with this X-Client-Trace-Id."
+            },
+            "required": false,
+            "description": "Only the requests the client sent with this X-Client-Trace-Id.",
+            "name": "trace",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of charges.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChargeListResponse"
                 }
               }
             }

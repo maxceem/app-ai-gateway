@@ -68,14 +68,18 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
   const app = await c.env.DB.prepare("SELECT 1 AS found FROM app WHERE id = ? AND account_id = ?").bind(appId, actor.accountId).first();
   if (app === null) throw new GatewayError(404, "app_not_found", "App is not registered");
 
+  // `settled`: whether the job's settlement correction exists, by its key.
+  const settledFilter = query.settled === undefined
+    ? ""
+    : ` AND ${query.settled === "true" ? "" : "NOT "}EXISTS (SELECT 1 FROM charge AS settlement WHERE settlement.id = 'settle:job:' || charge.owner_id)`;
   const [total, page] = await c.env.DB.batch([
     c.env.DB.prepare(
-      "SELECT COUNT(*) AS value FROM charge WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'",
+      `SELECT COUNT(*) AS value FROM charge WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'${settledFilter}`,
     ).bind(actor.accountId, appId),
     c.env.DB.prepare(
       `SELECT owner_id, provider_connection_id, operation, model, end_user_id, used_at, cost_nano, measured, price_source
          FROM charge
-        WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'
+        WHERE account_id = ? AND app_id = ? AND owner_type = 'job' AND kind = 'estimate'${settledFilter}
         ORDER BY used_at DESC, owner_id
         LIMIT ? OFFSET ?`,
     ).bind(actor.accountId, appId, query.limit, query.offset),

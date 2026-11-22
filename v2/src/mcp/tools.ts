@@ -40,6 +40,11 @@ export const MCP_READ_OPERATIONS = [
   "listAppUsers",
   "getAppUser",
   "listAppJobs",
+  "getAccountUsage",
+  "getAppUsage",
+  "getAppUsageTimeseries",
+  "getAppUsageBreakdown",
+  "listAppCharges",
   "getOperation",
 ] as const satisfies readonly OperationName[];
 
@@ -540,7 +545,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_app_jobs",
     title: "List an app's jobs",
     description:
-      "Returns the jobs an app submitted through the gateway (such as fal queue jobs), newest first, a page at a time (limit, offset). Each shows the estimate charged at submit, the correction from the provider's final figure, the total, and its state: settled, checking, estimate_kept or gave_up. Use it to explain what a job cost. It changes nothing.",
+      "Returns the jobs an app submitted through the gateway (such as fal queue jobs), newest first, a page at a time (limit, offset). Each shows the estimate charged at submit, the correction from the provider's final figure, the total, and its state: settled, checking, estimate_kept or gave_up. settled=false lists only the jobs whose estimate was never settled, such as a result that came too late to count. Use it to explain what a job cost. It changes nothing.",
     operation: "listAppJobs",
     cli: {
       command: "app job list",
@@ -553,6 +558,71 @@ export const MCP_TOOLS: readonly McpTool[] = [
     summary: (result) => {
       const settled = result.jobs.filter((job) => job.state === "settled").length;
       return `${plural(result.jobs.length, "job")} of ${result.total} for ${result.app_id}, ${settled} settled, from offset ${result.offset}.`;
+    },
+  }),
+  {
+    name: "get_usage",
+    title: "Get usage totals",
+    description:
+      "Returns one UTC month's usage totals: charges, failed and unpriced charges, tokens, session time and cost. With app, for that app; without, for the whole account, with a line per app, deleted apps included, and the day of its oldest kept usage (null when it has never made a call). For a breakdown use get_usage_breakdown; for days use get_usage_timeseries; for single charges use list_app_charges.",
+    operations: ["getAppUsage", "getAccountUsage"],
+    input: z.object({ app: PATH_ARGUMENTS.app!.optional() }).extend(CATALOG.getAppUsage.query.shape),
+    annotations: READS,
+    cli: {
+      command: "usage show",
+      view: { rows: "apps", columns: ["app_id=App", "name", "charges", "failed", "input_tokens=In", "output_tokens=Out", "cost_usd=Cost $", "deleted"] },
+    },
+    request: (input) => (input.app === undefined ? plainRequest("getAccountUsage", input) : plainRequest("getAppUsage", input)),
+    summary: (result) => {
+      if ("app_id" in (result as object)) {
+        const usage = result as OperationResponse<"getAppUsage">;
+        return `${plural(usage.charges, "charge")} costing ${usd(usage.cost_nano)} for ${usage.app_id} in ${usage.month}, ${usage.failed} failed.`;
+      }
+      const usage = result as OperationResponse<"getAccountUsage">;
+      return `${plural(usage.totals.charges, "charge")} costing ${usd(usage.totals.cost_nano)} across ${plural(usage.apps.length, "app")} in ${usage.month}.`;
+    },
+  },
+  tool({
+    name: "get_usage_breakdown",
+    title: "Get an app's usage by one dimension",
+    description:
+      "Returns an app's usage grouped by one dimension over a day range (from, to; at most 400 days), largest cost first: model, provider, connection, status, unit, or from the charges (kept 90 days) user, install, operation, preset, price_source and measured. Use it to find what drives an app's cost or failures.",
+    operation: "getAppUsageBreakdown",
+    cli: {
+      command: "usage breakdown",
+      view: { rows: "rows", columns: ["key", "label", "charges", "failed", "input_tokens=In", "output_tokens=Out", "cost_usd=Cost $"] },
+    },
+    summary: (result) => `${plural(result.rows.length, "row")} by ${result.by} for ${result.app_id} from ${result.from} to ${result.to}.`,
+  }),
+  tool({
+    name: "get_usage_timeseries",
+    title: "Get an app's usage per day",
+    description:
+      "Returns an app's usage per UTC day and provider type over a day range (from, to; at most 400 days): charges, failures, tokens, session time and cost. Use it to see when a change in traffic or cost began.",
+    operation: "getAppUsageTimeseries",
+    cli: {
+      command: "usage timeseries",
+      view: { rows: "buckets", columns: ["day", "provider_type=Provider", "charges", "failed", "cost_usd=Cost $"] },
+    },
+    summary: (result) => `${plural(result.buckets.length, "daily bucket")} for ${result.app_id} from ${result.from} to ${result.to}.`,
+  }),
+  tool({
+    name: "list_app_charges",
+    title: "List an app's charges",
+    description:
+      "Returns an app's ledger rows one each, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Each has its status, provider, model, user, tokens, cost (null for a failed attempt that cost nothing), how it was measured and where its price came from. Filter by kind, status (or failed), provider, connection, model, user, install, operation, owner (a call, session or job id), price_source, measured, trace and a day range; page back with before. Kept 90 days. Use it to debug failures or trace one user's traffic; for totals use get_usage.",
+    operation: "listAppCharges",
+    cli: {
+      command: "app charge list",
+      args: ["app"],
+      view: {
+        rows: "charges",
+        columns: ["used_at=Time", "kind", "status", "provider_type=Provider", "model", "input_tokens=In", "output_tokens=Out", "cost_usd=Cost $", "measured"],
+      },
+    },
+    summary: (result) => {
+      const more = result.next_before === null ? "" : ` More: pass before "${result.next_before}".`;
+      return `${plural(result.charges.length, "charge")} for ${result.app_id}.${more}`;
     },
   }),
   tool({
