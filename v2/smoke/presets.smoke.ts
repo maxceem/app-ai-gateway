@@ -17,21 +17,12 @@
  * always fail. Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, expectCode, expectStatus, fail, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, check, expectCode, expectStatus, fail, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 const run = Date.now().toString(36);
 const providerIds: string[] = [];
@@ -89,16 +80,16 @@ async function post(path: string, body: Record<string, unknown>, user: string): 
 
 /** The user's usage once `charges` charges are written (they are written after the answer). */
 async function usageOf(user: string, charges: number): Promise<{ charges: number; failed: number; cost_nano: number }> {
-  for (let tries = 0; tries < 20; tries += 1) {
+  for (let tries = 0; tries < 30; tries += 1) {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
     if (found.status === 200 && found.body.user.usage.charges >= charges) return found.body.user.usage;
     // real-timer: polls a live deployment until the charges land, with a deadline.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   fail("the expected charges were not written within a minute");
 }
 
-test("a rewritten model is sent and billed as its target", { skip }, async () => {
+test("a rewritten model is sent and billed as its target", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `rewrite-${run}`;
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
   expectStatus(answer, 200, "answer");
@@ -109,7 +100,7 @@ test("a rewritten model is sent and billed as its target", { skip }, async () =>
   check(usage.cost_nano > 0, "billed at the rewritten model's price");
 });
 
-test("a preset falls back after a 503: two charges, the failed one with no cost", { skip }, async () => {
+test("a preset falls back after a 503: two charges, the failed one with no cost", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `fallback-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/chain`, { messages: [{ role: "user", content: "hi" }] }, user);
   expectStatus(answer, 200, "answer");
@@ -119,10 +110,10 @@ test("a preset falls back after a 503: two charges, the failed one with no cost"
   check(usage.cost_nano > 0, "usage.cost_nano > 0");
 });
 
-test("a preset is not retried after a 400: the error is passed through, one charge", { skip }, async () => {
+test("a preset is not retried after a 400: the error is passed through, one charge", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `strict-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/strict`, { messages: [{ role: "user", content: "hi" }] }, user);
-  same(answer.status, 400, "answer.status is not 400");
+  expectStatus(answer, 400, "the preset call");
   expectCode(answer.body, "mock_failure", "the provider's error");
   const usage = await usageOf(user, 1);
   same(usage.charges, 1, "usage.charges is not 1");
@@ -136,7 +127,7 @@ test("a preset is not retried after a 400: the error is passed through, one char
 test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: 90_000 }, async () => {
   const user = `missing-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
-  same(answer.status, 404, "answer.status is not 404");
+  expectStatus(answer, 404, "the preset call");
   expectCode(answer.body, "preset_not_found", "a missing preset");
   let sample: { reason: string; user_id: string | null } | undefined;
   for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {

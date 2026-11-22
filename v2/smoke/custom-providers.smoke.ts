@@ -16,21 +16,12 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, uniqueSlug, send } from "./support.ts";
+import { admin, check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 const run = Date.now().toString(36);
 const slug = uniqueSlug("smoke-custom");
@@ -91,15 +82,15 @@ async function call(method: string, path: string, user: string, init: { body?: B
 
 /** The user's usage once `count` charges are written (they are written after the answer). */
 async function usageOf(user: string, count = 1): Promise<{ charges: number; cost_nano: number }> {
-  for (let tries = 0; tries < 20; tries += 1) {
+  for (let tries = 0; tries < 30; tries += 1) {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
     if (found.status === 200 && found.body.user.usage.charges >= count) return found.body.user.usage;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   fail("no charge was written within a minute");
 }
 
-test("a custom provider shows its base URL, key header and paths back, never its key", { skip }, async () => {
+test("a custom provider shows its base URL, key header and paths back, never its key", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const read = await admin("GET", `/v2/admin/providers/${providerIds[0]}`);
   expectStatus(read, 200, "read");
   same(read.body.provider.type, "custom", "read.body.provider.type is not \"custom\"");
@@ -108,7 +99,7 @@ test("a custom provider shows its base URL, key header and paths back, never its
   check(!holds(read.body, "sk-mock-smoke-custom-key"), "the provider read response holds its key");
 });
 
-test("a path with an API style is metered by that style, at the connection's rates", { skip }, async () => {
+test("a path with an API style is metered by that style, at the connection's rates", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `smoke-custom-chat-${run}`;
   const body = JSON.stringify({ model: "local-llm", messages: [{ role: "user", content: "hi" }] });
   const response = await call("POST", "v1/chat/completions", user, { body, headers: { "content-type": "application/json" } });
@@ -120,7 +111,7 @@ test("a path with an API style is metered by that style, at the connection's rat
   same(charged.cost_nano, usage.prompt_tokens * 1_000 + usage.completion_tokens * 2_000, "charged.cost_nano is not usage.prompt_tokens * 1_000 + usage.completion_tokens * 2_000");
 });
 
-test("a plain path is passed through with the key in the named header, and charged unpriced", { skip }, async () => {
+test("a plain path is passed through with the key in the named header, and charged unpriced", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `smoke-custom-echo-${run}`;
   const response = await call("GET", "v1/echo/abc", user);
   await expectResponse(response, 200, "response");
@@ -131,12 +122,12 @@ test("a plain path is passed through with the key in the named header, and charg
   same(charged.cost_nano, 0, "charged.cost_nano is not 0");
 });
 
-test("a path the custom provider does not list is refused, and nothing is sent", { skip }, async () => {
+test("a path the custom provider does not list is refused, and nothing is sent", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await call("POST", "v1/responses", `smoke-custom-closed-${run}`, { body: "{}", headers: { "content-type": "application/json" } });
   await expectResponse(response, 403, "response");
 });
 
-test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip }, async () => {
+test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const attempt = (fields: Record<string, unknown>) =>
     admin("POST", "/v2/admin/providers", { type: "custom", name: "Smoke refused", slug: uniqueSlug("smoke-custom-no"), secret: "sk-mock-smoke-custom-key", auth: AUTH, ...fields });
   for (const fields of [

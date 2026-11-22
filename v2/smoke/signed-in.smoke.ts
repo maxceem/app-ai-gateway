@@ -16,7 +16,7 @@
  */
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -31,15 +31,6 @@ const PER_DAY = 1000;
 const BUDGET_NANO = 5_000_000_000;
 const AUDIENCE = "app-ai-gateway-smoke";
 const CLIENT_SDK = "app-ai-gateway-swift/1.7.0";
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 let providerId = "";
 let appId = "";
@@ -157,7 +148,7 @@ async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: str
   return { user, standing, sameDay: utcDay() === day };
 }
 
-test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip }, async () => {
+test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   // A call and its read that straddle UTC midnight count on two days: once more, with another fresh user.
   let run = await oneCallThenMe();
   if (!run.sameDay) run = await oneCallThenMe();
@@ -177,22 +168,22 @@ test("a signed-in user exchanges a token, calls a provider, and reads /me", { sk
   check(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
 });
 
-test("the app key alone is refused once users must sign in", { skip }, async () => {
+test("the app key alone is refused once users must sign in", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat(appKey);
   await expectResponse(response, 401, "response");
   expectCode(await readJson(response), "auth_required", "response");
 });
 
-test("a user without the required claim is refused with issuer_claims_missing", { skip }, async () => {
+test("a user without the required claim is refused with issuer_claims_missing", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await exchange(await userToken("smoke-free-user", { plan: "free" }));
-  same(response.status, 403, "response.status is not 403");
+  await expectResponse(response, 403, "the token exchange");
   expectCode(await readJson(response), "issuer_claims_missing", "response");
 });
 
-test("a token signed by an unknown key is refused with issuer_token_rejected", { skip }, async () => {
+test("a token signed by an unknown key is refused with issuer_token_rejected", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const forger = await generateKeyPair("ES256");
   const response = await exchange(await userToken("smoke-forged-user", { plan: "pro" }, forger.privateKey));
-  same(response.status, 403, "response.status is not 403");
+  await expectResponse(response, 403, "the token exchange");
   expectCode(await readJson(response), "issuer_token_rejected", "response");
 });
 

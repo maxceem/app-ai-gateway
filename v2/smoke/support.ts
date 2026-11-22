@@ -3,88 +3,103 @@
  * only `*.smoke.ts`.
  *
  * A failed check prints only what is safe to print: fixed text, a status,
- * and an error code from a fixed list. Never a response body, a value read
- * from one, or a field name, which can hold an app key, a gateway token or a
- * provider key. The checks' output goes into the reports of whoever runs them
- * (the outside monitor after a release, or a person at a terminal), and those
- * reports should never hold a key either.
+ * an error code shaped like one, and numbers or booleans. Never a response
+ * body, a string read from one, or a field name, which can hold an app key, a
+ * gateway token or a provider key. The checks' output goes into the reports of
+ * whoever runs them (the outside monitor after a release, or a person at a
+ * terminal), and those reports should never hold a key either.
  *
- * So the checks assert only through the helpers below, each taking a fixed
- * message, and send requests only through `send`. `test/smoke-assertions.test.ts`
- * refuses anything else in the files it guards: a direct `node:assert` call,
- * `fetch` or `console`, or a message that is not a plain string.
+ * So the checks assert only through the helpers below, and send requests only
+ * through `send`. Every message is typed `Fixed`: the compiler refuses one
+ * built from a value. `test/smoke-assertions.test.ts` refuses the rest in the
+ * files it guards: a direct `node:assert` call, `fetch`, `console`, or an
+ * `Error` made from a value.
  */
 import { AssertionError } from "node:assert";
 import { randomUUID } from "node:crypto";
 
 /**
- * The error codes a failed check may name: the gateway's own (`src/core/errors.ts`,
- * written out here because a smoke check runs against older deployments too),
- * the mock provider's, and the CLI's. Any other code is reported as unlisted,
- * since a regression could put anything there.
+ * A message the compiler can see is fixed text: a string literal, or a choice
+ * of them. A template with a value in it, or any `string`, is `never`, so the
+ * call does not compile.
  */
-const KNOWN_CODES: ReadonlySet<string> = new Set([
-  "auth_required", "assertion_required", "attest_failed", "auth_method_not_supported", "issuer_token_rejected",
-  "issuer_claims_missing", "issuer_verification_unavailable", "invalid_request", "payload_too_large", "rate_limited",
-  "app_not_found", "app_disabled", "not_found", "service_unavailable", "internal_error", "provider_not_configured",
-  "provider_disabled", "provider_unavailable", "provider_error", "path_not_allowed", "model_not_allowed",
-  "pricing_not_configured", "max_output_tokens_exceeded", "preset_not_found", "job_not_found", "app_rate_limited",
-  "app_budget_exhausted", "billing_request_quota_exceeded", "billing_payment_required", "billing_unavailable",
-  "forbidden", "grant_insufficient", "conflict", "app_revision_required", "app_revision_conflict", "account_changed",
-  "provider_not_found", "key_not_found", "billing_plan_limit_reached", "billing_feature_not_included",
-  "session_required", "not_a_member", "last_owner", "operation_expired", "operation_denied", "operation_not_found",
-  "operation_mismatch", "already_revealed", "already_completed", "no_eligible_organization", "registration_disabled",
-  "tool_not_found", "tool_changed",
-  // The mock provider's.
-  "mock_error", "mock_failure",
-]);
+export type Fixed<M extends string> = {} extends Record<M, 1> ? never : M;
 
-/** Fails with `message`, which is fixed text. */
-export function fail(message: string): never {
+/** How long one request, or one `agw` run, may take. */
+export const REQUEST_TIMEOUT_MS = 60_000;
+/** How long one smoke test may take, as v1's: `node --test` has no limit of its own. */
+export const TEST_TIMEOUT_MS = 180_000;
+
+/** Fails with text these helpers built from fixed parts. */
+function stop(message: string): never {
   throw new AssertionError({ message });
 }
 
+/** Fails with `message`. */
+export function fail<M extends string>(message: Fixed<M>): never {
+  stop(message);
+}
+
 /** Fails with `message` unless `condition` holds. */
-export function check(condition: unknown, message: string): asserts condition {
-  if (!condition) fail(message);
+export function check<M extends string>(condition: unknown, message: Fixed<M>): asserts condition {
+  if (!condition) stop(message);
 }
 
-/** Fails with `message` unless the two parsed values are the same (see `sameJson`). */
-export function same(actual: unknown, expected: unknown, message: string): void {
-  check(sameJson(actual, expected), message);
+/**
+ * Fails with `message` unless the two parsed values are the same (see
+ * `sameJson`). When both are numbers or booleans, which cannot hold a key,
+ * it says both.
+ */
+export function same<M extends string>(actual: unknown, expected: unknown, message: Fixed<M>): void {
+  if (sameJson(actual, expected)) return;
+  const plain = (value: unknown) => typeof value === "number" || typeof value === "boolean";
+  stop(plain(actual) && plain(expected) ? `${message}: got ${String(actual)}, expected ${String(expected)}` : message);
 }
 
-/** Fails unless a parsed response answered `status`, saying what answered and its status and listed code. */
-export function expectStatus(response: { status: number; body?: unknown }, status: number, what: string): void {
-  check(response.status === status, `${what} ${outcome({ status: response.status, body: response.body })}`);
+/** Fails unless a parsed response answered `status`, saying what answered and its status and code. */
+export function expectStatus<W extends string>(response: { status: number; body?: unknown }, status: number, what: Fixed<W>): void {
+  if (response.status !== status) stop(`${what} ${outcome({ status: response.status, body: response.body })}`);
 }
 
 /** The same for a raw response, read from a copy so the caller can still read it. */
-export async function expectResponse(response: Response, status: number, what: string): Promise<void> {
-  if (response.status !== status) fail(`${what} ${await responseOutcome(response)}`);
+export async function expectResponse<W extends string>(response: Response, status: number, what: Fixed<W>): Promise<void> {
+  if (response.status !== status) stop(`${what} ${await responseOutcome(response)}`);
 }
 
-/** Fails unless a parsed body's error code is `code`, naming either code only when it is a listed one. */
-export function expectCode(body: unknown, code: string, what: string): void {
-  check(rawCode(body) === code, `${what}: expected ${listed(code)}, got ${errorCode(body)}`);
+/** Fails unless a parsed body's error code is `code`, naming either code only when it is shaped like one. */
+export function expectCode<C extends string, W extends string>(body: unknown, code: Fixed<C>, what: Fixed<W>): void {
+  if (rawCode(body) !== code) stop(`${what}: expected ${shaped(code)}, got ${errorCode(body)}`);
 }
 
-/** Prints `message`, which is fixed text. */
-export function note(message: string): void {
+/** Prints `message`. */
+export function note<M extends string>(message: Fixed<M>): void {
   console.log(message);
 }
 
 /**
- * A request to `path` on `base`. A request that cannot be made fails with
- * fixed text: Node's own error can quote the URL or a header, and either
- * can hold a key or a token.
+ * A request to `path` on `base`, given up after `REQUEST_TIMEOUT_MS`. A
+ * request that cannot be made fails with fixed text: Node's own error can
+ * quote the URL or a header, and either can hold a key or a token.
  */
 export async function send(path: string, base: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(new URL(path, base), init);
+    return await fetch(new URL(path, base), { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...init });
   } catch {
-    fail("a request could not be sent");
+    stop("a request could not be sent");
   }
+}
+
+/**
+ * A management API call on the deployment the checks run against
+ * (`V2_BASE_URL`, `V2_MANAGEMENT_KEY`), with its parsed answer.
+ */
+export async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
+  const response = await send(path, process.env.V2_BASE_URL ?? "", {
+    method,
+    headers: { authorization: `Bearer ${process.env.V2_MANAGEMENT_KEY ?? ""}`, "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: response.status, body: await readJson(response) };
 }
 
 /**
@@ -92,14 +107,14 @@ export async function send(path: string, base: string, init?: RequestInit): Prom
  * in a path or an `agw` argument; fails with fixed text otherwise, since a
  * regression could put anything there.
  */
-export function checkId(value: unknown, what: string): string {
-  check(typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value), `${what} is not shaped like an id`);
+export function checkId<W extends string>(value: unknown, what: Fixed<W>): string {
+  if (!(typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value))) stop(`${what} is not shaped like an id`);
   return value;
 }
 
 /** Fails unless an `agw --json` run exited 0. */
-export function expectCli(run: { code: number; json: unknown }, what: string): void {
-  check(run.code === 0, `${what} ${cliOutcome(run)}`);
+export function expectCli<W extends string>(run: { code: number; json: unknown }, what: Fixed<W>): void {
+  if (run.code !== 0) stop(`${what} ${cliOutcome(run)}`);
 }
 
 /** A slug no other run picks: the time, then a random part. */
@@ -111,16 +126,21 @@ function rawCode(body: unknown): unknown {
   return (body as { error?: { code?: unknown } } | null)?.error?.code;
 }
 
-/** A code, when it is a listed one. */
-function listed(code: unknown): string {
-  return typeof code === "string" && KNOWN_CODES.has(code) ? code : "an unlisted error code";
+/**
+ * A code, when it is shaped like one: lowercase words joined by `_`, at most
+ * 40 characters. Keys and tokens hold digits or capitals, so none passes;
+ * anything else is reported as an odd code, since a regression could put
+ * anything there.
+ */
+function shaped(code: unknown): string {
+  return typeof code === "string" && code.length <= 40 && /^[a-z]+(_[a-z]+){0,6}$/u.test(code) ? code : "an odd error code";
 }
 
-/** The error code in a parsed body, when it is a listed one. */
+/** The error code in a parsed body, when it is shaped like one. */
 function errorCode(body: unknown): string {
   const code = rawCode(body);
   if (code === undefined || code === null) return "no error code";
-  return listed(code);
+  return shaped(code);
 }
 
 /** What a failed check may say about a parsed response: its status and error code. */
@@ -157,8 +177,8 @@ export function sameJson(a: unknown, b: unknown): boolean {
  * alone: not the values, and not the field names either, which come from
  * the response.
  */
-export function assertHolds(actual: unknown, expected: unknown, message: string): void {
-  check(holdsAll(actual, expected), message);
+export function assertHolds<M extends string>(actual: unknown, expected: unknown, message: Fixed<M>): void {
+  if (!holdsAll(actual, expected)) stop(message);
 }
 
 function holdsAll(actual: unknown, expected: unknown): boolean {
@@ -178,7 +198,7 @@ export async function readJson(response: Response): Promise<any> {
   try {
     return JSON.parse(text);
   } catch {
-    fail(`answered ${response.status} with a body that is not JSON`);
+    stop(`answered ${response.status} with a body that is not JSON`);
   }
 }
 
@@ -221,5 +241,5 @@ export async function cleanUp(steps: readonly (() => Promise<{ status: number }>
       failed.push(`step ${index + 1} threw`);
     }
   }
-  check(failed.length === 0, `clean-up failed: ${failed.join(", ")}`);
+  if (failed.length > 0) stop(`clean-up failed: ${failed.join(", ")}`);
 }

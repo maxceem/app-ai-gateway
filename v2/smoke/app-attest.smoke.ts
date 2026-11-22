@@ -14,22 +14,13 @@
  * V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 const headers = { "content-type": "application/json", "x-app-version": "1.0.0" };
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 let providerId = "";
 let appId = "";
@@ -72,7 +63,7 @@ async function challenge(): Promise<{ challenge: string; expires_in: number; acc
 // The Swift package sends the App Store transaction, and signs over it, only
 // when the challenge says the exchange reads one; a deployment that stopped
 // saying so would silently put every iOS app back on per-install budgets.
-test("an iOS app is issued a challenge that says the exchange takes an App Store transaction", { skip }, async () => {
+test("an iOS app is issued a challenge that says the exchange takes an App Store transaction", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const issued = await challenge();
   check(issued.challenge.length > 10, "issued.challenge.length > 10");
   check(issued.expires_in > 0, "issued.expires_in > 0");
@@ -103,14 +94,14 @@ test("a failure on the device is recorded once per challenge, and can be read ba
   same(found.length, 1, "the device's failure was not read back exactly once within a minute");
 });
 
-test("a forged registration is refused with attest_failed", { skip }, async () => {
+test("a forged registration is refused with attest_failed", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const { challenge: issued } = await challenge();
   const response = await post("auth/register", { key_id: "c21va2Uta2V5LWlkLWZvci1hLXNtb2tlLWNoZWNr", attestation: "c21va2U=", challenge: issued });
   await expectResponse(response, 403, "response");
   expectCode(await readJson(response), "attest_failed", "response");
 });
 
-test("the app's proxy refuses a call without a gateway token with auth_required", { skip }, async () => {
+test("the app's proxy refuses a call without a gateway token with auth_required", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await post(`proxy/${slug}/v1/chat/completions`, { model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
   await expectResponse(response, 401, "response");
   expectCode(await readJson(response), "auth_required", "response");

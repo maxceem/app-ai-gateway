@@ -12,21 +12,12 @@
  * Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, expectCode, expectStatus, holds, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, check, expectCode, expectResponse, expectStatus, holds, readJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 let providerId = "";
 let appId = "";
@@ -75,30 +66,30 @@ function chat(body: Record<string, unknown>): Promise<Response> {
   });
 }
 
-test("a chat call answers with the provider's JSON", { skip }, async () => {
+test("a chat call answers with the provider's JSON", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
-  same(response.status, 200, "response.status is not 200");
+  await expectResponse(response, 200, "the chat call");
   const body = (await readJson(response)) as { usage?: { prompt_tokens?: number } };
   check((body.usage?.prompt_tokens ?? 0) > 0, "(body.usage?.prompt_tokens ?? 0) > 0");
 });
 
-test("a streamed chat call ends with its usage", { skip }, async () => {
+test("a streamed chat call ends with its usage", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o-mini", stream: true, messages: [{ role: "user", content: "Hi" }] });
-  same(response.status, 200, "response.status is not 200");
+  await expectResponse(response, 200, "the chat call");
   const text = await response.text();
   // Tested, never printed: a stream is the provider's text.
   check(/"usage"/u.test(text), "the stream has no usage");
   check(/data: \[DONE\]/u.test(text), "the stream does not end with [DONE]");
 });
 
-test("a model the app does not allow is refused", { skip }, async () => {
+test("a model the app does not allow is refused", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o", messages: [] });
-  same(response.status, 403, "response.status is not 403");
+  await expectResponse(response, 403, "the chat call");
   expectCode(await readJson(response), "model_not_allowed", "response");
 });
 
-test("a provider error is passed through", { skip }, async () => {
+test("a provider error is passed through", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [], mock_status: 429 });
-  same(response.status, 429, "response.status is not 429");
+  await expectResponse(response, 429, "the chat call");
   expectCode(await readJson(response), "mock_error", "response");
 });

@@ -14,21 +14,12 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, cleanUp, expectCode, expectResponse, expectStatus, fail, keyMark, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, fail, keyMark, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 /** One connection per provider type, all pointed at the mock. */
 const CONNECTIONS = {
@@ -92,10 +83,10 @@ async function call(type: Type, path: string, body: Record<string, unknown>, use
 
 /** The user's usage once its one charge is written (it is written after the answer). */
 async function usageOf(user: string): Promise<{ charges: number; cost_nano: number; input_tokens: number; output_tokens: number }> {
-  for (let tries = 0; tries < 20; tries += 1) {
+  for (let tries = 0; tries < 30; tries += 1) {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
     if (found.status === 200 && found.body.user.usage.charges > 0) return found.body.user.usage;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   fail("no charge was written within a minute");
 }
@@ -129,7 +120,7 @@ const STYLES: { name: string; type: Type; path: (stream: boolean) => string; bod
 
 for (const style of STYLES) {
   for (const stream of [false, true]) {
-    test(`${style.name}${stream ? ", streamed," : ""} is written as one priced charge with its tokens`, { skip }, async () => {
+    test(`${style.name}${stream ? ", streamed," : ""} is written as one priced charge with its tokens`, { skip, timeout: TEST_TIMEOUT_MS }, async () => {
       const user = `smoke-${style.type}-${stream ? "s" : "j"}-${style.name.length}-${run}`;
       // Read to the end: a streamed answer is charged once it is whole. Never printed.
       await (await call(style.type, style.path(stream), style.body(stream), user)).text();
@@ -142,7 +133,7 @@ for (const style of STYLES) {
   }
 }
 
-test("OpenRouter is billed at the cost its answer reports", { skip }, async () => {
+test("OpenRouter is billed at the cost its answer reports", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `smoke-openrouter-${run}`;
   const response = await call("openrouter", "v1/chat/completions", { model: "mock-lab/unlisted-model", messages: [{ role: "user", content: "Hi" }] }, user);
   const reported = ((await readJson(response)) as { usage: { prompt_tokens: number; cost: number } }).usage;
@@ -152,12 +143,12 @@ test("OpenRouter is billed at the cost its answer reports", { skip }, async () =
   same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
-test("a background Responses request is refused before it reaches the provider", { skip }, async () => {
+test("a background Responses request is refused before it reaches the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await send(`/v2/apps/${appId}/proxy/${slugs.openai}/v1/responses`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-bg-${run}` },
     body: JSON.stringify({ model: "gpt-5.6-luna", input: "Hi", background: true }),
   });
-  same(response.status, 400, "response.status is not 400");
+  await expectResponse(response, 400, "the background request");
   expectCode(await readJson(response), "invalid_request", "response");
 });

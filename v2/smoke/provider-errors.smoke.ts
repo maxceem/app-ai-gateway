@@ -21,7 +21,7 @@
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, uniqueSlug, send } from "./support.ts";
+import { admin, check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, send, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -30,15 +30,6 @@ const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEM
 const PROVIDER_KEY = "sk-mock-smoke-key";
 /** What the mock answers for `mock_status`, which the gateway must pass on as it is. */
 const MOCK_ERROR = { message: "Mock error", type: "mock_error", code: "mock_error" };
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 let providerId = "";
 const apps: { id: string; key: string }[] = [];
@@ -106,7 +97,7 @@ for (const status of [429, 500]) {
     const app = await newApp(`Smoke provider ${status}`);
     const trace = `smoke-${status}-${run}`;
     const response = await chat(app, trace, { mock_status: status });
-    same(response.status, status, "response.status is not status");
+    await expectResponse(response, status, "the chat call");
     assertProviderSawOnlyItsKey(response);
     // The provider's own error, not one the gateway made up in its place.
     check(sameJson(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR), "the app did not get the provider's own error");
@@ -124,7 +115,7 @@ test("the day's totals split one failed and one served call by status", { skip, 
   const app = await newApp("Smoke provider errors totals");
   const failedTrace = `smoke-failed-${run}`;
   const failed = await chat(app, failedTrace, { mock_status: 429 });
-  same(failed.status, 429, "failed.status is not 429");
+  await expectResponse(failed, 429, "the chat call");
   await failed.arrayBuffer();
   const servedTrace = `smoke-served-${run}`;
   const served = await chat(app, servedTrace, {});
@@ -156,13 +147,17 @@ type ListPrice = { input?: number; output?: number; cached_input?: number; modes
  * gpt-4o-mini while it qualifies, else the first `gpt-` chat model in name
  * order. Null when none qualifies.
  */
+/** OpenAI chat models the mock answers, tried in order for one with no flex price. */
+const CHAT_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano"];
+
 function modelWithoutFlexPrice(listed: Record<string, ListPrice>): string | null {
   const qualifies = (model: string) => {
     const price = listed[model];
     return price !== undefined && typeof price.input === "number" && typeof price.output === "number" && price.modes?.flex === undefined;
   };
-  if (qualifies("gpt-4o-mini")) return "gpt-4o-mini";
-  return Object.keys(listed).sort().find((model) => model.startsWith("gpt-") && qualifies(model)) ?? null;
+  // Known chat models only: another `gpt-` name could be an image or audio model,
+  // and the check would then fail for the wrong reason.
+  return CHAT_MODELS.find(qualifies) ?? null;
 }
 
 // A model with a price but none for flex: the request is served at the

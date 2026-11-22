@@ -19,17 +19,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertHolds, check, checkId, cleanUp, expectCli, expectResponse, expectStatus, note, readJson, same, uniqueSlug, send } from "./support.ts";
+import { admin, assertHolds, check, checkId, cleanUp, expectCli, expectResponse, expectStatus, fail, note, readJson, REQUEST_TIMEOUT_MS, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const skip = consoleUrl === "" || managementKey === "" ? "V2_CONSOLE_URL and V2_MANAGEMENT_KEY are needed" : false;
 const bin = fileURLToPath(new URL("../cli/src/bin.ts", import.meta.url));
 
+/** The console's origin; a `V2_CONSOLE_URL` that is not a URL fails with fixed text, never itself. */
+function consoleOrigin(): string {
+  try {
+    return new URL(consoleUrl).origin;
+  } catch {
+    fail("V2_CONSOLE_URL is not a URL");
+  }
+}
+
 /**
- * One `agw` run with `--json`, its document parsed. A run that cannot start or
- * prints no document fails with fixed text: never its arguments, which hold
- * ids read from the deployment, or its output.
+ * One `agw` run with `--json`, given up after `REQUEST_TIMEOUT_MS`, its
+ * document parsed. A run that cannot start or prints no document fails with
+ * fixed text: never its arguments, which hold ids read from the deployment,
+ * or its output.
  */
 function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any }> {
   return new Promise((resolve, reject) => {
@@ -40,7 +50,9 @@ function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any
         XDG_CACHE_HOME: join(home, "cache"),
         AGW_MANAGEMENT_KEY: managementKey,
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      // Never read, so never piped: a full pipe would stall the run.
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: REQUEST_TIMEOUT_MS,
     });
     let out = "";
     child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
@@ -55,11 +67,11 @@ function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any
   });
 }
 
-test("agw 2 connects with a management key and manages an app", { skip }, async () => {
+test("agw 2 connects with a management key and manages an app", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const home = await mkdtemp(join(tmpdir(), "agw-smoke-"));
   let created: string | undefined;
   try {
-    const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
+    const connected = await agw(home, "deployment", "connect", "--url", consoleOrigin());
     expectCli(connected, "agw connected");
     same(connected.json.result.credential, "environment", "connected.json.result.credential is not \"environment\"");
 
@@ -99,15 +111,6 @@ test("agw 2 connects with a management key and manages an app", { skip }, async 
 const base = process.env.V2_BASE_URL ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skipRoundTrip = skip !== false ? skip : base === "" || mockUrl === "" ? "V2_BASE_URL and V2_MOCK_URL are needed" : false;
-
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await send(path, base, {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await readJson(response) };
-}
 
 /** A public key for the issuer settings below. Saving never fetches it. */
 const JWK = "eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6ImY4M09KM0QyeEYxQmc4dnViOXRMZTFnSE16Vjc2ZThUdXM5dVBIdlJWRVUiLCJ5IjoieF9GRXpSdTltMzZITE5fdHVlNjU5TE5wWFc2cEN5U3Rpa1lqS0lXSTVhMCIsImtpZCI6InNtb2tlLTEiLCJhbGciOiJFUzI1NiJ9";
@@ -189,7 +192,7 @@ function everyOption(slug: string, mock: string, storage: Storage): Record<strin
   ];
 }
 
-test("agw 2 renames an app with every option set, and writes its settings back intact; model list runs", { skip: skipRoundTrip }, async () => {
+test("agw 2 renames an app with every option set, and writes its settings back intact; model list runs", { skip: skipRoundTrip, timeout: TEST_TIMEOUT_MS }, async () => {
   const home = await mkdtemp(join(tmpdir(), "agw-smoke-"));
   const slug = uniqueSlug("smoke-cli");
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
@@ -199,7 +202,7 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke CLI", slug, secret: "sk-mock-smoke-key", baseUrl: mock });
     expectStatus(provider, 201, "provider");
     providerId = checkId(provider.body.provider?.id, "the provider");
-    const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
+    const connected = await agw(home, "deployment", "connect", "--url", consoleOrigin());
     expectCli(connected, "agw connected");
 
     // The price list itself, as v1's check reads it: a known provider, and a number for a known model.
@@ -258,19 +261,16 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       // What agw reads before it writes: \`agw app show\` gives the baseline, whole.
       const shown = await agw(home, "app", "show", id);
       expectCli(shown, "agw shown");
-      assertHolds(shown.json.result?.app?.config, baseline, "the config agw app show printed is not the saved one");
-      assertHolds(baseline, shown.json.result?.app?.config, "the config agw app show printed is not the saved one");
+      same(shown.json.result?.app?.config, baseline, "the config agw app show printed is not the saved one");
       const renamed = await agw(home, "app", "update", id, "--name", `agw smoke every option ${index} renamed`);
       expectCli(renamed, "agw renamed");
       // What agw printed, and what the server holds after the rename: the baseline, whole.
       same(renamed.json.result?.app?.name, `agw smoke every option ${index} renamed`, "renamed.json.result?.app?.name is not `agw smoke every option ${index} renamed`");
-      assertHolds(renamed.json.result?.app?.config, baseline, "the config agw app update printed is not the saved one");
-      assertHolds(baseline, renamed.json.result?.app?.config, "the config agw app update printed is not the saved one");
+      same(renamed.json.result?.app?.config, baseline, "the config agw app update printed is not the saved one");
       const after = await admin("GET", `/v2/admin/apps/${id}`);
       expectStatus(after, 200, "after");
       same(after.body.app.name, `agw smoke every option ${index} renamed`, "after.body.app.name is not `agw smoke every option ${index} renamed`");
-      assertHolds(after.body.app.config, baseline, "the config after the rename is not the saved one");
-      assertHolds(baseline, after.body.app.config, "the config after the rename is not the saved one");
+      same(after.body.app.config, baseline, "the config after the rename is not the saved one");
     }
   } finally {
     // The remote clean-up and the local one each run, whatever the other did.
