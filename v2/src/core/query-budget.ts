@@ -191,6 +191,14 @@ export const MAINTENANCE_SLACK_QUERIES = 1;
 const MINIMUM_MAINTENANCE_QUERY_BUDGET = 20;
 
 /**
+ * The most D1 queries one Worker invocation may make, on the Workers Paid
+ * plan. A setting above it is lowered to it: a run that spent more would have
+ * D1 refuse every query after the 1,000th, and the passes after the one that
+ * spent them would fail every night.
+ */
+export const MAXIMUM_MAINTENANCE_QUERY_BUDGET = 1_000;
+
+/**
  * The allowance for one nightly run, raised by `MAINTENANCE_QUERY_BUDGET`.
  *
  * Deliberately not a `vars` entry in `wrangler.jsonc`: the Deploy to Cloudflare
@@ -215,6 +223,10 @@ export function maintenanceQueryBudget(env: Env): QueryBudget {
       using: DEFAULT_MAINTENANCE_QUERY_BUDGET,
     });
     return budget(DEFAULT_MAINTENANCE_QUERY_BUDGET);
+  }
+  if (parsed > MAXIMUM_MAINTENANCE_QUERY_BUDGET) {
+    log("warn", "maintenance_query_budget_capped", { maximum: MAXIMUM_MAINTENANCE_QUERY_BUDGET });
+    return budget(MAXIMUM_MAINTENANCE_QUERY_BUDGET);
   }
   return budget(parsed);
 }

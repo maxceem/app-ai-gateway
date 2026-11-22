@@ -10,7 +10,7 @@ import { createExecutionContext, createScheduledController, waitOnExecutionConte
 import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem/cf-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { QueryBudget } from "../src/core/query-budget.ts";
+import { MAINTENANCE_SLACK_QUERIES, MAXIMUM_MAINTENANCE_QUERY_BUDGET, maintenanceQueryBudget, QueryBudget } from "../src/core/query-budget.ts";
 import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
 import { FOLD_PICK, runUsageRetention, usageRetentionRules, USAGE_DAY_RETENTION_DAYS, USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
@@ -383,6 +383,59 @@ describe("usage retention: day rollups into months", () => {
     expect(await rows("SELECT cost_nano, charges, session_ms FROM usage_month")).toEqual([{ cost_nano: 1_500, charges: 10, session_ms: 5_000 }]);
   });
 
+  describe("a total past SQLite's largest integer", () => {
+    const MAX = 9223372036854775807n;
+    const HUGE = 5_000_000_000_000_000_000n;
+    async function hugeDay(dayText: string, app: string): Promise<void> {
+      // Bound as text and cast, so the exact integer reaches SQLite.
+      await env.DB.prepare(
+        `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, charges, cost_nano)
+         VALUES (?, ?, ?, 'openai', '', 'gpt-4o-mini', 'ok', '', 1, CAST(? AS INTEGER))`,
+      )
+        .bind(ACCOUNT_ID, app, dayText, HUGE.toString())
+        .run();
+    }
+    const months = () =>
+      rows("SELECT app_id, month, CAST(cost_nano AS TEXT) AS cost, typeof(cost_nano) AS type, charges FROM usage_month ORDER BY app_id, month");
+
+    it("stops at the largest integer within one chunk, and folds every other key exactly", async () => {
+      const codes = warningCodes();
+      await hugeDay("2026-04-01", "app_huge");
+      await hugeDay("2026-04-02", "app_huge");
+      await day("2026-04-01", { app: "app_small", cost: 7 });
+      await day("2026-04-02", { app: "app_small", cost: 8 });
+
+      const result = await runUsageRetention(env.DB, NOW, budget());
+
+      expect(result.months).toMatchObject({ caughtUp: true });
+      expect(await months()).toEqual([
+        { app_id: "app_huge", month: "2026-04", cost: MAX.toString(), type: "integer", charges: 2 },
+        { app_id: "app_small", month: "2026-04", cost: "15", type: "integer", charges: 4 },
+      ]);
+      expect(await rows("SELECT COUNT(*) AS n FROM usage_day")).toEqual([{ n: 0 }]);
+      expect(codes.filter((code) => code === "usage_month_total_too_large")).toHaveLength(1);
+    });
+
+    it("stops at the largest integer when the month row already holds most of it", async () => {
+      const codes = warningCodes();
+      await hugeDay("2026-04-01", "app_huge");
+      await hugeDay("2026-04-02", "app_huge");
+      await day("2026-04-03", { app: "app_small", cost: 7 });
+      await day("2026-04-04", { app: "app_small", cost: 8 });
+
+      // One row a chunk: the second huge day meets the first in its month row.
+      const result = await runUsageRetention(env.DB, NOW, budget(), 1);
+
+      expect(result.months).toMatchObject({ caughtUp: true });
+      expect(await months()).toEqual([
+        { app_id: "app_huge", month: "2026-04", cost: MAX.toString(), type: "integer", charges: 2 },
+        { app_id: "app_small", month: "2026-04", cost: "15", type: "integer", charges: 4 },
+      ]);
+      expect(await rows("SELECT COUNT(*) AS n FROM usage_day")).toEqual([{ n: 0 }]);
+      expect(codes.filter((code) => code === "usage_month_total_too_large")).toHaveLength(1);
+    });
+  });
+
   it("adds a day that arrives later to its month row", async () => {
     await day("2026-04-01", { cost: 1_000 });
     await runUsageRetention(env.DB, NOW, budget());
@@ -396,8 +449,8 @@ describe("usage retention: day rollups into months", () => {
 
 describe("the query budget", () => {
   it("never issues more statements than the allowance, and goes on where it stopped the next night", async () => {
-    // Of twenty statements, the charges get eleven chunks of two a night, after the shares kept for the other passes.
-    await insert(...Array.from({ length: 40 }, () => charge({ usedAt: OLD })));
+    // Of twenty statements, the charges get nine chunks of two a night, after the shares kept for the other passes.
+    await insert(...Array.from({ length: 36 }, () => charge({ usedAt: OLD })));
     const allowances: number[] = [];
     let runs = 0;
     while ((await chargeIds()).length > 0) {
@@ -427,6 +480,14 @@ describe("the query budget", () => {
     expect(result.charges?.caughtUp).toBe(false);
     expect(result.months).toMatchObject({ caughtUp: true });
     expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-01", cost_nano: 9 }]);
+  });
+
+  it("lowers a setting above D1's 1,000 queries a run to 1,000, with a warning", () => {
+    const codes = warningCodes();
+    const nightly = maintenanceQueryBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "10000" } as Env);
+    expect(nightly.limit).toBe(MAXIMUM_MAINTENANCE_QUERY_BUDGET - MAINTENANCE_SLACK_QUERIES);
+    expect(codes).toEqual(["maintenance_query_budget_capped"]);
+    expect(maintenanceQueryBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "400" } as Env).limit).toBe(400 - MAINTENANCE_SLACK_QUERIES);
   });
 
   it("charges the sign-in clean-up its library's statement count", () => {

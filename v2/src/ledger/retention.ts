@@ -126,8 +126,73 @@ const ROLLUP_SUMS = [
  */
 export const FOLD_PICK = "SELECT rowid FROM usage_day WHERE day < ?1 ORDER BY day, rowid LIMIT ?2";
 
-/** The fold's two statements: add the chunk to its month rows, then delete it. */
-const FOLD_STATEMENTS = 2;
+/** The fold's three statements: look for totals near the integer limit, add the chunk to its month rows, delete it. */
+const FOLD_STATEMENTS = 3;
+
+/** The key of a month row: the day rollup's key, with the month for the day. */
+const MONTH_KEY = ["account_id", "app_id", "month", "provider_type", "provider_connection_id", "model", "outcome", "unit"] as const;
+
+/**
+ * Where a total stops being summed exactly: 2^62, half of SQLite's largest
+ * integer. Far beyond any real usage (4.6 billion dollars in nano-dollars for
+ * one key in one month), but well short of the limit, so a sum of values
+ * below it, with any partial sum on the way, can never overflow.
+ */
+const LARGE_TOTAL = "4611686018427387904.0";
+const INT_MAX = "9223372036854775807";
+const INT_MIN = "(-9223372036854775807 - 1)";
+
+/**
+ * The fold's statements. `?1` and `?2` are {@link FOLD_PICK}'s.
+ *
+ * SQLite's `SUM` stops the whole statement with an error once a sum passes
+ * its largest integer, which would leave every month after it unmoved, night
+ * after night. That is never worth it for a total no one can reach, so:
+ *
+ * - a key whose chunk adds up to {@link LARGE_TOTAL} or more, counted with
+ *   `total()` over absolute values (a float sum that never fails), is added as
+ *   that float sum cast to an integer, which stops at the largest integer;
+ * - every other key is summed exactly, as before;
+ * - adding to a month row that is already there stops at the largest (or
+ *   smallest) integer instead of failing: SQLite turns an integer sum that
+ *   overflows into a float, and `min`/`max` bring it back in range.
+ *
+ * The first statement counts the keys this chunk takes near the limit, so the
+ * run can warn about it.
+ */
+function foldStatements(db: D1Database) {
+  const sums = ROLLUP_SUMS.join(", ");
+  const key = MONTH_KEY.join(", ");
+  const chunk = `chunk AS (
+    SELECT account_id, app_id, substr(day, 1, 7) AS month, provider_type, provider_connection_id, model, outcome, unit, ${sums}
+    FROM usage_day WHERE rowid IN (${FOLD_PICK}))`;
+  // `* 1.0` first: `abs` of SQLite's smallest integer is an error, of a float never.
+  const sizes = `sizes AS (
+    SELECT ${key}, ${ROLLUP_SUMS.map((column) => `total(abs(${column} * 1.0)) AS ${column}`).join(", ")}
+    FROM chunk GROUP BY ${key})`;
+  const large = (size: (column: string) => string) => `max(${ROLLUP_SUMS.map(size).join(", ")}) >= ${LARGE_TOTAL}`;
+  const detect = db.prepare(
+    `WITH ${chunk}, ${sizes}
+     SELECT COUNT(*) AS large FROM sizes AS s LEFT JOIN usage_month AS m USING (${key})
+     WHERE ${large((column) => `s.${column} + abs(coalesce(m.${column}, 0) * 1.0)`)}`,
+  );
+  const add = db.prepare(
+    `WITH ${chunk}, ${sizes},
+       big AS (SELECT ${key} FROM sizes WHERE ${large((column) => column)})
+     INSERT INTO usage_month (${key}, ${sums})
+     SELECT * FROM (
+       SELECT ${key}, ${ROLLUP_SUMS.map((column) => `SUM(${column})`).join(", ")}
+       FROM chunk WHERE (${key}) NOT IN (SELECT ${key} FROM big) GROUP BY ${key}
+       UNION ALL
+       SELECT ${key}, ${ROLLUP_SUMS.map((column) => `CAST(total(${column}) AS INTEGER)`).join(", ")}
+       FROM chunk WHERE (${key}) IN (SELECT ${key} FROM big) GROUP BY ${key}
+     ) WHERE true
+     ON CONFLICT (${key}) DO UPDATE SET
+       ${ROLLUP_SUMS.map((column) => `${column} = max(min(${column} + excluded.${column}, ${INT_MAX}), ${INT_MIN})`).join(",\n       ")}`,
+  );
+  const remove = db.prepare(`DELETE FROM usage_day WHERE rowid IN (${FOLD_PICK})`);
+  return { detect, add, remove };
+}
 
 /**
  * Moves day rollups of whole months past the window into their month rows, a
@@ -142,28 +207,28 @@ const FOLD_STATEMENTS = 2;
  * in `usage_day`.
  */
 async function foldMonths(db: D1Database, budget: QueryBudget, firstKeptDay: string, chunkRows: number): Promise<ChunkedDeleteResult> {
-  const sums = ROLLUP_SUMS.join(", ");
-  const keys = "account_id, app_id, substr(day, 1, 7), provider_type, provider_connection_id, model, outcome, unit";
-  const add = db.prepare(
-    `INSERT INTO usage_month (account_id, app_id, month, provider_type, provider_connection_id, model, outcome, unit, ${sums})
-     SELECT ${keys}, ${ROLLUP_SUMS.map((column) => `SUM(${column})`).join(", ")}
-     FROM usage_day
-     WHERE rowid IN (${FOLD_PICK})
-     GROUP BY ${keys}
-     ON CONFLICT (account_id, app_id, month, provider_type, provider_connection_id, model, outcome, unit) DO UPDATE SET
-       ${ROLLUP_SUMS.map((column) => `${column} = ${column} + excluded.${column}`).join(",\n       ")}`,
-  );
-  const remove = db.prepare(`DELETE FROM usage_day WHERE rowid IN (${FOLD_PICK})`);
+  const { detect, add, remove } = foldStatements(db);
   const result: ChunkedDeleteResult = { chunks: 0, deleted: 0, caughtUp: false };
-  while (budget.affords(FOLD_STATEMENTS)) {
-    const [, removed] = await db.batch([add.bind(firstKeptDay, chunkRows), remove.bind(firstKeptDay, chunkRows)]);
-    const deleted = removed?.meta.changes ?? 0;
-    result.chunks += 1;
-    result.deleted += deleted;
-    if (deleted < chunkRows) {
-      result.caughtUp = true;
-      break;
+  let largeKeys = 0;
+  try {
+    while (budget.affords(FOLD_STATEMENTS)) {
+      const [found, , removed] = await db.batch([
+        detect.bind(firstKeptDay, chunkRows),
+        add.bind(firstKeptDay, chunkRows),
+        remove.bind(firstKeptDay, chunkRows),
+      ]);
+      largeKeys += Number((found?.results[0] as { large?: number } | undefined)?.large ?? 0);
+      const deleted = removed?.meta.changes ?? 0;
+      result.chunks += 1;
+      result.deleted += deleted;
+      if (deleted < chunkRows) {
+        result.caughtUp = true;
+        break;
+      }
     }
+  } finally {
+    // Once a run, so the monitor alerts: these totals may no longer be exact.
+    if (largeKeys > 0) log("warn", "usage_month_total_too_large", { keys: largeKeys });
   }
   return result;
 }
@@ -210,7 +275,7 @@ async function pass(name: string, run: () => Promise<ChunkedDeleteResult>): Prom
 
 /**
  * Statements each pass may count on, however large the backlog of the passes
- * before it: two chunks each (the fold's chunk is two statements).
+ * before it: two chunks each (the fold's chunk is three statements).
  */
 const RESERVED = { charges: 2, sessions: 2, budgetDays: 2, months: 2 * FOLD_STATEMENTS } as const;
 
