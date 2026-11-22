@@ -166,9 +166,10 @@ function correctionFor(
 /**
  * Writes a correction whose cost is `finalCost` minus what is already booked
  * for the charge it corrects (the charge and its earlier corrections), worked
- * out inside the insert. With `unlessSettled`, it is not written once any
- * final settlement (a charge's or a job's) corrects the same charge. Returns
- * the row as written, or null when it was not written.
+ * out inside the insert. It is written only while the charge it corrects is
+ * in the ledger. With `unlessSettled`, it is not written once any final
+ * settlement (a charge's or a job's) corrects the same charge. Returns the
+ * row as written, or null when it was not written.
  */
 async function writeCorrection(
   db: D1Database,
@@ -186,16 +187,22 @@ async function writeCorrection(
       `? - COALESCE((SELECT cost_nano FROM charge WHERE id = ?), 0)
          - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE corrects_charge_id = ?), 0)`,
       [finalCost, correctedId, correctedId],
-      unlessSettled
-        ? {
-            // No final settlement of this charge (its own, or its job's), and no
-            // session-level total that already covers it (the session it belongs
-            // to, settled with a provider total).
-            sql: `NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
-              AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`,
-            params: [correctedId, correction.ownerType, correction.ownerId],
-          }
-        : undefined,
+      {
+        // Only while the charge it corrects is still in the ledger. Retention
+        // deletes a charge before its corrections (`./retention.ts`), so while
+        // the charge is here, so is everything already booked against it, and
+        // the difference above is exact. Once it is gone, nothing is written.
+        sql: `EXISTS (SELECT 1 FROM charge WHERE id = ?)${
+          unlessSettled
+            ? // No final settlement of this charge (its own, or its job's), and no
+              // session-level total that already covers it (the session it belongs
+              // to, settled with a provider total).
+              ` AND NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
+              AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`
+            : ""
+        }`,
+        params: unlessSettled ? [correctedId, correctedId, correction.ownerType, correction.ownerId] : [correctedId],
+      },
     ),
   ];
   if (doneWork !== null) statements.push(db.prepare("DELETE FROM open_work WHERE id = ?").bind(doneWork));
