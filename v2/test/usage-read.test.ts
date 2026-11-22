@@ -80,6 +80,7 @@ interface Seed {
   input?: number;
   output?: number;
   sessionMs?: number | null;
+  unit?: string;
 }
 
 /** A charge written straight to the ledger table; the rollup trigger fills `usage_day`. */
@@ -90,8 +91,8 @@ async function seed(values: Seed): Promise<string> {
   await env.DB.prepare(
     `INSERT INTO charge (id, kind, account_id, app_id, end_user_id, owner_type, owner_id, provider_type, provider_connection_id,
        operation, model, status, cost_nano, measured, price_source, input_tokens, output_tokens, session_ms, measures_json,
-       correction_kind, corrects_charge_id, client_trace_id, used_at, usage_day, written_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)`,
+       correction_kind, corrects_charge_id, client_trace_id, used_at, usage_day, written_at, unit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -118,6 +119,7 @@ async function seed(values: Seed): Promise<string> {
       values.usedAt,
       new Date(values.usedAt).toISOString().slice(0, 10),
       values.usedAt,
+      values.unit ?? null,
     )
     .run();
   return id;
@@ -337,8 +339,15 @@ describe("unpriced", () => {
     const priced = await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
     await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
     await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "pricing", correctsChargeId: priced, cost: 300 });
-    // As the rollup stood before 0009: both charges counted, the correction never subtracted.
-    await env.DB.prepare("UPDATE usage_day SET unpriced_charges = 2 WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).run();
+    // A second correction of the same charge subtracts nothing more (Neon 7b-3 round 2).
+    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "dollars", correctsChargeId: priced, cost: 40 });
+    // A failed unpriced charge with a unit, priced later: its own rollup row (outcome failed, unit images).
+    const failed = await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved", status: "provider_error", unit: "images" });
+    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "pricing", correctsChargeId: failed, cost: 200, status: "provider_error", unit: "images" });
+    // As the rollup stood before 0009: every unpriced charge counted, no correction ever subtracted.
+    await env.DB.prepare("UPDATE usage_day SET unpriced_charges = CASE outcome WHEN 'ok' THEN 2 ELSE 1 END WHERE account_id = ? AND app_id = ?")
+      .bind(ACCOUNT_ID, appId)
+      .run();
     // The migration's own statement, run over the table it now has.
     const update = MIGRATION_0009.split("--> statement-breakpoint")
       .map((statement) => statement.trim())
@@ -351,7 +360,14 @@ describe("unpriced", () => {
     expect(plan.filter((line) => /^SCAN (o|charge)\b/u.test(line))).toEqual([]);
     await env.DB.prepare(sql).run();
     const usage = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
-    expect(usage.body).toMatchObject({ charges: 2, unpriced: 1, cost_nano: 300 });
+    expect(usage.body).toMatchObject({ charges: 3, unpriced: 1, cost_nano: 540 });
+    const rows = await env.DB.prepare("SELECT outcome, unit, unpriced_charges AS n FROM usage_day WHERE account_id = ? AND app_id = ? ORDER BY outcome")
+      .bind(ACCOUNT_ID, appId)
+      .all();
+    expect(rows.results).toEqual([
+      { outcome: "failed", unit: "images", n: 0 },
+      { outcome: "ok", unit: "", n: 1 },
+    ]);
   });
 });
 
@@ -368,6 +384,10 @@ describe("dates", () => {
     expect(await status("usage?month=3000-01")).toBe(400);
     expect(await status("usage?month=2999-12")).toBe(200);
     expect(await status("usage/timeseries?from=2999-12-31&to=2999-12-31")).toBe(200);
+    // A defaulted start never falls before the first accepted day (Neon 7b-3 round 1).
+    const early = await request(key, "GET", `/v2/admin/apps/${appId}/usage/timeseries?to=1970-01-10`);
+    expect(early.status).toBe(200);
+    expect(early.body).toMatchObject({ from: "1970-01-01", to: "1970-01-10" });
   });
 
   it("count a charge at midnight UTC on its own day, in the totals and in the charges", async () => {
@@ -515,6 +535,10 @@ describe("tools", () => {
     expect(forApp.body.summary).toBe(`1 charge costing $0.0015 for ${appId} in 2025-09, 0 failed.`);
     const forAccount = await request(key, "POST", "/v2/cli/tools/get_usage", { month: "2025-09" });
     expect(forAccount.body.result.apps).toEqual([expect.objectContaining({ app_id: appId })]);
+    // An explicit null app reads the account, as a missing one does (Neon 7b-3 round 1).
+    const nullApp = await request(key, "POST", "/v2/cli/tools/get_usage", { app: null, month: "2025-09" });
+    expect(nullApp.status).toBe(200);
+    expect(nullApp.body.result.apps).toEqual([expect.objectContaining({ app_id: appId })]);
     const charges = await request(key, "POST", "/v2/cli/tools/list_app_charges", { app: appId });
     expect(charges.body.result.charges).toHaveLength(1);
     const breakdown = await request(key, "POST", "/v2/cli/tools/get_usage_breakdown", { app: appId, from: "2025-09-01", to: "2025-09-30" });

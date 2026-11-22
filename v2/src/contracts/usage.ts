@@ -15,7 +15,12 @@ const LimitSchema = z.coerce.number().int().min(1, { error: "limit must be 1 to 
 /** The longest day range one read covers: as far back as day totals are kept. */
 export const USAGE_RANGE_MAX_DAYS = 400;
 
-/** The longest range of a breakdown read from the charges themselves, which groups every charge in it. */
+/**
+ * The longest range read from the charges themselves: a breakdown by a
+ * dimension the rollups lack (which groups every charge in it), and the charge
+ * list filtered by anything with no index of its own (anything but `owner` or
+ * `user`), whose default is the last 30 days.
+ */
 export const USAGE_CHARGE_RANGE_MAX_DAYS = 31;
 
 export const UsageTotalsSchema = z
