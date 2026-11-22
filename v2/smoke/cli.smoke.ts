@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { cleanUp, outcome, uniqueSlug } from "./support.ts";
 
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -131,14 +132,16 @@ function everyOption(slug: string, mock: string): Record<string, unknown>[] {
       fallback: [{ provider: slug, operation: "openai.chat", model: "gpt-4o-mini" }],
     },
   };
-  const conversations = { store: false, keep: { images: false, audio: true, files: false }, retention_days: 30 };
+  // Each away from its default: storing is off and every kind is kept by default.
+  const conversations = { store: true, keep: { images: false, audio: false, files: false }, retention_days: 30 };
   return [
     {
       authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
       routing,
       limits: {
+        // A server app's budget can only be per user: the scope is still written, so it must survive.
         per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_nano: 5_000_000_000, scope: "user" } },
-        per_app: { requests: { per_minute: 600, per_day: null }, spending: { monthly_nano: 50_000_000_000 } },
+        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 } },
       },
       presets,
       conversations,
@@ -151,8 +154,9 @@ function everyOption(slug: string, mock: string): Record<string, unknown>[] {
       },
       routing,
       limits: {
-        per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_nano: 5_000_000_000, scope: "apple_account" } },
-        per_app: { requests: { per_minute: 600, per_day: null }, spending: { monthly_nano: 50_000_000_000 } },
+        // An iOS app's budget is per Apple Account by default: per install is away from it.
+        per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_nano: 5_000_000_000, scope: "install" } },
+        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 } },
       },
       presets,
       conversations,
@@ -162,22 +166,27 @@ function everyOption(slug: string, mock: string): Record<string, unknown>[] {
 
 test("agw 2 renames an app with every option set, and writes its settings back intact; model list runs", { skip: skipRoundTrip }, async () => {
   const home = await mkdtemp(join(tmpdir(), "agw-smoke-"));
-  const slug = `smoke-cli-${Date.now().toString(36)}`;
+  const slug = uniqueSlug("smoke-cli");
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
-  const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke CLI", slug, secret: "sk-mock-smoke-key", baseUrl: mock });
-  assert.equal(provider.status, 201, JSON.stringify(provider.body));
+  let providerId = "";
   const created: string[] = [];
   try {
+    const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke CLI", slug, secret: "sk-mock-smoke-key", baseUrl: mock });
+    assert.equal(provider.status, 201, outcome(provider));
+    providerId = provider.body.provider.id;
     const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
     assert.equal(connected.code, 0, JSON.stringify(connected.json.error));
 
+    // The price list itself, as v1's check reads it: a known provider, and a number for a known model.
     const models = await agw(home, "model", "list");
     assert.equal(models.code, 0, JSON.stringify(models.json.error));
-    assert.equal(typeof models.json.result, "object");
+    const prices = (models.json.result as { prices?: Record<string, Record<string, { input?: unknown }>> } | null)?.prices;
+    assert.ok(prices?.openai, "agw model list gave no OpenAI prices");
+    assert.equal(typeof prices.openai["gpt-4o-mini"]?.input, "number");
 
     for (const [index, config] of everyOption(slug, mock).entries()) {
       const app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
-      assert.equal(app.status, 201, JSON.stringify(app.body));
+      assert.equal(app.status, 201, outcome(app));
       const id = app.body.app.id as string;
       created.push(id);
       const before = await admin("GET", `/v2/admin/apps/${id}`);
@@ -188,8 +197,10 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       assert.deepEqual(after.body.app.config, before.body.app.config);
     }
   } finally {
-    for (const id of created) await admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`);
-    await admin("DELETE", `/v2/admin/providers/${provider.body.provider.id}`);
     await rm(home, { recursive: true, force: true });
+    await cleanUp([
+      ...created.map((id) => () => admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`)),
+      ...(providerId === "" ? [] : [() => admin("DELETE", `/v2/admin/providers/${providerId}`)]),
+    ]);
   }
 });

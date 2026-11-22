@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { holds, outcome } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -43,8 +44,10 @@ before(async () => {
     secret: "sk-mock-smoke-key",
     baseUrl: mockUrl,
   });
-  assert.equal(provider.status, 201, JSON.stringify(provider.body));
+  assert.equal(provider.status, 201, outcome(provider));
   assert.equal(provider.body.provider.secretHint, "-key");
+  // Write-only: the create answer holds the hint, never the key itself.
+  assert.ok(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
   providerId = provider.body.provider.id;
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke first call",

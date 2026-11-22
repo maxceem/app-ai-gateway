@@ -44,6 +44,7 @@
  * - `mock_delay_ms`: wait this long before answering (at most 120 s), for a
  *   slow provider. A raw body (Deepgram's audio) names it in the query.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
+ * - `service_tier`: echoed in `x-mock-service-tier`, so a check sees the mode arrived.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
  *   its closing event) or the transcript, before the usage, so a check can
@@ -58,9 +59,16 @@
  * that is not JSON is still counted and answered. Any key is accepted, in any
  * of the providers' key headers.
  *
- * Every answer also carries `x-mock-client-credentials`: the names of the
- * request headers that held a client's credential (an `agw_` key or a
- * signed token), or `none`. The gateway must never hand one to a provider.
+ * Every answer also carries two marks, so a check can judge what the gateway
+ * sent without the mock ever echoing a key:
+ *
+ * - `x-mock-key`: each provider key header that came in, with the first 16
+ *   hex characters of its key's SHA-256, such as `x-api-key:0123456789abcdef`,
+ *   or `missing`. A check hashes its own test key and compares, so the wrong
+ *   key, or the right key in the wrong header, is seen (v1's key check).
+ * - `x-mock-client-credentials`: where a client's credential (an `agw_` key or
+ *   a signed token) came in: request header names, `url` and `body`, or
+ *   `none`. The gateway must never hand one to a provider.
  *
  * `GET /jwks/<base64url JSON>` answers the public key the path carries as a
  * JWKS, with no provider key: a smoke check makes a key pair of its own and
@@ -407,14 +415,48 @@ export function clientCredentialHeaders(headers: Headers): string[] {
   return [...headers.entries()].filter(([, value]) => CLIENT_CREDENTIAL.test(value)).map(([name]) => name).sort();
 }
 
+/** Where a request carried a client's credential: header names, then `url` and `body`. */
+export function clientCredentialPlaces(request: Request, body: ArrayBuffer | null): string[] {
+  const places = clientCredentialHeaders(request.headers);
+  if (CLIENT_CREDENTIAL.test(request.url)) places.push("url");
+  if (body !== null && CLIENT_CREDENTIAL.test(new TextDecoder().decode(body))) places.push("body");
+  return places;
+}
+
+/** The headers a provider key comes in. */
+const KEY_HEADERS = ["authorization", "x-api-key", "x-goog-api-key", "xi-api-key"] as const;
+
+/** The first 16 hex characters of a key's SHA-256: enough to tell keys apart, never the key. */
+export async function keyFingerprint(key: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  return [...digest.slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** `x-mock-key`: each key header that came in, with its key's fingerprint, or `missing`. */
+export async function keyMarks(headers: Headers): Promise<string> {
+  const marks: string[] = [];
+  for (const name of KEY_HEADERS) {
+    const value = headers.get(name);
+    if (value === null) continue;
+    const key = name === "authorization" ? value.replace(/^(?:Bearer|Token|Key) /u, "") : value;
+    marks.push(`${name}:${await keyFingerprint(key)}`);
+  }
+  return marks.length === 0 ? "missing" : marks.join(",");
+}
+
 const mock = {
   async fetch(request: Request): Promise<Response> {
-    const leaked = clientCredentialHeaders(request.headers);
-    const response = await answer(request);
+    // The body is read once here, to look for a client's credential in it, and handed on whole.
+    const body = request.body === null ? null : await request.arrayBuffer();
+    const forwarded = body === null ? request : new Request(request, { body });
+    const leaked = clientCredentialPlaces(request, body);
+    const keys = await keyMarks(request.headers);
+    const response = await answer(forwarded);
     // A WebSocket upgrade or an opaque answer keeps its own headers.
     if (response.status === 101) return response;
     const marked = new Response(response.body, response);
     marked.headers.set("x-mock-client-credentials", leaked.length === 0 ? "none" : leaked.join(","));
+    marked.headers.set("x-mock-key", keys);
     return marked;
   },
 } satisfies ExportedHandler;
@@ -511,6 +553,8 @@ async function answer(request: Request): Promise<Response> {
   const model = typeof body.model === "string" ? body.model : "mock-model";
   const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
   for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+  // The service mode the request asked for, so a check can see it reached the provider.
+  if (typeof body.service_tier === "string") response.headers.set("x-mock-service-tier", body.service_tier);
   // Vercel AI Gateway's spend attribution, for the smoke checks to see.
   const tags = request.headers.get("ai-reporting-tags");
   if (tags !== null) response.headers.set("x-mock-reporting-tags", tags);

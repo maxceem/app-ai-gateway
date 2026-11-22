@@ -18,6 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { outcome } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -142,7 +143,7 @@ test("a preset the app does not have is refused and recorded as a refusal sample
   for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
     const found = await admin("GET", `/v2/admin/apps/${appId}/rejection-events?reason=preset_not_found&user=${encodeURIComponent(user)}`);
-    assert.equal(found.status, 200, JSON.stringify(found.body));
+    assert.equal(found.status, 200, outcome(found));
     sample = found.body.events[0];
   }
   assert.ok(sample, "no refusal sample was recorded within a minute");

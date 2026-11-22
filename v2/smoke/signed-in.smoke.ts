@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
+import { cleanUp, keyMark, outcome, responseOutcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -24,6 +25,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
 const ISSUER = "https://smoke.app-ai-gateway.invalid";
+const PROVIDER_KEY = "sk-mock-smoke-key";
 const AUDIENCE = "app-ai-gateway-smoke";
 const CLIENT_SDK = "app-ai-gateway-swift/1.7.0";
 
@@ -77,9 +79,9 @@ before(async () => {
   signingKey = pair.privateKey;
   const publicJwk = { ...(await exportJWK(pair.publicKey)), kid, alg: "ES256" };
   const jwksPath = Buffer.from(JSON.stringify(publicJwk)).toString("base64url");
-  slug = `smoke-signin-${Date.now().toString(36)}`;
-  const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke signed in", slug, secret: "sk-mock-smoke-key", baseUrl: mockUrl });
-  assert.equal(provider.status, 201, JSON.stringify(provider.body));
+  slug = uniqueSlug("smoke-signin");
+  const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke signed in", slug, secret: PROVIDER_KEY, baseUrl: mockUrl });
+  assert.equal(provider.status, 201, outcome(provider));
   providerId = provider.body.provider.id;
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
   const app = await admin("POST", "/v2/admin/apps", {
@@ -102,36 +104,47 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
+  assert.equal(app.status, 201, outcome(app));
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
 
 after(async () => {
-  if (appId !== "") await admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`);
-  if (providerId !== "") await admin("DELETE", `/v2/admin/providers/${providerId}`);
+  await cleanUp([
+    ...(appId === "" ? [] : [() => admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)]),
+    ...(providerId === "" ? [] : [() => admin("DELETE", `/v2/admin/providers/${providerId}`)]),
+  ]);
 });
 
 test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip }, async () => {
   const exchanged = await exchange(await userToken("smoke-user"));
-  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
   const { access_token: token } = (await exchanged.json()) as { access_token: string };
+  assert.equal(typeof token, "string");
 
   const response = await chat(token);
-  assert.equal(response.status, 200, await response.clone().text());
-  // The gateway token is the gateway's own: it never reaches the provider.
+  assert.equal(response.status, 200, await responseOutcome(response));
+  // The gateway token is the gateway's own: it never reaches the provider,
+  // and the provider gets the connection's key, in its own header.
   assert.equal(response.headers.get("x-mock-client-credentials"), "none");
+  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", PROVIDER_KEY));
   await response.arrayBuffer();
 
   const me = await fetch(new URL(`/v2/apps/${appId}/me`, base), { headers: { authorization: `Bearer ${token}` } });
-  assert.equal(me.status, 200, await me.clone().text());
-  await me.arrayBuffer();
+  assert.equal(me.status, 200, await responseOutcome(me));
+  const standing = (await me.json()) as { user_id: string; limits: Record<string, unknown> };
+  // The user is the issuer's subject, and the limits are the ones apps and the Swift package read.
+  assert.equal(standing.user_id, "smoke-user");
+  for (const field of ["requests_today", "requests_remaining", "requests_per_minute", "requests_per_day", "monthly_cost_usd", "monthly_budget_usd", "budget_scope", "blocked"]) {
+    assert.ok(field in standing.limits, `/me has no limits.${field}`);
+  }
+  assert.equal(standing.limits.blocked, false);
 });
 
 test("the app key alone is refused once users must sign in", { skip }, async () => {
   const response = await chat(appKey);
-  assert.ok(response.status >= 400 && response.status < 500, `answered ${response.status}`);
-  await response.arrayBuffer();
+  assert.equal(response.status, 401, await responseOutcome(response));
+  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "auth_required");
 });
 
 test("a user without the required claim is refused with issuer_claims_missing", { skip }, async () => {
@@ -150,7 +163,7 @@ test("a token signed by an unknown key is refused with issuer_token_rejected", {
 test("a token exchange records the client package it names", { skip, timeout: 90_000 }, async () => {
   const user = "smoke-sdk-user";
   const exchanged = await exchange(await userToken(user), { "x-client-sdk": CLIENT_SDK, "x-app-version": "1.0.0" });
-  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
   await exchanged.arrayBuffer();
   // Recorded after the response, so it is asked for until it is there.
   const path = `/v2/admin/apps/${appId}/auth-events?event=token_exchange&user=${user}&limit=5`;

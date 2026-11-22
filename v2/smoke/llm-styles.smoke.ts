@@ -15,6 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { keyMark } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -69,6 +70,9 @@ after(async () => {
   for (const id of providerIds) await admin("DELETE", `/v2/admin/providers/${id}`);
 });
 
+/** Each provider type's key header, as the provider itself reads it (v1's key-and-header check). */
+const KEY_HEADERS: Record<Type, string> = { openai: "authorization", anthropic: "x-api-key", gemini: "x-goog-api-key", openrouter: "authorization" };
+
 async function call(type: Type, path: string, body: Record<string, unknown>, user: string): Promise<string> {
   const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${slugs[type]}/${path}`, base), {
     method: "POST",
@@ -76,7 +80,10 @@ async function call(type: Type, path: string, body: Record<string, unknown>, use
     body: JSON.stringify(body),
   });
   const text = await response.text();
-  assert.equal(response.status, 200, text);
+  assert.equal(response.status, 200, `answered ${response.status}`);
+  // The connection's key, alone and in its provider's own header; never the app's key.
+  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], "sk-mock-smoke-key"));
+  assert.equal(response.headers.get("x-mock-client-credentials"), "none");
   return text;
 }
 

@@ -17,6 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { holds, outcome } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -58,7 +59,9 @@ before(async () => {
     // $1 and $2 per million tokens.
     pricing: { "local-llm": { input: 1, output: 2 } },
   });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.status, 201, outcome(created));
+  // Write-only: the create answer never holds the key it was given.
+  assert.ok(!holds(created.body, "sk-mock-smoke-custom-key"), "the provider create response holds the submitted key");
   providerIds.push(created.body.provider.id);
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke custom",
