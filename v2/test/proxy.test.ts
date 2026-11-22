@@ -245,6 +245,32 @@ describe("OpenAI chat through the proxy", () => {
     expect(event).toEqual({ reason: "model_not_allowed", model: "gpt-4o", operation: "openai.chat", user_id: "user-7" });
   });
 
+  it("records a path the app does not allow, samples once a minute per user and reason, and records nothing for an unproven caller (v1 config-refusals)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const rejections = async () =>
+      (await env.DB.prepare("SELECT reason, user_id, operation FROM app_rejection_event WHERE app_id = ? ORDER BY id").bind(appId).all()).results;
+    const send = async (path: string, model: string, extra: Record<string, string> = {}, bearer = key) => {
+      const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/${path}`, chatRequest(bearer, { model }, extra));
+      await waitOnExecutionContext(ctx);
+      return response.status;
+    };
+    // A path the app does not allow: recorded, with no operation, since none matched.
+    expect(await send("v1/files", "gpt-4o-mini")).toBe(403);
+    // Two refused models in the same minute: one sample. Another reason for the same user is still recorded.
+    expect(await send("v1/chat/completions", "gpt-4o")).toBe(403);
+    expect(await send("v1/chat/completions", "gpt-4.1")).toBe(403);
+    // Another user is sampled on their own.
+    expect(await send("v1/chat/completions", "gpt-4o", { "x-end-user-id": "user-8" })).toBe(403);
+    // A caller that never proved who it is records nothing.
+    expect(await send("v1/chat/completions", "gpt-4o", {}, "agw_app_not-a-real-key")).toBe(401);
+    expect(await rejections()).toEqual([
+      { reason: "path_not_allowed", user_id: "user-7", operation: null },
+      { reason: "model_not_allowed", user_id: "user-7", operation: "openai.chat" },
+      { reason: "model_not_allowed", user_id: "user-8", operation: "openai.chat" },
+    ]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("refuses an operation the app does not allow, a refused path and an undeclared path", async () => {
     const { appId, slug, key } = await setup({ operations: ["openai.realtime"] });
     for (const path of ["v1/chat/completions", "v1/organization/users", "v1/files", "v1/../v1/chat/completions"]) {

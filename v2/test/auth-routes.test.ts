@@ -292,6 +292,31 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
     });
   });
 
+  it("measures how long a user waited for the entitlement claim, from the first refusal to the sign-in that ends it (step 7b-4)", async () => {
+    const { appId, issuerToken } = await issuerApp();
+    const key = await seedAppKey(appId);
+    const pendingSince = () =>
+      env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = 'person-1'").bind(appId).first<{ since: number | null }>();
+    // Two refusals: only the first opens the wait.
+    expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+    const opened = (await pendingSince())?.since;
+    expect(opened).toEqual(expect.any(Number));
+    expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+    expect((await pendingSince())?.since).toBe(opened);
+    // The wait was opened five seconds ago; the sign-in that succeeds closes it and records it.
+    await env.DB.prepare("UPDATE app_end_user SET claim_pending_since = claim_pending_since - 5000 WHERE app_id = ?").bind(appId).run();
+    const ok = await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+    expect(ok.status).toBe(200);
+    expect((await pendingSince())?.since).toBeNull();
+    const last = (await authEvents(appId)).at(-1) as { outcome: string; claim_delay_ms: number | null };
+    expect(last.outcome).toBe("ok");
+    expect(last.claim_delay_ms).toBeGreaterThanOrEqual(5_000);
+    expect(last.claim_delay_ms).toBeLessThan(60_000);
+    // A later sign-in has no wait to close.
+    await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+    expect(((await authEvents(appId)).at(-1) as { claim_delay_ms: number | null }).claim_delay_ms).toBeNull();
+  });
+
   it("refuses an app key of another app", async () => {
     const { appId, issuerToken } = await issuerApp();
     const otherApp = await seedApp({ type: "api_key", end_user: { source: "none" } });

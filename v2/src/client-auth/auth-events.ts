@@ -70,14 +70,16 @@ async function markClaimPending(db: D1Database, appId: string, userId: string, n
 async function settleClaimPending(db: D1Database, appId: string, userId: string, now: number): Promise<number | null> {
   try {
     const row = await db
-      .prepare(
-        `UPDATE app_end_user SET claim_pending_since = NULL
-          WHERE app_id = ? AND id = ? AND claim_pending_since IS NOT NULL
-          RETURNING claim_pending_since AS since`,
-      )
+      .prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = ?")
       .bind(appId, userId)
       .first<{ since: number | null }>();
     if (row?.since == null) return null;
+    // Cleared only if still the same wait, so two sign-ins at once measure it once.
+    const cleared = await db
+      .prepare("UPDATE app_end_user SET claim_pending_since = NULL WHERE app_id = ? AND id = ? AND claim_pending_since = ?")
+      .bind(appId, userId, row.since)
+      .run();
+    if (cleared.meta.changes !== 1) return null;
     const delayMs = Math.max(0, now - row.since);
     log("info", "claim_propagation_recovered", { app: appId, delayMs });
     return delayMs;
