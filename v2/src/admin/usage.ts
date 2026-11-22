@@ -149,7 +149,8 @@ function totals(row: Partial<SumRow> | null | undefined): UsageTotals {
 function dayRange(from: string | undefined, to: string | undefined, maxDays = USAGE_RANGE_MAX_DAYS, now = Date.now()): { from: string; to: string } {
   const end = to ?? new Date(now).toISOString().slice(0, 10);
   const endMs = Date.parse(`${end}T00:00:00Z`);
-  const start = from ?? new Date(endMs - (Math.min(30, maxDays) - 1) * DAY_MS).toISOString().slice(0, 10);
+  // A default start never goes before the first day a range may name.
+  const start = from ?? new Date(Math.max(0, endMs - (Math.min(30, maxDays) - 1) * DAY_MS)).toISOString().slice(0, 10);
   const startMs = Date.parse(`${start}T00:00:00Z`);
   if (start > end) throw new GatewayError(400, "invalid_request", "from must not be after to");
   if ((endMs - startMs) / DAY_MS + 1 > maxDays) {
@@ -332,6 +333,9 @@ const CHARGE_FILTERS = {
   trace: "client_trace_id",
 } as const;
 
+/** The charge filters no index serves: read inside at most 31 days, unless an owner or user narrows them. */
+const UNINDEXED_FILTERS = ["kind", "provider", "connection", "model", "install", "operation", "price_source", "measured", "trace"] as const;
+
 export async function listAppCharges(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const appId = c.req.param("app")!;
@@ -343,19 +347,20 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
   // keeps SQLite from walking the app's index for it, which it would prefer
   // for the order, through every charge of the app. With a user, from
   // `charge_app_user_used`: the `+` on the account alone leaves that index
-  // the better match. Other filters walk the app's charges by time: without
-  // a range, through all 90 days kept.
+  // the better match. Every other filter has no index of its own (each would
+  // cost every charge a write): it walks the app's charges by time, so
+  // without an owner or a user it is read inside at most 31 days, by default
+  // the last 30.
   const byOwner = query.owner !== undefined ? "+" : "";
   const byUser = byOwner === "" && query.user !== undefined ? "+" : "";
   const where = [`${byOwner}app_id = ?`, `${byOwner}${byUser}account_id = ?`];
   const params: unknown[] = [appId, actor.accountId];
-  // A trace id has no index of its own (it would cost every charge a write):
-  // it is looked for inside a range of at most 31 days.
-  if (query.trace !== undefined && (query.from === undefined || query.to === undefined)) {
-    throw new GatewayError(400, "invalid_request", `A trace filter needs from and to, at most ${USAGE_CHARGE_RANGE_MAX_DAYS} days apart`);
-  }
-  if (query.from !== undefined || query.to !== undefined) {
-    const range = dayRange(query.from, query.to, query.trace !== undefined ? USAGE_CHARGE_RANGE_MAX_DAYS : USAGE_RANGE_MAX_DAYS);
+  const unindexed =
+    query.owner === undefined &&
+    query.user === undefined &&
+    (query.status !== undefined || UNINDEXED_FILTERS.some((name) => query[name] !== undefined));
+  if (unindexed || query.from !== undefined || query.to !== undefined) {
+    const range = dayRange(query.from, query.to, unindexed ? USAGE_CHARGE_RANGE_MAX_DAYS : USAGE_RANGE_MAX_DAYS);
     where.push("used_at >= ?", "used_at < ?");
     params.push(Date.parse(`${range.from}T00:00:00Z`), Date.parse(`${range.to}T00:00:00Z`) + DAY_MS);
   }

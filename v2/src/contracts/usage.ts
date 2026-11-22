@@ -121,7 +121,7 @@ export const ChargeListQuerySchema = UsageRangeQuerySchema.extend({
   status: z.enum(CHARGE_STATUS_FILTERS).optional().meta({ description: "A status, or failed for every status but ok." }),
   provider: z.string().max(100).optional().meta({ description: "A provider type, such as openai." }),
   connection: z.string().max(200).optional().meta({ description: "A provider connection's id." }),
-  model: z.string().max(200).optional().meta({ description: "A model. Without from and to, this filter (like operation, install and status) reads through all 90 days kept." }),
+  model: z.string().max(200).optional().meta({ description: "A model." }),
   user: z.string().max(200).optional().meta({ description: "An end user's id." }),
   install: z.string().max(200).optional().meta({ description: "An install: an App Attest key id." }),
   operation: z.string().max(200).optional(),
@@ -132,7 +132,7 @@ export const ChargeListQuerySchema = UsageRangeQuerySchema.extend({
     .string()
     .max(128)
     .optional()
-    .meta({ description: "Only the requests the client sent with this X-Client-Trace-Id. Needs from and to, at most 31 days apart." }),
+    .meta({ description: "Only the requests the client sent with this X-Client-Trace-Id." }),
 });
 
 export const ChargeSchema = z

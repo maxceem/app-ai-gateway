@@ -447,7 +447,7 @@ export const CATALOG = {
     tags: ["Admin usage"],
     summary: "List an app's charges",
     description:
-      "The ledger's rows, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Charges are kept 90 days; older usage is only in the totals.",
+      "The ledger's rows, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Charges are kept 90 days; older usage is only in the totals. Without filters, or with owner or user, a range covers up to 400 days and by default all charges kept. Every other filter has no index of its own: unless owner or user is given too, it is read inside at most 31 days, by default the last 30.",
     security: "management",
     query: ChargeListQuerySchema,
     response: ChargeListResponseSchema,

@@ -572,7 +572,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
       command: "usage show",
       view: { rows: "apps", columns: ["app_id=App", "name", "charges", "failed", "input_tokens=In", "output_tokens=Out", "cost_usd=Cost $", "deleted"] },
     },
-    request: (input) => (input.app === undefined ? plainRequest("getAccountUsage", input) : plainRequest("getAppUsage", input)),
+    // An explicit null app is the account, as a left-out one is.
+    request: (input) => (input.app === undefined || input.app === null ? plainRequest("getAccountUsage", input) : plainRequest("getAppUsage", input)),
     summary: (result) => {
       if ("app_id" in (result as object)) {
         const usage = result as OperationResponse<"getAppUsage">;
@@ -610,7 +611,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_app_charges",
     title: "List an app's charges",
     description:
-      "Returns an app's ledger rows one each, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Each has its status, provider, model, user, tokens, cost (null for a failed attempt that cost nothing), how it was measured and where its price came from. Filter by kind, status (or failed), provider, connection, model, user, install, operation, owner (a call, session or job id), price_source, measured, trace and a day range; page back with before. Kept 90 days. Use it to debug failures or trace one user's traffic; for totals use get_usage.",
+      "Returns an app's ledger rows one each, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Each has its status, provider, model, user, tokens, cost (null for a failed attempt that cost nothing), how it was measured and where its price came from. Filter by kind, status (or failed), provider, connection, model, user, install, operation, owner (a call, session or job id), price_source, measured, trace and a day range; page back with before. Kept 90 days. Filters other than owner and user cover at most 31 days, by default the last 30, unless owner or user is given too. Use it to debug failures or trace one user's traffic; for totals use get_usage.",
     operation: "listAppCharges",
     cli: {
       command: "app charge list",

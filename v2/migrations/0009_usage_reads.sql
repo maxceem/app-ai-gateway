@@ -34,25 +34,33 @@ CREATE TABLE `__new_usage_day` (
 	`units` integer DEFAULT 0 NOT NULL,
 	`session_ms` integer DEFAULT 0 NOT NULL,
 	PRIMARY KEY(`account_id`, `app_id`, `day`, `provider_type`, `provider_connection_id`, `model`, `outcome`, `unit`),
-	CONSTRAINT "usage_day_outcome" CHECK("__new_usage_day"."outcome" IN ('ok', 'failed')),
-	CONSTRAINT "usage_day_cost_integer" CHECK(typeof("__new_usage_day"."cost_nano") = 'integer')
+	CONSTRAINT "usage_day_outcome" CHECK("outcome" IN ('ok', 'failed')),
+	CONSTRAINT "usage_day_cost_integer" CHECK(typeof("cost_nano") = 'integer')
 );
 --> statement-breakpoint
 INSERT INTO `__new_usage_day`("account_id", "app_id", "day", "provider_type", "provider_connection_id", "model", "outcome", "unit", "charges", "unpriced_charges", "cost_nano", "input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "units", "session_ms") SELECT "account_id", "app_id", "day", "provider_type", "provider_connection_id", "model", "outcome", "unit", "charges", "unpriced_charges", "cost_nano", "input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "units", "session_ms" FROM `usage_day`;--> statement-breakpoint
 -- Charges corrected before this migration still count as unpriced: each one's
 -- first correction prices it, by the trigger's rule below.
-UPDATE `__new_usage_day` SET `unpriced_charges` = `unpriced_charges` - (
-	SELECT COUNT(*) FROM charge AS o
-	WHERE o.account_id = `__new_usage_day`.account_id AND o.app_id = `__new_usage_day`.app_id
-		AND o.usage_day = `__new_usage_day`.day AND o.provider_type = `__new_usage_day`.provider_type
-		AND COALESCE(o.provider_connection_id, '') = `__new_usage_day`.provider_connection_id
-		AND COALESCE(o.model, '') = `__new_usage_day`.model
-		AND (CASE WHEN o.status = 'ok' THEN 'ok' ELSE 'failed' END) = `__new_usage_day`.outcome
-		AND COALESCE(o.unit, '') = `__new_usage_day`.unit
+-- Driven from the corrected charges, so it reads only corrections and looks
+-- each charge and row up by its key: never an app's whole history per row.
+UPDATE `__new_usage_day` SET `unpriced_charges` = `unpriced_charges` - priced.n
+FROM (
+	SELECT o.account_id, o.app_id, o.usage_day AS day, o.provider_type,
+		COALESCE(o.provider_connection_id, '') AS provider_connection_id,
+		COALESCE(o.model, '') AS model,
+		CASE WHEN o.status = 'ok' THEN 'ok' ELSE 'failed' END AS outcome,
+		COALESCE(o.unit, '') AS unit,
+		COUNT(*) AS n
+	FROM charge AS o
+	WHERE o.id IN (SELECT c.corrects_charge_id FROM charge AS c WHERE c.corrects_charge_id IS NOT NULL)
 		AND o.kind != 'correction' AND o.price_source IN ('unresolved', 'not_priced')
-		AND EXISTS (SELECT 1 FROM charge AS c WHERE c.corrects_charge_id = o.id)
-)
-WHERE `unpriced_charges` > 0;--> statement-breakpoint
+	GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+) AS priced
+WHERE `__new_usage_day`.account_id = priced.account_id AND `__new_usage_day`.app_id = priced.app_id
+	AND `__new_usage_day`.day = priced.day AND `__new_usage_day`.provider_type = priced.provider_type
+	AND `__new_usage_day`.provider_connection_id = priced.provider_connection_id
+	AND `__new_usage_day`.model = priced.model AND `__new_usage_day`.outcome = priced.outcome
+	AND `__new_usage_day`.unit = priced.unit;--> statement-breakpoint
 DROP TABLE `usage_day`;--> statement-breakpoint
 ALTER TABLE `__new_usage_day` RENAME TO `usage_day`;--> statement-breakpoint
 CREATE INDEX `usage_day_account` ON `usage_day` (`account_id`,`day`);--> statement-breakpoint

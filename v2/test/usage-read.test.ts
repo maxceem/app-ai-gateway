@@ -265,11 +265,13 @@ describe("charges", () => {
     const last = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=2&before=${encodeURIComponent(second.body.next_before)}`);
     expect(last.body).toMatchObject({ charges: [], next_before: null });
 
-    const failed = await request(key, "GET", `/v2/admin/apps/${appId}/charges?status=failed`);
+    // Filters with no index of their own read inside a range (by default the last 30 days).
+    const june = "from=2025-05-31&to=2025-06-01";
+    const failed = await request(key, "GET", `/v2/admin/apps/${appId}/charges?status=failed&${june}`);
     expect(failed.body.charges.map((row: any) => row.id)).toEqual(["ch_c"]);
     const owner = await request(key, "GET", `/v2/admin/apps/${appId}/charges?owner=call_1`);
     expect(owner.body.charges.map((row: any) => row.id)).toEqual(["ch_b", "ch_a"]);
-    const unpriced = await request(key, "GET", `/v2/admin/apps/${appId}/charges?price_source=unresolved`);
+    const unpriced = await request(key, "GET", `/v2/admin/apps/${appId}/charges?price_source=unresolved&${june}`);
     expect(unpriced.body.charges.map((row: any) => row.id)).toEqual(["ch_d"]);
     const range = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-06-02&to=2025-06-03`);
     expect(range.body.charges).toEqual([]);
@@ -342,7 +344,12 @@ describe("unpriced", () => {
       .map((statement) => statement.trim())
       .find((statement) => statement.includes("UPDATE `__new_usage_day`"));
     expect(update).toBeDefined();
-    await env.DB.prepare(update!.replace(/^(--[^\n]*\n)+/u, "").replaceAll("`__new_usage_day`", "usage_day")).run();
+    const sql = update!.replace(/^(--[^\n]*\n)+/u, "").replaceAll("`__new_usage_day`", "usage_day");
+    // Driven from the corrections, never a scan of charges per rollup row (Neon 7b-3 round 1).
+    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`).all<{ detail: string }>()).results.map((row) => row.detail);
+    expect(plan.join("\n")).toContain("charge_corrects");
+    expect(plan.filter((line) => /^SCAN (o|charge)\b/u.test(line))).toEqual([]);
+    await env.DB.prepare(sql).run();
     const usage = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
     expect(usage.body).toMatchObject({ charges: 2, unpriced: 1, cost_nano: 300 });
   });
@@ -517,18 +524,39 @@ describe("tools", () => {
   });
 });
 
-describe("trace filter", () => {
-  it("needs a range of at most 31 days, since a trace id has no index of its own (Fable 7b-3)", async () => {
+describe("filters with no index", () => {
+  it("read a trace inside at most 31 days, since a trace id has no index of its own (Fable 7b-3)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     await seed({ appId, usedAt: at("2025-08-05"), trace: "t-1" });
     const get = (query: string) => request(key, "GET", `/v2/admin/apps/${appId}/charges?${query}`);
-    expect((await get("trace=t-1")).status).toBe(400);
+    // No range: the last 30 days, where this old charge is not.
+    expect(await get("trace=t-1")).toMatchObject({ status: 200, body: { charges: [] } });
     expect((await get("trace=t-1&from=2025-08-01")).status).toBe(400);
     expect((await get("trace=t-1&from=2025-07-01&to=2025-08-05")).status).toBe(400);
     const found = await get("trace=t-1&from=2025-08-01&to=2025-08-31");
     expect(found.status).toBe(200);
     expect(found.body.charges).toHaveLength(1);
+  });
+
+  it("read a model, status or install inside the last 30 days by default and at most 31, unless a user narrows them (Neon 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const today = new Date().toISOString().slice(0, 10);
+    const recent = await seed({ appId, usedAt: Date.now() - 2 * 86_400_000, model: "m-rare", user: "u-rare" });
+    const old = await seed({ appId, usedAt: Date.now() - 45 * 86_400_000, model: "m-rare", user: "u-rare" });
+    const ids = async (query: string) => {
+      const response = await request(key, "GET", `/v2/admin/apps/${appId}/charges?${query}`);
+      expect(response.status).toBe(200);
+      return response.body.charges.map((row: any) => row.id);
+    };
+    expect(await ids("model=m-rare")).toEqual([recent]);
+    const wide = new Date(Date.now() - 60 * 86_400_000).toISOString().slice(0, 10);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/charges?model=m-rare&from=${wide}&to=${today}`)).status).toBe(400);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/charges?status=failed&from=${wide}`)).status).toBe(400);
+    // A user has its own index: no cap, and by default every charge kept.
+    expect(await ids("model=m-rare&user=u-rare")).toEqual([recent, old]);
+    expect(await ids(`model=m-rare&user=u-rare&from=${wide}&to=${today}`)).toEqual([recent, old]);
   });
 });
 
