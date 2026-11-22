@@ -16,7 +16,7 @@
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
-import { freezeCutoffDay, ownerTakesBookingsSql } from "./freeze.ts";
+import { ON_TIME_SQL, onTimeCondition } from "./late-booking.ts";
 import type { NanoDollars } from "../money.ts";
 import type {
   ChargeKind,
@@ -138,8 +138,13 @@ const CHARGE_COLUMNS: readonly (readonly [column: string, read: (row: ChargeRow)
   ["written_at", (r) => r.writtenAt],
 ];
 
+/**
+ * One charge, under the ledger's late-booking rule (`./late-booking.ts`): its
+ * values, then the rule's two parameters. A WHERE clause also keeps SQLite
+ * from reading ON CONFLICT as part of the SELECT.
+ */
 const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => column).join(", ")})
-  VALUES (${CHARGE_COLUMNS.map(() => "?").join(", ")})
+  SELECT ${CHARGE_COLUMNS.map(() => "?").join(", ")} WHERE ${ON_TIME_SQL}
   ON CONFLICT(id) DO NOTHING`;
 
 /**
@@ -152,27 +157,19 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
  *   brings back work the sweep or a settlement has since ended.
  * - A job's row is not written once the job is settled (its
  *   `settle:job:<job>` correction exists).
- * - No row is written for an owner that has charges but no longer takes
- *   bookings (`./freeze.ts`): open work would make it live again, and let a
- *   correction be worked out against a ledger retention may already have cut.
- *   This covers a figure replayed from the failed-write store after its
- *   job's settlement was deleted.
+ *
+ * Work for an old owner may still be written: whatever it books later is a
+ * charge row, which the late-booking rule judges (`./late-booking.ts`).
  */
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?
   WHERE NOT (?5 = 'job' AND EXISTS (SELECT 1 FROM charge WHERE id = 'settle:job:' || ?6))
     AND (?7 IS NULL OR NOT EXISTS (SELECT 1 FROM charge WHERE id = ?7))
-    AND ${ownerTakesBookingsSql("?5", "?6", "?11")}
   ON CONFLICT(id) DO NOTHING`;
 
-/**
- * The statement that writes one open-work row, once: a row already there is
- * never changed. `writtenAt` is when it is written, for the freeze: a row
- * replayed from the failed-write store is judged at its replay, not at the
- * time it was first made.
- */
-function openWorkStatement(db: D1Database, work: OpenWorkRow, writtenAt: number = work.createdAt): D1PreparedStatement {
+/** The statement that writes one open-work row, once: a row already there is never changed. */
+function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStatement {
   return db
     .prepare(INSERT_OPEN_WORK)
     .bind(
@@ -186,55 +183,32 @@ function openWorkStatement(db: D1Database, work: OpenWorkRow, writtenAt: number 
       work.detail === null ? null : JSON.stringify(work.detail),
       work.dueAt,
       work.createdAt,
-      freezeCutoffDay(Math.max(work.createdAt, writtenAt)),
     );
 }
 
-/**
- * What became of one open-work row written on its own: written, not written
- * because it was already there or its owner is settled (`skipped`), or not
- * written because its owner's ledger is frozen (`frozen`, `./freeze.ts`).
- */
-export type OpenWorkOutcome = "written" | "skipped" | "frozen";
-
-/**
- * Writes open-work rows that have no charge (a job's saved figure), and says
- * what became of each. Each insert is preceded, in the same batch, by a read
- * of whether its owner takes bookings, so a frozen owner is told apart from an
- * ordinary repeat without another round trip. Throws when D1 cannot take them.
- */
-export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[], now?: number): Promise<OpenWorkOutcome[]> {
-  if (rows.length === 0) return [];
-  const statements: D1PreparedStatement[] = [];
-  for (const row of rows) {
-    statements.push(
-      db
-        .prepare(`SELECT ${ownerTakesBookingsSql("?1", "?2", "?3")} AS takes`)
-        .bind(row.ownerType, row.ownerId, freezeCutoffDay(Math.max(row.createdAt, now ?? row.createdAt))),
-      openWorkStatement(db, row, now),
-    );
-  }
-  const results = await db.batch(statements);
-  return rows.map((_, index) => {
-    if ((results[index * 2 + 1]?.meta.changes ?? 0) > 0) return "written";
-    const takes = (results[index * 2]?.results[0] as { takes?: number } | undefined)?.takes;
-    return takes === 0 ? "frozen" : "skipped";
-  });
+/** Writes open-work rows that have no charge (a job's saved figure). Throws when D1 cannot take them. */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  await db.batch(rows.map((row) => openWorkStatement(db, row)));
 }
 
-/** The statements that write some entries, in one batch. */
-export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[], now?: number): D1PreparedStatement[] {
+/** The statements that write some entries at `now`, in one batch. */
+export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[], now: number): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const { charge, openWork } of entries) {
     // The work first: it is written only while its charge is not there yet (see INSERT_OPEN_WORK).
-    for (const work of openWork) statements.push(openWorkStatement(db, work, now));
-    statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
+    for (const work of openWork) statements.push(openWorkStatement(db, work));
+    statements.push(insertChargeStatement(db, charge, now));
   }
   return statements;
 }
 
-/** Writes entries to D1 in one batch. Throws if D1 refuses or fails. */
-export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now?: number): Promise<void> {
+/**
+ * Writes entries to D1 in one batch, at `now`: the time they are written,
+ * which judges a replayed entry by its replay (`./late-booking.ts`). Throws if
+ * D1 refuses or fails.
+ */
+export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now: number): Promise<void> {
   if (entries.length === 0) return;
   await db.batch(ledgerStatements(db, entries, now));
 }
@@ -256,7 +230,7 @@ export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<v
     // A D1 write that stalls must not outlast the request's waitUntil window:
     // past the deadline the entry (its charge and its open work, together) goes
     // to the store too. Its ids are stable, so a late D1 commit is harmless.
-    await withDeadline(writeToLedger(env.DB, [entry]), LEDGER_D1_DEADLINE_MS, "writing the charge");
+    await withDeadline(writeToLedger(env.DB, [entry], Date.now()), LEDGER_D1_DEADLINE_MS, "writing the charge");
     return;
   } catch (error) {
     log("warn", "ledger_write_failed", { app: entry.charge.appId, charge: entry.charge.id, error: errorFacts(error) });
@@ -338,20 +312,22 @@ export async function readCharge(db: D1Database, id: string): Promise<ChargeRow 
   return row === null ? null : chargeFromRow(row);
 }
 
-/** The statement that inserts one charge, `ON CONFLICT(id) DO NOTHING`. */
-export function insertChargeStatement(db: D1Database, charge: ChargeRow): D1PreparedStatement {
-  return db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge)));
+/** The statement that inserts one charge at `now`, `ON CONFLICT(id) DO NOTHING`, under the late-booking rule. */
+export function insertChargeStatement(db: D1Database, charge: ChargeRow, now: number): D1PreparedStatement {
+  return db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge)), ...onTimeCondition(charge, now).params);
 }
 
 /**
  * The statement that inserts one charge whose cost is a SQL expression, such
  * as a difference worked out from other rows in the same batch. `cost` is a
  * SQL fragment with its own parameters, `costParams`, bound in place of the
- * `cost_nano` value. The row is skipped if its id exists.
+ * `cost_nano` value. The row is skipped if its id exists, or if it is too
+ * late to write at `now` (`./late-booking.ts`).
  */
 export function insertChargeWithCostStatement(
   db: D1Database,
   charge: ChargeRow,
+  now: number,
   cost: string,
   costParams: readonly unknown[],
   /** A SQL condition the row is inserted under, with its parameters. */
@@ -368,12 +344,13 @@ export function insertChargeWithCostStatement(
       params.push(read(charge));
     }
   }
+  const onTime = onTimeCondition(charge, now);
   // A WHERE clause also keeps SQLite from reading ON CONFLICT as part of the SELECT.
   return db
     .prepare(
       `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => column).join(", ")})
-       SELECT ${placeholders.join(", ")} WHERE ${where.sql}
+       SELECT ${placeholders.join(", ")} WHERE (${where.sql}) AND ${onTime.sql}
        ON CONFLICT(id) DO NOTHING`,
     )
-    .bind(...params, ...where.params);
+    .bind(...params, ...where.params, ...onTime.params);
 }

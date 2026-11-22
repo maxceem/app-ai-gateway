@@ -6,8 +6,9 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
-import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeToLedger, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
 import { nano, type NanoDollars } from "../src/money.ts";
+import { writeAtTheirTime } from "./helpers.ts";
 
 const DAY = "2026-11-19";
 const AT = Date.parse(`${DAY}T10:00:00Z`);
@@ -85,9 +86,9 @@ describe("the rollup trigger", () => {
   it("counts a retried write once", async () => {
     const appId = `app_retry_${crypto.randomUUID().slice(0, 6)}`;
     const one = entry({}, appId);
-    await writeToLedger(env.DB, [one]);
-    await writeToLedger(env.DB, [one]);
-    await writeToLedger(env.DB, [{ ...one, charge: { ...one.charge, costNano: nano(99_999) } }]);
+    await writeAtTheirTime([one]);
+    await writeAtTheirTime([one]);
+    await writeAtTheirTime([{ ...one, charge: { ...one.charge, costNano: nano(99_999) } }]);
     expect(await usageDay(appId)).toEqual([
       { outcome: "ok", charges: 1, unpriced_charges: 0, cost_nano: 1_000, input_tokens: 10, output_tokens: 5, units: 15 },
     ]);
@@ -95,7 +96,7 @@ describe("the rollup trigger", () => {
 
   it("counts an empty cost as 0, and a failed attempt apart from the paid ones", async () => {
     const appId = `app_failed_${crypto.randomUUID().slice(0, 6)}`;
-    await writeToLedger(env.DB, [
+    await writeAtTheirTime([
       entry({}, appId),
       entry(
         { status: "provider_error", httpStatus: 429, costNano: null, inputTokens: null, outputTokens: null, unit: null, units: null },
@@ -130,7 +131,7 @@ describe("the rollup trigger", () => {
       },
       appId,
     );
-    await writeToLedger(env.DB, [original, correction]);
+    await writeAtTheirTime([original, correction]);
     expect(await usageDay(appId)).toEqual([
       { outcome: "ok", charges: 1, unpriced_charges: 0, cost_nano: 1_750, input_tokens: 10, output_tokens: 5, units: 15 },
     ]);
@@ -138,7 +139,7 @@ describe("the rollup trigger", () => {
 
   it("keeps budget totals for the app and every end-user scope the charge names", async () => {
     const appId = `app_budget_${crypto.randomUUID().slice(0, 6)}`;
-    await writeToLedger(env.DB, [
+    await writeAtTheirTime([
       entry({ endUserId: "user-1", installId: "install-1", appleAccountId: "apple-1" }, appId),
       entry({ endUserId: "user-1", installId: null }, appId),
       entry({ costNano: null, status: "timeout" }, appId),
@@ -153,7 +154,7 @@ describe("the rollup trigger", () => {
 
   it("counts unpriced charges", async () => {
     const appId = `app_unpriced_${crypto.randomUUID().slice(0, 6)}`;
-    await writeToLedger(env.DB, [entry({ priceSource: "unresolved", costNano: null }, appId)]);
+    await writeAtTheirTime([entry({ priceSource: "unresolved", costNano: null }, appId)]);
     expect(await usageDay(appId)).toMatchObject([{ charges: 1, unpriced_charges: 1, cost_nano: 0 }]);
   });
 });

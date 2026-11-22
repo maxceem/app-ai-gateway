@@ -26,7 +26,7 @@ import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
 import { utcMonthDays } from "../limits/spend.ts";
-import { freezeCutoffDay, ownerLiveSql, startTakesBookings } from "./freeze.ts";
+import { bookingTooLate, logTooLate, sessionStartTakesBookings } from "./late-booking.ts";
 import { insertChargeWithCostStatement, utcDay, type ChargeRow } from "./write.ts";
 
 /**
@@ -81,8 +81,8 @@ export function sessionSettlementId(sessionId: string): string {
 function insertSessionStatements(db: D1Database, session: SessionRow, now: number): D1PreparedStatement[] {
   return [
     // A session row that is not there is written only while a session that
-    // started then could still take bookings (`./freeze.ts`). Past that, a
-    // missing row means retention deleted it with its slices, and a late
+    // started then could still take bookings (`./late-booking.ts`). Past that,
+    // a missing row means retention deleted it with its slices, and a late
     // checkpoint or close must not bring it back: its slice would count twice.
     db
       .prepare(
@@ -111,7 +111,7 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         session.expectsSessionTotal ? 1 : 0,
         now,
         now,
-        startTakesBookings(session.startedAt, now) ? 1 : 0,
+        sessionStartTakesBookings(session.startedAt, now) ? 1 : 0,
       ),
     // The sweep settles a session that never closes, once its cap has passed.
     // Never for a session that has ended: its work may be done and removed.
@@ -197,18 +197,17 @@ export async function writeCheckpoint(
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
     // A slice after settlement is $0 when a session-level dollar total covers it (S8).
-    // Written only under a session row: none is there for a frozen replay (see insertSessionStatements).
-    // And only while the session takes bookings (`./freeze.ts`): it started inside the
-    // window, or it is still live. Retention may have deleted this slice and left the
-    // ended session row for a later chunk; a replay must not book the slice again.
+    // Written only under a session row that started inside the late-booking
+    // window (`./late-booking.ts`); the slice's own day is judged by the insert.
     insertChargeWithCostStatement(
       db,
       slice,
+      now,
       "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
       [session.id, slice.costNano],
       {
-        sql: `EXISTS (SELECT 1 FROM session WHERE id = ?) AND (? OR ${ownerLiveSql("'session'", "?", "?")})`,
-        params: [session.id, startTakesBookings(session.startedAt, now) ? 1 : 0, session.id, session.id, session.id, freezeCutoffDay(now)],
+        sql: "EXISTS (SELECT 1 FROM session WHERE id = ?) AND ?",
+        params: [session.id, sessionStartTakesBookings(session.startedAt, now) ? 1 : 0],
       },
     ),
   ];
@@ -276,10 +275,11 @@ export async function writeCheckpoint(
   const reasons: StopReason[] = [];
   const state = first(stateAt);
   if (state === undefined) {
-    // No session row, and none written: a replay of a session past the ledger's
-    // freeze (`./freeze.ts`), long over. Nothing was booked; the relay is told
-    // to stop, so it does not send the slice again.
-    log("warn", "ledger_checkpoint_frozen", { app: session.appId, session: session.id, slice: slice.id });
+    // No session row, and none written: a replay of a session too old for the
+    // ledger (`./late-booking.ts`), long over. Nothing was booked; the relay is
+    // told to stop, so it does not send the slice again. A slice dated too late
+    // was logged by its insert already.
+    if (!bookingTooLate(slice.usageDay, now)) logTooLate(slice);
     return { decision: "stop", reasons: ["ended"], written: true };
   }
   if (state?.replaced_by !== null && state?.replaced_by !== undefined) reasons.push("replaced");
@@ -549,6 +549,16 @@ export async function settleSession(
     usageDay: utcDay(endedAt),
     writtenAt: now,
   };
+  if (bookingTooLate(correction.usageDay, now)) {
+    // Too late for the ledger (`./late-booking.ts`): the slices' estimate
+    // stands, and the session says so, where the provider total stays stored.
+    logTooLate(correction);
+    await db
+      .prepare("UPDATE session SET settlement = 'estimate_kept', settled_at = ?, updated_at = ? WHERE id = ? AND settlement = 'open'")
+      .bind(now, now, sessionId)
+      .run();
+    return "estimate_kept";
+  }
   // Worked out and written in one batch: the total minus every slice recorded
   // (S9). Both the correction and the state change need the session still
   // open, so a sweep that kept the estimate meanwhile wins, and neither happens.
@@ -556,6 +566,7 @@ export async function settleSession(
     insertChargeWithCostStatement(
       db,
       correction,
+      now,
       // Every charge the session owns but this correction: its slices and any
       // pricing corrections of them.
       `(SELECT session_total_nano FROM session WHERE id = ?)

@@ -17,7 +17,7 @@ import { DurableObject } from "cloudflare:workers";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
-import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkOutcome, type OpenWorkRow } from "../ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
  * How many entries one store holds before the oldest go to the logs. One
@@ -40,17 +40,13 @@ export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
  * One retry of what the store holds: charges first, then open-work rows. Each
  * write has the ledger's deadline, so a stalled D1 batch rejects and the alarm
  * falls through to its backoff instead of hanging. Stable ids make a late
- * commit safe. Returns what became of each open-work row, in order.
+ * commit safe. `now` is the time of this retry: the ledger judges a late
+ * charge by when it is written, not by when it was first kept
+ * (`../ledger/late-booking.ts`).
  */
-export async function retryStored(
-  db: D1Database,
-  entries: readonly LedgerEntry[],
-  rows: readonly OpenWorkRow[],
-  now: number,
-): Promise<OpenWorkOutcome[]> {
-  // `now`: open work is judged by the ledger's freeze at its replay (`../ledger/freeze.ts`).
+export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<void> {
   await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
-  return withDeadline(writeOpenWork(db, rows, now), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+  await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -126,9 +122,8 @@ export class ChargeStore extends DurableObject<Env> {
       this.setDelay(0);
       return;
     }
-    let outcomes: OpenWorkOutcome[];
     try {
-      outcomes = await retryStored(
+      await retryStored(
         this.env.DB,
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
@@ -143,20 +138,8 @@ export class ChargeStore extends DurableObject<Env> {
     }
     for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
     for (const one of work) this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
-    // A figure its owner's frozen ledger refused is dropped like the rest, but
-    // said so: it was kept through an outage and never booked (`../ledger/freeze.ts`).
-    const frozen = work.filter((_, index) => outcomes[index] === "frozen").map((one) => one.id);
-    if (frozen.length > 0) log("warn", "charge_store_figure_frozen", { frozen: frozen.length, ids: frozen.slice(0, 10) });
-    // Entries processed, and what became of each open-work row: a repeat whose
-    // first write committed before its reply was lost counts as skipped, not written.
-    const count = (outcome: OpenWorkOutcome) => outcomes.filter((one) => one === outcome).length;
-    log("info", "charge_store_written", {
-      processed: rows.length + work.length,
-      entries: rows.length,
-      written: count("written"),
-      skipped: count("skipped"),
-      frozen: frozen.length,
-    });
+    // Processed, not necessarily written: a repeat whose first write committed is skipped by the ledger.
+    log("info", "charge_store_written", { processed: rows.length + work.length });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());

@@ -24,11 +24,3 @@ export function timeOrderedId(now: number = Date.now()): string {
   for (const byte of random) suffix += byte.toString(16).padStart(2, "0");
   return now.toString(16).padStart(12, "0") + suffix;
 }
-
-/**
- * When `id` was made, for an id from {@link timeOrderedId}; null for any
- * other id, such as one made before ids carried their time.
- */
-export function timeOfOrderedId(id: string): number | null {
-  return /^[0-9a-f]{32}$/u.test(id) ? Number.parseInt(id.slice(0, 12), 16) : null;
-}

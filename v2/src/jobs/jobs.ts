@@ -27,11 +27,9 @@
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
-import { timeOfOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
-import { LEDGER_FREEZE_DAYS } from "../ledger/freeze.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
 import { writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
@@ -696,19 +694,6 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
 }
 
 /**
- * Whether the job started before its ledger could freeze (`../ledger/freeze.ts`).
- * The gateway's job id is a time-ordered id (`timeOrderedId`), so this needs
- * no lookup. Only used where the job's estimate is already gone, so it never
- * drops a figure the ledger could still settle; and to say why a figure was
- * not kept. Whether anything is booked is decided only inside the ledger's
- * own inserts.
- */
-export function jobRetired(job: string, now: number): boolean {
-  const started = timeOfOrderedId(job);
-  return started !== null && started < now - LEDGER_FREEZE_DAYS * 86_400_000;
-}
-
-/**
  * Settles a job from a final figure. The one settle function: a client poll,
  * the sweep's live check and the sweep's figure rows all call it, in any
  * order, at once or again. It reads only what never changes (the estimate
@@ -722,15 +707,7 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
-  if (known === null && !countless) {
-    // Its estimate is gone with the rest of its charges, not still on its way: nothing
-    // will ever settle against it, so the figure is not kept. The response is served as usual.
-    if (jobRetired(ref.job, now)) {
-      log("warn", "job_retired", { app: ref.appId, job: ref.job });
-      return "estimate_kept";
-    }
-    return "waiting";
-  }
+  if (known === null && !countless) return "waiting";
   const decision: FigureDecision = known === null ? { kind: "never" } : decideFigure(known, facts);
   // Only a result with a count has a figure row of its own.
   const dropFigure = async () => {
@@ -763,15 +740,12 @@ export const FIGURE_D1_DEADLINE_MS = 3_000;
  * Keeps a figure that could not settle yet, for the sweep: as its own row in
  * D1; while D1 cannot take it, in the failed-write store; when neither works,
  * logged in full, to be settled by hand. True when it was kept somewhere the
- * sweep will find it, or needs no keeping: the ledger itself declines a figure
- * for a job settled or frozen (`../ledger/write.ts`), and that decides alone.
+ * sweep will find it.
  */
 export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
   const row = figureWork(ref, facts, now);
   try {
-    const [outcome] = await withDeadline(writeOpenWork(env.DB, [row], now), FIGURE_D1_DEADLINE_MS, "saving the figure");
-    // Not written for an old job: its ledger is frozen, and nothing more will settle against it.
-    if (outcome === "frozen") log("warn", "job_retired", { app: ref.appId, job: ref.job });
+    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");
     return true;
   } catch (error) {
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });

@@ -101,14 +101,18 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
   about 40 apps that each have one page expire a night. Where it runs out before every
   app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
-  days, and detailed usage after 90 days: charges, settled sessions and budget totals. Once all of
-  a call's, job's or session's charges are past 60 days and nothing is left to settle it, nothing
-  more is booked against it (`ledger_correction_frozen`, `job_retired`): 30 days before retention
-  may delete it, so a late result can never be counted twice. Its corrections are deleted before
-  its other charges, so a user's usage never shows a correction without its charge. Day totals stay
-  400 days, then move into month totals.
+  days, and detailed usage after 90 days: charges, settled sessions and budget totals. A call's,
+  job's or session's corrections are deleted before its other charges, so a user's usage never
+  shows a correction without its charge. Day totals stay 400 days, then move into month totals.
   It also logs `ledger_sessions_stuck_open` when a session past 90 days is still open with nothing
   left to settle it: it is kept, with its charges, until someone looks.
+
+The ledger takes no charge dated more than 30 days back, such as a job's settlement that arrives
+after that, or an old charge replayed. That is 60 days before retention may delete anything, so a
+late result can never be counted twice. The app is still served as usual. Nothing is booked, and
+`ledger_booking_too_late` is logged as a warning. A session whose provider total comes too late
+keeps its slices' estimate and is marked `estimate_kept`. The longest wait a booking has on purpose
+is about 8 days, a job's saved result retried by the sweep, so in practice nothing is refused.
 
 Each kind of old row is a pass, and the passes take turns: each round, every pass with rows left
 deletes one chunk of at most 5,000 rows. So a large backlog of one kind never keeps the others

@@ -6,7 +6,7 @@
  * `now`: no timers.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, createScheduledController, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem/cf-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
@@ -26,9 +26,10 @@ import {
 } from "../src/core/query-budget.ts";
 import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
 import { timeOrderedId } from "../src/core/ids.ts";
-import { figureWork, keepFigure } from "../src/jobs/jobs.ts";
-import { retryStored } from "../src/do/ChargeStore.ts";
-import { LEDGER_FREEZE_DAYS } from "../src/ledger/freeze.ts";
+import { FIGURE_MAX_TRIES, figureWork, JOB_CHECK_EVERY_MS, JOB_MAX_CHECKS, keepFigure } from "../src/jobs/jobs.ts";
+import { RETENTION_MS as STORE_RETENTION_MS, retryStored } from "../src/do/ChargeStore.ts";
+import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
+import { retryDelay, SWEEP_MAX_TRIES } from "../src/ledger/sweep.ts";
 import {
   FOLD_PICK,
   runUsageRetention,
@@ -114,7 +115,8 @@ function charge(fields: Partial<ChargeRow> & { usedAt: number }): ChargeRow {
 }
 
 async function insert(...charges: ChargeRow[]): Promise<void> {
-  await env.DB.batch(charges.map((row) => insertChargeStatement(env.DB, row)));
+  // Seeded as of their own time: the ledger takes them then (`../src/ledger/late-booking.ts`).
+  await env.DB.batch(charges.map((row) => insertChargeStatement(env.DB, row, row.writtenAt)));
 }
 
 async function chargeIds(): Promise<string[]> {
@@ -390,16 +392,12 @@ describe("usage retention: charges", () => {
     expect(result.corrections).toMatchObject({ deleted: 1 });
     expect(await chargeIds()).toEqual([estimate.id]);
 
-    // A late poll finds the estimate and settles again: nothing is written, and the day rollup is unchanged.
+    // A late poll finds the estimate and settles again: the correction is dated on the estimate's
+    // day, too late for the ledger, so nothing is written and the day rollup is unchanged.
     expect(await settleJob(env.DB, { jobId: job, final, now: NOW })).toEqual({ status: "already" });
     expect(await chargeIds()).toEqual([estimate.id]);
     expect(await total()).toBe(1_200);
-    expect(codes).toContain("ledger_correction_frozen");
-    // Nor is a figure kept for the sweep, which would hold the job back from retention.
-    const facts = { status: "succeeded", units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
-    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
-    expect(await rows("SELECT id FROM open_work")).toEqual([]);
-    expect(codes).toContain("job_retired");
+    expect(codes).toContain("ledger_booking_too_late");
 
     // The next night deletes the estimate.
     await runUsageRetention(env.DB, NOW, budget());
@@ -407,17 +405,8 @@ describe("usage retention: charges", () => {
     expect(await total()).toBe(1_200);
   });
 
-  it("still corrects a charge past the window while its owner has open work", async () => {
-    const original = charge({ usedAt: OLD, priceSource: "unresolved", costNano: nano(0) });
-    await insert(original);
-    const work = await openWork({ ownerType: "call", ownerId: original.ownerId });
-    const { settleCharge } = await import("../src/ledger/corrections.ts");
-    const settled = await settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
-    expect(settled).toMatchObject({ status: "settled" });
-    expect((await rows("SELECT SUM(cost_nano) AS cost FROM charge"))[0]?.cost).toBe(700);
-  });
-
   it("never books a figure replayed from the failed-write store after retention deleted its job's settlement (Astra 7b-2 round 3)", async () => {
+    const codes = warningCodes();
     const job = timeOrderedId(OLD);
     const ref = { job, accountId: ACCOUNT_ID, appId: "app_retention" };
     const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(100) });
@@ -433,75 +422,73 @@ describe("usage retention: charges", () => {
     await runUsageRetention(env.DB, NOW, new QueryBudget(2));
     expect(await chargeIds()).toEqual([estimate.id]);
 
-    // The store replays the figure: the job's ledger is frozen, so no work comes back, and nothing is booked.
-    expect(await retryStored(env.DB, [], [stored], NOW)).toEqual(["frozen"]);
-    expect(await rows("SELECT id FROM open_work")).toEqual([]);
+    // The store replays the figure. The work may come back; what it would book is too late for the ledger.
+    await retryStored(env.DB, [], [stored], NOW);
     expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: NOW })).toEqual({ status: "already" });
+    expect(await chargeIds()).toEqual([estimate.id]);
     expect(await total()).toBe(120);
+    expect(codes).toContain("ledger_booking_too_late");
   });
 
-  it("says which stored figures the freeze refused, and keeps an ordinary repeat quiet (Astra 7b-2 round 4)", async () => {
-    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof figureWork>[1];
-    // A live job: its figure is written, and written again is an ordinary repeat.
-    const live = timeOrderedId(RECENT);
-    await insert(charge({ usedAt: RECENT, kind: "estimate", ownerType: "job", ownerId: live, measured: "pending" }));
-    const liveFigure = figureWork({ job: live, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, RECENT);
-    expect(await retryStored(env.DB, [], [liveFigure], NOW)).toEqual(["written"]);
-    expect(await retryStored(env.DB, [], [liveFigure], NOW)).toEqual(["skipped"]);
-
-    // Through the store's alarm: a figure for a job frozen by the time it is replayed is dropped with a warning.
-    const now = Date.now();
-    const old = timeOrderedId(now - (LEDGER_FREEZE_DAYS + 5) * DAY);
-    await insert(charge({ usedAt: now - (LEDGER_FREEZE_DAYS + 5) * DAY, kind: "estimate", ownerType: "job", ownerId: old, measured: "pending" }));
-    const store = env.CHARGE_STORE.getByName("app_retention_frozen");
-    await store.keepWork([figureWork({ job: old, accountId: ACCOUNT_ID, appId: "app_retention_frozen" }, facts, now)]);
-    const codes = warningCodes();
-    const infos: string[] = [];
-    vi.spyOn(console, "log").mockImplementation((entry: unknown) => void infos.push(String(entry)));
-    expect(await runDurableObjectAlarm(store)).toBe(true);
-    expect(codes).toEqual(["charge_store_figure_frozen"]);
-    expect(infos.filter((line) => line.includes('"message":"charge_store_written"'))).toEqual([expect.stringContaining('"written":0')]);
-    expect(await store.pendingCount()).toBe(0);
-    expect(await rows("SELECT id FROM open_work WHERE owner_id = ?", old)).toEqual([]);
-  });
-
-  it("keeps a figure for a job still inside the freeze window, and settles it from there later (Astra 7b-2 round 3)", async () => {
-    // A job on its last day before the freeze, whose check gave up long ago: a poll's settlement read failed, so the figure is kept.
-    const started = NOW - (LEDGER_FREEZE_DAYS - 1) * DAY;
+  it("keeps a figure for a job on its last day inside the window, and settles it from there (Astra 7b-2 round 3)", async () => {
+    // A poll's settlement read failed, so the figure is kept for the sweep.
+    const started = NOW - (LEDGER_LATE_BOOKING_DAYS - 1) * DAY;
     const job = timeOrderedId(started);
     const estimate = charge({ usedAt: started, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(100) });
     await insert(estimate);
-    await openWork({ ownerType: "job", ownerId: job, gaveUpAt: started + 3 * DAY });
     const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
     expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
     expect(await rows("SELECT id FROM open_work WHERE gave_up_at IS NULL")).toHaveLength(1);
-
-    // Days later, past the freeze, the kept figure still holds the job live, and it settles.
-    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(130) }, now: NOW + 3 * DAY })).toMatchObject({ status: "settled" });
+    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(130) }, now: NOW })).toMatchObject({ status: "settled" });
     expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(130);
   });
+});
 
-  it("books nothing against an owner frozen at 61 days, and still books at 59", async () => {
-    const codes = warningCodes();
+describe("the late-booking rule", () => {
+  it("takes a charge dated 29 days back and refuses one dated 31, with a warning, even while its owner has open work", async () => {
+    const warned: Record<string, unknown>[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(JSON.parse(String(line)) as Record<string, unknown>));
+    const { settleCharge } = await import("../src/ledger/corrections.ts");
     const book = async (days: number) => {
       const original = charge({ usedAt: NOW - days * DAY, priceSource: "unresolved", costNano: nano(0) });
       await insert(original);
-      const { settleCharge } = await import("../src/ledger/corrections.ts");
-      return settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW });
+      const work = await openWork({ ownerType: "call", ownerId: original.ownerId });
+      return settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
     };
-    expect(await book(LEDGER_FREEZE_DAYS - 1)).toMatchObject({ status: "settled" });
-    expect(codes).not.toContain("ledger_correction_frozen");
-    expect(await book(LEDGER_FREEZE_DAYS + 1)).not.toMatchObject({ status: "settled" });
-    expect(codes).toContain("ledger_correction_frozen");
-    expect((await rows("SELECT SUM(cost_nano) AS cost FROM charge"))[0]?.cost).toBe(700);
+    expect(await book(LEDGER_LATE_BOOKING_DAYS - 1)).toMatchObject({ status: "settled" });
+    expect(warned).toEqual([]);
+    expect(await book(LEDGER_LATE_BOOKING_DAYS + 1)).not.toMatchObject({ status: "settled" });
+    expect(warned).toEqual([
+      expect.objectContaining({
+        message: "ledger_booking_too_late",
+        app: "app_retention",
+        ownerType: "call",
+        kind: "correction",
+        usageDay: utcDay(NOW - (LEDGER_LATE_BOOKING_DAYS + 1) * DAY),
+        costNano: 700,
+      }),
+    ]);
+    expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(700);
+  });
 
-    // Nor does a figure saved for a frozen job come back as open work.
-    const job = timeOrderedId(NOW - (LEDGER_FREEZE_DAYS + 1) * DAY);
-    await insert(charge({ usedAt: NOW - (LEDGER_FREEZE_DAYS + 1) * DAY, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending" }));
-    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
-    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
-    expect(await rows("SELECT id FROM open_work")).toEqual([]);
-    expect(codes).toContain("job_retired");
+  it("is judged at the time of writing, not the row's own write time", async () => {
+    const codes = warningCodes();
+    const late = charge({ usedAt: OLD });
+    await env.DB.batch([insertChargeStatement(env.DB, late, NOW)]);
+    expect(await chargeIds()).toEqual([]);
+    expect(codes).toEqual(["ledger_booking_too_late"]);
+  });
+
+  it("is about three times the longest wait any booking has on purpose, and well inside retention", () => {
+    // The failed-write store's keep, the sweep's longest run of tries (a job's saved figure), and a job's checks.
+    let figureTries = 0;
+    for (let tries = 1; tries < FIGURE_MAX_TRIES; tries += 1) figureTries += retryDelay(tries);
+    let otherWork = 0;
+    for (let tries = 1; tries < SWEEP_MAX_TRIES; tries += 1) otherWork += retryDelay(tries);
+    const jobChecks = JOB_MAX_CHECKS * JOB_CHECK_EVERY_MS;
+    const longest = Math.max(STORE_RETENTION_MS, figureTries, otherWork, jobChecks);
+    expect(3 * longest).toBeLessThanOrEqual(LEDGER_LATE_BOOKING_DAYS * DAY);
+    expect(LEDGER_LATE_BOOKING_DAYS).toBeLessThan(USAGE_DETAIL_RETENTION_DAYS);
   });
 });
 
