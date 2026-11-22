@@ -16,9 +16,8 @@
  * The provider is the mock in `smoke/mock/`, whose `/fail-{status}/` paths
  * always fail. Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { outcome, readJson, uniqueSlug } from "./support.ts";
+import { check, expectCode, expectStatus, fail, readJson, same, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -52,7 +51,7 @@ before(async () => {
       secret: "sk-mock-smoke-key",
       baseUrl: urls[name],
     });
-    assert.equal(created.status, 201, outcome(created));
+    expectStatus(created, 201, "created");
     providerIds.push(created.body.provider.id);
   }
   const app = await admin("POST", "/v2/admin/apps", {
@@ -69,7 +68,7 @@ before(async () => {
       },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -96,39 +95,39 @@ async function usageOf(user: string, charges: number): Promise<{ charges: number
     // real-timer: polls a live deployment until the charges land, with a deadline.
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.fail(`no ${charges} charges for ${user}`);
+  fail("the expected charges were not written within a minute");
 }
 
 test("a rewritten model is sent and billed as its target", { skip }, async () => {
   const user = `rewrite-${run}`;
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, outcome(answer));
+  expectStatus(answer, 200, "answer");
   // The mock answers with the model it was sent.
-  assert.ok(answer.body.model === "gpt-4o-mini", "the answer is not from the preset's model");
+  check(answer.body.model === "gpt-4o-mini", "the answer is not from the preset's model");
   const usage = await usageOf(user, 1);
-  assert.equal(usage.charges, 1);
-  assert.ok(usage.cost_nano > 0, "billed at the rewritten model's price");
+  same(usage.charges, 1, "usage.charges is not 1");
+  check(usage.cost_nano > 0, "billed at the rewritten model's price");
 });
 
 test("a preset falls back after a 503: two charges, the failed one with no cost", { skip }, async () => {
   const user = `fallback-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/chain`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, outcome(answer));
+  expectStatus(answer, 200, "answer");
   const usage = await usageOf(user, 2);
-  assert.equal(usage.charges, 2);
-  assert.equal(usage.failed, 1);
-  assert.ok(usage.cost_nano > 0);
+  same(usage.charges, 2, "usage.charges is not 2");
+  same(usage.failed, 1, "usage.failed is not 1");
+  check(usage.cost_nano > 0, "usage.cost_nano > 0");
 });
 
 test("a preset is not retried after a 400: the error is passed through, one charge", { skip }, async () => {
   const user = `strict-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/strict`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 400);
-  assert.ok(answer.body.error?.code === "mock_failure", `not the provider's error: ${outcome(answer)}`);
+  same(answer.status, 400, "answer.status is not 400");
+  expectCode(answer.body, "mock_failure", "the provider's error");
   const usage = await usageOf(user, 1);
-  assert.equal(usage.charges, 1);
-  assert.equal(usage.failed, 1);
-  assert.equal(usage.cost_nano, 0);
+  same(usage.charges, 1, "usage.charges is not 1");
+  same(usage.failed, 1, "usage.failed is not 1");
+  same(usage.cost_nano, 0, "usage.cost_nano is not 0");
 });
 
 // A request the app's own settings refuse is answered as before and shows up
@@ -137,16 +136,16 @@ test("a preset is not retried after a 400: the error is passed through, one char
 test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: 90_000 }, async () => {
   const user = `missing-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 404);
-  assert.ok(answer.body.error?.code === "preset_not_found", `not preset_not_found: ${outcome(answer)}`);
+  same(answer.status, 404, "answer.status is not 404");
+  expectCode(answer.body, "preset_not_found", "a missing preset");
   let sample: { reason: string; user_id: string | null } | undefined;
   for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
     const found = await admin("GET", `/v2/admin/apps/${appId}/rejection-events?reason=preset_not_found&user=${encodeURIComponent(user)}`);
-    assert.equal(found.status, 200, outcome(found));
+    expectStatus(found, 200, "found");
     sample = found.body.events[0];
   }
-  assert.ok(sample, "no refusal sample was recorded within a minute");
-  assert.equal(sample.reason, "preset_not_found");
-  assert.equal(sample.user_id, user);
+  check(sample, "no refusal sample was recorded within a minute");
+  same(sample.reason, "preset_not_found", "sample.reason is not \"preset_not_found\"");
+  same(sample.user_id, user, "sample.user_id is not user");
 });

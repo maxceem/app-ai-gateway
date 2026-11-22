@@ -20,9 +20,8 @@
  *
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, keyMark, outcome, readJson, responseOutcome, sameJson, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -55,7 +54,7 @@ async function newApp(name: string, model = "gpt-4o-mini"): Promise<{ id: string
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: [model] } } },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   const created = { id: app.body.app.id as string, key: app.body.api_key.key as string };
   apps.push(created);
   return created;
@@ -65,7 +64,7 @@ before(async () => {
   if (skip !== false) return;
   slug = uniqueSlug("smoke-errors");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke provider errors", slug, secret: PROVIDER_KEY, baseUrl: mockUrl });
-  assert.equal(provider.status, 201, outcome(provider));
+  expectStatus(provider, 201, "provider");
   providerId = provider.body.provider.id;
 });
 
@@ -86,8 +85,8 @@ function chat(app: { id: string; key: string }, trace: string, body: Record<stri
 
 /** What reached the provider: the connection's key in its header, and no client credential anywhere. */
 function assertProviderSawOnlyItsKey(response: Response): void {
-  assert.equal(response.headers.get("x-mock-client-credentials"), "none");
-  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"));
+  same(response.headers.get("x-mock-client-credentials"), "none", "response.headers.get(\"x-mock-client-credentials\") is not \"none\"");
+  same(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"), "response.headers.get(\"x-mock-key\") is not keyMark(\"authorization\", \"fixture-smoke\")");
 }
 
 /** The charges of the request sent with `trace`, once written: they are written after the response. */
@@ -96,10 +95,10 @@ async function chargesOf(appId: string, trace: string): Promise<any[]> {
   for (let tries = 0; tries < 30; tries += 1) {
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
     const listed = await admin("GET", path);
-    assert.equal(listed.status, 200, outcome(listed));
+    expectStatus(listed, 200, "listed");
     if (listed.body.charges.length > 0) return listed.body.charges;
   }
-  assert.fail(`no charge was written for ${trace} within a minute`);
+  fail("no charge was written within a minute");
 }
 
 for (const status of [429, 500]) {
@@ -107,15 +106,15 @@ for (const status of [429, 500]) {
     const app = await newApp(`Smoke provider ${status}`);
     const trace = `smoke-${status}-${run}`;
     const response = await chat(app, trace, { mock_status: status });
-    assert.equal(response.status, status);
+    same(response.status, status, "response.status is not status");
     assertProviderSawOnlyItsKey(response);
     // The provider's own error, not one the gateway made up in its place.
-    assert.ok(sameJson(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR), "the app did not get the provider's own error");
+    check(sameJson(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR), "the app did not get the provider's own error");
     const charges = await chargesOf(app.id, trace);
-    assert.equal(charges.length, 1);
-    assert.equal(charges[0].status, "provider_error");
-    assert.equal(charges[0].http_status, status);
-    assert.equal(charges[0].cost_nano, null);
+    same(charges.length, 1, "charges.length is not 1");
+    same(charges[0].status, "provider_error", "charges[0].status is not \"provider_error\"");
+    same(charges[0].http_status, status, "charges[0].http_status is not status");
+    same(charges[0].cost_nano, null, "charges[0].cost_nano is not null");
   });
 }
 
@@ -125,28 +124,28 @@ test("the day's totals split one failed and one served call by status", { skip, 
   const app = await newApp("Smoke provider errors totals");
   const failedTrace = `smoke-failed-${run}`;
   const failed = await chat(app, failedTrace, { mock_status: 429 });
-  assert.equal(failed.status, 429);
+  same(failed.status, 429, "failed.status is not 429");
   await failed.arrayBuffer();
   const servedTrace = `smoke-served-${run}`;
   const served = await chat(app, servedTrace, {});
-  assert.equal(served.status, 200, await responseOutcome(served));
+  await expectResponse(served, 200, "served");
   assertProviderSawOnlyItsKey(served);
   await served.arrayBuffer();
 
   const [failedCharge] = await chargesOf(app.id, failedTrace);
-  assert.equal(failedCharge.status, "provider_error");
+  same(failedCharge.status, "provider_error", "failedCharge.status is not \"provider_error\"");
   const [servedCharge] = await chargesOf(app.id, servedTrace);
-  assert.equal(servedCharge.status, "ok");
-  assert.ok(servedCharge.cost_nano > 0);
+  same(servedCharge.status, "ok", "servedCharge.status is not \"ok\"");
+  check(servedCharge.cost_nano > 0, "servedCharge.cost_nano > 0");
 
   // The charges' own days, so a run that crosses UTC midnight reads the right ones.
   const days = [failedCharge.usage_day as string, servedCharge.usage_day as string].sort();
   const breakdown = await admin("GET", `/v2/admin/apps/${app.id}/usage/breakdown?by=status&from=${days[0]}&to=${days[1]}`);
-  assert.equal(breakdown.status, 200, outcome(breakdown));
+  expectStatus(breakdown, 200, "breakdown");
   const rows = Object.fromEntries(
     (breakdown.body.rows as { key: string | null; charges: number; failed: number }[]).map((row) => [row.key, { charges: row.charges, failed: row.failed }]),
   );
-  assert.deepEqual(rows, { failed: { charges: 1, failed: 1 }, ok: { charges: 1, failed: 0 } });
+  same(rows, { failed: { charges: 1, failed: 1 }, ok: { charges: 1, failed: 0 } }, "rows is not { failed: { charges: 1, failed: 1 }, ok: { charges: 1, failed: 0 } }");
 });
 
 type ListPrice = { input?: number; output?: number; cached_input?: number; modes?: Record<string, unknown> };
@@ -173,7 +172,7 @@ function modelWithoutFlexPrice(listed: Record<string, ListPrice>): string | null
 // tokens is caught too.
 test("a request in a service mode with no price is served, reaches the provider in that mode, and is charged at least the standard price", { skip, timeout: 90_000 }, async (t) => {
   const prices = await admin("GET", "/v2/admin/prices");
-  assert.equal(prices.status, 200, outcome(prices));
+  expectStatus(prices, 200, "prices");
   const listed = (prices.body.prices.openai ?? {}) as Record<string, ListPrice>;
   const model = modelWithoutFlexPrice(listed);
   if (model === null) {
@@ -185,24 +184,24 @@ test("a request in a service mode with no price is served, reaches the provider 
   const app = await newApp("Smoke provider errors flex", model);
   const trace = `smoke-flex-${run}`;
   const response = await chat(app, trace, { model, service_tier: "flex" });
-  assert.equal(response.status, 200, await responseOutcome(response));
-  assert.equal(response.headers.get("x-mock-service-tier"), "flex");
+  await expectResponse(response, 200, "response");
+  same(response.headers.get("x-mock-service-tier"), "flex", "response.headers.get(\"x-mock-service-tier\") is not \"flex\"");
   // What the provider counted: OpenAI's prompt tokens include the cached ones.
   const usage = ((await readJson(response)) as { usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
   const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
   const uncached = usage.prompt_tokens - cached;
-  assert.ok(uncached > 0 && usage.completion_tokens > 0, "the provider answered no usage");
+  check(uncached > 0 && usage.completion_tokens > 0, "the provider answered no usage");
   // The mock reports cached tokens for flex, so a gateway that drops them is caught below.
-  assert.ok(cached > 0, "the provider reported no cached tokens for this check to price");
+  check(cached > 0, "the provider reported no cached tokens for this check to price");
 
   const [charge] = await chargesOf(app.id, trace);
-  assert.equal(charge.status, "ok");
-  assert.equal(charge.price_is_estimate, true);
+  same(charge.status, "ok", "charge.status is not \"ok\"");
+  same(charge.price_is_estimate, true, "charge.price_is_estimate is not true");
   // The charge holds the provider's counts: input without the cached tokens, which are apart.
-  assert.equal(charge.input_tokens, uncached);
-  assert.equal(charge.cached_input_tokens ?? 0, cached);
-  assert.equal(charge.output_tokens, usage.completion_tokens);
+  same(charge.input_tokens, uncached, "charge.input_tokens is not uncached");
+  same(charge.cached_input_tokens ?? 0, cached, "charge.cached_input_tokens ?? 0 is not cached");
+  same(charge.output_tokens, usage.completion_tokens, "charge.output_tokens is not usage.completion_tokens");
   // Dollars per million tokens are nano-dollars per thousandth of a token: x 1,000 per token.
   const standard = uncached * price.input! * 1000 + cached * (price.cached_input ?? price.input!) * 1000 + usage.completion_tokens * price.output! * 1000;
-  assert.ok(charge.cost_nano >= Math.floor(standard), `charged ${charge.cost_nano} nano-dollars, below the standard ${standard}`);
+  check(charge.cost_nano >= Math.floor(standard), "the estimate is below the standard price");
 });

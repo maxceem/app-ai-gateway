@@ -2,22 +2,91 @@
  * Small helpers the smoke checks share. Not a check itself: the runner reads
  * only `*.smoke.ts`.
  *
- * A failed check prints only what is safe to print: a status and the
- * gateway's error code. Never a response body, which can hold an app key, a
- * gateway token or a provider key.
+ * A failed check prints only what is safe to print: fixed text, a status,
+ * and an error code from a fixed list. Never a response body, a value read
+ * from one, or a field name, which can hold an app key, a gateway token or a
+ * provider key. The repository is public and its CI logs can be read by
+ * anyone, so a smoke check's failure message is published.
+ *
+ * So the checks assert only through the helpers below, each taking a fixed
+ * message, and `test/smoke-assertions.test.ts` refuses anything else in the
+ * files it guards: a direct `node:assert` call, or a message that is not a
+ * plain string.
  */
-import assert from "node:assert/strict";
+import { AssertionError } from "node:assert";
 import { randomUUID } from "node:crypto";
+
+/**
+ * The error codes a failed check may name: the gateway's own (`src/core/errors.ts`,
+ * written out here because a smoke check runs against older deployments too),
+ * the mock provider's, and the CLI's. Any other code is reported as unlisted,
+ * since a regression could put anything there.
+ */
+const KNOWN_CODES: ReadonlySet<string> = new Set([
+  "auth_required", "assertion_required", "attest_failed", "auth_method_not_supported", "issuer_token_rejected",
+  "issuer_claims_missing", "issuer_verification_unavailable", "invalid_request", "payload_too_large", "rate_limited",
+  "app_not_found", "app_disabled", "not_found", "service_unavailable", "internal_error", "provider_not_configured",
+  "provider_disabled", "provider_unavailable", "provider_error", "path_not_allowed", "model_not_allowed",
+  "pricing_not_configured", "max_output_tokens_exceeded", "preset_not_found", "job_not_found", "app_rate_limited",
+  "app_budget_exhausted", "billing_request_quota_exceeded", "billing_payment_required", "billing_unavailable",
+  "forbidden", "grant_insufficient", "conflict", "app_revision_required", "app_revision_conflict", "account_changed",
+  "provider_not_found", "key_not_found", "billing_plan_limit_reached", "billing_feature_not_included",
+  "session_required", "not_a_member", "last_owner", "operation_expired", "operation_denied", "operation_not_found",
+  "operation_mismatch", "already_revealed", "already_completed", "no_eligible_organization", "registration_disabled",
+  "tool_not_found", "tool_changed",
+  // The mock provider's.
+  "mock_error", "mock_failure",
+]);
+
+/** Fails with `message`, which is fixed text. */
+export function fail(message: string): never {
+  throw new AssertionError({ message });
+}
+
+/** Fails with `message` unless `condition` holds. */
+export function check(condition: unknown, message: string): asserts condition {
+  if (!condition) fail(message);
+}
+
+/** Fails with `message` unless the two parsed values are the same (see `sameJson`). */
+export function same(actual: unknown, expected: unknown, message: string): void {
+  check(sameJson(actual, expected), message);
+}
+
+/** Fails unless a parsed response answered `status`, saying what answered and its status and listed code. */
+export function expectStatus(response: { status: number; body?: unknown }, status: number, what: string): void {
+  check(response.status === status, `${what} ${outcome({ status: response.status, body: response.body })}`);
+}
+
+/** The same for a raw response, read from a copy so the caller can still read it. */
+export async function expectResponse(response: Response, status: number, what: string): Promise<void> {
+  if (response.status !== status) fail(`${what} ${await responseOutcome(response)}`);
+}
+
+/** Fails unless a parsed body's error code is `code`, naming the code only when it is a listed one. */
+export function expectCode(body: unknown, code: string, what: string): void {
+  check(rawCode(body) === code, `${what}: expected ${code}, got ${errorCode(body)}`);
+}
+
+/** Fails unless an `agw --json` run exited 0. */
+export function expectCli(run: { code: number; json: unknown }, what: string): void {
+  check(run.code === 0, `${what} ${cliOutcome(run)}`);
+}
 
 /** A slug no other run picks: the time, then a random part. */
 export function uniqueSlug(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
 }
 
-/** The gateway's error code in a parsed body, when there is one. */
+function rawCode(body: unknown): unknown {
+  return (body as { error?: { code?: unknown } } | null)?.error?.code;
+}
+
+/** The error code in a parsed body, when it is a listed one. */
 function errorCode(body: unknown): string {
-  const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
-  return typeof code === "string" && /^[a-z0-9_]{1,64}$/u.test(code) ? code : "no error code";
+  const code = rawCode(body);
+  if (code === undefined || code === null) return "no error code";
+  return typeof code === "string" && KNOWN_CODES.has(code) ? code : "an unlisted error code";
 }
 
 /** What a failed check may say about a parsed response: its status and error code. */
@@ -50,16 +119,20 @@ export function sameJson(a: unknown, b: unknown): boolean {
 /**
  * Fails unless `actual` holds every value `expected` sets, at the same place:
  * objects may hold more fields, arrays must hold the same items in the same
- * order (each item whole, its fields in any order). Says only where it
- * differs, never the values, since settings can name a key's header.
+ * order (each item whole, its fields in any order). Fails with `message`
+ * alone: not the values, and not the field names either, which come from
+ * the response.
  */
-export function assertHolds(actual: unknown, expected: unknown, where = "config"): void {
+export function assertHolds(actual: unknown, expected: unknown, message: string): void {
+  check(holdsAll(actual, expected), message);
+}
+
+function holdsAll(actual: unknown, expected: unknown): boolean {
   if (expected !== null && typeof expected === "object" && !Array.isArray(expected)) {
-    assert.ok(actual !== null && typeof actual === "object" && !Array.isArray(actual), `${where} is not an object`);
-    for (const [name, value] of Object.entries(expected)) assertHolds((actual as Record<string, unknown>)[name], value, `${where}.${name}`);
-    return;
+    if (actual === null || typeof actual !== "object" || Array.isArray(actual)) return false;
+    return Object.entries(expected).every(([name, value]) => holdsAll((actual as Record<string, unknown>)[name], value));
   }
-  assert.ok(sameJson(actual, expected), `${where} is not what was saved`);
+  return sameJson(actual, expected);
 }
 
 /**
@@ -71,7 +144,7 @@ export async function readJson(response: Response): Promise<any> {
   try {
     return JSON.parse(text);
   } catch {
-    assert.fail(`answered ${response.status} with a body that is not JSON`);
+    fail(`answered ${response.status} with a body that is not JSON`);
   }
 }
 
@@ -114,5 +187,5 @@ export async function cleanUp(steps: readonly (() => Promise<{ status: number }>
       failed.push(`step ${index + 1} threw ${error instanceof Error ? error.name : "an error"}`);
     }
   }
-  assert.deepEqual(failed, [], "clean-up failed");
+  check(failed.length === 0, `clean-up failed: ${failed.join(", ")}`);
 }

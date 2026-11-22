@@ -13,9 +13,8 @@
  * Nothing reaches a provider. Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or
  * V2_BASE_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -40,7 +39,7 @@ before(async () => {
   if (skip !== false) return;
   slug = uniqueSlug("smoke-attest");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke App Attest", slug, secret: "sk-mock-smoke-key", baseUrl: mockUrl });
-  assert.equal(provider.status, 201, outcome(provider));
+  expectStatus(provider, 201, "provider");
   providerId = provider.body.provider.id;
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke App Attest",
@@ -49,7 +48,7 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appId = app.body.app.id;
 });
 
@@ -66,7 +65,7 @@ function post(path: string, body?: unknown): Promise<Response> {
 
 async function challenge(): Promise<{ challenge: string; expires_in: number; accepts_app_transaction?: boolean }> {
   const response = await post("auth/challenge");
-  assert.equal(response.status, 200, await responseOutcome(response));
+  await expectResponse(response, 200, "response");
   return (await readJson(response)) as { challenge: string; expires_in: number; accepts_app_transaction?: boolean };
 }
 
@@ -75,9 +74,9 @@ async function challenge(): Promise<{ challenge: string; expires_in: number; acc
 // saying so would silently put every iOS app back on per-install budgets.
 test("an iOS app is issued a challenge that says the exchange takes an App Store transaction", { skip }, async () => {
   const issued = await challenge();
-  assert.ok(issued.challenge.length > 10);
-  assert.ok(issued.expires_in > 0);
-  assert.equal(issued.accepts_app_transaction, true);
+  check(issued.challenge.length > 10, "issued.challenge.length > 10");
+  check(issued.expires_in > 0, "issued.expires_in > 0");
+  same(issued.accepts_app_transaction, true, "issued.accepts_app_transaction is not true");
 });
 
 test("a failure on the device is recorded once per challenge, and can be read back", { skip, timeout: 90_000 }, async () => {
@@ -86,11 +85,11 @@ test("a failure on the device is recorded once per challenge, and can be read ba
   const code = Math.floor(Math.random() * 1_000_000_000);
   const report = { challenge: issued, step: "attest_key", error: { domain: "smoke", code } };
   const first = await post("auth/failure", report);
-  assert.equal(first.status, 200, await responseOutcome(first));
-  assert.equal(((await readJson(first)) as { recorded: boolean }).recorded, true);
+  await expectResponse(first, 200, "first");
+  same(((await readJson(first)) as { recorded: boolean }).recorded, true, "((await readJson(first)) as { recorded: boolean }).recorded is not true");
   const again = await post("auth/failure", report);
-  assert.equal(again.status, 200, await responseOutcome(again));
-  assert.equal(((await readJson(again)) as { recorded: boolean }).recorded, false);
+  await expectResponse(again, 200, "again");
+  same(((await readJson(again)) as { recorded: boolean }).recorded, false, "((await readJson(again)) as { recorded: boolean }).recorded is not false");
 
   // The flag says it was recorded; the diagnostics read says it really was, once.
   const path = `/v2/admin/apps/${appId}/auth-events?event=challenge&outcome=client_failed&limit=50`;
@@ -98,21 +97,21 @@ test("a failure on the device is recorded once per challenge, and can be read ba
   for (let tries = 0; tries < 30 && found.length === 0; tries += 1) {
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
     const listed = await admin("GET", path);
-    assert.equal(listed.status, 200, outcome(listed));
+    expectStatus(listed, 200, "listed");
     found = (listed.body.events as { reason: string | null; outcome: string }[]).filter((event) => event.reason === `attest_key:smoke:${code}`);
   }
-  assert.equal(found.length, 1, "the device's failure was not read back exactly once within a minute");
+  same(found.length, 1, "the device's failure was not read back exactly once within a minute");
 });
 
 test("a forged registration is refused with attest_failed", { skip }, async () => {
   const { challenge: issued } = await challenge();
   const response = await post("auth/register", { key_id: "c21va2Uta2V5LWlkLWZvci1hLXNtb2tlLWNoZWNr", attestation: "c21va2U=", challenge: issued });
-  assert.equal(response.status, 403, await responseOutcome(response));
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "attest_failed");
+  await expectResponse(response, 403, "response");
+  expectCode(await readJson(response), "attest_failed", "response");
 });
 
 test("the app's proxy refuses a call without a gateway token with auth_required", { skip }, async () => {
   const response = await post(`proxy/${slug}/v1/chat/completions`, { model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
-  assert.equal(response.status, 401, await responseOutcome(response));
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "auth_required");
+  await expectResponse(response, 401, "response");
+  expectCode(await readJson(response), "auth_required", "response");
 });

@@ -13,9 +13,8 @@
  * The provider is the mock in `smoke/mock/`, so nothing is billed. Skipped
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, keyMark, outcome, readJson, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectCode, expectResponse, expectStatus, fail, keyMark, readJson, same, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -52,7 +51,7 @@ before(async () => {
     const slug = uniqueSlug(`smoke-${type}`);
     // Each connection its own fixture key, so a gateway that sends another connection's key is seen.
     const created = await admin("POST", "/v2/admin/providers", { type, name: `Smoke ${type}`, slug, secret: `sk-mock-smoke-${type}`, baseUrl: mockUrl });
-    assert.equal(created.status, 201, outcome(created));
+    expectStatus(created, 201, "created");
     providerIds.push(created.body.provider.id);
     slugs[type] = slug;
   }
@@ -61,7 +60,7 @@ before(async () => {
     name: "Smoke LLM styles",
     config: { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers } },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -84,13 +83,10 @@ async function call(type: Type, path: string, body: Record<string, unknown>, use
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": user },
     body: JSON.stringify(body),
   });
-  if (response.status !== 200) {
-    await response.body?.cancel();
-    assert.fail(`answered ${response.status}`);
-  }
+  await expectResponse(response, 200, "the call");
   // The connection's own key, alone, in its provider's own header and scheme; never the app's key.
-  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], `fixture-${type}`), "the provider did not get its own key in its own header");
-  assert.equal(response.headers.get("x-mock-client-credentials"), "none", "a client credential reached the provider");
+  same(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], `fixture-${type}`), "the provider did not get its own key in its own header");
+  same(response.headers.get("x-mock-client-credentials"), "none", "a client credential reached the provider");
   return response;
 }
 
@@ -101,7 +97,7 @@ async function usageOf(user: string): Promise<{ charges: number; cost_nano: numb
     if (found.status === 200 && found.body.user.usage.charges > 0) return found.body.user.usage;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.fail(`no charge for ${user}`);
+  fail("no charge was written within a minute");
 }
 
 const STYLES: { name: string; type: Type; path: (stream: boolean) => string; body: (stream: boolean) => Record<string, unknown> }[] = [
@@ -138,10 +134,10 @@ for (const style of STYLES) {
       // Read to the end: a streamed answer is charged once it is whole. Never printed.
       await (await call(style.type, style.path(stream), style.body(stream), user)).text();
       const usage = await usageOf(user);
-      assert.equal(usage.charges, 1, "not exactly one charge");
-      assert.ok(usage.input_tokens > 0, "no input tokens on the charge");
-      assert.equal(usage.output_tokens, 5, "the charge's output tokens are not the mock's");
-      assert.ok(usage.cost_nano > 0, "the charge has no cost");
+      same(usage.charges, 1, "not exactly one charge");
+      check(usage.input_tokens > 0, "no input tokens on the charge");
+      same(usage.output_tokens, 5, "the charge's output tokens are not the mock's");
+      check(usage.cost_nano > 0, "the charge has no cost");
     });
   }
 }
@@ -151,9 +147,9 @@ test("OpenRouter is billed at the cost its answer reports", { skip }, async () =
   const response = await call("openrouter", "v1/chat/completions", { model: "mock-lab/unlisted-model", messages: [{ role: "user", content: "Hi" }] }, user);
   const reported = ((await readJson(response)) as { usage: { prompt_tokens: number; cost: number } }).usage;
   const usage = await usageOf(user);
-  assert.equal(usage.charges, 1);
+  same(usage.charges, 1, "usage.charges is not 1");
   // The mock reports $1 per million prompt tokens: 1,000 nano-dollars a token.
-  assert.equal(usage.cost_nano, reported.prompt_tokens * 1000);
+  same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
 test("a background Responses request is refused before it reaches the provider", { skip }, async () => {
@@ -162,6 +158,6 @@ test("a background Responses request is refused before it reaches the provider",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-bg-${run}` },
     body: JSON.stringify({ model: "gpt-5.6-luna", input: "Hi", background: true }),
   });
-  assert.equal(response.status, 400);
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "invalid_request");
+  same(response.status, 400, "response.status is not 400");
+  expectCode(await readJson(response), "invalid_request", "response");
 });

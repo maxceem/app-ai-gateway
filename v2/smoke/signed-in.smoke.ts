@@ -14,10 +14,9 @@
  *
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { cleanUp, keyMark, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
+import { check, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -85,7 +84,7 @@ before(async () => {
   const jwksPath = Buffer.from(JSON.stringify(publicJwk)).toString("base64url");
   slug = uniqueSlug("smoke-signin");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke signed in", slug, secret: PROVIDER_KEY, baseUrl: mockUrl });
-  assert.equal(provider.status, 201, outcome(provider));
+  expectStatus(provider, 201, "provider");
   providerId = provider.body.provider.id;
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
   const app = await admin("POST", "/v2/admin/apps", {
@@ -114,7 +113,7 @@ before(async () => {
       },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -139,21 +138,21 @@ function utcDay(): string {
 async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: string; limits: Record<string, unknown> }; sameDay: boolean }> {
   const user = uniqueSlug("smoke-user");
   const exchanged = await exchange(await userToken(user));
-  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
+  await expectResponse(exchanged, 200, "exchanged");
   const { access_token: token } = (await readJson(exchanged)) as { access_token: unknown };
-  assert.ok(typeof token === "string" && token !== "", "the exchange gave no access token");
+  check(typeof token === "string" && token !== "", "the exchange gave no access token");
 
   const day = utcDay();
   const response = await chat(token);
-  assert.equal(response.status, 200, await responseOutcome(response));
+  await expectResponse(response, 200, "response");
   // The gateway token is the gateway's own: it never reaches the provider,
   // and the provider gets the connection's key, in its own header.
-  assert.equal(response.headers.get("x-mock-client-credentials"), "none");
-  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"));
+  same(response.headers.get("x-mock-client-credentials"), "none", "response.headers.get(\"x-mock-client-credentials\") is not \"none\"");
+  same(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"), "response.headers.get(\"x-mock-key\") is not keyMark(\"authorization\", \"fixture-smoke\")");
   await response.arrayBuffer();
 
   const me = await fetch(new URL(`/v2/apps/${appId}/me`, base), { headers: { authorization: `Bearer ${token}` } });
-  assert.equal(me.status, 200, await responseOutcome(me));
+  await expectResponse(me, 200, "me");
   const standing = (await readJson(me)) as { user_id: string; limits: Record<string, unknown> };
   return { user, standing, sameDay: utcDay() === day };
 }
@@ -162,45 +161,45 @@ test("a signed-in user exchanges a token, calls a provider, and reads /me", { sk
   // A call and its read that straddle UTC midnight count on two days: once more, with another fresh user.
   let run = await oneCallThenMe();
   if (!run.sameDay) run = await oneCallThenMe();
-  assert.ok(run.sameDay, "the call and /me straddled UTC midnight twice");
+  check(run.sameDay, "the call and /me straddled UTC midnight twice");
   const { user, standing } = run;
   // The user is the issuer's subject, and the limits are the app's configured ones, as apps and the Swift package read them.
-  assert.equal(standing.user_id, user);
+  same(standing.user_id, user, "standing.user_id is not user");
   const { limits } = standing;
-  assert.equal(limits.requests_per_minute, PER_MINUTE);
-  assert.equal(limits.requests_per_day, PER_DAY);
-  assert.equal(limits.monthly_budget_usd, BUDGET_NANO / 1e9);
-  assert.equal(limits.budget_scope, "user");
-  assert.equal(limits.blocked, false);
+  same(limits.requests_per_minute, PER_MINUTE, "limits.requests_per_minute is not PER_MINUTE");
+  same(limits.requests_per_day, PER_DAY, "limits.requests_per_day is not PER_DAY");
+  same(limits.monthly_budget_usd, BUDGET_NANO / 1e9, "limits.monthly_budget_usd is not BUDGET_NANO / 1e9");
+  same(limits.budget_scope, "user", "limits.budget_scope is not \"user\"");
+  same(limits.blocked, false, "limits.blocked is not false");
   // A fresh user's one call, counted once: what is left is the day's limit less that one.
-  assert.equal(limits.requests_today, 1);
-  assert.equal(limits.requests_remaining, PER_DAY - 1);
-  assert.ok(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
+  same(limits.requests_today, 1, "limits.requests_today is not 1");
+  same(limits.requests_remaining, PER_DAY - 1, "limits.requests_remaining is not PER_DAY - 1");
+  check(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
 });
 
 test("the app key alone is refused once users must sign in", { skip }, async () => {
   const response = await chat(appKey);
-  assert.equal(response.status, 401, await responseOutcome(response));
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "auth_required");
+  await expectResponse(response, 401, "response");
+  expectCode(await readJson(response), "auth_required", "response");
 });
 
 test("a user without the required claim is refused with issuer_claims_missing", { skip }, async () => {
   const response = await exchange(await userToken("smoke-free-user", { plan: "free" }));
-  assert.equal(response.status, 403);
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "issuer_claims_missing");
+  same(response.status, 403, "response.status is not 403");
+  expectCode(await readJson(response), "issuer_claims_missing", "response");
 });
 
 test("a token signed by an unknown key is refused with issuer_token_rejected", { skip }, async () => {
   const forger = await generateKeyPair("ES256");
   const response = await exchange(await userToken("smoke-forged-user", { plan: "pro" }, forger.privateKey));
-  assert.equal(response.status, 403);
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "issuer_token_rejected");
+  same(response.status, 403, "response.status is not 403");
+  expectCode(await readJson(response), "issuer_token_rejected", "response");
 });
 
 test("a token exchange records the client package it names", { skip, timeout: 90_000 }, async () => {
   const user = "smoke-sdk-user";
   const exchanged = await exchange(await userToken(user), { "x-client-sdk": CLIENT_SDK, "x-app-version": "1.0.0" });
-  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
+  await expectResponse(exchanged, 200, "exchanged");
   await exchanged.arrayBuffer();
   // Recorded after the response, so it is asked for until it is there.
   const path = `/v2/admin/apps/${appId}/auth-events?event=token_exchange&user=${user}&limit=5`;
@@ -209,7 +208,7 @@ test("a token exchange records the client package it names", { skip, timeout: 90
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
     recorded = (await admin("GET", path)).body.events?.[0];
   }
-  assert.ok(recorded, "no token exchange was recorded within a minute");
-  assert.equal(recorded.outcome, "ok");
-  assert.equal(recorded.client_sdk, CLIENT_SDK);
+  check(recorded, "no token exchange was recorded within a minute");
+  same(recorded.outcome, "ok", "recorded.outcome is not \"ok\"");
+  same(recorded.client_sdk, CLIENT_SDK, "recorded.client_sdk is not CLIENT_SDK");
 });

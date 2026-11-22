@@ -15,9 +15,8 @@
  * The provider is the mock in `smoke/mock/`, so nothing is billed. Skipped
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome, readJson, responseOutcome, sameJson, uniqueSlug } from "./support.ts";
+import { check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -59,11 +58,11 @@ before(async () => {
     // $1 and $2 per million tokens.
     pricing: { "local-llm": { input: 1, output: 2 } },
   });
-  assert.equal(created.status, 201, outcome(created));
+  expectStatus(created, 201, "created");
   // Saved first, so a failed check below still removes it.
   providerIds.push(created.body.provider.id);
   // Write-only: the create answer never holds the key it was given.
-  assert.ok(!holds(created.body, "sk-mock-smoke-custom-key"), "the provider create response holds the submitted key");
+  check(!holds(created.body, "sk-mock-smoke-custom-key"), "the provider create response holds the submitted key");
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke custom",
     config: {
@@ -71,7 +70,7 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["custom.openai-chat", "passthrough"] } } },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appIds.push(app.body.app.id);
   ({ id: appId } = app.body.app);
   appKey = app.body.api_key.key;
@@ -97,44 +96,44 @@ async function usageOf(user: string, count = 1): Promise<{ charges: number; cost
     if (found.status === 200 && found.body.user.usage.charges >= count) return found.body.user.usage;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.fail(`no charge for ${user}`);
+  fail("no charge was written within a minute");
 }
 
 test("a custom provider shows its base URL, key header and paths back, never its key", { skip }, async () => {
   const read = await admin("GET", `/v2/admin/providers/${providerIds[0]}`);
-  assert.equal(read.status, 200, outcome(read));
-  assert.equal(read.body.provider.type, "custom");
-  assert.ok(sameJson(read.body.provider.auth, AUTH), "the provider's key header is not what was saved");
-  assert.ok(sameJson(read.body.provider.passthrough, PATHS), "the provider's paths are not what was saved");
-  assert.ok(!holds(read.body, "sk-mock-smoke-custom-key"), "the provider read response holds its key");
+  expectStatus(read, 200, "read");
+  same(read.body.provider.type, "custom", "read.body.provider.type is not \"custom\"");
+  check(sameJson(read.body.provider.auth, AUTH), "the provider's key header is not what was saved");
+  check(sameJson(read.body.provider.passthrough, PATHS), "the provider's paths are not what was saved");
+  check(!holds(read.body, "sk-mock-smoke-custom-key"), "the provider read response holds its key");
 });
 
 test("a path with an API style is metered by that style, at the connection's rates", { skip }, async () => {
   const user = `smoke-custom-chat-${run}`;
   const body = JSON.stringify({ model: "local-llm", messages: [{ role: "user", content: "hi" }] });
   const response = await call("POST", "v1/chat/completions", user, { body, headers: { "content-type": "application/json" } });
-  assert.equal(response.status, 200, await responseOutcome(response));
+  await expectResponse(response, 200, "response");
   const usage = ((await readJson(response)) as { usage: { prompt_tokens: number; completion_tokens: number } }).usage;
   const charged = await usageOf(user);
-  assert.equal(charged.charges, 1);
+  same(charged.charges, 1, "charged.charges is not 1");
   // 1,000 nano-dollars per input token, 2,000 per output token.
-  assert.equal(charged.cost_nano, usage.prompt_tokens * 1_000 + usage.completion_tokens * 2_000);
+  same(charged.cost_nano, usage.prompt_tokens * 1_000 + usage.completion_tokens * 2_000, "charged.cost_nano is not usage.prompt_tokens * 1_000 + usage.completion_tokens * 2_000");
 });
 
 test("a plain path is passed through with the key in the named header, and charged unpriced", { skip }, async () => {
   const user = `smoke-custom-echo-${run}`;
   const response = await call("GET", "v1/echo/abc", user);
-  assert.equal(response.status, 200, await responseOutcome(response));
+  await expectResponse(response, 200, "response");
   const echoed = (await readJson(response)) as { method: string; path: string; forwarded: string[] };
-  assert.ok(echoed.path === "/v1/echo/abc", "the provider was sent another path");
-  assert.ok(echoed.forwarded.includes("x-api-key"), "the provider got no key in the named header");
+  check(echoed.path === "/v1/echo/abc", "the provider was sent another path");
+  check(echoed.forwarded.includes("x-api-key"), "the provider got no key in the named header");
   const charged = await usageOf(user);
-  assert.equal(charged.cost_nano, 0);
+  same(charged.cost_nano, 0, "charged.cost_nano is not 0");
 });
 
 test("a path the custom provider does not list is refused, and nothing is sent", { skip }, async () => {
   const response = await call("POST", "v1/responses", `smoke-custom-closed-${run}`, { body: "{}", headers: { "content-type": "application/json" } });
-  assert.equal(response.status, 403, await responseOutcome(response));
+  await expectResponse(response, 403, "response");
 });
 
 test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip }, async () => {
@@ -150,6 +149,6 @@ test("saving refuses a {name} part where an endpoint's name is, and addresses th
   ]) {
     const refused = await attempt(fields);
     if (refused.status === 201) providerIds.push(refused.body.provider.id);
-    assert.equal(refused.status, 400, `${JSON.stringify(fields)} ${outcome(refused)}`);
+    expectStatus(refused, 400, "a provider with refused fields");
   }
 });

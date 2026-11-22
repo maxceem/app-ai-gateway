@@ -11,9 +11,8 @@
  * come from the environment only, never from a file in the repository.
  * Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome, readJson, uniqueSlug } from "./support.ts";
+import { check, expectCode, expectStatus, holds, readJson, same, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -44,13 +43,13 @@ before(async () => {
     secret: "sk-mock-smoke-key",
     baseUrl: mockUrl,
   });
-  assert.equal(provider.status, 201, outcome(provider));
+  expectStatus(provider, 201, "provider");
   // Saved first, so a failed check below still removes it.
   providerId = provider.body.provider.id;
   // Write-only: the create answer holds the hint, never the key itself. Checked
   // before the hint, so a key copied into the hint is never printed.
-  assert.ok(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
-  assert.ok(provider.body.provider.secretHint === "-key", "the provider create response has the wrong key hint");
+  check(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
+  check(provider.body.provider.secretHint === "-key", "the provider create response has the wrong key hint");
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke first call",
     config: {
@@ -58,7 +57,7 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     },
   });
-  assert.equal(app.status, 201, outcome(app));
+  expectStatus(app, 201, "app");
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -78,28 +77,28 @@ function chat(body: Record<string, unknown>): Promise<Response> {
 
 test("a chat call answers with the provider's JSON", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
-  assert.equal(response.status, 200);
+  same(response.status, 200, "response.status is not 200");
   const body = (await readJson(response)) as { usage?: { prompt_tokens?: number } };
-  assert.ok((body.usage?.prompt_tokens ?? 0) > 0);
+  check((body.usage?.prompt_tokens ?? 0) > 0, "(body.usage?.prompt_tokens ?? 0) > 0");
 });
 
 test("a streamed chat call ends with its usage", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", stream: true, messages: [{ role: "user", content: "Hi" }] });
-  assert.equal(response.status, 200);
+  same(response.status, 200, "response.status is not 200");
   const text = await response.text();
   // Tested, never printed: a stream is the provider's text.
-  assert.ok(/"usage"/u.test(text), "the stream has no usage");
-  assert.ok(/data: \[DONE\]/u.test(text), "the stream does not end with [DONE]");
+  check(/"usage"/u.test(text), "the stream has no usage");
+  check(/data: \[DONE\]/u.test(text), "the stream does not end with [DONE]");
 });
 
 test("a model the app does not allow is refused", { skip }, async () => {
   const response = await chat({ model: "gpt-4o", messages: [] });
-  assert.equal(response.status, 403);
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "model_not_allowed");
+  same(response.status, 403, "response.status is not 403");
+  expectCode(await readJson(response), "model_not_allowed", "response");
 });
 
 test("a provider error is passed through", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [], mock_status: 429 });
-  assert.equal(response.status, 429);
-  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "mock_error");
+  same(response.status, 429, "response.status is not 429");
+  expectCode(await readJson(response), "mock_error", "response");
 });

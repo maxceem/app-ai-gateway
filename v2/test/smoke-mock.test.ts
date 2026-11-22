@@ -136,12 +136,12 @@ describe("the smoke checks' config comparison", () => {
   it("holds an array of objects whatever their fields' order, and still sees a change", () => {
     const saved = { required_claims: [{ path: "plan", equals: "pro" }, { path: "roles", contains: ["pro"] }] };
     const reordered = { required_claims: [{ equals: "pro", path: "plan" }, { contains: ["pro"], path: "roles" }] };
-    expect(() => assertHolds(reordered, saved)).not.toThrow();
-    expect(() => assertHolds(saved, reordered)).not.toThrow();
+    expect(() => assertHolds(reordered, saved, "the config is not what was saved")).not.toThrow();
+    expect(() => assertHolds(saved, reordered, "the config is not what was saved")).not.toThrow();
     // The items' order still counts, and so does a value.
-    expect(() => assertHolds({ required_claims: [...saved.required_claims].reverse() }, saved)).toThrow();
-    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "free" }, saved.required_claims[1]] }, saved)).toThrow();
-    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "pro", extra: 1 }, saved.required_claims[1]] }, saved)).toThrow();
+    expect(() => assertHolds({ required_claims: [...saved.required_claims].reverse() }, saved, "the config is not what was saved")).toThrow();
+    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "free" }, saved.required_claims[1]] }, saved, "the config is not what was saved")).toThrow();
+    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "pro", extra: 1 }, saved.required_claims[1]] }, saved, "the config is not what was saved")).toThrow();
   });
 
   it("reads a body that is not JSON as its status alone, never its text", async () => {
