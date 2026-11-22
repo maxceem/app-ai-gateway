@@ -137,10 +137,21 @@ export const SendVerificationEmailResponseSchema = z
   })
   .meta({ id: "SendVerificationEmailResponse" });
 
+/**
+ * The longest verification token the confirmation takes. The sender never
+ * signs a longer one: it leaves out where to continue rather than send a link
+ * that could not be confirmed.
+ */
+export const VERIFICATION_TOKEN_MAX_LENGTH = 4096;
+
 /** The link a verification email carried, handed back by the page it opened. */
 export const ConfirmEmailVerificationRequestSchema = z
   .object({
-    token: z.string().min(1).max(2048).meta({ description: "The `token` query parameter of the link in the verification email." }),
+    token: z
+      .string()
+      .min(1)
+      .max(VERIFICATION_TOKEN_MAX_LENGTH)
+      .meta({ description: "The `token` in the `#` fragment of the link in the verification email: the page reads it there and posts it here, so it never reaches a request log." }),
   })
   .strict()
   .meta({ id: "ConfirmEmailVerificationRequest" });

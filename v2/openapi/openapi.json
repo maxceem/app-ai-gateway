@@ -6694,8 +6694,8 @@
           "token": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2048,
-            "description": "The `token` query parameter of the link in the verification email."
+            "maxLength": 4096,
+            "description": "The `token` in the `#` fragment of the link in the verification email: the page reads it there and posts it here, so it never reaches a request log."
           }
         },
         "required": [

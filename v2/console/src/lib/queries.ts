@@ -77,7 +77,7 @@ export function useSignIn() {
 export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: SignUpInput) => signUpWithPassword(input),
+    mutationFn: ({ returnPath, ...input }: SignUpInput & { returnPath?: string }) => signUpWithPassword(input, returnPath),
     onSuccess: () => client.invalidateQueries(),
   });
 }

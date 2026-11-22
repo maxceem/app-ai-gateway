@@ -35,6 +35,10 @@ describe("VerifyEmailPage", () => {
     expect(continuePath("/v2/apps/my-app?tab=usage")).toBe("/apps/my-app?tab=usage");
     expect(continuePath("/v2")).toBe("/");
     expect(continuePath("//evil.test/")).toBeNull();
+    // Safe-looking before /v2 comes off, protocol-relative after: the landing page instead (Sol 7b-7 round 2).
+    expect(continuePath("/v2//evil.test")).toBe("/apps");
+    expect(continuePath("/v2/\\evil.test")).toBe("/apps");
+    expect(continuePath("/v2//evil.test/path?x=1")).toBe("/apps");
     stubApi({ [CONFIRM_URL]: { body: { email: "person@example.test", returnTo: "/v2/apps" } } });
     const router = createMemoryRouter([{ path: "*", element: <VerifyEmailPage /> }], {
       basename: "/v2",

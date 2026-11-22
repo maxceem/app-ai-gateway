@@ -30,12 +30,16 @@ export function tokenFromHash(hash: string): string | null {
 /**
  * Where Continue goes: the console path the link names, as the router sees it.
  * The server writes it as a browser path, under the console's `/v2` base,
- * which the router adds itself.
+ * which the router adds itself. The path is judged again once it is in the
+ * router's terms: normalising and taking off `/v2` can turn a safe-looking
+ * path (`/v2//evil.test`, `/v2/\evil`) into one that leaves the console, and
+ * such a path falls back to the landing page.
  */
 export function continuePath(returnTo: string | null | undefined): string | null {
   if (!isSafeReturnPath(returnTo)) return null;
   const url = new URL(returnTo, "https://console.invalid");
-  return `${routerPath(url.pathname)}${url.search}`;
+  const path = `${routerPath(url.pathname)}${url.search}`;
+  return isSafeReturnPath(path) && !path.includes("\\") ? path : DEFAULT_LANDING;
 }
 export function VerifyEmailPage() {
   const location = useLocation();

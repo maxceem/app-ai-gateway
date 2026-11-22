@@ -6,6 +6,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
 import { accountActivatedSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
+import { withDeadline } from "../core/background.ts";
+import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
@@ -29,10 +31,29 @@ export const appCache = ttlCache<string, AppRecord>({ name: "app", ttlMs: APP_CA
 /** Bumped by every invalidation, so a read that started before one does not store an old record. */
 let invalidations = 0;
 
+/** How long a read that replaces an expired pending record may take before the request is told to retry. */
+export const PENDING_REFRESH_DEADLINE_MS = 5_000;
+
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appCache.get(appId);
   if (cached) return cached;
-  return readOrKnown("app", appCache.peek(appId), () => readApp(env, appId));
+  const known = appCache.peek(appId);
+  if (known !== undefined && !known.value.accountActivated && emailVerificationRequired(env)) {
+    // A record of an account still waiting on its owner's address is never
+    // served past its life, not even through a stall: the owner may have
+    // verified since, and serving it would refuse their apps for up to the
+    // stale window. If the fresh read cannot be had, the request is told to
+    // retry, never that the account is unverified. Activated records keep the
+    // stale fallback below.
+    try {
+      return await withDeadline(readApp(env, appId), PENDING_REFRESH_DEADLINE_MS, "reading the app");
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      log("warn", "app_pending_refresh_failed", { app: appId, error: errorFacts(error) });
+      throw new GatewayError(503, "service_unavailable", "The app could not be read just now; retry shortly", { "Retry-After": "5" });
+    }
+  }
+  return readOrKnown("app", known, () => readApp(env, appId));
 }
 
 async function readApp(env: Env, appId: string): Promise<AppRecord> {

@@ -44,8 +44,14 @@ export function signInWithPassword(input: SignInInput): Promise<unknown> {
   return post(`${AUTH_BASE}/sign-in/email`, { ...input, rememberMe: true });
 }
 
-export function signUpWithPassword(input: SignUpInput): Promise<unknown> {
-  return post(`${AUTH_BASE}/sign-up/email`, input);
+/**
+ * Signs up with a password. `returnPath` is the console page the person was
+ * headed for: where the verification email's link continues, when the
+ * deployment sends one. Checked like every return path, never trusted.
+ */
+export function signUpWithPassword(input: SignUpInput, returnPath?: string): Promise<unknown> {
+  const destination = isSafeReturnPath(returnPath) ? returnPath : DEFAULT_LANDING;
+  return post(`${AUTH_BASE}/sign-up/email`, { ...input, callbackURL: consoleUrl(destination) });
 }
 
 /**

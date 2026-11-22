@@ -11,7 +11,8 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { confirmEmailVerification, sendVerificationEmail, VERIFICATION_LINK_TTL_MS } from "../src/auth/email-verification.ts";
+import { confirmEmailVerification, consoleReturnPath, sendVerificationEmail, VERIFICATION_LINK_TTL_MS } from "../src/auth/email-verification.ts";
+import { VERIFICATION_TOKEN_MAX_LENGTH } from "../src/contracts/access.ts";
 import { readAccountActivated } from "../src/core/account-standing.ts";
 import { appCache } from "../src/apps/app-records.ts";
 import { managementKeyStatements } from "../scripts/management-key-sql.ts";
@@ -221,6 +222,22 @@ describe("verification links", () => {
     expect(await env.DB.prepare("SELECT email_verified AS v FROM mgmt_user WHERE id = ?").bind(owner.userId).first("v")).toBe(0);
   });
 
+  it("always fit what the confirmation takes, however long the path to continue at (Sol 7b-7 round 2)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: verifying, sent } = deployment({ email: true });
+    // The longest path allowed, in bytes, made of characters JSON escapes, so the signed claims are as long as they get.
+    const longest = `/${'"'.repeat(511)}`;
+    expect(consoleReturnPath(longest)).toBe(longest);
+    // Bounded in bytes, not characters: 200 emoji are 800 bytes.
+    expect(consoleReturnPath(`/${"😀".repeat(200)}`)).toBeNull();
+    await sendVerificationEmail(verifying, CONSOLE, { id: owner.userId, email: owner.email }, longest);
+    const token = tokenFrom(sent[0]!);
+    expect(token.length).toBeLessThanOrEqual(VERIFICATION_TOKEN_MAX_LENGTH);
+    const confirmed = await call("/v2/console/email-verification/confirm", { environment: verifying, json: { token }, headers: { origin: CONSOLE, "x-console-request": "1" } });
+    expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+    expect(await confirmed.json()).toMatchObject({ returnTo: longest });
+  });
+
   it("are not sent where the deployment has no sender address, which health reports", async () => {
     const owner = await unverifiedOwner();
     const { env: broken, binding } = deployment({ email: true, from: null });
@@ -369,6 +386,15 @@ describe("sign-up", () => {
     expect(returnTo).toBe("/v2/apps");
     clearCaches();
     expect(await readAccountActivated(verifying, accountId)).toBe(true);
+  });
+
+  it("continues the first link where the sign-up form was headed (Sol 7b-7 round 2)", async () => {
+    const email = `deep-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    const { env: verifying, sent } = deployment({ email: true });
+    const created = await signUp(verifying, email, { callbackURL: "/v2/apps/my-app?tab=usage" });
+    expect(created.status, await created.clone().text()).toBe(200);
+    const { returnTo } = await confirmEmailVerification(verifying, tokenFrom(sent[0]!));
+    expect(returnTo).toBe("/v2/apps/my-app?tab=usage");
   });
 
   it("is refused with email_unavailable, making no account, where links could not open: no console origin (Sol 7b-7)", async () => {

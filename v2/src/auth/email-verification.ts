@@ -21,6 +21,7 @@ import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { log } from "../core/log.ts";
 import { emailSender, emailSetup } from "../email/sender.ts";
 import { V2_PATH } from "./settings.ts";
+import { VERIFICATION_TOKEN_MAX_LENGTH } from "../contracts/access.ts";
 
 /** How long a verification link works. */
 export const VERIFICATION_LINK_TTL_MS = 24 * 3_600_000;
@@ -60,7 +61,8 @@ export function emailDeliveryStatus(env: Env): "off" | "ok" | "misconfigured" {
  * no link can send the browser off the console. Anything else is dropped.
  */
 export function consoleReturnPath(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > 512) return null;
+  // Bounded in bytes, as it is signed: 512 characters of another script would be far more.
+  if (typeof value !== "string" || encoder.encode(value).length > 512) return null;
   return /^\/(?![/\\])[^\\\s]*$/u.test(value) ? value : null;
 }
 
@@ -154,12 +156,10 @@ export async function sendVerificationEmail(
   }
   const sender = emailSender(env)!;
   const { from, replyTo } = setup;
-  const token = await signLink(env, {
-    u: person.id,
-    e: person.email,
-    x: nowMs + VERIFICATION_LINK_TTL_MS,
-    ...(returnTo === null ? {} : { r: returnTo }),
-  });
+  const claims = { u: person.id, e: person.email, x: nowMs + VERIFICATION_LINK_TTL_MS };
+  let token = await signLink(env, returnTo === null ? claims : { ...claims, r: returnTo });
+  // Never a link the confirmation would refuse for its length: without where to continue, it still verifies.
+  if (token.length > VERIFICATION_TOKEN_MAX_LENGTH) token = await signLink(env, claims);
   const link = new URL(VERIFICATION_PAGE_PATH, consoleOrigin);
   // In the fragment, never the query: a browser does not send it, so the token never reaches a request log.
   link.hash = new URLSearchParams({ token }).toString();
