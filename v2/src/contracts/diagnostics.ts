@@ -128,6 +128,6 @@ export const AuthEventSummaryResponseSchema = z
     claim_delay: z
       .object({ count: z.number().int(), avg_ms: z.number().nullable(), p50_ms: z.number().nullable(), p95_ms: z.number().nullable() })
       .meta({ description: "How long users waited for an entitlement claim to reach the issuer, for the waits that ended in the window." }),
-    pending_users: z.number().int().meta({ description: "Active users waiting on an entitlement claim right now." }),
+    pending_users: z.number().int().meta({ description: "Active users waiting on an entitlement claim right now, counting waits that began within the last 90 days (as long as events are kept)." }),
   })
   .meta({ id: "AuthEventSummaryResponse" });

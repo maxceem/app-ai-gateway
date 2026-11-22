@@ -2759,7 +2759,7 @@
           },
           "pending_users": {
             "type": "integer",
-            "description": "Active users waiting on an entitlement claim right now."
+            "description": "Active users waiting on an entitlement claim right now, counting waits that began within the last 90 days (as long as events are kept)."
           }
         },
         "required": [

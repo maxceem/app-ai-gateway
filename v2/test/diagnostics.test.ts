@@ -239,9 +239,9 @@ describe("summary", () => {
     // Two users wait on a claim; a blocked one does not count.
     await env.DB.prepare(
       `INSERT INTO app_end_user (app_id, id, status, created_at, claim_pending_since) VALUES
-         (?1, 'w1', 'active', 0, 1), (?1, 'w2', 'active', 0, 1), (?1, 'w3', 'blocked', 0, 1), (?1, 'w4', 'active', 0, NULL)`,
+         (?1, 'w1', 'active', 0, ?2), (?1, 'w2', 'active', 0, ?2), (?1, 'w3', 'blocked', 0, ?2), (?1, 'w4', 'active', 0, NULL)`,
     )
-      .bind(appId)
+      .bind(appId, NOW - 86_400_000)
       .run();
 
     const { status, body } = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=7`);
@@ -393,6 +393,27 @@ describe("isolation", () => {
     // A live app's id is never given out again either.
     vi.spyOn(appIds, "next").mockReturnValueOnce(again);
     expect(await createApp(key)).not.toBe(again);
+  });
+
+  it("a missing-claim refusal landing after its app was deleted leaves no user row (Fable 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    expect((await request(key, "DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)).status).toBe(200);
+    await recordAuthEvent({ env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "gone", outcome: "issuer_claims_missing", latencyMs: 1 });
+    expect(await env.DB.prepare("SELECT id FROM app_end_user WHERE app_id = ?").bind(appId).first()).toBeNull();
+  });
+
+  it("a success with no wait open writes no user row, and the users waiting count only waits from the last 90 days (Fable 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await recordAuthEvent({ env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "fine", outcome: "ok", latencyMs: 1 });
+    expect(await env.DB.prepare("SELECT id FROM app_end_user WHERE app_id = ? AND id = 'fine'").bind(appId).first()).toBeNull();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO app_end_user (app_id, id, created_at, claim_pending_since) VALUES (?, 'recent', ?, ?)").bind(appId, NOW, NOW - 86_400_000),
+      env.DB.prepare("INSERT INTO app_end_user (app_id, id, created_at, claim_pending_since) VALUES (?, 'stale', ?, ?)").bind(appId, NOW, NOW - 91 * 86_400_000),
+    ]);
+    const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=7`);
+    expect(summary.body.pending_users).toBe(1);
   });
 
   it("never shows a row recorded with no account (Sol 7b-4)", async () => {

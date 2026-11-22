@@ -134,18 +134,26 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
   if (change === "succeeded") {
     statements.push(
       db
-        .prepare(`UPDATE app_end_user SET claim_pending_since = (${PENDING_SINCE_SQL}) WHERE app_id = ?1 AND id = ?2`)
+        // Only a user who is waiting: a success with no wait open writes no row (Fable 7b-4).
+        .prepare(
+          `UPDATE app_end_user SET claim_pending_since = (${PENDING_SINCE_SQL})
+            WHERE app_id = ?1 AND id = ?2 AND claim_pending_since IS NOT NULL`,
+        )
         .bind(input.appId, userId, input.accountId),
     );
   } else if (change === "refused") {
-    // A user first seen here gets a row; a blocked user's wait is never opened, as it could never end.
+    // A user first seen here gets a row, but only while the app is still there under
+    // the attempt's account: a refusal landing after the app was deleted leaves no
+    // row behind (Fable 7b-4). A blocked user's wait is never opened, as it could
+    // never end, and an unchanged wait is not written again.
     statements.push(
       db
         .prepare(
           `INSERT INTO app_end_user (app_id, id, created_at, claim_pending_since)
-           VALUES (?1, ?2, ?4, (${PENDING_SINCE_SQL}))
+           SELECT ?1, ?2, ?4, (${PENDING_SINCE_SQL})
+            WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
            ON CONFLICT (app_id, id) DO UPDATE SET claim_pending_since = excluded.claim_pending_since
-            WHERE status = 'active'`,
+            WHERE status = 'active' AND claim_pending_since IS NOT excluded.claim_pending_since`,
         )
         .bind(input.appId, userId, input.accountId, now),
     );

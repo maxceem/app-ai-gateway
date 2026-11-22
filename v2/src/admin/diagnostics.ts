@@ -22,6 +22,7 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import {
   AuthEventListQuerySchema,
   AuthEventSummaryQuerySchema,
+  DIAGNOSTICS_RETENTION_DAYS,
   RejectionEventListQuerySchema,
 } from "../contracts/diagnostics.ts";
 import { USAGE_CHARGE_RANGE_MAX_DAYS } from "../contracts/usage.ts";
@@ -249,10 +250,14 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
     db.prepare(`SELECT COUNT(*) AS count, AVG(claim_delay_ms) AS avg FROM app_auth_event WHERE ${waits}`).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(50)).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(95)).bind(appId, actor.accountId, start, end),
-    // Active users only: a blocked user's wait can never end.
+    // Active users only: a blocked user's wait can never end. And only waits that
+    // began inside the events' retention: an older one belongs to a user who has
+    // not been back since, and its events are gone (Fable 7b-4).
     db
-      .prepare("SELECT COUNT(*) AS count FROM app_end_user WHERE app_id = ? AND claim_pending_since IS NOT NULL AND status = 'active'")
-      .bind(appId),
+      .prepare(
+        "SELECT COUNT(*) AS count FROM app_end_user WHERE app_id = ? AND claim_pending_since IS NOT NULL AND claim_pending_since >= ? AND status = 'active'",
+      )
+      .bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS),
   ]);
   const all = <T>(result: D1Result | undefined) => (result?.results ?? []) as T[];
   const groups = all<AuthGroup>(auth);
