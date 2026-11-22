@@ -22,7 +22,8 @@ export interface OutcomeRow {
  * Collapses the per-day buckets into one row per distinct failure.
  *
  * `ok` is dropped: the success rate above already says how much of the window
- * succeeded. Days are merged, not appended: the API groups by event as well,
+ * succeeded. So is `client_recovered`: the app got past it on its own, which
+ * is not a failure (Sol 7b-6). Days are merged, not appended: the API groups by event as well,
  * so one day can arrive as two buckets for the same failure.
  *
  * v1 split failed proxied requests by their status; v2's summary counts them
@@ -38,7 +39,7 @@ export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[
   };
 
   for (const bucket of summary?.daily ?? []) {
-    if (bucket.outcome === "ok") continue;
+    if (bucket.outcome === "ok" || bucket.outcome === "client_recovered") continue;
     add(`auth:${bucket.outcome}:${bucket.reason ?? ""}`, bucket.outcome, bucket.reason, bucket.date, bucket.count);
   }
   for (const bucket of summary?.failed_charges ?? []) {

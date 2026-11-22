@@ -14,7 +14,8 @@ export function StatCard({
     <Card className="gap-0 py-4">
       <CardContent className="px-4">
         <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{label}</p>
-        <p className="tabular mt-1.5 text-2xl leading-none font-semibold">{value}</p>
+        {/* A div: the value may be a loading skeleton, which is itself a div and cannot sit in a paragraph (Sol 7b-6). */}
+        <div className="tabular mt-1.5 text-2xl leading-none font-semibold">{value}</div>
         {detail ? <p className="mt-1.5 text-xs text-muted-foreground">{detail}</p> : null}
       </CardContent>
     </Card>

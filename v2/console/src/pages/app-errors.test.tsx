@@ -154,6 +154,61 @@ describe("Errors tab", () => {
     await findByHint(/named a model the gateway does not know/u);
   });
 
+  it("reads Apple's failures from their own field, so busier networks never hide them (Sol 7b-6)", async () => {
+    renderTab({
+      data: summary({
+        failing_networks: [{ network_asn: 7922, network_name: "Comcast", count: 9, last_seen: "2026-08-29T08:00:00.000Z" }],
+        apple_failures: { count: 2, last_seen: "2026-08-28T08:00:00.000Z" },
+      }),
+    });
+    expect(await screen.findByText(/Sign-in failed 2 times on Apple's network/u)).toBeTruthy();
+  });
+
+  it("shows no alert when the gateway says Apple had no failures, whatever the network list holds", async () => {
+    renderTab({
+      data: summary({
+        failing_networks: [{ network_asn: 714, network_name: "Apple Inc.", count: 3, last_seen: "2026-08-29T08:00:00.000Z" }],
+        apple_failures: null,
+      }),
+    });
+    await screen.findByText("No failures in this range.");
+    expect(screen.queryByText(/on Apple's network/u)).toBeNull();
+  });
+
+  it("says the figures are unavailable when the summary cannot be read, never zero (Sol 7b-6)", async () => {
+    stubApi({
+      [`${BASE}/auth-events/summary`]: { status: 500, body: { error: { code: "internal_error", message: "No" } } },
+      [`${BASE}/rejection-events`]: { body: { app_id: "my-app", limit: 25, next_before: null, events: [] } },
+      [`${BASE}/auth-events`]: { body: { app_id: "my-app", limit: 25, next_before: null, events: [] } },
+    });
+    renderAuthenticated(<ErrorsTab appId="my-app" />, { route: "/apps/my-app/errors" });
+    expect(await screen.findByText("Could not load the summary.")).toBeTruthy();
+    expect(screen.getAllByText("unavailable")).toHaveLength(4);
+    expect(screen.queryByText("none waiting")).toBeNull();
+    expect(screen.queryByText("0 attempts")).toBeNull();
+  });
+
+  it("offers every recorded outcome, app_disabled included, and reads it a window of days at a time", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderTab();
+    await screen.findByText("No attempts.");
+    await user.click(screen.getByRole("combobox", { name: "Outcome" }));
+    await user.click(await screen.findByRole("option", { name: "app_disabled" }));
+    await waitFor(() =>
+      expect(urls(fetchMock, "/auth-events?").some((url) => url.includes("outcome=app_disabled") && url.includes("from=") && url.includes("to="))).toBe(true),
+    );
+    expect(screen.getByRole("button", { name: "Earlier days" })).toBeTruthy();
+  });
+
+  it("reads a typed user once it settles, not once per letter", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderTab();
+    await screen.findByText("No refusal samples.");
+    await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
+    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
+    expect(urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=")).length).toBe(1);
+  });
+
   it("offers a retry when the refusal samples cannot be read", async () => {
     renderTab({ refusalStatus: 500 });
     expect(await screen.findByText(/Could not load refusal samples/u)).toBeTruthy();

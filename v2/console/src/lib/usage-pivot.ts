@@ -13,6 +13,17 @@ import type { TimeseriesBucket } from "@/lib/types";
 /** Which number of a bucket the chart is drawing. `charges` is v1's requests. */
 export type Metric = "cost_usd" | "charges" | "tokens";
 
+/**
+ * A band of the chart. Its key is generated (`s0`, `s1`…), never the provider's
+ * name: a name is data, and as a key it could collide with `date` or end up in
+ * the chart's style sheet (Sol 7b-6). The name is shown as text only.
+ */
+export interface Series {
+  key: string;
+  /** The provider type, or {@link OTHER} for the folded band. */
+  provider: string;
+}
+
 /** One column of the chart: the day, then one total per series key. */
 export interface ChartColumn {
   date: string;
@@ -53,20 +64,22 @@ export function pivot(buckets: TimeseriesBucket[], from: string, to: string, met
     .map(([provider]) => provider);
   const named = ranked.slice(0, MAX_SERIES);
   const folded = new Set(ranked.slice(MAX_SERIES));
-  const providers = folded.size > 0 ? [...named, OTHER] : named;
+  const series: Series[] = (folded.size > 0 ? [...named, OTHER] : named).map((provider, index) => ({ key: `s${index}`, provider }));
+  const keyOf = new Map(series.map((entry) => [entry.provider, entry.key]));
+  const otherKey = keyOf.get(OTHER);
 
   const byDate = new Map<string, Record<string, number>>();
   for (let day = new Date(`${from}T00:00:00Z`); day <= new Date(`${to}T00:00:00Z`); day.setUTCDate(day.getUTCDate() + 1)) {
-    byDate.set(day.toISOString().slice(0, 10), Object.fromEntries(providers.map((provider) => [provider, 0])));
+    byDate.set(day.toISOString().slice(0, 10), Object.fromEntries(series.map((entry) => [entry.key, 0])));
   }
   for (const bucket of buckets) {
     const row = byDate.get(bucket.day);
     if (!row) continue;
-    const key = folded.has(bucket.provider_type) ? OTHER : bucket.provider_type;
+    const key = folded.has(bucket.provider_type) ? otherKey! : keyOf.get(bucket.provider_type)!;
     row[key] = (row[key] ?? 0) + metricOf(bucket, metric);
   }
   return {
-    providers,
+    series,
     /** How many providers the `Other` band stands for, for the legend to say. */
     foldedCount: folded.size,
     rows: [...byDate.entries()].map(([date, values]): ChartColumn => ({ date, ...values })),

@@ -190,6 +190,32 @@ describe("sign-in attempts", () => {
   });
 });
 
+describe("page ends", () => {
+  it("hand out a cursor only when an older row exists: none after exactly a full page (Sol 7b-6)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    for (let index = 0; index < 25; index += 1) {
+      await authEvent({ appId, at: at("2025-06-01", index) });
+      await rejection({ appId, at: at("2025-06-01", index) });
+    }
+    for (const path of ["auth-events", "rejection-events"]) {
+      const full = await request(key, "GET", `/v2/admin/apps/${appId}/${path}?limit=25`);
+      expect(full.body.events).toHaveLength(25);
+      expect(full.body.next_before).toBeNull();
+    }
+    await authEvent({ appId, at: at("2025-05-31") });
+    await rejection({ appId, at: at("2025-05-31") });
+    for (const path of ["auth-events", "rejection-events"]) {
+      const first = await request(key, "GET", `/v2/admin/apps/${appId}/${path}?limit=25`);
+      expect(first.body.events).toHaveLength(25);
+      expect(first.body.next_before).not.toBeNull();
+      const rest = await request(key, "GET", `/v2/admin/apps/${appId}/${path}?limit=25&before=${encodeURIComponent(first.body.next_before)}`);
+      expect(rest.body.events).toHaveLength(1);
+      expect(rest.body.next_before).toBeNull();
+    }
+  });
+});
+
 describe("refused requests", () => {
   it("page newest first, filtered by reason, scope, user or days", async () => {
     const key = await seedManagementKey();
@@ -260,6 +286,23 @@ describe("summary", () => {
     expect(body.rejection_samples).toEqual([{ date: dayOf(yesterday), reason: "blocked_user", scope: "user", count: 1 }]);
     expect(body.token_exchange).toEqual({ total: 4, ok: 3, success_rate: 0.75 });
     expect(body.claim_delay).toEqual({ count: 3, avg_ms: 4_333, p50_ms: 3_000, p95_ms: 9_000 });
+    // Apple's failures on their own: the recovered challenge is not one (Sol 7b-6).
+    expect(body.apple_failures).toEqual({ count: 1, last_seen: new Date(yesterday).toISOString() });
+  });
+
+  it("counts Apple's failures on their own, so ten busier networks never hide them, and says null when there are none (Sol 7b-6)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const yesterday = daysAgo(1);
+    for (let network = 0; network < 10; network += 1) {
+      for (let attempt = 0; attempt < 3; attempt += 1) await authEvent({ appId, at: yesterday, outcome: "attest_failed", asn: 64_500 + network, network: `n${network}` });
+    }
+    const none = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=7`);
+    expect(none.body.apple_failures).toBeNull();
+    await authEvent({ appId, at: yesterday, outcome: "attest_failed", asn: 714, network: "Apple" });
+    const { body } = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=7`);
+    expect(body.failing_networks.map((row: any) => row.network_asn)).not.toContain(714);
+    expect(body.apple_failures).toEqual({ count: 1, last_seen: new Date(yesterday).toISOString() });
   });
 
   it("names at most the ten networks most failures came from, counted in SQL (Gemini Neon 7b-4)", async () => {

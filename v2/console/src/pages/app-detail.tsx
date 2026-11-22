@@ -27,7 +27,7 @@ import { dollarsToNano, nanoToDollarText, nanoToDollars } from "@/lib/money";
 import { operationsOf, providerLabel } from "@/lib/providers";
 import {
   useApp,
-  useAppCharges,
+  useFirstCall,
   useAppCheck,
   useAppJobs,
   JOBS_REFRESH_MS,
@@ -181,22 +181,13 @@ export function AppDetailPage() {
 // ---------------------------------------------------------------------------
 // Overview
 
-/** How often the overview asks again while the app has made no call yet. */
-export const FIRST_CALL_POLL_MS = 10_000;
-
 /**
- * Whether the app has made a call, v1's first-request check: its newest
- * charge, if any is kept. While there is none it asks again every
- * {@link FIRST_CALL_POLL_MS}, so the first call shows without a reload, and
- * stops once one has.
+ * Whether the app has made a call, v1's first-request check (`useFirstCall`):
+ * asked again every ten seconds until it has, so the first call shows without
+ * a reload, and never past a refusal or fifteen minutes.
  */
 function FirstCall({ app }: { app: App }) {
-  const [waiting, setWaiting] = useState(true);
-  const latest = useAppCharges(app.id, { limit: 1 }, waiting ? FIRST_CALL_POLL_MS : undefined);
-  const newest = latest.data?.charges[0];
-  useEffect(() => {
-    if (latest.isSuccess) setWaiting(newest === undefined);
-  }, [latest.isSuccess, newest]);
+  const first = useFirstCall(app.id);
   return (
     <Card>
       <CardHeader>
@@ -204,18 +195,20 @@ function FirstCall({ app }: { app: App }) {
         <CardDescription>Whether this app has called a provider through the gateway.</CardDescription>
       </CardHeader>
       <CardContent className="text-sm">
-        {latest.isPending ? (
+        {first.isPending ? (
           <Skeleton className="h-5 w-48" />
-        ) : latest.isError ? (
+        ) : first.isError ? (
           <p className="text-destructive">Could not check for calls.</p>
-        ) : newest ? (
+        ) : first.firstDay ? (
           <p className="flex items-center gap-2">
             <CheckCircle2 className="size-4 text-primary" />
             <span>
-              Calls are arriving. The latest was <RelativeTime value={newest.used_at} />.{" "}
+              This app has made calls, {first.isFirst ? "the first" : "one"} on {first.firstDay}.{" "}
               <Link className="underline" to={`/apps/${encodeURIComponent(app.id)}/usage`}>See usage</Link>.
             </span>
           </p>
+        ) : first.stopped ? (
+          <p className="text-muted-foreground">No calls yet. Reload the page to check again.</p>
         ) : (
           <p className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />

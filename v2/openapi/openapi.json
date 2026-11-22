@@ -2083,6 +2083,13 @@
           "session_ms": {
             "type": "integer",
             "description": "Connection time of live sessions, in milliseconds."
+          },
+          "first_usage_day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The UTC day of the app's oldest usage still kept (YYYY-MM-DD, or YYYY-MM once it is only in month totals). Null when the app has never made a call; absent from older gateways."
           }
         },
         "required": [
@@ -2760,6 +2767,25 @@
           "pending_users": {
             "type": "integer",
             "description": "Active users waiting on an entitlement claim right now, counting waits that began within the last 90 days (as long as events are kept)."
+          },
+          "apple_failures": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "last_seen": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "last_seen"
+            ],
+            "description": "Failed sign-ins in the window from Apple's own network (714), where App Review tests apps, counted on their own so busier networks never hide them. Null when there were none; absent from older gateways."
           }
         },
         "required": [

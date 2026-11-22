@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
-import { call } from "./api";
+import { ApiError, call } from "./api";
 import {
   changePassword,
   plainlySignedOut,
@@ -25,6 +25,7 @@ export const keys = {
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
   jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
   accountUsage: (month: string) => ["account-usage", month] as const,
+  appUsage: (appId: string) => ["app-usage", appId] as const,
   timeseries: (appId: string, query: unknown) => ["usage-timeseries", appId, query] as const,
   breakdown: (appId: string, query: unknown) => ["usage-breakdown", appId, query] as const,
   charges: (appId: string, query: unknown) => ["charges", appId, query] as const,
@@ -355,6 +356,72 @@ export function useAccountUsage(month: string, refetchInterval?: number) {
     queryFn: () => call("getAccountUsage", { query: { month } }),
     refetchInterval,
   });
+}
+
+/** How often the overview asks again while the app has made no call yet. */
+export const FIRST_CALL_POLL_MS = 10_000;
+/** How many times it asks at most: 15 minutes, then a reload asks again. */
+export const FIRST_CALL_MAX_POLLS = 90;
+
+interface PollState {
+  error: unknown;
+  dataUpdateCount: number;
+  errorUpdateCount: number;
+}
+
+/** A refusal asking again cannot change: the app is gone, or this login may not read it. */
+const permanent = (error: unknown) => error instanceof ApiError && error.status >= 400 && error.status < 500;
+
+/**
+ * When to ask again for a first call: never once it is found, never after a
+ * permanent refusal, and never past {@link FIRST_CALL_MAX_POLLS} (Sol 7b-6).
+ * Exported for its test.
+ */
+export function firstCallInterval(state: PollState, found: boolean): number | false {
+  if (found || permanent(state.error)) return false;
+  if (state.dataUpdateCount + state.errorUpdateCount >= FIRST_CALL_MAX_POLLS) return false;
+  return FIRST_CALL_POLL_MS;
+}
+
+const retryTransient = (count: number, error: unknown) => !permanent(error) && count < 2;
+
+/**
+ * Whether an app has ever made a call, v1's first-request check, asked again
+ * every {@link FIRST_CALL_POLL_MS} until it has. Read from the app's usage
+ * totals (`first_usage_day`), which outlive its charges: an app whose last
+ * charge aged out still has made calls. A gateway from before that field
+ * answers without it, and then the newest charge stands in.
+ */
+export function useFirstCall(appId: string) {
+  const usage = useQuery({
+    queryKey: keys.appUsage(appId),
+    queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
+    // Absent (an older gateway) is an answer too: the charge read below takes over.
+    refetchInterval: (query) => firstCallInterval(query.state, query.state.data !== undefined && query.state.data.first_usage_day !== null),
+    retry: retryTransient,
+  });
+  const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
+  const charges = useQuery({
+    queryKey: keys.charges(appId, { limit: 1 }),
+    queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
+    enabled: legacy,
+    refetchInterval: (query) => firstCallInterval(query.state, (query.state.data?.charges.length ?? 0) > 0),
+    retry: retryTransient,
+  });
+  const client = useQueryClient();
+  const source = legacy ? charges : usage;
+  const firstDay = legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null);
+  const state = client.getQueryState(legacy ? keys.charges(appId, { limit: 1 }) : keys.appUsage(appId));
+  return {
+    isPending: source.isPending,
+    isError: source.isError && source.data === undefined,
+    /** The day of the app's first call kept; from an older gateway, of its newest charge. */
+    firstDay,
+    /** Whether `firstDay` is the first call's, rather than the newest charge's. */
+    isFirst: !legacy,
+    /** Asking stopped without finding one: the cap, or a refusal. */
+    stopped: firstDay === null && state !== undefined && firstCallInterval(state, false) === false,
+  };
 }
 
 export function useUsageTimeseries(appId: string, query: OperationQuery<"getAppUsageTimeseries">) {

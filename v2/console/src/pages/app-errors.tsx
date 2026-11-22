@@ -12,7 +12,7 @@
  *   know reads `unrecognized`: it was the caller's own text.
  * - Pages go back with the `before` cursor the API hands out, not a numeric id.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { Hint } from "@/components/hint";
+import { DateWindowNav, KEPT_DAYS, useDateWindow } from "@/components/date-window";
 import { RangePicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { AuthOutcomeBadge } from "@/components/status-badge";
@@ -30,7 +31,7 @@ import { foldOutcomes } from "@/lib/auth-events";
 import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
 import { isAppleNetwork, networkLabel } from "@/lib/networks";
 import { useAuthEventSummary, useAuthEvents, useRejectionEvents, type AuthEventQuery, type RejectionQuery } from "@/lib/queries";
-import { REJECTION_SCOPES } from "@contracts/diagnostics";
+import { AUTH_EVENT_OUTCOMES, REJECTION_SCOPES } from "@contracts/diagnostics";
 
 type RejectionScope = (typeof REJECTION_SCOPES)[number];
 
@@ -68,18 +69,18 @@ export const REJECTION_REASON_LABELS: Record<string, string> = {
   payload_too_large: "Request too large",
 };
 
-const OUTCOME_FILTERS = [
-  "issuer_claims_missing",
-  "issuer_token_rejected",
-  "issuer_verification_unavailable",
-  "service_unavailable",
-  "attest_failed",
-  "auth_required",
-  "abandoned",
-  "client_failed",
-  "client_recovered",
-  "ok",
-] as const;
+/** How long the user filter waits after the last keystroke before it reads. */
+export const USER_FILTER_DEBOUNCE_MS = 250;
+
+/** `value`, once it has stopped changing for `ms`: a filter typed letter by letter reads once, not per letter. */
+function useDebounced<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return settled;
+}
 
 export function ErrorsTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
@@ -89,19 +90,32 @@ export function ErrorsTab({ appId }: { appId: string }) {
   const [rejectionScope, setRejectionScope] = useState("all");
   const [rejectionUser, setRejectionUser] = useState("");
   const [rejectionCursors, setRejectionCursors] = useState<string[]>([]);
+  const eventWindow = useDateWindow();
+  const rejectionWindow = useDateWindow();
+  const rejectionUserFilter = useDebounced(rejectionUser.trim(), USER_FILTER_DEBOUNCE_MS);
+  // The settled user filter starts the refusal pages again.
+  useEffect(() => {
+    setRejectionCursors([]);
+  }, [rejectionUserFilter]);
 
   const summary = useAuthEventSummary(appId, Number(days));
+  // A filter with no index of its own reads a window of days, which the list shows and moves (Sol 7b-6).
+  const eventsWindowed = outcome !== "all";
   const eventQuery: AuthEventQuery = {
     limit: 25,
     ...(outcome === "all" ? {} : { outcome }),
+    ...(eventsWindowed ? { from: eventWindow.from, to: eventWindow.to } : {}),
     ...(cursors.length > 0 ? { before: cursors.at(-1) } : {}),
   };
   const events = useAuthEvents(appId, eventQuery);
+  // A user filter has an index; a reason or scope alone does not.
+  const rejectionsWindowed = rejectionUserFilter === "" && (rejectionReason !== "all" || rejectionScope !== "all");
   const rejectionQuery: RejectionQuery = {
     limit: 25,
     ...(rejectionReason === "all" ? {} : { reason: rejectionReason }),
     ...(rejectionScope === "all" ? {} : { scope: rejectionScope as RejectionScope }),
-    ...(rejectionUser.trim() ? { user: rejectionUser.trim() } : {}),
+    ...(rejectionUserFilter ? { user: rejectionUserFilter } : {}),
+    ...(rejectionsWindowed ? { from: rejectionWindow.from, to: rejectionWindow.to } : {}),
     ...(rejectionCursors.length > 0 ? { before: rejectionCursors.at(-1) } : {}),
   };
   const rejections = useRejectionEvents(appId, rejectionQuery);
@@ -111,8 +125,16 @@ export function ErrorsTab({ appId }: { appId: string }) {
   const pending = summary.data?.pending_users ?? 0;
   // A failure on Apple's own network is most likely App Review's: the one network
   // worth calling out, because a build in review that cannot sign in may be
-  // rejected without the developer ever seeing why.
-  const apple = summary.data?.failing_networks.find((row) => isAppleNetwork(row.network_asn));
+  // rejected without the developer ever seeing why. Read on its own where the
+  // gateway gives it, so ten busier networks never hide it; from the network
+  // list on an older gateway.
+  const apple =
+    summary.data?.apple_failures !== undefined
+      ? summary.data.apple_failures
+      : summary.data?.failing_networks.find((row) => isAppleNetwork(row.network_asn));
+  // Until the summary has loaded, the cards say so, not zero (Sol 7b-6).
+  const figure = (text: string) => (summary.isPending ? <Skeleton className="h-6 w-16" /> : summary.isError ? "—" : text);
+  const detail = (text: string) => (summary.isSuccess ? text : summary.isError ? "unavailable" : undefined);
 
   return (
     <div className="space-y-4">
@@ -132,17 +154,17 @@ export function ErrorsTab({ appId }: { appId: string }) {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Exchange success"
-          value={formatPercent(summary.data?.token_exchange.success_rate)}
-          detail={`${formatNumber(summary.data?.token_exchange.total ?? 0)} attempts`}
+          value={figure(formatPercent(summary.data?.token_exchange.success_rate))}
+          detail={detail(`${formatNumber(summary.data?.token_exchange.total ?? 0)} attempts`)}
         />
-        <StatCard label="Claim delay p50" value={formatDuration(claimDelay?.p50_ms)} detail={`${formatNumber(claimDelay?.count ?? 0)} measured`} />
-        <StatCard label="Claim delay p95" value={formatDuration(claimDelay?.p95_ms)} detail={`avg ${formatDuration(claimDelay?.avg_ms)}`} />
+        <StatCard label="Claim delay p50" value={figure(formatDuration(claimDelay?.p50_ms))} detail={detail(`${formatNumber(claimDelay?.count ?? 0)} measured`)} />
+        <StatCard label="Claim delay p95" value={figure(formatDuration(claimDelay?.p95_ms))} detail={detail(`avg ${formatDuration(claimDelay?.avg_ms)}`)} />
         <StatCard
           label="Pending activations"
-          value={formatNumber(pending)}
+          value={figure(formatNumber(pending))}
           // The only figure here about right now rather than the window: these
           // users are waiting on an entitlement claim as you read this.
-          detail={pending > 0 ? "waiting on a claim now" : "none waiting"}
+          detail={detail(pending > 0 ? "waiting on a claim now" : "none waiting")}
         />
       </div>
 
@@ -204,7 +226,11 @@ export function ErrorsTab({ appId }: { appId: string }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Recent refusal samples"
-            description="Requests stopped before a provider call, by the app's limits or by its settings, such as a model it does not allow. At most one sample per user a minute; this is diagnostic history, not an exact count. Kept 90 days."
+            description={
+              rejectionsWindowed
+                ? `Filtered by reason or scope: ${rejectionWindow.from} to ${rejectionWindow.to}, at most 31 days at a time. Move back through the ${KEPT_DAYS} days kept below.`
+                : `Requests stopped before a provider call, by the app's limits or by its settings, such as a model it does not allow. At most one sample per user a minute; this is diagnostic history, not an exact count. Kept ${KEPT_DAYS} days.`
+            }
           />
           <div className="flex flex-wrap gap-2 pt-3">
             <Select
@@ -212,6 +238,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               onValueChange={(value) => {
                 setRejectionReason(value);
                 setRejectionCursors([]);
+                rejectionWindow.reset();
               }}
             >
               <SelectTrigger className="w-[230px]" size="sm" aria-label="Refusal reason">
@@ -231,6 +258,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               onValueChange={(value) => {
                 setRejectionScope(value);
                 setRejectionCursors([]);
+                rejectionWindow.reset();
               }}
             >
               <SelectTrigger className="w-[150px]" size="sm" aria-label="Refusal scope">
@@ -250,10 +278,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               aria-label="Refusal user ID"
               placeholder="User ID"
               value={rejectionUser}
-              onChange={(event) => {
-                setRejectionUser(event.target.value);
-                setRejectionCursors([]);
-              }}
+              onChange={(event) => setRejectionUser(event.target.value)}
             />
           </div>
         </CardHeader>
@@ -320,7 +345,12 @@ export function ErrorsTab({ appId }: { appId: string }) {
               )}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
+            {rejectionsWindowed ? (
+              <div className="mr-auto">
+                <DateWindowNav range={rejectionWindow} disabled={rejections.isFetching} onMove={() => setRejectionCursors([])} />
+              </div>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -345,13 +375,18 @@ export function ErrorsTab({ appId }: { appId: string }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Recent attempts"
-            description="Every token exchange and key registration, and every App Attest challenge that nothing used, newest first. Kept 90 days."
+            description={
+              eventsWindowed
+                ? `Filtered by outcome: ${eventWindow.from} to ${eventWindow.to}, at most 31 days at a time. Move back through the ${KEPT_DAYS} days kept below.`
+                : `Every token exchange and key registration, and every App Attest challenge that nothing used, newest first. Kept ${KEPT_DAYS} days.`
+            }
             action={
               <Select
                 value={outcome}
                 onValueChange={(next) => {
                   setOutcome(next);
                   setCursors([]);
+                  eventWindow.reset();
                 }}
               >
                 <SelectTrigger className="w-[210px]" size="sm" aria-label="Outcome">
@@ -359,7 +394,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All outcomes</SelectItem>
-                  {OUTCOME_FILTERS.map((value) => (
+                  {AUTH_EVENT_OUTCOMES.map((value) => (
                     <SelectItem key={value} value={value}>
                       {value}
                     </SelectItem>
@@ -443,7 +478,12 @@ export function ErrorsTab({ appId }: { appId: string }) {
               )}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
+            {eventsWindowed ? (
+              <div className="mr-auto">
+                <DateWindowNav range={eventWindow} disabled={events.isFetching} onMove={() => setCursors([])} />
+              </div>
+            ) : null}
             <Button variant="outline" size="sm" disabled={events.isFetching || cursors.length === 0} onClick={() => setCursors((current) => current.slice(0, -1))}>
               Newer
             </Button>

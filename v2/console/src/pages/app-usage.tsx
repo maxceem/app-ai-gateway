@@ -33,6 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { Hint } from "@/components/hint";
+import { DateWindowNav, KEPT_DAYS, useDateWindow } from "@/components/date-window";
 import { RangePicker } from "@/components/pickers";
 import { AuthOutcomeBadge } from "@/components/status-badge";
 import {
@@ -40,7 +41,6 @@ import {
   daysAgo,
   formatCompact,
   formatCost,
-  formatCostToCent,
   formatDateTime,
   formatEventTime,
   formatNumber,
@@ -103,6 +103,9 @@ export function UsageTab({ app }: { app: App }) {
   const [dimension, setDimension] = useState<UsageDimension>("model");
   const [status, setStatus] = useState<string>("all");
   const [cursors, setCursors] = useState<string[]>([]);
+  const dateWindow = useDateWindow();
+  // A status filter has no index of its own, so it reads a window of days the list shows and moves.
+  const windowed = status !== "all";
 
   const to = today();
   const from = daysAgo(Number(days) - 1);
@@ -113,21 +116,21 @@ export function UsageTab({ app }: { app: App }) {
   const chargeQuery: ChargeQuery = {
     limit: 25,
     ...(status === "all" ? {} : { status: status as NonNullable<ChargeQuery["status"]> }),
+    ...(windowed ? { from: dateWindow.from, to: dateWindow.to } : {}),
     ...(cursors.length > 0 ? { before: cursors.at(-1) } : {}),
   };
   const charges = useAppCharges(app.id, chargeQuery);
 
   const chart = useMemo(() => pivot(series.data?.buckets ?? [], from, to, metric), [series.data, from, to, metric]);
+  // Keys are generated (`s0`…) and colours fixed: a provider's name is only ever a label, shown as text.
+  const colorOf = (provider: string, index: number) => (provider === OTHER ? "var(--chart-other)" : CHART_COLORS[index]!);
   const config: ChartConfig = Object.fromEntries(
-    chart.providers.map((provider, index) => [
-      provider,
-      provider === OTHER
-        ? { label: `Other (${chart.foldedCount})`, color: "var(--chart-other)" }
-        : { label: provider, color: CHART_COLORS[index] },
+    chart.series.map(({ key, provider }, index) => [
+      key,
+      { label: provider === OTHER ? `Other (${chart.foldedCount})` : provider, color: colorOf(provider, index) },
     ]),
   );
-  // A day's total for one provider reads to the cent; one charge keeps its fraction of a cent.
-  const formatMetric = (value: number) => (metric === "cost_usd" ? formatCostToCent(value) : formatCompact(value));
+  const formatMetric = (value: number) => (metric === "cost_usd" ? formatCost(value) : formatCompact(value));
 
   return (
     <div className="space-y-4">
@@ -158,7 +161,7 @@ export function UsageTab({ app }: { app: App }) {
             <Skeleton className="h-[220px] w-full" />
           ) : series.isError ? (
             <EmptyState>Could not load usage.</EmptyState>
-          ) : chart.providers.length === 0 ? (
+          ) : chart.series.length === 0 ? (
             <EmptyState>No usage recorded in this range.</EmptyState>
           ) : (
             <ChartContainer config={config} className="h-[220px] w-full">
@@ -168,8 +171,8 @@ export function UsageTab({ app }: { app: App }) {
                 <YAxis tickLine={false} axisLine={false} width={56} tickFormatter={(value: number) => formatMetric(value)} />
                 <ChartTooltip content={<ChartTooltipContent valueFormatter={(value) => formatMetric(Number(value))} />} />
                 <ChartLegend content={<ChartLegendContent />} />
-                {chart.providers.map((provider) => (
-                  <Bar key={provider} dataKey={provider} stackId="usage" fill={`var(--color-${provider})`} radius={[2, 2, 0, 0]} />
+                {chart.series.map(({ key, provider }, index) => (
+                  <Bar key={key} dataKey={key} stackId="usage" fill={colorOf(provider, index)} radius={[2, 2, 0, 0]} />
                 ))}
               </BarChart>
             </ChartContainer>
@@ -273,13 +276,18 @@ export function UsageTab({ app }: { app: App }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Recent charges"
-            description="Each upstream attempt, session slice and job estimate, and each correction, newest first. Kept 90 days."
+            description={
+              windowed
+                ? `Filtered by status: ${dateWindow.from} to ${dateWindow.to}, at most 31 days at a time. Move back through the ${KEPT_DAYS} days kept below.`
+                : `Each upstream attempt, session slice and job estimate, and each correction, newest first. Kept ${KEPT_DAYS} days.`
+            }
             action={
               <Select
                 value={status}
                 onValueChange={(next) => {
                   setStatus(next);
                   setCursors([]);
+                  dateWindow.reset();
                 }}
               >
                 <SelectTrigger className="w-[170px]" size="sm" aria-label="Charge status">
@@ -337,7 +345,12 @@ export function UsageTab({ app }: { app: App }) {
               )}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
+            {windowed ? (
+              <div className="mr-auto">
+                <DateWindowNav range={dateWindow} disabled={charges.isFetching} onMove={() => setCursors([])} />
+              </div>
+            ) : null}
             <Button variant="outline" size="sm" disabled={charges.isFetching || cursors.length === 0} onClick={() => setCursors((current) => current.slice(0, -1))}>
               Newer
             </Button>
@@ -417,7 +430,17 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
  * estimate (a job before its final figure, or a mode with no exact price)
  * reads ≈.
  */
-export function ChargeCost({ charge }: { charge: Pick<Charge, "cost_usd" | "price_source" | "price_is_estimate"> }) {
+export function ChargeCost({ charge }: { charge: Pick<Charge, "cost_usd" | "price_source" | "price_is_estimate" | "measured" | "status"> }) {
+  // A failed attempt that reported no usage was billed nothing: its cost is
+  // empty and its measure complete, whatever price source it was written
+  // with (`call-charge.ts`). That is not a cost still unknown (Sol 7b-6).
+  if (charge.cost_usd === null && charge.status !== "ok" && charge.measured === "complete") {
+    return (
+      <Hint content="Failed before the provider reported any usage: nothing was billed.">
+        <span className="text-muted-foreground">—</span>
+      </Hint>
+    );
+  }
   if (charge.price_source === "unresolved" || charge.price_source === "not_priced") {
     return (
       <Hint content={PRICE_SOURCE_TEXT[charge.price_source]}>

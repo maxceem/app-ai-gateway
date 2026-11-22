@@ -88,6 +88,20 @@ describe("Usage tab", () => {
     expect(screen.getByText("estimate")).toBeTruthy();
   });
 
+  it("shows — for a failure the ledger wrote with no price and nothing billed, not unpriced (Sol 7b-6)", async () => {
+    // As `call-charge.ts` writes a failed attempt with no usage on a model with no rate:
+    // no cost, price source unresolved, measured complete.
+    renderUsage({
+      charges: [
+        charge({ id: "free", status: "provider_error", http_status: 401, error_code: "upstream_error", cost_usd: null, cost_nano: null, price_source: "unresolved", measured: "complete" }),
+      ],
+    });
+    const row = (await screen.findByText("upstream_error")).closest("tr")!;
+    expect(within(row).queryByText("unpriced")).toBeNull();
+    expect(within(row).getByText("—", { selector: "span" })).toBeTruthy();
+    await findByHint(/^Failed before the provider reported any usage/u);
+  });
+
   it("shows a correction as its own row naming the charge it corrects", async () => {
     renderUsage({ charges: [charge({ id: "corr", kind: "correction", corrects_charge_id: "c1", correction_kind: "units", cost_usd: -0.001, cost_nano: -1_000_000 })] });
     expect(await screen.findByText("correction (units)")).toBeTruthy();
@@ -142,5 +156,31 @@ describe("Usage tab", () => {
     await user.click(screen.getByRole("combobox", { name: "Charge status" }));
     await user.click(await screen.findByRole("option", { name: "Every failure" }));
     await waitFor(() => expect(urls(fetchMock, "/charges").some((url) => url.includes("status=failed") && !url.includes("before="))).toBe(true));
+  });
+
+  it("reads a status filter a window of days at a time, says which, and moves it back through the 90 kept (Sol 7b-6)", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderUsage();
+    await screen.findByText("No charges.");
+    await user.click(screen.getByRole("combobox", { name: "Charge status" }));
+    await user.click(await screen.findByRole("option", { name: "Every failure" }));
+    const filtered = () =>
+      urls(fetchMock, "/charges")
+        .filter((url) => url.includes("status=failed"))
+        .map((url) => new URL(url, "http://x").searchParams);
+    await waitFor(() => expect(filtered().length).toBeGreaterThan(0));
+    const first = filtered().at(-1)!;
+    const span = (params: URLSearchParams) => (Date.parse(params.get("to")!) - Date.parse(params.get("from")!)) / 86_400_000 + 1;
+    expect(span(first)).toBe(31);
+    expect(screen.getByText(`${first.get("from")} to ${first.get("to")}`)).toBeTruthy();
+    const earlier = screen.getByRole("button", { name: "Earlier days" });
+    await user.click(earlier);
+    await waitFor(() => expect(filtered().some((params) => params.get("to")! < first.get("from")!)).toBe(true));
+    // Twice back reaches the oldest day kept: 90 days in all, then no further.
+    await user.click(earlier);
+    await waitFor(() => expect(earlier.hasAttribute("disabled")).toBe(true));
+    const last = filtered().at(-1)!;
+    expect((Date.parse(first.get("to")!) - Date.parse(last.get("from")!)) / 86_400_000 + 1).toBe(90);
+    expect(filtered().every((params) => !params.has("before"))).toBe(true);
   });
 });

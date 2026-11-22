@@ -36,6 +36,13 @@ describe("foldOutcomes", () => {
     ]);
   });
 
+  it("leaves out recovered challenges: the app got past them on its own (Sol 7b-6)", () => {
+    const rows = foldOutcomes(
+      summary({ daily: [{ date: "2026-08-02", event: "challenge", outcome: "client_recovered", reason: null, count: 3 }] }),
+    );
+    expect(rows).toEqual([]);
+  });
+
   it("shows failed charges as one row, and refusals as samples, busiest first", () => {
     const rows = foldOutcomes(
       summary({

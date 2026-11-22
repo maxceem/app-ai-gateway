@@ -52,6 +52,11 @@ export const UsageRangeQuerySchema = z.object({
 export const AppUsageResponseSchema = z
   .object({ app_id: z.string(), month: z.string() })
   .extend(UsageTotalsSchema.shape)
+  .extend({
+    first_usage_day: z.string().nullable().optional().meta({
+      description: "The UTC day of the app's oldest usage still kept (YYYY-MM-DD, or YYYY-MM once it is only in month totals). Null when the app has never made a call; absent from older gateways.",
+    }),
+  })
   .meta({ id: "AppUsageResponse" });
 
 export const AccountUsageResponseSchema = z

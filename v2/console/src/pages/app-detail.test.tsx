@@ -31,6 +31,8 @@ const USERS = {
 type Answer = { status?: number; body: unknown };
 
 /** Routes by method and path; anything else is the app itself. */
+const NO_USAGE = { charges: 0, failed: 0, unpriced: 0, cost_nano: 0, cost_usd: 0, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, session_ms: 0 };
+
 function stub(routes: Record<string, Answer> = {}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -41,7 +43,9 @@ function stub(routes: Record<string, Answer> = {}) {
         ? { body: PROVIDERS }
         : url.startsWith(`${APP_URL}/charges`)
           ? { body: { app_id: "my-app", limit: 1, next_before: null, charges: [] } }
-          : { body: { app: testApp() } });
+          : url.startsWith(`${APP_URL}/usage`)
+            ? { body: { app_id: "my-app", month: "2026-11", ...NO_USAGE, first_usage_day: null } }
+            : { body: { app: testApp() } });
     return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -326,16 +330,26 @@ describe("AppDetailPage", () => {
     expect(await screen.findByText(/No calls yet/u)).toBeTruthy();
   });
 
-  it("says on the overview when calls are arriving, linking to its usage", async () => {
+  it("says on the overview when the app has made calls, from its usage totals, linking to its usage", async () => {
     stub({
       ...CHECK,
+      [`GET ${APP_URL}/usage`]: { body: { app_id: "my-app", month: "2026-11", ...NO_USAGE, first_usage_day: "2026-08-02" } },
+    });
+    renderTab("overview");
+    expect(await screen.findByText(/This app has made calls, the first on 2026-08-02/u)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "See usage" }).getAttribute("href")).toBe("/apps/my-app/usage");
+  });
+
+  it("asks an older gateway, whose usage has no first day, for its newest charge instead", async () => {
+    stub({
+      ...CHECK,
+      [`GET ${APP_URL}/usage`]: { body: { app_id: "my-app", month: "2026-11", ...NO_USAGE } },
       [`GET ${APP_URL}/charges?limit=1`]: {
-        body: { app_id: "my-app", limit: 1, next_before: null, charges: [{ id: "c1", used_at: "2026-11-02T10:00:00.000Z" }] },
+        body: { app_id: "my-app", limit: 1, next_before: null, charges: [{ id: "c1", used_at: "2026-11-02T10:00:00.000Z", usage_day: "2026-11-02" }] },
       },
     });
     renderTab("overview");
-    expect(await screen.findByText(/Calls are arriving/u)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "See usage" }).getAttribute("href")).toBe("/apps/my-app/usage");
+    expect(await screen.findByText(/This app has made calls, one on 2026-11-02/u)).toBeTruthy();
   });
 
   it("offers the Usage and Errors tabs beside the others", async () => {

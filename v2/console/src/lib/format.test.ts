@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   cachedInputRate,
   formatCost,
-  formatCostToCent,
   formatPercent,
   inputTokens,
   totalTokens,
@@ -16,17 +15,26 @@ const usage = {
 };
 
 describe("cost formatting", () => {
-  it("keeps four decimals below a cent, where a request's whole cost lives", () => {
-    expect(formatCost(0.0081)).toBe("$0.0081");
-    expect(formatCost(0)).toBe("$0.00");
-    expect(formatCost(1.239)).toBe("$1.24");
-  });
-
-  it("reads a total to the cent, so a column of them is one width", () => {
-    expect(formatCostToCent(0.0081)).toBe("$0.01");
-    expect(formatCostToCent(0.00004)).toBe("$0.00");
-    expect(formatCostToCent(1.239)).toBe("$1.24");
-    expect(formatCostToCent(null)).toBe("—");
+  // One formatter for every amount (Sol 7b-6): cents kept however large, and a nonzero amount never zero.
+  it.each([
+    [null, "—"],
+    [undefined, "—"],
+    [0, "$0.00"],
+    [0.004, "$0.004"],
+    [0.0081, "$0.0081"],
+    [0.00421337, "$0.0042"],
+    [0.000000001, "$0.000000001"],
+    [0.00000005, "$0.00000005"],
+    [0.0099999, "$0.01"],
+    [0.01, "$0.01"],
+    [1.239, "$1.24"],
+    [100.49, "$100.49"],
+    [1234.5, "$1,234.50"],
+    [-0.0042, "-$0.0042"],
+    [-0.75, "-$0.75"],
+    [-100.49, "-$100.49"],
+  ])("shows %s as %s", (value, text) => {
+    expect(formatCost(value)).toBe(text);
   });
 });
 

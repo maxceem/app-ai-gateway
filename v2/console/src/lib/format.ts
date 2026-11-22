@@ -15,25 +15,25 @@ export const formatCompact = (value: number | null | undefined): string =>
 export const formatPercent = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : percent.format(value);
 
-/** Gateway costs are often fractions of a cent, so small values keep more digits. */
+const dollars = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Dollars, the one way the console shows money (Sol 7b-6). A cent or more
+ * keeps its cents, however large: `$1,234.56`. Under a cent, two significant
+ * digits, down to the gateway's nano-dollar: a request's whole cost often
+ * lives there, and a nonzero amount never reads as zero. A correction's
+ * negative amount keeps its sign in front: `-$0.0042`.
+ */
 export function formatCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (value === 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  return formatCostToCent(value);
-}
-
-/**
- * The same to the nearest cent, with no sub-cent case. For totals — a day's
- * spend on one provider — where a hundredth of a cent is noise, and a column
- * of amounts that change length row by row is harder to read than that
- * precision is worth. A single request's cost keeps {@link formatCost}, where
- * the fraction of a cent is the whole answer.
- */
-export function formatCostToCent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  if (value < 100) return `$${value.toFixed(2)}`;
-  return `$${plain.format(Math.round(value))}`;
+  const sign = value < 0 ? "-" : "";
+  const size = Math.abs(value);
+  if (size >= 0.01) return `${sign}$${dollars.format(size)}`;
+  const significant = Number(size.toPrecision(2));
+  // Enough decimals for two significant digits, at most nine (one nano-dollar).
+  const decimals = Math.min(9, Math.max(3, 1 - Math.floor(Math.log10(significant))));
+  return `${sign}$${significant.toFixed(decimals).replace(/0+$/u, "")}`;
 }
 
 /** A duration a person reads at a glance: seconds under a minute, else minutes. */
