@@ -14,18 +14,21 @@
  * is counted against the run's allowance for it; each page of keys is deleted as soon as it is listed, so
  * a run that runs out keeps what it deleted and the next run goes on.
  *
- * App folders are listed a page at a time, in one pass from after the last app
- * the previous run reached (kept in one small object) to the end of the
- * listing, where the cursor is cleared and the next run starts from the first
- * app again. So a run always makes progress, however many apps there are, and
- * one busy app never holds up the apps after it: a run that runs out in it,
- * having deleted something there, leaves the cursor after it, and a later pass
- * comes back to it. A run that runs out in an app before deleting anything
- * there leaves the cursor before it, so the next run starts with that app.
+ * App folders are listed a page at a time, from after the last app the
+ * previous run reached (kept in one small object) to the end of the listing,
+ * then from the first app round to where the run began. So one run goes round
+ * every app once while its allowances last, however the cursor stood. A run
+ * that runs out stops there: one busy app never holds up the apps after it,
+ * because a run that runs out in it, having deleted something there, leaves
+ * the cursor after it, and a later run comes back to it. A run that runs out
+ * in an app before deleting anything there leaves the cursor before it, so the
+ * next run starts with that app. A run that runs out logs
+ * `conversation_retention_backlog_left` as a warning.
  *
- * Runs once a day, from the hourly cron (`../index.ts`).
+ * Runs once a day, from the hourly cron (`../maintenance/nightly.ts`).
  */
 import { CONVERSATION_RETENTION_DAYS } from "../contracts/app-config.ts";
+import { log } from "../core/log.ts";
 import { QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
 import { appFolderName, CONVERSATIONS_ROOT, dayBefore, parseAppFolderName } from "./storage.ts";
 
@@ -40,14 +43,17 @@ export const RETENTION_CURSOR = `${CONVERSATIONS_ROOT}.retention-cursor`;
  */
 export const RETENTION_CALLS = 500;
 /**
- * D1 queries one run may make: the first read of every app's retention, then
- * one read of the app before each page it deletes. D1 allows 50 queries per
- * Worker invocation on the Workers Free plan, and the hourly clean-up in the
- * same 03:17 run spends six (`../maintenance/nightly.ts`), so this stays
- * under what is left. Where it runs out first, the run stops as it does when
- * its R2 calls run out.
+ * D1 queries one run may make when it is called on its own. The hourly cron
+ * gives it what `MAINTENANCE_QUERY_BUDGET` leaves after the hourly clean-up in
+ * the same 03:17 run (`../maintenance/nightly.ts`): 43 at the default of 50.
+ * A run spends one to read every app's retention, then one to look at the app
+ * again before each page it deletes. So on the Workers Free plan it keeps up
+ * with about 40 apps that each have one page of conversations expire a night;
+ * a deployment with more raises `MAINTENANCE_QUERY_BUDGET` on the Paid plan.
+ * Where the queries run out first, the run stops as it does when its R2
+ * calls run out.
  */
-export const RETENTION_D1_QUERIES = 40;
+export const RETENTION_D1_QUERIES = 43;
 /** The UTC hour of the day the hourly cron runs retention in. */
 export const RETENTION_HOUR_UTC = 3;
 
@@ -175,57 +181,65 @@ export async function runConversationRetention(
     const retention = await appRetention(db);
     // The cursor is written with the one call kept back for it.
     const work = new QueryBudget(Math.max(0, budget.remaining - 1));
+    // From after the cursor to the end of the listing, then from the first app
+    // round to the cursor (that app included, as a later pass coming back to it).
+    const legs: { after: string | null; upTo: string | null }[] =
+      last === null ? [{ after: null, upTo: null }] : [{ after: last, upTo: null }, { after: null, upTo: last }];
     try {
-      let cursor: string | undefined;
-      for (;;) {
-        work.charge(1);
-        const page = await bucket.list({
-          prefix: CONVERSATIONS_ROOT,
-          delimiter: "/",
-          limit: pageSize,
-          ...(cursor !== undefined ? { cursor } : last !== null ? { startAfter: last } : {}),
-        });
-        for (const folder of page.delimitedPrefixes) {
-          // `startAfter` names the folder, whose own keys sort after it: it comes back first.
-          if (last !== null && folder <= last) continue;
-          beforeCurrent = resume;
-          resume = folder;
-          const owner = parseAppFolderName(folder.slice(CONVERSATIONS_ROOT.length, -1));
-          // Written before folders named their account: never served, never touched.
-          if (owner === null) continue;
-          const { accountId, appId } = owner;
-          current = folder;
-          deletedBeforeCurrent = result.deletedObjects;
-          const days = retention.get(appFolderName(accountId, appId));
-          if (days === undefined) {
-            // The app was missing when the sweep began; it is looked up again before each page,
-            // so an app made since then keeps what it has written.
-            const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await appNow(db, accountId, appId)).state === "absent");
-            if (!outcome.stopped) result.removedApps += 1;
-          } else {
-            for await (const day of folders(bucket, folder, work, pageSize)) {
-              const match = DAY_FOLDER.exec(day.slice(folder.length));
-              // Day folders sort oldest first, so the first one kept ends the app.
-              if (match === null || match[1]! >= dayBefore(now, days)) break;
-              // The retention is read again after each page is listed, right before that page is deleted:
-              // a retention raised since the sweep began is honoured, and a failed read leaves the folder
-              // for a later run.
-              const dayName = match[1]!;
-              const outcome = await deleteAll(bucket, day, work, pageSize, result, async () => {
-                const fresh = await appNow(db, accountId, appId);
-                return fresh.state === "present" && dayName < dayBefore(now, fresh.days);
-              });
-              if (outcome.stopped) break;
+      for (const leg of legs) {
+        let cursor: string | undefined;
+        listing: for (;;) {
+          work.charge(1);
+          const page = await bucket.list({
+            prefix: CONVERSATIONS_ROOT,
+            delimiter: "/",
+            limit: pageSize,
+            ...(cursor !== undefined ? { cursor } : leg.after !== null ? { startAfter: leg.after } : {}),
+          });
+          for (const folder of page.delimitedPrefixes) {
+            // `startAfter` names the folder, whose own keys sort after it: it comes back first.
+            if (leg.after !== null && folder <= leg.after) continue;
+            // Back where the run began: every app has had its turn.
+            if (leg.upTo !== null && folder > leg.upTo) break listing;
+            beforeCurrent = resume;
+            resume = folder;
+            const owner = parseAppFolderName(folder.slice(CONVERSATIONS_ROOT.length, -1));
+            // Written before folders named their account: never served, never touched.
+            if (owner === null) continue;
+            const { accountId, appId } = owner;
+            current = folder;
+            deletedBeforeCurrent = result.deletedObjects;
+            const days = retention.get(appFolderName(accountId, appId));
+            if (days === undefined) {
+              // The app was missing when the sweep began; it is looked up again before each page,
+              // so an app made since then keeps what it has written.
+              const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await appNow(db, accountId, appId)).state === "absent");
+              if (!outcome.stopped) result.removedApps += 1;
+            } else {
+              for await (const day of folders(bucket, folder, work, pageSize)) {
+                const match = DAY_FOLDER.exec(day.slice(folder.length));
+                // Day folders sort oldest first, so the first one kept ends the app.
+                if (match === null || match[1]! >= dayBefore(now, days)) break;
+                // The retention is read again after each page is listed, right before that page is deleted:
+                // a retention raised since the sweep began is honoured, and a failed read leaves the folder
+                // for a later run.
+                const dayName = match[1]!;
+                const outcome = await deleteAll(bucket, day, work, pageSize, result, async () => {
+                  const fresh = await appNow(db, accountId, appId);
+                  return fresh.state === "present" && dayName < dayBefore(now, fresh.days);
+                });
+                if (outcome.stopped) break;
+              }
             }
+            current = null;
           }
-          current = null;
+          if (!page.truncated) {
+            // The end of the listing: the next run starts from the first app.
+            resume = null;
+            break;
+          }
+          cursor = page.cursor;
         }
-        if (!page.truncated) {
-          // The end of the listing: the next run starts from the first app.
-          resume = null;
-          break;
-        }
-        cursor = page.cursor;
       }
     } finally {
       // What the work spent is the run's too (never more than it was given).
@@ -239,6 +253,11 @@ export async function runConversationRetention(
     // But only where it deleted something there: an app the run reached with nothing
     // left to spend was never looked at, so the next run starts with it instead.
     if (current !== null) resume = result.deletedObjects > deletedBeforeCurrent ? current : beforeCurrent;
+    // Not every app had its turn: expired conversations may be left until a later run.
+    log("warn", "conversation_retention_backlog_left", {
+      deletedObjects: result.deletedObjects,
+      ranOutOf: reads.remaining === 0 ? "d1_queries" : "r2_calls",
+    });
   }
   if (resume !== last && budget.affords(1)) {
     budget.charge(1);

@@ -4,7 +4,9 @@
  * limits:
  *
  * - 03:17 UTC: stored conversations past their app's retention
- *   (`../conversations/retention.ts`), with its own allowance of R2 calls;
+ *   (`../conversations/retention.ts`), with its own allowance of R2 calls,
+ *   and the D1 queries `MAINTENANCE_QUERY_BUDGET` leaves after the hourly
+ *   clean-up;
  * - 04:17 UTC: the nightly maintenance (v1's `prune` in `src/index.ts`).
  *
  * One cron trigger, as v1, rather than one per job: a Workers Free account
@@ -95,15 +97,31 @@ function settleChallenges(db: D1Database): Promise<void> {
   return job("auth_challenges_settled", "auth_challenges_prune_failed", () => settleExpiredChallenges(db), (settled) => ({ ...settled }));
 }
 
+/** Statements the App Attest challenge clean-up issues: one batch of two. */
+export const CHALLENGE_SETTLE_STATEMENTS = 2;
+
+/**
+ * Conversation retention's D1 queries: what `MAINTENANCE_QUERY_BUDGET` leaves
+ * once the hourly clean-up in the same 03:17 run has had its statements. 43 at
+ * the default of 50, and more where a deployment on the Paid plan raises it.
+ */
+export function conversationReadBudget(env: Env): QueryBudget {
+  const reads = maintenanceStatementBudget(env);
+  reads.charge(SIGN_IN_SWEEP_STATEMENTS + CHALLENGE_SETTLE_STATEMENTS);
+  return reads;
+}
+
 /** Stored conversations past their app's retention, where the deployment keeps them. */
 function pruneConversations(env: Env, now: number): Promise<void> {
   const bucket = conversationsBucket(env);
   if (bucket === null) return Promise.resolve();
-  return job("conversations_pruned", "conversations_prune_failed", () => runConversationRetention(bucket, env.DB, now), (pruned) => ({ ...pruned }));
+  return job(
+    "conversations_pruned",
+    "conversations_prune_failed",
+    () => runConversationRetention(bucket, env.DB, now, undefined, undefined, conversationReadBudget(env)),
+    (pruned) => ({ ...pruned }),
+  );
 }
-
-/** Statements the App Attest challenge clean-up issues: one batch of two. */
-export const CHALLENGE_SETTLE_STATEMENTS = 2;
 
 /** The nightly passes at `now`, in the order they take their turns. */
 export function nightlyPasses(now: number): Pass[] {

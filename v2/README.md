@@ -95,8 +95,11 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 
 The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in its own hour:
 
-- At 03:17 UTC it deletes stored conversations past each app's retention. It makes at most 500
-  R2 calls and 40 D1 queries, and goes on the next night where it stopped.
+- At 03:17 UTC it deletes stored conversations past each app's retention. It goes round every
+  app once, with at most 500 R2 calls and the D1 queries `MAINTENANCE_QUERY_BUDGET` leaves after
+  the hourly clean-up: 43 by default, one per page of conversations it deletes. That keeps up with
+  about 40 apps that each have one page expire a night. Where it runs out, it logs
+  `conversation_retention_backlog_left` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
   days, and detailed usage after 90 days: charges, settled sessions and budget totals. Day totals
   stay 400 days, then move into month totals.
@@ -115,7 +118,7 @@ A backlog left over is cleared over the next nights, and the run logs `maintenan
 a warning. On the Workers Paid plan, two optional Worker variables clear it faster:
 
 - `MAINTENANCE_QUERY_BUDGET` (for example `1000`). A value above 1,000, D1's limit on that plan, is
-  lowered to 1,000.
+  lowered to 1,000. It also raises conversation retention's D1 queries.
 - `MAINTENANCE_ROW_BUDGET` (for example `1000000`). A value above 5,000,000 is lowered to 5,000,000.
 
 ## Deploying

@@ -9,7 +9,8 @@ import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, wait
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { conversationRecord, type CaptureHints, type ConversationCapture } from "../src/conversations/record.ts";
-import { RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
+import { RETENTION_CURSOR, RETENTION_D1_QUERIES, runConversationRetention } from "../src/conversations/retention.ts";
+import { conversationReadBudget } from "../src/maintenance/nightly.ts";
 import { QueryBudget } from "../src/core/query-budget.ts";
 import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
@@ -1649,13 +1650,13 @@ describe("conversation retention", () => {
     let runs = 0;
     while ((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects.length > 0 && runs < 10) {
       // Pages of 50 keys. A run that reaches the app pays for the cursor read, the app list, the day list,
-      // one page's list and delete, and the cursor write. A run that ran out in it leaves the cursor after it,
-      // so the next run reaches the end of the listing and clears the cursor, and the one after comes back.
+      // one page's list and delete, and the cursor write. A run that ran out in it leaves the cursor after it;
+      // the next run finds no app after it, goes round to the first app, and comes back to it in the same run.
       await runConversationRetention(store, env.DB, now, new QueryBudget(7), 50);
       runs += 1;
     }
     expect((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects).toHaveLength(0);
-    expect(runs).toBe(5);
+    expect(runs).toBe(3);
     // Only the cursor was read, never a batch.
     expect(reads.mock.calls.every(([key]) => key === RETENTION_CURSOR)).toBe(true);
     const left = (await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects.map((object) => object.key).sort();
@@ -1818,8 +1819,10 @@ describe("conversation retention", () => {
     await expire(first, ["2026-11-12", "2026-11-13"]);
     await runConversationRetention(store, env.DB, now, new QueryBudget(500), 1_000, new QueryBudget(3));
     expect(await left(second)).toBe(0);
-    // It reached the end of the listing, so the run after it starts from the first app again.
-    expect(await store.get(RETENTION_CURSOR)).toBeNull();
+    // Then it went round to the first app in the same run, and ran out there after one of its two days:
+    // the next run starts after it, goes round, and comes back to it.
+    expect(await left(first)).toBe(1);
+    expect(await (await store.get(RETENTION_CURSOR))?.text()).toBe(first);
     await runConversationRetention(store, env.DB, now, new QueryBudget(500), 1_000, new QueryBudget(3));
     expect(await left(first)).toBe(0);
   });
@@ -1849,6 +1852,99 @@ describe("conversation retention", () => {
     expect(await store.head(expired)).toBeNull();
     expect(runs).toBeLessThanOrEqual(2);
     expect((await store.list({ prefix: first })).objects).toHaveLength(keptDays.length);
+  });
+
+  /** The warnings logged from here on, by their code. */
+  function warnings(): { message: string; ranOutOf?: string }[] {
+    const entries: { message: string; ranOutOf?: string }[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: unknown) => {
+      entries.push(JSON.parse(String(entry)) as { message: string; ranOutOf?: string });
+    });
+    return entries;
+  }
+
+  /** Apps with a one-day retention, written straight to D1, their folders sorted. */
+  async function oneDayApps(count: number): Promise<string[]> {
+    const tag = crypto.randomUUID().slice(0, 8);
+    const ids = Array.from({ length: count }, (_, index) => `app_wrap_${tag}_${String(index).padStart(2, "0")}`);
+    const at = Date.now();
+    await env.DB.batch(
+      ids.map((id) =>
+        env.DB
+          .prepare("INSERT INTO app (id, account_id, name, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .bind(id, ACCOUNT_ID, id, JSON.stringify({ conversations: { store: true, retention_days: 1 } }), at, at),
+      ),
+    );
+    return ids.map((id) => appPrefix(ACCOUNT_ID, id)).sort();
+  }
+
+  it("goes round every app in one run at the default allowances: 40 apps with one expired page each (Sol 7b-2 round 5)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T03:17:00.000Z");
+    const folders = await oneDayApps(40);
+    for (const folder of folders) {
+      await store.put(`${folder}2026-11-10/000000-0123456789abcdef.jsonl.gz`, "expired");
+      await store.put(`${folder}2026-11-21/000000-0123456789abcdef.jsonl.gz`, "kept");
+    }
+    // The last run stopped halfway down the list.
+    await store.put(RETENTION_CURSOR, folders[19]!);
+    const logged = warnings();
+    const reads = conversationReadBudget(env);
+    expect(reads.limit - reads.spent).toBe(RETENTION_D1_QUERIES);
+    await runConversationRetention(store, env.DB, now, undefined, undefined, reads);
+    // Every app's expired page is gone in the one run, and every kept day stays.
+    const left = (await store.list({ prefix: "conversations/" })).objects.map((object) => object.key);
+    expect(left.filter((key) => key.includes("/2026-11-10/"))).toEqual([]);
+    expect(left.filter((key) => key.includes("/2026-11-21/"))).toHaveLength(folders.length);
+    // One read of every app's retention, then one look before each app's page.
+    expect(reads.remaining).toBe(RETENTION_D1_QUERIES - 1 - folders.length);
+    expect(logged.map((entry) => entry.message)).not.toContain("conversation_retention_backlog_left");
+  });
+
+  it("goes on from the first app after the end of the listing, and stops at the app it began after (Sol 7b-2 round 5)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T03:17:00.000Z");
+    const [a, b, c] = (await oneDayApps(3)) as [string, string, string];
+    for (const folder of [a, b, c]) {
+      await store.put(`${folder}2026-11-10/000000-0123456789abcdef.jsonl.gz`, "expired");
+      await store.put(`${folder}2026-11-21/000000-0123456789abcdef.jsonl.gz`, "kept");
+    }
+    await store.put(RETENTION_CURSOR, b);
+    const lists = vi.spyOn(store, "list");
+    await runConversationRetention(store, env.DB, now);
+    // C's days were listed once: coming round again, the run stopped at the first app after B.
+    expect(lists.mock.calls.filter(([options]) => options?.prefix === c)).toHaveLength(1);
+    // C after the cursor, then A and B from the first app: every expired day in one run, every kept one stays.
+    for (const folder of [a, b, c]) {
+      expect((await store.list({ prefix: folder })).objects.map((object) => object.key)).toEqual([`${folder}2026-11-21/000000-0123456789abcdef.jsonl.gz`]);
+    }
+    // It went all the way round, so the next run starts after B again.
+    expect(await (await store.get(RETENTION_CURSOR))?.text()).toBe(b);
+  });
+
+  it("takes its D1 queries from MAINTENANCE_QUERY_BUDGET, after the hourly clean-up (Sol 7b-2 round 5)", () => {
+    expect(conversationReadBudget(env).remaining).toBe(RETENTION_D1_QUERIES);
+    // A deployment on the Paid plan that raises the setting, as text or as a number, gets more.
+    expect(conversationReadBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "200" } as Env).remaining).toBe(200 - 50 + RETENTION_D1_QUERIES);
+    expect(conversationReadBudget({ ...env, MAINTENANCE_QUERY_BUDGET: 200 } as unknown as Env).remaining).toBe(200 - 50 + RETENTION_D1_QUERIES);
+  });
+
+  it("warns when it runs out before every app had its turn, and not when it goes all the way round (Sol 7b-2 round 5)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const orphan = `${appPrefix(ACCOUNT_ID, "warn-gone")}2020-01-01/000000-aaaaaaaa.jsonl.gz`;
+    await store.put(orphan, "orphan");
+    const logged = warnings();
+    // Its only D1 query reads the apps' retention: none is left to look at the gone app.
+    await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(500), 1_000, new QueryBudget(1));
+    expect(await store.head(orphan)).not.toBeNull();
+    expect(logged).toEqual([expect.objectContaining({ message: "conversation_retention_backlog_left", ranOutOf: "d1_queries" })]);
+    logged.length = 0;
+    await runConversationRetention(store, env.DB, Date.now());
+    expect(await store.head(orphan)).toBeNull();
+    expect(logged).toEqual([]);
   });
 
   it("stops when the run's allowance runs out", async () => {
