@@ -469,28 +469,6 @@
           ],
           "isUnique": false,
           "where": "\"app_auth_event\".\"claim_delay_ms\" IS NOT NULL"
-        },
-        "app_auth_event_user_success": {
-          "name": "app_auth_event_user_success",
-          "columns": [
-            "app_id",
-            "user_id",
-            "account_id",
-            "created_at"
-          ],
-          "isUnique": false,
-          "where": "\"app_auth_event\".\"outcome\" = 'ok' AND \"app_auth_event\".\"event\" <> 'challenge'"
-        },
-        "app_auth_event_user_claim_missing": {
-          "name": "app_auth_event_user_claim_missing",
-          "columns": [
-            "app_id",
-            "user_id",
-            "account_id",
-            "created_at"
-          ],
-          "isUnique": false,
-          "where": "\"app_auth_event\".\"outcome\" = 'issuer_claims_missing' AND \"app_auth_event\".\"event\" <> 'challenge'"
         }
       },
       "foreignKeys": {},

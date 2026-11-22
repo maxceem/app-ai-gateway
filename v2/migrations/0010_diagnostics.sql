@@ -21,8 +21,6 @@ ALTER TABLE `app_auth_event` ADD `claim_delay_ms` integer;--> statement-breakpoi
 CREATE INDEX `app_auth_event_app_account_created` ON `app_auth_event` (`app_id`,`account_id`,`created_at`,`id`);--> statement-breakpoint
 CREATE INDEX `app_auth_event_claim_delay` ON `app_auth_event` (`app_id`,`account_id`,`claim_delay_ms`,`created_at`) WHERE claim_delay_ms IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `app_auth_event_app_user_created` ON `app_auth_event` (`app_id`,`user_id`,`account_id`,`created_at`,`id`);--> statement-breakpoint
-CREATE INDEX `app_auth_event_user_success` ON `app_auth_event` (`app_id`,`user_id`,`account_id`,`created_at`) WHERE outcome = 'ok' AND event <> 'challenge';--> statement-breakpoint
-CREATE INDEX `app_auth_event_user_claim_missing` ON `app_auth_event` (`app_id`,`user_id`,`account_id`,`created_at`) WHERE outcome = 'issuer_claims_missing' AND event <> 'challenge';--> statement-breakpoint
 DROP INDEX `app_rejection_event_app_created`;--> statement-breakpoint
 DROP INDEX `app_rejection_event_app_user_created`;--> statement-breakpoint
 ALTER TABLE `app_rejection_event` ADD `account_id` text;--> statement-breakpoint

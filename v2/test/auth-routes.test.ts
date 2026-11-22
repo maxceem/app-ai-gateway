@@ -4,7 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, PENDING_SINCE_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
   attestAuthentication,
@@ -553,17 +553,3 @@ describe("expired challenges", () => {
   });
 });
 
-describe("claim waits", () => {
-  it("work out the wait with one seek into each outcome's own index, with no sort (Sol 7b-4 rounds 4 to 6)", async () => {
-    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${PENDING_SINCE_SQL}`).bind("app", "u1", "acct").all<{ detail: string }>()).results
-      .map((row) => row.detail)
-      .join("\n");
-    // Each index holds only the rows its lookup wants, so a user with many refusals and no success
-    // still costs one seek: the first missing-claim refusal after the time, the latest success.
-    expect(plan).toContain("app_auth_event_user_claim_missing (app_id=? AND user_id=? AND account_id=? AND created_at>?)");
-    expect(plan).toContain("app_auth_event_user_success (app_id=? AND user_id=? AND account_id=?)");
-    expect(plan).not.toContain("app_auth_event_app_user_created");
-    expect(plan).not.toContain("TEMP B-TREE");
-    expect(plan).not.toMatch(/SCAN (r|s|app_auth_event)\b/);
-  });
-});

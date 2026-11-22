@@ -57,43 +57,23 @@ function claimChange(input: AuthEventInput): "refused" | "succeeded" | null {
 }
 
 /**
- * When the user's current wait for an entitlement claim began: the earliest
- * refusal for a missing claim after their latest successful sign-in, or null.
- * `?1` the app, `?2` the user, `?3` the account. A success ends the refusals
- * at or before its own time. Each lookup reads its own partial index, holding
- * only the rows it wants (`app_auth_event_user_success`, then
- * `app_auth_event_user_claim_missing`), so each is one seek to one row, however
- * many attempts the user has made (Sol 7b-4 round 6). `INDEXED BY` makes the
- * statement fail rather than fall back to a walk if an index is ever missing.
- *
- * The events are kept 90 days. A wait open longer than that restarts from the
- * oldest refusal still kept: accepted for a diagnostic, since a 90-day wait for
- * an entitlement claim is outside what it measures.
- */
-export const PENDING_SINCE_SQL = `SELECT r.created_at FROM app_auth_event AS r INDEXED BY app_auth_event_user_claim_missing
-   WHERE r.app_id = ?1 AND r.user_id = ?2 AND r.account_id = ?3
-     AND r.outcome = 'issuer_claims_missing' AND r.event <> 'challenge'
-     AND r.created_at > COALESCE((SELECT s.created_at FROM app_auth_event AS s INDEXED BY app_auth_event_user_success
-                                   WHERE s.app_id = ?1 AND s.user_id = ?2 AND s.account_id = ?3
-                                     AND s.outcome = 'ok' AND s.event <> 'challenge'
-                                   ORDER BY s.created_at DESC LIMIT 1), -1)
-   ORDER BY r.created_at LIMIT 1`;
-
-/**
  * The statements that record one attempt, run as one batch (one transaction):
- * the event, then the user's wait for an entitlement claim worked out again
- * from the events (`PENDING_SINCE_SQL`). The wait is never patched by the
- * attempt itself, so whatever order the writes land in, once they all have,
- * `claim_pending_since` is what the events say (Sol 7b-4 round 5).
+ * the event, then its change to the user's wait for an entitlement claim,
+ * kept on the user row (`app_end_user.claim_pending_since`), as v1 did.
  *
- * A successful sign-in records on its event how long the wait read in its
- * batch had been open: `claim_delay_ms`, the attempt's own time `now` minus
- * the wait's start. A known gap, accepted for a diagnostic: a refusal whose
- * write lands after the write of the success that ended its wait is not
- * measured on that success. That needs two writes from moments apart to land
- * in reverse order. The pending state itself is still right.
+ * - A refusal for a missing claim opens a wait at the attempt's time, unless
+ *   one is already open (the first refusal is the start), or the user signed
+ *   in after this attempt began: sign-in sets `last_seen_at` before it
+ *   answers, so a refusal whose write lands after a later success opens none.
+ * - A successful sign-in records on its event how long the open wait had
+ *   been open (`claim_delay_ms`, the attempt's time `now` minus the start),
+ *   then closes it. A success with no wait open writes no user row.
  *
- * `account_id` is the account the attempt read the app under (`accountId`).
+ * This is a diagnostic, so rare gaps are accepted (owner, 2026-11-22): writes
+ * from attempts moments apart that land in reverse order can miss a wait or
+ * close a newer one, and a lost write leaves the wait as it was until the
+ * user's next success. `account_id` is the account the attempt read the app
+ * under (`accountId`).
  */
 function recordStatements(db: D1Database, input: AuthEventInput, id: string, now: number): D1PreparedStatement[] {
   const change = claimChange(input);
@@ -136,24 +116,25 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
       db
         // Only a user who is waiting: a success with no wait open writes no row (Fable 7b-4).
         .prepare(
-          `UPDATE app_end_user SET claim_pending_since = (${PENDING_SINCE_SQL})
-            WHERE app_id = ?1 AND id = ?2 AND claim_pending_since IS NOT NULL`,
+          `UPDATE app_end_user SET claim_pending_since = NULL
+            WHERE app_id = ?1 AND id = ?2 AND claim_pending_since IS NOT NULL AND claim_pending_since <= ?3`,
         )
-        .bind(input.appId, userId, input.accountId),
+        .bind(input.appId, userId, now),
     );
   } else if (change === "refused") {
     // A user first seen here gets a row, but only while the app is still there under
     // the attempt's account: a refusal landing after the app was deleted leaves no
     // row behind (Fable 7b-4). A blocked user's wait is never opened, as it could
-    // never end, and an unchanged wait is not written again.
+    // never end.
     statements.push(
       db
         .prepare(
           `INSERT INTO app_end_user (app_id, id, created_at, claim_pending_since)
-           SELECT ?1, ?2, ?4, (${PENDING_SINCE_SQL})
+           SELECT ?1, ?2, ?4, ?4
             WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
            ON CONFLICT (app_id, id) DO UPDATE SET claim_pending_since = excluded.claim_pending_since
-            WHERE status = 'active' AND claim_pending_since IS NOT excluded.claim_pending_since`,
+            WHERE status = 'active' AND claim_pending_since IS NULL
+              AND (last_seen_at IS NULL OR last_seen_at < excluded.claim_pending_since)`,
         )
         .bind(input.appId, userId, input.accountId, now),
     );

@@ -278,11 +278,19 @@ describe("summary", () => {
 });
 
 describe("claim waits", () => {
-  it("follow the events, whatever order the writes land in (Sol 7b-4 rounds 1, 2 and 5)", async () => {
+  async function setup() {
     const key = await seedManagementKey();
     const appId = await createApp(key);
+    /** One attempt at `time`. A sign-in first marks the user seen, as the real sign-in does before it answers. */
     const attempt = async (time: number, userId: string, outcome: "ok" | "issuer_claims_missing") => {
       vi.setSystemTime(time);
+      if (outcome === "ok") {
+        await env.DB.prepare(
+          "INSERT INTO app_end_user (app_id, id, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?3) ON CONFLICT (app_id, id) DO UPDATE SET last_seen_at = ?3",
+        )
+          .bind(appId, userId, time)
+          .run();
+      }
       await recordAuthEvent({ env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId, outcome, latencyMs: 1 });
     };
     const since = async (userId: string) =>
@@ -294,65 +302,33 @@ describe("claim waits", () => {
           .bind(appId, userId)
           .all<{ ms: number | null }>()
       ).results.map((row) => row.ms);
-    const T0 = NOW - 60_000;
+    return { key, appId, attempt, since, delays };
+  }
+  const T0 = NOW - 60_000;
 
-    // u1 waits from T0. The sign-in at T0+30s lands first, then a refusal from T0+10s lands late.
+  it("a refusal opens a wait, a repeated one keeps the first start, and the sign-in measures and closes it", async () => {
+    const { key, appId, attempt, since, delays } = await setup();
     await attempt(T0, "u1", "issuer_claims_missing");
+    await attempt(T0 + 10_000, "u1", "issuer_claims_missing");
     expect(await since("u1")).toBe(T0);
     await attempt(T0 + 30_000, "u1", "ok");
     expect(await delays("u1")).toEqual([30_000]);
-    await attempt(T0 + 10_000, "u1", "issuer_claims_missing");
-    // The late refusal does not open the wait again: a later sign-in already ended it.
     expect(await since("u1")).toBeNull();
-
-    // u2 never waited: its sign-in lands before a refusal made earlier.
-    await attempt(T0 + 20_000, "u2", "ok");
-    await attempt(T0 + 5_000, "u2", "issuer_claims_missing");
-    expect(await since("u2")).toBeNull();
-    // A refusal after the sign-in opens a new wait, and the next sign-in measures it exactly.
-    await attempt(T0 + 40_000, "u2", "issuer_claims_missing");
-    expect(await since("u2")).toBe(T0 + 40_000);
-    await attempt(T0 + 52_500, "u2", "ok");
-    expect(await delays("u2")).toEqual([null, 12_500]);
-    expect(await since("u2")).toBeNull();
-
-    // u3: refusals from T0+10s and T0+20s land in reverse order; the wait starts at the earlier one (Sol 7b-4 round 2).
-    await attempt(T0 + 20_000, "u3", "issuer_claims_missing");
-    await attempt(T0 + 10_000, "u3", "issuer_claims_missing");
-    expect(await since("u3")).toBe(T0 + 10_000);
-    await attempt(T0 + 30_000, "u3", "ok");
-    expect(await delays("u3")).toEqual([20_000]);
-
-    // u4: a refusal at T0+10s, a success at T0+20s, then a refusal at T0+30s from a device with an old
-    // token, landing in the order 10s, 30s, 20s. The late success measures the first wait and leaves
-    // the second open (Sol 7b-4 round 5).
-    await attempt(T0 + 10_000, "u4", "issuer_claims_missing");
-    await attempt(T0 + 30_000, "u4", "issuer_claims_missing");
-    expect(await since("u4")).toBe(T0 + 10_000);
-    await attempt(T0 + 20_000, "u4", "ok");
-    expect(await delays("u4")).toEqual([10_000]);
-    expect(await since("u4")).toBe(T0 + 30_000);
-
-    // u5: the same three attempts landing in order end the same way.
-    await attempt(T0 + 10_000, "u5", "issuer_claims_missing");
-    await attempt(T0 + 20_000, "u5", "ok");
-    await attempt(T0 + 30_000, "u5", "issuer_claims_missing");
-    expect(await delays("u5")).toEqual([10_000]);
-    expect(await since("u5")).toBe(T0 + 30_000);
-
-    // u6: the success lands first; the wait it ended was never measured (the documented gap), and
-    // the refusal after it is still open.
-    await attempt(T0 + 20_000, "u6", "ok");
-    await attempt(T0 + 30_000, "u6", "issuer_claims_missing");
-    await attempt(T0 + 10_000, "u6", "issuer_claims_missing");
-    expect(await delays("u6")).toEqual([null]);
-    expect(await since("u6")).toBe(T0 + 30_000);
-
-    // In every order, the pending count is what the events say: u4, u5 and u6 wait, u1 to u3 do not.
     vi.setSystemTime(NOW);
     const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=1`);
-    expect(summary.body.claim_delay).toMatchObject({ count: 5, p50_ms: 12_500, p95_ms: 30_000 });
-    expect(summary.body.pending_users).toBe(3);
+    expect(summary.body.claim_delay).toMatchObject({ count: 1, p50_ms: 30_000, p95_ms: 30_000 });
+    expect(summary.body.pending_users).toBe(0);
+  });
+
+  it("a refusal whose write lands after a later sign-in opens no wait", async () => {
+    const { attempt, since, delays } = await setup();
+    await attempt(T0 + 30_000, "u2", "ok");
+    await attempt(T0 + 10_000, "u2", "issuer_claims_missing");
+    expect(await since("u2")).toBeNull();
+    expect(await delays("u2")).toEqual([null]);
+    // A refusal after the sign-in is a new wait.
+    await attempt(T0 + 40_000, "u2", "issuer_claims_missing");
+    expect(await since("u2")).toBe(T0 + 40_000);
   });
 });
 
