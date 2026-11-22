@@ -769,9 +769,9 @@ export const FIGURE_D1_DEADLINE_MS = 3_000;
 export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
   const row = figureWork(ref, facts, now);
   try {
-    const written = await withDeadline(writeOpenWork(env.DB, [row], now), FIGURE_D1_DEADLINE_MS, "saving the figure");
+    const [outcome] = await withDeadline(writeOpenWork(env.DB, [row], now), FIGURE_D1_DEADLINE_MS, "saving the figure");
     // Not written for an old job: its ledger is frozen, and nothing more will settle against it.
-    if (written === 0 && jobRetired(ref.job, now)) log("warn", "job_retired", { app: ref.appId, job: ref.job });
+    if (outcome === "frozen") log("warn", "job_retired", { app: ref.appId, job: ref.job });
     return true;
   } catch (error) {
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });

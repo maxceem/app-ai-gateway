@@ -332,6 +332,23 @@ describe("polling a job", () => {
     expect(await openWork(appId)).toEqual([]);
   });
 
+  it("serves a client's poll past the ledger's freeze as usual, and books nothing: a job id never expires (Astra 7b-2 round 4)", async () => {
+    const { appId, key, jobId } = await submitted();
+    // The sweep's check ended long ago; only the client still polls.
+    await env.DB.prepare("DELETE FROM open_work WHERE app_id = ?").bind(appId).run();
+    const before = await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + (LEDGER_FREEZE_DAYS + 1) * 86_400_000);
+    falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "3" } }) });
+    const { response, json } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(response.status).toBe(200);
+    expect(json).toEqual({ images: [{}, {}] });
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect(await openWork(appId)).toEqual([]);
+    expect((await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results).toEqual(before.results);
+    expect(logged("ledger_correction_frozen")).toBe(true);
+  });
+
   it("settles once however often the result is read: a second poll and the sweep add nothing", async () => {
     const { appId, key, jobId } = await submitted();
     falAnswers({ result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "1" } }) });

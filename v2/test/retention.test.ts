@@ -6,7 +6,7 @@
  * `now`: no timers.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, createScheduledController, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
 import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem/cf-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
@@ -434,10 +434,35 @@ describe("usage retention: charges", () => {
     expect(await chargeIds()).toEqual([estimate.id]);
 
     // The store replays the figure: the job's ledger is frozen, so no work comes back, and nothing is booked.
-    await retryStored(env.DB, [], [stored], NOW);
+    expect(await retryStored(env.DB, [], [stored], NOW)).toEqual(["frozen"]);
     expect(await rows("SELECT id FROM open_work")).toEqual([]);
     expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: NOW })).toEqual({ status: "already" });
     expect(await total()).toBe(120);
+  });
+
+  it("says which stored figures the freeze refused, and keeps an ordinary repeat quiet (Astra 7b-2 round 4)", async () => {
+    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof figureWork>[1];
+    // A live job: its figure is written, and written again is an ordinary repeat.
+    const live = timeOrderedId(RECENT);
+    await insert(charge({ usedAt: RECENT, kind: "estimate", ownerType: "job", ownerId: live, measured: "pending" }));
+    const liveFigure = figureWork({ job: live, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, RECENT);
+    expect(await retryStored(env.DB, [], [liveFigure], NOW)).toEqual(["written"]);
+    expect(await retryStored(env.DB, [], [liveFigure], NOW)).toEqual(["skipped"]);
+
+    // Through the store's alarm: a figure for a job frozen by the time it is replayed is dropped with a warning.
+    const now = Date.now();
+    const old = timeOrderedId(now - (LEDGER_FREEZE_DAYS + 5) * DAY);
+    await insert(charge({ usedAt: now - (LEDGER_FREEZE_DAYS + 5) * DAY, kind: "estimate", ownerType: "job", ownerId: old, measured: "pending" }));
+    const store = env.CHARGE_STORE.getByName("app_retention_frozen");
+    await store.keepWork([figureWork({ job: old, accountId: ACCOUNT_ID, appId: "app_retention_frozen" }, facts, now)]);
+    const codes = warningCodes();
+    const infos: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((entry: unknown) => void infos.push(String(entry)));
+    expect(await runDurableObjectAlarm(store)).toBe(true);
+    expect(codes).toEqual(["charge_store_figure_frozen"]);
+    expect(infos.filter((line) => line.includes('"message":"charge_store_written"'))).toEqual([expect.stringContaining('"written":0')]);
+    expect(await store.pendingCount()).toBe(0);
+    expect(await rows("SELECT id FROM open_work WHERE owner_id = ?", old)).toEqual([]);
   });
 
   it("keeps a figure for a job still inside the freeze window, and settles it from there later (Astra 7b-2 round 3)", async () => {

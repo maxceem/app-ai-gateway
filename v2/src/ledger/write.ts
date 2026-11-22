@@ -191,14 +191,35 @@ function openWorkStatement(db: D1Database, work: OpenWorkRow, writtenAt: number 
 }
 
 /**
- * Writes open-work rows that have no charge (a job's saved figure). Returns
- * how many were written: a row already there, or for an owner settled or
- * frozen, is not. Throws when D1 cannot take them.
+ * What became of one open-work row written on its own: written, not written
+ * because it was already there or its owner is settled (`skipped`), or not
+ * written because its owner's ledger is frozen (`frozen`, `./freeze.ts`).
  */
-export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[], now?: number): Promise<number> {
-  if (rows.length === 0) return 0;
-  const results = await db.batch(rows.map((row) => openWorkStatement(db, row, now)));
-  return results.reduce((written, result) => written + (result.meta.changes ?? 0), 0);
+export type OpenWorkOutcome = "written" | "skipped" | "frozen";
+
+/**
+ * Writes open-work rows that have no charge (a job's saved figure), and says
+ * what became of each. Each insert is preceded, in the same batch, by a read
+ * of whether its owner takes bookings, so a frozen owner is told apart from an
+ * ordinary repeat without another round trip. Throws when D1 cannot take them.
+ */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[], now?: number): Promise<OpenWorkOutcome[]> {
+  if (rows.length === 0) return [];
+  const statements: D1PreparedStatement[] = [];
+  for (const row of rows) {
+    statements.push(
+      db
+        .prepare(`SELECT ${ownerTakesBookingsSql("?1", "?2", "?3")} AS takes`)
+        .bind(row.ownerType, row.ownerId, freezeCutoffDay(Math.max(row.createdAt, now ?? row.createdAt))),
+      openWorkStatement(db, row, now),
+    );
+  }
+  const results = await db.batch(statements);
+  return rows.map((_, index) => {
+    if ((results[index * 2 + 1]?.meta.changes ?? 0) > 0) return "written";
+    const takes = (results[index * 2]?.results[0] as { takes?: number } | undefined)?.takes;
+    return takes === 0 ? "frozen" : "skipped";
+  });
 }
 
 /** The statements that write some entries, in one batch. */
