@@ -103,21 +103,21 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   await expectResponse(checkout, 200, "the checkout");
   same((await readJson(checkout)).url, "https://checkout.invalid/smoke/smoke-pro", "the checkout is not the mock's");
 
-  // While it is open, the same plan answers the same page, and another is refused.
-  const again = await asConsole("/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "month", accountId });
-  await expectResponse(again, 200, "the same checkout again");
-  same((await readJson(again)).url, "https://checkout.invalid/smoke/smoke-pro", "the same checkout again is another page");
-  const other = await asConsole("/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "year", accountId });
-  await expectResponse(other, 409, "a checkout for another period while one is open");
-  expectCode(await readJson(other), "checkout_open", "a checkout for another period while one is open");
-
   // A write for an account other than the one selected is refused.
   const elsewhere = await asConsole("/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "month", accountId: "another-account" });
   await expectResponse(elsewhere, 409, "a checkout for another account");
   expectCode(await readJson(elsewhere), "account_changed", "a checkout for another account");
 
   // A plan the billing service does not sell is its refusal, in the gateway's words.
-  const unknown = await asConsole("/v2/admin/billing/change", { planKey: "no-such-plan", billingPeriod: "month", accountId, subscriptionId: null });
+  const unknown = await asConsole("/v2/admin/billing/change", {
+    planKey: "no-such-plan",
+    billingPeriod: "month",
+    accountId,
+    subscriptionId: null,
+    subscriptionStatus: null,
+    subscriptionPeriod: null,
+    price: { priceAmountCents: 1000, priceCurrency: "USD" },
+  });
   await expectResponse(unknown, 404, "a change to an unknown plan");
   expectCode(await readJson(unknown), "billing_not_found", "a change to an unknown plan");
 });

@@ -322,9 +322,43 @@ describe("BillingPage", () => {
       expect(JSON.parse(String(call![1]!.body))).toEqual({
         planKey: "team",
         billingPeriod: "year",
+        price: { priceAmountCents: 50000, priceCurrency: "USD" },
         accountId: "acct-1",
         subscriptionId: "sub-console-page",
+        subscriptionStatus: "active",
+        subscriptionPeriod: "year",
       });
+    });
+  });
+
+  it("reads the catalog afresh as the change dialog opens, and confirms and sends the price it reads (Sol 7b-8)", async () => {
+    let planReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/billing/plans")) {
+        planReads += 1;
+        // The tab's copy says $50/mo; by the time the dialog opens it is $60.
+        const cents = planReads === 1 ? 5000 : 6000;
+        return new Response(JSON.stringify({ plans: [...PLANS, TEAM([{ billingPeriod: "month", priceAmountCents: cents }])] }), { status: 200 });
+      }
+      if (init?.method === "POST") return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      const access = billed(PAID_PLAN, subscription());
+      return new Response(JSON.stringify({ access, allowance: null, limits: {}, features: { conversationStorage: true }, actions: actionsFor(access) }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderBilling();
+
+    const team = (await screen.findByText("Team")).closest("[data-slot=card]") as HTMLElement;
+    expect(within(team).getByText("$50/mo")).toBeTruthy();
+    await userEvent.click(within(team).getByRole("button", { name: /upgrade to Team/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("$60/mo")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/change"));
+      expect(JSON.parse(String(call![1]!.body))).toMatchObject({ price: { priceAmountCents: 6000, priceCurrency: "USD" } });
     });
   });
 
@@ -348,7 +382,12 @@ describe("BillingPage", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel subscription" }));
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/cancel"));
-      expect(JSON.parse(String(call![1]!.body))).toEqual({ accountId: "acct-1", subscriptionId: "sub-console-page" });
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
+        accountId: "acct-1",
+        subscriptionId: "sub-console-page",
+        subscriptionStatus: "active",
+        subscriptionPeriod: "month",
+      });
     });
   });
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,7 +31,9 @@ import {
   type QuotaMeter,
 } from "@/lib/billing";
 import { cn } from "@/lib/utils";
+import { call } from "@/lib/api";
 import {
+  keys,
   useBillingPlans,
   useBillingStatus,
   useCancelSubscription,
@@ -42,15 +45,41 @@ import type { BillingAccess, BillingPlan, BillingPrice, PlanAllowance, Subscript
 
 type Period = "month" | "year";
 
+/**
+ * The account and subscription a write acts on, as the page showed them when
+ * the person opened the dialog (or pressed the button): the gateway refuses a
+ * write whose account, or whose subscription's id, status or period, has
+ * changed since, rather than act on what the person never saw.
+ */
+interface Shown {
+  accountId: string;
+  subscriptionId: string | null;
+  subscriptionStatus: NonNullable<ReturnType<typeof subscriptionOf>>["status"] | null;
+  subscriptionPeriod: Period | null;
+}
+
+function shownOf(accountId: string, access: BillingAccess | undefined): Shown {
+  const subscription = subscriptionOf(access);
+  return {
+    accountId,
+    subscriptionId: subscription?.subscriptionId ?? null,
+    subscriptionStatus: subscription?.status ?? null,
+    subscriptionPeriod: subscription?.billingPeriod ?? null,
+  };
+}
+
 export function BillingPage() {
   const { capabilities, account } = useConsoleSession();
   const [period, setPeriod] = useState<Period>("month");
-  const [confirmCancel, setConfirmCancel] = useState(false);
-  // The plan a change was asked for, with the exact price it is made at, held
-  // until it is confirmed: unlike a checkout, which asks for the card on the
-  // provider's own page, a change on a live subscription bills without
-  // another screen in between.
-  const [confirmChange, setConfirmChange] = useState<{ plan: BillingPlan; price: BillingPrice } | null>(null);
+  // What a cancel acts on, captured when its dialog opens.
+  const [confirmCancel, setConfirmCancel] = useState<Shown | null>(null);
+  // The plan a change was asked for, with the exact price it is made at and
+  // what it acts on, held until it is confirmed: unlike a checkout, which asks
+  // for the card on the provider's own page, a change on a live subscription
+  // bills without another screen in between.
+  const [confirmChange, setConfirmChange] = useState<{ plan: BillingPlan; price: BillingPrice; shown: Shown } | null>(null);
+  const [preparingChange, setPreparingChange] = useState(false);
+  const client = useQueryClient();
 
   const status = useBillingStatus(capabilities.billing);
   const plans = useBillingPlans(capabilities.billing);
@@ -62,9 +91,6 @@ export function BillingPage() {
   const access = status.data?.access;
   const allowance = status.data?.allowance;
   const catalog = plans.data?.plans ?? [];
-  // Every write names the account and subscription this page showed: the
-  // gateway refuses one that has changed since (another tab, another admin).
-  const shown = { accountId: account.id, subscriptionId: subscriptionOf(access)?.subscriptionId ?? null };
   // A change keeps the subscription's own period, never the page's toggle: a
   // yearly subscription must not move onto a monthly schedule. The card shows
   // the price for that period, so what is shown is what is submitted.
@@ -85,7 +111,8 @@ export function BillingPage() {
       const result = await change.mutateAsync({
         planKey: confirmChange.plan.planKey,
         billingPeriod: confirmChange.price.billingPeriod,
-        ...shown,
+        price: { priceAmountCents: confirmChange.price.priceAmountCents, priceCurrency: confirmChange.price.priceCurrency },
+        ...confirmChange.shown,
       });
       setConfirmChange(null);
       if (result.requiredActionUrl) {
@@ -98,21 +125,41 @@ export function BillingPage() {
     }
   };
 
+  // A change's dialog shows the price read afresh from the catalog as it
+  // opens, never a copy the tab has held: that price is the one sent, and the
+  // gateway refuses the change if it moved since (Sol 7b-8).
+  const openChange = async (plan: BillingPlan) => {
+    const shown = shownOf(account.id, access);
+    setPreparingChange(true);
+    try {
+      const fresh = await client.fetchQuery({ queryKey: keys.billingPlans, queryFn: () => call("listBillingPlans"), staleTime: 0 });
+      const current = fresh.plans.find((entry) => entry.planKey === plan.planKey);
+      const price = current ? priceFor(current, changePeriod) : undefined;
+      if (!current || !price) {
+        toast.error(`${plan.name} has no ${changePeriod === "year" ? "yearly" : "monthly"} price right now`);
+        return;
+      }
+      setConfirmChange({ plan: current, price, shown });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not read the plans");
+    } finally {
+      setPreparingChange(false);
+    }
+  };
+
   // A plan card acts on whichever route the billing contract serves for it.
   const act = (plan: BillingPlan, action: PlanAction) => {
     if (action.intent === "checkout") return void subscribe(plan);
-    if (action.intent === "change") {
-      const price = priceFor(plan, changePeriod);
-      return price ? setConfirmChange({ plan, price }) : undefined;
-    }
-    if (action.intent === "cancel") return setConfirmCancel(true);
+    if (action.intent === "change") return void openChange(plan);
+    if (action.intent === "cancel") return setConfirmCancel(shownOf(account.id, access));
   };
 
   const doCancel = async () => {
+    if (!confirmCancel) return;
     try {
-      await cancel.mutateAsync(shown);
+      await cancel.mutateAsync(confirmCancel);
       toast.success("Subscription canceled");
-      setConfirmCancel(false);
+      setConfirmCancel(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not cancel the subscription");
     }
@@ -127,7 +174,7 @@ export function BillingPage() {
       const result = await resume.mutateAsync({
         planKey: subscription.planKey,
         billingPeriod: subscription.billingPeriod ?? period,
-        ...shown,
+        ...shownOf(account.id, access),
       });
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
@@ -172,7 +219,7 @@ export function BillingPage() {
         pending={status.isPending}
         cancelPending={cancel.isPending}
         resumePending={resume.isPending}
-        onCancel={() => setConfirmCancel(true)}
+        onCancel={() => setConfirmCancel(shownOf(account.id, access))}
         onResume={() => void doResume()}
       />
 
@@ -206,7 +253,7 @@ export function BillingPage() {
                 plan={plan}
                 period={action.intent === "change" ? changePeriod : period}
                 action={action}
-                pending={checkout.isPending || change.isPending}
+                pending={checkout.isPending || change.isPending || preparingChange}
                 onAct={() => act(plan, action)}
               />
             );
@@ -234,8 +281,8 @@ export function BillingPage() {
       />
 
       <ConfirmDialog
-        open={confirmCancel}
-        onOpenChange={setConfirmCancel}
+        open={confirmCancel !== null}
+        onOpenChange={(open) => setConfirmCancel(open ? confirmCancel : null)}
         title="Cancel subscription"
         description={
           <p>

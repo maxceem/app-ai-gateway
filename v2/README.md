@@ -102,8 +102,10 @@ billing operations answer 404 and nothing is counted against a plan.
   subdomains) where a checkout or payment page the billing service answers may be. The gateway
   passes such a page on only when it is HTTPS on one of these hosts, and answers
   `billing_unavailable` otherwise. Defaults to `lemonsqueezy.com`.
-- Where a checkout sends the person back is always the console's own pages, built from
-  `CONSOLE_ORIGIN` (or the gateway's own origin without one).
+- Where a completed checkout sends the person back is always the console's own page, built from
+  `CONSOLE_ORIGIN` (or the gateway's own origin without one). The billing provider has no page
+  for an abandoned checkout; the billing service keeps the console's billing page with it.
+  Store-domain checkout pages on a custom domain need that domain in `BILLING_PAYMENT_HOSTS`.
 
 ## Nightly maintenance
 

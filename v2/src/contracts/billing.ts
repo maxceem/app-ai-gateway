@@ -204,10 +204,26 @@ export const BillingPlanSelectionSchema = z.object({
 const ShownAccount = { accountId: z.string().min(1).max(200) };
 
 /**
- * The subscription the console showed, `null` where it showed none. A write
- * on a subscription that has since changed is refused (`subscription_changed`).
+ * The subscription the console showed when the dialog opened: its id, status
+ * and period, each `null` where it showed none. A write on a subscription
+ * replaced, or whose status or period changed since, is refused
+ * (`subscription_changed`) rather than applied to what the person never saw.
  */
-const ShownSubscription = { subscriptionId: z.string().min(1).max(200).nullable() };
+const ShownSubscription = {
+  subscriptionId: z.string().min(1).max(200).nullable(),
+  subscriptionStatus: BillingSubscriptionStatusSchema.nullable(),
+  subscriptionPeriod: BillingPeriodSchema.nullable(),
+};
+
+/**
+ * The price the console showed for the plan and period asked for. A change
+ * bills without another screen, so a price changed since is refused
+ * (`price_changed`) rather than charged.
+ */
+export const ShownPriceSchema = z.object({
+  priceAmountCents: z.number().int(),
+  priceCurrency: z.string().min(1).max(10),
+}).meta({ id: "BillingShownPrice" });
 
 /**
  * A checkout. The gateway chooses where the provider sends the person back
@@ -215,9 +231,16 @@ const ShownSubscription = { subscriptionId: z.string().min(1).max(200).nullable(
  */
 export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend(ShownAccount).meta({ id: "BillingCheckoutRequest" });
 
-/** A change or a resume, on the account and subscription the console showed. */
-export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownAccount, ...ShownSubscription }).meta({
-  id: "BillingChangeRequest",
+/** A change, on the account and subscription the console showed, at the price it showed. */
+export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({
+  ...ShownAccount,
+  ...ShownSubscription,
+  price: ShownPriceSchema,
+}).meta({ id: "BillingChangeRequest" });
+
+/** A resume, on the account and subscription the console showed. */
+export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownAccount, ...ShownSubscription }).meta({
+  id: "BillingResumeRequest",
 });
 
 /** A cancel, on the account and subscription the console showed. */

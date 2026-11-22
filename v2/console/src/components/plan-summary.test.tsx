@@ -163,7 +163,7 @@ describe("the return from a completed checkout", () => {
     stubBilling(PAID);
     const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
       capabilities: { billing: true },
-      route: checkoutReturnPathFor("pro"),
+      route: checkoutReturnPathFor("pro", "acct-1"),
     });
     await waitFor(() => expect(router.location.search).toBe(""));
     expect(router.location.pathname).toBe("/apps");
@@ -177,7 +177,7 @@ describe("the return from a completed checkout", () => {
     const info = vi.spyOn(toast, "info");
     // Still the free plan: the webhook has not landed.
     const fetchMock = stubBilling(FREE);
-    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro") });
+    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
     for (let check = 0; check < PLAN_CONFIRM_CHECKS + 2; check += 1) {
       await act(() => vi.advanceTimersByTimeAsync(PLAN_CONFIRM_INTERVAL_MS));
     }
@@ -187,13 +187,28 @@ describe("the return from a completed checkout", () => {
     expect(statusReads(fetchMock)).toBeLessThanOrEqual(PLAN_CONFIRM_CHECKS + 1);
   });
 
+  it("does not announce a return that names another account as complete (Sol 7b-8)", async () => {
+    const success = vi.spyOn(toast, "success");
+    const info = vi.spyOn(toast, "info");
+    const fetchMock = stubBilling(PAID);
+    const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
+      capabilities: { billing: true },
+      route: checkoutReturnPathFor("pro", "acct-other"),
+    });
+    await waitFor(() => expect(router.location.search).toBe(""));
+    await waitFor(() => expect(info).toHaveBeenCalledWith("Payment received", expect.anything()));
+    expect(success).not.toHaveBeenCalledWith("Payment complete", expect.anything());
+    // The confirming reads never start for another account's return.
+    expect(statusReads(fetchMock)).toBeLessThanOrEqual(1);
+  });
+
   it("announces nothing on a console without billing, and still takes the marker off", async () => {
     const loading = vi.spyOn(toast, "loading");
     const success = vi.spyOn(toast, "success");
     const fetchMock = stubBilling(PAID);
     const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
       capabilities: { billing: false },
-      route: checkoutReturnPathFor("pro"),
+      route: checkoutReturnPathFor("pro", "acct-1"),
     });
     await waitFor(() => expect(router.location.search).toBe(""));
     expect(loading).not.toHaveBeenCalled();

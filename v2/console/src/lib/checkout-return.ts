@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { call } from "./api";
-import { checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
+import type { OperationResponse } from "@contracts/catalog";
+import { checkoutAccountFrom, checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { useConsoleSession } from "./console-session";
 import { keys } from "./queries";
 
@@ -16,6 +17,21 @@ import { keys } from "./queries";
  */
 export const PLAN_CONFIRM_INTERVAL_MS = 3_000;
 export const PLAN_CONFIRM_CHECKS = 5;
+/** How long one check may take; a stalled read counts as one not yet confirmed. */
+export const PLAN_CONFIRM_READ_MS = 2_500;
+
+/** One read of the plan, with no automatic retries and a deadline (Sol 7b-8). */
+async function readPlanOnce(read: () => Promise<OperationResponse<"getBillingStatus">>): Promise<OperationResponse<"getBillingStatus"> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), PLAN_CONFIRM_READ_MS);
+  });
+  try {
+    return await Promise.race([read(), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** One toast for the whole return, updated in place. */
 const TOAST_ID = "checkout-return";
@@ -33,7 +49,7 @@ export function useCheckoutSuccessToast(): void {
   const location = useLocation();
   const navigate = useNavigate();
   const client = useQueryClient();
-  const { capabilities } = useConsoleSession();
+  const { capabilities, account } = useConsoleSession();
   // Set before the work: under StrictMode the effect runs twice on one instance.
   const handled = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -52,6 +68,10 @@ export function useCheckoutSuccessToast(): void {
     if (!succeeded || handled.current) return;
     handled.current = true;
     const planKey = planKeyFrom(location.search);
+    // A return is only this account's to confirm when it names this account:
+    // one read in another account's console, or with no account, could
+    // announce a plan the account already held as one just bought.
+    const forThisAccount = checkoutAccountFrom(location.search) === account.id;
     void navigate(pathWithoutCheckout(location.pathname, location.search), { replace: true });
     if (!capabilities.billing) return;
 
@@ -60,7 +80,7 @@ export function useCheckoutSuccessToast(): void {
         id: TOAST_ID,
         description: "Your new plan is still being confirmed. Reload the billing page in a minute to see it.",
       });
-    if (planKey === null) {
+    if (planKey === null || !forThisAccount) {
       received();
       return;
     }
@@ -68,10 +88,12 @@ export function useCheckoutSuccessToast(): void {
 
     const check = async (left: number): Promise<void> => {
       try {
-        const status = await client.fetchQuery({ queryKey: keys.billingStatus, queryFn: () => call("getBillingStatus"), staleTime: 0 });
+        const status = await readPlanOnce(() =>
+          client.fetchQuery({ queryKey: keys.billingStatus, queryFn: () => call("getBillingStatus"), staleTime: 0, retry: false }),
+        );
         if (unmounted.current) return;
-        const access = status.access;
-        if (access.state === "billed" && access.plan?.planKey === planKey) {
+        const access = status?.access;
+        if (access?.state === "billed" && access.plan?.planKey === planKey) {
           toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${access.plan.planName} plan.` });
           void client.invalidateQueries({ queryKey: keys.session });
           return;
@@ -87,5 +109,5 @@ export function useCheckoutSuccessToast(): void {
       timer.current = setTimeout(() => void check(left - 1), PLAN_CONFIRM_INTERVAL_MS);
     };
     void check(PLAN_CONFIRM_CHECKS);
-  }, [succeeded, capabilities.billing, client, navigate, location.pathname, location.search]);
+  }, [succeeded, capabilities.billing, account.id, client, navigate, location.pathname, location.search]);
 }

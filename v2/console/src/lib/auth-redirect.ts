@@ -113,6 +113,19 @@ export function postAuthPath(search: string): string {
 export const CHECKOUT_PARAM = "checkout";
 export const CHECKOUT_SUCCESS = "success";
 
+/**
+ * The account a checkout was started for, which the gateway writes into the
+ * return address: a return read in another account's console announces
+ * nothing about this one.
+ */
+export const ACCOUNT_PARAM = "account";
+
+/** The account a checkout return names, or `null`. */
+export function checkoutAccountFrom(search: string): string | null {
+  const raw = new URLSearchParams(search).get(ACCOUNT_PARAM);
+  return raw !== null && raw.length > 0 && raw.length <= 200 ? raw : null;
+}
+
 /** True when this load is the return leg of a completed checkout. */
 export function checkoutSucceeded(search: string): boolean {
   return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
@@ -123,13 +136,15 @@ export function pathWithoutCheckout(pathname: string, search: string): string {
   const params = new URLSearchParams(search);
   params.delete(CHECKOUT_PARAM);
   params.delete(PLAN_PARAM);
+  params.delete(ACCOUNT_PARAM);
   const rest = params.toString();
   return rest ? `${pathname}?${rest}` : pathname;
 }
 
 /** Where a completed checkout for `planKey` sends the operator (a router path). */
-export function checkoutReturnPathFor(planKey: string): string {
-  return `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}&${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
+export function checkoutReturnPathFor(planKey: string, accountId?: string): string {
+  const account = accountId === undefined ? "" : `&${ACCOUNT_PARAM}=${encodeURIComponent(accountId)}`;
+  return `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}&${PLAN_PARAM}=${encodeURIComponent(planKey)}${account}`;
 }
 
 /** The sign-in URL that remembers where the operator was headed. */

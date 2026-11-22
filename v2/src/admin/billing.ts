@@ -17,7 +17,7 @@ import {
   BILLING_SERVICE_ID,
   billingPlanLimits,
   billingRpcError,
-  getBillingAccess,
+  getFreshBillingAccess,
   invalidateBillingAccess,
   planFeatures,
   subscriptionActions,
@@ -29,13 +29,16 @@ import {
   BillingCancelRequestSchema,
   BillingChangeRequestSchema,
   BillingCheckoutRequestSchema,
+  BillingResumeRequestSchema,
   BillingTrialRequestSchema,
   PLAN_LIMIT_KEYS,
+  type BillingPeriod,
   type GatewayBillingAccess,
   type PlanAllowance,
   type PlanLimits,
 } from "../contracts/billing.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -79,7 +82,13 @@ async function rpc<T>(operation: () => Promise<T>): Promise<T> {
  * plan limit, or billing not readable). A schedule billing data cannot be
  * turned into is shown as no figure, never as an error: the page still loads.
  */
-export async function planAllowance(env: Env, accountId: string, access: GatewayBillingAccess): Promise<PlanAllowance | null> {
+export async function planAllowance(
+  env: Env,
+  accountId: string,
+  access: GatewayBillingAccess,
+  /** How long the limiter object may take: a stalled one shows as no figure (Sol 7b-8). */
+  limiterDeadlineMs: number = ALLOWANCE_DEADLINE_MS,
+): Promise<PlanAllowance | null> {
   let quota;
   try {
     quota = await billingQuotaFor(access, env, accountId);
@@ -90,7 +99,7 @@ export async function planAllowance(env: Env, accountId: string, access: Gateway
   if (quota.kind === "unmetered") return null;
   let used: number;
   try {
-    used = await env.ACCOUNT_LIMITER.getByName(accountId).usage(quota.period.periodId);
+    used = await withDeadline(env.ACCOUNT_LIMITER.getByName(accountId).usage(quota.period.periodId), limiterDeadlineMs, "reading the allowance");
   } catch (error) {
     // The count lives in the account's limiter object; one that cannot answer
     // shows as no figure, and the billing page still loads (Sol 7b-8).
@@ -99,6 +108,9 @@ export async function planAllowance(env: Env, accountId: string, access: Gateway
   }
   return { ...quota.period, used, limit: quota.limit };
 }
+
+/** How long the billing page waits for the account's limiter object. */
+const ALLOWANCE_DEADLINE_MS = 1_000;
 
 /** The plan's ceilings as this gateway enforces them; a misconfigured one is left out rather than failing the page. */
 function enforcedLimits(access: GatewayBillingAccess): PlanLimits {
@@ -121,11 +133,15 @@ function enforcedLimits(access: GatewayBillingAccess): PlanLimits {
  * elsewhere (Sol 7b-8). A deployment without a separate console serves it on
  * its own origin.
  */
-function consoleReturnUrls(c: AdminContext, planKey: string): { successUrl: string; cancelUrl: string } {
+function consoleReturnUrls(c: AdminContext, planKey: string, accountId: string): { successUrl: string; cancelUrl: string } {
   const origin = consoleOrigin(c.env) ?? new URL(c.req.url).origin;
   return {
-    // The apps page announces a completed checkout for this plan, then strips the marker.
-    successUrl: `${origin}/v2/apps?checkout=success&plan=${encodeURIComponent(planKey)}`,
+    // The apps page announces a completed checkout for this plan on this
+    // account, then strips the marker. Naming the account keeps a return read
+    // in another account's console from announcing that account's plan.
+    successUrl: `${origin}/v2/apps?checkout=success&plan=${encodeURIComponent(planKey)}&account=${encodeURIComponent(accountId)}`,
+    // Passed to the billing service, which keeps it with the checkout; the
+    // provider itself has no page it sends an abandoned checkout back to.
     cancelUrl: `${origin}/v2/billing`,
   };
 }
@@ -175,87 +191,53 @@ function requireShownAccount(c: AdminContext, accountId: string): string {
   return selected;
 }
 
+/** The subscription the console showed when the dialog opened. */
+interface ShownSubscription {
+  readonly subscriptionId: string | null;
+  readonly subscriptionStatus: string | null;
+  readonly subscriptionPeriod: BillingPeriod | null;
+}
+
 /**
- * The subscription a write acts on is the one the console showed. It is read
- * afresh from the billing service: one replaced or ended since is refused
- * before anything is asked of it (Sol 7b-8). Billing that cannot be read
- * answers 503, as any settings write does.
+ * The subscription a write acts on is the one the console showed when the
+ * dialog opened: the same id, status and period. It is read afresh from the
+ * billing service: one replaced, ended or moved to another period since is
+ * refused before anything is asked of it (Sol 7b-8). Billing that cannot be
+ * read answers 503, as any settings write does.
  */
-async function requireShownSubscription(env: Env, accountId: string, subscriptionId: string | null): Promise<void> {
-  invalidateBillingAccess(accountId);
-  const access = await getBillingAccess(env, accountId);
+async function requireShownSubscription(c: AdminContext, accountId: string, shown: ShownSubscription): Promise<void> {
+  const access = await getFreshBillingAccess(c.env, accountId, (promise) => c.executionCtx.waitUntil(promise));
   if (access.state !== "billed" || access.stale === true) {
     throw new GatewayError(503, "billing_unavailable", "The subscription could not be read; try again shortly");
   }
-  if ((access.subscription?.subscriptionId ?? null) !== subscriptionId) {
+  const current = access.subscription;
+  const same =
+    (current?.subscriptionId ?? null) === shown.subscriptionId &&
+    (current?.status ?? null) === shown.subscriptionStatus &&
+    (current?.billingPeriod ?? null) === shown.subscriptionPeriod;
+  if (!same) {
     throw new GatewayError(409, "subscription_changed", "The subscription changed since the page was read; reload it");
   }
 }
 
-/** How long a checkout page stays payable: the billing service issues each for an hour. */
-export const CHECKOUT_LIFETIME_MS = 60 * 60_000;
-
-/** How long a request preparing a checkout holds the account's slot before another may take it over. */
-const CHECKOUT_CLAIM_MS = 60_000;
-
-interface OpenCheckout {
-  plan_key: string;
-  billing_period: string;
-  url: string | null;
-  claim_id: string;
-  expires_at: number;
-}
-
 /**
- * The account's one open checkout (Sol 7b-8). Either this request takes the
- * account's slot (no open checkout, or the last one expired) and prepares the
- * page, or it answers the open one: the same page for the same plan and
- * period, a refusal for any other, so the account never holds two payable
- * checkouts at once. Taking the slot is one statement, so two tabs cannot both.
+ * The price a change is made at is the one the console showed: the billing
+ * service's catalog is read afresh, and a price changed since is refused
+ * before the change, which bills at once (Sol 7b-8). A plan or period the
+ * catalog does not sell is the billing service's `billing_not_found`.
  */
-async function openCheckout(
-  env: Env,
-  accountId: string,
+async function requireShownPrice(
+  runtime: BillingRuntime,
   planKey: string,
-  billingPeriod: string,
-  prepare: () => Promise<string>,
-): Promise<string> {
-  const now = Date.now();
-  const claim = crypto.randomUUID();
-  const taken = await env.DB.prepare(
-    `INSERT INTO billing_open_checkout (account_id, plan_key, billing_period, url, claim_id, expires_at)
-     VALUES (?1, ?2, ?3, NULL, ?4, ?5)
-     ON CONFLICT (account_id) DO UPDATE SET
-       plan_key = excluded.plan_key, billing_period = excluded.billing_period,
-       url = NULL, claim_id = excluded.claim_id, expires_at = excluded.expires_at
-     WHERE billing_open_checkout.expires_at <= ?6
-     RETURNING claim_id`,
-  )
-    .bind(accountId, planKey, billingPeriod, claim, now + CHECKOUT_CLAIM_MS, now)
-    .first<{ claim_id: string }>();
-  if (taken?.claim_id !== claim) {
-    const open = await env.DB.prepare("SELECT plan_key, billing_period, url, claim_id, expires_at FROM billing_open_checkout WHERE account_id = ?")
-      .bind(accountId)
-      .first<OpenCheckout>();
-    if (open && open.plan_key === planKey && open.billing_period === billingPeriod && open.url !== null) return open.url;
-    if (open && open.url === null) {
-      throw new GatewayError(409, "checkout_in_progress", "A checkout is being prepared for this account; try again in a moment");
-    }
-    const until = open ? new Date(open.expires_at).toISOString() : "shortly";
-    throw new GatewayError(409, "checkout_open", `A checkout for another plan is open until ${until}; finish it or try again then`);
+  billingPeriod: BillingPeriod,
+  shown: { readonly priceAmountCents: number; readonly priceCurrency: string },
+): Promise<void> {
+  const { plans } = await rpc(() => runtime.listPlans({ serviceId: BILLING_SERVICE_ID }));
+  const price = plans.find((plan) => plan.planKey === planKey)?.prices.find((entry) => entry.billingPeriod === billingPeriod);
+  if (price === undefined) throw new GatewayError(404, "billing_not_found", "The requested plan was not found");
+  if (price.priceAmountCents !== shown.priceAmountCents || price.priceCurrency.toLowerCase() !== shown.priceCurrency.toLowerCase()) {
+    throw new GatewayError(409, "price_changed", "The plan's price changed since it was shown; reload the page");
   }
-  let url: string;
-  try {
-    url = await prepare();
-  } catch (error) {
-    // Nothing was issued: the slot is given back for the next attempt.
-    await env.DB.prepare("DELETE FROM billing_open_checkout WHERE account_id = ? AND claim_id = ?").bind(accountId, claim).run();
-    throw error;
-  }
-  await env.DB.prepare("UPDATE billing_open_checkout SET url = ?, expires_at = ? WHERE account_id = ? AND claim_id = ?")
-    .bind(url, Date.now() + CHECKOUT_LIFETIME_MS, accountId, claim)
-    .run();
-  return url;
 }
 
 export async function listBillingPlans(c: AdminContext): Promise<Response> {
@@ -267,10 +249,10 @@ export async function listBillingPlans(c: AdminContext): Promise<Response> {
 export async function getBillingStatus(c: AdminContext): Promise<Response> {
   billingCaller(c);
   const accountId = c.get("actor").accountId;
-  // The billing page asks the billing service every time: after a checkout or
-  // a change, a cached plan would show the old one (Sol 7b-8).
-  invalidateBillingAccess(accountId);
-  const access = await getBillingAccess(c.env, accountId);
+  // The billing page asks the billing service afresh: after a checkout or a
+  // change, a cached plan would show the old one. The read is shared, bounded
+  // and keeps app traffic's last known plan (Sol 7b-8).
+  const access = await getFreshBillingAccess(c.env, accountId, (promise) => c.executionCtx.waitUntil(promise));
   return c.json({
     access,
     limits: enforcedLimits(access),
@@ -284,18 +266,18 @@ export async function startCheckout(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingCheckoutRequestSchema);
   const accountId = requireShownAccount(c, input.accountId);
-  const url = await openCheckout(c.env, accountId, input.planKey, input.billingPeriod, async () => {
-    const result = await rpc(() =>
-      runtime.createCheckout({
-        serviceId: BILLING_SERVICE_ID,
-        tenantId: accountId,
-        planKey: input.planKey,
-        billingPeriod: input.billingPeriod,
-        ...consoleReturnUrls(c, input.planKey),
-      }),
-    );
-    return paymentPage(c.env, result.url);
-  });
+  // Each checkout is the billing service's own: keeping one per account, and
+  // reconciling a second one paid, is its job, not this gateway's.
+  const result = await rpc(() =>
+    runtime.createCheckout({
+      serviceId: BILLING_SERVICE_ID,
+      tenantId: accountId,
+      planKey: input.planKey,
+      billingPeriod: input.billingPeriod,
+      ...consoleReturnUrls(c, input.planKey, accountId),
+    }),
+  );
+  const url = paymentPage(c.env, result.url);
   invalidateBillingAccess(accountId);
   return c.json({ url } satisfies OperationResponse<"startCheckout">);
 }
@@ -304,7 +286,8 @@ export async function changePlan(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingChangeRequestSchema);
   const accountId = requireShownAccount(c, input.accountId);
-  await requireShownSubscription(c.env, accountId, input.subscriptionId);
+  await requireShownSubscription(c, accountId, input);
+  await requireShownPrice(runtime, input.planKey, input.billingPeriod, input.price);
   const result = await rpc(() =>
     runtime.changePlan({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey, billingPeriod: input.billingPeriod }),
   );
@@ -317,9 +300,9 @@ export async function changePlan(c: AdminContext): Promise<Response> {
 
 export async function resumeSubscription(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
-  const input = await parseBody(c, BillingChangeRequestSchema);
+  const input = await parseBody(c, BillingResumeRequestSchema);
   const accountId = requireShownAccount(c, input.accountId);
-  await requireShownSubscription(c.env, accountId, input.subscriptionId);
+  await requireShownSubscription(c, accountId, input);
   const result = await rpc(() =>
     runtime.resumeSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey, billingPeriod: input.billingPeriod }),
   );
@@ -334,7 +317,7 @@ export async function cancelSubscription(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingCancelRequestSchema);
   const accountId = requireShownAccount(c, input.accountId);
-  await requireShownSubscription(c.env, accountId, input.subscriptionId);
+  await requireShownSubscription(c, accountId, input);
   await rpc(() => runtime.cancelSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }));
   invalidateBillingAccess(accountId);
   return c.json({ ok: true } satisfies OperationResponse<"cancelSubscription">);
