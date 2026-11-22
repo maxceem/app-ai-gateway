@@ -278,7 +278,7 @@ describe("summary", () => {
 });
 
 describe("claim waits", () => {
-  it("apply in attempt order when the writes land out of order (Sol 7b-4)", async () => {
+  it("follow the events, whatever order the writes land in (Sol 7b-4 rounds 1, 2 and 5)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     const attempt = async (time: number, userId: string, outcome: "ok" | "issuer_claims_missing") => {
@@ -323,10 +323,36 @@ describe("claim waits", () => {
     await attempt(T0 + 30_000, "u3", "ok");
     expect(await delays("u3")).toEqual([20_000]);
 
+    // u4: a refusal at T0+10s, a success at T0+20s, then a refusal at T0+30s from a device with an old
+    // token, landing in the order 10s, 30s, 20s. The late success measures the first wait and leaves
+    // the second open (Sol 7b-4 round 5).
+    await attempt(T0 + 10_000, "u4", "issuer_claims_missing");
+    await attempt(T0 + 30_000, "u4", "issuer_claims_missing");
+    expect(await since("u4")).toBe(T0 + 10_000);
+    await attempt(T0 + 20_000, "u4", "ok");
+    expect(await delays("u4")).toEqual([10_000]);
+    expect(await since("u4")).toBe(T0 + 30_000);
+
+    // u5: the same three attempts landing in order end the same way.
+    await attempt(T0 + 10_000, "u5", "issuer_claims_missing");
+    await attempt(T0 + 20_000, "u5", "ok");
+    await attempt(T0 + 30_000, "u5", "issuer_claims_missing");
+    expect(await delays("u5")).toEqual([10_000]);
+    expect(await since("u5")).toBe(T0 + 30_000);
+
+    // u6: the success lands first; the wait it ended was never measured (the documented gap), and
+    // the refusal after it is still open.
+    await attempt(T0 + 20_000, "u6", "ok");
+    await attempt(T0 + 30_000, "u6", "issuer_claims_missing");
+    await attempt(T0 + 10_000, "u6", "issuer_claims_missing");
+    expect(await delays("u6")).toEqual([null]);
+    expect(await since("u6")).toBe(T0 + 30_000);
+
+    // In every order, the pending count is what the events say: u4, u5 and u6 wait, u1 to u3 do not.
     vi.setSystemTime(NOW);
     const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=1`);
-    expect(summary.body.claim_delay).toMatchObject({ count: 3, p50_ms: 20_000, p95_ms: 30_000 });
-    expect(summary.body.pending_users).toBe(0);
+    expect(summary.body.claim_delay).toMatchObject({ count: 5, p50_ms: 12_500, p95_ms: 30_000 });
+    expect(summary.body.pending_users).toBe(3);
   });
 });
 

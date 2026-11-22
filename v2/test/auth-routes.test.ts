@@ -4,7 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { EXPIRED_CHALLENGES_SQL, LATER_SUCCESS_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, PENDING_SINCE_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
   attestAuthentication,
@@ -488,15 +488,33 @@ describe("expired challenges", () => {
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     // A batch of 2 stands in for 1,000: the oldest two go first.
     expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2 });
-    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     const left = await env.DB.prepare("SELECT challenge FROM app_auth_challenge ORDER BY expires_at").all<{ challenge: string }>();
     expect(left.results.map((row) => row.challenge)).toEqual(["backlog-2", "backlog-3", "backlog-4"]);
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 2, deleted: 2 });
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 1 });
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 0, deleted: 0 });
-    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(2);
+    // The hourly drain goes on while batches come back full, up to its limit, and says a backlog is left.
+    expect(await drainExpiredChallenges(env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
+    // With room for more batches it clears the rest in one run, and stops at the first batch that is not full.
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     const versions = (await authEvents(appId)).map((event: any) => event.app_version).sort();
     expect(versions).toEqual(["1.0.0", "1.0.2", "1.0.3", "1.0.4"]);
+  });
+
+  it("clears a burst in one hourly run, a full batch after another (Sol 7b-4 round 5)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      Array.from({ length: 5 }, (_, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES (?, ?, ?, 0)").bind(`burst-${index}`, appId, now - 10_000 + index),
+      ),
+    );
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toEqual([]);
   });
 
   it("picks a batch through the expiry index, with no sort", async () => {
@@ -509,10 +527,14 @@ describe("expired challenges", () => {
 });
 
 describe("claim waits", () => {
-  it("look for a later success through the user index, by account and time (Sol 7b-4 round 4)", async () => {
-    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${LATER_SUCCESS_SQL}`).bind("app", "u1", Date.now(), "acct").all<{ detail: string }>()).results
+  it("work out the wait from the user index, by account and time, with no sort (Sol 7b-4 rounds 4 and 5)", async () => {
+    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${PENDING_SINCE_SQL}`).bind("app", "u1", "acct").all<{ detail: string }>()).results
       .map((row) => row.detail)
       .join("\n");
+    // The refusal after the last success seeks the time range; the last success is read from the same index.
     expect(plan).toContain("app_auth_event_app_user_created (app_id=? AND user_id=? AND account_id=? AND created_at>?)");
+    expect(plan).toContain("app_auth_event_app_user_created (app_id=? AND user_id=? AND account_id=?)");
+    expect(plan).not.toContain("TEMP B-TREE");
+    expect(plan).not.toMatch(/SCAN (r|s|app_auth_event)\b/);
   });
 });
