@@ -20,10 +20,14 @@
  * days, so in practice nothing old is held back. Work given up is kept 90
  * days, so the console can show it, and is then deleted.
  *
- * A correction is deleted only once the charge it corrects is gone. So while
- * a charge is in the ledger, every correction of it is too, and a late
- * settlement works out its difference from all of them. Once the charge is
- * gone, nothing more is written against it (`./corrections.ts`).
+ * Charges go by owner: a call's, a job's or a session's charges, corrections
+ * included, are deleted together in one statement, once every one of them is
+ * past the window. A correction always has its charge's owner and usage date,
+ * and a session's total is a correction of the session. So no reader ever sees
+ * a correction without the charge it corrects, or a session's total without
+ * its slices, and a cost never turns negative halfway through retention.
+ * Once the charge is gone, nothing more is written against it
+ * (`./corrections.ts`).
  *
  * Every pass picks its rows straight from its rule, through an index, a chunk
  * at a time, taking turns with the nightly run's other passes
@@ -60,22 +64,48 @@ function gaveUpWork(cutoffMs: number): Deletable {
 }
 
 /**
- * Charges dated before `?`. Kept: a charge with open work the sweep has not
- * finished or given up on; a slice of a session not settled yet; and a
- * correction whose charge is still there. Served by `charge_usage_day`.
+ * Charges dated before `?1`, picked one at a time. Kept: a charge with open
+ * work the sweep has not finished or given up on; a slice of a session not
+ * settled yet; and any charge whose owner still has a charge on or after `?1`
+ * (so an owner's charges always go together). Served by `charge_usage_day`,
+ * and `charge_owner` for the checks.
  */
 function oldCharges(cutoffDay: string): Deletable {
   return {
     table: "charge",
     rowids: `SELECT c.rowid FROM charge AS c
-      WHERE c.usage_day < ?
+      WHERE c.usage_day < ?1
         AND NOT EXISTS (SELECT 1 FROM open_work AS w
                         WHERE w.owner_type = c.owner_type AND w.owner_id = c.owner_id AND w.gave_up_at IS NULL)
         AND NOT (c.owner_type = 'session'
                  AND EXISTS (SELECT 1 FROM session AS s WHERE s.id = c.owner_id AND s.settlement = 'open'))
-        AND (c.corrects_charge_id IS NULL
-             OR NOT EXISTS (SELECT 1 FROM charge AS o WHERE o.id = c.corrects_charge_id))`,
+        AND NOT EXISTS (SELECT 1 FROM charge AS y
+                        WHERE y.owner_type = c.owner_type AND y.owner_id = c.owner_id AND y.usage_day >= ?1)`,
     params: [cutoffDay],
+  };
+}
+
+/**
+ * Deletes old charges a chunk at a time, each picked charge with every other
+ * charge of its owner, in one statement: all or none of an owner's charges
+ * are ever in the ledger as far as any reader can tell. A chunk picks at most
+ * `rows` charges; their owners' other charges (corrections, a session's other
+ * slices) come with them, and the count it returns is every row deleted, so
+ * the run's row allowance is charged for what was written.
+ */
+function chargesPass(cutoffDay: string): Pass {
+  const rule = oldCharges(cutoffDay);
+  return {
+    name: "usage_retention_charges",
+    statements: 1,
+    rowWrites: ROW_WRITES.charge,
+    async chunk(db, rows) {
+      const statement = db.prepare(
+        `DELETE FROM charge WHERE (owner_type, owner_id) IN (
+           SELECT c.owner_type, c.owner_id FROM charge AS c WHERE c.rowid IN (${rule.rowids} LIMIT ?2))`,
+      );
+      return (await statement.bind(...rule.params, rows).run()).meta.changes ?? 0;
+    },
   };
 }
 
@@ -129,7 +159,15 @@ export const FOLD_PICK = "SELECT rowid FROM usage_day WHERE day < ?1 ORDER BY da
 /** The fold's three statements: look for totals near the integer limit, add the chunk to its month rows, delete it. */
 const FOLD_STATEMENTS = 3;
 
-/** The key of a month row: the day rollup's key, with the month for the day. */
+/**
+ * The key of a month row: the day rollup's key, with the month for the day.
+ * The month row names the account; the day rollup's key does not, as an app id
+ * is unique across accounts (its name plus a random suffix, `newAppId`). Two
+ * accounts could only share a day row if one deleted an app and another made
+ * one with the same name and the same random suffix, on a day the old app
+ * still had charges: about one chance in two billion. A v1 import must keep
+ * app ids unique across accounts for the same reason.
+ */
 const MONTH_KEY = ["account_id", "app_id", "month", "provider_type", "provider_connection_id", "model", "outcome", "unit"] as const;
 
 /**
@@ -256,7 +294,7 @@ export function usageRetentionPasses(now: number): Pass[] {
   const rules = usageRetentionRules(now);
   return [
     deletePass("usage_retention_gave_up_work", rules.gaveUpWork),
-    deletePass("usage_retention_charges", rules.charges),
+    chargesPass(dayBefore(now, USAGE_DETAIL_RETENTION_DAYS)),
     deletePass("usage_retention_sessions", rules.sessions),
     deletePass("usage_retention_budget_days", rules.budgetDays),
     foldMonthsPass(firstKeptMonthDay(now, USAGE_DAY_RETENTION_DAYS)),

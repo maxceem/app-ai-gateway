@@ -101,7 +101,9 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
   about 40 apps that each have one page expire a night. Where it runs out before every
   app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
-  days, and detailed usage after 90 days: charges, settled sessions and budget totals. Day totals
+  days, and detailed usage after 90 days: charges, settled sessions and budget totals. A call's,
+  job's or session's charges, corrections included, go together once all of them are past 90 days,
+  so a user's usage never shows a correction without its charge. Day totals
   stay 400 days, then move into month totals.
 
 Each kind of old row is a pass, and the passes take turns: each round, every pass with rows left

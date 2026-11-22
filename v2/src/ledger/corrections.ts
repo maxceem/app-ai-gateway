@@ -189,9 +189,10 @@ async function writeCorrection(
       [finalCost, correctedId, correctedId],
       {
         // Only while the charge it corrects is still in the ledger. Retention
-        // deletes a charge before its corrections (`./retention.ts`), so while
-        // the charge is here, so is everything already booked against it, and
-        // the difference above is exact. Once it is gone, nothing is written.
+        // deletes a charge together with its corrections, in one statement
+        // (`./retention.ts`), so while the charge is here, so is everything
+        // already booked against it, and the difference above is exact. Once
+        // it is gone, nothing is written.
         sql: `EXISTS (SELECT 1 FROM charge WHERE id = ?)${
           unlessSettled
             ? // No final settlement of this charge (its own, or its job's), and no

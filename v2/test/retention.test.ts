@@ -29,6 +29,7 @@ import { FOLD_PICK, runUsageRetention, usageRetentionRules, USAGE_DAY_RETENTION_
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { CHALLENGE_SETTLE_STATEMENTS, NIGHTLY_HOUR_UTC, nightlyPasses, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
 import { nano } from "../src/money.ts";
+import { usageByUser } from "../src/admin/users.ts";
 import { ACCOUNT_ID, attestAuthentication, seedApp } from "./helpers.ts";
 
 const DAY = 86_400_000;
@@ -36,6 +37,8 @@ const DAY = 86_400_000;
 const NOW = Date.parse("2027-06-15T04:17:00Z");
 const OLD = NOW - (USAGE_DETAIL_RETENTION_DAYS + 5) * DAY;
 const RECENT = NOW - 10 * DAY;
+/** The month of {@link OLD}, as the users list asks for it. */
+const OLD_MONTH = new Date(OLD).toISOString().slice(0, 7);
 
 let counter = 0;
 const unique = (prefix: string) => `${prefix}_${++counter}`;
@@ -235,7 +238,7 @@ describe("usage retention: charges", () => {
     expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
   });
 
-  it("deletes a correction only after the charge it corrects, and keeps both while the charge is kept", async () => {
+  it("deletes a correction together with the charge it corrects, and keeps both while the charge is kept", async () => {
     const original = charge({ usedAt: OLD });
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId });
     const keptOriginal = charge({ usedAt: OLD });
@@ -244,11 +247,46 @@ describe("usage retention: charges", () => {
     await openWork({ ownerType: "call", ownerId: keptOriginal.ownerId });
 
     const result = await runUsageRetention(env.DB, NOW, budget());
-    // One chunk deletes the charge, which frees its correction: the pass is not
-    // done after a short chunk, so a later round of the same night deletes it
-    // (Sol 7b-2 round 4).
+    // The charge and its correction share an owner, and go in the same statement (Astra 7b-2 round 1).
     expect(await chargeIds()).toEqual([keptFix.id, keptOriginal.id]);
     expect(result.charges).toMatchObject({ deleted: 2, caughtUp: true });
+  });
+
+  it("never shows a user a correction without its charge, between chunks (Astra 7b-2 round 1)", async () => {
+    const original = charge({ usedAt: OLD, costNano: nano(1_000) });
+    const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
+    const other = charge({ usedAt: OLD, costNano: nano(500) });
+    await insert(original, fix, other);
+    const month = OLD_MONTH;
+    const read = async () => (await usageByUser(env.DB, "app_retention", ["user_1"], month)).get("user_1");
+    expect(await read()).toMatchObject({ charges: 2, cost_nano: 750 });
+
+    // One chunk of one charge a night: the original is picked, and its correction goes with it.
+    const seen: unknown[] = [];
+    for (let night = 0; night < 3; night++) {
+      await runUsageRetention(env.DB, NOW, new QueryBudget(2), 1);
+      const usage = await read();
+      seen.push(usage === undefined ? null : { charges: usage.charges, cost: usage.cost_nano });
+    }
+    expect(seen).toEqual([{ charges: 1, cost: 500 }, null, null]);
+  });
+
+  it("keeps all of an owner's charges while any of them is inside the window, and deletes them together after", async () => {
+    // A call retried across midnight on the cutoff day: its first try is past the window, its second is not.
+    const owner = unique("call");
+    const first = charge({ usedAt: NOW - (USAGE_DETAIL_RETENTION_DAYS + 1) * DAY, ownerId: owner, seq: 1 });
+    const second = charge({ usedAt: NOW - USAGE_DETAIL_RETENTION_DAYS * DAY, ownerId: owner, seq: 2 });
+    // A settled session: its slices and its provider total (a correction of the session) go together.
+    const sessionId = unique("ses");
+    await session(sessionId, OLD, "settled");
+    const slices = [1, 2].map((seq) => charge({ usedAt: OLD, ownerType: "session", ownerId: sessionId, seq }));
+    const total = charge({ usedAt: OLD, kind: "correction", correctionKind: "dollars", ownerType: "session", ownerId: sessionId, seq: null });
+    await insert(first, second, ...slices, total);
+
+    const result = await runUsageRetention(env.DB, NOW, budget(), 1);
+
+    expect(await chargeIds()).toEqual([first.id, second.id]);
+    expect(result.charges).toMatchObject({ deleted: 3, caughtUp: true });
   });
 
   it("never books a job twice when retention deletes its charges around a late poll", async () => {
@@ -828,6 +866,7 @@ describe("retention queries", () => {
       const detail = await plan(`${rule.rowids} LIMIT 1`, ...rule.params);
       expect(detail, name).toContain(indexes[name as keyof typeof indexes]);
     }
+    expect(await plan(`DELETE FROM charge WHERE (owner_type, owner_id) IN (SELECT owner_type, owner_id FROM charge WHERE rowid IN (${rules.charges.rowids} LIMIT 1))`, ...rules.charges.params)).toContain("charge_owner");
     expect(await plan(FOLD_PICK, "2026-05-01", 1)).toContain("usage_day_day");
     expect(await plan("SELECT rowid FROM app_auth_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_auth_event_created");
     expect(await plan("SELECT rowid FROM app_rejection_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_rejection_event_created");

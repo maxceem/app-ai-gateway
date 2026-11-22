@@ -310,7 +310,7 @@ export const CATALOG = {
     tags: ["Admin end users"],
     summary: "List an app's end users",
     description:
-      "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`.",
+      "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
     security: "management",
     query: EndUserListQuerySchema,
     response: EndUserListResponseSchema,
@@ -327,7 +327,7 @@ export const CATALOG = {
     security: "management",
     query: EndUserQuerySchema,
     response: EndUserResponseSchema,
-    responseDescription: "The end user, with their usage in `month`.",
+    responseDescription: "The end user, with their usage in `month`. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
     errors: ADMIN_ERRORS,
   },
 
