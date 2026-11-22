@@ -10,9 +10,11 @@ import { createExecutionContext, createScheduledController, waitOnExecutionConte
 import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem/cf-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { ROW_WRITES } from "../src/core/chunked-delete.ts";
+import { ROW_WRITES, runPasses } from "../src/core/chunked-delete.ts";
+import { authEventsPass } from "../src/client-auth/auth-events.ts";
 import {
   DEFAULT_MAINTENANCE_ROWS,
+  DEFAULT_MAINTENANCE_STATEMENTS,
   MAINTENANCE_SLACK_STATEMENTS,
   MAXIMUM_MAINTENANCE_ROWS,
   MAXIMUM_MAINTENANCE_STATEMENTS,
@@ -132,6 +134,14 @@ async function rows(sql: string, ...params: unknown[]): Promise<Record<string, u
 
 const budget = (n = 1_000) => new QueryBudget(n);
 
+async function authEventRow(createdAt: number): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO app_auth_event (id, app_id, event, outcome, created_at) VALUES (?, 'app_retention', 'token_exchange', 'succeeded', ?)`,
+  )
+    .bind(unique("evt"), createdAt)
+    .run();
+}
+
 function quiet(): void {
   vi.spyOn(console, "log").mockImplementation(() => undefined);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -233,13 +243,12 @@ describe("usage retention: charges", () => {
     await insert(fix, original, keptFix, keptOriginal);
     await openWork({ ownerType: "call", ownerId: keptOriginal.ownerId });
 
-    await runUsageRetention(env.DB, NOW, budget());
-    // The first night deletes the charge; its correction waits for a later chunk or night.
-    expect(await chargeIds()).not.toContain(original.id);
-    expect(await chargeIds()).toEqual(expect.arrayContaining([keptFix.id, keptOriginal.id]));
-
-    await runUsageRetention(env.DB, NOW, budget());
+    const result = await runUsageRetention(env.DB, NOW, budget());
+    // One chunk deletes the charge, which frees its correction: the pass is not
+    // done after a short chunk, so a later round of the same night deletes it
+    // (Sol 7b-2 round 4).
     expect(await chargeIds()).toEqual([keptFix.id, keptOriginal.id]);
+    expect(result.charges).toMatchObject({ deleted: 2, caughtUp: true });
   });
 
   it("never books a job twice when retention deletes its charges around a late poll", async () => {
@@ -273,8 +282,9 @@ describe("usage retention: charges", () => {
     const final = { kind: "dollars", costNano: nano(1_200) } as const;
     await settleJob(env.DB, { jobId: job, final, now: OLD + DAY });
 
-    // One night: the estimate goes, its settlement stays until a later chunk.
-    await runUsageRetention(env.DB, NOW, budget());
+    // A night whose budget ran out between the two: the estimate is gone, its
+    // settlement is still there until a later chunk.
+    await env.DB.prepare("DELETE FROM charge WHERE id = ?").bind(estimate.id).run();
     expect(await chargeIds()).toHaveLength(1);
 
     expect(await settleJobFrom(env.DB, estimate, { kind: "dollars", costNano: nano(1_500) }, NOW)).toEqual({ status: "already" });
@@ -545,6 +555,49 @@ describe("the query budget", () => {
     }
     // No trigger runs on a delete, or on an update of a month row, to write more.
     expect(await rows("SELECT name FROM sqlite_master WHERE type = 'trigger' AND (sql LIKE '%DELETE ON%' OR sql LIKE '%UPDATE ON%')")).toEqual([]);
+  });
+
+  it("reads both settings as a number or as text, and falls back on anything else without throwing (Sol 7b-2 round 4)", () => {
+    const codes = warningCodes();
+    const statements = (value: unknown) => maintenanceStatementBudget({ ...env, MAINTENANCE_QUERY_BUDGET: value } as unknown as Env).limit;
+    const rowsOf = (value: unknown) => maintenanceRowLimit({ ...env, MAINTENANCE_ROW_BUDGET: value } as unknown as Env);
+    // A Wrangler `vars` entry may be a JSON number.
+    expect(statements(400)).toBe(400 - MAINTENANCE_SLACK_STATEMENTS);
+    expect(rowsOf(50_000)).toBe(50_000);
+    expect(statements(" 400 ")).toBe(400 - MAINTENANCE_SLACK_STATEMENTS);
+    expect(rowsOf(10_000_000)).toBe(MAXIMUM_MAINTENANCE_ROWS);
+    expect(codes).toEqual(["maintenance_row_budget_capped"]);
+    codes.length = 0;
+    for (const garbage of [true, {}, [100], "lots", 400.5, Number.NaN, Number.POSITIVE_INFINITY, -5]) {
+      expect(statements(garbage)).toBe(DEFAULT_MAINTENANCE_STATEMENTS - MAINTENANCE_SLACK_STATEMENTS);
+      expect(rowsOf(garbage)).toBe(DEFAULT_MAINTENANCE_ROWS);
+    }
+    expect(new Set(codes)).toEqual(new Set(["maintenance_query_budget_invalid", "maintenance_row_budget_invalid"]));
+    codes.length = 0;
+    // Not set, null or empty: the default, quietly.
+    for (const unset of [undefined, null, "", "  "]) {
+      expect(statements(unset)).toBe(DEFAULT_MAINTENANCE_STATEMENTS - MAINTENANCE_SLACK_STATEMENTS);
+      expect(rowsOf(unset)).toBe(DEFAULT_MAINTENANCE_ROWS);
+    }
+    expect(codes).toEqual([]);
+  });
+
+  it("warns of a backlog only for a pass whose last chunk was full (Sol 7b-2 round 4)", async () => {
+    const codes = warningCodes();
+    // Three rows, chunks of two: the first chunk is full, and the budget runs out.
+    const fill = async (n: number) => {
+      for (let i = 0; i < n; i++) await authEventRow(OLD);
+    };
+    await fill(3);
+    await runPasses(env.DB, new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
+    expect(codes).toEqual(["maintenance_backlog_left"]);
+    codes.length = 0;
+
+    // One row left, chunks of two: the chunk is short, and the budget runs out
+    // before the chunk that would find nothing. Very likely done: no warning.
+    const results = await runPasses(env.DB, new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
+    expect(results.get("auth_events_prune")).toMatchObject({ deleted: 1, caughtUp: false, lastFull: false });
+    expect(codes).toEqual([]);
   });
 
   it("charges the sign-in clean-up its library's statement count", () => {

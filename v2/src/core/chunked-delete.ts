@@ -26,9 +26,16 @@
  *   equal part of the rows left for the passes still to go, and what one pass
  *   does not use is left to the passes after it.
  *
- * When a budget runs out with rows still to delete, the run says so with one
- * `maintenance_backlog_left` warning, naming the passes. A pass that fails is
- * logged and drops out; the others go on.
+ * A pass has caught up only when a chunk finds nothing to delete. A short
+ * chunk is not enough: another pass's deletes can make more of its rows
+ * deletable (deleting a charge frees its corrections), so it gets another
+ * turn in a later round, or the next night.
+ *
+ * When a budget runs out, the run warns with one `maintenance_backlog_left`,
+ * naming the passes whose last chunk was full (or that never got one): those
+ * very likely have rows left. A pass whose last chunk was short is very likely
+ * done, and is not named. A pass that fails is logged and drops out; the
+ * others go on.
  *
  * The rule's query must be served by an index, so a chunk costs about what it
  * deletes, and a night with nothing to delete costs one short index read.
@@ -86,8 +93,10 @@ export interface Pass {
 export interface ChunkedDeleteResult {
   chunks: number;
   deleted: number;
-  /** Whether no deletable row is left, rather than a budget running out first. */
+  /** Whether a chunk found nothing to delete, rather than a budget running out first. */
   caughtUp: boolean;
+  /** Whether the last chunk handled every row it asked for: rows are very likely left. Null before the first chunk. */
+  lastFull: boolean | null;
 }
 
 /** A pass deleting the rows `spec` picks, one statement a chunk. */
@@ -118,7 +127,7 @@ export async function runPasses(
 ): Promise<Map<string, ChunkedDeleteResult | null>> {
   const counted = statements.database(db);
   const results = new Map<string, ChunkedDeleteResult | null>(
-    passes.map((pass) => [pass.name, { chunks: 0, deleted: 0, caughtUp: false }]),
+    passes.map((pass) => [pass.name, { chunks: 0, deleted: 0, caughtUp: false, lastFull: null }]),
   );
   let rowsLeft = rowLimit;
   let active = [...passes];
@@ -141,7 +150,8 @@ export async function runPasses(
         result.chunks += 1;
         result.deleted += handled;
         rowsLeft -= handled * pass.rowWrites;
-        if (handled < rows) result.caughtUp = true;
+        result.lastFull = handled >= rows;
+        if (handled === 0) result.caughtUp = true;
         else next.push(pass);
       } catch (error) {
         if (error instanceof QueryBudgetExhausted) continue; // Left as backlog.
@@ -159,7 +169,8 @@ export async function runPasses(
     const result = results.get(pass.name);
     if (result === null || result === undefined) continue;
     log("info", "maintenance_pass", { pass: pass.name, ...result });
-    if (!result.caughtUp) left.push(pass.name);
+    // A short last chunk: very likely done, so no alarm for it.
+    if (!result.caughtUp && result.lastFull !== false) left.push(pass.name);
   }
   if (left.length > 0) {
     // So the monitor alerts: rows past their retention are still there, and will be until a night with room.

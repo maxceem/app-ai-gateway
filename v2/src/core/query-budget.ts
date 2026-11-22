@@ -203,17 +203,22 @@ export const MINIMUM_MAINTENANCE_ROWS = 1_000;
 export const MAXIMUM_MAINTENANCE_ROWS = 5_000_000;
 
 /**
- * An optional whole-number setting between `minimum` and `maximum`: a value
- * below the minimum, or not a whole number, gives the default; one above the
- * maximum is lowered to it. Both are logged as `warn`.
+ * An optional whole-number setting between `minimum` and `maximum`. It may be
+ * a number or text: a `vars` entry in a Wrangler file can be a JSON number,
+ * while the dashboard and secrets give text. A value of any other type, not a
+ * whole number, or below the minimum gives the default; one above the maximum
+ * is lowered to it. Both are logged as `warn`. Never throws: a setting it
+ * cannot read must not stop the nightly run.
  */
-function setting(
-  configured: string | undefined,
+export function setting(
+  configured: unknown,
   name: string,
   { fallback, minimum, maximum }: { fallback: number; minimum: number; maximum: number },
 ): number {
-  if (configured === undefined || configured.trim() === "") return fallback;
-  const parsed = Number(configured);
+  if (configured === undefined || configured === null) return fallback;
+  if (typeof configured === "string" && configured.trim() === "") return fallback;
+  const parsed =
+    typeof configured === "number" ? configured : typeof configured === "string" ? Number(configured.trim()) : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed < minimum) {
     // The value itself is not logged: a setting is text, and one pasted into
     // the wrong variable may be a secret.
@@ -239,7 +244,7 @@ function setting(
  * retention backlog worth clearing faster.
  */
 export function maintenanceStatementBudget(env: Env): QueryBudget {
-  const configured = (env as { MAINTENANCE_QUERY_BUDGET?: string }).MAINTENANCE_QUERY_BUDGET;
+  const configured = (env as { MAINTENANCE_QUERY_BUDGET?: unknown }).MAINTENANCE_QUERY_BUDGET;
   const allowance = setting(configured, "maintenance_query_budget", {
     fallback: DEFAULT_MAINTENANCE_STATEMENTS,
     minimum: MINIMUM_MAINTENANCE_STATEMENTS,
@@ -248,9 +253,17 @@ export function maintenanceStatementBudget(env: Env): QueryBudget {
   return new QueryBudget(allowance - MAINTENANCE_SLACK_STATEMENTS);
 }
 
-/** The rows one nightly run may write, raised by `MAINTENANCE_ROW_BUDGET`. Not a `vars` entry, for the same reason. */
+/**
+ * The rows one nightly run's retention passes may write, raised by
+ * `MAINTENANCE_ROW_BUDGET`. Not a `vars` entry, for the same reason.
+ *
+ * It covers the retention passes only. The App Attest challenge clean-up runs
+ * every hour, the nightly hour included, and is not charged to it: it settles
+ * about one hour of challenges, so its writes follow the writes the apps made
+ * that hour, not a backlog (`../client-auth/auth-events.ts`).
+ */
 export function maintenanceRowLimit(env: Env): number {
-  const configured = (env as { MAINTENANCE_ROW_BUDGET?: string }).MAINTENANCE_ROW_BUDGET;
+  const configured = (env as { MAINTENANCE_ROW_BUDGET?: unknown }).MAINTENANCE_ROW_BUDGET;
   return setting(configured, "maintenance_row_budget", {
     fallback: DEFAULT_MAINTENANCE_ROWS,
     minimum: MINIMUM_MAINTENANCE_ROWS,

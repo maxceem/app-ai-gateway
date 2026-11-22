@@ -108,6 +108,8 @@ waiting. The run stops when every pass is done, or when one of two allowances ru
 - **D1 statements:** at most 50, the Workers Free plan's limit per run.
 - **Rows written:** at most 20,000. D1 counts each deleted row and each of its index entries. The
   Free plan allows 100,000 row writes a day for the whole account, and the apps need the rest.
+  This allowance covers the retention passes only. The hourly clean-up of expired App Attest
+  challenges is not counted in it: each hour it settles about one hour of challenges.
 
 A backlog left over is cleared over the next nights, and the run logs `maintenance_backlog_left` as
 a warning. On the Workers Paid plan, two optional Worker variables clear it faster:
