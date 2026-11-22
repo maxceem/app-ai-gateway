@@ -17,7 +17,7 @@
  * always fail. Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -43,7 +43,7 @@ before(async () => {
       baseUrl: urls[name],
     });
     expectStatus(created, 201, "created");
-    providerIds.push(created.body.provider.id);
+    providerIds.push(checkId(created.body.provider?.id, "the provider"));
   }
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke presets",
@@ -60,7 +60,7 @@ before(async () => {
     },
   });
   expectStatus(app, 201, "app");
-  appId = app.body.app.id;
+  appId = checkId(app.body.app?.id, "the app");
   appKey = app.body.api_key.key;
 });
 

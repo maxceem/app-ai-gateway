@@ -21,7 +21,7 @@
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectResponse, expectStatus, keyMark, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectResponse, expectStatus, keyMark, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -46,7 +46,7 @@ async function newApp(name: string, model = "gpt-4o-mini"): Promise<{ id: string
     },
   });
   expectStatus(app, 201, "app");
-  const created = { id: app.body.app.id as string, key: app.body.api_key.key as string };
+  const created = { id: checkId(app.body.app?.id, "the app"), key: app.body.api_key.key as string };
   apps.push(created);
   return created;
 }
@@ -56,7 +56,7 @@ before(async () => {
   slug = uniqueSlug("smoke-errors");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke provider errors", slug, secret: PROVIDER_KEY, baseUrl: mockUrl });
   expectStatus(provider, 201, "provider");
-  providerId = provider.body.provider.id;
+  providerId = checkId(provider.body.provider?.id, "the provider");
 });
 
 after(async () => {

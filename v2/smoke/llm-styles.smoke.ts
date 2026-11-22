@@ -14,7 +14,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, keyMark, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -43,7 +43,7 @@ before(async () => {
     // Each connection its own fixture key, so a gateway that sends another connection's key is seen.
     const created = await admin("POST", "/v2/admin/providers", { type, name: `Smoke ${type}`, slug, secret: `sk-mock-smoke-${type}`, baseUrl: mockUrl });
     expectStatus(created, 201, "created");
-    providerIds.push(created.body.provider.id);
+    providerIds.push(checkId(created.body.provider?.id, "the provider"));
     slugs[type] = slug;
   }
   const providers = Object.fromEntries((Object.keys(CONNECTIONS) as Type[]).map((type) => [slugs[type], { operations: [...CONNECTIONS[type]] }]));
@@ -52,7 +52,7 @@ before(async () => {
     config: { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers } },
   });
   expectStatus(app, 201, "app");
-  appId = app.body.app.id;
+  appId = checkId(app.body.app?.id, "the app");
   appKey = app.body.api_key.key;
 });
 

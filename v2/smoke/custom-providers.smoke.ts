@@ -16,7 +16,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectResponse, expectStatus, holds, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectResponse, expectStatus, holds, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -51,7 +51,7 @@ before(async () => {
   });
   expectStatus(created, 201, "created");
   // Saved first, so a failed check below still removes it.
-  providerIds.push(created.body.provider.id);
+  providerIds.push(checkId(created.body.provider?.id, "the provider"));
   // Write-only: the create answer never holds the key it was given.
   check(!holds(created.body, "sk-mock-smoke-custom-key"), "the provider create response holds the submitted key");
   const app = await admin("POST", "/v2/admin/apps", {
@@ -62,7 +62,7 @@ before(async () => {
     },
   });
   expectStatus(app, 201, "app");
-  appIds.push(app.body.app.id);
+  appIds.push(checkId(app.body.app?.id, "the app"));
   ({ id: appId } = app.body.app);
   appKey = app.body.api_key.key;
 });
@@ -139,7 +139,7 @@ test("saving refuses a {name} part where an endpoint's name is, and addresses th
     { baseUrl: "https://gateway.ai.cloudflare.com/v1/a/g/openai/" },
   ]) {
     const refused = await attempt(fields);
-    if (refused.status === 201) providerIds.push(refused.body.provider.id);
+    if (refused.status === 201) providerIds.push(checkId(refused.body.provider?.id, "the provider"));
     expectStatus(refused, 400, "a provider with refused fields");
   }
 });

@@ -12,7 +12,7 @@
  * Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, holds, readJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, holds, readJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -36,7 +36,7 @@ before(async () => {
   });
   expectStatus(provider, 201, "provider");
   // Saved first, so a failed check below still removes it.
-  providerId = provider.body.provider.id;
+  providerId = checkId(provider.body.provider?.id, "the provider");
   // Write-only: the create answer holds the hint, never the key itself. Checked
   // before the hint, so a key copied into the hint is never printed.
   check(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
@@ -49,7 +49,7 @@ before(async () => {
     },
   });
   expectStatus(app, 201, "app");
-  appId = app.body.app.id;
+  appId = checkId(app.body.app?.id, "the app");
   appKey = app.body.api_key.key;
 });
 

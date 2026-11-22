@@ -276,11 +276,11 @@ test("agw 2 reads an app with every option set whole, renames it without losing 
       // setting it was not asked to change, and agw must print them all back.
       const renamed = await agw(home, "app", "update", id, "--name", `agw smoke every option ${index} renamed`);
       expectCli(renamed, "agw renamed");
-      same(renamed.json.result?.app?.name, `agw smoke every option ${index} renamed`, "renamed.json.result?.app?.name is not `agw smoke every option ${index} renamed`");
+      same(renamed.json.result?.app?.name, `agw smoke every option ${index} renamed`, "agw app update did not print the new name");
       same(renamed.json.result?.app?.config, baseline, "the config agw app update printed is not the saved one");
       const after = await admin("GET", `/v2/admin/apps/${id}`);
       expectStatus(after, 200, "after");
-      same(after.body.app.name, `agw smoke every option ${index} renamed`, "after.body.app.name is not `agw smoke every option ${index} renamed`");
+      same(after.body.app.name, `agw smoke every option ${index} renamed`, "the app name did not change after the rename");
       same(after.body.app.config, baseline, "the config after the rename is not the saved one");
       // The whole document written back as `agw app show` printed it (PUT, as v1's `agw app replace`
       // and any client that edits a saved app file do): every setting survives the round trip.

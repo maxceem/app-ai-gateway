@@ -14,7 +14,7 @@
  * V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -31,7 +31,7 @@ before(async () => {
   slug = uniqueSlug("smoke-attest");
   const provider = await admin("POST", "/v2/admin/providers", { type: "openai", name: "Smoke App Attest", slug, secret: "sk-mock-smoke-key", baseUrl: mockUrl });
   expectStatus(provider, 201, "provider");
-  providerId = provider.body.provider.id;
+  providerId = checkId(provider.body.provider?.id, "the provider");
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke App Attest",
     config: {
@@ -40,7 +40,7 @@ before(async () => {
     },
   });
   expectStatus(app, 201, "app");
-  appId = app.body.app.id;
+  appId = checkId(app.body.app?.id, "the app");
 });
 
 after(async () => {
