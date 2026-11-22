@@ -359,50 +359,62 @@ describe("AppDetailPage", () => {
     expect(screen.getByRole("link", { name: "Errors" }).getAttribute("href")).toBe("/apps/my-app/errors");
   });
 
-  it("starts the Usage tab afresh when moving straight from one app to another (Neon 7b-6)", async () => {
-    // Each app answers as itself, with an older page of charges to go to.
+  it("starts an app's tabs afresh when moving straight from one app to another (Neon 7b-6)", async () => {
+    // Each app answers as itself, with an older page of sign-ins and refusals to go to. The
+    // Errors tab pages like the Usage tab, with no chart to load.
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       const id = /^\/v2\/admin\/apps\/([^/?]+)/u.exec(url)?.[1] ?? "";
-      const body = url.includes("/usage/timeseries")
-        ? { app_id: id, from: "2026-08-01", to: "2026-08-30", buckets: [] }
-        : url.includes("/usage/breakdown")
-          ? { app_id: id, by: "model", from: "2026-08-01", to: "2026-08-30", rows: [] }
-          : url.includes("/charges")
-            ? { app_id: id, limit: 25, next_before: `cursor-of-${id}`, charges: [] }
-            : url === "/v2/admin/providers"
-              ? PROVIDERS
-              : { app: testApp({ id, name: id }) };
+      const page = { app_id: id, limit: 25, next_before: `cursor-of-${id}`, events: [] };
+      const body = url.includes("/auth-events/summary")
+        ? {
+            app_id: id,
+            days: 30,
+            from: "2026-08-01",
+            to: "2026-08-30",
+            daily: [],
+            failing_networks: [],
+            failed_charges: [],
+            rejection_samples: [],
+            token_exchange: { total: 0, ok: 0, success_rate: null },
+            claim_delay: { count: 0, avg_ms: null, p50_ms: null, p95_ms: null },
+            pending_users: 0,
+          }
+        : url.includes("/auth-events") || url.includes("/rejection-events")
+          ? page
+          : url === "/v2/admin/providers"
+            ? PROVIDERS
+            : { app: testApp({ id, name: id }) };
       return new Response(JSON.stringify(body), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const { client } = renderAuthenticated(
       <>
-        <Link to="/apps/app-one/usage">To app one</Link>
-        <Link to="/apps/app-two/usage">To app two</Link>
+        <Link to="/apps/app-one/errors">To app one</Link>
+        <Link to="/apps/app-two/errors">To app two</Link>
         <Routes>
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
         </Routes>
       </>,
-      { route: "/apps/app-two/usage" },
+      { route: "/apps/app-two/errors" },
     );
     // App two is read once, so it is cached when the person comes back to it.
     await screen.findByRole("heading", { name: "app-two" });
     await user.click(screen.getByRole("link", { name: "To app one" }));
     await screen.findByRole("heading", { name: "app-one" });
-    const older = await screen.findByRole("button", { name: "Older" });
-    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
-    await user.click(older);
-    const chargeUrls = () => fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/charges"));
-    await waitFor(() => expect(chargeUrls().some((url) => url.includes("cursor-of-app-one"))).toBe(true));
-    const before = chargeUrls().length;
+    await settled(client);
+    const listUrls = () =>
+      fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => /\/(auth|rejection)-events\?/u.test(url));
+    for (const older of screen.getAllByRole("button", { name: "Older" })) await user.click(older);
+    await waitFor(() => expect(listUrls().some((url) => url.includes("cursor-of-app-one"))).toBe(true));
+    const before = listUrls().length;
     await user.click(screen.getByRole("link", { name: "To app two" }));
     await screen.findByRole("heading", { name: "app-two" });
     await settled(client);
-    // Back on app two, straight from the cache: its own first page, never app one's cursor.
-    expect(chargeUrls().slice(before).every((url) => !url.includes("before="))).toBe(true);
-    expect(screen.getByRole("button", { name: "Newer" }).hasAttribute("disabled")).toBe(true);
+    // Back on app two, straight from the cache: its own first pages, never app one's cursors.
+    expect(listUrls().slice(before).every((url) => !url.includes("before="))).toBe(true);
+    for (const newer of screen.getAllByRole("button", { name: "Newer" })) expect(newer.hasAttribute("disabled")).toBe(true);
   });
 
   it("sends an explicit null configuration as typed, for the gateway to refuse", async () => {

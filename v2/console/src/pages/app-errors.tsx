@@ -122,10 +122,10 @@ export function ErrorsTab({ appId }: { appId: string }) {
   // rejected without the developer ever seeing why. Read on its own where the
   // gateway gives it, so ten busier networks never hide it; from the network
   // list on an older gateway.
+  // Only from a summary that loaded: a failed refresh keeps the old data, and an old alert must not stay up.
+  const shown = summary.isSuccess ? summary.data : undefined;
   const apple =
-    summary.data?.apple_failures !== undefined
-      ? summary.data.apple_failures
-      : summary.data?.failing_networks.find((row) => isAppleNetwork(row.network_asn));
+    shown?.apple_failures !== undefined ? shown.apple_failures : shown?.failing_networks.find((row) => isAppleNetwork(row.network_asn));
   // Until the summary has loaded, the cards say so, not zero.
   const figure = (text: string) => (summary.isPending ? <Skeleton className="h-6 w-16" /> : summary.isError ? "—" : text);
   const detail = (text: string) => (summary.isSuccess ? text : summary.isError ? "unavailable" : undefined);

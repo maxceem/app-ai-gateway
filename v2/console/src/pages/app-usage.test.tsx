@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { UsageTab } from "./app-usage";
+import { ChargeMeasure, UsageTab } from "./app-usage";
 import { testApp } from "@/test/fixtures";
 import { findByHint, renderAuthenticated, stubApi } from "@/test/render";
 import type { App, Charge } from "@/lib/types";
@@ -244,5 +244,12 @@ describe("Usage tab", () => {
     expect((Date.parse(first.get("to")!) - Date.parse(last.get("from")!)) / 86_400_000 + 1).toBe(91);
     expect(span(last)).toBeLessThanOrEqual(31);
     expect(filtered().every((params) => !params.has("before"))).toBe(true);
+  });
+});
+
+describe("ChargeMeasure", () => {
+  it("shows a token charge's units correction, whose token columns are empty (Neon 7b-6 round 2)", () => {
+    render(<ChargeMeasure tokens={null} charge={{ unit: "tokens", units: -1_200, session_ms: null }} />);
+    expect(screen.getByText("-1,200")).toBeTruthy();
   });
 });

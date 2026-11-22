@@ -396,6 +396,8 @@ export function UsageTab({ app }: { app: App }) {
 export function ChargeMeasure({ tokens, charge }: { tokens: number | null; charge: Pick<Charge, "unit" | "units" | "session_ms"> }) {
   const otherUnit = charge.unit !== null && charge.unit !== "tokens" && charge.units !== null;
   if (!otherUnit && tokens !== null) return <>{formatCompact(tokens)}</>;
+  // A units correction of a token charge carries its token delta in `units`, its token columns empty.
+  if (!otherUnit && tokens === null && charge.unit === "tokens" && charge.units !== null) return <>{formatCompact(charge.units)}</>;
   const sessionShown = charge.session_ms !== null && charge.session_ms > 0;
   const parts: string[] = [];
   // A slice's session seconds are its connection time, shown once below.

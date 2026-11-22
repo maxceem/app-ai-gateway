@@ -108,6 +108,14 @@ describe("Errors tab", () => {
     expect(screen.getByText("Apple Inc. (AS714)")).toBeTruthy();
   });
 
+  it("takes the App Review alert down when a later read of the summary fails (Neon 7b-6 round 2)", async () => {
+    const { client } = renderTab({ data: summary({ apple_failures: { count: 2, last_seen: "2026-08-28T08:00:00.000Z" } }) });
+    expect(await screen.findByText(/Sign-in failed 2 times on Apple's network/u)).toBeTruthy();
+    stubApi({ [`${BASE}/auth-events/summary`]: { status: 500, body: { error: { code: "internal_error" } } } });
+    await act(async () => void (await client.refetchQueries()));
+    await waitFor(() => expect(screen.queryByText(/on Apple's network/u)).toBeNull());
+  });
+
   it("shows no App Review alert when Apple's network is not among the failures", async () => {
     renderTab({ data: summary({ failing_networks: [{ network_asn: 7922, network_name: "Comcast", count: 9, last_seen: "2026-08-29T08:00:00.000Z" }] }) });
     await screen.findByText("No failures in this range.");
