@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { call } from "./api";
+import { checkoutReturnPathFor, consoleUrl } from "./auth-redirect";
 import {
   changePassword,
   plainlySignedOut,
@@ -34,6 +35,8 @@ export const keys = {
   rejections: (appId: string, query: unknown) => ["rejection-events", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
+  billingStatus: ["billing-status"] as const,
+  billingPlans: ["billing-plans"] as const,
 };
 
 /**
@@ -461,5 +464,77 @@ export function useRejectionEvents(appId: string, query: RejectionQuery) {
   return useQuery({
     queryKey: keys.rejections(appId, query),
     queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Billing: a hosted deployment only (the `billing` capability). Nothing here
+// moves money: a checkout is finished on the billing provider's own page.
+
+/** The account's plan and allowance. Polled gently, since the allowance moves with every request. */
+export function useBillingStatus(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.billingStatus,
+    queryFn: () => call("getBillingStatus"),
+    enabled,
+    staleTime: 30_000,
+    refetchInterval: enabled ? 5 * 60_000 : false,
+  });
+}
+
+export function useBillingPlans(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.billingPlans,
+    queryFn: () => call("listBillingPlans"),
+    enabled,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+}
+
+/** Whatever changes the plan changes the status and the session's plan line. */
+function useRefreshPlan() {
+  const client = useQueryClient();
+  return () => {
+    void client.invalidateQueries({ queryKey: keys.billingStatus });
+    void client.invalidateQueries({ queryKey: keys.session });
+  };
+}
+
+export function useStartCheckout() {
+  return useMutation({
+    mutationFn: (input: OperationRequest<"changePlan">) =>
+      call("startCheckout", {
+        body: {
+          ...input,
+          // A completed checkout lands on the apps page, which announces it;
+          // an abandoned one comes back to the plans, where it would be resumed.
+          successUrl: `${window.location.origin}${consoleUrl(checkoutReturnPathFor(input.planKey))}`,
+          cancelUrl: `${window.location.origin}${consoleUrl("/billing")}`,
+        },
+      }),
+  });
+}
+
+export function useChangePlan() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationFn: (input: OperationRequest<"changePlan">) => call("changePlan", { body: input }),
+    onSuccess: refresh,
+  });
+}
+
+export function useResumeSubscription() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationFn: (input: OperationRequest<"resumeSubscription">) => call("resumeSubscription", { body: input }),
+    onSuccess: refresh,
+  });
+}
+
+export function useCancelSubscription() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationFn: () => call("cancelSubscription"),
+    onSuccess: refresh,
   });
 }

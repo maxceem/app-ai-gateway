@@ -63,9 +63,73 @@ export function routerPath(pathname: string): string {
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
-/** Where an operator belongs the moment they are authenticated. */
+/** Where a plan chosen before sign-in is bought (a hosted deployment's pricing page links here). */
+export const CHECKOUT_PATH = "/checkout";
+
+/** Carries a plan picked on the pricing page, before the visitor had an account. */
+export const PLAN_PARAM = "plan";
+
+/**
+ * The billing service's free tier: what every account already has, so never
+ * something to send anyone to checkout for.
+ */
+export const FREE_PLAN_KEY = "free";
+
+/**
+ * Plan keys are short lowercase slugs. The value arrives from a link anyone
+ * can write and is put back into a URL, so it is held to a shape that cannot
+ * carry anything else. Whether it names a real plan is settled against the
+ * catalog later.
+ */
+const PLAN_KEY_PATTERN = /^[a-z0-9_-]{1,32}$/u;
+
+/** The plan named in a query string, or `null` when there is no usable one. */
+export function planKeyFrom(search: string): string | null {
+  const raw = new URLSearchParams(search).get(PLAN_PARAM);
+  return raw !== null && PLAN_KEY_PATTERN.test(raw) ? raw : null;
+}
+
+/** The console path that starts checkout for one plan. */
+export function checkoutPathFor(planKey: string): string {
+  return `${CHECKOUT_PATH}?${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
+}
+
+/**
+ * Where an operator belongs the moment they are authenticated. A paid plan
+ * named on the link is an intent formed before the account existed (a price
+ * pressed on the pricing page), so it goes to that plan's checkout (v1's rule).
+ */
 export function postAuthPath(search: string): string {
+  const planKey = planKeyFrom(search);
+  if (planKey !== null && planKey !== FREE_PLAN_KEY) return checkoutPathFor(planKey);
   return returnPathFrom(search);
+}
+
+/**
+ * Marks the page a completed checkout returns to. The provider sends the
+ * browser back with nothing but a URL, so the purchase can only travel as a
+ * query marker: read once, announced, and stripped.
+ */
+export const CHECKOUT_PARAM = "checkout";
+export const CHECKOUT_SUCCESS = "success";
+
+/** True when this load is the return leg of a completed checkout. */
+export function checkoutSucceeded(search: string): boolean {
+  return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
+}
+
+/** The same location with the checkout marker and its plan spent, keeping any other query. */
+export function pathWithoutCheckout(pathname: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(CHECKOUT_PARAM);
+  params.delete(PLAN_PARAM);
+  const rest = params.toString();
+  return rest ? `${pathname}?${rest}` : pathname;
+}
+
+/** Where a completed checkout for `planKey` sends the operator (a router path). */
+export function checkoutReturnPathFor(planKey: string): string {
+  return `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}&${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
 }
 
 /** The sign-in URL that remembers where the operator was headed. */

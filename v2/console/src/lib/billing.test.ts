@@ -1,0 +1,322 @@
+/** The billing page's rules (v1's tests, ported; v2 has no unclaimed accounts). */
+import { describe, expect, it } from "vitest";
+import {
+  billingNotice,
+  formatBillingDateTime,
+  planAction,
+  priceFor,
+  quotaMeter,
+  quotaNotice,
+  subscriptionTimeline,
+} from "./billing";
+import type {
+  BillingAccess,
+  BillingPlan,
+  EntitledPlan,
+  PlanAllowance,
+  SubscriptionState,
+} from "./types";
+
+const RESETS = "2026-10-01T00:00:00.000Z";
+const STARTS = "2026-09-01T00:00:00.000Z";
+
+const quota = (overrides: Partial<PlanAllowance> = {}): PlanAllowance => ({
+  periodId: "2026-09",
+  periodStart: STARTS,
+  periodEnd: RESETS,
+  used: 2_500,
+  limit: 10_000,
+  resetAt: RESETS,
+  ...overrides,
+});
+
+const subscription = (overrides: Partial<SubscriptionState> = {}): SubscriptionState => ({
+  subscriptionId: "sub-console",
+  status: "active",
+  planKey: "pro",
+  planName: "Pro",
+  billingPeriod: "month",
+  renewsAt: null,
+  endsAt: null,
+  trialEndsAt: null,
+  source: "lemon_squeezy",
+  createdAt: "2025-01-01T00:00:00.000Z",
+  updatedAt: "2025-01-01T00:00:00.000Z",
+  billingAnchorDay: 1,
+  billingAnchorAt: "2025-01-01T00:00:00.000Z",
+  billingScheduleUpdatedAt: "2025-01-01T00:00:00.000Z",
+  ...overrides,
+});
+
+const paidPlan: EntitledPlan = { planKey: "pro", planName: "Pro", isDefault: false };
+const freePlan: EntitledPlan = {
+  planKey: "free",
+  planName: "Free",
+  limits: { maxRequestsPerMonth: 1000 },
+  isDefault: true,
+};
+
+const billed = (
+  plan: EntitledPlan | null,
+  sub: SubscriptionState | null = null,
+): BillingAccess => ({ state: "billed", plan, subscription: sub });
+
+describe("billingNotice", () => {
+  it("stays silent for a self-hosted deployment", () => {
+    expect(billingNotice({ state: "self_hosted" })).toBeNull();
+  });
+
+  it("stays silent when billing status is unknown", () => {
+    expect(billingNotice(undefined)).toBeNull();
+    expect(billingNotice(null)).toBeNull();
+  });
+
+  it("stays silent for a healthy paid subscription", () => {
+    expect(billingNotice(billed(paidPlan, subscription()))).toBeNull();
+  });
+
+  /**
+   * The quota meter already states the free allowance in full. A banner on a
+   * working account that never subscribed would be permanent nagging, not
+   * information.
+   */
+  it("stays silent for a fresh account on the default plan", () => {
+    expect(billingNotice(billed(freePlan))).toBeNull();
+  });
+
+  it("warns that traffic moved to the default plan when a subscription ends", () => {
+    const notice = billingNotice(
+      billed(freePlan, subscription({ status: "expired" })),
+      // The limits the gateway parsed for the plan, from the status response.
+      { maxRequestsPerMonth: 1000 },
+    );
+    // Traffic still flows, so this is a change of allowance, not an outage.
+    expect(notice?.tone).toBe("warning");
+    expect(notice?.title).toMatch(/subscription has ended/i);
+    expect(notice?.description).toMatch(/Free plan \(1,000 requests\/month\)/);
+    expect(notice?.actionable).toBe(true);
+  });
+
+  it("warns about a past-due payment that has not yet cost the plan", () => {
+    const notice = billingNotice(billed(paidPlan, subscription({ status: "past_due" })));
+    expect(notice?.tone).toBe("warning");
+    expect(notice?.title).toMatch(/past due/i);
+    expect(notice?.actionable).toBe(true);
+  });
+
+  it("escalates when no plan resolves at all", () => {
+    const notice = billingNotice(billed(null));
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.title).toMatch(/no active plan/i);
+    expect(notice?.actionable).toBe(true);
+  });
+
+  it("does not offer plans for an unreachable billing service", () => {
+    const notice = billingNotice({ state: "unavailable" });
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.actionable).toBe(false);
+  });
+});
+
+describe("subscriptionTimeline", () => {
+  it("prefers the end date of a canceled subscription over its renewal", () => {
+    const timeline = subscriptionTimeline(subscription({
+      renewsAt: "2026-10-01T00:00:00.000Z",
+      endsAt: "2026-09-15T00:00:00.000Z",
+    }));
+    expect(timeline?.label).toBe("Access ends");
+  });
+
+  it("reports the renewal date of a healthy subscription", () => {
+    expect(subscriptionTimeline(subscription({ renewsAt: "2026-10-01T00:00:00.000Z" }))?.label)
+      .toBe("Renews");
+  });
+
+  it("reports the trial end during a trial", () => {
+    expect(
+      subscriptionTimeline(subscription({
+        status: "on_trial",
+        trialEndsAt: "2026-10-01T00:00:00.000Z",
+      }))?.label,
+    ).toBe("Trial ends");
+  });
+
+  it("returns nothing when no date is known or parseable", () => {
+    expect(subscriptionTimeline(subscription())).toBeNull();
+    expect(subscriptionTimeline(subscription({ renewsAt: "not-a-date" }))).toBeNull();
+  });
+});
+
+describe("priceFor", () => {
+  const plan: BillingPlan = {
+    planKey: "pro",
+    name: "Pro",
+    description: "",
+    features: [],
+    trialDays: 0,
+    prices: [
+      { billingPeriod: "month", priceAmountCents: 2000, priceCurrency: "USD" },
+      { billingPeriod: "year", priceAmountCents: 20000, priceCurrency: "USD" },
+    ],
+  };
+
+  it("selects the price for the requested period", () => {
+    expect(priceFor(plan, "year")?.priceAmountCents).toBe(20000);
+    expect(priceFor({ ...plan, prices: [] }, "month")).toBeUndefined();
+  });
+});
+
+describe("quotaMeter", () => {
+  it("reads nothing where there is no allowance to report", () => {
+    expect(quotaMeter(null)).toBeNull();
+    expect(quotaMeter(undefined)).toBeNull();
+  });
+
+  it("measures the current plan period against its ceiling", () => {
+    const meter = quotaMeter(quota());
+    expect(meter?.ratio).toBe(0.25);
+    expect(meter?.tone).toBe("normal");
+    expect(meter?.label).toBe("2,500 of 10,000 requests");
+    expect(meter?.caption).toMatch(/^Resets /);
+  });
+
+  it("warns from four fifths and escalates once the allowance is gone", () => {
+    expect(quotaMeter(quota({ used: 7_999 }))?.tone)
+      .toBe("normal");
+    expect(quotaMeter(quota({ used: 8_000 }))?.tone)
+      .toBe("warning");
+    expect(quotaMeter(quota({ used: 10_000 }))?.tone)
+      .toBe("destructive");
+  });
+
+  it("caps the reading at a full bar when the period ran past the allowance", () => {
+    // A plan lowered during a period leaves used above limit; the bar cannot overflow.
+    const meter = quotaMeter(quota({ used: 12_000 }));
+    expect(meter?.ratio).toBe(1);
+    expect(meter?.tone).toBe("destructive");
+  });
+
+  it("reads an allowance of zero as spent rather than as no reading at all", () => {
+    const meter = quotaMeter(quota({ used: 0, limit: 0 }));
+    expect(meter?.ratio).toBe(1);
+    expect(meter?.tone).toBe("destructive");
+  });
+
+  it("states the exact reset instant in the viewer's time zone", () => {
+    expect(quotaMeter(quota())?.caption).toBe(`Resets ${formatBillingDateTime(RESETS)}`);
+  });
+
+  it("does not invent a calendar-month reset when a timestamp is invalid", () => {
+    expect(quotaMeter(quota({ resetAt: "invalid" }))?.caption).toBe("Reset time unavailable");
+  });
+});
+
+describe("quotaNotice", () => {
+  it("stays silent while the allowance is comfortable, or absent", () => {
+    expect(quotaNotice(quota({ used: 10 }))).toBeNull();
+    // A plan with no monthly limit has no quota to report at all.
+    expect(quotaNotice(null)).toBeNull();
+  });
+
+  it("warns before the allowance runs out and says where the period stands", () => {
+    const notice = quotaNotice(quota({ used: 9_000 }));
+    expect(notice?.tone).toBe("warning");
+    expect(notice?.description).toContain("9,000 of 10,000 requests");
+    expect(notice?.actionable).toBe(true);
+  });
+
+  it("escalates once requests are being refused", () => {
+    const notice = quotaNotice(quota({ used: 10_000 }));
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.title).toMatch(/spent/i);
+    expect(notice?.description).toMatch(/refused/i);
+  });
+});
+
+describe("planAction", () => {
+  const catalogPlan = (
+    planKey: string,
+    name: string,
+    cents: number | null,
+  ): BillingPlan => ({
+    planKey,
+    name,
+    description: "",
+    features: [],
+    trialDays: 0,
+    prices: cents === null
+      ? []
+      : [{ billingPeriod: "month", priceAmountCents: cents, priceCurrency: "USD" }],
+  });
+
+  const FREE = catalogPlan("free", "Free", null);
+  const STARTER = catalogPlan("starter", "Starter", 1_000);
+  const GROWTH = catalogPlan("growth", "Growth", 3_900);
+  const SCALE = catalogPlan("scale", "Scale", 14_900);
+  const CATALOG = [FREE, STARTER, GROWTH, SCALE];
+
+  const held = (planKey: string, sub: SubscriptionState | null = null): BillingAccess => ({
+    state: "billed",
+    plan: {
+      planKey,
+      planName: planKey,
+      isDefault: planKey === "free",
+    },
+    subscription: sub,
+  });
+
+  // What the gateway says about each subscription below. The console no
+  // longer decides these, so the cases say which answer they are about.
+  const LIVE = { cancel: true, resume: false, manual: false };
+  const NONE = { cancel: false, resume: false, manual: false };
+  const MANUAL = { cancel: false, resume: false, manual: true };
+  const on = (plan: BillingPlan, access: BillingAccess, actions = NONE) =>
+    planAction(plan, CATALOG, access, actions);
+
+  it("states the plan already held, and offers nothing on it", () => {
+    expect(on(GROWTH, held("growth", subscription({ planKey: "growth" })), LIVE))
+      .toMatchObject({ intent: "current", label: "Current plan" });
+  });
+
+  it("reads direction from the price, not from catalog order", () => {
+    const access = held("growth", subscription({ planKey: "growth" }));
+    expect(on(SCALE, access, LIVE)).toMatchObject({ label: "Upgrade to Scale", variant: "default" });
+    expect(on(STARTER, access, LIVE))
+      .toMatchObject({ label: "Downgrade to Starter", variant: "outline" });
+  });
+
+  /**
+   * The billing service has no price to change *to* on the default plan, so the
+   * only route back to it is cancelling — which is what the button must do.
+   */
+  it("routes a downgrade to the free plan through cancellation", () => {
+    expect(on(FREE, held("growth", subscription({ planKey: "growth" })), LIVE))
+      .toMatchObject({ intent: "cancel", label: "Downgrade to Free", variant: "outline" });
+  });
+
+  it("buys a first subscription through checkout, and moves a live one through change", () => {
+    expect(on(GROWTH, held("free")))
+      .toMatchObject({ intent: "checkout", label: "Upgrade to Growth" });
+    expect(on(GROWTH, held("starter", subscription({ planKey: "starter" })), LIVE))
+      .toMatchObject({ intent: "change" });
+  });
+
+  /** A lapsed subscription entitles nothing, so its plans are bought again. */
+  it("treats an expired subscription as no subscription at all", () => {
+    expect(on(GROWTH, held("free", subscription({ status: "expired" }))))
+      .toMatchObject({ intent: "checkout" });
+    expect(on(FREE, held("free", subscription({ status: "expired" }))))
+      .toMatchObject({ intent: "current" });
+  });
+
+  it("disables every route out of a manual grant, which billing refuses", () => {
+    const access = held("growth", subscription({ planKey: "growth", source: "manual" }));
+    expect(on(SCALE, access, MANUAL).reason).toBeTruthy();
+    expect(on(STARTER, access, MANUAL).reason).toBeTruthy();
+    expect(on(FREE, access, MANUAL).reason).toBeTruthy();
+  });
+
+  it("has nothing to leave when the free plan is already the one held", () => {
+    expect(on(FREE, held("free"))).toMatchObject({ intent: "current" });
+  });
+});

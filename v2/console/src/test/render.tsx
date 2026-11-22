@@ -143,6 +143,8 @@ export function renderAuthenticated(
     session?: Partial<Session>;
     capabilities?: Partial<Capabilities>;
     route?: string;
+    /** Mounts the tree behind this route pattern only, for a screen that redirects away. */
+    path?: string;
   } = {},
 ) {
   const client = testQueryClient();
@@ -164,7 +166,7 @@ export function renderAuthenticated(
                   session={testSession(options.session)}
                   capabilities={{ ...CAPABILITIES, ...options.capabilities }}
                 >
-                  {ui}
+                  {options.path === undefined ? ui : <Routes><Route path={options.path} element={ui} /></Routes>}
                 </ConsoleSessionProvider>
               </TooltipProvider>
             </>,
