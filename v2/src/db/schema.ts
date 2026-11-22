@@ -363,10 +363,6 @@ export const charge = sqliteTable(
     // list and breakdowns), with the account named so a read never leaves it,
     // and the id so a page position is found directly.
     index("charge_app_account_used").on(table.appId, table.accountId, table.usedAt, table.id),
-    // A client's trace id, for the charge list's trace filter, newest first. Only rows that carry one.
-    index("charge_app_trace")
-      .on(table.appId, table.accountId, table.clientTraceId, table.usedAt, table.id)
-      .where(sql`client_trace_id IS NOT NULL`),
     index("charge_account_used").on(table.accountId, table.usedAt),
     // An app's end users and their usage in a month (the management API's user list).
     index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),

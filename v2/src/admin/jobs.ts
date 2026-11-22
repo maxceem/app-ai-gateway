@@ -24,9 +24,8 @@ interface EstimateRow {
   cost_nano: number | null;
   measured: string;
   price_source: string;
-  /** What the job's corrections add up to, and how many there are. */
+  /** What the job's corrections add up to; null when it has none. */
   correction_nano: number | null;
-  corrections: number;
   /** When its settlement correction was written, and how that figure was measured. */
   settled_at: number | null;
   settled_measured: string | null;
@@ -76,7 +75,7 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
   // `settled`: whether the job's settlement correction exists, by its key.
   const settledFilter = query.settled === undefined
     ? ""
-    : ` AND ${query.settled === "true" ? "" : "NOT "}EXISTS (SELECT 1 FROM charge AS settlement WHERE settlement.id = 'settle:job:' || charge.owner_id)`;
+    : ` AND ${query.settled === "true" ? "" : "NOT "}EXISTS (SELECT 1 FROM charge AS settlement WHERE settlement.id = 'settle:job:' || charge.owner_id AND settlement.account_id = ?1)`;
   const jobs = `FROM charge
         WHERE account_id = ?1 AND app_id = ?2 AND owner_type = 'job' AND kind = 'estimate' AND used_at >= ?3${settledFilter}`;
   // One batch, so one snapshot: the filter and each job's corrections and work
@@ -88,9 +87,6 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
               (SELECT SUM(fix.cost_nano) FROM charge AS fix
                 WHERE fix.owner_type = 'job' AND fix.owner_id = charge.owner_id AND fix.kind = 'correction'
                   AND fix.account_id = ?1 AND fix.app_id = ?2) AS correction_nano,
-              (SELECT COUNT(*) FROM charge AS fix
-                WHERE fix.owner_type = 'job' AND fix.owner_id = charge.owner_id AND fix.kind = 'correction'
-                  AND fix.account_id = ?1 AND fix.app_id = ?2) AS corrections,
               (SELECT written_at FROM charge AS settlement
                 WHERE settlement.id = 'settle:job:' || charge.owner_id AND settlement.account_id = ?1) AS settled_at,
               (SELECT measured FROM charge AS settlement
@@ -125,7 +121,8 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
     offset: query.offset,
     jobs: estimates.map((row) => {
       const settledAt = row.settled_at;
-      const correctionNano = row.corrections === 0 ? null : row.correction_nano;
+      // Null with no correction: SQL's SUM over no rows.
+      const correctionNano = row.correction_nano;
       const totalNano = row.cost_nano === null && correctionNano === null ? null : (row.cost_nano ?? 0) + (correctionNano ?? 0);
       const state = jobState(settledAt !== null, row);
       return {

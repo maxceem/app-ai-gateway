@@ -1138,18 +1138,6 @@
           ],
           "isUnique": false
         },
-        "charge_app_trace": {
-          "name": "charge_app_trace",
-          "columns": [
-            "app_id",
-            "account_id",
-            "client_trace_id",
-            "used_at",
-            "id"
-          ],
-          "isUnique": false,
-          "where": "client_trace_id IS NOT NULL"
-        },
         "charge_account_used": {
           "name": "charge_account_used",
           "columns": [

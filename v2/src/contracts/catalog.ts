@@ -432,7 +432,7 @@ export const CATALOG = {
     tags: ["Admin usage"],
     summary: "Get an app's usage by one dimension",
     description:
-      "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
+      "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. A correction groups under its own price_source and measured, so a charge priced later shows its first price_source with no cost and the price's with the cost. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
     security: "management",
     query: UsageBreakdownQuerySchema,
     response: UsageBreakdownResponseSchema,

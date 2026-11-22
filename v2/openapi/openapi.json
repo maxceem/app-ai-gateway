@@ -8877,7 +8877,7 @@
         ],
         "operationId": "getAppUsageBreakdown",
         "summary": "Get an app's usage by one dimension",
-        "description": "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
+        "description": "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. A correction groups under its own price_source and measured, so a charge priced later shows its first price_source with no cost and the price's with the cost. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
         "security": [
           {
             "ManagementBearer": []
@@ -8937,10 +8937,10 @@
                 "app_version"
               ],
               "default": "model",
-              "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, so a range further back shows only what is left."
+              "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over at most 31 days; a correction groups under its own price_source and measured."
             },
             "required": false,
-            "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, so a range further back shows only what is left.",
+            "description": "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over at most 31 days; a correction groups under its own price_source and measured.",
             "name": "by",
             "in": "query"
           },
@@ -9138,9 +9138,11 @@
           {
             "schema": {
               "type": "string",
-              "maxLength": 200
+              "maxLength": 200,
+              "description": "A model. Without from and to, this filter (like operation, install and status) reads through all 90 days kept."
             },
             "required": false,
+            "description": "A model. Without from and to, this filter (like operation, install and status) reads through all 90 days kept.",
             "name": "model",
             "in": "query"
           },
@@ -9219,10 +9221,10 @@
             "schema": {
               "type": "string",
               "maxLength": 128,
-              "description": "Only the requests the client sent with this X-Client-Trace-Id."
+              "description": "Only the requests the client sent with this X-Client-Trace-Id. Needs from and to, at most 31 days apart."
             },
             "required": false,
-            "description": "Only the requests the client sent with this X-Client-Trace-Id.",
+            "description": "Only the requests the client sent with this X-Client-Trace-Id. Needs from and to, at most 31 days apart.",
             "name": "trace",
             "in": "query"
           }

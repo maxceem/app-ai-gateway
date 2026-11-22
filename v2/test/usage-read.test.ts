@@ -8,6 +8,8 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { QueryBudget } from "../src/core/query-budget.ts";
+import { runUsageRetention } from "../src/ledger/retention.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -21,6 +23,12 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 const ORIGIN = "https://gateway.test";
+/** Migration 0009's text, to run one of its statements over seeded rows. */
+const MIGRATION_0009: string = Object.values(
+  (import.meta as ImportMeta & {
+    glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
+  }).glob<string>("../migrations/0009_usage_reads.sql", { query: "?raw", import: "default", eager: true }),
+)[0]!;
 const OTHER_ACCOUNT = "acc_other_usage";
 
 async function request(key: string, method: string, path: string, body?: unknown) {
@@ -304,6 +312,40 @@ describe("unpriced", () => {
     const fromCharges = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?from=2025-10-01&to=2025-10-31&by=user`);
     expect(fromCharges.body.rows).toEqual([expect.objectContaining({ key: "u1", charges: 2, unpriced: 1, cost_nano: 4_000 })]);
   });
+
+  it("counts a job estimate settled in dollars as priced, once, however many corrections follow (Fable 7b-3)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const job = `job_${crypto.randomUUID().slice(0, 8)}`;
+    const estimate = await seed({ appId, usedAt: at("2025-11-03"), kind: "estimate", ownerType: "job", ownerId: job, cost: null, priceSource: "unresolved", user: "u1" });
+    const usage = async () => (await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-11`)).body;
+    expect(await usage()).toMatchObject({ charges: 1, unpriced: 1 });
+    await seed({ appId, usedAt: at("2025-11-03"), kind: "correction", ownerType: "job", ownerId: job, correctionKind: "dollars", correctsChargeId: estimate, cost: 700, user: "u1" });
+    expect(await usage()).toMatchObject({ charges: 1, unpriced: 0, cost_nano: 700 });
+    // A second correction of the same charge prices nothing more.
+    await seed({ appId, usedAt: at("2025-11-03"), kind: "correction", ownerType: "job", ownerId: job, correctionKind: "pricing", correctsChargeId: estimate, cost: 50, user: "u1" });
+    expect(await usage()).toMatchObject({ charges: 1, unpriced: 0, cost_nano: 750 });
+    const fromCharges = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?from=2025-11-01&to=2025-11-30&by=user`);
+    expect(fromCharges.body.rows).toEqual([expect.objectContaining({ key: "u1", charges: 1, unpriced: 0, cost_nano: 750 })]);
+  });
+
+  it("migration 0009 takes charges corrected before it out of the unpriced count, once (Fable 7b-3)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const priced = await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
+    await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
+    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "pricing", correctsChargeId: priced, cost: 300 });
+    // As the rollup stood before 0009: both charges counted, the correction never subtracted.
+    await env.DB.prepare("UPDATE usage_day SET unpriced_charges = 2 WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).run();
+    // The migration's own statement, run over the table it now has.
+    const update = MIGRATION_0009.split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .find((statement) => statement.includes("UPDATE `__new_usage_day`"));
+    expect(update).toBeDefined();
+    await env.DB.prepare(update!.replace(/^(--[^\n]*\n)+/u, "").replaceAll("`__new_usage_day`", "usage_day")).run();
+    const usage = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
+    expect(usage.body).toMatchObject({ charges: 2, unpriced: 1, cost_nano: 300 });
+  });
 });
 
 describe("dates", () => {
@@ -384,7 +426,11 @@ describe("query plans", () => {
     expect(page).not.toContain("TEMP B-TREE");
     const deep = await planOf(get(`charges?limit=1&before=${encodeURIComponent(`${at("2024-09-02")}.zzz`)}`));
     expect(deep).toMatch(/charge_app_account_used \(app_id=\? AND account_id=\? AND \(used_at,id\)<\(\?,\?\)\)/u);
-    expect(await planOf(get("charges?trace=trace-1"))).toContain("charge_app_trace");
+    // A trace has no index of its own: it is looked for inside its range, by the app's index.
+    expect(await planOf(get("charges?trace=trace-1&from=2024-09-01&to=2024-09-30"))).toContain("charge_app_account_used");
+    // A user's charges come from the user index, not a walk through the app's (Fable 7b-3).
+    await seed({ appId, usedAt: at("2024-09-02"), user: "rare-user" });
+    expect(await planOf(get("charges?user=rare-user"))).toContain("charge_app_user_used");
     expect(await planOf(get("charges?owner=call_plan"))).toContain("charge_owner");
     expect(await planOf(get("usage/breakdown?by=user&from=2024-09-01&to=2024-09-30"))).toContain("charge_app_account_used");
   });
@@ -468,5 +514,38 @@ describe("tools", () => {
     expect(breakdown.body.result.rows).toEqual([expect.objectContaining({ key: "gpt-4o-mini", charges: 1 })]);
     const days = await request(key, "POST", "/v2/cli/tools/get_usage_timeseries", { app: appId, from: "2025-09-01", to: "2025-09-30" });
     expect(days.body.result.buckets).toHaveLength(1);
+  });
+});
+
+describe("trace filter", () => {
+  it("needs a range of at most 31 days, since a trace id has no index of its own (Fable 7b-3)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: at("2025-08-05"), trace: "t-1" });
+    const get = (query: string) => request(key, "GET", `/v2/admin/apps/${appId}/charges?${query}`);
+    expect((await get("trace=t-1")).status).toBe(400);
+    expect((await get("trace=t-1&from=2025-08-01")).status).toBe(400);
+    expect((await get("trace=t-1&from=2025-07-01&to=2025-08-05")).status).toBe(400);
+    const found = await get("trace=t-1&from=2025-08-01&to=2025-08-31");
+    expect(found.status).toBe(200);
+    expect(found.body.charges).toHaveLength(1);
+  });
+});
+
+describe("month totals after the nightly fold", () => {
+  it("read the same before and after the real fold moves the month's days into its total (Fable 7b-3)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: at("2024-02-03"), cost: 1_000 });
+    await seed({ appId, usedAt: at("2024-02-20"), cost: 2_500, status: "timeout" });
+    await seed({ appId, usedAt: at("2024-02-29"), cost: null, priceSource: "unresolved" });
+    const read = async () => (await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2024-02`)).body;
+    const before = await read();
+    expect(before).toMatchObject({ charges: 3, failed: 1, unpriced: 1, cost_nano: 3_500 });
+    // Well past 400 days: the fold moves February 2024's days into its month total.
+    await runUsageRetention(env.DB, Date.parse("2026-06-01T12:00:00Z"), new QueryBudget(1_000));
+    const days = await env.DB.prepare("SELECT COUNT(*) AS n FROM usage_day WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).first("n");
+    expect(days).toBe(0);
+    expect(await read()).toEqual(before);
   });
 });

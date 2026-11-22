@@ -61,7 +61,7 @@ export const ROW_WRITES = {
   app_rejection_event: 5,
   open_work: 5,
   // 9 for most charges; a correction has one more, in `charge_correction_day`.
-  charge: 11,
+  charge: 10,
   session: 4,
   budget_day: 3,
   usage_day: 4,

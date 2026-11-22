@@ -6,13 +6,15 @@
 -- - The rollup trigger names that key in its ON CONFLICT, so it is dropped
 --   first (renaming a table re-checks every trigger) and made again at the
 --   end. It is the trigger of 0002_ledger.sql with two changes: the new key,
---   and a pricing correction taking its charge back out of `unpriced_charges`,
---   in the charge's own row, so the count means "still has no price".
--- - Rows copy over unchanged.
+--   and the first correction of an unpriced charge taking it back out of
+--   `unpriced_charges`, in the charge's own row, so the count means "still has
+--   no price". A correction is only written with a price (a pricing correction
+--   or a settlement in dollars or priced units), so the first one prices it.
+-- - Rows copy over, then the same rule is applied once to charges already
+--   corrected before this migration.
 DROP TRIGGER charge_rollup_after_insert;--> statement-breakpoint
 DROP INDEX `charge_app_used`;--> statement-breakpoint
 CREATE INDEX `charge_app_account_used` ON `charge` (`app_id`,`account_id`,`used_at`,`id`);--> statement-breakpoint
-CREATE INDEX `charge_app_trace` ON `charge` (`app_id`,`account_id`,`client_trace_id`,`used_at`,`id`) WHERE client_trace_id IS NOT NULL;--> statement-breakpoint
 CREATE TABLE `__new_usage_day` (
 	`account_id` text NOT NULL,
 	`app_id` text NOT NULL,
@@ -37,6 +39,20 @@ CREATE TABLE `__new_usage_day` (
 );
 --> statement-breakpoint
 INSERT INTO `__new_usage_day`("account_id", "app_id", "day", "provider_type", "provider_connection_id", "model", "outcome", "unit", "charges", "unpriced_charges", "cost_nano", "input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "units", "session_ms") SELECT "account_id", "app_id", "day", "provider_type", "provider_connection_id", "model", "outcome", "unit", "charges", "unpriced_charges", "cost_nano", "input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "units", "session_ms" FROM `usage_day`;--> statement-breakpoint
+-- Charges corrected before this migration still count as unpriced: each one's
+-- first correction prices it, by the trigger's rule below.
+UPDATE `__new_usage_day` SET `unpriced_charges` = `unpriced_charges` - (
+	SELECT COUNT(*) FROM charge AS o
+	WHERE o.account_id = `__new_usage_day`.account_id AND o.app_id = `__new_usage_day`.app_id
+		AND o.usage_day = `__new_usage_day`.day AND o.provider_type = `__new_usage_day`.provider_type
+		AND COALESCE(o.provider_connection_id, '') = `__new_usage_day`.provider_connection_id
+		AND COALESCE(o.model, '') = `__new_usage_day`.model
+		AND (CASE WHEN o.status = 'ok' THEN 'ok' ELSE 'failed' END) = `__new_usage_day`.outcome
+		AND COALESCE(o.unit, '') = `__new_usage_day`.unit
+		AND o.kind != 'correction' AND o.price_source IN ('unresolved', 'not_priced')
+		AND EXISTS (SELECT 1 FROM charge AS c WHERE c.corrects_charge_id = o.id)
+)
+WHERE `unpriced_charges` > 0;--> statement-breakpoint
 DROP TABLE `usage_day`;--> statement-breakpoint
 ALTER TABLE `__new_usage_day` RENAME TO `usage_day`;--> statement-breakpoint
 CREATE INDEX `usage_day_account` ON `usage_day` (`account_id`,`day`);--> statement-breakpoint
@@ -68,9 +84,11 @@ BEGIN
 		output_tokens = output_tokens + excluded.output_tokens,
 		units = units + excluded.units,
 		session_ms = session_ms + excluded.session_ms;
-	-- A pricing correction prices a charge that had none: that charge leaves
+	-- The first correction of a charge that had no price prices it (pricing,
+	-- or a settlement in dollars or priced units): that charge leaves
 	-- `unpriced_charges`, in the row it was counted in (a correction is dated
-	-- on its charge's day, but its cost may land under the price's unit).
+	-- on its charge's day, but its cost may land under the price's unit). A
+	-- later correction of the same charge changes nothing here.
 	INSERT INTO usage_day (
 		account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, unpriced_charges
 	)
@@ -78,8 +96,10 @@ BEGIN
 		COALESCE(o.provider_connection_id, ''), COALESCE(o.model, ''),
 		CASE WHEN o.status = 'ok' THEN 'ok' ELSE 'failed' END, COALESCE(o.unit, ''), -1
 	FROM charge AS o
-	WHERE NEW.correction_kind = 'pricing' AND o.id = NEW.corrects_charge_id
+	WHERE NEW.kind = 'correction' AND o.id = NEW.corrects_charge_id
 		AND o.kind != 'correction' AND o.price_source IN ('unresolved', 'not_priced')
+		AND NOT EXISTS (SELECT 1 FROM charge AS earlier
+		                WHERE earlier.corrects_charge_id = o.id AND earlier.id != NEW.id)
 	ON CONFLICT (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit) DO UPDATE SET
 		unpriced_charges = unpriced_charges + excluded.unpriced_charges;
 	-- Budget totals: the app always, and each end-user scope the charge names.

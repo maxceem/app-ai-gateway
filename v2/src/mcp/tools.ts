@@ -586,7 +586,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_usage_breakdown",
     title: "Get an app's usage by one dimension",
     description:
-      "Returns an app's usage grouped by one dimension over a day range (from, to; at most 400 days), largest cost first: model, provider, connection, status, unit, or from the charges (kept 90 days) user, install, operation, preset, price_source and measured. Use it to find what drives an app's cost or failures.",
+      "Returns an app's usage grouped by one dimension over a day range (from, to), largest cost first. From day totals, over at most 400 days: model, provider, connection, status, unit. From the charges (kept 90 days), over at most 31 days: user, install, operation, preset, price_source, measured, app_version. Use it to find what drives an app's cost or failures.",
     operation: "getAppUsageBreakdown",
     cli: {
       command: "usage breakdown",

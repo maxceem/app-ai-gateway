@@ -70,8 +70,7 @@ const CHARGE_SUMS = `
   COALESCE(SUM(kind <> 'correction'), 0) AS charges,
   COALESCE(SUM(kind <> 'correction' AND status <> 'ok'), 0) AS failed,
   COALESCE(SUM(kind <> 'correction' AND price_source IN ('unresolved', 'not_priced')
-    AND NOT EXISTS (SELECT 1 FROM charge AS priced
-                    WHERE priced.corrects_charge_id = charge.id AND priced.correction_kind = 'pricing')), 0) AS unpriced,
+    AND NOT EXISTS (SELECT 1 FROM charge AS priced WHERE priced.corrects_charge_id = charge.id)), 0) AS unpriced,
   COALESCE(SUM(cost_nano), 0) AS cost_nano,
   COALESCE(SUM(input_tokens), 0) AS input_tokens,
   COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
@@ -111,6 +110,19 @@ function monthDays(month: string): { first: string; next: string } {
 
 type SumRow = Omit<UsageTotals, "cost_usd">;
 
+/** The columns of a {@link SumRow}, each summed the same way. */
+const SUM_KEYS = [
+  "charges",
+  "failed",
+  "unpriced",
+  "cost_nano",
+  "input_tokens",
+  "cached_input_tokens",
+  "cache_write_tokens",
+  "output_tokens",
+  "session_ms",
+] as const satisfies readonly (keyof SumRow)[];
+
 /** Nano-dollars become dollars only here, at the edge. */
 function totals(row: Partial<SumRow> | null | undefined): UsageTotals {
   const value = (key: keyof SumRow) => Number(row?.[key] ?? 0);
@@ -137,13 +149,11 @@ function totals(row: Partial<SumRow> | null | undefined): UsageTotals {
 function dayRange(from: string | undefined, to: string | undefined, maxDays = USAGE_RANGE_MAX_DAYS, now = Date.now()): { from: string; to: string } {
   const end = to ?? new Date(now).toISOString().slice(0, 10);
   const endMs = Date.parse(`${end}T00:00:00Z`);
-  if (Number.isNaN(endMs)) throw new GatewayError(400, "invalid_request", "to is not a real day");
   const start = from ?? new Date(endMs - (Math.min(30, maxDays) - 1) * DAY_MS).toISOString().slice(0, 10);
   const startMs = Date.parse(`${start}T00:00:00Z`);
-  if (Number.isNaN(startMs)) throw new GatewayError(400, "invalid_request", "from is not a real day");
   if (start > end) throw new GatewayError(400, "invalid_request", "from must not be after to");
   if ((endMs - startMs) / DAY_MS + 1 > maxDays) {
-    throw new GatewayError(400, "invalid_request", `A range covers at most ${maxDays} days${maxDays < USAGE_RANGE_MAX_DAYS ? " for this breakdown" : ""}`);
+    throw new GatewayError(400, "invalid_request", `A range covers at most ${maxDays} days${maxDays < USAGE_RANGE_MAX_DAYS ? " for this read" : ""}`);
   }
   return { from: start, to: end };
 }
@@ -180,20 +190,12 @@ export async function getAccountUsage(c: AdminContext): Promise<Response> {
   const apps = rows
     .map((row) => ({ app_id: row.app_id, name: names.get(row.app_id) ?? null, deleted: !names.has(row.app_id), ...totals(row) }))
     .sort((a, b) => b.cost_nano - a.cost_nano || b.charges - a.charges || a.app_id.localeCompare(b.app_id));
-  const sum = (key: keyof SumRow) => rows.reduce((total, row) => total + Number(row[key] ?? 0), 0);
+  const sums = Object.fromEntries(
+    SUM_KEYS.map((key) => [key, rows.reduce((total, row) => total + Number(row[key] ?? 0), 0)]),
+  ) as SumRow;
   return c.json({
     month,
-    totals: totals({
-      charges: sum("charges"),
-      failed: sum("failed"),
-      unpriced: sum("unpriced"),
-      cost_nano: sum("cost_nano"),
-      input_tokens: sum("input_tokens"),
-      cached_input_tokens: sum("cached_input_tokens"),
-      cache_write_tokens: sum("cache_write_tokens"),
-      output_tokens: sum("output_tokens"),
-      session_ms: sum("session_ms"),
-    }),
+    totals: totals(sums),
     apps,
     first_usage_day: ((oldest?.results[0] as { first?: string | null } | undefined)?.first ?? null),
   } satisfies OperationResponse<"getAccountUsage">);
@@ -301,41 +303,11 @@ export async function getAppUsageBreakdown(c: AdminContext): Promise<Response> {
   } satisfies OperationResponse<"getAppUsageBreakdown">);
 }
 
-interface ChargeRowOut {
-  id: string;
-  kind: OperationResponse<"listAppCharges">["charges"][number]["kind"];
-  owner_type: OperationResponse<"listAppCharges">["charges"][number]["owner_type"];
-  owner_id: string;
-  corrects_charge_id: string | null;
-  correction_kind: string | null;
-  status: string;
-  http_status: number | null;
-  error_code: string | null;
-  provider_type: string;
-  provider_connection_id: string | null;
-  operation: string;
-  preset: string | null;
-  model: string | null;
-  end_user_id: string | null;
-  install_id: string | null;
-  cost_nano: number | null;
-  measured: OperationResponse<"listAppCharges">["charges"][number]["measured"];
-  price_source: OperationResponse<"listAppCharges">["charges"][number]["price_source"];
+/** A charge as D1 returns it: the response's shape, before dollars, flags and times are made readable. */
+type ChargeRowOut = Omit<OperationResponse<"listAppCharges">["charges"][number], "cost_usd" | "price_is_estimate" | "used_at"> & {
   price_is_estimate: number;
-  input_tokens: number | null;
-  cached_input_tokens: number | null;
-  cache_write_tokens: number | null;
-  output_tokens: number | null;
-  unit: string | null;
-  units: number | null;
-  session_ms: number | null;
-  latency_ms: number | null;
-  app_version: string | null;
-  auth_method: string | null;
-  client_trace_id: string | null;
   used_at: number;
-  usage_day: string;
-}
+};
 
 /** A page position: the last charge's time and id, so equal times still page in order. */
 function parseBefore(before: string): { usedAt: number; id: string } {
@@ -369,12 +341,21 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
   // first, and a page position found directly by its time and id.
   // With an owner, its few charges come from `charge_owner` instead: the `+`
   // keeps SQLite from walking the app's index for it, which it would prefer
-  // for the order, through every charge of the app.
+  // for the order, through every charge of the app. With a user, from
+  // `charge_app_user_used`: the `+` on the account alone leaves that index
+  // the better match. Other filters walk the app's charges by time: without
+  // a range, through all 90 days kept.
   const byOwner = query.owner !== undefined ? "+" : "";
-  const where = [`${byOwner}app_id = ?`, `${byOwner}account_id = ?`];
+  const byUser = byOwner === "" && query.user !== undefined ? "+" : "";
+  const where = [`${byOwner}app_id = ?`, `${byOwner}${byUser}account_id = ?`];
   const params: unknown[] = [appId, actor.accountId];
+  // A trace id has no index of its own (it would cost every charge a write):
+  // it is looked for inside a range of at most 31 days.
+  if (query.trace !== undefined && (query.from === undefined || query.to === undefined)) {
+    throw new GatewayError(400, "invalid_request", `A trace filter needs from and to, at most ${USAGE_CHARGE_RANGE_MAX_DAYS} days apart`);
+  }
   if (query.from !== undefined || query.to !== undefined) {
-    const range = dayRange(query.from, query.to);
+    const range = dayRange(query.from, query.to, query.trace !== undefined ? USAGE_CHARGE_RANGE_MAX_DAYS : USAGE_RANGE_MAX_DAYS);
     where.push("used_at >= ?", "used_at < ?");
     params.push(Date.parse(`${range.from}T00:00:00Z`), Date.parse(`${range.to}T00:00:00Z`) + DAY_MS);
   }

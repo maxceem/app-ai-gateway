@@ -87,7 +87,7 @@ export type UsageDimension = (typeof USAGE_DIMENSIONS)[number];
 export const UsageBreakdownQuerySchema = UsageRangeQuerySchema.extend({
   by: z.enum(USAGE_DIMENSIONS).default("model").meta({
     description:
-      "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, so a range further back shows only what is left.",
+      "What to group by. model, provider (type), connection, status (ok or failed) and unit come from day totals, kept 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over at most 31 days; a correction groups under its own price_source and measured.",
   }),
   limit: LimitSchema,
 });
@@ -121,14 +121,18 @@ export const ChargeListQuerySchema = UsageRangeQuerySchema.extend({
   status: z.enum(CHARGE_STATUS_FILTERS).optional().meta({ description: "A status, or failed for every status but ok." }),
   provider: z.string().max(100).optional().meta({ description: "A provider type, such as openai." }),
   connection: z.string().max(200).optional().meta({ description: "A provider connection's id." }),
-  model: z.string().max(200).optional(),
+  model: z.string().max(200).optional().meta({ description: "A model. Without from and to, this filter (like operation, install and status) reads through all 90 days kept." }),
   user: z.string().max(200).optional().meta({ description: "An end user's id." }),
   install: z.string().max(200).optional().meta({ description: "An install: an App Attest key id." }),
   operation: z.string().max(200).optional(),
   owner: z.string().max(200).optional().meta({ description: "A call, session or job id: all its charges, corrections included." }),
   price_source: z.enum(PRICE_SOURCES).optional(),
   measured: z.enum(MEASURED).optional(),
-  trace: z.string().max(128).optional().meta({ description: "Only the requests the client sent with this X-Client-Trace-Id." }),
+  trace: z
+    .string()
+    .max(128)
+    .optional()
+    .meta({ description: "Only the requests the client sent with this X-Client-Trace-Id. Needs from and to, at most 31 days apart." }),
 });
 
 export const ChargeSchema = z
