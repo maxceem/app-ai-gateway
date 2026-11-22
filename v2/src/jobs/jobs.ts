@@ -27,9 +27,11 @@
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
+import { timeOfOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
+import { USAGE_DETAIL_RETENTION_DAYS } from "../ledger/retention.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
 import { writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
@@ -694,6 +696,16 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
 }
 
 /**
+ * Whether usage retention may already have deleted the job's charges: it
+ * started longer ago than charges are kept. The gateway's job id is a
+ * time-ordered id (`timeOrderedId`), so this needs no lookup.
+ */
+export function jobRetired(job: string, now: number): boolean {
+  const started = timeOfOrderedId(job);
+  return started !== null && started < now - USAGE_DETAIL_RETENTION_DAYS * 86_400_000;
+}
+
+/**
  * Settles a job from a final figure. The one settle function: a client poll,
  * the sweep's live check and the sweep's figure rows all call it, in any
  * order, at once or again. It reads only what never changes (the estimate
@@ -707,7 +719,15 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
-  if (known === null && !countless) return "waiting";
+  if (known === null && !countless) {
+    // Its estimate is gone with the rest of its charges, not still on its way: nothing
+    // will ever settle against it, so the figure is not kept. The response is served as usual.
+    if (jobRetired(ref.job, now)) {
+      log("warn", "job_retired", { app: ref.appId, job: ref.job });
+      return "estimate_kept";
+    }
+    return "waiting";
+  }
   const decision: FigureDecision = known === null ? { kind: "never" } : decideFigure(known, facts);
   // Only a result with a count has a figure row of its own.
   const dropFigure = async () => {

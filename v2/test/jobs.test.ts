@@ -9,6 +9,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
+import { timeOrderedId } from "../src/core/ids.ts";
+import { USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
 import { applyFinalResult, boundedJson, checkJob, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, JOB_POLL_TIMEOUT_MS, jobCheckId, jobEstimate, jobFinalFigure, providerRequestId, readResultFacts, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
@@ -494,6 +496,23 @@ describe("the sweep and the four failure cases", () => {
     await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("settled");
     expect((await charges(appId)).map((row) => row.cost_nano)).toEqual([50_000_000, 25_000_000]);
+  });
+
+  it("keeps no figure for a job older than charges are kept: its estimate is gone, not on its way", async () => {
+    const now = Date.parse("2027-06-15T04:17:00Z");
+    const figures = async (job: string) =>
+      (await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ?").bind(job).all()).results.map((row) => row.id);
+    const facts = { status: 200, units: 3, outputs: { images: 0 } };
+    const retired: JobRef = { job: timeOrderedId(now - (USAGE_DETAIL_RETENTION_DAYS + 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
+    expect(await applyFinalResult(env, retired, facts, now)).toBe("estimate_kept");
+    expect(await figures(retired.job)).toEqual([]);
+    expect(logged("job_retired")).toBe(true);
+    // A job inside the window whose estimate is not in the ledger yet still keeps its figure.
+    const recent: JobRef = { job: timeOrderedId(now - (USAGE_DETAIL_RETENTION_DAYS - 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
+    expect(await applyFinalResult(env, recent, facts, now)).toBe("done");
+    expect(await figures(recent.job)).toHaveLength(1);
+    // Not left for the sweeps of the tests after this one.
+    await env.DB.prepare("DELETE FROM open_work WHERE app_id = 'app_retired'").run();
   });
 
   it("a duplicate completion: a client poll and the sweep settling at once write one correction", async () => {
