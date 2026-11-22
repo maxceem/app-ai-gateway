@@ -13,6 +13,7 @@ import { z } from "zod";
 import { CLI_CLIENT_ID } from "../auth/identity.ts";
 import { AccountSelectRequestSchema, CredentialSchema, ManagementKeyCreateRequestSchema } from "../contracts/access.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
+import { accountActivated, emailVerificationRequired } from "../core/account-standing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { requireConsoleSession, type AdminActor, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -27,14 +28,24 @@ export function activeAccounts(memberships: readonly OrganizationMembership[]): 
     .map(({ organization, role }) => ({ id: organization.id, name: organization.name, role }));
 }
 
-function sessionPayload(state: AuthState, actor: AdminActor): OperationResponse<"getAdminSession">["session"] {
+/**
+ * Whether the account's apps are refused for its owners' unverified email:
+ * only where the deployment verifies addresses, and only while no owner has
+ * verified theirs and the account was not activated without one.
+ */
+async function verificationPending(env: Env, accountId: string): Promise<boolean> {
+  return emailVerificationRequired(env) && !(await accountActivated(env, accountId));
+}
+
+function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): OperationResponse<"getAdminSession">["session"] {
   const user = state.user!;
   const accounts = actor.credentialType === "session"
     ? activeAccounts(state.memberships)
     : [{ id: actor.accountId, name: state.organization?.name ?? "", role: actor.role }];
   return {
     user: { id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified },
-    account: { id: actor.accountId, name: state.organization?.name ?? "" },
+    // Written only when true, so a client that does not know it meets it only then.
+    account: { id: actor.accountId, name: state.organization?.name ?? "", ...(pending ? { verificationPending: true } : {}) },
     role: actor.role,
     grant: actor.grant,
     credentialType: actor.credentialType,
@@ -42,8 +53,10 @@ function sessionPayload(state: AuthState, actor: AdminActor): OperationResponse<
   };
 }
 
-export function getAdminSession(c: AdminContext): Response {
-  return c.json({ session: sessionPayload(c.get("authState"), c.get("actor")) } satisfies OperationResponse<"getAdminSession">);
+export async function getAdminSession(c: AdminContext): Promise<Response> {
+  const actor = c.get("actor");
+  const pending = await verificationPending(c.env, actor.accountId);
+  return c.json({ session: sessionPayload(c.get("authState"), actor, pending) } satisfies OperationResponse<"getAdminSession">);
 }
 
 export async function listAccounts(c: AdminContext): Promise<Response> {
@@ -63,7 +76,8 @@ export async function selectAccount(c: AdminContext): Promise<Response> {
     accountId: selected.organization?.id ?? accountId,
     role: selected.role ?? c.get("actor").role,
   };
-  return c.json({ session: sessionPayload(selected, actor) } satisfies OperationResponse<"selectAccount">);
+  const pending = await verificationPending(c.env, actor.accountId);
+  return c.json({ session: sessionPayload(selected, actor, pending) } satisfies OperationResponse<"selectAccount">);
 }
 
 /** A key or an OAuth sign-in as the access page shows it. */

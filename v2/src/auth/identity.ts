@@ -11,6 +11,7 @@
  */
 import type { AuthState, CfAuth, CfAuthError, CfAuthEvent } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../db/schema.ts";
+import { emailVerificationRequired } from "../core/account-standing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -96,9 +97,11 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
 }
 
 /**
- * Lets an account serve traffic whatever its owner's email. This deployment
- * does not verify addresses yet, so every new account is activated as it is
- * made, and adding email verification later stops none of them (v1's rule).
+ * Lets an account serve traffic whatever its owner's email: how a deployment
+ * that sends no email activates each account it makes, so that adding a
+ * sender later stops none of them (v1's rule). Where it does send email, an
+ * account serves traffic once an owner verifies their address
+ * (`../core/account-standing.ts`).
  */
 async function activateAccount(db: D1Database, accountId: string): Promise<void> {
   await db
@@ -157,7 +160,7 @@ export async function createIdentity(
       log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) }),
     logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
     onEvent: async (event: CfAuthEvent) => {
-      if (event.type === "organization.created") await activateAccount(env.DB, event.organizationId);
+      if (event.type === "organization.created" && !emailVerificationRequired(env)) await activateAccount(env.DB, event.organizationId);
     },
     // Browser approvals: the OAuth flows, and the writes an agent hands to a
     // person (a key entered in a browser, a created key revealed on a page).

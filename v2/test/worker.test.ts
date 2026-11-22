@@ -6,7 +6,7 @@ describe("the v2 Worker", () => {
   it("answers the health check", async () => {
     const response = await exports.default.fetch("https://gateway.test/v2/healthz");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
+    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok", email: "off" });
   });
 
   it("reports a key vault that is not set up as misconfigured, and still answers", async () => {

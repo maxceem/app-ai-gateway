@@ -5,6 +5,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
+import { assertAccountServes } from "../core/account-standing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
@@ -90,4 +91,14 @@ export function invalidateApp(appId: string): void {
 
 export function assertAppActive(value: AppRecord): void {
   if (value.status !== "active") throw new GatewayError(403, "app_disabled", "App is disabled");
+}
+
+/**
+ * Whether the app may serve its traffic now: it is active, and its account
+ * may serve (`../core/account-standing.ts`, where the deployment verifies
+ * email). Every app-traffic path asks this one function.
+ */
+export async function assertAppServes(env: Env, value: AppRecord): Promise<void> {
+  assertAppActive(value);
+  await assertAccountServes(env, value.accountId);
 }

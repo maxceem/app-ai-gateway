@@ -22,7 +22,14 @@ export const AdminSessionSchema = z
       emailVerified: z.boolean(),
     }),
     /** The account this caller acts in. */
-    account: z.object({ id: z.string(), name: z.string() }),
+    account: z.object({
+      id: z.string(),
+      name: z.string(),
+      verificationPending: z.boolean().optional().meta({
+        description:
+          "True while this account's apps are refused (`email_unverified`) because no owner has verified their email address yet. Only where the deployment verifies addresses; left out otherwise.",
+      }),
+    }),
     role: z.enum(ACCOUNT_ROLES),
     grant: z.enum(GRANTS),
     credentialType: z.enum(["session", "apiKey", "oauth"]),
@@ -102,10 +109,48 @@ export const ConsoleCapabilitiesSchema = z
     oauth: z.boolean(),
     /** Whether apps can store their conversations here (the deployment has a CONVERSATIONS bucket). */
     conversationStorage: z.boolean().optional(),
+    /** Whether people's email addresses are verified here (the deployment sends email). */
+    emailVerification: z.boolean().optional(),
     termsOfServiceUrl: z.string().optional(),
     privacyPolicyUrl: z.string().optional(),
   })
   .meta({ id: "ConsoleCapabilities" });
+
+/** A console path to continue at once a verification link is opened: one beginning with a single `/`. */
+const ConsoleReturnPathSchema = z
+  .string()
+  .max(512)
+  .regex(/^\/(?![/\\])[^\\\s]*$/u)
+  .meta({ description: "A console path to continue at once the link is opened, such as `/v2/apps`." });
+
+export const SendVerificationEmailRequestSchema = z
+  .object({ returnTo: ConsoleReturnPathSchema.optional() })
+  .strict()
+  .meta({ id: "SendVerificationEmailRequest" });
+
+export const SendVerificationEmailResponseSchema = z
+  .object({
+    status: z.enum(["sent", "already_verified"]).meta({
+      description: "`sent` when a link went out now; `already_verified` when the address needs none.",
+    }),
+    email: z.string().meta({ description: "The address the link was sent to, or that is already verified." }),
+  })
+  .meta({ id: "SendVerificationEmailResponse" });
+
+/** The link a verification email carried, handed back by the page it opened. */
+export const ConfirmEmailVerificationRequestSchema = z
+  .object({
+    token: z.string().min(1).max(2048).meta({ description: "The `token` query parameter of the link in the verification email." }),
+  })
+  .strict()
+  .meta({ id: "ConfirmEmailVerificationRequest" });
+
+export const ConfirmEmailVerificationResponseSchema = z
+  .object({
+    email: z.string().meta({ description: "The address now verified." }),
+    returnTo: z.string().nullable().meta({ description: "The console path the link was asked for from, to continue there; null for none." }),
+  })
+  .meta({ id: "ConfirmEmailVerificationResponse" });
 
 const OAuthClientSchema = z.object({
   id: z.string(),

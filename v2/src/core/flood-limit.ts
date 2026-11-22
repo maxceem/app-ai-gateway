@@ -78,6 +78,15 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "create a sign-in",
     sharedBy: "everyone sharing your network address",
   },
+  // Each one sends an email to a real inbox. Five an hour covers a person who
+  // missed the first and a few retries, and keeps the deployment's sender from
+  // being turned on somebody's inbox (v1's limit).
+  verification_email: {
+    limit: 5,
+    windowMs: 3_600_000,
+    action: "send a verification email",
+    sharedBy: "your sign-in",
+  },
   // An OAuth authorization request is public, and one naming a client's
   // metadata document makes the gateway fetch it, so it is counted first.
   oauth_authorize: {

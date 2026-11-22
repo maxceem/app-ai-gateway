@@ -1,7 +1,7 @@
 /**
  * The console's own pages' API, under `/v2/console`: what the deployment
- * offers, the OAuth consent page, and the page where a person enters the code
- * a CLI shows.
+ * offers, the OAuth consent page, the page where a person enters the code a
+ * CLI shows, and email verification.
  *
  * Except the capabilities, every call must be made from the console's own
  * pages: the URL must be on the console's origin (404 anywhere else) and the
@@ -29,6 +29,8 @@ import {
   DeviceApproveRequestSchema,
   DeviceCodeRequestSchema,
   DeviceLookupRequestSchema,
+  ConfirmEmailVerificationRequestSchema,
+  SendVerificationEmailRequestSchema,
 } from "../contracts/access.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { honoPath } from "../contracts/client-catalog.ts";
@@ -39,6 +41,8 @@ import { activeAccounts } from "../admin/access.ts";
 import { parseBody } from "../admin/apps.ts";
 import { conversationsBucket } from "../conversations/storage.ts";
 import { denyHandoff, getHandoff, submitHandoff } from "../admin/handoffs.ts";
+import { confirmEmailVerification, sendVerificationEmail } from "../auth/email-verification.ts";
+import { emailVerificationRequired } from "../core/account-standing.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 type ConsoleContext = Context<ConsoleEnv>;
@@ -54,6 +58,7 @@ consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
     googleAuth: googleAuthEnabled(c.env),
     oauth: oauthIssuer(c.env) !== null,
     conversationStorage: conversationsBucket(c.env) !== null,
+    emailVerification: emailVerificationRequired(c.env),
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
   } satisfies OperationResponse<"getConsoleCapabilities">),
@@ -76,6 +81,12 @@ consoleRoutes.use("/v2/console/oauth/*", async (c, next) => {
   c.header("Referrer-Policy", "no-referrer");
 });
 consoleRoutes.use("/v2/console/device/*", async (c, next) => {
+  assertConsoleOrigin(c);
+  await next();
+  c.header("Cache-Control", "no-store");
+  c.header("Referrer-Policy", "no-referrer");
+});
+consoleRoutes.use("/v2/console/email-verification/*", async (c, next) => {
   assertConsoleOrigin(c);
   await next();
   c.header("Cache-Control", "no-store");
@@ -218,3 +229,28 @@ consoleRoutes.post(path("denyDeviceRequest"), handle(async (c) => {
 consoleRoutes.post(path("getHandoff"), handle(getHandoff));
 consoleRoutes.post(path("submitHandoff"), handle(submitHandoff));
 consoleRoutes.post(path("denyHandoff"), handle(denyHandoff));
+
+/*
+ * Email verification. Sending needs a person signed in to this browser, and
+ * nothing more: verifying is about the person, not an account. Confirming
+ * needs only the link, which is the whole proof.
+ */
+consoleRoutes.post(path("sendVerificationEmail"), handle(async (c) => {
+  const { returnTo } = await parseBody(c, SendVerificationEmailRequestSchema);
+  const session = await requireBrowserSession(c);
+  if (!emailVerificationRequired(c.env)) throw new GatewayError(409, "conflict", "This deployment does not verify email addresses");
+  const user = session.user!;
+  if (!user.email) throw new GatewayError(409, "conflict", "This sign-in has no email address");
+  if (user.emailVerified) {
+    return c.json({ status: "already_verified", email: user.email } satisfies OperationResponse<"sendVerificationEmail">);
+  }
+  await enforceEndpointRateLimit(c.env, "verification_email", user.id);
+  // `assertConsoleOrigin` has checked this origin is the console's.
+  await sendVerificationEmail(c.env, new URL(c.req.url).origin, { id: user.id, email: user.email }, returnTo ?? null);
+  return c.json({ status: "sent", email: user.email } satisfies OperationResponse<"sendVerificationEmail">);
+}));
+
+consoleRoutes.post(path("confirmEmailVerification"), handle(async (c) => {
+  const { token } = await parseBody(c, ConfirmEmailVerificationRequestSchema);
+  return c.json((await confirmEmailVerification(c.env, token)) satisfies OperationResponse<"confirmEmailVerification">);
+}));

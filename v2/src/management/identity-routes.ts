@@ -7,12 +7,16 @@
  * - a sign-up the deployment does not admit is refused with
  *   `registration_disabled`, as JSON for a script and as a redirect to the
  *   console's sign-in page for a browser coming back from Google;
- * - with `OAUTH_RELAY_URL`, Google's authorization URL is wrapped in the relay.
+ * - with `OAUTH_RELAY_URL`, Google's authorization URL is wrapped in the relay;
+ * - where the deployment sends email, a password sign-up is sent its first
+ *   verification link (`../auth/email-verification.ts`).
  */
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { createIdentity, IDENTITY_BASE_PATH, oauthRelayOrigin } from "../auth/identity.ts";
-import { registrationAllowed, V2_PATH } from "../auth/settings.ts";
+import { consoleReturnPath, sendFirstVerificationEmail } from "../auth/email-verification.ts";
+import { consoleOrigin, registrationAllowed, V2_PATH } from "../auth/settings.ts";
+import { emailVerificationRequired } from "../core/account-standing.ts";
 import { clientAddress, enforceEndpointRateLimit } from "../core/flood-limit.ts";
 
 export const identityRoutes = new Hono<{ Bindings: Env; Variables: { identity: Promise<CfAuth> } }>();
@@ -132,6 +136,8 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
     await enforceEndpointRateLimit(c.env, "sign_up_address", clientAddress(request));
     if (!registrationAllowed(c.env, await submittedEmail(request))) return c.json(registrationDisabled(), 403);
   }
+  // Where the first verification link continues: the console path the sign-up came from.
+  const signUpCallback = signUp && emailVerificationRequired(c.env) ? await submittedField(request, "callbackURL") : undefined;
   let denied = false;
   const identity = await createIdentity(c.env, c.req.url, { onRegistrationDenied: () => { denied = true; } }, c.req.header("cf-ray") ?? null);
   const handled = await identity.handler(request);
@@ -139,6 +145,9 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   if (denied || (await isDisabledSignup(response))) {
     // Google's callback is a page load: a JSON error would strand the person on it.
     return isTopLevelNavigation(request) ? registrationDisabledRedirect(response) : c.json(registrationDisabled(), 403);
+  }
+  if (signUp && response.ok && emailVerificationRequired(c.env)) {
+    await sendFirstVerificationEmail(c.env, consoleOrigin(c.env) ?? new URL(c.req.url).origin, response, consoleReturnPath(signUpCallback));
   }
   return response;
 });

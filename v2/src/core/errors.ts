@@ -64,6 +64,8 @@ export type ErrorCode =
   | "already_completed"
   | "no_eligible_organization"
   | "registration_disabled"
+  | "email_unverified"
+  | "email_unavailable"
   // MCP tools and the CLI's tool catalog (v1's codes).
   | "tool_not_found"
   | "tool_changed";

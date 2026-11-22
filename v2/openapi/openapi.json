@@ -110,6 +110,15 @@
               "misconfigured"
             ],
             "description": "Whether the key vault is set up: `ok`, or `misconfigured` when its settings are missing or invalid. No provider key can be opened while it is `misconfigured`. Optional: older deployments leave it out."
+          },
+          "email": {
+            "type": "string",
+            "enum": [
+              "off",
+              "ok",
+              "misconfigured"
+            ],
+            "description": "Whether the deployment can send verification email: `off` when no email is set up (addresses are not verified), `ok`, or `misconfigured` when it is meant to send but its settings are incomplete. Which setting is wrong is logged, never shown here. Optional: older deployments leave it out."
           }
         },
         "required": [
@@ -5921,6 +5930,10 @@
               },
               "name": {
                 "type": "string"
+              },
+              "verificationPending": {
+                "type": "boolean",
+                "description": "True while this account's apps are refused (`email_unverified`) because no owner has verified their email address yet. Only where the deployment verifies addresses; left out otherwise."
               }
             },
             "required": [
@@ -6169,6 +6182,9 @@
             "type": "boolean"
           },
           "conversationStorage": {
+            "type": "boolean"
+          },
+          "emailVerification": {
             "type": "boolean"
           },
           "termsOfServiceUrl": {
@@ -6618,6 +6634,74 @@
         "required": [
           "state"
         ]
+      },
+      "SendVerificationEmailResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "sent",
+              "already_verified"
+            ],
+            "description": "`sent` when a link went out now; `already_verified` when the address needs none."
+          },
+          "email": {
+            "type": "string",
+            "description": "The address the link was sent to, or that is already verified."
+          }
+        },
+        "required": [
+          "status",
+          "email"
+        ]
+      },
+      "SendVerificationEmailRequest": {
+        "type": "object",
+        "properties": {
+          "returnTo": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^\\/(?![/\\\\])[^\\\\\\s]*$/u",
+            "description": "A console path to continue at once the link is opened, such as `/v2/apps`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConfirmEmailVerificationResponse": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The address now verified."
+          },
+          "returnTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The console path the link was asked for from, to continue there; null for none."
+          }
+        },
+        "required": [
+          "email",
+          "returnTo"
+        ]
+      },
+      "ConfirmEmailVerificationRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "The `token` query parameter of the link in the verification email."
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -13283,6 +13367,160 @@
           },
           "429": {
             "description": "Too many attempts from this network address. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/email-verification/send": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "sendVerificationEmail",
+        "summary": "Email verification: send a link",
+        "description": "Sends a verification link to the address of the person signed in to this browser, for their console session only. Where the deployment verifies email addresses, an account's apps serve requests only once an owner has verified theirs; reading and changing settings never waits for it. A link lasts 24 hours, and a sign-up with a password sends the first one itself. Counted per person.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendVerificationEmailRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether a link went out, and to which address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendVerificationEmailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No person is signed in to this browser (`session_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This deployment does not verify email addresses, or the sign-in has no address of its own (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many links were sent for this sign-in. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The deployment could not send the email (`email_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/console/email-verification/confirm": {
+      "post": {
+        "tags": [
+          "Console"
+        ],
+        "operationId": "confirmEmailVerification",
+        "summary": "Email verification: confirm a link",
+        "description": "Verifies the address a verification link was sent to. The link alone is the proof, so no sign-in is needed; it is bound to the sign-in and the address it was sent for, and stops working once it expires or the address changes. Confirming a link again answers the same.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmEmailVerificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The address verified, and where to continue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmEmailVerificationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The link is malformed, has expired, or no longer matches the sign-in's address (`invalid_request`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request did not come from the console's own page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not served here (only on the console's origin).",
             "content": {
               "application/json": {
                 "schema": {
