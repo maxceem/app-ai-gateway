@@ -439,6 +439,58 @@ export const usageDay = sqliteTable(
 );
 
 /**
+ * Usage summed per app and UTC month, for days past the day rollup's
+ * retention (400 days, as v1). The nightly retention moves each such
+ * `usage_day` row here in the same transaction that deletes it, so a day is
+ * counted in exactly one of the two tables. A month's total is its row here
+ * plus any `usage_day` rows still dated in it (a late correction can add one).
+ *
+ * The same key as `usage_day`, with the account in it as well.
+ */
+export const usageMonth = sqliteTable(
+  "usage_month",
+  {
+    accountId: text("account_id").notNull(),
+    appId: text("app_id").notNull(),
+    /** `YYYY-MM`. */
+    month: text("month").notNull(),
+    providerType: text("provider_type").notNull(),
+    providerConnectionId: text("provider_connection_id").notNull(),
+    model: text("model").notNull(),
+    outcome: text("outcome").$type<"ok" | "failed">().notNull(),
+    unit: text("unit").notNull(),
+
+    charges: integer("charges").notNull().default(0),
+    unpricedCharges: integer("unpriced_charges").notNull().default(0),
+    costNano: integer("cost_nano").notNull().default(0),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    units: integer("units").notNull().default(0),
+    sessionMs: integer("session_ms").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.accountId,
+        table.appId,
+        table.month,
+        table.providerType,
+        table.providerConnectionId,
+        table.model,
+        table.outcome,
+        table.unit,
+      ],
+    }),
+    index("usage_month_account").on(table.accountId, table.month),
+    check("usage_month_outcome", oneOf(table.outcome, ["ok", "failed"])),
+    check("usage_month_month", sql`length(${table.month}) = 7`),
+    check("usage_month_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
+  ],
+);
+
+/**
  * Dollars and session time per budget scope and UTC day, kept by the same
  * trigger. The limiter objects read their cached budget totals from here
  * every 10 s (step 1b). `scope_id` is the app id for the `app` scope.
