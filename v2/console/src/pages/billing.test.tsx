@@ -101,11 +101,12 @@ function stubBilling(
   access: BillingAccess,
   checkoutUrl = "https://checkout.example/session",
   allowance: PlanAllowance | null = null,
+  plans: unknown[] = PLANS,
 ) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/billing/plans")) {
-      return new Response(JSON.stringify({ plans: PLANS }), { status: 200 });
+      return new Response(JSON.stringify({ plans }), { status: 200 });
     }
     if (url.includes("/billing/checkout")) {
       return new Response(JSON.stringify({ url: checkoutUrl }), { status: 200 });
@@ -281,12 +282,74 @@ describe("BillingPage", () => {
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/checkout"));
       expect(call).toBeDefined();
-      expect(JSON.parse(String(call![1]!.body))).toMatchObject({
+      // The account the page showed; where to come back to is the gateway's to choose.
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
         planKey: "pro",
         billingPeriod: "month",
+        accountId: "acct-1",
       });
     });
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/session"));
+  });
+
+  const TEAM = (prices: { billingPeriod: "month" | "year"; priceAmountCents: number }[]) => ({
+    planKey: "team",
+    name: "Team",
+    description: "For teams",
+    features: [],
+    trialDays: 0,
+    prices: prices.map((price) => ({ ...price, priceCurrency: "USD" })),
+  });
+
+  it("shows, confirms and submits a change at the subscription's own period and price (Sol 7b-8)", async () => {
+    const fetchMock = stubBilling(
+      billed(PAID_PLAN, subscription({ billingPeriod: "year" })),
+      undefined,
+      null,
+      [...PLANS, TEAM([{ billingPeriod: "month", priceAmountCents: 5000 }, { billingPeriod: "year", priceAmountCents: 50000 }])],
+    );
+    renderBilling();
+
+    // The page's toggle reads Monthly, but a yearly subscription changes at the yearly price.
+    const team = (await screen.findByText("Team")).closest("[data-slot=card]") as HTMLElement;
+    expect(within(team).getByText("$500/yr")).toBeTruthy();
+    await userEvent.click(within(team).getByRole("button", { name: /upgrade to Team/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("$500/yr")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/change"));
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
+        planKey: "team",
+        billingPeriod: "year",
+        accountId: "acct-1",
+        subscriptionId: "sub-console-page",
+      });
+    });
+  });
+
+  it("offers no change to a plan with no price at the subscription's period", async () => {
+    stubBilling(billed(PAID_PLAN, subscription({ billingPeriod: "year" })), undefined, null, [
+      ...PLANS,
+      TEAM([{ billingPeriod: "month", priceAmountCents: 5000 }]),
+    ]);
+    renderBilling();
+
+    const team = (await screen.findByText("Team")).closest("[data-slot=card]") as HTMLElement;
+    expect(within(team).getByRole("button", { name: /upgrade to Team/i })).toHaveProperty("disabled", true);
+  });
+
+  it("cancels the subscription the page showed, on the account it showed", async () => {
+    const fetchMock = stubBilling(billed(PAID_PLAN, subscription()));
+    renderBilling();
+
+    await userEvent.click(await screen.findByRole("button", { name: /cancel subscription/i }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel subscription" }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/cancel"));
+      expect(JSON.parse(String(call![1]!.body))).toEqual({ accountId: "acct-1", subscriptionId: "sub-console-page" });
+    });
   });
 
   it("offers cancel for a live subscription and resume for a cancelled one", async () => {

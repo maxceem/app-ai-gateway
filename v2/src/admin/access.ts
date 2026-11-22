@@ -47,17 +47,20 @@ async function verificationPending(env: Env, accountId: string): Promise<boolean
 /**
  * The account's plan and this period's allowance, for `account status`. Only
  * where the deployment has billing. It never fails or holds up the session:
- * billing waits at most the app-traffic deadline, the count as long again,
- * and a read that cannot finish shows as no figure.
+ * the plan and the count share one budget, the app-traffic deadline (Sol 7b-8),
+ * and a read that cannot finish in it shows as no figure.
  */
 async function sessionBilling(c: AdminContext, accountId: string): Promise<SessionBilling | undefined> {
   if (billingBinding(c.env) === null) return undefined;
+  const started = Date.now();
   const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
   const access = await getAppTrafficBillingAccess(c.env, accountId, waitUntil);
   if (access.state !== "billed") return { state: "unavailable", planName: null, allowance: null };
   let allowance: SessionBilling["allowance"] = null;
+  const left = APP_TRAFFIC_BILLING_DEADLINE_MS - (Date.now() - started);
   try {
-    const reading = await withDeadline(planAllowance(c.env, accountId, access), APP_TRAFFIC_BILLING_DEADLINE_MS, "reading the allowance");
+    if (left <= 0) throw new Error("no time left for the allowance");
+    const reading = await withDeadline(planAllowance(c.env, accountId, access), left, "reading the allowance");
     if (reading !== null) allowance = { used: reading.used, limit: reading.limit, resetAt: reading.resetAt };
   } catch (error) {
     log("warn", "billing_allowance_unreadable", { account: accountId, error: errorFacts(error) });

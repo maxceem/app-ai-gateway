@@ -171,17 +171,6 @@ export function admitAppTraffic(access: GatewayBillingAccess, accountId: string)
   }
 }
 
-/**
- * The plan check for app calls that are not provider requests: the token
- * exchange and `/me` (v1's entitlement gate). Only a plan known to be missing
- * refuses (402); billing that is slow or cannot be read admits the call, as
- * for a provider request. A deployment without billing reads nothing.
- */
-export async function admitAppCall(env: Env, accountId: string, waitUntil: (promise: Promise<unknown>) => void): Promise<void> {
-  if (billingBinding(env) === null) return;
-  admitAppTraffic(await getAppTrafficBillingAccess(env, accountId, waitUntil), accountId);
-}
-
 /** The plan limits the request path spends. */
 const REQUEST_PATH_LIMITS: readonly PlanLimitKey[] = ["maxRequestsPerMonth", "maxSessionMinutesPerMonth"];
 

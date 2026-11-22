@@ -6,13 +6,15 @@
  * billing service is stubbed: nothing is bought.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import userEvent from "@testing-library/user-event";
 import { AppShell } from "./app-shell";
 import { SidebarContent } from "./app-sidebar";
 import { BillingBanner } from "./plan-summary";
 import { CheckoutPage } from "@/pages/checkout";
 import { checkoutReturnPathFor, postAuthPath } from "@/lib/auth-redirect";
+import { PLAN_CONFIRM_CHECKS, PLAN_CONFIRM_INTERVAL_MS } from "@/lib/checkout-return";
 import { renderAuthenticated, settled } from "@/test/render";
 import type { BillingAccess, PlanAllowance } from "@/lib/types";
 
@@ -48,7 +50,11 @@ function stubBilling(access: BillingAccess, reading: PlanAllowance | null = null
   return fetchMock;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 describe("the sidebar's plan block and Billing entry", () => {
   it("say nothing about billing on a deployment without it, and never ask for it", async () => {
@@ -126,12 +132,8 @@ describe("a plan chosen before sign-in", () => {
     renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
     const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/checkout"));
-    expect(JSON.parse(String(call![1]!.body))).toEqual({
-      planKey: "pro",
-      billingPeriod: "month",
-      successUrl: `https://console.test/v2${checkoutReturnPathFor("pro")}`,
-      cancelUrl: "https://console.test/v2/billing",
-    });
+    // The account it acts on; where the provider sends the person back is the gateway's to choose.
+    expect(JSON.parse(String(call![1]!.body))).toEqual({ planKey: "pro", billingPeriod: "month", accountId: "acct-1" });
   });
 
   it("sends a member, or a plan already held, to the plans page, and a deployment without billing to the apps", async () => {
@@ -153,7 +155,11 @@ describe("a plan chosen before sign-in", () => {
 });
 
 describe("the return from a completed checkout", () => {
-  it("is announced once, and the marker is taken off the address", async () => {
+  const statusReads = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status")).length;
+
+  it("says the payment is being confirmed, then complete once the billing service reports the plan bought, and takes the marker off", async () => {
+    const loading = vi.spyOn(toast, "loading");
+    const success = vi.spyOn(toast, "success");
     stubBilling(PAID);
     const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
       capabilities: { billing: true },
@@ -161,5 +167,37 @@ describe("the return from a completed checkout", () => {
     });
     await waitFor(() => expect(router.location.search).toBe(""));
     expect(router.location.pathname).toBe("/apps");
+    expect(loading).toHaveBeenCalledWith("Confirming your payment…", expect.anything());
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
+  });
+
+  it("reads the plan a capped number of times, then says the payment was received rather than complete (Sol 7b-8)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const success = vi.spyOn(toast, "success");
+    const info = vi.spyOn(toast, "info");
+    // Still the free plan: the webhook has not landed.
+    const fetchMock = stubBilling(FREE);
+    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro") });
+    for (let check = 0; check < PLAN_CONFIRM_CHECKS + 2; check += 1) {
+      await act(() => vi.advanceTimersByTimeAsync(PLAN_CONFIRM_INTERVAL_MS));
+    }
+    await waitFor(() => expect(info).toHaveBeenCalledWith("Payment received", expect.anything()));
+    expect(success).not.toHaveBeenCalledWith("Payment complete", expect.anything());
+    // The page's own status read may add one; the confirming reads stop at the cap.
+    expect(statusReads(fetchMock)).toBeLessThanOrEqual(PLAN_CONFIRM_CHECKS + 1);
+  });
+
+  it("announces nothing on a console without billing, and still takes the marker off", async () => {
+    const loading = vi.spyOn(toast, "loading");
+    const success = vi.spyOn(toast, "success");
+    const fetchMock = stubBilling(PAID);
+    const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
+      capabilities: { billing: false },
+      route: checkoutReturnPathFor("pro"),
+    });
+    await waitFor(() => expect(router.location.search).toBe(""));
+    expect(loading).not.toHaveBeenCalled();
+    expect(success).not.toHaveBeenCalled();
+    expect(statusReads(fetchMock)).toBe(0);
   });
 });

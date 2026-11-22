@@ -38,18 +38,19 @@ import {
   useResumeSubscription,
   useStartCheckout,
 } from "@/lib/queries";
-import type { BillingAccess, BillingPlan, PlanAllowance, SubscriptionActions } from "@/lib/types";
+import type { BillingAccess, BillingPlan, BillingPrice, PlanAllowance, SubscriptionActions } from "@/lib/types";
 
 type Period = "month" | "year";
 
 export function BillingPage() {
-  const { capabilities } = useConsoleSession();
+  const { capabilities, account } = useConsoleSession();
   const [period, setPeriod] = useState<Period>("month");
   const [confirmCancel, setConfirmCancel] = useState(false);
-  // The plan a change was asked for, held until it is confirmed: unlike a
-  // checkout, which asks for the card on the provider's own page, a change on a
-  // live subscription bills without another screen in between.
-  const [confirmChange, setConfirmChange] = useState<BillingPlan | null>(null);
+  // The plan a change was asked for, with the exact price it is made at, held
+  // until it is confirmed: unlike a checkout, which asks for the card on the
+  // provider's own page, a change on a live subscription bills without
+  // another screen in between.
+  const [confirmChange, setConfirmChange] = useState<{ plan: BillingPlan; price: BillingPrice } | null>(null);
 
   const status = useBillingStatus(capabilities.billing);
   const plans = useBillingPlans(capabilities.billing);
@@ -61,10 +62,17 @@ export function BillingPage() {
   const access = status.data?.access;
   const allowance = status.data?.allowance;
   const catalog = plans.data?.plans ?? [];
+  // Every write names the account and subscription this page showed: the
+  // gateway refuses one that has changed since (another tab, another admin).
+  const shown = { accountId: account.id, subscriptionId: subscriptionOf(access)?.subscriptionId ?? null };
+  // A change keeps the subscription's own period, never the page's toggle: a
+  // yearly subscription must not move onto a monthly schedule. The card shows
+  // the price for that period, so what is shown is what is submitted.
+  const changePeriod: Period = subscriptionOf(access)?.billingPeriod ?? period;
 
   const subscribe = async (plan: BillingPlan) => {
     try {
-      const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
+      const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period, accountId: account.id });
       window.location.assign(url);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
@@ -74,18 +82,17 @@ export function BillingPage() {
   const doChange = async () => {
     if (!confirmChange) return;
     try {
-      // The subscription's own period, not the page's: a change must not
-      // silently move a yearly subscription onto a monthly schedule.
       const result = await change.mutateAsync({
-        planKey: confirmChange.planKey,
-        billingPeriod: subscriptionOf(access)?.billingPeriod ?? period,
+        planKey: confirmChange.plan.planKey,
+        billingPeriod: confirmChange.price.billingPeriod,
+        ...shown,
       });
       setConfirmChange(null);
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
         return;
       }
-      toast.success(`Moved to ${confirmChange.name}`);
+      toast.success(`Moved to ${confirmChange.plan.name}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not change the plan");
     }
@@ -94,13 +101,16 @@ export function BillingPage() {
   // A plan card acts on whichever route the billing contract serves for it.
   const act = (plan: BillingPlan, action: PlanAction) => {
     if (action.intent === "checkout") return void subscribe(plan);
-    if (action.intent === "change") return setConfirmChange(plan);
+    if (action.intent === "change") {
+      const price = priceFor(plan, changePeriod);
+      return price ? setConfirmChange({ plan, price }) : undefined;
+    }
     if (action.intent === "cancel") return setConfirmCancel(true);
   };
 
   const doCancel = async () => {
     try {
-      await cancel.mutateAsync();
+      await cancel.mutateAsync(shown);
       toast.success("Subscription canceled");
       setConfirmCancel(false);
     } catch (error) {
@@ -117,6 +127,7 @@ export function BillingPage() {
       const result = await resume.mutateAsync({
         planKey: subscription.planKey,
         billingPeriod: subscription.billingPeriod ?? period,
+        ...shown,
       });
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
@@ -193,7 +204,7 @@ export function BillingPage() {
               <PlanCard
                 key={plan.planKey}
                 plan={plan}
-                period={period}
+                period={action.intent === "change" ? changePeriod : period}
                 action={action}
                 pending={checkout.isPending || change.isPending}
                 onAct={() => act(plan, action)}
@@ -206,12 +217,15 @@ export function BillingPage() {
       <ConfirmDialog
         open={confirmChange !== null}
         onOpenChange={(open) => setConfirmChange(open ? confirmChange : null)}
-        title={`Move to ${confirmChange?.name ?? ""}`}
+        title={`Move to ${confirmChange?.plan.name ?? ""}`}
         description={
           <p>
-            Your subscription changes to this plan and its allowance applies from the change. The
-            billing provider settles the difference, charging an upgrade right away and putting a
-            downgrade on your next invoice.
+            Your subscription changes to {confirmChange?.plan.name} at{" "}
+            <span className="tabular font-medium text-foreground">
+              {confirmChange ? formatPrice(confirmChange.price) : ""}
+            </span>
+            , and its allowance applies from the change. The billing provider settles the
+            difference, charging an upgrade right away and putting a downgrade on your next invoice.
           </p>
         }
         confirmLabel="Change plan"
@@ -410,7 +424,11 @@ function PlanCard({
               wrapperClassName="w-full"
               variant={action.variant}
               disabled={pending || (!free && !price)}
-              {...(action.reason ? { reason: action.reason } : {})}
+              {...(action.reason
+                ? { reason: action.reason }
+                : !free && !price
+                  ? { reason: `This plan has no ${period === "year" ? "yearly" : "monthly"} price.` }
+                  : {})}
               onClick={onAct}
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : null}

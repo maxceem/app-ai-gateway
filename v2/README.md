@@ -93,6 +93,18 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 - Set secrets with `wrangler secret put <NAME>`, never in a file that is committed. `.dev.vars.example`
   lists every secret.
 
+## Hosted billing settings
+
+Only a deployment that binds the billing service (`BILLING`) has billing; everywhere else the
+billing operations answer 404 and nothing is counted against a plan.
+
+- `BILLING_PAYMENT_HOSTS`: optional, a comma-separated list of hosts (each also covering its
+  subdomains) where a checkout or payment page the billing service answers may be. The gateway
+  passes such a page on only when it is HTTPS on one of these hosts, and answers
+  `billing_unavailable` otherwise. Defaults to `lemonsqueezy.com`.
+- Where a checkout sends the person back is always the console's own pages, built from
+  `CONSOLE_ORIGIN` (or the gateway's own origin without one).
+
 ## Nightly maintenance
 
 The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in its own hour:

@@ -85,6 +85,13 @@
       "when": 1795370899755,
       "tag": "0011_email_pending_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795374678620,
+      "tag": "0012_billing_open_checkout",
+      "breakpoints": true
     }
   ]
 }

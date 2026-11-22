@@ -10,7 +10,6 @@ import { and, eq } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { assertAppServes, loadApp } from "../apps/app-records.ts";
-import { admitAppCall } from "../billing/access.ts";
 import { clientAuth, type ExchangeType, type TokenExchange } from "../client-auth/client-auth.ts";
 import {
   CHALLENGE_TTL_SECONDS,
@@ -303,13 +302,11 @@ export async function tokenHandler(c: AuthContext): Promise<Response> {
     const app = await loadApp(c.env, appId);
     attempt.accountId = app.accountId;
     assertAppServes(c.env, app);
-    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
-    // v1's entitlement gate: an account with no plan at all is refused (402).
-    await admitAppCall(c.env, app.accountId, waitUntil);
     const { exchange } = clientAuth(app);
     if (exchange === null) {
       throw new GatewayError(400, "auth_method_not_supported", "API key token exchange requires an issuer end-user source");
     }
+    const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
     const issued = await exchangeToken({ env: c.env, appId, exchange, rawBody, attempt, waitUntil });
     return c.json({
       access_token: issued.token,

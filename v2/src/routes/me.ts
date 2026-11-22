@@ -6,12 +6,11 @@
  * token, the App Attest proof where the app signs every request, and the
  * replay check, which is never skipped.
  *
- * On a hosted deployment, an account with no plan at all is refused (402), as
- * v1's entitlement gate does; billing that cannot be read admits the call.
+ * Unlike v1, there is no hosted billing check here yet: that is management
+ * side, and is ported with it.
  */
 import type { Context } from "hono";
 import { assertAppServes, loadApp } from "../apps/app-records.ts";
-import { admitAppCall } from "../billing/access.ts";
 import { authenticateRequest } from "../client-auth/client-auth.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { appUserBlocked } from "../client-auth/user-status.ts";
@@ -29,7 +28,6 @@ export async function meHandler(c: Context<{ Bindings: Env; Variables: DeadlineV
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
   assertAppServes(c.env, app);
-  await admitAppCall(c.env, app.accountId, (promise) => c.executionCtx.waitUntil(promise));
   const { identity, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,

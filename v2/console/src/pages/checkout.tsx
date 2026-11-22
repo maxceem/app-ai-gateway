@@ -31,7 +31,7 @@ const BILLING_PATH = "/billing";
  */
 export function CheckoutPage() {
   const location = useLocation();
-  const { capabilities, canManage } = useConsoleSession();
+  const { capabilities, canManage, account } = useConsoleSession();
   const plans = useBillingPlans(capabilities.billing);
   const status = useBillingStatus(capabilities.billing);
   const billing = status.data?.access;
@@ -76,12 +76,12 @@ export function CheckoutPage() {
     // The catalog is monthly-only today, but the period a plan is actually
     // sold on is the plan's to state, not this page's to assume.
     const billingPeriod = priceFor(plan, "month") ? "month" : "year";
-    startCheckout({ planKey: plan.planKey, billingPeriod })
+    startCheckout({ planKey: plan.planKey, billingPeriod, accountId: account.id })
       .then(({ url }) => window.location.assign(url))
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : "Could not start checkout");
       });
-  }, [ready, plan, startCheckout]);
+  }, [ready, plan, startCheckout, account.id]);
 
   if (landing !== null) return <Navigate to={landing} replace />;
   if (unknownPlan) return <Navigate to={BILLING_PATH} replace />;

@@ -106,6 +106,23 @@ export const emailPendingVerification = sqliteTable("email_pending_verification"
   email: text("email").primaryKey(),
 });
 
+/**
+ * The account's open checkout, at most one: a second checkout asked for while
+ * one is open answers the same page rather than issue a second payable one
+ * (Sol 7b-8). `url` is null while the first request is still preparing it;
+ * `claim_id` is that request's own mark, so only it fills the row in.
+ * `expires_at` is when the page stops being payable (the billing service
+ * issues it for an hour), or, while preparing, when the claim lapses.
+ */
+export const billingOpenCheckout = sqliteTable("billing_open_checkout", {
+  accountId: text("account_id").primaryKey(),
+  planKey: text("plan_key").notNull(),
+  billingPeriod: text("billing_period").notNull(),
+  url: text("url"),
+  claimId: text("claim_id").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
 // ---------------------------------------------------------------------------
 // What an account sets up
 

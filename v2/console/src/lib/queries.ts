@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { call } from "./api";
-import { checkoutReturnPathFor, consoleUrl } from "./auth-redirect";
 import {
   changePassword,
   plainlySignedOut,
@@ -500,18 +499,14 @@ function useRefreshPlan() {
   };
 }
 
+/**
+ * Starts a checkout. The gateway picks where the provider sends the person
+ * back (the apps page, which announces it, or the plans), and answers the same
+ * page again while a checkout for the same plan is open.
+ */
 export function useStartCheckout() {
   return useMutation({
-    mutationFn: (input: OperationRequest<"changePlan">) =>
-      call("startCheckout", {
-        body: {
-          ...input,
-          // A completed checkout lands on the apps page, which announces it;
-          // an abandoned one comes back to the plans, where it would be resumed.
-          successUrl: `${window.location.origin}${consoleUrl(checkoutReturnPathFor(input.planKey))}`,
-          cancelUrl: `${window.location.origin}${consoleUrl("/billing")}`,
-        },
-      }),
+    mutationFn: (input: OperationRequest<"startCheckout">) => call("startCheckout", { body: input }),
   });
 }
 
@@ -534,7 +529,7 @@ export function useResumeSubscription() {
 export function useCancelSubscription() {
   const refresh = useRefreshPlan();
   return useMutation({
-    mutationFn: () => call("cancelSubscription"),
+    mutationFn: (input: OperationRequest<"cancelSubscription">) => call("cancelSubscription", { body: input }),
     onSuccess: refresh,
   });
 }

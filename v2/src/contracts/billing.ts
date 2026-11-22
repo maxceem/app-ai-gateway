@@ -197,13 +197,31 @@ export const BillingPlanSelectionSchema = z.object({
 }).meta({ id: "BillingPlanSelection" });
 
 /**
- * A checkout. Where the provider sends the person back must be a console
- * page: a URL anywhere else is refused (`invalid_request`).
+ * The account the console showed when the person acted. A write whose account
+ * is no longer the one selected (another tab switched it) is refused with
+ * `account_changed` rather than applied to the other account.
  */
-export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend({
-  successUrl: z.url().max(2_000).optional(),
-  cancelUrl: z.url().max(2_000).optional(),
-}).meta({ id: "BillingCheckoutRequest" });
+const ShownAccount = { accountId: z.string().min(1).max(200) };
+
+/**
+ * The subscription the console showed, `null` where it showed none. A write
+ * on a subscription that has since changed is refused (`subscription_changed`).
+ */
+const ShownSubscription = { subscriptionId: z.string().min(1).max(200).nullable() };
+
+/**
+ * A checkout. The gateway chooses where the provider sends the person back
+ * (the console's own pages); there is nothing to choose here.
+ */
+export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend(ShownAccount).meta({ id: "BillingCheckoutRequest" });
+
+/** A change or a resume, on the account and subscription the console showed. */
+export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownAccount, ...ShownSubscription }).meta({
+  id: "BillingChangeRequest",
+});
+
+/** A cancel, on the account and subscription the console showed. */
+export const BillingCancelRequestSchema = z.object({ ...ShownAccount, ...ShownSubscription }).meta({ id: "BillingCancelRequest" });
 
 export const BillingCheckoutResponseSchema = z.object({ url: z.string() }).meta({ id: "BillingCheckoutResponse" });
 
@@ -215,7 +233,7 @@ export const BillingChangeResponseSchema = z.object({
 
 export const BillingCancelResponseSchema = z.object({ ok: z.literal(true) }).meta({ id: "BillingCancelResponse" });
 
-export const BillingTrialRequestSchema = z.object({ planKey: z.string().min(1).max(100) }).meta({ id: "BillingTrialRequest" });
+export const BillingTrialRequestSchema = z.object({ planKey: z.string().min(1).max(100), ...ShownAccount }).meta({ id: "BillingTrialRequest" });
 
 export const BillingTrialResponseSchema = BillingAccessSchema.meta({ id: "BillingTrialResponse" });
 
@@ -248,3 +266,4 @@ export type BillingCheckoutResponse = z.infer<typeof BillingCheckoutResponseSche
 export type BillingChangeResponse = z.infer<typeof BillingChangeResponseSchema>;
 export type BillingCancelResponse = z.infer<typeof BillingCancelResponseSchema>;
 export type SessionBilling = z.infer<typeof SessionBillingSchema>;
+export type BillingChangeRequest = z.infer<typeof BillingChangeRequestSchema>;
