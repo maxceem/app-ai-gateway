@@ -371,7 +371,7 @@ export function UsageTab({ app }: { app: App }) {
               variant="outline"
               size="sm"
               disabled={charges.isFetching || !charges.data?.next_before}
-              onClick={() => list.older(charges.data!.next_before as string)}
+              onClick={() => list.older(charges.data!.next_before as string, list.range)}
             >
               Older
             </Button>

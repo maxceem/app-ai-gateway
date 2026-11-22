@@ -390,8 +390,35 @@ export function firstCallInterval(state: PollState, found: boolean): number | fa
  * again; this does not forget until a reload (Sol 7b-6 round 4).
  */
 const firstCallStopped = new Set<string>();
+/** How many answers each first-call read has had on this page, per app and read. */
+const firstCallAnswers = new Map<string, number>();
 /** Forgets every stop, as a reload does. For tests. */
-export const forgetFirstCallStops = () => firstCallStopped.clear();
+export const forgetFirstCallStops = () => {
+  firstCallStopped.clear();
+  firstCallAnswers.clear();
+};
+
+/**
+ * One first-call read, which records its own stop as it settles: a refusal
+ * asking again cannot change, or the {@link FIRST_CALL_MAX_POLLS}th answer
+ * without a call. It runs in the request, not in the card, so a read that
+ * settles after the card has gone still records the stop, and coming back
+ * once the cache has forgotten the entry does not ask again (Sol 7b-6 round 5).
+ * A transient failure is not counted here: it is retried, and the card, while
+ * shown, stops on the query's own count.
+ */
+async function askFirstCall<T>(appId: string, read: string, ask: () => Promise<T>, found: (data: T | undefined) => boolean): Promise<T> {
+  try {
+    const data = await ask();
+    const answers = (firstCallAnswers.get(`${appId} ${read}`) ?? 0) + 1;
+    firstCallAnswers.set(`${appId} ${read}`, answers);
+    if (!found(data) && answers >= FIRST_CALL_MAX_POLLS) firstCallStopped.add(appId);
+    return data;
+  } catch (error) {
+    if (permanent(error)) firstCallStopped.add(appId);
+    throw error;
+  }
+}
 
 /**
  * The timer for one of the first-call reads. Where it stops without having
@@ -435,7 +462,7 @@ export function useFirstCall(appId: string) {
   const halted = firstCallStopped.has(appId);
   const usage = useQuery({
     queryKey: keys.appUsage(appId),
-    queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
+    queryFn: () => askFirstCall(appId, "usage", () => call("getAppUsage", { params: { app: appId }, query: {} }), usageAnswered),
     // Stopped earlier on this page: never asked again, even after the cache forgot the stop.
     enabled: !halted,
     // Absent (an older gateway) is an answer too: the charge read below takes over.
@@ -450,7 +477,7 @@ export function useFirstCall(appId: string) {
   const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
   const charges = useQuery({
     queryKey: keys.charges(appId, { limit: 1 }),
-    queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
+    queryFn: () => askFirstCall(appId, "charges", () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }), chargeFound),
     enabled: legacy && !halted,
     refetchInterval: pollFor(appId, chargeFound),
     refetchOnReconnect: mayAskAgain(chargeFound),

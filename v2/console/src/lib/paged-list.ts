@@ -4,10 +4,12 @@
  * A page cursor belongs to the exact query it was read under. So every change
  * of a filter, or of the days, starts the pages again in the same update: a
  * cursor can never outlive its query, whatever changes and in what order
- * (Sol 7b-6 rounds 2 and 3). The cursors also remember the exact days they
- * were read for: when the days move on their own, at UTC midnight, the same
- * render starts at page one again (Sol 7b-6 round 4). Every paged list in the
- * console holds its state here, so this kind of bug cannot come back list by list.
+ * (Sol 7b-6 rounds 2 and 3). Each cursor also carries the exact days it was
+ * read for. When the days move on their own, at UTC midnight, a cursor read
+ * for other days is never sent: the render shows page one (round 4), and an
+ * "Older" click carrying a cursor read for yesterday's days goes to page one
+ * of today's instead (round 5). Every paged list in the console holds its
+ * state here, so this kind of bug cannot come back list by list.
  */
 import { useMemo, useState } from "react";
 import { windowAt, type DateWindow } from "@/components/date-window";
@@ -16,13 +18,18 @@ interface State<F> {
   filters: F;
   /** The date window, 0 for the newest days. */
   step: number;
-  /** The `before` cursors of the pages read so far; the last is the page shown. */
-  cursors: string[];
-  /** The days the cursors were read for, as `from..to`. */
-  cursorsFor: string;
+  /** The `before` cursors of the pages read so far, each with the days it was read for; the last is the page shown. */
+  cursors: Page[];
 }
 
-const daysOf = (range: DateWindow) => `${range.from}..${range.to}`;
+/** A `before` cursor and the days of the read that returned it. */
+interface Page {
+  cursor: string;
+  from: string;
+  to: string;
+}
+
+const sameDays = (page: Page, range: DateWindow) => page.from === range.from && page.to === range.to;
 
 export interface PagedList<F> {
   filters: F;
@@ -34,28 +41,32 @@ export interface PagedList<F> {
   setFilters: (patch: Partial<F>) => void;
   earlier: () => void;
   later: () => void;
-  older: (next: string) => void;
+  /** Goes to the page before `next`, a cursor read for the days `readFor` (the range shown with it). */
+  older: (next: string, readFor: DateWindow) => void;
   newer: () => void;
 }
 
 export function usePagedList<F extends Record<string, unknown>>(initial: F): PagedList<F> {
-  const [state, setState] = useState<State<F>>({ filters: initial, step: 0, cursors: [], cursorsFor: "" });
+  const [state, setState] = useState<State<F>>({ filters: initial, step: 0, cursors: [] });
   // Built once: they only ever call `setState`, so effects may depend on them safely.
   const actions = useMemo(
     () => ({
       setFilters: (patch: Partial<F>) =>
         setState((current) => {
           const changed = Object.entries(patch).some(([key, value]) => current.filters[key] !== value);
-          return changed ? { filters: { ...current.filters, ...patch }, step: 0, cursors: [], cursorsFor: "" } : current;
+          return changed ? { filters: { ...current.filters, ...patch }, step: 0, cursors: [] } : current;
         }),
       earlier: () => setState((current) => (windowAt(current.step).canEarlier ? { ...current, step: current.step + 1, cursors: [] } : current)),
       later: () => setState((current) => (current.step > 0 ? { ...current, step: current.step - 1, cursors: [] } : current)),
-      older: (next: string) =>
+      older: (next: string, readFor: DateWindow) =>
         setState((current) => {
-          const days = daysOf(windowAt(current.step));
-          // Cursors read for other days (the window moved at midnight) are dropped, never mixed.
-          const kept = current.cursorsFor === days ? current.cursors : [];
-          return { ...current, cursors: [...kept, next], cursorsFor: days };
+          const days = windowAt(current.step);
+          const page = { cursor: next, from: readFor.from, to: readFor.to };
+          // A cursor read for other days than today's window (the click came after
+          // UTC midnight) is dropped: page one of the current days, never a skip.
+          if (!sameDays(page, days)) return { ...current, cursors: [] };
+          const kept = current.cursors.filter((earlier) => sameDays(earlier, days));
+          return { ...current, cursors: [...kept, page] };
         }),
       newer: () => setState((current) => ({ ...current, cursors: current.cursors.slice(0, -1) })),
     }),
@@ -64,11 +75,11 @@ export function usePagedList<F extends Record<string, unknown>>(initial: F): Pag
   const range = windowAt(state.step);
   // Cursors belong to the days they were read for: once the days move, at UTC
   // midnight, they are not sent again, in this very render.
-  const cursors = state.cursorsFor === daysOf(range) ? state.cursors : [];
+  const cursors = state.cursors.every((page) => sameDays(page, range)) ? state.cursors : [];
   return {
     filters: state.filters,
     range,
-    before: cursors.at(-1),
+    before: cursors.at(-1)?.cursor,
     canNewer: cursors.length > 0,
     ...actions,
   };

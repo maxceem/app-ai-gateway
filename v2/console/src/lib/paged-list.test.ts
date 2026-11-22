@@ -19,8 +19,8 @@ describe("a paged list", () => {
   it("goes older and newer through its cursors", () => {
     const { result } = setup();
     expect(result.current.before).toBeUndefined();
-    act(() => result.current.older("c1"));
-    act(() => result.current.older("c2"));
+    act(() => result.current.older("c1", result.current.range));
+    act(() => result.current.older("c2", result.current.range));
     expect(result.current.before).toBe("c2");
     act(() => result.current.newer());
     expect(result.current.before).toBe("c1");
@@ -29,10 +29,10 @@ describe("a paged list", () => {
 
   it("starts at page one when a filter is set, and again when it is cleared after paging", () => {
     const { result } = setup();
-    act(() => result.current.older("unfiltered-page-2"));
+    act(() => result.current.older("unfiltered-page-2", result.current.range));
     act(() => result.current.setFilters({ user: "user-9" }));
     expect(result.current.before).toBeUndefined();
-    act(() => result.current.older("filtered-page-2"));
+    act(() => result.current.older("filtered-page-2", result.current.range));
     act(() => result.current.setFilters({ user: "" }));
     // Never back to the unfiltered list's old page two.
     expect(result.current.before).toBeUndefined();
@@ -41,7 +41,7 @@ describe("a paged list", () => {
 
   it("keeps its pages when a filter is set to the value it already has", () => {
     const { result } = setup();
-    act(() => result.current.older("c1"));
+    act(() => result.current.older("c1", result.current.range));
     act(() => result.current.setFilters({ user: "" }));
     expect(result.current.before).toBe("c1");
   });
@@ -49,7 +49,7 @@ describe("a paged list", () => {
   it("starts at page one when the days move on their own at UTC midnight (Sol 7b-6 round 4)", () => {
     vi.setSystemTime(Date.parse("2026-11-22T23:59:30Z"));
     const { result, rerender } = setup();
-    act(() => result.current.older("page-2-of-the-old-days"));
+    act(() => result.current.older("page-2-of-the-old-days", result.current.range));
     expect(result.current.before).toBe("page-2-of-the-old-days");
     vi.setSystemTime(Date.parse("2026-11-23T00:00:30Z"));
     rerender();
@@ -57,15 +57,30 @@ describe("a paged list", () => {
     expect(result.current.before).toBeUndefined();
     expect(result.current.canNewer).toBe(false);
     // A page read for the new days starts fresh, without the old cursor.
-    act(() => result.current.older("page-2-of-the-new-days"));
+    act(() => result.current.older("page-2-of-the-new-days", result.current.range));
     act(() => result.current.newer());
     expect(result.current.before).toBeUndefined();
+  });
+
+  it("goes to page one of the new days when the first click after UTC midnight carries a cursor read for yesterday's (Sol 7b-6 round 5)", () => {
+    vi.setSystemTime(Date.parse("2026-11-22T23:59:30Z"));
+    const { result } = setup();
+    // The page shown, and its "Older" button, were rendered before midnight.
+    const shownRange = result.current.range;
+    act(() => result.current.older("page-2-of-the-old-days", shownRange));
+    const staleCursor = "page-3-of-the-old-days";
+    vi.setSystemTime(Date.parse("2026-11-23T00:00:30Z"));
+    // The click comes after midnight, still carrying what the old render showed.
+    act(() => result.current.older(staleCursor, shownRange));
+    expect(result.current.range.to).toBe("2026-11-23");
+    expect(result.current.before).toBeUndefined();
+    expect(result.current.canNewer).toBe(false);
   });
 
   it("starts at page one when the days move, and at the newest days when a filter changes", () => {
     const { result } = setup();
     act(() => result.current.earlier());
-    act(() => result.current.older("c1"));
+    act(() => result.current.older("c1", result.current.range));
     act(() => result.current.later());
     expect(result.current.before).toBeUndefined();
     act(() => result.current.earlier());

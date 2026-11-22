@@ -348,7 +348,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               variant="outline"
               size="sm"
               disabled={rejections.isFetching || !rejections.data?.next_before}
-              onClick={() => rejectionList.older(rejections.data!.next_before as string)}
+              onClick={() => rejectionList.older(rejections.data!.next_before as string, rejectionList.range)}
             >
               Older
             </Button>
@@ -472,7 +472,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               variant="outline"
               size="sm"
               disabled={events.isFetching || !events.data?.next_before}
-              onClick={() => eventList.older(events.data!.next_before as string)}
+              onClick={() => eventList.older(events.data!.next_before as string, eventList.range)}
             >
               Older
             </Button>

@@ -192,6 +192,96 @@ describe("the first-call check", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  /** Holds each matching read until `release()`, then answers `status` with `body`. */
+  function heldAnswer(match: string, status: number, body: unknown) {
+    const releases: (() => void)[] = [];
+    const release = () => releases.splice(0).forEach((go) => go());
+    const hold = () => new Promise<void>((go) => releases.push(go));
+    return {
+      release,
+      reply: async () => {
+        await hold();
+        return new Response(JSON.stringify(body), { status });
+      },
+      match,
+    };
+  }
+  const REFUSAL = { error: { code: "forbidden", message: "No" } };
+
+  it("records a refusal that arrives after the card has gone, and does not ask again on coming back (Sol 7b-6 round 5)", async () => {
+    const held = heldAnswer(USAGE_URL, 403, REFUSAL);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith(held.match) ? held.reply() : new Response("{}", { status: 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The user leaves while the read is still on its way; the 403 lands afterwards.
+    first.unmount();
+    held.release();
+    await advance(0);
+    await advance(AWAY_MS);
+    expect(client.getQueryState(["app-usage", "my-app"])).toBeUndefined();
+    const again = renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(again.result.current.stopped).toBe(true);
+  });
+
+  it("records the capped answer that arrives after the card has gone (Sol 7b-6 round 5)", async () => {
+    let answered = 0;
+    const held = heldAnswer(USAGE_URL, 200, { app_id: "my-app", month: "2026-11", ...NO_USAGE, first_usage_day: null });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (!String(input).startsWith(USAGE_URL)) return new Response("{}", { status: 404 });
+      answered += 1;
+      // Every answer but the last comes at once; the capped one is held until the card has gone.
+      if (answered < FIRST_CALL_MAX_POLLS) {
+        return new Response(JSON.stringify({ app_id: "my-app", month: "2026-11", ...NO_USAGE, first_usage_day: null }), { status: 200 });
+      }
+      return held.reply();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    for (let poll = 1; poll < FIRST_CALL_MAX_POLLS; poll += 1) await advance(FIRST_CALL_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    first.unmount();
+    held.release();
+    await advance(0);
+    await advance(AWAY_MS);
+    renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+  });
+
+  it("records a refusal of the older gateway's charge read that arrives after the card has gone (Sol 7b-6 round 5)", async () => {
+    const CHARGES_URL = "/v2/admin/apps/my-app/charges";
+    const held = heldAnswer(CHARGES_URL, 403, REFUSAL);
+    // An older gateway: its usage answer has no `first_usage_day`, so the charge read takes over.
+    const legacyUsage = { app_id: "my-app", month: "2026-11", ...NO_USAGE };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith(USAGE_URL)) return new Response(JSON.stringify(legacyUsage), { status: 200 });
+      if (String(input).startsWith(CHARGES_URL)) return held.reply();
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const chargeReads = () => fetchMock.mock.calls.filter(([input]) => String(input).startsWith(CHARGES_URL)).length;
+    const first = renderFirstCall(client);
+    await advance(0);
+    await vi.waitFor(() => expect(chargeReads()).toBe(1));
+    first.unmount();
+    held.release();
+    await advance(0);
+    await advance(AWAY_MS);
+    renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(chargeReads()).toBe(1);
+  });
+
   it("gives up after its cap, saying it stopped", () => {
     const state = { error: null, dataUpdateCount: FIRST_CALL_MAX_POLLS, errorUpdateCount: 0 };
     expect(firstCallInterval(state, false)).toBe(false);
