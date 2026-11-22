@@ -15,7 +15,6 @@
  * OAuth discovery documents live under `/.well-known/`, outside `/v2`.
  */
 import { Hono, type Context } from "hono";
-import { settleExpiredChallenges } from "./client-auth/auth-events.ts";
 import { CLIENT_CATALOG, honoPath, type ClientOperationName, type ClientOperationResponse } from "./contracts/client-catalog.ts";
 import type { ErrorResponse } from "./contracts/operation.ts";
 import { errorFacts } from "./core/error-facts.ts";
@@ -31,8 +30,7 @@ import { proxyHandler } from "./proxy/serve.ts";
 import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
 import { vaultStatus } from "./vault/index.ts";
-import { conversationsBucket } from "./conversations/storage.ts";
-import { RETENTION_HOUR_UTC, runConversationRetention } from "./conversations/retention.ts";
+import { runHourly } from "./maintenance/nightly.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
@@ -198,39 +196,15 @@ app.onError((error, c: Context<Env2>) => {
 export default {
   fetch: app.fetch,
   /**
-   * Every minute: the sweep of open work. Hourly (any other cron): record
-   * expired, unused App Attest challenges as abandoned, and delete them;
-   * clean up expired OAuth approvals and ended OAuth connections' tokens;
-   * and once a day, delete stored conversations past their retention.
+   * Every minute: the sweep of open work. Hourly (the other cron): the
+   * clean-up of expired App Attest challenges and sign-in records, and once a
+   * day the nightly maintenance (`./maintenance/nightly.ts`).
    */
   async scheduled(controller, env, ctx) {
     if (controller.cron === SWEEP_CRON) {
       ctx.waitUntil(runSweep(env, { waitUntil: (work) => ctx.waitUntil(work) }).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
       return;
     }
-    // Stored conversations past their app's retention, once a day, where the deployment keeps them.
-    const bucket = conversationsBucket(env);
-    if (bucket !== null && new Date(controller.scheduledTime).getUTCHours() === RETENTION_HOUR_UTC) {
-      ctx.waitUntil(
-        runConversationRetention(bucket, env.DB, controller.scheduledTime).then(
-          (pruned) => log("info", "conversations_pruned", { ...pruned }),
-          (error: unknown) => log("warn", "conversations_prune_failed", { error: errorFacts(error) }),
-        ),
-      );
-    }
-    ctx.waitUntil(
-      settleExpiredChallenges(env.DB).then(
-        (settled) => log("info", "auth_challenges_settled", settled),
-        (error: unknown) => log("warn", "auth_challenges_prune_failed", { error: errorFacts(error) }),
-      ),
-    );
-    ctx.waitUntil(
-      import("./management/maintenance.ts")
-        .then(({ sweepSignIn }) => sweepSignIn(env))
-        .then(
-          (swept) => log("info", "sign_in_swept", swept),
-          (error: unknown) => log("warn", "sign_in_sweep_failed", { error: errorFacts(error) }),
-        ),
-    );
+    runHourly(env, controller.scheduledTime, (work) => ctx.waitUntil(work));
   },
 } satisfies ExportedHandler<Env>;

@@ -9,7 +9,8 @@ import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, wait
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { conversationRecord, type CaptureHints, type ConversationCapture } from "../src/conversations/record.ts";
-import { CallBudget, RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
+import { RETENTION_CURSOR, runConversationRetention } from "../src/conversations/retention.ts";
+import { QueryBudget } from "../src/core/query-budget.ts";
 import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
 import { planIncludes } from "../src/billing/access.ts";
@@ -1588,7 +1589,7 @@ describe("conversation retention", () => {
     await store.put(`${appPrefix(ACCOUNT_ID, "conversation-deleted-app")}2020-01-01/000000-dddddddd.jsonl.gz`, "orphan");
 
     // Other tests in this file may have left batches of their own, so only these keys are asserted.
-    const result = await runConversationRetention(store, env.DB, Date.now(), new CallBudget(500));
+    const result = await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(500));
     expect(result.deletedObjects).toBeGreaterThanOrEqual(2);
     expect(result.removedApps).toBeGreaterThanOrEqual(1);
     const left = (await store.list({ prefix: "conversations/" })).objects.map((object) => object.key);
@@ -1627,7 +1628,7 @@ describe("conversation retention", () => {
       },
     } as unknown as D1Database;
 
-    await runConversationRetention(store, db, Date.now(), new CallBudget(500));
+    await runConversationRetention(store, db, Date.now(), new QueryBudget(500));
     const left = (await store.list({ prefix: `conversations/${ACCOUNT_ID}~conversation-` })).objects.map((object) => object.key);
     expect(left).toContain(`${appPrefix(ACCOUNT_ID, late)}2020-01-01/000000-aaaaaaaa.jsonl.gz`);
     expect(left).toContain(`${appPrefix(ACCOUNT_ID, unreadable)}2020-01-01/000000-bbbbbbbb.jsonl.gz`);
@@ -1647,10 +1648,10 @@ describe("conversation retention", () => {
     const reads = vi.spyOn(store, "get");
     let runs = 0;
     while ((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects.length > 0 && runs < 10) {
-      // Pages of 50 keys. A run that reaches the app pays for the cursor read, the app list, the day list,
-      // one page's list and delete, and the cursor write. A run that ran out in it leaves the cursor after it,
+      // Pages of 50 keys. A run that reaches the app pays for the cursor read, the apps' settings read, the
+      // app list, the day list, one page's list, the settings read again and the delete, and the cursor write. A run that ran out in it leaves the cursor after it,
       // so the next run reaches the end of the listing and clears the cursor, and the one after comes back.
-      await runConversationRetention(store, env.DB, now, new CallBudget(7), 50);
+      await runConversationRetention(store, env.DB, now, new QueryBudget(8), 50);
       runs += 1;
     }
     expect((await store.list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}2026-11-20/` })).objects).toHaveLength(0);
@@ -1677,7 +1678,7 @@ describe("conversation retention", () => {
       return list(options);
     });
     try {
-      await runConversationRetention(store, env.DB, now, new CallBudget(50));
+      await runConversationRetention(store, env.DB, now, new QueryBudget(50));
     } finally {
       listed.mockRestore();
     }
@@ -1701,7 +1702,7 @@ describe("conversation retention", () => {
       return page;
     });
     try {
-      await runConversationRetention(store, env.DB, now, new CallBudget(50));
+      await runConversationRetention(store, env.DB, now, new QueryBudget(50));
     } finally {
       listed.mockRestore();
     }
@@ -1715,10 +1716,10 @@ describe("conversation retention", () => {
       await store.put(`${appPrefix(ACCOUNT_ID, "busy-a")}2020-01-01/${String(index).padStart(6, "0")}-aaaaaaaaaaaaaaa${index.toString(16)}.jsonl.gz`, "orphan");
     }
     await store.put(`${appPrefix(ACCOUNT_ID, "busy-b")}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "orphan");
-    // Enough for the cursor, the app list and one app's list, not its delete.
-    await runConversationRetention(store, env.DB, Date.now(), new CallBudget(3));
+    // Enough for the cursor, the apps' settings, the app list and one app's list, not its delete.
+    await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(4));
     expect(await (await store.get(RETENTION_CURSOR))!.text()).toBe(appPrefix(ACCOUNT_ID, "busy-a"));
-    await runConversationRetention(store, env.DB, Date.now(), new CallBudget(5));
+    await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(7));
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "busy-b") })).objects).toHaveLength(0);
   });
 
@@ -1732,7 +1733,7 @@ describe("conversation retention", () => {
     // One page of two folders per list: each run reads the cursor, lists a page, deletes two apps, then saves where it stopped.
     let runs = 0;
     while ((await left()) > 0 && runs < 10) {
-      await runConversationRetention(store, env.DB, Date.now(), new CallBudget(7), 2);
+      await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(7), 2);
       runs += 1;
     }
     expect(await left()).toBe(0);
@@ -1742,7 +1743,7 @@ describe("conversation retention", () => {
   it("stops when the run's allowance runs out", async () => {
     const store = bucket();
     await store.put(`${appPrefix(ACCOUNT_ID, "conversation-budget-gone")}2020-01-01/000000-eeeeeeee.jsonl.gz`, "orphan");
-    const budget = new CallBudget(2);
+    const budget = new QueryBudget(2);
     await expect(runConversationRetention(store, env.DB, Date.now(), budget)).resolves.toBeDefined();
     expect(budget.remaining).toBeLessThanOrEqual(1);
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "conversation-budget-gone") })).objects).toHaveLength(1);
@@ -1753,8 +1754,9 @@ describe("conversation retention", () => {
     await store.put(`${appPrefix(ACCOUNT_ID, "cursor-a")}2020-01-01/000000-aaaaaaaa.jsonl.gz`, "orphan");
     await store.put(`${appPrefix(ACCOUNT_ID, "cursor-b")}2020-01-01/000000-bbbbbbbb.jsonl.gz`, "orphan");
     await store.put(RETENTION_CURSOR, appPrefix(ACCOUNT_ID, "cursor-a"));
-    // The cursor read, the list of apps, one app's list and delete, and the cursor write.
-    const budget = new CallBudget(5);
+    // The cursor read, the apps' settings, the list of apps, one app's list, its settings again and its
+    // delete, and the cursor write.
+    const budget = new QueryBudget(7);
     await runConversationRetention(store, env.DB, Date.now(), budget);
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-b") })).objects).toHaveLength(0);
     expect((await store.list({ prefix: appPrefix(ACCOUNT_ID, "cursor-a") })).objects).toHaveLength(1);
