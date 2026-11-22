@@ -532,12 +532,24 @@ describe("second review fixes", () => {
     expect(await chargesOf(appId)).toMatchObject([{ app_version: "9".repeat(64) }]);
   });
 
-  it("stores a refused request's model cut to 200 characters (F3)", async () => {
+  it("records a refused request's model only when the gateway knows it, never the caller's own text (F3, Sol 7b-4)", async () => {
     const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
-    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "m".repeat(300) }));
+    const models = async () =>
+      (await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at").bind(appId).all<{ model: string }>()).results.map(
+        (row) => row.model,
+      );
+    // A key put in the model field by mistake is never stored.
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "sk-proj-not-a-model-0123456789" }));
     await waitOnExecutionContext(ctx);
-    const event = await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string }>();
-    expect(event?.model).toHaveLength(200);
+    expect(await models()).toEqual(["unrecognized"]);
+  });
+
+  it("records a refused request's model when it has a price, though the app does not allow it (Sol 7b-4)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o" }));
+    await waitOnExecutionContext(ctx);
+    const event = await env.DB.prepare("SELECT model, account_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string; account_id: string }>();
+    expect(event).toEqual({ model: "gpt-4o", account_id: ACCOUNT_ID });
   });
 
   it("refuses a provider slug that is not valid percent-encoding (F4)", async () => {

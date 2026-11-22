@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d7b89eda-6ef2-4589-a896-2563c18baa2e",
+  "id": "9f56f4d4-a8df-413f-8157-12c09fa720d1",
   "prevId": "1cb1a285-1ca8-43af-9e38-dca9960bc61b",
   "tables": {
     "account_activation": {
@@ -338,6 +338,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "user_id": {
           "name": "user_id",
           "type": "text",
@@ -424,11 +431,13 @@
         }
       },
       "indexes": {
-        "app_auth_event_app_created": {
-          "name": "app_auth_event_app_created",
+        "app_auth_event_app_account_created": {
+          "name": "app_auth_event_app_account_created",
           "columns": [
             "app_id",
-            "created_at"
+            "account_id",
+            "created_at",
+            "id"
           ],
           "isUnique": false
         },
@@ -437,7 +446,9 @@
           "columns": [
             "app_id",
             "user_id",
-            "created_at"
+            "account_id",
+            "created_at",
+            "id"
           ],
           "isUnique": false
         },
@@ -447,6 +458,16 @@
             "created_at"
           ],
           "isUnique": false
+        },
+        "app_auth_event_claim_delay": {
+          "name": "app_auth_event_claim_delay",
+          "columns": [
+            "app_id",
+            "account_id",
+            "claim_delay_ms"
+          ],
+          "isUnique": false,
+          "where": "\"app_auth_event\".\"claim_delay_ms\" IS NOT NULL"
         }
       },
       "foreignKeys": {},
@@ -661,6 +682,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "user_id": {
           "name": "user_id",
           "type": "text",
@@ -747,11 +775,13 @@
         }
       },
       "indexes": {
-        "app_rejection_event_app_created": {
-          "name": "app_rejection_event_app_created",
+        "app_rejection_event_app_account_created": {
+          "name": "app_rejection_event_app_account_created",
           "columns": [
             "app_id",
-            "created_at"
+            "account_id",
+            "created_at",
+            "id"
           ],
           "isUnique": false
         },
@@ -760,7 +790,9 @@
           "columns": [
             "app_id",
             "user_id",
-            "created_at"
+            "account_id",
+            "created_at",
+            "id"
           ],
           "isUnique": false
         },

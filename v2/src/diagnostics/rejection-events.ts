@@ -38,10 +38,29 @@ export const REJECTION_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 export const REJECTION_SAMPLE_WINDOW_MS = 60_000;
+
+/**
+ * What a refusal records instead of a requested model the gateway does not
+ * know (`knownModel`): a caller's model field is their text, and a key or a
+ * prompt put there by mistake must never be stored or shown.
+ */
+export const UNRECOGNIZED_MODEL = "unrecognized";
+
+/**
+ * A stored model as a read returns it: rows recorded before the rule above
+ * (or copied from v1) may hold any text, so anything not shaped like a model
+ * name is shown as {@link UNRECOGNIZED_MODEL}.
+ */
+export function shownModel(model: string | null): string | null {
+  if (model === null) return null;
+  return /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u.test(model) ? model : UNRECOGNIZED_MODEL;
+}
 export const REJECTION_RETENTION_DAYS = 90;
 
 export interface RejectionEventInput {
   readonly identity: GatewayIdentity;
+  /** The account that owns the app, as the request read it. */
+  readonly accountId: string;
   readonly reason: string;
   readonly scope: string | null;
   readonly providerSlug: string | null;
@@ -70,16 +89,20 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
   const id = timeOrderedId();
   try {
     await env.DB.prepare(
+      // Under the account the caller was verified for, and only while that
+      // account still owns the app: an app id that comes back in another
+      // account never shows this row.
       `INSERT INTO app_rejection_event
-        (id, app_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
+        (id, app_id, account_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
          app_version, auth_method, latency_ms, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM app WHERE id = ?)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM app WHERE id = ? AND account_id = ?)
        ON CONFLICT(id) DO NOTHING`,
     )
       .bind(
         id,
         identity.appId,
+        input.accountId,
         identity.userId,
         identity.installId,
         identity.apiKeyId ?? null,
@@ -93,6 +116,7 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
         input.latencyMs,
         Date.now(),
         identity.appId,
+        input.accountId,
       )
       .run();
   } catch (error) {

@@ -485,7 +485,7 @@ export const CATALOG = {
     tags: ["Admin diagnostics"],
     summary: "List an app's sign-in attempts",
     description:
-      "One row per sign-in attempt, successful or refused: challenges nobody used, App Attest registrations and token exchanges, with the outcome and reason. Newest first, kept 90 days. Without filters, or with user, a range covers up to 400 days and by default every event kept. An event or outcome filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
+      "One row per sign-in attempt, successful or refused: challenges nobody used, App Attest registrations and token exchanges, with the outcome and reason. Newest first, kept 90 days. Only events recorded while this account owned the app are shown. Without filters, or with user, from and to each bound the read on their own, so to alone reads every event kept up to that day. An event or outcome filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
     security: "management",
     query: AuthEventListQuerySchema,
     response: AuthEventListResponseSchema,
@@ -500,7 +500,7 @@ export const CATALOG = {
     tags: ["Admin diagnostics"],
     summary: "List an app's refused requests",
     description:
-      "Samples of the requests the gateway refused before they reached a provider: a limit, a model or path the app does not allow, a blocked user. At most one sample a minute per caller (and per reason, for a refusal caused by the app's settings), so counts are not exact totals. Newest first, kept 90 days. A reason or scope filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
+      "Samples of the requests the gateway refused before they reached a provider: a limit, a model or path the app does not allow, a blocked user. At most one sample a minute per caller (and per reason, for a refusal caused by the app's settings), so counts are not exact totals. The requested model is shown only when it names a model the gateway knows, and as unrecognized otherwise: a caller's own text is never stored. Newest first, kept 90 days. Only refusals recorded while this account owned the app are shown. Without filters, or with user, from and to each bound the read on their own. A reason or scope filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
     security: "management",
     query: RejectionEventListQuerySchema,
     response: RejectionEventListResponseSchema,

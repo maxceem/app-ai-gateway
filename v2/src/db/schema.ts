@@ -671,6 +671,13 @@ export const appAuthEvent = sqliteTable(
   {
     id: text("id").primaryKey(),
     appId: text("app_id").notNull(),
+    /**
+     * The account that owned the app when the attempt was made, from the app row
+     * at write time. Reads filter by it, so an app id that comes back in another
+     * account never shows this one's events. Null for a row written after its
+     * app was deleted, and for rows from before step 7b-4: never shown.
+     */
+    accountId: text("account_id"),
     userId: text("user_id"),
     event: text("event").$type<AuthEventName>().notNull(),
     authMethod: text("auth_method"),
@@ -687,9 +694,12 @@ export const appAuthEvent = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
-    index("app_auth_event_app_created").on(table.appId, table.createdAt),
-    index("app_auth_event_app_user_created").on(table.appId, table.userId, table.createdAt),
+    // Each ends in the lists' full order (time, then id), so a page needs no sort.
+    index("app_auth_event_app_account_created").on(table.appId, table.accountId, table.createdAt, table.id),
+    index("app_auth_event_app_user_created").on(table.appId, table.userId, table.accountId, table.createdAt, table.id),
     index("app_auth_event_created").on(table.createdAt),
+    // The few sign-ins that closed a wait, in order of the wait: the summary's percentiles read one row each.
+    index("app_auth_event_claim_delay").on(table.appId, table.accountId, table.claimDelayMs).where(sql`${table.claimDelayMs} IS NOT NULL`),
   ],
 );
 
@@ -704,6 +714,8 @@ export const appRejectionEvent = sqliteTable(
   {
     id: text("id").primaryKey(),
     appId: text("app_id").notNull(),
+    /** The account that owned the app when the request was refused (see `appAuthEvent.accountId`). */
+    accountId: text("account_id"),
     userId: text("user_id"),
     installId: text("install_id"),
     appKeyId: text("app_key_id"),
@@ -721,8 +733,8 @@ export const appRejectionEvent = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
-    index("app_rejection_event_app_created").on(table.appId, table.createdAt),
-    index("app_rejection_event_app_user_created").on(table.appId, table.userId, table.createdAt),
+    index("app_rejection_event_app_account_created").on(table.appId, table.accountId, table.createdAt, table.id),
+    index("app_rejection_event_app_user_created").on(table.appId, table.userId, table.accountId, table.createdAt, table.id),
     index("app_rejection_event_created").on(table.createdAt),
   ],
 );

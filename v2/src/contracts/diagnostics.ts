@@ -74,7 +74,7 @@ export const RejectionEventSchema = z
     reason: z.string().meta({ description: "Why it was refused. The list may grow." }),
     scope: z.string().nullable().meta({ description: "Whose limit refused it, where a limit did: user, install, apple_account, app or account." }),
     provider_slug: z.string().nullable(),
-    model: z.string().nullable(),
+    model: z.string().nullable().meta({ description: "The requested model, when it names one the gateway knows; unrecognized otherwise." }),
     operation: z.string().nullable(),
     app_version: z.string().nullable(),
     auth_method: z.string().nullable(),

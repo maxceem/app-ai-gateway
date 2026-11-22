@@ -277,9 +277,9 @@ describe("usage reads with a read grant", () => {
 
     // The diagnostics reads take the same read grant (step 7b-4).
     await env.DB.prepare(
-      "INSERT INTO app_auth_event (id, app_id, event, outcome, created_at) VALUES (?, ?, 'token_exchange', 'ok', ?)",
+      "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, created_at) VALUES (?, ?, ?, 'token_exchange', 'ok', ?)",
     )
-      .bind(`ae_${crypto.randomUUID().slice(0, 8)}`, appId, Date.now())
+      .bind(`ae_${crypto.randomUUID().slice(0, 8)}`, appId, human.accountId, Date.now())
       .run();
     const attempts = await callTool(access_token, "list_auth_events", { app: appId });
     expect(attempts.isError).not.toBe(true);

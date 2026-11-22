@@ -44,12 +44,12 @@ import { timeOrderedId } from "../core/ids.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
-import { recordRejectionEvent, REJECTION_REASONS } from "../diagnostics/rejection-events.ts";
+import { recordRejectionEvent, REJECTION_REASONS, UNRECOGNIZED_MODEL } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { recordLedgerEntry } from "../ledger/write.ts";
-import { listedUnitRate, priceSources, resolveCall, resolvePassthrough, servedNow, type CallRefusal } from "../pricing/billability.ts";
+import { knownModel, listedUnitRate, priceSources, resolveCall, resolvePassthrough, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
   connectionCredentials,
@@ -235,10 +235,11 @@ export async function serveCaller(
       c.executionCtx.waitUntil(
         recordRejectionEvent(c.env, {
           identity,
+          accountId: input.app.accountId,
           reason: reason.reason,
           scope: reason.scope,
           providerSlug: input.providerSlug,
-          model: facts.model === null ? null : facts.model.slice(0, 200),
+          model: facts.model,
           operation: facts.operation,
           appVersion,
           latencyMs: Date.now() - startedAt,
@@ -305,7 +306,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const body = parsed.kind === "json" ? parsed.body : parsed.kind === "form" ? formFields(parsed.fields) : {};
       if (parsed.kind === "json") refuseBackground(operation, body);
       const requested = requestModel(operation, body, match.parts, url.searchParams);
-      caller.facts.model = requested;
+      // Kept for a refusal's diagnostic only when it names a model the gateway knows.
+      caller.facts.model = knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested) ? requested : UNRECOGNIZED_MODEL;
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
       const call = resolveCall(routing, app.routing.model_rewrites, priceSources(connection), operation, requested);

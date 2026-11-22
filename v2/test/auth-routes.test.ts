@@ -293,28 +293,34 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
   });
 
   it("measures how long a user waited for the entitlement claim, from the first refusal to the sign-in that ends it (step 7b-4)", async () => {
-    const { appId, issuerToken } = await issuerApp();
-    const key = await seedAppKey(appId);
-    const pendingSince = () =>
-      env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = 'person-1'").bind(appId).first<{ since: number | null }>();
-    // Two refusals: only the first opens the wait.
-    expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
-    const opened = (await pendingSince())?.since;
-    expect(opened).toEqual(expect.any(Number));
-    expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
-    expect((await pendingSince())?.since).toBe(opened);
-    // The wait was opened five seconds ago; the sign-in that succeeds closes it and records it.
-    await env.DB.prepare("UPDATE app_end_user SET claim_pending_since = claim_pending_since - 5000 WHERE app_id = ?").bind(appId).run();
-    const ok = await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
-    expect(ok.status).toBe(200);
-    expect((await pendingSince())?.since).toBeNull();
-    const last = (await authEvents(appId)).at(-1) as { outcome: string; claim_delay_ms: number | null };
-    expect(last.outcome).toBe("ok");
-    expect(last.claim_delay_ms).toBeGreaterThanOrEqual(5_000);
-    expect(last.claim_delay_ms).toBeLessThan(60_000);
-    // A later sign-in has no wait to close.
-    await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
-    expect(((await authEvents(appId)).at(-1) as { claim_delay_ms: number | null }).claim_delay_ms).toBeNull();
+    // A frozen clock, moved by hand: each attempt is recorded at an exact time.
+    const start = Date.parse("2026-11-20T15:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    try {
+      const { appId, issuerToken } = await issuerApp();
+      const key = await seedAppKey(appId);
+      const pendingSince = () =>
+        env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = 'person-1'").bind(appId).first<{ since: number | null }>();
+      // Two refusals: only the first opens the wait.
+      expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+      expect((await pendingSince())?.since).toBe(start);
+      vi.setSystemTime(start + 1_000);
+      expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+      expect((await pendingSince())?.since).toBe(start);
+      // Five seconds after the first refusal, the sign-in that succeeds closes the wait and records it.
+      vi.setSystemTime(start + 5_000);
+      const ok = await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+      expect(ok.status).toBe(200);
+      expect((await pendingSince())?.since).toBeNull();
+      expect((await authEvents(appId)).at(-1)).toMatchObject({ outcome: "ok", claim_delay_ms: 5_000 });
+      // A later sign-in has no wait to close.
+      vi.setSystemTime(start + 6_000);
+      await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+      expect(((await authEvents(appId)).at(-1) as { claim_delay_ms: number | null }).claim_delay_ms).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses an app key of another app", async () => {

@@ -1,24 +1,33 @@
 /**
  * Step 7b-4: reading an app's sign-in attempts, its refused requests and a
  * summary of both back through the management API and its tools. Every read
- * goes through an app the caller's account owns; deleting the app deletes
- * its events.
+ * goes through an app the caller's account owns, and shows only events
+ * recorded under that account. The clock is frozen, so day bounds are exact.
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
+/** The frozen time every test runs at. */
+const NOW = Date.parse("2026-11-20T15:00:00Z");
+
 beforeEach(() => {
   clearCaches();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const ORIGIN = "https://gateway.test";
 const DAY = 86_400_000;
@@ -77,8 +86,8 @@ async function authEvent(values: AuthSeed): Promise<string> {
   counter += 1;
   const id = values.id ?? `ae_${String(counter).padStart(4, "0")}`;
   await env.DB.prepare(
-    `INSERT INTO app_auth_event (id, app_id, user_id, event, auth_method, outcome, reason, network_asn, network_name, latency_ms, claim_delay_ms, created_at)
-     VALUES (?, ?, ?, ?, 'api_key', ?, ?, ?, ?, 12, ?, ?)`,
+    `INSERT INTO app_auth_event (id, app_id, account_id, user_id, event, auth_method, outcome, reason, network_asn, network_name, latency_ms, claim_delay_ms, created_at)
+     VALUES (?1, ?2, (SELECT account_id FROM app WHERE id = ?2), ?3, ?4, 'api_key', ?5, ?6, ?7, ?8, 12, ?9, ?10)`,
   )
     .bind(
       id,
@@ -96,21 +105,29 @@ async function authEvent(values: AuthSeed): Promise<string> {
   return id;
 }
 
-async function rejection(values: { appId: string; at: number; id?: string; reason?: string; scope?: string | null; user?: string | null }): Promise<string> {
+async function rejection(values: {
+  appId: string;
+  at: number;
+  id?: string;
+  reason?: string;
+  scope?: string | null;
+  user?: string | null;
+  model?: string;
+}): Promise<string> {
   counter += 1;
   const id = values.id ?? `re_${String(counter).padStart(4, "0")}`;
   await env.DB.prepare(
-    `INSERT INTO app_rejection_event (id, app_id, user_id, reason, scope, provider_slug, model, latency_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, 'openai', 'gpt-4o-mini', 3, ?)`,
+    `INSERT INTO app_rejection_event (id, app_id, account_id, user_id, reason, scope, provider_slug, model, latency_ms, created_at)
+     VALUES (?1, ?2, (SELECT account_id FROM app WHERE id = ?2), ?3, ?4, ?5, 'openai', ?6, 3, ?7)`,
   )
-    .bind(id, values.appId, values.user ?? null, values.reason ?? "model_not_allowed", values.scope ?? null, values.at)
+    .bind(id, values.appId, values.user ?? null, values.reason ?? "model_not_allowed", values.scope ?? null, values.model ?? "gpt-4o-mini", values.at)
     .run();
   return id;
 }
 
 const at = (day: string, ms = 0) => Date.parse(`${day}T12:00:00Z`) + ms;
-/** Noon UTC, `days` days before today. */
-const daysAgo = (days: number) => Date.parse(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`) - days * DAY;
+/** Noon UTC, `days` days before the frozen today. */
+const daysAgo = (days: number) => Date.parse("2026-11-20T12:00:00Z") - days * DAY;
 const dayOf = (time: number) => new Date(time).toISOString().slice(0, 10);
 
 describe("sign-in attempts", () => {
@@ -159,6 +176,15 @@ describe("sign-in attempts", () => {
     // No filter at all: every event kept.
     const all = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events`);
     expect(all.body.events.map((row: any) => row.id)).toEqual(["ae_recent", "ae_old"]);
+    // `to` alone, on an indexed read, reads everything kept up to that day, as v1.
+    const upTo = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events?to=${dayOf(daysAgo(2))}`);
+    expect(upTo.body.events.map((row: any) => row.id)).toEqual(["ae_old"]);
+    const upToByUser = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events?user=u1&to=${dayOf(daysAgo(1))}`);
+    expect(upToByUser.body.events.map((row: any) => row.id)).toEqual(["ae_recent", "ae_old"]);
+    // With an unindexed filter, `to` alone still reads only the 30 days before it.
+    const upToFiltered = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events?outcome=attest_failed&to=${dayOf(daysAgo(1))}`);
+    expect(upToFiltered.body.events.map((row: any) => row.id)).toEqual(["ae_recent"]);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/auth-events?from=2026-11-10&to=2026-11-01`)).status).toBe(400);
   });
 });
 
@@ -183,6 +209,18 @@ describe("refused requests", () => {
     const byDays = await request(key, "GET", `/v2/admin/apps/${appId}/rejection-events?from=2025-06-02&to=2025-06-02`);
     expect(byDays.body.events.map((row: any) => row.id)).toEqual(["re_b"]);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/rejection-events?scope=everyone`)).status).toBe(400);
+  });
+
+  it("never shows a stored model that is not shaped like a model name (Sol 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await rejection({ appId, at: at("2025-06-02"), id: "re_text", model: "Bearer sk-live secret, and a prompt" });
+    await rejection({ appId, at: at("2025-06-01"), id: "re_model", model: "anthropic/claude-sonnet-4.5:beta" });
+    const { body } = await request(key, "GET", `/v2/admin/apps/${appId}/rejection-events`);
+    expect(body.events.map((row: any) => [row.id, row.model])).toEqual([
+      ["re_text", "unrecognized"],
+      ["re_model", "anthropic/claude-sonnet-4.5:beta"],
+    ]);
   });
 });
 
@@ -248,6 +286,52 @@ describe("summary", () => {
   });
 });
 
+describe("claim waits", () => {
+  it("apply in attempt order when the writes land out of order (Sol 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const attempt = async (time: number, userId: string, outcome: "ok" | "issuer_claims_missing") => {
+      vi.setSystemTime(time);
+      await recordAuthEvent({ env, appId, event: "token_exchange", userId, outcome, latencyMs: 1 });
+    };
+    const since = async (userId: string) =>
+      (await env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = ?").bind(appId, userId).first<{ since: number | null }>())
+        ?.since ?? null;
+    const delays = async (userId: string) =>
+      (
+        await env.DB.prepare("SELECT claim_delay_ms AS ms FROM app_auth_event WHERE app_id = ? AND user_id = ? AND outcome = 'ok' ORDER BY created_at")
+          .bind(appId, userId)
+          .all<{ ms: number | null }>()
+      ).results.map((row) => row.ms);
+    const T0 = NOW - 60_000;
+
+    // u1 waits from T0. The sign-in at T0+30s lands first, then a refusal from T0+10s lands late.
+    await attempt(T0, "u1", "issuer_claims_missing");
+    expect(await since("u1")).toBe(T0);
+    await attempt(T0 + 30_000, "u1", "ok");
+    expect(await delays("u1")).toEqual([30_000]);
+    await attempt(T0 + 10_000, "u1", "issuer_claims_missing");
+    // The late refusal does not open the wait again: a later sign-in already ended it.
+    expect(await since("u1")).toBeNull();
+
+    // u2 never waited: its sign-in lands before a refusal made earlier.
+    await attempt(T0 + 20_000, "u2", "ok");
+    await attempt(T0 + 5_000, "u2", "issuer_claims_missing");
+    expect(await since("u2")).toBeNull();
+    // A refusal after the sign-in opens a new wait, and the next sign-in measures it exactly.
+    await attempt(T0 + 40_000, "u2", "issuer_claims_missing");
+    expect(await since("u2")).toBe(T0 + 40_000);
+    await attempt(T0 + 52_500, "u2", "ok");
+    expect(await delays("u2")).toEqual([null, 12_500]);
+    expect(await since("u2")).toBeNull();
+
+    vi.setSystemTime(NOW);
+    const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=1`);
+    expect(summary.body.claim_delay).toEqual({ count: 2, avg_ms: 21_250, p50_ms: 12_500, p95_ms: 30_000 });
+    expect(summary.body.pending_users).toBe(0);
+  });
+});
+
 describe("isolation", () => {
   it("answers 404 for another account's app, and never pages into it with a position from one's own", async () => {
     const key = await seedManagementKey();
@@ -268,17 +352,30 @@ describe("isolation", () => {
     expect((await request(key, "GET", `/v2/admin/apps/${mine}/auth-events?before=garbage`)).status).toBe(400);
   });
 
-  it("deletes an app's events with the app, as v1, so an id that comes back starts with none", async () => {
+  it("never shows another account's events under an app id that came back, including one written after the app was deleted (Sol 7b-4)", async () => {
     const key = await seedManagementKey();
-    const appId = await createApp(key);
-    await authEvent({ appId, at: at("2025-07-01") });
-    await rejection({ appId, at: at("2025-07-01") });
-    expect((await request(key, "DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)).status).toBe(200);
-    const left = await env.DB.batch([
-      env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_event WHERE app_id = ?").bind(appId),
-      env.DB.prepare("SELECT COUNT(*) AS n FROM app_rejection_event WHERE app_id = ?").bind(appId),
-    ]);
-    expect(left.map((result) => (result.results[0] as { n: number }).n)).toEqual([0, 0]);
+    // Another account's app, with an event of its own.
+    const appId = await foreignApp();
+    await authEvent({ appId, at: at("2026-11-19") });
+    await rejection({ appId, at: at("2026-11-19") });
+    // They delete it; a sign-in that was under way records its event afterwards.
+    await env.DB.prepare("DELETE FROM app WHERE id = ?").bind(appId).run();
+    await recordAuthEvent({ env, appId, event: "token_exchange", userId: "late", outcome: "ok", latencyMs: 1 });
+    // The same id comes back in this account.
+    await env.DB.prepare(
+      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Mine', '{}', 1, 'active', 0, 0)",
+    )
+      .bind(appId, ACCOUNT_ID)
+      .run();
+    const late = await env.DB.prepare("SELECT account_id FROM app_auth_event WHERE app_id = ? AND user_id = 'late'").bind(appId).first();
+    expect(late).toEqual({ account_id: null });
+    for (const path of ["auth-events", "auth-events?user=late", "rejection-events"]) {
+      const { status, body } = await request(key, "GET", `/v2/admin/apps/${appId}/${path}`);
+      expect(status, path).toBe(200);
+      expect(body.events, path).toEqual([]);
+    }
+    const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary`);
+    expect(summary.body).toMatchObject({ daily: [], rejection_samples: [], token_exchange: { total: 0 } });
   });
 });
 
@@ -314,13 +411,19 @@ describe("query plans", () => {
     await authEvent({ appId, at: at("2025-08-02"), user: "u1" });
     await rejection({ appId, at: at("2025-08-02"), user: "u1" });
     const get = (path: string) => () => request(key, "GET", `/v2/admin/apps/${appId}/${path}`);
-    expect(await planOf("app_auth_event", get("auth-events?limit=1"))).toContain("app_auth_event_app_created");
-    const deep = await planOf("app_auth_event", get(`auth-events?before=${encodeURIComponent(`${at("2025-08-02")}.zzz`)}`));
-    expect(deep).toContain("app_auth_event_app_created");
-    expect(await planOf("app_auth_event", get("auth-events?user=u1"))).toContain("app_auth_event_app_user_created");
-    expect(await planOf("app_rejection_event", get("rejection-events"))).toContain("app_rejection_event_app_created");
-    expect(await planOf("app_rejection_event", get("rejection-events?user=u1"))).toContain("app_rejection_event_app_user_created");
-    expect(await planOf("app_auth_event", get("auth-events/summary"))).toContain("app_auth_event_app_created");
+    /** A list page: through `index`, in its order, with no sort of its own. */
+    const listed = (plan: string, index: string) => {
+      expect(plan).toContain(index);
+      expect(plan).not.toContain("TEMP B-TREE");
+    };
+    listed(await planOf("app_auth_event", get("auth-events?limit=1")), "app_auth_event_app_account_created");
+    listed(await planOf("app_auth_event", get(`auth-events?before=${encodeURIComponent(`${at("2025-08-02")}.zzz`)}`)), "app_auth_event_app_account_created");
+    listed(await planOf("app_auth_event", get("auth-events?outcome=ok")), "app_auth_event_app_account_created");
+    listed(await planOf("app_auth_event", get("auth-events?user=u1")), "app_auth_event_app_user_created");
+    listed(await planOf("app_auth_event", get("auth-events?user=u1&outcome=ok&to=2025-08-02")), "app_auth_event_app_user_created");
+    listed(await planOf("app_rejection_event", get("rejection-events")), "app_rejection_event_app_account_created");
+    listed(await planOf("app_rejection_event", get("rejection-events?user=u1")), "app_rejection_event_app_user_created");
+    expect(await planOf("app_auth_event", get("auth-events/summary"))).toContain("app_auth_event_app_account_created");
     expect(await planOf("app_end_user", get("auth-events/summary"))).toContain("app_end_user_claim_pending");
   });
 });
