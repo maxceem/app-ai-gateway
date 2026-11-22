@@ -44,6 +44,7 @@ import { denyHandoff, getHandoff, submitHandoff } from "../admin/handoffs.ts";
 import { confirmEmailVerification, sendVerificationEmail } from "../auth/email-verification.ts";
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { emailSetup } from "../email/sender.ts";
+import { log } from "../core/log.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 type ConsoleContext = Context<ConsoleEnv>;
@@ -246,7 +247,10 @@ consoleRoutes.post(path("sendVerificationEmail"), handle(async (c) => {
     return c.json({ status: "already_verified", email: user.email } satisfies OperationResponse<"sendVerificationEmail">);
   }
   // Settings still being fixed spend none of the person's hourly sends (Neon 7b-7).
-  if (emailSetup(c.env).state === "misconfigured") {
+  const setup = emailSetup(c.env);
+  if (setup.state === "misconfigured") {
+    // Names the setting to fix, as the sign-up's refusal does; never a value.
+    log("error", "verification_email_unconfigured", { reason: setup.problem });
     throw new GatewayError(503, "email_unavailable", "This deployment cannot send email yet: its email settings are incomplete");
   }
   await enforceEndpointRateLimit(c.env, "verification_email", user.id);

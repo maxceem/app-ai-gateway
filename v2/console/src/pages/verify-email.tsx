@@ -94,7 +94,7 @@ export function VerifyEmailPage() {
               <Alert variant="destructive" role="alert">
                 <MailX />
                 <AlertTitle>Could not verify yet</AlertTitle>
-                <AlertDescription>{authErrorMessage(confirm.error, "The server did not answer")}. Try again in a moment.</AlertDescription>
+                <AlertDescription>{`${authErrorMessage(confirm.error, "The server did not answer").replace(/[.!?]+$/u, "")}. Try again in a moment.`}</AlertDescription>
               </Alert>
               <Button className="w-full" onClick={() => confirm.mutate(token)}>
                 Try again

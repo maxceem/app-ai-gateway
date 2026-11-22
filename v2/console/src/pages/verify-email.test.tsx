@@ -85,13 +85,16 @@ describe("VerifyEmailPage", () => {
         if (!String(input).startsWith(CONFIRM_URL)) return json({}, 404);
         bodies.push(JSON.parse(String(init?.body)));
         return bodies.length === 1
-          ? json({ error: { code: "service_unavailable", message: "Busy" } }, 503)
+          ? json({ error: { code: "service_unavailable", message: "Busy." } }, 503)
           : json({ email: "person@example.test", returnTo: null }, 200);
       }),
     );
     renderPublic(<VerifyEmailPage />, { route: "/verify-email#token=abc.def", path: "/verify-email" });
     await pressVerify();
-    await userEvent.click(await screen.findByRole("button", { name: /try again/i }));
+    // A message that already ends a sentence is not given a second period (Neon 7b-7 round 2).
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    expect(document.body.textContent).not.toContain("..");
+    await userEvent.click(retry);
     expect(await screen.findByText(/person@example.test is verified/i)).toBeTruthy();
     expect(bodies).toEqual([{ token: "abc.def" }, { token: "abc.def" }]);
   });

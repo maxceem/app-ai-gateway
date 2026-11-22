@@ -468,7 +468,8 @@ describe("sending a link from the console", () => {
   it("spends none of the hourly sends while the email settings are incomplete (Neon 7b-7)", async () => {
     const owner = await unverifiedOwner();
     const { env: broken, binding } = deployment({ email: true, from: null });
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line: unknown) => void errors.push(String(line)));
     vi.spyOn(console, "log").mockImplementation(() => {});
     for (let attempt = 1; attempt <= 6; attempt += 1) {
       const refused = await send(broken, owner.cookie);
@@ -476,6 +477,10 @@ describe("sending a link from the console", () => {
       expect(await errorCode(refused)).toBe("email_unavailable");
     }
     expect(binding.send).not.toHaveBeenCalled();
+    // The log names the setting to fix (Neon 7b-7 round 2).
+    const unconfigured = errors.filter((line) => line.includes('"message":"verification_email_unconfigured"'));
+    expect(unconfigured).toHaveLength(6);
+    expect(unconfigured[0]).toContain('"reason":"');
     // The settings fixed, the person still has every send of the hour.
     const { env: fixed } = deployment({ email: true });
     const sent = await send(fixed, owner.cookie);
