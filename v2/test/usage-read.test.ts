@@ -560,13 +560,13 @@ describe("filters with no index", () => {
   it("read a trace inside at most 31 days, since a trace id has no index of its own (Fable 7b-3)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
-    await seed({ appId, usedAt: at("2025-08-05"), trace: "t-1" });
+    await seed({ appId, usedAt: at("2020-08-05"), trace: "t-1" });
     const get = (query: string) => request(key, "GET", `/v2/admin/apps/${appId}/charges?${query}`);
-    // No range: the last 30 days, where this old charge is not.
+    // No range: the last 30 days, where a charge from 2020 never is, whatever day the test runs.
     expect(await get("trace=t-1")).toMatchObject({ status: 200, body: { charges: [] } });
-    expect((await get("trace=t-1&from=2025-08-01")).status).toBe(400);
-    expect((await get("trace=t-1&from=2025-07-01&to=2025-08-05")).status).toBe(400);
-    const found = await get("trace=t-1&from=2025-08-01&to=2025-08-31");
+    expect((await get("trace=t-1&from=2020-08-01")).status).toBe(400);
+    expect((await get("trace=t-1&from=2020-07-01&to=2020-08-05")).status).toBe(400);
+    const found = await get("trace=t-1&from=2020-08-01&to=2020-08-31");
     expect(found.status).toBe(200);
     expect(found.body.charges).toHaveLength(1);
   });

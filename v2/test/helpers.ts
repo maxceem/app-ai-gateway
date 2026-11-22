@@ -287,7 +287,7 @@ export async function seedManagementKey(
     env.DB.prepare(
       `INSERT OR IGNORE INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at)
        VALUES (?, ?, ?, ?, 'active', ?)`,
-    ).bind(`mem_${userId}`, accountId, userId, options.role ?? "owner", new Date(now).toISOString()),
+    ).bind(`mem_${userId}_${accountId}`, accountId, userId, options.role ?? "owner", new Date(now).toISOString()),
     env.DB.prepare(
       `INSERT INTO mgmt_api_key(id, user_id, organization_id, name, token_hash, token_hint, enabled, created_at, source, "grant", credential_type)
        VALUES (?, ?, ?, 'test', ?, ?, 1, ?, 'console', ?, 'apiKey')`,
