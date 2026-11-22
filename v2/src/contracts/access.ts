@@ -5,6 +5,7 @@
  * entering a device code. Plain `zod`, so the console and the CLI can import it.
  */
 import { z } from "zod";
+import { SessionBillingSchema } from "./billing.ts";
 
 export const ACCOUNT_ROLES = ["owner", "admin", "member"] as const;
 export const GRANTS = ["read", "manage"] as const;
@@ -35,6 +36,10 @@ export const AdminSessionSchema = z
     credentialType: z.enum(["session", "apiKey", "oauth"]),
     /** Every account a console session may switch to. Only the current one for a key or a token. */
     accounts: z.array(AccountSchema),
+    billing: SessionBillingSchema.optional().meta({
+      description:
+        "The account's plan and this period's request allowance. Only on a hosted deployment with billing; left out otherwise.",
+    }),
   })
   .meta({ id: "AdminSession" });
 

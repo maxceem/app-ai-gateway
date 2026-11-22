@@ -72,6 +72,17 @@ import {
   SendVerificationEmailRequestSchema,
   SendVerificationEmailResponseSchema,
 } from "./access.ts";
+import {
+  BillingCancelResponseSchema,
+  BillingChangeResponseSchema,
+  BillingCheckoutRequestSchema,
+  BillingCheckoutResponseSchema,
+  BillingPlanSelectionSchema,
+  BillingPlansResponseSchema,
+  BillingStatusResponseSchema,
+  BillingTrialRequestSchema,
+  BillingTrialResponseSchema,
+} from "./billing.ts";
 import { CLIENT_CATALOG } from "./client-catalog.ts";
 import {
   HandoffAnswerResponseSchema,
@@ -139,6 +150,14 @@ const SESSION_ONLY_ERRORS = {
   401: "A valid console sign-in is required.",
   403: "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
   404: "Not found.",
+} as const;
+
+const BILLING_ACTION_ERRORS = {
+  ...SESSION_ONLY_ERRORS,
+  403: "Only a person signed in to the console can do this (`session_required`), only an owner or admin can (`forbidden`), or the billing service does not allow it for this account (`billing_action_forbidden`).",
+  404: "This deployment has no billing (`not_found`), or the plan or price does not exist (`billing_not_found`).",
+  409: "The account already has a live subscription (`billing_conflict`).",
+  502: "The billing service could not be reached (`billing_unavailable`).",
 } as const;
 
 /** Errors the console's own pages can answer with. */
@@ -1021,6 +1040,102 @@ export const CATALOG = {
       403: "The request did not come from the console's own page.",
       404: "Not served here (only on the console's origin).",
     },
+  },
+
+  /*
+   * The billing page's operations: hosted deployments only, and kept out of
+   * the published API document (`hidden`), as v1 did. A deployment without
+   * billing answers 404 to each. A person signed in to the console only: a
+   * key that could buy or cancel would hand over more than itself. Reading is
+   * any member's; buying, changing and cancelling is an owner's or an admin's.
+   */
+  listBillingPlans: {
+    method: "GET",
+    path: "/v2/admin/billing/plans",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "List the plans on offer",
+    security: "session",
+    response: BillingPlansResponseSchema,
+    responseDescription: "The plans, as the billing service offers them.",
+    errors: { ...SESSION_ONLY_ERRORS, 404: "This deployment has no billing (`not_found`).", 502: "The billing service could not be reached (`billing_unavailable`)." },
+  },
+
+  getBillingStatus: {
+    method: "GET",
+    path: "/v2/admin/billing/status",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Get the account's plan and this period's allowance",
+    security: "session",
+    response: BillingStatusResponseSchema,
+    responseDescription: "The plan, its limits and features, this period's requests against the allowance, and what a person may do about the subscription.",
+    errors: { ...SESSION_ONLY_ERRORS, 404: "This deployment has no billing (`not_found`)." },
+  },
+
+  startCheckout: {
+    method: "POST",
+    path: "/v2/admin/billing/checkout",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Start a checkout for a plan",
+    description: "Answers the billing provider's checkout page for the person to finish there. Owners and admins only. successUrl and cancelUrl must be console pages.",
+    security: "session",
+    request: BillingCheckoutRequestSchema,
+    response: BillingCheckoutResponseSchema,
+    responseDescription: "The checkout page's URL.",
+    errors: BILLING_ACTION_ERRORS,
+  },
+
+  changePlan: {
+    method: "POST",
+    path: "/v2/admin/billing/change",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Change the subscription's plan",
+    security: "session",
+    request: BillingPlanSelectionSchema,
+    response: BillingChangeResponseSchema,
+    responseDescription: "The change was accepted; `requiredActionUrl` is a page where the payment method has to be confirmed first.",
+    errors: BILLING_ACTION_ERRORS,
+  },
+
+  resumeSubscription: {
+    method: "POST",
+    path: "/v2/admin/billing/resume",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Resume a cancelled subscription",
+    security: "session",
+    request: BillingPlanSelectionSchema,
+    response: BillingChangeResponseSchema,
+    responseDescription: "The subscription was resumed; `requiredActionUrl` is a page where the payment method has to be confirmed first.",
+    errors: BILLING_ACTION_ERRORS,
+  },
+
+  cancelSubscription: {
+    method: "POST",
+    path: "/v2/admin/billing/cancel",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Cancel the subscription at the end of its period",
+    security: "session",
+    response: BillingCancelResponseSchema,
+    responseDescription: "The cancellation was accepted.",
+    errors: BILLING_ACTION_ERRORS,
+  },
+
+  startTrial: {
+    method: "POST",
+    path: "/v2/admin/billing/trial",
+    hidden: true,
+    tags: ["Admin billing"],
+    summary: "Start a trial without a card",
+    security: "session",
+    request: BillingTrialRequestSchema,
+    response: BillingTrialResponseSchema,
+    responseDescription: "The account's billing access once the trial has started.",
+    errors: BILLING_ACTION_ERRORS,
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
 

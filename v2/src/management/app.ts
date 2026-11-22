@@ -39,6 +39,15 @@ import {
   validateApp,
   validateAppDraft,
 } from "../admin/apps.ts";
+import {
+  cancelSubscription,
+  changePlan,
+  getBillingStatus,
+  listBillingPlans,
+  resumeSubscription,
+  startCheckout,
+  startTrial,
+} from "../admin/billing.ts";
 import { callCliTool, listCliTools } from "../admin/cli-tools.ts";
 import {
   createReservedApp,
@@ -116,6 +125,14 @@ admin.post(path("createReservedApp"), createReservedApp);
 admin.post(path("createReservedAppKey"), createReservedAppKey);
 admin.get(path("getOperation"), getOperation);
 admin.post(path("revealOperation"), revealOperation);
+// The billing page (hosted deployments only; 404 elsewhere).
+admin.get(path("listBillingPlans"), listBillingPlans);
+admin.get(path("getBillingStatus"), getBillingStatus);
+admin.post(path("startCheckout"), startCheckout);
+admin.post(path("changePlan"), changePlan);
+admin.post(path("resumeSubscription"), resumeSubscription);
+admin.post(path("cancelSubscription"), cancelSubscription);
+admin.post(path("startTrial"), startTrial);
 // The CLI's tool catalog: the list is public, a call is the caller's.
 admin.get(path("listCliTools"), listCliTools);
 admin.post(path("callCliTool"), adminAuth, callCliTool);

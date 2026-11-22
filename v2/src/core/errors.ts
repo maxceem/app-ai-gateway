@@ -52,6 +52,9 @@ export type ErrorCode =
   | "key_not_found"
   | "billing_plan_limit_reached"
   | "billing_feature_not_included"
+  | "billing_not_found"
+  | "billing_action_forbidden"
+  | "billing_conflict"
   // Sign-in and accounts (v1's codes).
   | "session_required"
   | "not_a_member"

@@ -36,6 +36,11 @@ export interface OperationSpec {
    * media type (`*\/*`). `response` is then not read.
    */
   readonly file?: true;
+  /**
+   * Left out of the published API document: an operation only a hosted
+   * deployment serves, for its console alone (the billing page).
+   */
+  readonly hidden?: true;
   /** Error statuses this operation can answer with, and what each means. */
   readonly errors?: Readonly<Record<number, string>>;
 }

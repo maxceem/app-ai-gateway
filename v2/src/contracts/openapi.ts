@@ -78,6 +78,8 @@ export function createOpenAPIDocument() {
       "The console's sign-in. Management calls with it must also send x-console-request: 1. Console page calls must come from the console's own origin.",
   });
   for (const name of Object.keys(CATALOG) as OperationName[]) {
+    // The hosted console's own operations (billing) are not part of the published API.
+    if ((CATALOG[name] as OperationSpec).hidden === true) continue;
     registry.openAPIRegistry.registerPath(routeConfig(name));
   }
   return registry.getOpenAPI31Document({

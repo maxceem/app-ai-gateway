@@ -6,7 +6,16 @@
  *
  * Ported from v1's `src/billing/gateway.ts`, request path only.
  */
-import { PlanLimitInputSchema, type GatewayBillingAccess, type PlanLimitKey, type PlanLimits } from "../contracts/billing.ts";
+import {
+  PLAN_FEATURES,
+  PlanLimitInputSchema,
+  type GatewayBillingAccess,
+  type PlanFeature,
+  type PlanFeatureAccess,
+  type PlanLimitKey,
+  type PlanLimits,
+  type SubscriptionActions,
+} from "../contracts/billing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -39,6 +48,16 @@ const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed
   ttlMs: BILLING_STALE_MAX_MS,
   maxEntries: 5_000,
 });
+
+/**
+ * Forgets what this isolate knows of an account's plan, after a change the
+ * account made itself (a checkout, a plan change, a cancel): the next read
+ * asks the billing service. Other isolates catch up within the cache's 30 s.
+ */
+export function invalidateBillingAccess(accountId: string): void {
+  billingAccessCache.delete(accountId);
+  lastKnownAccess.delete(accountId);
+}
 
 function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   if (access.state !== "billed" || access.plan?.isDefault !== false || !access.subscription) return null;
@@ -152,6 +171,17 @@ export function admitAppTraffic(access: GatewayBillingAccess, accountId: string)
   }
 }
 
+/**
+ * The plan check for app calls that are not provider requests: the token
+ * exchange and `/me` (v1's entitlement gate). Only a plan known to be missing
+ * refuses (402); billing that is slow or cannot be read admits the call, as
+ * for a provider request. A deployment without billing reads nothing.
+ */
+export async function admitAppCall(env: Env, accountId: string, waitUntil: (promise: Promise<unknown>) => void): Promise<void> {
+  if (billingBinding(env) === null) return;
+  admitAppTraffic(await getAppTrafficBillingAccess(env, accountId, waitUntil), accountId);
+}
+
 /** The plan limits the request path spends. */
 const REQUEST_PATH_LIMITS: readonly PlanLimitKey[] = ["maxRequestsPerMonth", "maxSessionMinutesPerMonth"];
 
@@ -204,13 +234,7 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
   return access;
 }
 
-/**
- * The features a plan can include or leave out (v1's `PLAN_FEATURES`, the one
- * this gateway serves). Which plan includes one is plan data alone: a list
- * under `limits.includes`. With no list, a plan includes every feature.
- */
-export const PLAN_FEATURES = ["conversationStorage"] as const;
-export type PlanFeature = (typeof PLAN_FEATURES)[number];
+export { PLAN_FEATURES, type PlanFeature };
 
 /**
  * Whether the account's plan includes `feature` (v1's `planIncludes`).
@@ -232,6 +256,55 @@ export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature)
     throw new GatewayError(502, "billing_unavailable", "Billing plan limit includes is invalid");
   }
   return includes.includes(feature);
+}
+
+/** Whether the plan includes each feature, as the billing page shows it. A misconfigured list reads as none. */
+export function planFeatures(access: GatewayBillingAccess): PlanFeatureAccess {
+  return Object.fromEntries(
+    PLAN_FEATURES.map((feature) => {
+      try {
+        return [feature, planIncludes(access, feature)];
+      } catch {
+        return [feature, false];
+      }
+    }),
+  ) as PlanFeatureAccess;
+}
+
+/** Subscription statuses the billing provider can still cancel at the end of the period. */
+const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["on_trial", "active", "paused", "past_due"]);
+
+/**
+ * What a person may do about the subscription from the console (v1's rule).
+ * Keyed off the subscription, not the plan: an account on the free default
+ * plan can still hold a cancelled subscription to resume. A grant made by
+ * hand is the billing operator's to change, so it offers nothing.
+ */
+export function subscriptionActions(access: GatewayBillingAccess): SubscriptionActions {
+  const subscription = access.state === "billed" ? access.subscription : null;
+  if (!subscription) return { cancel: false, resume: false, manual: false };
+  const selfService = Boolean(subscription.subscriptionId) && subscription.source === "lemon_squeezy";
+  return {
+    cancel: selfService && CANCELLABLE_STATUSES.has(subscription.status),
+    resume: selfService && subscription.status === "cancelled",
+    manual: subscription.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
+  };
+}
+
+/** A billing service refusal as this gateway's own error (v1's mapping). Anything unknown is a 502. */
+export function billingRpcError(error: unknown): GatewayError {
+  const code = billingErrorCodeOf(error);
+  if (code === "service_not_found" || code === "billing_plan_not_found" || code === "billing_plan_price_not_found") {
+    return new GatewayError(404, "billing_not_found", "The requested plan was not found");
+  }
+  if (code === "service_inactive" || code === "billing_manually_managed") {
+    return new GatewayError(403, "billing_action_forbidden", "This billing action is not available");
+  }
+  if (code === "billing_subscription_already_active") {
+    return new GatewayError(409, "billing_conflict", "A live subscription already exists");
+  }
+  log("error", "billing_action_failed", { billingErrorCode: code, error: errorFacts(error) });
+  return new GatewayError(502, "billing_unavailable", "The billing service is unavailable; try again shortly");
 }
 
 /**

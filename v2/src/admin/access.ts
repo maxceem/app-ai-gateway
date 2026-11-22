@@ -14,6 +14,13 @@ import { CLI_CLIENT_ID } from "../auth/identity.ts";
 import { AccountSelectRequestSchema, CredentialSchema, ManagementKeyCreateRequestSchema } from "../contracts/access.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { emailVerificationRequired, readAccountPending } from "../core/account-standing.ts";
+import { APP_TRAFFIC_BILLING_DEADLINE_MS, getAppTrafficBillingAccess } from "../billing/access.ts";
+import { billingBinding } from "../billing/contract.ts";
+import type { SessionBilling } from "../contracts/billing.ts";
+import { withDeadline } from "../core/background.ts";
+import { errorFacts } from "../core/error-facts.ts";
+import { log } from "../core/log.ts";
+import { planAllowance } from "./billing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { requireConsoleSession, type AdminActor, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -37,7 +44,33 @@ async function verificationPending(env: Env, accountId: string): Promise<boolean
   return emailVerificationRequired(env) && (await readAccountPending(env, accountId));
 }
 
-function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): OperationResponse<"getAdminSession">["session"] {
+/**
+ * The account's plan and this period's allowance, for `account status`. Only
+ * where the deployment has billing. It never fails or holds up the session:
+ * billing waits at most the app-traffic deadline, the count as long again,
+ * and a read that cannot finish shows as no figure.
+ */
+async function sessionBilling(c: AdminContext, accountId: string): Promise<SessionBilling | undefined> {
+  if (billingBinding(c.env) === null) return undefined;
+  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+  const access = await getAppTrafficBillingAccess(c.env, accountId, waitUntil);
+  if (access.state !== "billed") return { state: "unavailable", planName: null, allowance: null };
+  let allowance: SessionBilling["allowance"] = null;
+  try {
+    const reading = await withDeadline(planAllowance(c.env, accountId, access), APP_TRAFFIC_BILLING_DEADLINE_MS, "reading the allowance");
+    if (reading !== null) allowance = { used: reading.used, limit: reading.limit, resetAt: reading.resetAt };
+  } catch (error) {
+    log("warn", "billing_allowance_unreadable", { account: accountId, error: errorFacts(error) });
+  }
+  return { state: "billed", planName: access.plan?.planName ?? null, allowance };
+}
+
+function sessionPayload(
+  state: AuthState,
+  actor: AdminActor,
+  pending: boolean,
+  billing?: SessionBilling,
+): OperationResponse<"getAdminSession">["session"] {
   const user = state.user!;
   const accounts = actor.credentialType === "session"
     ? activeAccounts(state.memberships)
@@ -50,13 +83,14 @@ function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): 
     grant: actor.grant,
     credentialType: actor.credentialType,
     accounts,
+    ...(billing === undefined ? {} : { billing }),
   };
 }
 
 export async function getAdminSession(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
-  const pending = await verificationPending(c.env, actor.accountId);
-  return c.json({ session: sessionPayload(c.get("authState"), actor, pending) } satisfies OperationResponse<"getAdminSession">);
+  const [pending, billing] = await Promise.all([verificationPending(c.env, actor.accountId), sessionBilling(c, actor.accountId)]);
+  return c.json({ session: sessionPayload(c.get("authState"), actor, pending, billing) } satisfies OperationResponse<"getAdminSession">);
 }
 
 export async function listAccounts(c: AdminContext): Promise<Response> {

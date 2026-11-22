@@ -5969,6 +5969,57 @@
             "items": {
               "$ref": "#/components/schemas/AccountMembership"
             }
+          },
+          "billing": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "billed",
+                  "unavailable"
+                ]
+              },
+              "planName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The plan's name; null when no plan resolves or billing cannot be read."
+              },
+              "allowance": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "used": {
+                    "type": "integer",
+                    "description": "Requests sent to providers in this period, across all apps."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "description": "The plan's maxRequestsPerMonth."
+                  },
+                  "resetAt": {
+                    "type": "string",
+                    "description": "When the allowance resets; the same as periodEnd."
+                  }
+                },
+                "required": [
+                  "used",
+                  "limit",
+                  "resetAt"
+                ],
+                "description": "This period's requests against the plan's allowance; null when the plan sets no monthly limit or it cannot be read."
+              }
+            },
+            "required": [
+              "state",
+              "planName",
+              "allowance"
+            ],
+            "description": "The account's plan and this period's request allowance. Only on a hosted deployment with billing; left out otherwise."
           }
         },
         "required": [
