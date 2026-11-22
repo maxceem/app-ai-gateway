@@ -222,7 +222,14 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       await capabilities.body?.cancel();
     } else {
       await expectResponse(capabilities, 200, "the capabilities");
-      offered = ((await readJson(capabilities)) as { conversationStorage?: unknown } | null)?.conversationStorage;
+      const body = (await readJson(capabilities)) as { billing?: unknown; conversationStorage?: unknown } | null;
+      // Every deployment that has capabilities answers with an object holding `billing`:
+      // anything else (null, an array, an error) is a broken endpoint, not an older one.
+      check(
+        typeof body === "object" && body !== null && !Array.isArray(body) && typeof body.billing === "boolean",
+        "the capabilities are not a capabilities object",
+      );
+      offered = body.conversationStorage;
       check(offered === undefined || typeof offered === "boolean", "the capabilities' conversationStorage is not a boolean");
     }
     let storage: Storage = offered === undefined ? "absent" : offered ? "on" : "off";
