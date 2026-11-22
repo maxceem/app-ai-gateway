@@ -186,6 +186,52 @@ describe("the account gate", () => {
     expect(await resend.json()).toMatchObject({ status: "already_verified" });
   });
 
+  it("clears after a sign-in with the owner's linked Google account, at most 10 s late on an isolate that cached the refusal (Sol 7b-7 round 5)", async () => {
+    const owner = await unverifiedOwner();
+    const app = await serverApp(owner.accountId);
+    const subject = `google-${crypto.randomUUID().slice(0, 8)}`;
+    const linkedAt = Date.now();
+    // Linked earlier: Better Auth leaves the address unverified on linking; a later sign-in with it may verify it.
+    await env.DB.prepare(
+      "INSERT INTO mgmt_user_account(id, account_id, provider_id, user_id, created_at, updated_at) VALUES (?, ?, 'google', ?, ?, ?)",
+    ).bind(`acct_${subject}`, subject, owner.userId, linkedAt, linkedAt).run();
+    const verifying = { ...deployment({ email: true }).env, GOOGLE_CLIENT_ID: "client.test", GOOGLE_CLIENT_SECRET: "secret.test" } as Env;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["Date"], now: linkedAt });
+    try {
+      // This isolate caches the refusal, as one that never hears of the sign-in would.
+      expect(await errorCode(await me(verifying, app))).toBe("email_unverified");
+
+      const started = await call("/v2/auth/sign-in/social", { environment: verifying, headers: { origin: CONSOLE }, json: { provider: "google", callbackURL: "/v2/apps" } });
+      expect(started.status, await started.clone().text()).toBe(200);
+      const state = new URL(((await started.json()) as { url: string }).url).searchParams.get("state")!;
+      const cookie = started.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+      // Google's token endpoint, answering with an ID token for the linked subject and a verified address.
+      const encode = (value: object) => btoa(JSON.stringify(value)).replaceAll("=", "").replaceAll("+", "-").replaceAll("/", "_");
+      const seconds = Math.floor(linkedAt / 1000);
+      const idToken = `${encode({ alg: "RS256", kid: "test" })}.${encode({
+        iss: "https://accounts.google.com", aud: "client.test", sub: subject, email: owner.email, email_verified: true, name: "Owner", iat: seconds, exp: seconds + 3600,
+      })}.signature`;
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+        if (!String(input instanceof Request ? input.url : input).startsWith("https://oauth2.googleapis.com/token")) return new Response("{}", { status: 404 });
+        return Response.json({ access_token: "access.test", token_type: "Bearer", expires_in: 3600, id_token: idToken });
+      }));
+      const back = await call(`/v2/auth/callback/google?code=code.test&state=${encodeURIComponent(state)}`, { environment: verifying, headers: { cookie } });
+      vi.unstubAllGlobals();
+      expect(back.status, await back.clone().text()).toBe(302);
+      expect(back.headers.get("location") ?? "").not.toContain("error");
+      expect(await env.DB.prepare("SELECT email_verified AS v FROM mgmt_user WHERE id = ?").bind(owner.userId).first("v")).toBe(1);
+
+      // Still the cached refusal for up to its 10 s, then the fresh read serves.
+      expect(await errorCode(await me(verifying, app))).toBe("email_unverified");
+      vi.setSystemTime(linkedAt + 10_001);
+      expect((await me(verifying, app)).status).toBe(200);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it("serves an account with any owner who is not waiting", async () => {
     const owner = await unverifiedOwner();
     const app = await serverApp(owner.accountId);
@@ -471,6 +517,35 @@ describe("sign-up", () => {
     const attempt = await signUp(verifying, owner.email);
     expect(attempt.status).not.toBe(200);
     expect(await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(owner.email).first()).toBeNull();
+    expect((await me(verifying, app)).status).toBe(200);
+  });
+
+  it("clears a mark a failed sign-up left, so the next sign-up with the address serves even once email is turned on (Sol 7b-7 round 5)", async () => {
+    const email = `retried-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    const { env: verifying } = deployment({ email: true });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // The address is marked, then the person cannot be written.
+    const failing = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            if (/insert into "?mgmt_user"?\s*\(/iu.test(query)) throw new Error("D1 is down");
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    expect((await signUp({ ...verifying, DB: failing } as Env, email)).status).not.toBe(200);
+    expect(await env.DB.prepare("SELECT 1 AS one FROM email_pending_verification WHERE email = lower(?)").bind(email).first("one")).toBe(1);
+    // The person signs up again where nothing is verified: the stale mark goes with it.
+    const created = await signUp(deployment().env, email);
+    expect(created.status, await created.clone().text()).toBe(200);
+    expect(await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(email).first()).toBeNull();
+    // Email is turned on later: the account keeps serving.
+    const app = await serverApp(await accountOf(email));
     expect((await me(verifying, app)).status).toBe(200);
   });
 

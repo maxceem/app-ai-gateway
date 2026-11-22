@@ -97,28 +97,37 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
 }
 
 /**
- * Marks the address of a person about to be made as waiting to be verified,
- * where the deployment verifies addresses (`../core/account-standing.ts`).
+ * Settles the waiting mark of a person about to be made (`../core/account-standing.ts`).
  * It runs before the person is written, so before their account and its
- * membership exist: no request can see the account unmarked. Only a person
- * whose address is not verified yet: a password sign-up. Google's arrive
- * verified, and a key-made account never comes here. Never an address that
- * already belongs to someone: a sign-up attempt with another person's address
- * must not hold their account back.
+ * membership exist: no request can see the account unmarked.
  *
- * If the mark cannot be written, the account serves, as every unmarked one
- * does, and the failure is logged for the monitor: never an account refused
- * that should serve.
+ * First, any mark already on the address is removed: one left by a sign-up
+ * whose person was never written would otherwise hold back whoever signs up
+ * with the address next, even where nothing is verified (Sol 7b-7 round 5).
+ * Then the address is marked, where the deployment verifies addresses and the
+ * person's is not verified yet: a password sign-up. Google's arrive verified,
+ * and a key-made account never comes here. Both are one batch. Neither ever
+ * touches an address that already belongs to someone: a sign-up attempt with
+ * another person's address must not clear or set their mark.
+ *
+ * An address changed outside the app, by hand in the database, keeps or loses
+ * its mark with it; nothing here follows such a change.
+ *
+ * If the batch fails, the account serves, as every unmarked one does, and the
+ * failure is logged for the monitor: never an account refused that should serve.
  */
-async function markPendingVerification(db: D1Database, email: string): Promise<void> {
+async function settlePendingMark(db: D1Database, email: string, mark: boolean): Promise<void> {
+  const free = "NOT EXISTS (SELECT 1 FROM mgmt_user WHERE email = ?1 COLLATE NOCASE)";
   try {
-    await db
-      .prepare(
-        `INSERT OR IGNORE INTO email_pending_verification(email, marked_at)
-         SELECT lower(?1), ?2 WHERE NOT EXISTS (SELECT 1 FROM mgmt_user WHERE email = ?1 COLLATE NOCASE)`,
-      )
-      .bind(email, Date.now())
-      .run();
+    const statements = [db.prepare(`DELETE FROM email_pending_verification WHERE email = lower(?1) AND ${free}`).bind(email)];
+    if (mark) {
+      statements.push(
+        db
+          .prepare(`INSERT OR IGNORE INTO email_pending_verification(email, marked_at) SELECT lower(?1), ?2 WHERE ${free}`)
+          .bind(email, Date.now()),
+      );
+    }
+    await db.batch(statements);
   } catch (error) {
     log("warn", "email_pending_mark_failed", { error: errorFacts(error) });
   }
@@ -159,7 +168,7 @@ export async function createIdentity(
     userHooks: {
       beforeCreate: async (user) => {
         if (!registrationAllowed(env, user.email)) await registrationDenied(options.onRegistrationDenied);
-        if (!user.emailVerified && user.email && emailVerificationRequired(env)) await markPendingVerification(env.DB, user.email);
+        if (user.email) await settlePendingMark(env.DB, user.email, !user.emailVerified && emailVerificationRequired(env));
       },
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
