@@ -1740,6 +1740,46 @@ describe("conversation retention", () => {
     expect(runs).toBeGreaterThan(1);
   });
 
+  it("stops, keeps what it has not deleted, and resumes later when its D1 queries run out before its R2 calls (Sol 7b-2 round 2)", async () => {
+    const { appId } = await storingApp({ store: true, retention_days: 1 });
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const now = Date.parse("2026-11-22T04:00:00.000Z");
+    const days = Array.from({ length: 8 }, (_, index) => `2026-11-${String(10 + index).padStart(2, "0")}`);
+    for (const day of days) await store.put(`${appPrefix(ACCOUNT_ID, appId)}${day}/000000-0123456789abcdef.jsonl.gz`, "expired");
+    const kept = `${appPrefix(ACCOUNT_ID, appId)}2026-11-21/000000-0123456789abcdef.jsonl.gz`;
+    await store.put(kept, "kept");
+    const expiredLeft = async () =>
+      (await store.list({ prefix: appPrefix(ACCOUNT_ID, appId) })).objects.filter((object) => object.key !== kept).length;
+
+    // Four D1 queries: the retention of every app, then one look before each of three pages.
+    const reads = new QueryBudget(4);
+    const r2 = new QueryBudget(500);
+    await runConversationRetention(store, env.DB, now, r2, 1_000, reads);
+    expect(reads.remaining).toBe(0);
+    expect(r2.remaining).toBeGreaterThan(400);
+    expect(await expiredLeft()).toBe(days.length - 3);
+    expect(await store.head(kept)).not.toBeNull();
+
+    // A run whose only D1 query is the first read deletes nothing, not even the folder of an app
+    // that is gone: with no query left to look it up, it is never taken for gone.
+    const orphan = `${appPrefix(ACCOUNT_ID, "app-gone-unread")}2020-01-01/000000-aaaaaaaa.jsonl.gz`;
+    await store.put(orphan, "orphan");
+    await store.delete(RETENTION_CURSOR);
+    await runConversationRetention(store, env.DB, now, new QueryBudget(500), 1_000, new QueryBudget(1));
+    expect(await store.head(orphan)).not.toBeNull();
+    expect(await expiredLeft()).toBe(days.length - 3);
+
+    // Later runs go on until every expired day is gone, and the day inside the window stays.
+    let runs = 0;
+    while ((await expiredLeft()) > 0 && runs < 10) {
+      await runConversationRetention(store, env.DB, now, new QueryBudget(500), 1_000, new QueryBudget(4));
+      runs += 1;
+    }
+    expect(await expiredLeft()).toBe(0);
+    expect(await store.head(kept)).not.toBeNull();
+  });
+
   it("stops when the run's allowance runs out", async () => {
     const store = bucket();
     await store.put(`${appPrefix(ACCOUNT_ID, "conversation-budget-gone")}2020-01-01/000000-eeeeeeee.jsonl.gz`, "orphan");
