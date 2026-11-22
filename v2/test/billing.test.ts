@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { getAppTrafficBillingAccess, getFreshBillingAccess } from "../src/billing/access.ts";
+import { getAppTrafficBillingAccess } from "../src/billing/access.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -416,7 +416,13 @@ describe("the billing page's allowance", () => {
   });
 });
 
-describe("the billing page's fresh read (Sol 7b-8)", () => {
+describe("the console's own billing read, apart from app traffic's (Sol 7b-8)", () => {
+  /** The fake's `getTenantAccess`, to hold its answers back. */
+  function tenantAccess(fake: ReturnType<typeof billingFake>) {
+    return (fake.env as unknown as { BILLING: { getTenantAccess: (input: Record<string, unknown>) => Promise<unknown> } }).BILLING;
+  }
+  const asked = (fake: ReturnType<typeof billingFake>) => fake.calls.filter((call) => call.method === "getTenantAccess").length;
+
   it("never takes away the plan app traffic falls back on while billing cannot answer", async () => {
     const { caller, accountId } = await person();
     const fake = billingFake(growth());
@@ -425,38 +431,127 @@ describe("the billing page's fresh read (Sol 7b-8)", () => {
     vi.useFakeTimers({ toFake: ["Date"], now });
     // App traffic has read the plan.
     expect(await getAppTrafficBillingAccess(fake.env, accountId, waitUntil)).toMatchObject({ state: "billed", plan: { planKey: "growth" } });
-    // Billing goes down; the console starts a checkout and reads the page afresh.
+    // Billing goes down; the console starts a checkout, and the billing page says billing is unavailable.
     fake.state.access = "down";
     await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env);
-    expect((await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).status).toBe(200);
+    expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({
+      status: 503,
+      body: { error: { code: "billing_unavailable" } },
+    });
     // Once the isolate's cached reading has expired, app traffic still has its known plan, marked stale.
     vi.setSystemTime(now + 31_000);
     expect(await getAppTrafficBillingAccess(fake.env, accountId, waitUntil)).toMatchObject({ state: "billed", stale: true, plan: { planKey: "growth" } });
   });
 
-  it("shares one call between reads at the same time, and starts none right after a failed one", async () => {
-    const { accountId } = await person();
+  it("asks billing every time, but not again within 5 s of a failed read", async () => {
+    const { caller } = await person();
     const fake = billingFake(growth());
-    const waitUntil = () => undefined;
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({ status: 200 });
+    expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({ status: 200 });
+    expect(asked(fake)).toBe(2);
+    fake.state.access = "down";
+    expect((await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).status).toBe(503);
+    // Within the 5 s, billing is not asked again: the page answers 503 at once.
+    fake.state.access = growth();
+    const failed = await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env);
+    expect(failed).toMatchObject({ status: 503, body: { error: { code: "billing_unavailable" } } });
+    expect(asked(fake)).toBe(3);
+    vi.setSystemTime(now + 6_000);
+    expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({ status: 200, body: { access: { plan: { planKey: "growth" } } } });
+    expect(asked(fake)).toBe(4);
+  });
+
+  it("drops a read that answers too late: it never shows up in a later read, the console's or app traffic's", async () => {
+    const { caller, accountId } = await person();
+    const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
+    const service = tenantAccess(fake);
+    const original = service.getTenantAccess;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    service.getTenantAccess = async (input) => {
+      const answer = await original(input);
+      await gate;
+      return answer;
+    };
+    // The console's read is held past its 1 s deadline.
+    expect((await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).status).toBe(503);
+    // Its old answer arrives late, after the plan has changed.
+    service.getTenantAccess = original;
+    fake.state.access = growth();
+    release();
+    await gate;
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: now + 6_000 });
+    expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({ status: 200, body: { access: { plan: { planKey: "growth" } } } });
+    expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ plan: { planKey: "growth" } });
+  });
+
+  it("names the account it expects: another one selected since is refused with account_changed", async () => {
+    const { caller, accountId } = await person();
+    const fake = billingFake(growth());
+    expect(await send(caller, "GET", `/v2/admin/billing/status?account=${encodeURIComponent(accountId)}`, undefined, fake.env)).toMatchObject({
+      status: 200,
+      body: { access: { plan: { planKey: "growth" } } },
+    });
+    expect(await send(caller, "GET", "/v2/admin/billing/status?account=acct-other", undefined, fake.env)).toMatchObject({
+      status: 409,
+      body: { error: { code: "account_changed" } },
+    });
+    expect(asked(fake)).toBe(1);
+  });
+});
+
+describe("app traffic's plan cache across a change the account makes (Sol 7b-8)", () => {
+  it("never keeps the old plan from a read that began before the change and finished after it", async () => {
+    const { caller, accountId } = await person();
+    const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
     const service = (fake.env as unknown as { BILLING: { getTenantAccess: (input: Record<string, unknown>) => Promise<unknown> } }).BILLING;
     const original = service.getTenantAccess;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     service.getTenantAccess = async (input) => {
+      const answer = await original(input);
       await gate;
-      return original(input);
+      return answer;
     };
-    const reads = [getFreshBillingAccess(fake.env, accountId, waitUntil), getFreshBillingAccess(fake.env, accountId, waitUntil)];
-    release();
-    for (const access of await Promise.all(reads)) expect(access).toMatchObject({ state: "billed", plan: { planKey: "growth" } });
-    expect(fake.calls.filter((call) => call.method === "getTenantAccess")).toHaveLength(1);
-    // A failed read holds off the next one for the retry interval.
+    // App traffic starts reading the free plan, and is held.
+    const before = getAppTrafficBillingAccess(fake.env, accountId, () => undefined, 60_000);
+    // Meanwhile the account buys growth.
     service.getTenantAccess = original;
+    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env)).status).toBe(200);
+    fake.state.access = growth();
+    release();
+    expect(await before).toMatchObject({ plan: { planKey: "free" } });
+    // The next read asks billing again rather than serving the old answer from the cache.
+    expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ plan: { planKey: "growth" } });
+    // And the old plan was never kept to fall back on: with billing down and the cache expired,
+    // app traffic falls back on growth, read after the change.
     fake.state.access = "down";
-    await getFreshBillingAccess(fake.env, accountId, waitUntil);
-    const asked = fake.calls.filter((call) => call.method === "getTenantAccess").length;
-    expect(await getFreshBillingAccess(fake.env, accountId, waitUntil)).toMatchObject({ state: "billed", stale: true });
-    expect(fake.calls.filter((call) => call.method === "getTenantAccess")).toHaveLength(asked);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 31_000 });
+    expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ stale: true, plan: { planKey: "growth" } });
+  });
+
+  it("does not keep the old plan to fall back on when nothing read after the change", async () => {
+    const { caller, accountId } = await person();
+    const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
+    const service = (fake.env as unknown as { BILLING: { getTenantAccess: (input: Record<string, unknown>) => Promise<unknown> } }).BILLING;
+    const original = service.getTenantAccess;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    service.getTenantAccess = async (input) => {
+      const answer = await original(input);
+      await gate;
+      return answer;
+    };
+    const before = getAppTrafficBillingAccess(fake.env, accountId, () => undefined, 60_000);
+    service.getTenantAccess = original;
+    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env)).status).toBe(200);
+    release();
+    await before;
+    fake.state.access = "down";
+    expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ state: "unavailable" });
   });
 });
 

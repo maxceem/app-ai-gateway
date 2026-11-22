@@ -17,9 +17,9 @@ import {
   BILLING_SERVICE_ID,
   billingPlanLimits,
   billingRpcError,
-  getFreshBillingAccess,
   invalidateBillingAccess,
   planFeatures,
+  readBillingForConsole,
   subscriptionActions,
 } from "../billing/access.ts";
 import { billingBinding, type BillingRuntime } from "../billing/contract.ts";
@@ -30,6 +30,7 @@ import {
   BillingChangeRequestSchema,
   BillingCheckoutRequestSchema,
   BillingResumeRequestSchema,
+  BillingStatusQuerySchema,
   BillingTrialRequestSchema,
   PLAN_LIMIT_KEYS,
   type BillingPeriod,
@@ -44,6 +45,7 @@ import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { requireAdminRole, requireConsoleSession, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
+import { parseQuery } from "./usage.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
@@ -206,8 +208,8 @@ interface ShownSubscription {
  * read answers 503, as any settings write does.
  */
 async function requireShownSubscription(c: AdminContext, accountId: string, shown: ShownSubscription): Promise<void> {
-  const access = await getFreshBillingAccess(c.env, accountId, (promise) => c.executionCtx.waitUntil(promise));
-  if (access.state !== "billed" || access.stale === true) {
+  const access = await readBillingForConsole(c.env, accountId);
+  if (access.state !== "billed") {
     throw new GatewayError(503, "billing_unavailable", "The subscription could not be read; try again shortly");
   }
   const current = access.subscription;
@@ -248,11 +250,12 @@ export async function listBillingPlans(c: AdminContext): Promise<Response> {
 
 export async function getBillingStatus(c: AdminContext): Promise<Response> {
   billingCaller(c);
-  const accountId = c.get("actor").accountId;
-  // The billing page asks the billing service afresh: after a checkout or a
-  // change, a cached plan would show the old one. The read is shared, bounded
-  // and keeps app traffic's last known plan (Sol 7b-8).
-  const access = await getFreshBillingAccess(c.env, accountId, (promise) => c.executionCtx.waitUntil(promise));
+  const query = parseQuery(c, BillingStatusQuerySchema);
+  const accountId = query.account === undefined ? c.get("actor").accountId : requireShownAccount(c, query.account);
+  // The billing page asks the billing service directly: after a checkout or a
+  // change, a cached plan would show the old one. That read is the console's
+  // own and never touches app traffic's (Sol 7b-8).
+  const access = await readBillingForConsole(c.env, accountId);
   return c.json({
     access,
     limits: enforcedLimits(access),

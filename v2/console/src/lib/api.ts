@@ -85,6 +85,8 @@ export interface CallOptions<K extends OperationName> {
   query?: OperationQuery<K>;
   body?: OperationRequest<K>;
   headers?: HeadersInit;
+  /** Cancels the request: a read nobody waits for any more is stopped, not left running. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -98,7 +100,7 @@ export interface CallOptions<K extends OperationName> {
  */
 export function call<K extends OperationName>(
   name: K,
-  { params, query, body, headers }: CallOptions<K> = {},
+  { params, query, body, headers, signal }: CallOptions<K> = {},
 ): Promise<OperationResponse<K>> {
   // One cast, because `operationPath` takes the parameters this operation's own
   // template declares and a generic name stands for every template at once.
@@ -111,5 +113,6 @@ export function call<K extends OperationName>(
     method: CATALOG[name].method,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     ...(headers === undefined ? {} : { headers }),
+    ...(signal === undefined ? {} : { signal }),
   });
 }

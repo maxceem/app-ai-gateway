@@ -187,7 +187,18 @@ describe("the return from a completed checkout", () => {
     expect(statusReads(fetchMock)).toBeLessThanOrEqual(PLAN_CONFIRM_CHECKS + 1);
   });
 
-  it("does not announce a return that names another account as complete (Sol 7b-8)", async () => {
+  it("asks for the plan of the account the checkout was for, in its own reads with no retries (Sol 7b-8)", async () => {
+    const success = vi.spyOn(toast, "success");
+    const fetchMock = stubBilling(PAID);
+    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
+    const confirming = fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account=acct-1"));
+    expect(confirming.length).toBeGreaterThanOrEqual(1);
+    for (const [, init] of confirming) expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("shows nothing for a return that names another account, and reads nothing for it (Sol 7b-8)", async () => {
+    const loading = vi.spyOn(toast, "loading");
     const success = vi.spyOn(toast, "success");
     const info = vi.spyOn(toast, "info");
     const fetchMock = stubBilling(PAID);
@@ -196,10 +207,28 @@ describe("the return from a completed checkout", () => {
       route: checkoutReturnPathFor("pro", "acct-other"),
     });
     await waitFor(() => expect(router.location.search).toBe(""));
-    await waitFor(() => expect(info).toHaveBeenCalledWith("Payment received", expect.anything()));
-    expect(success).not.toHaveBeenCalledWith("Payment complete", expect.anything());
-    // The confirming reads never start for another account's return.
-    expect(statusReads(fetchMock)).toBeLessThanOrEqual(1);
+    expect(loading).not.toHaveBeenCalled();
+    expect(success).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account="))).toBe(false);
+  });
+
+  it("stops, saying nothing, once the gateway says another account is selected (Sol 7b-8)", async () => {
+    const success = vi.spyOn(toast, "success");
+    const info = vi.spyOn(toast, "info");
+    const dismiss = vi.spyOn(toast, "dismiss");
+    const fetchMock = stubBilling(PAID);
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/status?account=")
+        ? new Response(JSON.stringify({ error: { code: "account_changed", message: "changed" } }), { status: 409 })
+        : answer(input, init),
+    );
+    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
+    expect(success).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account="))).toHaveLength(1);
   });
 
   it("announces nothing on a console without billing, and still takes the marker off", async () => {

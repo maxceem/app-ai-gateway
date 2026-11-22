@@ -229,6 +229,13 @@ export const ShownPriceSchema = z.object({
  * A checkout. The gateway chooses where the provider sends the person back
  * (the console's own pages); there is nothing to choose here.
  */
+/**
+ * A status read may name the account it expects: the checkout return's
+ * confirmation does, so a read answered for another account selected since is
+ * refused (`account_changed`), never taken as this one's plan (Sol 7b-8).
+ */
+export const BillingStatusQuerySchema = z.object({ account: z.string().min(1).max(200).optional() }).meta({ id: "BillingStatusQuery" });
+
 export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend(ShownAccount).meta({ id: "BillingCheckoutRequest" });
 
 /** A change, on the account and subscription the console showed, at the price it showed. */

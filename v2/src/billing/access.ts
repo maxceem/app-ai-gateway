@@ -16,6 +16,7 @@ import {
   type PlanLimits,
   type SubscriptionActions,
 } from "../contracts/billing.ts";
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -50,13 +51,34 @@ const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed
 });
 
 /**
- * Forgets this isolate's cached reading of an account's plan, after a change
- * the account made itself (a checkout, a plan change, a cancel): the next read
- * asks the billing service. Other isolates catch up within the cache's 30 s.
- * The last known reading stays: it is what app traffic falls back on while
- * billing cannot answer, and a console action never takes that away (Sol 7b-8).
+ * Each account's billing version in this isolate: bumped by every change the
+ * account makes through the console here. A plan read records the version it
+ * started under and stores its answer only if the version is still the same
+ * when it finishes, so a read begun before an upgrade can never put the old
+ * plan back once the upgrade is made (Sol 7b-8). It is isolate memory: a
+ * change lands on one isolate, and the others catch up within the cache's own
+ * 30 s. An entry that ages out reads as 0, which only ever stops a store.
+ */
+const billingVersions = ttlCache<string, number>({
+  name: "billing-version",
+  ttlMs: 10 * 60_000,
+  maxEntries: 5_000,
+});
+
+function billingVersion(accountId: string): number {
+  return billingVersions.get(accountId) ?? 0;
+}
+
+/**
+ * After a change the account made itself (a checkout, a plan change, a
+ * cancel): bumps its billing version and forgets this isolate's cached
+ * reading, so the next read asks the billing service and none begun before
+ * the change can store what it read. The last known reading stays: it is what
+ * app traffic falls back on while billing cannot answer, and a console action
+ * never takes that away.
  */
 export function invalidateBillingAccess(accountId: string): void {
+  billingVersions.set(accountId, billingVersion(accountId) + 1);
   billingAccessCache.delete(accountId);
 }
 
@@ -69,7 +91,7 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-async function loadBillingAccess(binding: BillingRuntime, accountId: string): Promise<GatewayBillingAccess> {
+async function loadBillingAccess(binding: BillingRuntime, accountId: string, version: number): Promise<GatewayBillingAccess> {
   try {
     const access = await binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId });
     const value = { state: "billed", plan: access.plan, subscription: access.subscription } satisfies GatewayBillingAccess;
@@ -79,7 +101,9 @@ async function loadBillingAccess(binding: BillingRuntime, accountId: string): Pr
       log("error", "billing_expired_entitlement", { account: accountId });
       return { state: "unavailable" };
     }
-    lastKnownAccess.set(accountId, value, { storedAt: now });
+    // A read begun before a change the account made since keeps its answer to
+    // itself: the old plan is never kept as the one to fall back on.
+    if (billingVersion(accountId) === version) lastKnownAccess.set(accountId, value, { storedAt: now });
     return value;
   } catch (error) {
     const code = billingErrorCodeOf(error);
@@ -110,12 +134,14 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
   const cached = billingAccessCache.get(accountId, now);
   if (cached) return cached;
   billingAccessCache.delete(accountId);
-  const pending = loadBillingAccess(binding, accountId);
+  const version = billingVersion(accountId);
+  const pending = loadBillingAccess(binding, accountId, version);
   billingAccessCache.set(accountId, pending, { storedAt: now });
   // A fresh answer keeps the full TTL, or less if the entitlement ends sooner.
-  // Anything else is held only for the retry interval.
+  // Anything else is held only for the retry interval. A read that a change
+  // made since has outdated stores nothing.
   void pending.then((access) => {
-    if (billingAccessCache.peek(accountId)?.value !== pending) return;
+    if (billingVersion(accountId) !== version || billingAccessCache.peek(accountId)?.value !== pending) return;
     if (access.state === "billed" && !access.stale) {
       const endsAt = entitlementEndsAt(access);
       if (endsAt === null) return;
@@ -127,72 +153,62 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
   return pending;
 }
 
-/** Fresh reads running now, one per account, shared by every caller that asks meanwhile. */
-const freshReads = new Map<string, Promise<GatewayBillingAccess>>();
-
-/** When a fresh read last failed, per account: within the retry interval, no new one is started. */
-const freshFailedAt = ttlCache<string, number>({
-  name: "billing-fresh-failed",
+/** When a console read of an account last failed or ran late: within the retry interval, none is started. */
+const consoleReadFailedAt = ttlCache<string, number>({
+  name: "billing-console-failed",
   ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000,
   maxEntries: 5_000,
 });
 
-/** How long the console waits for a fresh reading before answering with what is known. */
+/** How long the console waits for the billing service. */
 export const CONSOLE_BILLING_DEADLINE_MS = 1_000;
 
+function consoleBillingUnavailable(): GatewayError {
+  return new GatewayError(503, "billing_unavailable", "The billing service could not be read; try again shortly", {
+    "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
+  });
+}
+
 /**
- * A fresh reading for the console (the billing page, a write's check), never
- * the isolate's cached one: after a checkout or a change, a cached plan would
- * show the old one. It still behaves like the request path's reads (Sol 7b-8):
+ * The account's plan for the console (the billing page, a write's check):
+ * asked of the billing service directly, every time, so a checkout or a change
+ * shows at once. It is kept apart from app traffic's plan reading (Sol 7b-8):
+ * it never reads, joins or fills app traffic's cache, nor its last known plan,
+ * so nothing the console does can put an old plan back for app traffic or
+ * take its fallback away.
  *
- * - callers asking at the same time share one call to the billing service;
- * - after a failed call, none is started again within the retry interval;
- * - it waits at most `deadlineMs`, and a late or failed call answers what is
- *   known (the last known reading, marked stale, or unavailable);
- * - it never clears the last known reading app traffic falls back on, and a
- *   good answer refreshes the isolate's cache for app traffic too.
+ * It waits at most `deadlineMs`. A failed or late call answers 503, and no
+ * new call is made for that account within the retry interval, so a console
+ * left open through an outage adds no load. A late answer is dropped: it
+ * reaches no cache, so it can never affect a later read.
  */
-export async function getFreshBillingAccess(
+export async function readBillingForConsole(
   env: Env,
   accountId: string,
-  waitUntil: (promise: Promise<unknown>) => void,
   deadlineMs: number = CONSOLE_BILLING_DEADLINE_MS,
 ): Promise<GatewayBillingAccess> {
   const binding = billingBinding(env);
   if (binding === null) return { state: "self_hosted" };
-  let pending = freshReads.get(accountId);
-  if (pending === undefined) {
-    if (freshFailedAt.get(accountId) !== undefined) return withoutBilling(accountId);
-    const now = Date.now();
-    pending = loadBillingAccess(binding, accountId)
-      .then((access) => {
-        if (access.state === "billed" && !access.stale) {
-          const endsAt = entitlementEndsAt(access);
-          billingAccessCache.set(accountId, Promise.resolve(access), {
-            storedAt: now,
-            ttlMs: endsAt === null ? BILLING_ACCESS_CACHE_TTL_MS : Math.min(BILLING_ACCESS_CACHE_TTL_MS, endsAt - now),
-          });
-        } else {
-          freshFailedAt.set(accountId, now);
-        }
-        return access;
-      })
-      .finally(() => freshReads.delete(accountId));
-    freshReads.set(accountId, pending);
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), Math.max(0, deadlineMs));
-  });
+  if (consoleReadFailedAt.get(accountId) !== undefined) throw consoleBillingUnavailable();
   try {
-    const access = await Promise.race([pending, late]);
-    if (access !== null) return access;
-  } finally {
-    clearTimeout(timer);
+    const access = await withDeadline(
+      binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }),
+      deadlineMs,
+      "reading the account's plan",
+    );
+    const value = { state: "billed", plan: access.plan, subscription: access.subscription } satisfies GatewayBillingAccess;
+    const endsAt = entitlementEndsAt(value);
+    if (endsAt !== null && endsAt <= Date.now()) {
+      log("error", "billing_expired_entitlement", { account: accountId });
+      return { state: "unavailable" };
+    }
+    return value;
+  } catch (error) {
+    consoleReadFailedAt.set(accountId, Date.now());
+    const code = billingErrorCodeOf(error);
+    log("warn", "billing_console_read_failed", { account: accountId, billingErrorCode: code, error: errorFacts(error) });
+    throw consoleBillingUnavailable();
   }
-  waitUntil(pending);
-  log("warn", "billing_access_slow", { account: accountId, deadlineMs });
-  return withoutBilling(accountId);
 }
 
 /**
