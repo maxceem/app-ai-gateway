@@ -91,6 +91,15 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 - Set secrets with `wrangler secret put <NAME>`, never in a file that is committed. `.dev.vars.example`
   lists every secret.
 
+## Nightly maintenance
+
+The hourly cron runs the nightly maintenance at 03:17 UTC (`src/maintenance/nightly.ts`). It deletes
+auth and rejection events after 90 days, stored conversations past each app's retention, and
+detailed usage after 90 days: charges, settled sessions and budget totals. Day totals stay 400 days,
+then move into month totals. One run makes at most 50 D1 queries and R2 calls, the Workers Free
+plan's limit. On the Workers Paid plan, set the optional Worker variable `MAINTENANCE_QUERY_BUDGET`
+(for example `1000`) to clear a large backlog faster.
+
 ## Deploying
 
 `wrangler.jsonc` holds what every deployment shares. A deployment's own Worker
