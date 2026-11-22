@@ -32,10 +32,14 @@ export function AppsPage() {
   // deleted ones included (their usage is kept), and a line per app.
   const usage = useAccountUsage(month);
   const list = apps.data?.apps ?? [];
-  const usageOf = new Map((usage.data?.apps ?? []).map((line) => [line.app_id, line]));
-  const totals = usage.data?.totals;
-  const deleted = (usage.data?.apps ?? []).filter((line) => line.deleted).length;
+  // Only a read that succeeded is shown: after a failed refresh the query keeps its old data,
+  // and no figure, line or detail may show it under an error.
+  const shown = usage.isSuccess ? usage.data : undefined;
+  const usageOf = new Map((shown?.apps ?? []).map((line) => [line.app_id, line]));
+  const totals = shown?.totals;
+  const deleted = (shown?.apps ?? []).filter((line) => line.deleted).length;
   const figure = (value: string) => (usage.isPending ? <Skeleton className="h-6 w-16" /> : usage.isError ? "—" : value);
+  const detail = (text: string) => (usage.isSuccess ? text : usage.isError ? "unavailable" : undefined);
 
   return (
     <div className="space-y-6">
@@ -57,18 +61,18 @@ export function AppsPage() {
         <StatCard
           label="Spend"
           value={figure(formatCost(totals?.cost_usd))}
-          detail={deleted > 0 ? `includes ${formatNumber(deleted)} deleted ${deleted === 1 ? "app" : "apps"}` : "all your apps"}
+          detail={detail(deleted > 0 ? `includes ${formatNumber(deleted)} deleted ${deleted === 1 ? "app" : "apps"}` : "all your apps")}
         />
         <StatCard
           label="Charges"
           value={figure(formatNumber(totals?.charges))}
-          detail={totals && totals.failed > 0 ? `${formatNumber(totals.failed)} failed` : "calls, session slices and job estimates"}
+          detail={detail(totals && totals.failed > 0 ? `${formatNumber(totals.failed)} failed` : "calls, session slices and job estimates")}
         />
-        <StatCard label="Tokens" value={figure(formatCompact(totals ? totalTokens(totals) : null))} detail="all buckets" />
+        <StatCard label="Tokens" value={figure(formatCompact(totals ? totalTokens(totals) : null))} detail={detail("all buckets")} />
         <StatCard
           label="Unpriced"
           value={figure(formatNumber(totals?.unpriced))}
-          detail="charges still without a price, counted as $0"
+          detail={detail("charges still without a price, counted as $0")}
         />
       </div>
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Route, Routes } from "react-router-dom";
+import { Link, Route, Routes } from "react-router-dom";
 import { toast } from "sonner";
 import { AppDetailPage, JOB_CHECK_OVERDUE_MS, jobCheckOverdue, routingOf, scopeOf } from "./app-detail";
 import { testApp } from "@/test/fixtures";
@@ -357,6 +357,52 @@ describe("AppDetailPage", () => {
     renderTab("overview");
     expect((await screen.findByRole("link", { name: "Usage" })).getAttribute("href")).toBe("/apps/my-app/usage");
     expect(screen.getByRole("link", { name: "Errors" }).getAttribute("href")).toBe("/apps/my-app/errors");
+  });
+
+  it("starts the Usage tab afresh when moving straight from one app to another (Neon 7b-6)", async () => {
+    // Each app answers as itself, with an older page of charges to go to.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const id = /^\/v2\/admin\/apps\/([^/?]+)/u.exec(url)?.[1] ?? "";
+      const body = url.includes("/usage/timeseries")
+        ? { app_id: id, from: "2026-08-01", to: "2026-08-30", buckets: [] }
+        : url.includes("/usage/breakdown")
+          ? { app_id: id, by: "model", from: "2026-08-01", to: "2026-08-30", rows: [] }
+          : url.includes("/charges")
+            ? { app_id: id, limit: 25, next_before: `cursor-of-${id}`, charges: [] }
+            : url === "/v2/admin/providers"
+              ? PROVIDERS
+              : { app: testApp({ id, name: id }) };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const { client } = renderAuthenticated(
+      <>
+        <Link to="/apps/app-one/usage">To app one</Link>
+        <Link to="/apps/app-two/usage">To app two</Link>
+        <Routes>
+          <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+        </Routes>
+      </>,
+      { route: "/apps/app-two/usage" },
+    );
+    // App two is read once, so it is cached when the person comes back to it.
+    await screen.findByRole("heading", { name: "app-two" });
+    await user.click(screen.getByRole("link", { name: "To app one" }));
+    await screen.findByRole("heading", { name: "app-one" });
+    const older = await screen.findByRole("button", { name: "Older" });
+    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+    await user.click(older);
+    const chargeUrls = () => fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/charges"));
+    await waitFor(() => expect(chargeUrls().some((url) => url.includes("cursor-of-app-one"))).toBe(true));
+    const before = chargeUrls().length;
+    await user.click(screen.getByRole("link", { name: "To app two" }));
+    await screen.findByRole("heading", { name: "app-two" });
+    await settled(client);
+    // Back on app two, straight from the cache: its own first page, never app one's cursor.
+    expect(chargeUrls().slice(before).every((url) => !url.includes("before="))).toBe(true);
+    expect(screen.getByRole("button", { name: "Newer" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("sends an explicit null configuration as typed, for the gateway to refuse", async () => {

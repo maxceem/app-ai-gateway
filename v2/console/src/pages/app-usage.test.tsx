@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UsageTab } from "./app-usage";
@@ -93,7 +93,7 @@ describe("Usage tab", () => {
     // no cost, price source unresolved, measured complete.
     renderUsage({
       charges: [
-        charge({ id: "free", status: "provider_error", http_status: 401, error_code: "upstream_error", cost_usd: null, cost_nano: null, price_source: "unresolved", measured: "complete" }),
+        charge({ id: "free", status: "provider_error", http_status: 401, error_code: "upstream_error", cost_usd: null, cost_nano: null, price_source: "unresolved", measured: "complete", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null }),
       ],
     });
     const row = (await screen.findByText("upstream_error")).closest("tr")!;
@@ -106,14 +106,57 @@ describe("Usage tab", () => {
     const longUser = "user-0123456789abcdef0123456789";
     renderUsage({
       charges: [
-        charge({ id: "job", kind: "estimate", owner_type: "job", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null, unit: "image", units: 3, end_user_id: longUser }),
+        charge({ id: "job", kind: "estimate", owner_type: "job", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null, unit: "images", units: 3, end_user_id: longUser }),
         charge({ id: "slice", kind: "slice", owner_type: "session", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null, session_ms: 90_000, end_user_id: null }),
       ],
     });
-    expect(await screen.findByText("3 image")).toBeTruthy();
+    expect(await screen.findByText("3 images")).toBeTruthy();
     expect(screen.getByText("2 min")).toBeTruthy();
     expect(screen.getByText("user-0…6789")).toBeTruthy();
     expect(screen.queryByText(longUser)).toBeNull();
+  });
+
+  it("shows a charge's own unit at its real scale, though its token columns hold 0 (Neon 7b-6)", async () => {
+    // As the gateway writes a job estimate or a speech call: 0 in every token column, the count
+    // in `units`, stored at a thousandth for a fractional unit.
+    const zero = { input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0 };
+    renderUsage({
+      charges: [
+        charge({ id: "video", kind: "estimate", owner_type: "job", ...zero, unit: "video_seconds", units: 5_000, model: "video-model" }),
+        charge({ id: "audio", ...zero, unit: "audio_seconds", units: 2_700, model: "audio-model" }),
+        charge({ id: "credits", ...zero, unit: "credits", units: 10_000, model: "credit-model" }),
+        charge({ id: "less", kind: "correction", ...zero, unit: "video_seconds", units: -2_000, model: "less-model" }),
+        charge({ id: "slice", kind: "slice", owner_type: "session", ...zero, unit: "session_seconds", units: 90_000, session_ms: 90_000, model: "slice-model" }),
+      ],
+    });
+    const measure = async (model: string) => within((await screen.findByText(model)).closest("tr")!).getAllByRole("cell")[4]!.textContent;
+    expect(await measure("video-model")).toBe("5.0 s");
+    expect(await measure("audio-model")).toBe("2.7 s");
+    expect(await measure("credit-model")).toBe("10 credits");
+    expect(await measure("less-model")).toBe("-2.0 s");
+    // A slice's session seconds are its connection time, shown once.
+    expect(await measure("slice-model")).toBe("2 min");
+  });
+
+  it("shows unpriced, not —, for a failed attempt that did report usage (Neon 7b-6)", async () => {
+    renderUsage({
+      charges: [
+        charge({ id: "used", status: "provider_error", error_code: "upstream_error", cost_usd: null, cost_nano: null, price_source: "unresolved", measured: "complete", input_tokens: 500, output_tokens: 100 }),
+      ],
+    });
+    const row = (await screen.findByText("upstream_error")).closest("tr")!;
+    expect(within(row).getByText("unpriced")).toBeTruthy();
+  });
+
+  it("names an install once when it is also the user, as on an App Attest app counting installs (Neon 7b-6)", async () => {
+    const id = "install-0123456789abcdef0123";
+    const base = testApp();
+    const app = {
+      ...base,
+      config: { ...base.config, authentication: { type: "apple_app_attest", end_user: { source: "app_install" } } },
+    } as unknown as App;
+    renderUsage({ app, charges: [charge({ end_user_id: id, install_id: id })] });
+    expect(await screen.findByRole("button", { name: `User ${id}` })).toBeTruthy();
   });
 
   it("shows a correction as its own row naming the charge it corrects", async () => {
@@ -173,6 +216,10 @@ describe("Usage tab", () => {
   });
 
   it("reads a status filter a window of days at a time, says which, and moves it back through the 90 kept (Sol 7b-6)", async () => {
+    // A fixed day: a run that crossed UTC midnight would move the windows under the test.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-11-22T15:00:00Z"));
+    onTestFinished(() => void vi.useRealTimers());
     const user = userEvent.setup();
     const { fetchMock } = renderUsage();
     await screen.findByText("No charges.");

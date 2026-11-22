@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -161,19 +161,23 @@ export function AppDetailPage() {
         ))}
       </nav>
 
-      {active.slug === "overview" ? <OverviewTab app={data} /> : null}
-      {active.slug === "usage" ? (
-        <Suspense fallback={<Skeleton className="h-40 w-full" />}>
-          <UsageTab app={data} />
-        </Suspense>
-      ) : null}
-      {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
-      {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
-      {active.slug === "limits" ? <LimitsTab app={data} /> : null}
-      {active.slug === "users" ? <UsersTab app={data} /> : null}
-      {active.slug === "jobs" ? <JobsTab app={data} /> : null}
-      {active.slug === "keys" ? <KeysTab app={data} /> : null}
-      {active.slug === "settings" ? <SettingsTab app={data} /> : null}
+      {/* Keyed by the app, so moving straight from one cached app to another starts every
+          tab afresh: no page cursor, filter or draft carries over to the wrong app. */}
+      <Fragment key={data.id}>
+        {active.slug === "overview" ? <OverviewTab app={data} /> : null}
+        {active.slug === "usage" ? (
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <UsageTab app={data} />
+          </Suspense>
+        ) : null}
+        {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
+        {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
+        {active.slug === "limits" ? <LimitsTab app={data} /> : null}
+        {active.slug === "users" ? <UsersTab app={data} /> : null}
+        {active.slug === "jobs" ? <JobsTab app={data} /> : null}
+        {active.slug === "keys" ? <KeysTab app={data} /> : null}
+        {active.slug === "settings" ? <SettingsTab app={data} /> : null}
+      </Fragment>
     </div>
   );
 }

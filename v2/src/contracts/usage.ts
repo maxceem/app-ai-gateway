@@ -10,6 +10,10 @@ import { z } from "zod";
 import { CHARGE_KINDS, CHARGE_STATUSES, MEASURED, OWNER_TYPES, PRICE_SOURCES } from "../ledger/labels.ts";
 import { DaySchema, MonthSchema } from "./admin.ts";
 
+/** Units stored at `MILLI_SCALE` (a thousandth each), for clients that show counts. */
+export { MILLI_SCALED_UNITS } from "../ledger/labels.ts";
+export { MILLI_SCALE } from "../money.ts";
+
 const LimitSchema = z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50);
 
 /** The longest day range one read covers: as far back as day totals are kept. */

@@ -350,11 +350,10 @@ export function usePrices() {
 // Usage and diagnostics: read-only, so nothing here invalidates anything
 
 /** The whole account's usage in one UTC month, with a line per app, deleted apps included. */
-export function useAccountUsage(month: string, refetchInterval?: number) {
+export function useAccountUsage(month: string) {
   return useQuery({
     queryKey: keys.accountUsage(month),
     queryFn: () => call("getAccountUsage", { query: { month } }),
-    refetchInterval,
   });
 }
 
@@ -412,11 +411,10 @@ export function useUsageBreakdown(appId: string, query: OperationQuery<"getAppUs
 
 export type ChargeQuery = OperationQuery<"listAppCharges">;
 
-export function useAppCharges(appId: string, query: ChargeQuery, refetchInterval?: number) {
+export function useAppCharges(appId: string, query: ChargeQuery) {
   return useQuery({
     queryKey: keys.charges(appId, query),
     queryFn: () => call("listAppCharges", { params: { app: appId }, query }),
-    refetchInterval,
   });
 }
 

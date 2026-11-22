@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
 import { appIds } from "../src/admin/apps.ts";
-import { CLAIM_WAIT_TOTALS, claimWaitAt, FAILING_NETWORKS, PENDING_USERS } from "../src/admin/diagnostics.ts";
+import { APPLE_FAILURES, CLAIM_WAIT_TOTALS, claimWaitAt, FAILING_NETWORKS, PENDING_USERS } from "../src/admin/diagnostics.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -556,6 +556,13 @@ describe("query plans", () => {
       .all<{ detail: string }>();
     const reads = networks.results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
     expect(reads).toEqual([expect.stringContaining("app_auth_event_app_account_created")]);
+    // Apple's failures: the same window through the same index, counted with no sort.
+    const apple = await env.DB.prepare(`EXPLAIN QUERY PLAN ${APPLE_FAILURES}`)
+      .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
+      .all<{ detail: string }>();
+    const appleReads = apple.results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
+    expect(appleReads).toEqual([expect.stringContaining("app_auth_event_app_account_created")]);
+    expect(apple.results.map((row) => row.detail).join("\n")).not.toContain("TEMP B-TREE");
   });
 });
 

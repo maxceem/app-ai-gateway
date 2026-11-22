@@ -47,6 +47,7 @@ import {
   formatEventTime,
   formatNumber,
   formatPercent,
+  formatUnits,
   inputTokens,
   today,
 } from "@/lib/format";
@@ -259,7 +260,7 @@ export function UsageTab({ app }: { app: App }) {
                 </TableRow>
               ) : (
                 breakdown.data?.rows.map((row) => (
-                  <TableRow key={row.key ?? "none"}>
+                  <TableRow key={row.key === null ? "none:" : `key:${row.key}`}>
                     <TableCell className="font-mono text-xs">
                       {row.key === null ? <span className="font-sans text-muted-foreground">none</span> : (row.label ?? row.key)}
                     </TableCell>
@@ -385,15 +386,22 @@ export function UsageTab({ app }: { app: App }) {
 }
 
 /**
- * What a charge measured: its tokens, or else what its unit counts (a job's
- * images or seconds) and a session slice's connection time. A dash only when
- * it carries none of them.
+ * What a charge measured. A charge billed in tokens shows its tokens. One
+ * billed in another unit (a job's images or seconds, a speech call's
+ * characters) shows that count, read at its real scale (`formatUnits`), and
+ * any tokens it also reported; a session slice its connection time. The
+ * gateway writes 0, not null, into the token columns of such a charge, so
+ * the unit decides, not the tokens. A dash only when it carries none.
  */
-function ChargeMeasure({ tokens, charge }: { tokens: number | null; charge: Pick<Charge, "unit" | "units" | "session_ms"> }) {
-  if (tokens !== null) return <>{formatCompact(tokens)}</>;
+export function ChargeMeasure({ tokens, charge }: { tokens: number | null; charge: Pick<Charge, "unit" | "units" | "session_ms"> }) {
+  const otherUnit = charge.unit !== null && charge.unit !== "tokens" && charge.units !== null;
+  if (!otherUnit && tokens !== null) return <>{formatCompact(tokens)}</>;
+  const sessionShown = charge.session_ms !== null && charge.session_ms > 0;
   const parts: string[] = [];
-  if (charge.units !== null && charge.unit !== null) parts.push(`${formatCompact(charge.units)} ${charge.unit}`);
-  if (charge.session_ms !== null && charge.session_ms > 0) parts.push(formatDuration(charge.session_ms));
+  // A slice's session seconds are its connection time, shown once below.
+  if (otherUnit && !(charge.unit === "session_seconds" && sessionShown)) parts.push(formatUnits(charge.unit!, charge.units!));
+  if (otherUnit && tokens !== null && tokens !== 0) parts.push(`${formatCompact(tokens)} tokens`);
+  if (sessionShown) parts.push(formatDuration(charge.session_ms));
   return parts.length === 0 ? <>—</> : <span className="whitespace-nowrap">{parts.join(" · ")}</span>;
 }
 
@@ -419,7 +427,7 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
         <FullIds
           ids={[
             ...(charge.end_user_id ? [{ label: "User", value: charge.end_user_id }] : []),
-            ...(installs && charge.install_id ? [{ label: "Install", value: charge.install_id }] : []),
+            ...(installs && charge.install_id && charge.install_id !== charge.end_user_id ? [{ label: "Install", value: charge.install_id }] : []),
           ]}
         >
           <span className="block">
@@ -464,17 +472,40 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
   );
 }
 
+type ChargeCostFields = Pick<
+  Charge,
+  | "cost_usd"
+  | "price_source"
+  | "price_is_estimate"
+  | "measured"
+  | "status"
+  | "input_tokens"
+  | "cached_input_tokens"
+  | "cache_write_tokens"
+  | "output_tokens"
+  | "units"
+  | "session_ms"
+>;
+
+/** Whether the provider reported any usage for a charge: the same test as the ledger's no-usage branch. */
+function reportedUsage(charge: ChargeCostFields): boolean {
+  return [charge.input_tokens, charge.cached_input_tokens, charge.cache_write_tokens, charge.output_tokens, charge.units, charge.session_ms].some(
+    (value) => value !== null,
+  );
+}
+
 /**
  * A charge's cost. A failed attempt that cost nothing has none, shown as —
  * rather than $0.00. An unpriced charge says so rather than claim $0, and an
  * estimate (a job before its final figure, or a mode with no exact price)
  * reads ≈.
  */
-export function ChargeCost({ charge }: { charge: Pick<Charge, "cost_usd" | "price_source" | "price_is_estimate" | "measured" | "status"> }) {
+export function ChargeCost({ charge }: { charge: ChargeCostFields }) {
   // A failed attempt that reported no usage was billed nothing: its cost is
   // empty and its measure complete, whatever price source it was written
-  // with (`call-charge.ts`). That is not a cost still unknown.
-  if (charge.cost_usd === null && charge.status !== "ok" && charge.measured === "complete") {
+  // with (`call-charge.ts`). That is not a cost still unknown. A failed
+  // attempt that did report usage, on a model with no price yet, is unpriced.
+  if (charge.cost_usd === null && charge.status !== "ok" && charge.measured === "complete" && !reportedUsage(charge)) {
     return (
       <Hint content="Failed before the provider reported any usage: nothing was billed.">
         <span className="text-muted-foreground">—</span>

@@ -1,7 +1,7 @@
-import { useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /**
  * A long identifier shortened to its two ends, `7CHxeN…eQu2`: enough to tell
@@ -12,40 +12,52 @@ export function shortId(value: string): string {
 }
 
 /**
- * Shows the full identifiers behind shortened ones on hover. The tooltip stays
- * open while the pointer is inside it, so each value can be selected, or
- * copied with its button.
+ * Shortened identifiers that open their full values: a button, so a keyboard
+ * reaches it as well as a pointer, labelled with the full values for a screen
+ * reader. The panel it opens stays open while you select or copy a value.
  */
-export function FullIds({ ids, children }: { ids: { label: string; value: string }[]; children: ReactElement }) {
-  if (!ids.some((id) => shortId(id.value) !== id.value)) return children;
+export function FullIds({ ids, children }: { ids: { label: string; value: string }[]; children: ReactNode }) {
+  if (!ids.some((id) => shortId(id.value) !== id.value)) return <>{children}</>;
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="bottom" align="start" className="max-w-none text-left select-text [text-wrap:wrap]">
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={ids.map((id) => `${id.label} ${id.value}`).join(", ")}
+          className="block cursor-pointer rounded-sm text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          {children}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="bottom" align="start" className="text-xs select-text">
         <dl className="grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-1">
           {ids.map((id) => (
             <FullId key={id.label} label={id.label} value={id.value} />
           ))}
         </dl>
-      </TooltipContent>
-    </Tooltip>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 function FullId({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The "copied" tick resets after a moment; never after the panel is gone.
+  useEffect(() => () => clearTimeout(timer.current), []);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       toast.error("Could not copy. Select the value and copy it manually.");
     }
   };
   return (
     <>
-      <dt className="opacity-70">{label}</dt>
+      <dt className="text-muted-foreground">{label}</dt>
       <dd className="font-mono">{value}</dd>
       <dd>
         <button

@@ -1,3 +1,5 @@
+import { MILLI_SCALE, MILLI_SCALED_UNITS } from "@contracts/usage";
+
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const plain = new Intl.NumberFormat("en-US");
 const percent = new Intl.NumberFormat("en-US", {
@@ -10,7 +12,7 @@ export const formatNumber = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : plain.format(value);
 
 export const formatCompact = (value: number | null | undefined): string =>
-  value === null || value === undefined ? "—" : value < 10_000 ? plain.format(value) : compact.format(value);
+  value === null || value === undefined ? "—" : Math.abs(value) < 10_000 ? plain.format(value) : compact.format(value);
 
 export const formatPercent = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : percent.format(value);
@@ -146,3 +148,20 @@ export function recentMonths(count: number): string[] {
   }
   return months;
 }
+
+const MILLI_SCALED: ReadonlySet<string> = new Set(MILLI_SCALED_UNITS);
+const TIME_UNITS: ReadonlySet<string> = new Set(["audio_seconds", "video_seconds", "session_seconds"]);
+
+/**
+ * A count of a billed unit other than tokens, as a person reads it. The
+ * gateway stores fractional units at a thousandth (`MILLI_SCALED_UNITS`), so
+ * 2.7 seconds arrives as 2700: seconds read as a duration, other such units
+ * as their real amount. A correction's negative count keeps its sign.
+ */
+export function formatUnits(unit: string, units: number): string {
+  const sign = units < 0 ? "-" : "";
+  if (TIME_UNITS.has(unit)) return `${sign}${formatDuration(Math.abs(units))}`;
+  const amount = MILLI_SCALED.has(unit) ? units / MILLI_SCALE : units;
+  return `${formatCompact(amount)} ${unit.replaceAll("_", " ")}`;
+}
+

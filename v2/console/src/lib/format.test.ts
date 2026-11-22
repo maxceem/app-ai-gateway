@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   cachedInputRate,
+  formatCompact,
   formatCost,
+  formatUnits,
   formatPercent,
   inputTokens,
   totalTokens,
@@ -64,3 +66,23 @@ describe("token formatting", () => {
     expect(formatPercent(cachedInputRate(empty))).toBe("—");
   });
 });
+
+describe("unit formatting", () => {
+  it("reads a fractional unit at its real scale, and a plain count as it is (Neon 7b-6)", () => {
+    expect(formatUnits("video_seconds", 5_000)).toBe("5.0 s");
+    expect(formatUnits("audio_seconds", 2_700)).toBe("2.7 s");
+    expect(formatUnits("session_seconds", 90_000)).toBe("2 min");
+    expect(formatUnits("credits", 10_000)).toBe("10 credits");
+    expect(formatUnits("megapixels", 1_000)).toBe("1 megapixels");
+    expect(formatUnits("model_units", 2_500)).toBe("2.5 model units");
+    expect(formatUnits("images", 3)).toBe("3 images");
+    expect(formatUnits("characters", 12_000)).toBe("12K characters");
+  });
+
+  it("keeps a correction's sign", () => {
+    expect(formatUnits("video_seconds", -2_000)).toBe("-2.0 s");
+    expect(formatUnits("credits", -1_500)).toBe("-1.5 credits");
+    expect(formatCompact(-25_000)).toBe("-25K");
+  });
+});
+

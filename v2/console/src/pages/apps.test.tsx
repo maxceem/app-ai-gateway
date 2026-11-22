@@ -66,6 +66,19 @@ describe("AppsPage", () => {
     expect(fetchMock.mock.calls.some(([input]) => /^\/v2\/admin\/usage\?month=\d{4}-\d{2}$/u.test(String(input)))).toBe(true);
   });
 
+  it("shows unavailable, never old figures, when the month's usage cannot be read (Neon 7b-6)", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith("/v2/admin/usage")
+        ? new Response(JSON.stringify({ error: { code: "internal_error", message: "No" } }), { status: 500 })
+        : new Response(JSON.stringify({ apps: [testApp()] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderAuthenticated(<AppsPage />);
+    expect((await screen.findAllByText("unavailable")).length).toBe(4);
+    expect(screen.queryByText("all your apps")).toBeNull();
+    expect(screen.queryByText(/failed$/u)).toBeNull();
+  });
+
   it("creates a server app and shows its first key once", async () => {
     const created = { app: testApp({ id: "new-app" }), api_key: { id: "k1", name: "Default", key: "agw_app_secret", key_prefix: "agw_app_", created_at: "2026-11-01T00:00:00.000Z" } };
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>

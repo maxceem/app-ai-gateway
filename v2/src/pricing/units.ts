@@ -12,12 +12,13 @@
  * per million characters. The cost is `count × rate ÷ per`, rounded up once
  * (`costOfRates` in `./tokens.ts`, over `priceUnitsMixed`).
  */
+import { MILLI_SCALED_UNITS } from "../ledger/labels.ts";
 import { MILLI_SCALE } from "../money.ts";
 import { requestMeasuresOf, type OperationDescription, type Unit } from "../providers/operation.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 
 /** Units stored at `MILLI_SCALE`; every other unit is a plain count. */
-const MILLI_UNITS: ReadonlySet<Unit> = new Set<Unit>(["audio_seconds", "session_seconds", "video_seconds", "model_units", "credits", "megapixels"]);
+const MILLI_UNITS: ReadonlySet<Unit> = new Set<Unit>(MILLI_SCALED_UNITS satisfies readonly Unit[]);
 
 /** The scale a unit's count is stored at: 1000 for a unit that can be fractional, else 1. */
 export function unitScale(unit: Unit): number {
