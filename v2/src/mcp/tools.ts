@@ -45,6 +45,9 @@ export const MCP_READ_OPERATIONS = [
   "getAppUsageTimeseries",
   "getAppUsageBreakdown",
   "listAppCharges",
+  "getAppAuthEventSummary",
+  "listAppAuthEvents",
+  "listAppRejectionEvents",
   "getOperation",
 ] as const satisfies readonly OperationName[];
 
@@ -624,6 +627,54 @@ export const MCP_TOOLS: readonly McpTool[] = [
     summary: (result) => {
       const more = result.next_before === null ? "" : ` More: pass before "${result.next_before}".`;
       return `${plural(result.charges.length, "charge")} for ${result.app_id}.${more}`;
+    },
+  }),
+  tool({
+    name: "get_auth_event_summary",
+    title: "Summarize an app's sign-in health",
+    description:
+      "Returns an app's sign-in health over a trailing window of UTC days (days, 1 to 90, default 30): attempts per day by event, outcome and reason, the networks failures came from, failed charges and sampled refusals per day, the token-exchange success rate, how long users waited for an entitlement claim, and how many wait now. Start here when an app's users cannot sign in or get answers, then drill in with list_auth_events or list_rejection_events.",
+    operation: "getAppAuthEventSummary",
+    cli: {
+      command: "app auth-event summary",
+      args: ["app"],
+      view: { rows: "daily", columns: ["date", "event", "outcome", "reason", "count"] },
+    },
+    summary: (result) => {
+      const attempts = result.daily.reduce((sum, day) => sum + day.count, 0);
+      return `${plural(attempts, "sign-in attempt")} for ${result.app_id} from ${result.from} to ${result.to}, ${result.pending_users} waiting on an entitlement claim.`;
+    },
+  }),
+  tool({
+    name: "list_auth_events",
+    title: "List an app's sign-in attempts",
+    description:
+      "Returns an app's sign-in attempts one each, newest first: unused challenges, App Attest registrations and token exchanges, with the outcome and reason. Filter by event, outcome, user and a day range; page back with before. Kept 90 days. An event or outcome filter covers at most 31 days, by default the last 30, unless user is given too. Use it to explain why an app's users cannot sign in.",
+    operation: "listAppAuthEvents",
+    cli: {
+      command: "app auth-event list",
+      args: ["app"],
+      view: { rows: "events", columns: ["created_at=Time", "event", "outcome", "reason", "user_id=User", "network_name=Network"] },
+    },
+    summary: (result) => {
+      const more = result.next_before === null ? "" : ` More: pass before "${result.next_before}".`;
+      return `${plural(result.events.length, "sign-in attempt")} for ${result.app_id}.${more}`;
+    },
+  }),
+  tool({
+    name: "list_rejection_events",
+    title: "List an app's refused requests",
+    description:
+      "Returns samples of the requests the gateway refused before they reached a provider, newest first: a limit, a model or path the app does not allow, a blocked user, with the reason and whose limit it was (scope). At most one sample a minute per caller, so counts are not exact totals. Filter by reason, scope, user and a day range; page back with before. Kept 90 days. A reason or scope filter covers at most 31 days, by default the last 30, unless user is given too.",
+    operation: "listAppRejectionEvents",
+    cli: {
+      command: "app rejection list",
+      args: ["app"],
+      view: { rows: "events", columns: ["created_at=Time", "reason", "scope", "model", "user_id=User"] },
+    },
+    summary: (result) => {
+      const more = result.next_before === null ? "" : ` More: pass before "${result.next_before}".`;
+      return `${plural(result.events.length, "refusal sample")} for ${result.app_id}.${more}`;
     },
   }),
   tool({

@@ -46,6 +46,8 @@ the account, the person, their role and the grant.
 - \`get_usage_breakdown\`, \`get_usage_timeseries\`: an app's usage by one dimension, or by day.
 - \`list_app_charges\`: an app's charges one by one, kept 90 days.
 - \`list_app_jobs\`: an app's jobs, and which estimates never settled.
+- \`get_auth_event_summary\`: why an app's users cannot sign in or get answers, over the last days.
+- \`list_auth_events\`, \`list_rejection_events\`: an app's sign-in attempts and refused requests one by one, kept 90 days.
 - \`get_operation\`: where something a creating tool started stands.
 
 ## Changing

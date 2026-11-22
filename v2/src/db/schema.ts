@@ -219,10 +219,18 @@ export const appEndUser = sqliteTable(
     status: text("status").$type<EndUserStatus>().notNull().default("active"),
     createdAt: integer("created_at").notNull(),
     lastSeenAt: integer("last_seen_at"),
+    /**
+     * When an issuer token for this user was first refused for a missing
+     * entitlement claim, until a sign-in of theirs succeeds: how long a paid
+     * entitlement takes to reach the issuer. Measurement only, as v1.
+     */
+    claimPendingSince: integer("claim_pending_since"),
   },
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
     check("app_end_user_status", oneOf(table.status, ["active", "blocked"])),
+    // The users still waiting on a claim: few, and counted by the auth-event summary.
+    index("app_end_user_claim_pending").on(table.appId).where(sql`${table.claimPendingSince} IS NOT NULL`),
   ],
 );
 
@@ -674,6 +682,8 @@ export const appAuthEvent = sqliteTable(
     networkAsn: integer("network_asn"),
     networkName: text("network_name"),
     latencyMs: integer("latency_ms"),
+    /** For a sign-in that closed a user's wait for an entitlement claim: how long it was open, in milliseconds. */
+    claimDelayMs: integer("claim_delay_ms"),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [

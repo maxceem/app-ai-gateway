@@ -906,8 +906,12 @@ export async function deleteApp(c: AdminContext): Promise<Response> {
     throw invalid("Pass ?confirm=<app-id> to delete an app");
   }
   await appRow(c.env.DB, actor.accountId, appId);
-  // The ledger keeps its history; everything that lets the app sign in goes.
+  // The ledger keeps its history; everything that lets the app sign in goes,
+  // and so do its sign-in and refusal diagnostics, as v1: they are read only
+  // through the app, and an app id can come back in another account.
   await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM app_auth_event WHERE app_id = ?").bind(appId),
+    c.env.DB.prepare("DELETE FROM app_rejection_event WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_attest_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_auth_challenge WHERE app_id = ?").bind(appId),

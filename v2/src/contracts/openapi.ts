@@ -100,6 +100,7 @@ export function createOpenAPIDocument() {
       { name: "Admin providers", description: "Provider connections and their keys. A key is write-only: only its hint is ever returned." },
       { name: "Admin app keys", description: "Keys for server apps." },
       { name: "Admin usage", description: "What your apps used and cost: totals for a month, per day and by dimension from day totals kept 400 days, and the charges themselves, kept 90 days." },
+      { name: "Admin diagnostics", description: "Why your apps' users cannot sign in or get answers: sign-in attempts, refused requests and a summary of both, kept 90 days." },
       { name: "Admin access", description: "Who is calling, your accounts, management keys, and CLI and MCP sign-ins." },
       { name: "Admin operations", description: "Writes an agent hands to a person: where each stands, and revealing a key one created." },
       { name: "Console", description: "The console's own pages: OAuth consent, entering a CLI sign-in code, and approving a key an agent asked for. Called only from the console's origin." },

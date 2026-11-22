@@ -53,6 +53,7 @@ import { createProvider, deleteProvider, getProvider, listProviders, testProvide
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
 import { listAppJobs } from "../admin/jobs.ts";
 import { getAccountUsage, getAppUsage, getAppUsageBreakdown, getAppUsageTimeseries, listAppCharges } from "../admin/usage.ts";
+import { getAppAuthEventSummary, listAppAuthEvents, listAppRejectionEvents } from "../admin/diagnostics.ts";
 import { getAppConversationFile, listAppConversations } from "../admin/conversations.ts";
 import { CATALOG, type OperationName } from "../contracts/catalog.ts";
 import { honoPath } from "../contracts/client-catalog.ts";
@@ -93,6 +94,9 @@ admin.get(path("getAppUsage"), getAppUsage);
 admin.get(path("getAppUsageTimeseries"), getAppUsageTimeseries);
 admin.get(path("getAppUsageBreakdown"), getAppUsageBreakdown);
 admin.get(path("listAppCharges"), listAppCharges);
+admin.get(path("getAppAuthEventSummary"), getAppAuthEventSummary);
+admin.get(path("listAppAuthEvents"), listAppAuthEvents);
+admin.get(path("listAppRejectionEvents"), listAppRejectionEvents);
 admin.get(path("listAppConversations"), listAppConversations);
 admin.get(path("getAppConversationFile"), getAppConversationFile);
 admin.get(path("getAppUser"), getAppUser);
