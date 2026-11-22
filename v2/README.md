@@ -151,8 +151,9 @@ deploy: the Worker uploads `console/dist/` as its static files.
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,
 then apply `0005`. The new Worker works with the column still there.
-The same goes for `0012_drop_account_activation.sql`: Workers built before it write
-`account_activation` on every sign-up. Apply `0011` and deploy the new Worker first, then apply `0012`.
+Migration `0011_email_pending_verification.sql` follows the usual order: apply it, then deploy.
+The old `account_activation` table stays for now: this Worker no longer writes it, while older
+ones still do. A later release drops it, once every deployment runs a Worker that does not.
 
 Email verification can be turned on at any time. Only an account a password sign-up makes while it
 is on waits for its owner's address, and only until that address is verified: by the emailed link,

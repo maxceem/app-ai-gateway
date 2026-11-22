@@ -19,6 +19,7 @@ import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
 import { log } from "../core/log.ts";
+import { secretStrongEnough } from "../core/secret-strength.ts";
 import { emailSender, emailSetup } from "../email/sender.ts";
 import { V2_PATH } from "./settings.ts";
 import { VERIFICATION_TOKEN_MAX_LENGTH } from "../contracts/access.ts";
@@ -82,8 +83,17 @@ function fromBase64url(text: string): Uint8Array<ArrayBuffer> | null {
   }
 }
 
-/** The link key: HKDF over `BETTER_AUTH_SECRET`, for this purpose alone. */
+/**
+ * The link key: HKDF over `BETTER_AUTH_SECRET`, for this purpose alone. A
+ * missing, empty or short secret is refused with a 503, for signing and
+ * confirming alike: HKDF over empty key material gives a key anyone can
+ * compute, and so a link anyone can forge (Neon 7b-7).
+ */
 async function linkKey(env: Env): Promise<CryptoKey> {
+  if (!secretStrongEnough(env.BETTER_AUTH_SECRET)) {
+    log("error", "email_link_secret_invalid", {});
+    throw new GatewayError(503, "service_unavailable", "Email verification is not configured on this deployment (BETTER_AUTH_SECRET)");
+  }
   const base = await crypto.subtle.importKey("raw", encoder.encode(env.BETTER_AUTH_SECRET), "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
     { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: encoder.encode(LINK_KEY_INFO) },
@@ -194,10 +204,23 @@ export async function sendVerificationEmail(
 }
 
 /**
+ * The person a password sign-up's answer made, where they still need a
+ * verification link: read from the answer once, before it is returned. A
+ * sign-in that arrives verified — Google's — needs none.
+ */
+export async function personToVerify(response: Response): Promise<{ id: string; email: string } | null> {
+  if (!response.ok) return null;
+  const body = (await response.clone().json().catch(() => undefined)) as
+    | { user?: { id?: unknown; email?: unknown; emailVerified?: unknown } }
+    | undefined;
+  const user = body?.user;
+  if (typeof user?.id !== "string" || typeof user.email !== "string" || user.emailVerified !== false) return null;
+  return { id: user.id, email: user.email };
+}
+
+/**
  * Sends the first verification link to a person who just created a sign-in
- * with a password, from the sign-up's own `response`, on a deployment that
- * verifies addresses. A sign-in that arrives verified — Google's — is never
- * sent one.
+ * with a password, on a deployment that verifies addresses.
  *
  * A failure is logged and goes no further: the sign-in exists either way, and
  * the console offers to send the link again.
@@ -205,15 +228,10 @@ export async function sendVerificationEmail(
 export async function sendFirstVerificationEmail(
   env: Env,
   consoleOrigin: string,
-  response: Response,
+  user: { readonly id: string; readonly email: string },
   returnTo: string | null,
 ): Promise<void> {
-  if (!response.ok || emailSetup(env).state === "off") return;
-  const body = (await response.clone().json().catch(() => undefined)) as
-    | { user?: { id?: unknown; email?: unknown; emailVerified?: unknown } }
-    | undefined;
-  const user = body?.user;
-  if (typeof user?.id !== "string" || typeof user.email !== "string" || user.emailVerified !== false) return;
+  if (emailSetup(env).state === "off") return;
   try {
     await enforceEndpointRateLimit(env, "verification_email", user.id);
     await sendVerificationEmail(env, consoleOrigin, { id: user.id, email: user.email }, returnTo);

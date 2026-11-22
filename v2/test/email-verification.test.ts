@@ -324,6 +324,25 @@ describe("verification links", () => {
     expect(await confirmed.json()).toMatchObject({ returnTo: longest });
   });
 
+  it("are neither signed nor confirmed without a signing secret of at least 32 bytes (Neon 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: verifying, sent } = deployment({ email: true });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await sendVerificationEmail(verifying, CONSOLE, { id: owner.userId, email: owner.email }, null);
+    const token = tokenFrom(sent[0]!);
+    for (const secret of [undefined, "", "too short"]) {
+      const weak = { ...verifying, BETTER_AUTH_SECRET: secret } as unknown as Env;
+      await expect(confirmEmailVerification(weak, token)).rejects.toMatchObject({ status: 503, code: "service_unavailable" });
+      await expect(sendVerificationEmail(weak, CONSOLE, { id: owner.userId, email: owner.email }, null))
+        .rejects.toMatchObject({ status: 503 });
+      // A link signed with empty key material, which anyone could compute, verifies nothing either.
+      const confirmed = await call("/v2/console/email-verification/confirm", { environment: weak, json: { token }, headers: { origin: CONSOLE, "x-console-request": "1" } });
+      expect(confirmed.status).toBe(503);
+    }
+    expect(await env.DB.prepare("SELECT email_verified AS v FROM mgmt_user WHERE id = ?").bind(owner.userId).first("v")).toBe(0);
+  });
+
   it("are not sent where the deployment has no sender address, which health reports", async () => {
     const owner = await unverifiedOwner();
     const { env: broken, binding } = deployment({ email: true, from: null });
@@ -444,6 +463,23 @@ describe("sending a link from the console", () => {
     const sixth = await send(verifying, owner.cookie);
     expect(sixth.status).toBe(429);
     expect(binding.send).toHaveBeenCalledTimes(5);
+  });
+
+  it("spends none of the hourly sends while the email settings are incomplete (Neon 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: broken, binding } = deployment({ email: true, from: null });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const refused = await send(broken, owner.cookie);
+      expect(refused.status).toBe(503);
+      expect(await errorCode(refused)).toBe("email_unavailable");
+    }
+    expect(binding.send).not.toHaveBeenCalled();
+    // The settings fixed, the person still has every send of the hour.
+    const { env: fixed } = deployment({ email: true });
+    const sent = await send(fixed, owner.cookie);
+    expect(sent.status, await sent.clone().text()).toBe(200);
   });
 
   it("sends a link the confirmation takes, dropping a return path longer than it allows in bytes (Sol 7b-7 round 3)", async () => {

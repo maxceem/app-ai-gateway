@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AuthLayout } from "@/pages/auth-shell";
 import { authErrorMessage } from "@/lib/auth-errors";
-import { DEFAULT_LANDING, isSafeReturnPath, routerPath } from "@/lib/auth-redirect";
+import { DEFAULT_LANDING, isRetryableError, isSafeReturnPath, routerPath } from "@/lib/auth-redirect";
 import { useConfirmEmailVerification } from "@/lib/queries";
 
 /**
@@ -86,6 +86,19 @@ export function VerifyEmailPage() {
                   <Link to={DEFAULT_LANDING}>Open the console</Link>
                 </Button>
               )}
+            </>
+          ) : confirm.isError && isRetryableError(confirm.error) ? (
+            // A passing failure (the network, a busy server): the token is still in memory, so the
+            // person can try again here; a reload would lose it, since it left the address bar.
+            <>
+              <Alert variant="destructive" role="alert">
+                <MailX />
+                <AlertTitle>Could not verify yet</AlertTitle>
+                <AlertDescription>{authErrorMessage(confirm.error, "The server did not answer")}. Try again in a moment.</AlertDescription>
+              </Alert>
+              <Button className="w-full" onClick={() => confirm.mutate(token)}>
+                Try again
+              </Button>
             </>
           ) : confirm.isError ? (
             <Refused message={authErrorMessage(confirm.error, "This link could not be confirmed")} />

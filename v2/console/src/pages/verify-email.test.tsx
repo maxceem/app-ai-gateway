@@ -76,6 +76,26 @@ describe("VerifyEmailPage", () => {
     expect(screen.getByText(/not valid any more/i)).toBeTruthy();
   });
 
+  it("offers Try again on a passing failure, with the token kept in memory (Neon 7b-7)", async () => {
+    const bodies: unknown[] = [];
+    const json = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (!String(input).startsWith(CONFIRM_URL)) return json({}, 404);
+        bodies.push(JSON.parse(String(init?.body)));
+        return bodies.length === 1
+          ? json({ error: { code: "service_unavailable", message: "Busy" } }, 503)
+          : json({ email: "person@example.test", returnTo: null }, 200);
+      }),
+    );
+    renderPublic(<VerifyEmailPage />, { route: "/verify-email#token=abc.def", path: "/verify-email" });
+    await pressVerify();
+    await userEvent.click(await screen.findByRole("button", { name: /try again/i }));
+    expect(await screen.findByText(/person@example.test is verified/i)).toBeTruthy();
+    expect(bodies).toEqual([{ token: "abc.def" }, { token: "abc.def" }]);
+  });
+
   it("asks for the link again when it carries no token", () => {
     stubApi({});
     renderPublic(<VerifyEmailPage />, { route: "/verify-email", path: "/verify-email" });

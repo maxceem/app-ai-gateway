@@ -14,7 +14,7 @@
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { createIdentity, IDENTITY_BASE_PATH, oauthRelayOrigin } from "../auth/identity.ts";
-import { consoleReturnPath, sendFirstVerificationEmail } from "../auth/email-verification.ts";
+import { consoleReturnPath, personToVerify, sendFirstVerificationEmail } from "../auth/email-verification.ts";
 import { consoleOrigin, registrationAllowed, V2_PATH } from "../auth/settings.ts";
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -159,10 +159,10 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   }
   const origin = consoleOrigin(c.env);
   if (signUp && response.ok && origin !== null && emailVerificationRequired(c.env)) {
-    // Sent after the answer, so a slow mail server never holds the sign-up up. The copy is taken
-    // now, before the answer's own body goes out; a failure is logged there, as before.
-    const copy = response.clone();
-    c.executionCtx.waitUntil(sendFirstVerificationEmail(c.env, origin, copy, consoleReturnPath(signUpCallback)));
+    // Sent after the answer, so a slow mail server never holds the sign-up up. The person is
+    // read from the answer once, now; a failure is logged there, as before.
+    const person = await personToVerify(response);
+    if (person !== null) c.executionCtx.waitUntil(sendFirstVerificationEmail(c.env, origin, person, consoleReturnPath(signUpCallback)));
   }
   return response;
 });
