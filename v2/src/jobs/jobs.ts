@@ -698,7 +698,10 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
 /**
  * Whether usage retention may already have deleted the job's charges: it
  * started longer ago than charges are kept. The gateway's job id is a
- * time-ordered id (`timeOrderedId`), so this needs no lookup.
+ * time-ordered id (`timeOrderedId`), so this needs no lookup. Such a job gets
+ * no new open work ({@link keepFigure}): open work would hold its owner back
+ * from retention while part of its ledger may already be gone. A correction
+ * of its charges is refused in the ledger itself (`../ledger/corrections.ts`).
  */
 export function jobRetired(job: string, now: number): boolean {
   const started = timeOfOrderedId(job);
@@ -760,9 +763,14 @@ export const FIGURE_D1_DEADLINE_MS = 3_000;
  * Keeps a figure that could not settle yet, for the sweep: as its own row in
  * D1; while D1 cannot take it, in the failed-write store; when neither works,
  * logged in full, to be settled by hand. True when it was kept somewhere the
- * sweep will find it.
+ * sweep will find it, or needs no keeping: a job past the retention window.
  */
 export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
+  if (jobRetired(ref.job, now)) {
+    // Past the window: nothing will settle against it again, so there is nothing to keep.
+    log("warn", "job_retired", { app: ref.appId, job: ref.job });
+    return true;
+  }
   const row = figureWork(ref, facts, now);
   try {
     await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");

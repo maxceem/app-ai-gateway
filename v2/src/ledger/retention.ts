@@ -20,14 +20,18 @@
  * days, so in practice nothing old is held back. Work given up is kept 90
  * days, so the console can show it, and is then deleted.
  *
- * Charges go by owner: a call's, a job's or a session's charges, corrections
- * included, are deleted together in one statement, once every one of them is
- * past the window. A correction always has its charge's owner and usage date,
- * and a session's total is a correction of the session. So no reader ever sees
- * a correction without the charge it corrects, or a session's total without
- * its slices, and a cost never turns negative halfway through retention.
- * Once the charge is gone, nothing more is written against it
- * (`./corrections.ts`).
+ * Charges go by owner (a call, a job or a session). Once every charge of an
+ * owner is past the window, with no open work and no open session, the owner
+ * is frozen: nothing more is written against it (`./corrections.ts` refuses a
+ * correction of a charge past the window; `../jobs/jobs.ts` keeps no figure
+ * for a job past it). Its charges are then deleted in two plain, bounded
+ * passes: its corrections first, then the rest once no correction is left.
+ * A correction always has its charge's owner and usage date, and a session's
+ * total is a correction of the session. So a reader between chunks never sees
+ * a correction without what it corrects, and a cost never turns negative. It
+ * may briefly see a charge without its correction (an estimate without its
+ * settlement), but only in months already past the 90 days usage per user is
+ * kept, as documented.
  *
  * Every pass picks its rows straight from its rule, through an index, a chunk
  * at a time, taking turns with the nightly run's other passes
@@ -63,49 +67,49 @@ function gaveUpWork(cutoffMs: number): Deletable {
   };
 }
 
+/** The first usage day still inside the window at `now`: a charge dated before it is past the window. */
+export function detailCutoffDay(now: number): string {
+  return dayBefore(now, USAGE_DETAIL_RETENTION_DAYS);
+}
+
 /**
- * Charges dated before `?1`, picked one at a time. Kept: a charge with open
- * work the sweep has not finished or given up on; a slice of a session not
- * settled yet; and any charge whose owner still has a charge on or after `?1`
- * (so an owner's charges always go together). Served by `charge_usage_day`,
- * and `charge_owner` for the checks.
+ * Whether charge `c`'s owner is frozen: no open work the sweep has not
+ * finished or given up on, not a session still open, and no charge on or
+ * after `?1`. Served by `open_work_owner`, the session's key and
+ * `charge_owner`.
  */
-function oldCharges(cutoffDay: string): Deletable {
-  return {
-    table: "charge",
-    rowids: `SELECT c.rowid FROM charge AS c
-      WHERE c.usage_day < ?1
-        AND NOT EXISTS (SELECT 1 FROM open_work AS w
+const FROZEN_OWNER = `NOT EXISTS (SELECT 1 FROM open_work AS w
                         WHERE w.owner_type = c.owner_type AND w.owner_id = c.owner_id AND w.gave_up_at IS NULL)
         AND NOT (c.owner_type = 'session'
                  AND EXISTS (SELECT 1 FROM session AS s WHERE s.id = c.owner_id AND s.settlement = 'open'))
         AND NOT EXISTS (SELECT 1 FROM charge AS y
-                        WHERE y.owner_type = c.owner_type AND y.owner_id = c.owner_id AND y.usage_day >= ?1)`,
+                        WHERE y.owner_type = c.owner_type AND y.owner_id = c.owner_id AND y.usage_day >= ?1)`;
+
+/** Corrections dated before `?1` of frozen owners. Served by `charge_correction_day`. */
+function oldCorrections(cutoffDay: string): Deletable {
+  return {
+    table: "charge",
+    rowids: `SELECT c.rowid FROM charge AS c
+      WHERE c.kind = 'correction' AND c.usage_day < ?1
+        AND ${FROZEN_OWNER}`,
     params: [cutoffDay],
   };
 }
 
 /**
- * Deletes old charges a chunk at a time, each picked charge with every other
- * charge of its owner, in one statement: all or none of an owner's charges
- * are ever in the ledger as far as any reader can tell. A chunk picks at most
- * `rows` charges; their owners' other charges (corrections, a session's other
- * slices) come with them, and the count it returns is every row deleted, so
- * the run's row allowance is charged for what was written.
+ * Charges other than corrections, dated before `?1`, of frozen owners with no
+ * correction left: an owner's corrections always go first. Served by
+ * `charge_usage_day`, and `charge_owner` for the checks.
  */
-function chargesPass(cutoffDay: string): Pass {
-  const rule = oldCharges(cutoffDay);
+function oldOriginals(cutoffDay: string): Deletable {
   return {
-    name: "usage_retention_charges",
-    statements: 1,
-    rowWrites: ROW_WRITES.charge,
-    async chunk(db, rows) {
-      const statement = db.prepare(
-        `DELETE FROM charge WHERE (owner_type, owner_id) IN (
-           SELECT c.owner_type, c.owner_id FROM charge AS c WHERE c.rowid IN (${rule.rowids} LIMIT ?2))`,
-      );
-      return (await statement.bind(...rule.params, rows).run()).meta.changes ?? 0;
-    },
+    table: "charge",
+    rowids: `SELECT c.rowid FROM charge AS c
+      WHERE c.usage_day < ?1 AND c.kind != 'correction'
+        AND ${FROZEN_OWNER}
+        AND NOT EXISTS (SELECT 1 FROM charge AS z
+                        WHERE z.owner_type = c.owner_type AND z.owner_id = c.owner_id AND z.kind = 'correction')`,
+    params: [cutoffDay],
   };
 }
 
@@ -276,10 +280,11 @@ function firstKeptMonthDay(now: number, days: number): string {
 
 /** The rows each delete pass picks at `now`, in the order the passes run. */
 export function usageRetentionRules(now: number) {
-  const detailDay = dayBefore(now, USAGE_DETAIL_RETENTION_DAYS);
+  const detailDay = detailCutoffDay(now);
   return {
     gaveUpWork: gaveUpWork(now - GAVE_UP_WORK_RETENTION_DAYS * DAY_MS),
-    charges: oldCharges(detailDay),
+    corrections: oldCorrections(detailDay),
+    charges: oldOriginals(detailDay),
     sessions: oldSessions(now - USAGE_DETAIL_RETENTION_DAYS * DAY_MS),
     budgetDays: oldBudgetDays(detailDay),
   } as const;
@@ -288,13 +293,15 @@ export function usageRetentionRules(now: number) {
 /**
  * The usage retention passes at `now`, in the order they take their turns:
  * open work given up long ago first (given-up work holds no charge back, so
- * this order is only tidiness); the charges before the sessions they belong to.
+ * this order is only tidiness); corrections before the charges they correct;
+ * the charges before the sessions they belong to.
  */
 export function usageRetentionPasses(now: number): Pass[] {
   const rules = usageRetentionRules(now);
   return [
     deletePass("usage_retention_gave_up_work", rules.gaveUpWork),
-    chargesPass(dayBefore(now, USAGE_DETAIL_RETENTION_DAYS)),
+    deletePass("usage_retention_corrections", rules.corrections),
+    deletePass("usage_retention_charges", rules.charges),
     deletePass("usage_retention_sessions", rules.sessions),
     deletePass("usage_retention_budget_days", rules.budgetDays),
     foldMonthsPass(firstKeptMonthDay(now, USAGE_DAY_RETENTION_DAYS)),
@@ -303,6 +310,7 @@ export function usageRetentionPasses(now: number): Pass[] {
 
 export interface UsageRetentionResult {
   gaveUpWork: ChunkedDeleteResult | null;
+  corrections: ChunkedDeleteResult | null;
   charges: ChunkedDeleteResult | null;
   sessions: ChunkedDeleteResult | null;
   budgetDays: ChunkedDeleteResult | null;
@@ -325,9 +333,34 @@ export async function runUsageRetention(
   const of = (name: string) => results.get(`usage_retention_${name}`) ?? null;
   return {
     gaveUpWork: of("gave_up_work"),
+    corrections: of("corrections"),
     charges: of("charges"),
     sessions: of("sessions"),
     budgetDays: of("budget_days"),
     months: of("months"),
   };
+}
+
+/** Statements {@link warnStuckSessions} issues. */
+export const STUCK_SESSION_STATEMENTS = 1;
+
+/**
+ * Sessions started before the window that are still open with no open work
+ * left: their settlement gave up (a D1 error on its last try, say), so their
+ * row and slices are kept for good. Nothing is lost, but the monitor should
+ * know: one `warn` with the count. Served by `session_started`.
+ */
+export async function warnStuckSessions(db: D1Database, now: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM session AS s
+        WHERE s.started_at < ? AND s.settlement = 'open'
+          AND NOT EXISTS (SELECT 1 FROM open_work AS w
+                          WHERE w.owner_type = 'session' AND w.owner_id = s.id AND w.gave_up_at IS NULL)`,
+    )
+    .bind(now - USAGE_DETAIL_RETENTION_DAYS * DAY_MS)
+    .first<{ n: number }>();
+  const stuck = Number(row?.n ?? 0);
+  if (stuck > 0) log("warn", "ledger_sessions_stuck_open", { sessions: stuck });
+  return stuck;
 }

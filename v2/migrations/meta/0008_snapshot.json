@@ -1175,6 +1175,14 @@
           ],
           "isUnique": false
         },
+        "charge_correction_day": {
+          "name": "charge_correction_day",
+          "columns": [
+            "usage_day"
+          ],
+          "isUnique": false,
+          "where": "kind = 'correction'"
+        },
         "charge_job_estimates": {
           "name": "charge_job_estimates",
           "columns": [

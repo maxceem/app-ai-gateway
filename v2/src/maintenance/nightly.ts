@@ -41,7 +41,7 @@ import { log } from "../core/log.ts";
 import { runPasses, type Pass } from "../core/chunked-delete.ts";
 import { maintenanceRowLimit, maintenanceStatementBudget, QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
 import { rejectionEventsPass } from "../diagnostics/rejection-events.ts";
-import { usageRetentionPasses } from "../ledger/retention.ts";
+import { STUCK_SESSION_STATEMENTS, usageRetentionPasses, warnStuckSessions } from "../ledger/retention.ts";
 
 /**
  * The UTC hour whose run of the hourly cron also runs the nightly
@@ -131,6 +131,9 @@ export function nightlyPasses(now: number): Pass[] {
 /** The nightly jobs, within `budget`'s statements and `rowLimit` rows written. */
 export async function runNightly(env: Env, now: number, budget: QueryBudget, rowLimit: number): Promise<void> {
   await settleChallenges(budget.database(env.DB));
+  if (budget.affords(STUCK_SESSION_STATEMENTS)) {
+    await job("ledger_sessions_checked", "ledger_sessions_check_failed", () => warnStuckSessions(budget.database(env.DB), now), (stuck) => ({ stuck }));
+  }
   // Logs each pass itself, and never throws.
   await runPasses(env.DB, budget, rowLimit, nightlyPasses(now));
 }

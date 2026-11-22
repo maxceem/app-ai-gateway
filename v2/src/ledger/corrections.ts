@@ -23,12 +23,14 @@
  *   a final settlement of one charge never both add its full cost. Pricing
  *   stops once a final settlement exists; the settlement already includes it.
  */
+import { log } from "../core/log.ts";
 import { rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources } from "../pricing/billability.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import type { CorrectionKind, PriceSource } from "./labels.ts";
+import { detailCutoffDay } from "./retention.ts";
 import { chargeFromRow, insertChargeWithCostStatement, readCharge, type ChargeRow } from "./write.ts";
 
 /** The provider's final figure for a charge or a job. */
@@ -167,9 +169,12 @@ function correctionFor(
  * Writes a correction whose cost is `finalCost` minus what is already booked
  * for the charge it corrects (the charge and its earlier corrections), worked
  * out inside the insert. It is written only while the charge it corrects is
- * in the ledger. With `unlessSettled`, it is not written once any final
- * settlement (a charge's or a job's) corrects the same charge. Returns the
- * row as written, or null when it was not written.
+ * in the ledger, and never once that charge is past the retention window
+ * with no open work on its owner: its owner is frozen, and retention may
+ * already have deleted part of what is booked against it (`./retention.ts`).
+ * With `unlessSettled`, it is not written once any final settlement (a
+ * charge's or a job's) corrects the same charge. Returns the row as written,
+ * or null when it was not written.
  */
 async function writeCorrection(
   db: D1Database,
@@ -180,6 +185,7 @@ async function writeCorrection(
   doneJob: string | null = null,
 ): Promise<ChargeRow | null> {
   const correctedId = correction.correctsChargeId!;
+  const cutoffDay = detailCutoffDay(correction.writtenAt);
   const statements = [
     insertChargeWithCostStatement(
       db,
@@ -188,12 +194,17 @@ async function writeCorrection(
          - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE corrects_charge_id = ?), 0)`,
       [finalCost, correctedId, correctedId],
       {
-        // Only while the charge it corrects is still in the ledger. Retention
-        // deletes a charge together with its corrections, in one statement
-        // (`./retention.ts`), so while the charge is here, so is everything
-        // already booked against it, and the difference above is exact. Once
-        // it is gone, nothing is written.
-        sql: `EXISTS (SELECT 1 FROM charge WHERE id = ?)${
+        // Only while the charge it corrects is still in the ledger, and its
+        // owner is not frozen: the charge is inside the retention window, or
+        // its owner still has open work, which retention never deletes
+        // around. Retention deletes a frozen owner's corrections before its
+        // other charges, so a correction written then would be worked out
+        // against a ledger missing part of what was booked, and its trigger
+        // would add to the day rollup a second time. Nothing is written instead.
+        sql: `EXISTS (SELECT 1 FROM charge AS o WHERE o.id = ?
+                AND (o.usage_day >= ?
+                     OR EXISTS (SELECT 1 FROM open_work AS w
+                                WHERE w.owner_type = o.owner_type AND w.owner_id = o.owner_id AND w.gave_up_at IS NULL)))${
           unlessSettled
             ? // No final settlement of this charge (its own, or its job's), and no
               // session-level total that already covers it (the session it belongs
@@ -202,7 +213,7 @@ async function writeCorrection(
               AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`
             : ""
         }`,
-        params: unlessSettled ? [correctedId, correctedId, correction.ownerType, correction.ownerId] : [correctedId],
+        params: unlessSettled ? [correctedId, cutoffDay, correctedId, correction.ownerType, correction.ownerId] : [correctedId, cutoffDay],
       },
     ),
   ];
@@ -210,7 +221,11 @@ async function writeCorrection(
   // A settled job needs no more work: its check and every figure saved for it go, once the correction exists.
   if (doneJob !== null) statements.push(db.prepare("DELETE FROM open_work WHERE owner_type = 'job' AND owner_id = ?").bind(doneJob));
   const [inserted] = await db.batch(statements);
-  if ((inserted?.meta.changes ?? 0) === 0) return null;
+  if ((inserted?.meta.changes ?? 0) === 0) {
+    // Its usage date is the charge's: past the window, the freeze is the likely reason. Nothing is booked.
+    if (correction.usageDay < cutoffDay) log("warn", "ledger_correction_frozen", { app: correction.appId, owner: correction.ownerType });
+    return null;
+  }
   return readCharge(db, correction.id);
 }
 

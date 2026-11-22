@@ -25,7 +25,16 @@ import {
   QueryBudget,
 } from "../src/core/query-budget.ts";
 import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
-import { FOLD_PICK, runUsageRetention, usageRetentionRules, USAGE_DAY_RETENTION_DAYS, USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
+import { timeOrderedId } from "../src/core/ids.ts";
+import { keepFigure } from "../src/jobs/jobs.ts";
+import {
+  FOLD_PICK,
+  runUsageRetention,
+  STUCK_SESSION_STATEMENTS,
+  usageRetentionRules,
+  USAGE_DAY_RETENTION_DAYS,
+  USAGE_DETAIL_RETENTION_DAYS,
+} from "../src/ledger/retention.ts";
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { CHALLENGE_SETTLE_STATEMENTS, NIGHTLY_HOUR_UTC, nightlyPasses, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
 import { nano } from "../src/money.ts";
@@ -238,7 +247,7 @@ describe("usage retention: charges", () => {
     expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
   });
 
-  it("deletes a correction together with the charge it corrects, and keeps both while the charge is kept", async () => {
+  it("deletes a correction before the charge it corrects, and keeps both while the charge is kept", async () => {
     const original = charge({ usedAt: OLD });
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId });
     const keptOriginal = charge({ usedAt: OLD });
@@ -247,28 +256,55 @@ describe("usage retention: charges", () => {
     await openWork({ ownerType: "call", ownerId: keptOriginal.ownerId });
 
     const result = await runUsageRetention(env.DB, NOW, budget());
-    // The charge and its correction share an owner, and go in the same statement (Astra 7b-2 round 1).
+    // The correction goes in its own pass, the charge in the next once no correction is left (Astra 7b-2 round 2).
     expect(await chargeIds()).toEqual([keptFix.id, keptOriginal.id]);
-    expect(result.charges).toMatchObject({ deleted: 2, caughtUp: true });
+    expect(result.corrections).toMatchObject({ deleted: 1, caughtUp: true });
+    expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
   });
 
-  it("never shows a user a correction without its charge, between chunks (Astra 7b-2 round 1)", async () => {
+  it("never shows a user a correction without its charge, or a negative cost, between chunks (Astra 7b-2 rounds 1 and 2)", async () => {
     const original = charge({ usedAt: OLD, costNano: nano(1_000) });
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
     const other = charge({ usedAt: OLD, costNano: nano(500) });
     await insert(original, fix, other);
-    const month = OLD_MONTH;
-    const read = async () => (await usageByUser(env.DB, "app_retention", ["user_1"], month)).get("user_1");
+    const read = async () => (await usageByUser(env.DB, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
     expect(await read()).toMatchObject({ charges: 2, cost_nano: 750 });
 
-    // One chunk of one charge a night: the original is picked, and its correction goes with it.
-    const seen: unknown[] = [];
-    for (let night = 0; night < 3; night++) {
-      await runUsageRetention(env.DB, NOW, new QueryBudget(2), 1);
-      const usage = await read();
-      seen.push(usage === undefined ? null : { charges: usage.charges, cost: usage.cost_nano });
+    // One charge a chunk, one chunk of each pass a night, and a read after every night.
+    for (let night = 0; night < 10 && (await chargeIds()).length > 0; night++) {
+      await runUsageRetention(env.DB, NOW, new QueryBudget(3), 1);
+      const ids = await chargeIds();
+      if (ids.includes(fix.id)) expect(ids).toContain(original.id);
+      expect((await read())?.cost_nano ?? 0).toBeGreaterThanOrEqual(0);
     }
-    expect(seen).toEqual([{ charges: 1, cost: 500 }, null, null]);
+    expect(await chargeIds()).toEqual([]);
+  });
+
+  it("deletes a large owner a bounded chunk at a time, within the row allowance (Astra 7b-2 round 2)", async () => {
+    // A settled session with 1,001 slices past the window, and its provider total: ten times a chunk of 100 (Astra's case was 5,001 with a chunk of 5,000).
+    const sessionId = unique("ses");
+    await session(sessionId, OLD, "settled");
+    const template = charge({ usedAt: OLD, ownerType: "session", ownerId: sessionId, seq: 0 });
+    await insert(template, charge({ usedAt: OLD, kind: "correction", correctionKind: "dollars", ownerType: "session", ownerId: sessionId, seq: null }));
+    const columns = (await rows("SELECT name FROM pragma_table_info('charge')")).map((row) => String(row.name));
+    const copied = columns.map((column) => (column === "id" ? "'slice_' || n.i" : column === "seq" ? "n.i" : column)).join(", ");
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)
+       INSERT INTO charge (${columns.join(", ")}) SELECT ${copied} FROM n, charge WHERE charge.id = ?`,
+    )
+      .bind(template.id)
+      .run();
+    expect(await rows("SELECT COUNT(*) AS n FROM charge")).toEqual([{ n: 1_002 }]);
+
+    const rowLimit = 2_000;
+    const result = await runUsageRetention(env.DB, NOW, budget(), 100, rowLimit);
+
+    const deleted = (result.corrections?.deleted ?? 0) + (result.charges?.deleted ?? 0);
+    expect(result.corrections).toMatchObject({ deleted: 1 });
+    expect(deleted).toBeGreaterThan(1);
+    expect(deleted * ROW_WRITES.charge).toBeLessThanOrEqual(rowLimit);
+    for (const pass of [result.corrections, result.charges]) expect(pass!.deleted).toBeLessThanOrEqual(pass!.chunks * 100);
+    expect(await rows("SELECT COUNT(*) AS n FROM charge")).toEqual([{ n: 1_002 - deleted }]);
   });
 
   it("keeps all of an owner's charges while any of them is inside the window, and deletes them together after", async () => {
@@ -286,7 +322,12 @@ describe("usage retention: charges", () => {
     const result = await runUsageRetention(env.DB, NOW, budget(), 1);
 
     expect(await chargeIds()).toEqual([first.id, second.id]);
-    expect(result.charges).toMatchObject({ deleted: 3, caughtUp: true });
+    expect(result.corrections).toMatchObject({ deleted: 1, caughtUp: true });
+    expect(result.charges).toMatchObject({ deleted: 2, caughtUp: true });
+
+    // The next day the second try is past the window too, and both go (Astra 7b-2 round 2).
+    await runUsageRetention(env.DB, NOW + DAY, budget(), 1);
+    expect(await chargeIds()).toEqual([]);
   });
 
   it("never books a job twice when retention deletes its charges around a late poll", async () => {
@@ -327,6 +368,48 @@ describe("usage retention: charges", () => {
 
     expect(await settleJobFrom(env.DB, estimate, { kind: "dollars", costNano: nano(1_500) }, NOW)).toEqual({ status: "already" });
     expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(1_200);
+  });
+
+  it("books nothing for a late poll once a job is past the window, with its settlement deleted and its estimate not yet (Astra 7b-2 round 2)", async () => {
+    const codes = warningCodes();
+    const job = timeOrderedId(OLD);
+    const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
+    await insert(estimate);
+    const final = { kind: "dollars", costNano: nano(1_200) } as const;
+    await settleJob(env.DB, { jobId: job, final, now: OLD + DAY });
+    const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
+    expect(await total()).toBe(1_200);
+
+    // A night whose allowance ran out after the corrections pass: the settlement is gone, the estimate stays.
+    const result = await runUsageRetention(env.DB, NOW, new QueryBudget(2));
+    expect(result.corrections).toMatchObject({ deleted: 1 });
+    expect(await chargeIds()).toEqual([estimate.id]);
+
+    // A late poll finds the estimate and settles again: nothing is written, and the day rollup is unchanged.
+    expect(await settleJob(env.DB, { jobId: job, final, now: NOW })).toEqual({ status: "already" });
+    expect(await chargeIds()).toEqual([estimate.id]);
+    expect(await total()).toBe(1_200);
+    expect(codes).toContain("ledger_correction_frozen");
+    // Nor is a figure kept for the sweep, which would hold the job back from retention.
+    const facts = { status: "succeeded", units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
+    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
+    expect(await rows("SELECT id FROM open_work")).toEqual([]);
+    expect(codes).toContain("job_retired");
+
+    // The next night deletes the estimate.
+    await runUsageRetention(env.DB, NOW, budget());
+    expect(await chargeIds()).toEqual([]);
+    expect(await total()).toBe(1_200);
+  });
+
+  it("still corrects a charge past the window while its owner has open work", async () => {
+    const original = charge({ usedAt: OLD, priceSource: "unresolved", costNano: nano(0) });
+    await insert(original);
+    const work = await openWork({ ownerType: "call", ownerId: original.ownerId });
+    const { settleCharge } = await import("../src/ledger/corrections.ts");
+    const settled = await settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
+    expect(settled).toMatchObject({ status: "settled" });
+    expect((await rows("SELECT SUM(cost_nano) AS cost FROM charge"))[0]?.cost).toBe(700);
   });
 });
 
@@ -433,8 +516,8 @@ describe("usage retention: day rollups into months", () => {
     while ((await rows("SELECT COUNT(*) AS n FROM usage_day"))[0]!.n !== 0) {
       nights += 1;
       expect(nights).toBeLessThan(5);
-      // Seven statements: one each for the four delete passes, which have nothing to do, and one chunk of the fold.
-      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(7), 2);
+      // Eight statements: one each for the five delete passes, which have nothing to do, and one chunk of the fold.
+      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(8), 2);
       expect(result.months?.chunks).toBe(1);
       expect(await april()).toEqual(whole);
     }
@@ -582,7 +665,7 @@ describe("the query budget", () => {
   it("accepts no fewer statements than the hourly clean-up and one round of every pass need", () => {
     const round = nightlyPasses(NOW).reduce((sum, pass) => sum + pass.statements, 0);
     expect(MINIMUM_MAINTENANCE_STATEMENTS).toBeGreaterThanOrEqual(
-      MAINTENANCE_SLACK_STATEMENTS + SIGN_IN_SWEEP_STATEMENTS + CHALLENGE_SETTLE_STATEMENTS + round,
+      MAINTENANCE_SLACK_STATEMENTS + SIGN_IN_SWEEP_STATEMENTS + CHALLENGE_SETTLE_STATEMENTS + STUCK_SESSION_STATEMENTS + round,
     );
   });
 
@@ -677,6 +760,27 @@ describe("the nightly run", () => {
     expect(await rows("SELECT id FROM app_rejection_event")).toEqual([{ id: newRejection }]);
     expect(await chargeIds()).toEqual([recent.id]);
     expect(allowance.spent).toBeLessThanOrEqual(49);
+  });
+
+  it("warns of sessions past the window still open with no open work left (Astra 7b-2 round 2)", async () => {
+    const warned: Record<string, unknown>[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: unknown) => {
+      warned.push(JSON.parse(String(entry)) as Record<string, unknown>);
+    });
+    const stuck = unique("ses");
+    const waiting = unique("ses");
+    await session(stuck, OLD, "open");
+    await session(waiting, OLD, "open");
+    await openWork({ ownerType: "session", ownerId: waiting });
+    await session(unique("ses"), RECENT, "open");
+
+    await runNightly(env, NOW, budget(), 1_000_000);
+
+    expect(warned.filter((entry) => entry.message === "ledger_sessions_stuck_open")).toEqual([
+      expect.objectContaining({ message: "ledger_sessions_stuck_open", sessions: 1 }),
+    ]);
+    // All three are kept.
+    expect(await rows("SELECT COUNT(*) AS n FROM session")).toEqual([{ n: 3 }]);
   });
 
   it("goes on with the other jobs when one fails", async () => {
@@ -861,12 +965,24 @@ describe("retention queries", () => {
 
   it("picks every pass's rows through an index, never a scan of the whole table", async () => {
     const rules = usageRetentionRules(NOW);
-    const indexes = { gaveUpWork: "open_work_gave_up", charges: "charge_usage_day", sessions: "session_started", budgetDays: "budget_day_day" };
+    const indexes = {
+      gaveUpWork: "open_work_gave_up",
+      corrections: "charge_correction_day",
+      charges: "charge_usage_day",
+      sessions: "session_started",
+      budgetDays: "budget_day_day",
+    };
     for (const [name, rule] of Object.entries(rules)) {
       const detail = await plan(`${rule.rowids} LIMIT 1`, ...rule.params);
       expect(detail, name).toContain(indexes[name as keyof typeof indexes]);
     }
-    expect(await plan(`DELETE FROM charge WHERE (owner_type, owner_id) IN (SELECT owner_type, owner_id FROM charge WHERE rowid IN (${rules.charges.rowids} LIMIT 1))`, ...rules.charges.params)).toContain("charge_owner");
+    // The owner checks go through the owner's index, never a scan.
+    for (const rule of [rules.corrections, rules.charges]) {
+      const detail = await plan(`${rule.rowids} LIMIT 1`, ...rule.params);
+      expect(detail).toContain("charge_owner");
+      expect(detail).toContain("open_work_owner");
+      expect(detail).not.toMatch(/SCAN (charge|open_work)\b(?! USING)/u);
+    }
     expect(await plan(FOLD_PICK, "2026-05-01", 1)).toContain("usage_day_day");
     expect(await plan("SELECT rowid FROM app_auth_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_auth_event_created");
     expect(await plan("SELECT rowid FROM app_rejection_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_rejection_event_created");

@@ -367,6 +367,8 @@ export const charge = sqliteTable(
     index("charge_corrects").on(table.correctsChargeId),
     // Charges past their retention, for the nightly maintenance.
     index("charge_usage_day").on(table.usageDay),
+    // Corrections past their retention, which go before the charges they correct.
+    index("charge_correction_day").on(table.usageDay).where(sql`kind = 'correction'`),
     // An app's jobs, newest first (the management API's job list), without
     // scanning the app's call charges.
     index("charge_job_estimates")

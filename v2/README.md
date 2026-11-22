@@ -101,10 +101,12 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
   about 40 apps that each have one page expire a night. Where it runs out before every
   app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
-  days, and detailed usage after 90 days: charges, settled sessions and budget totals. A call's,
-  job's or session's charges, corrections included, go together once all of them are past 90 days,
-  so a user's usage never shows a correction without its charge. Day totals
-  stay 400 days, then move into month totals.
+  days, and detailed usage after 90 days: charges, settled sessions and budget totals. Once all of
+  a call's, job's or session's charges are past 90 days, nothing more is booked against it, and its
+  corrections are deleted before its other charges, so a user's usage never shows a correction
+  without its charge. Day totals stay 400 days, then move into month totals.
+  It also logs `ledger_sessions_stuck_open` when a session past 90 days is still open with nothing
+  left to settle it: it is kept, with its charges, until someone looks.
 
 Each kind of old row is a pass, and the passes take turns: each round, every pass with rows left
 deletes one chunk of at most 5,000 rows. So a large backlog of one kind never keeps the others
@@ -116,8 +118,8 @@ waiting. The run stops when every pass is done, or when one of two allowances ru
   This allowance covers the retention passes only. The hourly clean-up of expired App Attest
   challenges is not counted in it: each hour it settles about one hour of challenges.
 
-At the defaults, a night deletes about 2,200 charges when charges are the only backlog, because
-each charge costs 9 row writes with its index entries. A deployment that serves more than about
+At the defaults, a night deletes about 2,000 charges when charges are the only backlog, because
+each charge is counted as 10 row writes with its index entries. A deployment that serves more than about
 2,000 requests a day falls behind and logs `maintenance_backlog_left` every night. It should raise
 `MAINTENANCE_ROW_BUDGET`. On the Free plan, the apps' own writes leave little room to do that, so
 past about 2,000 requests a day the Paid plan is the better fit.
