@@ -152,16 +152,9 @@ One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires
 Workers built before it still read on every management-key request. Deploy the new Worker first,
 then apply `0005`. The new Worker works with the column still there.
 
-Turning email verification on for the first time, in this order:
-
-1. Deploy the Worker (and use its `scripts/`) with email still off. An older Worker or an older
-   `management-key.ts --create-account` can still make accounts without an activation row.
-2. Run the activation backfill once more, after that deploy. Migration `0011` runs it before the
-   deploy, so accounts made in between are not in it; running it again is safe, because it only
-   adds missing rows:
-   `wrangler d1 execute DB --remote -c wrangler.<profile>.jsonc --file migrations/0011_account_activation_backfill.sql`
-3. Then set the email settings. From then on, every account a password sign-up makes waits for its
-   owner's address, and every account made before keeps serving.
+Email verification can be turned on at any time. Only an account a password sign-up makes while it
+is on waits for its owner's address; every account made before, or by
+`management-key.ts --create-account`, keeps serving its apps.
 
 On a host shared with v1, the v2 Worker needs these routes, while v1 keeps its own paths
 (`/.well-known/oauth-*` without `/v2` included):

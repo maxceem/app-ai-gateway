@@ -157,7 +157,9 @@ export async function sendVerificationEmail(
   const sender = emailSender(env)!;
   const { from, replyTo } = setup;
   const claims = { u: person.id, e: person.email, x: nowMs + VERIFICATION_LINK_TTL_MS };
-  let token = await signLink(env, returnTo === null ? claims : { ...claims, r: returnTo });
+  // Every caller's return path passes the same check the confirmation makes, bytes included, so no link carries one it would refuse.
+  const continueAt = returnTo === null ? null : consoleReturnPath(returnTo);
+  let token = await signLink(env, continueAt === null ? claims : { ...claims, r: continueAt });
   // Never a link the confirmation would refuse for its length: without where to continue, it still verifies.
   if (token.length > VERIFICATION_TOKEN_MAX_LENGTH) token = await signLink(env, claims);
   const link = new URL(VERIFICATION_PAGE_PATH, consoleOrigin);
@@ -241,9 +243,15 @@ export async function confirmEmailVerification(
     new GatewayError(400, "invalid_request", "This verification link is not valid any more. Send a new one from the console.");
   if (!claims) throw invalid();
   const person = "id = ?1 AND email = ?2 AND kind = 'human'";
-  const [changed, verified, owned] = await env.DB.batch([
+  const [changed, , verified, owned] = await env.DB.batch([
     env.DB.prepare(`UPDATE mgmt_user SET email_verified = 1, updated_at = ?3 WHERE ${person} AND email_verified = 0`)
       .bind(claims.u, claims.e, nowMs),
+    // The accounts this person owns stop waiting: only once their address is verified, never by a stale link.
+    env.DB.prepare(
+      `DELETE FROM account_pending_verification
+       WHERE account_id IN (SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?1 AND role = 'owner')
+         AND EXISTS (SELECT 1 FROM mgmt_user WHERE ${person} AND email_verified = 1)`,
+    ).bind(claims.u, claims.e),
     env.DB.prepare(`SELECT id FROM mgmt_user WHERE ${person} AND email_verified = 1`).bind(claims.u, claims.e),
     env.DB.prepare("SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?1 AND role = 'owner'").bind(claims.u),
   ]);

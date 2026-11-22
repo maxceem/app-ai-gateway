@@ -97,17 +97,28 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
 }
 
 /**
- * Lets an account serve traffic whatever its owner's email: how a deployment
- * that sends no email activates each account it makes, so that adding a
- * sender later stops none of them (v1's rule). Where it does send email, an
- * account serves traffic once an owner verifies their address
- * (`../core/account-standing.ts`).
+ * Marks an account a person just made as waiting for their address, where the
+ * deployment verifies addresses (`../core/account-standing.ts`). Only a person
+ * whose address is not verified yet: a password sign-up. Google's arrive
+ * verified, and a key-made account never comes here.
+ *
+ * If the mark cannot be written, the account serves, as every unmarked one
+ * does, and the failure is logged for the monitor: never an account refused
+ * that should serve.
  */
-async function activateAccount(db: D1Database, accountId: string): Promise<void> {
-  await db
-    .prepare("INSERT OR IGNORE INTO account_activation(account_id, activated_at) SELECT id, ? FROM mgmt_organization WHERE id = ?")
-    .bind(Date.now(), accountId)
-    .run();
+async function markPendingVerification(db: D1Database, accountId: string, userId: string): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO account_pending_verification(account_id, marked_at)
+         SELECT o.id, ?3 FROM mgmt_organization o JOIN mgmt_user u ON u.id = ?2
+         WHERE o.id = ?1 AND u.kind = 'human' AND u.email_verified = 0`,
+      )
+      .bind(accountId, userId, Date.now())
+      .run();
+  } catch (error) {
+    log("warn", "email_pending_mark_failed", { account: accountId, error: errorFacts(error) });
+  }
 }
 
 export interface IdentityOptions {
@@ -160,7 +171,9 @@ export async function createIdentity(
       log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) }),
     logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
     onEvent: async (event: CfAuthEvent) => {
-      if (event.type === "organization.created" && !emailVerificationRequired(env)) await activateAccount(env.DB, event.organizationId);
+      if (event.type === "organization.created" && emailVerificationRequired(env)) {
+        await markPendingVerification(env.DB, event.organizationId, event.userId);
+      }
     },
     // Browser approvals: the OAuth flows, and the writes an agent hands to a
     // person (a key entered in a browser, a created key revealed on a page).

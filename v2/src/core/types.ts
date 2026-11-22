@@ -19,10 +19,11 @@ export interface AppRecord {
   /** Conversation storage, where the app turned it on (`conversations.store`); null otherwise. */
   conversations: ConversationsConfig | null;
   /**
-   * Whether the app's account may serve traffic where the deployment verifies
-   * email (`../core/account-standing.ts`), read with the app itself.
+   * Whether the app's account is waiting for its owner's email address, so
+   * refused where the deployment verifies email (`../core/account-standing.ts`),
+   * read with the app itself.
    */
-  accountActivated: boolean;
+  accountPending: boolean;
 }
 
 interface GatewayIdentityFields {

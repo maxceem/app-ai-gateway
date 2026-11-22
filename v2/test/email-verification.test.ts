@@ -1,8 +1,9 @@
 /**
  * Email verification and the account gate (v1's `email-verification.test.ts`,
- * ported). Where the deployment sends email, an account's app traffic waits
- * for an owner's verified address; reading and configuring never does. A
- * deployment that sends no email activates every account it makes.
+ * ported). Where the deployment sends email, the app traffic of an account a
+ * password sign-up made waits for its owner's verified address; reading and
+ * configuring never does. Every other account serves, so turning email on
+ * later refuses none.
  *
  * No email leaves the test: the `EMAIL` binding is a stand-in that keeps what
  * it is handed.
@@ -13,9 +14,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { confirmEmailVerification, consoleReturnPath, sendVerificationEmail, VERIFICATION_LINK_TTL_MS } from "../src/auth/email-verification.ts";
 import { VERIFICATION_TOKEN_MAX_LENGTH } from "../src/contracts/access.ts";
-import { readAccountActivated } from "../src/core/account-standing.ts";
+import { readAccountPending } from "../src/core/account-standing.ts";
 import { appCache } from "../src/apps/app-records.ts";
-import { managementKeyStatements } from "../scripts/management-key-sql.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAppKey, seedHuman } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -78,15 +78,21 @@ async function errorCode(response: Response): Promise<string | undefined> {
   return body?.error?.code;
 }
 
-/** A person owning an account that was neither activated nor verified. */
-async function unverifiedOwner() {
+/** A person whose address is not verified, owning an account that is not marked as waiting. */
+async function unverifiedPerson() {
   const human = await seedHuman(`owner-${crypto.randomUUID().slice(0, 8)}@example.test`);
-  await env.DB.batch([
-    env.DB.prepare("UPDATE mgmt_user SET email_verified = 0 WHERE id = ?").bind(human.userId),
-    env.DB.prepare("DELETE FROM account_activation WHERE account_id = ?").bind(human.accountId),
-  ]);
+  await env.DB.prepare("UPDATE mgmt_user SET email_verified = 0 WHERE id = ?").bind(human.userId).run();
   return human;
 }
+
+/** A person whose address is not verified, owning an account waiting for it, as a password sign-up makes one. */
+async function unverifiedOwner() {
+  const human = await unverifiedPerson();
+  await env.DB.prepare("INSERT INTO account_pending_verification(account_id, marked_at) VALUES (?, ?)").bind(human.accountId, Date.now()).run();
+  return human;
+}
+
+const unmark = (accountId: string) => env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(accountId).run();
 
 /** A server app of the owner's account, with a key, whose users come from a header. */
 async function serverApp(accountId: string): Promise<{ appId: string; key: string }> {
@@ -106,7 +112,7 @@ beforeEach(() => clearCaches());
 afterEach(() => vi.restoreAllMocks());
 
 describe("the account gate", () => {
-  it("refuses app traffic with email_unverified until an owner verifies, and only where the deployment sends email", async () => {
+  it("refuses a waiting account's app traffic with email_unverified until it is verified, and only where the deployment sends email", async () => {
     const owner = await unverifiedOwner();
     const app = await serverApp(owner.accountId);
     const verifying = deployment({ email: true }).env;
@@ -125,15 +131,17 @@ describe("the account gate", () => {
     // Without a sender, nothing waits for an address nobody can verify.
     expect((await me(deployment().env, app)).status).toBe(200);
 
-    await env.DB.prepare("UPDATE mgmt_user SET email_verified = 1 WHERE id = ?").bind(owner.userId).run();
+    // Confirming the address removes the mark.
+    await unmark(owner.accountId);
     clearCaches();
     expect((await me(verifying, app)).status).toBe(200);
   });
 
-  it("serves an account activated without a verified owner", async () => {
-    const owner = await unverifiedOwner();
-    await env.DB.prepare("INSERT INTO account_activation(account_id, activated_at) VALUES (?, ?)").bind(owner.accountId, Date.now()).run();
+  it("serves every account not marked as waiting, whatever its owner's email: turning email on later refuses none", async () => {
+    const owner = await unverifiedPerson();
     const app = await serverApp(owner.accountId);
+    expect((await me(deployment().env, app)).status).toBe(200);
+    // The deployment starts sending email: the account made before keeps serving.
     expect((await me(deployment({ email: true }).env, app)).status).toBe(200);
   });
 
@@ -154,7 +162,7 @@ describe("the account gate", () => {
     expect(await pending(deployment({ email: true }).env, owner.cookie)).toBe(true);
     // Written only when true.
     expect(await pending(deployment().env, owner.cookie)).toBeUndefined();
-    await env.DB.prepare("INSERT INTO account_activation(account_id, activated_at) VALUES (?, ?)").bind(owner.accountId, Date.now()).run();
+    await unmark(owner.accountId);
     clearCaches();
     expect(await pending(deployment({ email: true }).env, owner.cookie)).toBeUndefined();
   });
@@ -182,7 +190,7 @@ describe("verification links", () => {
     expect(first.status, await first.clone().text()).toBe(200);
     expect(await first.json()).toEqual({ email: owner.email, returnTo: "/v2/apps" });
     expect(await env.DB.prepare("SELECT email_verified AS v FROM mgmt_user WHERE id = ?").bind(owner.userId).first("v")).toBe(1);
-    expect(await readAccountActivated(verifying, owner.accountId)).toBe(true);
+    expect(await readAccountPending(verifying, owner.accountId)).toBe(false);
 
     // Opened again, it answers the same and does nothing more: this isolate's
     // cached apps of the account are left alone (Sol 7b-7).
@@ -254,9 +262,8 @@ describe("verification links", () => {
 });
 
 describe("the gate on the request path", () => {
-  it("reads the account's activation in the app's own query, with no separate read (Sol 7b-7)", async () => {
-    const owner = await unverifiedOwner();
-    await env.DB.prepare("INSERT INTO account_activation(account_id, activated_at) VALUES (?, ?)").bind(owner.accountId, Date.now()).run();
+  it("reads whether the account is waiting in the app's own query, with no separate read (Sol 7b-7)", async () => {
+    const owner = await unverifiedPerson();
     const app = await serverApp(owner.accountId);
     const statements: string[] = [];
     const db = new Proxy(env.DB, {
@@ -273,43 +280,35 @@ describe("the gate on the request path", () => {
     });
     const verifying = { ...deployment({ email: true }).env, DB: db } as Env;
     expect((await me(verifying, app)).status).toBe(200);
-    const gate = statements.filter((query) => query.includes("account_activation"));
+    const gate = statements.filter((query) => query.includes("account_pending_verification"));
     expect(gate.length).toBeGreaterThan(0);
-    // Every statement that asks about activation is the one that loads the app.
+    // Every statement that asks about the mark is the one that loads the app.
     for (const query of gate) expect(query).toMatch(/from "app"/u);
   });
 });
 
 describe("accounts made with a management key", () => {
-  const run = async (write: Parameters<typeof managementKeyStatements>[0]) => {
-    for (const statement of managementKeyStatements(write)) await env.DB.prepare(statement).run();
-  };
-  const base = () => ({
-    userId: `svc_${crypto.randomUUID().slice(0, 12)}`,
-    keyId: `mk_${crypto.randomUUID().slice(0, 12)}`,
-    hash: crypto.randomUUID().replaceAll("-", ""),
-    hint: "abcd",
-    grant: "manage" as const,
-    now: Date.now(),
-  });
-
-  it("are activated as the bootstrap command makes them, since their owner has no address to verify (Sol 7b-7)", async () => {
+  it("serve, since nothing marks them: their owner is a key, with no address to verify", async () => {
     const accountId = `acc_boot_${crypto.randomUUID().slice(0, 8)}`;
-    await run({ ...base(), accountId, accountName: "Bootstrapped" });
-    expect(await readAccountActivated(deployment({ email: true }).env, accountId)).toBe(true);
+    const userId = `svc_${crypto.randomUUID().slice(0, 12)}`;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    // What `scripts/management-key.ts --create-account` writes.
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_user (id, name, email, kind, email_verified, created_at, updated_at) VALUES (?, 'Management key owner', NULL, 'service', 0, ?, ?)").bind(userId, now, now),
+      env.DB.prepare("INSERT INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Bootstrapped', ?, ?, ?)").bind(accountId, userId, iso, iso),
+      env.DB.prepare("INSERT INTO mgmt_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)").bind(`mem_${userId}`, accountId, userId, iso),
+    ]);
+    const app = await serverApp(accountId);
+    expect((await me(deployment({ email: true }).env, app)).status).toBe(200);
   });
 
-  it("never activate an account that was waiting for its owner, by the command or by a new key (Sol 7b-7)", async () => {
+  it("never clear a waiting account's mark when a key is added to it", async () => {
     const owner = await unverifiedOwner();
     const verifying = deployment({ email: true }).env;
-    // The command adding a key to it, even asked to create it, finds it there and leaves it waiting.
-    await run({ ...base(), accountId: owner.accountId, accountName: "Already here" });
-    await run({ ...base(), accountId: owner.accountId });
-    expect(await readAccountActivated(verifying, owner.accountId)).toBe(false);
-    // So does a key made in the console.
     const created = await asConsole(verifying, owner.cookie, "/v2/admin/management-keys", { name: "CI", grant: "read" });
     expect(created.status, await created.clone().text()).toBe(201);
-    expect(await readAccountActivated(verifying, owner.accountId)).toBe(false);
+    expect(await readAccountPending(verifying, owner.accountId)).toBe(true);
   });
 });
 
@@ -348,6 +347,22 @@ describe("sending a link from the console", () => {
     expect(binding.send).toHaveBeenCalledTimes(5);
   });
 
+  it("sends a link the confirmation takes, dropping a return path longer than it allows in bytes (Sol 7b-7 round 3)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: verifying, sent } = deployment({ email: true });
+    // 301 characters, so the request accepts it; 601 bytes, more than a link may carry.
+    const multibyte = `/${"😀".repeat(150)}`;
+    const resent = await send(verifying, owner.cookie, { returnTo: multibyte });
+    expect(resent.status, await resent.clone().text()).toBe(200);
+    const confirmed = await call("/v2/console/email-verification/confirm", {
+      environment: verifying,
+      json: { token: tokenFrom(sent[0]!) },
+      headers: { origin: CONSOLE, "x-console-request": "1" },
+    });
+    expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+    expect(await confirmed.json()).toEqual({ email: owner.email, returnTo: null });
+  });
+
   it("is served only on the console's own page", async () => {
     const owner = await unverifiedOwner();
     const { env: verifying } = deployment({ email: true });
@@ -381,11 +396,11 @@ describe("sign-up", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe(email);
     const accountId = await accountOf(email);
-    expect(await readAccountActivated(verifying, accountId)).toBe(false);
+    expect(await readAccountPending(verifying, accountId)).toBe(true);
     const { returnTo } = await confirmEmailVerification(verifying, tokenFrom(sent[0]!));
     expect(returnTo).toBe("/v2/apps");
     clearCaches();
-    expect(await readAccountActivated(verifying, accountId)).toBe(true);
+    expect(await readAccountPending(verifying, accountId)).toBe(false);
   });
 
   it("continues the first link where the sign-up form was headed (Sol 7b-7 round 2)", async () => {
@@ -411,12 +426,36 @@ describe("sign-up", () => {
     expect(await health.json()).toMatchObject({ email: "misconfigured" });
   });
 
-  it("activates the account as it is made where the deployment sends no email, so a sender added later stops none of it", async () => {
+  it("marks nothing where the deployment sends no email, so a sender added later stops none of it", async () => {
     const email = `trusted-${crypto.randomUUID().slice(0, 8)}@example.test`;
     const { env: trusting, sent } = deployment();
     const created = await signUp(trusting, email);
     expect(created.status, await created.clone().text()).toBe(200);
     expect(sent).toHaveLength(0);
-    expect(await readAccountActivated(deployment({ email: true }).env, await accountOf(email))).toBe(true);
+    expect(await readAccountPending(deployment({ email: true }).env, await accountOf(email))).toBe(false);
+  });
+
+  it("leaves the account serving, and logs it, when the mark cannot be written", async () => {
+    const email = `unmarked-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    const { env: verifying } = deployment({ email: true });
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            if (query.includes("INSERT OR IGNORE INTO account_pending_verification")) throw new Error("D1 is down");
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const created = await signUp({ ...verifying, DB: db } as Env, email);
+    expect(created.status, await created.clone().text()).toBe(200);
+    expect(await readAccountPending(verifying, await accountOf(email))).toBe(false);
+    expect(warned.some((line) => line.includes('"message":"email_pending_mark_failed"'))).toBe(true);
   });
 });

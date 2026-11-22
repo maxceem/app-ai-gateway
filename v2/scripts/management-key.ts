@@ -11,12 +11,10 @@
  * - Only its SHA-256 hash reaches the database, so the command that writes
  *   it carries no secret.
  * - `--create-account` also creates the account (and a service user that owns
- *   it) when it does not exist yet, and activates it: its owner is a key, with
- *   no address to verify. An account that already exists is left as it is.
+ *   it) when it does not exist yet.
  */
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { managementKeyStatements } from "./management-key-sql.ts";
 
 const args = process.argv.slice(2);
 function option(name: string): string | undefined {
@@ -43,16 +41,26 @@ while (entropy.length < 48) {
 }
 const key = `agw_mgmt_${entropy}`;
 const hash = createHash("sha256").update(key).digest("hex");
-const statements = managementKeyStatements({
-  accountId,
-  ...(accountName === undefined ? {} : { accountName }),
-  userId: `svc_${randomUUID().replaceAll("-", "").slice(0, 16)}`,
-  keyId: `mk_${randomUUID().replaceAll("-", "").slice(0, 16)}`,
-  hash,
-  hint: key.slice(-4),
-  grant: grant as "manage" | "read",
-  now: Date.now(),
-});
+const now = Date.now();
+const iso = new Date(now).toISOString();
+const userId = `svc_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+const sqlText = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+const statements = [
+  `INSERT INTO mgmt_user (id, name, email, kind, email_verified, created_at, updated_at)
+   VALUES (${sqlText(userId)}, 'Management key owner', NULL, 'service', 0, ${now}, ${now});`,
+  ...(accountName === undefined
+    ? []
+    : [
+        `INSERT OR IGNORE INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at)
+         VALUES (${sqlText(accountId)}, ${sqlText(accountName)}, ${sqlText(userId)}, ${sqlText(iso)}, ${sqlText(iso)});`,
+      ]),
+  `INSERT INTO mgmt_organization_user (id, organization_id, user_id, role, status, joined_at)
+   VALUES (${sqlText(`mem_${userId}`)}, ${sqlText(accountId)}, ${sqlText(userId)}, 'owner', 'active', ${sqlText(iso)});`,
+  `INSERT INTO mgmt_api_key (id, user_id, organization_id, name, token_hash, token_hint, enabled, created_at, source, "grant", credential_type)
+   VALUES (${sqlText(`mk_${randomUUID().replaceAll("-", "").slice(0, 16)}`)}, ${sqlText(userId)}, ${sqlText(accountId)},
+     'Management key', ${sqlText(hash)}, ${sqlText(key.slice(-4))}, 1, ${now}, 'cli', ${sqlText(grant)}, 'apiKey');`,
+];
 
 execFileSync(
   "pnpm",

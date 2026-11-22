@@ -84,12 +84,16 @@ export const {
   organizationInvitation: mgmtOrganizationInvitation,
 } = mgmtAuthTables;
 
-/** Accounts allowed to serve traffic before their owner's email is verified. */
-export const accountActivation = sqliteTable("account_activation", {
+/**
+ * Accounts whose app traffic waits for their owner's email address: made by a
+ * password sign-up while the deployment verifies addresses. Every other
+ * account serves (`../core/account-standing.ts`).
+ */
+export const accountPendingVerification = sqliteTable("account_pending_verification", {
   accountId: text("account_id")
     .primaryKey()
     .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
-  activatedAt: integer("activated_at").notNull(),
+  markedAt: integer("marked_at").notNull(),
 });
 
 // ---------------------------------------------------------------------------

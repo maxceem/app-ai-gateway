@@ -93,7 +93,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
   /** A deployment that sends email, so the account gate is on. */
   const verifying = { ...env, EMAIL: { send: async () => ({ messageId: "m" }) }, EMAIL_FROM: "gateway@example.test", CONSOLE_ORIGIN: "https://console.gateway.test" } as unknown as Env;
 
-  /** A server app of a fresh account with no activation row and no owner: it waits. */
+  /** A server app of a fresh account marked as waiting for its owner's address. */
   async function pendingApp(): Promise<string> {
     await seedAccount();
     const appId = `app_pending_${crypto.randomUUID().slice(0, 8)}`;
@@ -107,6 +107,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
       env.DB.prepare(
         "INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?)",
       ).bind(appId, accountId, appId, JSON.stringify(config), now, now),
+      env.DB.prepare("INSERT INTO account_pending_verification(account_id, marked_at) VALUES (?, ?)").bind(accountId, now),
     ]);
     return appId;
   }
@@ -119,7 +120,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
 
   it("asks for retry, never email_unverified, when the fresh read fails", async () => {
     const appId = await pendingApp();
-    expect((await loadApp(verifying, appId)).accountActivated).toBe(false);
+    expect((await loadApp(verifying, appId)).accountPending).toBe(true);
     expire(appId);
     const failing = { ...verifying, DB: { prepare: () => { throw transient(); } } } as unknown as Env;
     await expect(loadApp(failing, appId)).rejects.toMatchObject({ status: 503, code: "service_unavailable" });
@@ -128,8 +129,9 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
   it("reads afresh even while a stall holds, so an owner who verified is served", async () => {
     const appId = await pendingApp();
     const first = await loadApp(verifying, appId);
-    expect(first.accountActivated).toBe(false);
-    await env.DB.prepare("INSERT INTO account_activation (account_id, activated_at) VALUES (?, ?)").bind(first.accountId, Date.now()).run();
+    expect(first.accountPending).toBe(true);
+    // The owner verifies: the mark goes.
+    await env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(first.accountId).run();
     expire(appId);
     // A stall elsewhere: reads with a known record would skip D1 for a while.
     useFakeClock();
@@ -138,16 +140,16 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
     await vi.advanceTimersByTimeAsync(BUDGET_MS);
     await expect(stalled).resolves.toBe("known");
     vi.useRealTimers();
-    expect((await loadApp(verifying, appId)).accountActivated).toBe(true);
+    expect((await loadApp(verifying, appId)).accountPending).toBe(false);
   });
 
-  it("keeps the stale fallback for an activated app", async () => {
+  it("keeps the stale fallback for an app whose account is not waiting", async () => {
     const appId = await pendingApp();
     const first = await loadApp(verifying, appId);
-    await env.DB.prepare("INSERT INTO account_activation (account_id, activated_at) VALUES (?, ?)").bind(first.accountId, Date.now()).run();
+    await env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(first.accountId).run();
     appCache.delete(appId);
     const activated = await loadApp(verifying, appId);
-    expect(activated.accountActivated).toBe(true);
+    expect(activated.accountPending).toBe(false);
     const entry = appCache.peek(appId)!;
     appCache.set(appId, entry.value, { storedAt: entry.storedAt - 61_000 });
     const failing = { ...verifying, DB: { prepare: () => { throw transient(); } } } as unknown as Env;

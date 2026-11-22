@@ -5,7 +5,7 @@
  */
 import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
-import { accountActivatedSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
+import { accountPendingSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -19,10 +19,9 @@ import { app } from "../db/schema.ts";
 
 const APP_CACHE_TTL_MS = 60_000;
 /**
- * How long a cached app whose account is not activated yet is trusted: its
- * owner may verify at any moment, and this isolate may not be the one that
- * hears of it. Activation only ever turns on, so an activated entry keeps the
- * full minute.
+ * How long a cached app whose account is waiting for its owner's address is
+ * trusted: its owner may verify at any moment, and this isolate may not be the
+ * one that hears of it. Every other entry keeps the full minute.
  */
 const PENDING_ACTIVATION_TTL_MS = 10_000;
 
@@ -38,13 +37,13 @@ export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appCache.get(appId);
   if (cached) return cached;
   const known = appCache.peek(appId);
-  if (known !== undefined && !known.value.accountActivated && emailVerificationRequired(env)) {
+  if (known !== undefined && known.value.accountPending && emailVerificationRequired(env)) {
     // A record of an account still waiting on its owner's address is never
     // served past its life, not even through a stall: the owner may have
     // verified since, and serving it would refuse their apps for up to the
     // stale window. If the fresh read cannot be had, the request is told to
-    // retry, never that the account is unverified. Activated records keep the
-    // stale fallback below.
+    // retry, never that the account is unverified. Every other record keeps
+    // the stale fallback below.
     try {
       return await withDeadline(readApp(env, appId), PENDING_REFRESH_DEADLINE_MS, "reading the app");
     } catch (error) {
@@ -59,10 +58,10 @@ export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
 async function readApp(env: Env, appId: string): Promise<AppRecord> {
   const startedAt = Date.now();
   const generation = invalidations;
-  // The account's activation comes in the same query, so the gate costs no read of its own.
+  // Whether the account waits for its owner's address comes in the same query, so the gate costs no read of its own.
   const row = await database(env.DB).query.app.findFirst({
     where: eq(app.id, appId),
-    extras: { accountActivated: sql<number>`${sql.raw(accountActivatedSql('"app"."account_id"'))}`.as("account_activated") },
+    extras: { accountPending: sql<number>`${sql.raw(accountPendingSql('"app"."account_id"'))}`.as("account_pending") },
   });
   if (!row) {
     appCache.delete(appId);
@@ -93,10 +92,10 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     limits: config.limits,
     presets: config.presets ?? {},
     conversations: config.conversations?.store === true ? config.conversations : null,
-    accountActivated: Boolean(row.accountActivated),
+    accountPending: Boolean(row.accountPending),
   };
   if (generation === invalidations) {
-    const pending = !value.accountActivated && emailVerificationRequired(env);
+    const pending = value.accountPending && emailVerificationRequired(env);
     appCache.set(appId, value, { storedAt: startedAt, ...(pending ? { ttlMs: PENDING_ACTIVATION_TTL_MS } : {}) });
   }
   return value;
@@ -146,5 +145,5 @@ export function assertAppActive(value: AppRecord): void {
  */
 export function assertAppServes(env: Env, value: AppRecord): void {
   assertAppActive(value);
-  assertAccountServes(env, value.accountActivated);
+  assertAccountServes(env, value.accountPending);
 }

@@ -1,20 +1,21 @@
 /**
  * Whether an account may serve application traffic yet: v1's account gate,
  * for the one rule v2 keeps (owner, 2026-11-19: there are no unclaimed
- * accounts in v2, so no deadlines). Where the deployment verifies email, an
- * account serves requests once an owner has verified their address, or once
- * it was activated without one (`account_activation`). A deployment that does
- * not verify email never asks, and this costs it nothing.
+ * accounts in v2, so no deadlines).
+ *
+ * Every account serves, except one marked as waiting for its owner's address
+ * (`account_pending_verification`). The mark is written only when a password
+ * sign-up makes an account while the deployment verifies addresses
+ * (`../auth/identity.ts`), and confirming the address removes it
+ * (`../auth/email-verification.ts`). So turning email verification on later
+ * refuses no account that served before, and an account made by
+ * `scripts/management-key.ts --create-account`, whose owner is a key, is never
+ * marked. A deployment that does not verify email never asks.
  *
  * On the request path the answer costs no read of its own: it is read in the
  * same D1 query that loads the app, and cached with it
- * (`../apps/app-records.ts`, {@link accountActivatedSql}). Only the console's
- * session asks for it alone ({@link readAccountActivated}).
- *
- * The answer only ever goes from "not yet" to "yes": an owner's verified email
- * is never unverified, and an activation row is never removed from a live
- * account. So a cached "yes" is kept as long as the app is, and a stale "not
- * yet" can only refuse for a moment longer, never admit.
+ * (`../apps/app-records.ts`, {@link accountPendingSql}). Only the console's
+ * session asks for it alone ({@link readAccountPending}).
  *
  * Reading and configuring an account never waits for this: everything can be
  * set up before the link is clicked. Only app traffic does: provider requests,
@@ -25,10 +26,7 @@ import { GatewayError } from "./errors.ts";
 
 /**
  * Whether this deployment verifies people's email addresses: wherever it is
- * set up to send email, even where that setup is not complete yet. An account
- * made then still waits for its owner's address, and sign-up says so
- * (`../management/identity-routes.ts`), so fixing the setup later lets nobody
- * past the gate unverified.
+ * set up to send email, even where that setup is not complete yet.
  */
 export function emailVerificationRequired(env: Env): boolean {
   return emailSetup(env).state !== "off";
@@ -36,32 +34,26 @@ export function emailVerificationRequired(env: Env): boolean {
 
 /**
  * SQL true when the account named by `account` (a SQL expression, such as a
- * column or a `?1`) is activated: an activation row, or an owner who is a
- * person with a verified address. Served by the activation table's key and
- * the membership index.
+ * column or a `?1`) is waiting for its owner's address. Served by the mark
+ * table's key.
  */
-export function accountActivatedSql(account: string): string {
-  return `(EXISTS (SELECT 1 FROM account_activation a WHERE a.account_id = ${account})
-  OR EXISTS (
-    SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id = m.user_id
-    WHERE m.organization_id = ${account} AND m.role = 'owner' AND m.status = 'active'
-      AND u.kind = 'human' AND u.email_verified = 1
-  ))`;
+export function accountPendingSql(account: string): string {
+  return `EXISTS (SELECT 1 FROM account_pending_verification p WHERE p.account_id = ${account})`;
 }
 
-/** Whether the account is activated, read now: for the console's session, never the request path. */
-export async function readAccountActivated(env: Env, accountId: string): Promise<boolean> {
-  const row = await env.DB.prepare(`SELECT ${accountActivatedSql("?1")} AS activated`).bind(accountId).first<{ activated: number }>();
-  return Boolean(row?.activated);
+/** Whether the account is marked as waiting, read now: for the console's session, never the request path. */
+export async function readAccountPending(env: Env, accountId: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT ${accountPendingSql("?1")} AS pending`).bind(accountId).first<{ pending: number }>();
+  return Boolean(row?.pending);
 }
 
 /**
- * Refuses app traffic for an account whose owner has not verified their
- * address yet, where the deployment verifies addresses. `activated` is what the
- * app's own read found, so this costs nothing.
+ * Refuses app traffic for an account still waiting for its owner's address,
+ * where the deployment verifies addresses. `pending` is what the app's own
+ * read found, so this costs nothing.
  */
-export function assertAccountServes(env: Env, activated: boolean): void {
-  if (activated || !emailVerificationRequired(env)) return;
+export function assertAccountServes(env: Env, pending: boolean): void {
+  if (!pending || !emailVerificationRequired(env)) return;
   throw new GatewayError(
     403,
     "email_unverified",
