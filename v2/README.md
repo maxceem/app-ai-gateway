@@ -153,8 +153,9 @@ Workers built before it still read on every management-key request. Deploy the n
 then apply `0005`. The new Worker works with the column still there.
 
 Email verification can be turned on at any time. Only an account a password sign-up makes while it
-is on waits for its owner's address; every account made before, or by
-`management-key.ts --create-account`, keeps serving its apps.
+is on waits for its owner's address, and only until that address is verified, by the emailed link
+or a linked Google sign-in. Every account made before, or by `management-key.ts --create-account`,
+keeps serving its apps.
 
 On a host shared with v1, the v2 Worker needs these routes, while v1 keeps its own paths
 (`/.well-known/oauth-*` without `/v2` included):

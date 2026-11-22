@@ -1,47 +1,9 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "90cf4e9a-cc6f-48cf-99a4-4c38120b03b7",
+  "id": "94b4d082-69b4-4cc5-9ec4-8fbaee771543",
   "prevId": "03211708-3b8a-4eff-a7bc-66a4e5d28d35",
   "tables": {
-    "account_pending_verification": {
-      "name": "account_pending_verification",
-      "columns": {
-        "account_id": {
-          "name": "account_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "marked_at": {
-          "name": "marked_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "account_pending_verification_account_id_mgmt_organization_id_fk": {
-          "name": "account_pending_verification_account_id_mgmt_organization_id_fk",
-          "tableFrom": "account_pending_verification",
-          "tableTo": "mgmt_organization",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "app": {
       "name": "app",
       "columns": {
@@ -1296,6 +1258,30 @@
           "value": "\"charge\".\"cost_nano\" IS NULL OR typeof(\"charge\".\"cost_nano\") = 'integer'"
         }
       }
+    },
+    "email_pending_verification": {
+      "name": "email_pending_verification",
+      "columns": {
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "marked_at": {
+          "name": "marked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
     },
     "mgmt_api_key": {
       "name": "mgmt_api_key",

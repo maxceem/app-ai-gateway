@@ -88,11 +88,15 @@ async function unverifiedPerson() {
 /** A person whose address is not verified, owning an account waiting for it, as a password sign-up makes one. */
 async function unverifiedOwner() {
   const human = await unverifiedPerson();
-  await env.DB.prepare("INSERT INTO account_pending_verification(account_id, marked_at) VALUES (?, ?)").bind(human.accountId, Date.now()).run();
+  await env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (lower(?), ?)").bind(human.email, Date.now()).run();
   return human;
 }
 
-const unmark = (accountId: string) => env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(accountId).run();
+/** Clears every owner's mark on the account. */
+const unmark = (accountId: string) =>
+  env.DB.prepare(
+    "DELETE FROM email_pending_verification WHERE email IN (SELECT lower(u.email) FROM mgmt_organization_user m JOIN mgmt_user u ON u.id = m.user_id WHERE m.organization_id = ?)",
+  ).bind(accountId).run();
 
 /** A server app of the owner's account, with a key, whose users come from a header. */
 async function serverApp(accountId: string): Promise<{ appId: string; key: string }> {
@@ -165,6 +169,34 @@ describe("the account gate", () => {
     await unmark(owner.accountId);
     clearCaches();
     expect(await pending(deployment({ email: true }).env, owner.cookie)).toBeUndefined();
+  });
+
+  it("clears once the owner's address is verified any other way, such as a linked Google sign-in: apps, banner and resend agree (Sol 7b-7 round 4)", async () => {
+    const owner = await unverifiedOwner();
+    const app = await serverApp(owner.accountId);
+    const verifying = deployment({ email: true }).env;
+    expect(await errorCode(await me(verifying, app))).toBe("email_unverified");
+    // Google sets the address verified; the mark stays, and no longer matters.
+    await env.DB.prepare("UPDATE mgmt_user SET email_verified = 1 WHERE id = ?").bind(owner.userId).run();
+    clearCaches();
+    expect((await me(verifying, app)).status).toBe(200);
+    const session = await asConsole(verifying, owner.cookie, "/v2/admin/session");
+    expect(((await session.json()) as { session: { account: { verificationPending?: boolean } } }).session.account.verificationPending).toBeUndefined();
+    const resend = await asConsole(verifying, owner.cookie, "/v2/console/email-verification/send", {});
+    expect(await resend.json()).toMatchObject({ status: "already_verified" });
+  });
+
+  it("serves an account with any owner who is not waiting", async () => {
+    const owner = await unverifiedOwner();
+    const app = await serverApp(owner.accountId);
+    const verifying = deployment({ email: true }).env;
+    expect(await errorCode(await me(verifying, app))).toBe("email_unverified");
+    const other = await seedHuman(`co-owner-${crypto.randomUUID().slice(0, 8)}@example.test`);
+    await env.DB.prepare(
+      "INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)",
+    ).bind(`mem_co_${other.userId}`, owner.accountId, other.userId, new Date().toISOString()).run();
+    clearCaches();
+    expect((await me(verifying, app)).status).toBe(200);
   });
 
   it("says in the console's capabilities whether addresses are verified", async () => {
@@ -280,7 +312,7 @@ describe("the gate on the request path", () => {
     });
     const verifying = { ...deployment({ email: true }).env, DB: db } as Env;
     expect((await me(verifying, app)).status).toBe(200);
-    const gate = statements.filter((query) => query.includes("account_pending_verification"));
+    const gate = statements.filter((query) => query.includes("email_pending_verification"));
     expect(gate.length).toBeGreaterThan(0);
     // Every statement that asks about the mark is the one that loads the app.
     for (const query of gate) expect(query).toMatch(/from "app"/u);
@@ -403,6 +435,45 @@ describe("sign-up", () => {
     expect(await readAccountPending(verifying, accountId)).toBe(false);
   });
 
+  it("marks the address before the person, so their account is never visible unmarked (Sol 7b-7 round 4)", async () => {
+    const email = `ordered-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    const { env: verifying } = deployment({ email: true });
+    const order: string[] = [];
+    const watch = (query: string) => {
+      if (/insert or ignore into email_pending_verification/iu.test(query)) order.push("mark");
+      else if (/insert into "?mgmt_user"?\s*\(/iu.test(query)) order.push("person");
+      else if (/insert into "?mgmt_organization_user"?/iu.test(query)) order.push("membership");
+    };
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            watch(query);
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const created = await signUp({ ...verifying, DB: db } as Env, email);
+    expect(created.status, await created.clone().text()).toBe(200);
+    expect(order[0]).toBe("mark");
+    expect(order).toContain("person");
+    expect(await readAccountPending(verifying, await accountOf(email))).toBe(true);
+  });
+
+  it("never marks an address that already belongs to someone: a sign-up attempt with it holds nobody back", async () => {
+    const owner = await unverifiedPerson();
+    const app = await serverApp(owner.accountId);
+    const { env: verifying } = deployment({ email: true });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const attempt = await signUp(verifying, owner.email);
+    expect(attempt.status).not.toBe(200);
+    expect(await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(owner.email).first()).toBeNull();
+    expect((await me(verifying, app)).status).toBe(200);
+  });
+
   it("continues the first link where the sign-up form was headed (Sol 7b-7 round 2)", async () => {
     const email = `deep-${crypto.randomUUID().slice(0, 8)}@example.test`;
     const { env: verifying, sent } = deployment({ email: true });
@@ -445,7 +516,7 @@ describe("sign-up", () => {
       get(target, property, receiver) {
         if (property === "prepare") {
           return (query: string) => {
-            if (query.includes("INSERT OR IGNORE INTO account_pending_verification")) throw new Error("D1 is down");
+            if (query.includes("INSERT OR IGNORE INTO email_pending_verification")) throw new Error("D1 is down");
             return target.prepare(query);
           };
         }

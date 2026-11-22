@@ -85,14 +85,13 @@ export const {
 } = mgmtAuthTables;
 
 /**
- * Accounts whose app traffic waits for their owner's email address: made by a
- * password sign-up while the deployment verifies addresses. Every other
- * account serves (`../core/account-standing.ts`).
+ * Addresses waiting to be verified: written, lower-cased, by a password
+ * sign-up while the deployment verifies addresses, before the person or their
+ * account exists. An account's app traffic waits while every active owner's
+ * address is marked here and not verified (`../core/account-standing.ts`).
  */
-export const accountPendingVerification = sqliteTable("account_pending_verification", {
-  accountId: text("account_id")
-    .primaryKey()
-    .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
+export const emailPendingVerification = sqliteTable("email_pending_verification", {
+  email: text("email").primaryKey(),
   markedAt: integer("marked_at").notNull(),
 });
 

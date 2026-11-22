@@ -98,6 +98,8 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
     await seedAccount();
     const appId = `app_pending_${crypto.randomUUID().slice(0, 8)}`;
     const accountId = `acc_pending_${crypto.randomUUID().slice(0, 8)}`;
+    const userId = `usr_pending_${crypto.randomUUID().slice(0, 8)}`;
+    const email = `${userId}@example.test`;
     const now = Date.now();
     const config = { authentication: { type: "api_key", end_user: { source: "none" } } };
     await env.DB.batch([
@@ -107,7 +109,14 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
       env.DB.prepare(
         "INSERT INTO app(id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?)",
       ).bind(appId, accountId, appId, JSON.stringify(config), now, now),
-      env.DB.prepare("INSERT INTO account_pending_verification(account_id, marked_at) VALUES (?, ?)").bind(accountId, now),
+      // Its only owner is a person whose address waits to be verified.
+      env.DB.prepare(
+        "INSERT INTO mgmt_user(id, name, email, kind, email_verified, created_at, updated_at) VALUES (?, 'Owner', ?, 'human', 0, ?, ?)",
+      ).bind(userId, email, now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)",
+      ).bind(`mem_${userId}`, accountId, userId, new Date(now).toISOString()),
+      env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (?, ?)").bind(email, now),
     ]);
     return appId;
   }
@@ -131,7 +140,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
     const first = await loadApp(verifying, appId);
     expect(first.accountPending).toBe(true);
     // The owner verifies: the mark goes.
-    await env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(first.accountId).run();
+    await env.DB.prepare("DELETE FROM email_pending_verification WHERE email IN (SELECT lower(u.email) FROM mgmt_organization_user m JOIN mgmt_user u ON u.id = m.user_id WHERE m.organization_id = ?)").bind(first.accountId).run();
     expire(appId);
     // A stall elsewhere: reads with a known record would skip D1 for a while.
     useFakeClock();
@@ -146,7 +155,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
   it("keeps the stale fallback for an app whose account is not waiting", async () => {
     const appId = await pendingApp();
     const first = await loadApp(verifying, appId);
-    await env.DB.prepare("DELETE FROM account_pending_verification WHERE account_id = ?").bind(first.accountId).run();
+    await env.DB.prepare("DELETE FROM email_pending_verification WHERE email IN (SELECT lower(u.email) FROM mgmt_organization_user m JOIN mgmt_user u ON u.id = m.user_id WHERE m.organization_id = ?)").bind(first.accountId).run();
     appCache.delete(appId);
     const activated = await loadApp(verifying, appId);
     expect(activated.accountPending).toBe(false);

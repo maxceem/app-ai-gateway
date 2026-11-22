@@ -205,7 +205,7 @@ describe("console sign-in", () => {
     expect(body.session.credentialType).toBe("session");
     expect(body.session.role).toBe("owner");
     // The new account serves traffic: this deployment verifies no addresses, so nothing marks it as waiting.
-    const pending = await env.DB.prepare("SELECT 1 FROM account_pending_verification WHERE account_id = ?").bind(body.session.account.id).first();
+    const pending = await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(email).first();
     expect(pending).toBeNull();
 
     // A cookie alone is not enough: a page on another site could send it.

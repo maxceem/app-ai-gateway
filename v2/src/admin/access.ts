@@ -31,7 +31,7 @@ export function activeAccounts(memberships: readonly OrganizationMembership[]): 
 /**
  * Whether the account's apps are refused for its owner's unverified email:
  * only where the deployment verifies addresses, and only while the account is
- * marked as waiting.
+ * waiting: every active owner's address marked and not verified.
  */
 async function verificationPending(env: Env, accountId: string): Promise<boolean> {
   return emailVerificationRequired(env) && (await readAccountPending(env, accountId));

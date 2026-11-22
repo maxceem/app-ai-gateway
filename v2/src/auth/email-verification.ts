@@ -246,11 +246,10 @@ export async function confirmEmailVerification(
   const [changed, , verified, owned] = await env.DB.batch([
     env.DB.prepare(`UPDATE mgmt_user SET email_verified = 1, updated_at = ?3 WHERE ${person} AND email_verified = 0`)
       .bind(claims.u, claims.e, nowMs),
-    // The accounts this person owns stop waiting: only once their address is verified, never by a stale link.
+    // The address stops waiting: only once it is verified, never by a stale link.
     env.DB.prepare(
-      `DELETE FROM account_pending_verification
-       WHERE account_id IN (SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?1 AND role = 'owner')
-         AND EXISTS (SELECT 1 FROM mgmt_user WHERE ${person} AND email_verified = 1)`,
+      `DELETE FROM email_pending_verification
+       WHERE email = lower(?2) AND EXISTS (SELECT 1 FROM mgmt_user WHERE ${person} AND email_verified = 1)`,
     ).bind(claims.u, claims.e),
     env.DB.prepare(`SELECT id FROM mgmt_user WHERE ${person} AND email_verified = 1`).bind(claims.u, claims.e),
     env.DB.prepare("SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?1 AND role = 'owner'").bind(claims.u),

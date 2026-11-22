@@ -9,7 +9,7 @@
  *
  * This is the only module that imports the library at run time.
  */
-import type { AuthState, CfAuth, CfAuthError, CfAuthEvent } from "@maxceem/cf-auth";
+import type { AuthState, CfAuth, CfAuthError } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../db/schema.ts";
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -97,27 +97,30 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
 }
 
 /**
- * Marks an account a person just made as waiting for their address, where the
- * deployment verifies addresses (`../core/account-standing.ts`). Only a person
+ * Marks the address of a person about to be made as waiting to be verified,
+ * where the deployment verifies addresses (`../core/account-standing.ts`).
+ * It runs before the person is written, so before their account and its
+ * membership exist: no request can see the account unmarked. Only a person
  * whose address is not verified yet: a password sign-up. Google's arrive
- * verified, and a key-made account never comes here.
+ * verified, and a key-made account never comes here. Never an address that
+ * already belongs to someone: a sign-up attempt with another person's address
+ * must not hold their account back.
  *
  * If the mark cannot be written, the account serves, as every unmarked one
  * does, and the failure is logged for the monitor: never an account refused
  * that should serve.
  */
-async function markPendingVerification(db: D1Database, accountId: string, userId: string): Promise<void> {
+async function markPendingVerification(db: D1Database, email: string): Promise<void> {
   try {
     await db
       .prepare(
-        `INSERT OR IGNORE INTO account_pending_verification(account_id, marked_at)
-         SELECT o.id, ?3 FROM mgmt_organization o JOIN mgmt_user u ON u.id = ?2
-         WHERE o.id = ?1 AND u.kind = 'human' AND u.email_verified = 0`,
+        `INSERT OR IGNORE INTO email_pending_verification(email, marked_at)
+         SELECT lower(?1), ?2 WHERE NOT EXISTS (SELECT 1 FROM mgmt_user WHERE email = ?1 COLLATE NOCASE)`,
       )
-      .bind(accountId, userId, Date.now())
+      .bind(email, Date.now())
       .run();
   } catch (error) {
-    log("warn", "email_pending_mark_failed", { account: accountId, error: errorFacts(error) });
+    log("warn", "email_pending_mark_failed", { error: errorFacts(error) });
   }
 }
 
@@ -156,6 +159,7 @@ export async function createIdentity(
     userHooks: {
       beforeCreate: async (user) => {
         if (!registrationAllowed(env, user.email)) await registrationDenied(options.onRegistrationDenied);
+        if (!user.emailVerified && user.email && emailVerificationRequired(env)) await markPendingVerification(env.DB, user.email);
       },
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
@@ -170,11 +174,6 @@ export async function createIdentity(
     onError: (error, { scope }) =>
       log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) }),
     logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
-    onEvent: async (event: CfAuthEvent) => {
-      if (event.type === "organization.created" && emailVerificationRequired(env)) {
-        await markPendingVerification(env.DB, event.organizationId, event.userId);
-      }
-    },
     // Browser approvals: the OAuth flows, and the writes an agent hands to a
     // person (a key entered in a browser, a created key revealed on a page).
     ...(realm === null
