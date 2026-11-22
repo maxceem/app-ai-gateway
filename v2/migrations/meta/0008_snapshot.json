@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "acfc6cc8-e3d6-4794-a1a5-0673c0720261",
+  "id": "7ffe4103-2425-4e4d-9e6a-894c29c79a96",
   "prevId": "dfeb0dec-4385-4e60-a081-af44f7414ec4",
   "tables": {
     "account_activation": {
@@ -802,7 +802,15 @@
           "default": 0
         }
       },
-      "indexes": {},
+      "indexes": {
+        "budget_day_day": {
+          "name": "budget_day_day",
+          "columns": [
+            "day"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "budget_day_app_id_scope_scope_id_day_pk": {
@@ -1157,6 +1165,13 @@
           "name": "charge_corrects",
           "columns": [
             "corrects_charge_id"
+          ],
+          "isUnique": false
+        },
+        "charge_usage_day": {
+          "name": "charge_usage_day",
+          "columns": [
+            "usage_day"
           ],
           "isUnique": false
         },
@@ -2593,6 +2608,14 @@
             "owner_id"
           ],
           "isUnique": false
+        },
+        "open_work_gave_up": {
+          "name": "open_work_gave_up",
+          "columns": [
+            "gave_up_at"
+          ],
+          "isUnique": false,
+          "where": "gave_up_at IS NOT NULL"
         }
       },
       "foreignKeys": {},
@@ -2979,6 +3002,13 @@
             "started_at"
           ],
           "isUnique": false
+        },
+        "session_started": {
+          "name": "session_started",
+          "columns": [
+            "started_at"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {},
@@ -3144,6 +3174,13 @@
           "name": "usage_day_account",
           "columns": [
             "account_id",
+            "day"
+          ],
+          "isUnique": false
+        },
+        "usage_day_day": {
+          "name": "usage_day_day",
+          "columns": [
             "day"
           ],
           "isUnique": false

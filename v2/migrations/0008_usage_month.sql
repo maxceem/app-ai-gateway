@@ -22,4 +22,9 @@ CREATE TABLE `usage_month` (
 	CONSTRAINT "usage_month_cost_integer" CHECK(typeof("usage_month"."cost_nano") = 'integer')
 );
 --> statement-breakpoint
-CREATE INDEX `usage_month_account` ON `usage_month` (`account_id`,`month`);
+CREATE INDEX `usage_month_account` ON `usage_month` (`account_id`,`month`);--> statement-breakpoint
+CREATE INDEX `budget_day_day` ON `budget_day` (`day`);--> statement-breakpoint
+CREATE INDEX `charge_usage_day` ON `charge` (`usage_day`);--> statement-breakpoint
+CREATE INDEX `open_work_gave_up` ON `open_work` (`gave_up_at`) WHERE gave_up_at IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `session_started` ON `session` (`started_at`);--> statement-breakpoint
+CREATE INDEX `usage_day_day` ON `usage_day` (`day`);

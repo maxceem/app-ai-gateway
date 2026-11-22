@@ -3,11 +3,13 @@
  * refused, kept 90 days, so a developer can see why their app's users cannot
  * sign in.
  */
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { deleteInChunks, type ChunkedDeleteResult } from "../core/chunked-delete.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import type { ErrorCode } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
+import type { QueryBudget } from "../core/query-budget.ts";
 import type { AuthMethod } from "../core/types.ts";
 import type { ClientNetwork } from "../core/client-network.ts";
 import { storedAppVersion } from "../core/app-version.ts";
@@ -115,9 +117,14 @@ export async function settleExpiredChallenges(
   return { abandoned: recorded?.meta.changes ?? 0, deleted: deleted?.meta.changes ?? 0 };
 }
 
-/** Deletes auth events older than the retention. */
-export async function pruneAuthEvents(db: D1Database, now: number = Date.now()): Promise<number> {
-  const cutoff = now - AUTH_EVENT_RETENTION_DAYS * 86_400_000;
-  const result = await database(db).delete(appAuthEvent).where(lt(appAuthEvent.createdAt, cutoff));
-  return result.meta.changes ?? 0;
+/**
+ * Deletes auth events older than the retention, a chunk at a time while
+ * `budget` lasts (`db` charges it). Served by `app_auth_event_created`.
+ */
+export function pruneAuthEvents(db: D1Database, budget: QueryBudget, now: number): Promise<ChunkedDeleteResult> {
+  return deleteInChunks(db, budget, {
+    table: "app_auth_event",
+    rowids: "SELECT rowid FROM app_auth_event WHERE created_at < ?",
+    params: [now - AUTH_EVENT_RETENTION_DAYS * 86_400_000],
+  });
 }

@@ -93,12 +93,17 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 
 ## Nightly maintenance
 
-The hourly cron runs the nightly maintenance at 03:17 UTC (`src/maintenance/nightly.ts`). It deletes
-auth and rejection events after 90 days, stored conversations past each app's retention, and
-detailed usage after 90 days: charges, settled sessions and budget totals. Day totals stay 400 days,
-then move into month totals. One run makes at most 50 D1 queries and R2 calls, the Workers Free
-plan's limit. On the Workers Paid plan, set the optional Worker variable `MAINTENANCE_QUERY_BUDGET`
-(for example `1000`) to clear a large backlog faster.
+The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in its own hour:
+
+- At 03:17 UTC it deletes stored conversations past each app's retention.
+- At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
+  days, and detailed usage after 90 days: charges, settled sessions and budget totals. Day totals
+  stay 400 days, then move into month totals.
+
+The nightly maintenance makes at most 50 D1 queries, the Workers Free plan's limit per run. Each
+query deletes at most 5,000 rows, so a large backlog is cleared over several nights. On the Workers
+Paid plan, set the optional Worker variable `MAINTENANCE_QUERY_BUDGET` (for example `1000`) to
+clear it faster.
 
 ## Deploying
 

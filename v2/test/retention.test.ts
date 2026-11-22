@@ -11,15 +11,16 @@ import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { QueryBudget } from "../src/core/query-budget.ts";
-import { runUsageRetention, USAGE_DAY_RETENTION_DAYS, USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
+import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
+import { FOLD_PICK, runUsageRetention, usageRetentionRules, USAGE_DAY_RETENTION_DAYS, USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { NIGHTLY_HOUR_UTC, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
 import { nano } from "../src/money.ts";
 import { ACCOUNT_ID, attestAuthentication, seedApp } from "./helpers.ts";
 
 const DAY = 86_400_000;
-/** The run's time: 03:17 UTC, as the nightly cron. */
-const NOW = Date.parse("2027-06-15T03:17:00Z");
+/** The run's time: 04:17 UTC, as the nightly cron. */
+const NOW = Date.parse("2027-06-15T04:17:00Z");
 const OLD = NOW - (USAGE_DETAIL_RETENTION_DAYS + 5) * DAY;
 const RECENT = NOW - 10 * DAY;
 
@@ -30,7 +31,7 @@ const TABLES = ["charge", "session", "open_work", "budget_day", "usage_day", "us
 
 beforeEach(async () => {
   quiet();
-  // The walks cover whole tables, so each test starts from empty ones.
+  // The passes cover whole tables, so each test starts from empty ones.
   await env.DB.batch(TABLES.map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
 });
 
@@ -172,7 +173,7 @@ describe("usage retention: charges", () => {
 
     const result = await runUsageRetention(env.DB, NOW, budget());
 
-    expect(result.gaveUpWork).toBe(1);
+    expect(result.gaveUpWork).toMatchObject({ deleted: 1, caughtUp: true });
     const left = (await rows("SELECT id FROM open_work ORDER BY id")).map((row) => row.id);
     expect(left).not.toContain(longAgo);
     expect(left).toEqual(expect.arrayContaining([lately, live]));
@@ -189,31 +190,84 @@ describe("usage retention: charges", () => {
     expect(await chargeIds()).toEqual([estimate.id]);
   });
 
-  it("steps over a kept charge instead of stopping behind it", async () => {
-    const kept = charge({ usedAt: OLD });
-    await insert(kept);
-    await openWork({ ownerType: "call", ownerId: kept.ownerId });
-    const later = Array.from({ length: 6 }, () => charge({ usedAt: OLD }));
-    await insert(...later);
+  it("is never held up by kept charges, however many come first", async () => {
+    // More kept rows than a chunk, written before the deletable ones.
+    const kept = Array.from({ length: 3 }, () => charge({ usedAt: OLD }));
+    await insert(...kept);
+    for (const row of kept) await openWork({ ownerType: "call", ownerId: row.ownerId });
+    await insert(...Array.from({ length: 6 }, () => charge({ usedAt: OLD })));
 
-    // Two rows a chunk: the kept one is alone in the first chunk's survivors.
     const result = await runUsageRetention(env.DB, NOW, budget(), 2);
 
-    expect(await chargeIds()).toEqual([kept.id]);
+    expect(await chargeIds()).toEqual(kept.map((row) => row.id));
     expect(result.charges).toMatchObject({ deleted: 6, caughtUp: true });
   });
 
-  it("stops for the night at the first chunk that holds a charge too new", async () => {
-    const first = charge({ usedAt: OLD });
-    const recent = charge({ usedAt: RECENT });
-    // Written late, behind a newer row: it waits until the walk reaches it.
-    const straggler = charge({ usedAt: OLD });
-    const behind = charge({ usedAt: RECENT });
-    await insert(first, recent, behind, straggler);
+  it("finds an old charge written late, behind more than a chunk of newer ones", async () => {
+    const recent = Array.from({ length: 5 }, () => charge({ usedAt: RECENT }));
+    await insert(...recent);
+    await insert(charge({ usedAt: OLD }));
 
-    await runUsageRetention(env.DB, NOW, budget(), 2);
+    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
 
-    expect(await chargeIds()).toEqual([recent.id, behind.id, straggler.id]);
+    expect(await chargeIds()).toEqual(recent.map((row) => row.id));
+    expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
+  });
+
+  it("deletes a correction only after the charge it corrects, and keeps both while the charge is kept", async () => {
+    const original = charge({ usedAt: OLD });
+    const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId });
+    const keptOriginal = charge({ usedAt: OLD });
+    const keptFix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: keptOriginal.id, ownerId: keptOriginal.ownerId });
+    await insert(fix, original, keptFix, keptOriginal);
+    await openWork({ ownerType: "call", ownerId: keptOriginal.ownerId });
+
+    await runUsageRetention(env.DB, NOW, budget());
+    // The first night deletes the charge; its correction waits for a later chunk or night.
+    expect(await chargeIds()).not.toContain(original.id);
+    expect(await chargeIds()).toEqual(expect.arrayContaining([keptFix.id, keptOriginal.id]));
+
+    await runUsageRetention(env.DB, NOW, budget());
+    expect(await chargeIds()).toEqual([keptFix.id, keptOriginal.id]);
+  });
+
+  it("never books a job twice when retention deletes its charges around a late poll", async () => {
+    const job = unique("job");
+    const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
+    await insert(estimate);
+    const final = { kind: "dollars", costNano: nano(1_200) } as const;
+    expect(await settleJob(env.DB, { jobId: job, final, now: OLD + DAY })).toMatchObject({ status: "settled" });
+    const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
+    expect(await total()).toBe(1_200);
+
+    // A poll reads the estimate, then retention runs before it writes.
+    const read = (await rows("SELECT id FROM charge WHERE id = ?", estimate.id)).length;
+    expect(read).toBe(1);
+    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(env.DB, NOW, budget());
+    expect(await chargeIds()).toEqual([]);
+
+    // The poll writes from what it read: nothing is booked.
+    expect(await settleJobFrom(env.DB, estimate, final, NOW)).toEqual({ status: "already" });
+    // A poll after that finds no estimate.
+    expect(await settleJob(env.DB, { jobId: job, final, now: NOW })).toEqual({ status: "charge_missing" });
+    expect(await chargeIds()).toEqual([]);
+    expect(await total()).toBe(1_200);
+  });
+
+  it("writes no correction from an estimate read before retention deleted it, while its settlement is still there", async () => {
+    const job = unique("job");
+    const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
+    await insert(estimate);
+    const final = { kind: "dollars", costNano: nano(1_200) } as const;
+    await settleJob(env.DB, { jobId: job, final, now: OLD + DAY });
+
+    // One night: the estimate goes, its settlement stays until a later chunk.
+    await runUsageRetention(env.DB, NOW, budget());
+    expect(await chargeIds()).toHaveLength(1);
+
+    expect(await settleJobFrom(env.DB, estimate, { kind: "dollars", costNano: nano(1_500) }, NOW)).toEqual({ status: "already" });
+    expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(1_200);
   });
 });
 
@@ -296,6 +350,39 @@ describe("usage retention: day rollups into months", () => {
     ]);
   });
 
+  it("finds a late day behind more than a chunk of newer days", async () => {
+    for (const recent of ["2027-06-10", "2027-06-11", "2027-06-12", "2027-06-13", "2027-06-14"]) await day(recent);
+    await day("2026-04-03", { cost: 70 });
+
+    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
+
+    expect(result.months).toMatchObject({ deleted: 1, caughtUp: true });
+    expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-04", cost_nano: 70 }]);
+  });
+
+  it("keeps a month's totals exact when the budget splits it over nights", async () => {
+    for (const [index, dayText] of ["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05"].entries()) {
+      await day(dayText, { cost: 100 * (index + 1), ms: 1_000 });
+    }
+    const april = async () => {
+      const month = await rows("SELECT COALESCE(SUM(cost_nano), 0) AS cost, COALESCE(SUM(charges), 0) AS charges, COALESCE(SUM(session_ms), 0) AS ms FROM usage_month WHERE month = '2026-04'");
+      const days = await rows("SELECT COALESCE(SUM(cost_nano), 0) AS cost, COALESCE(SUM(charges), 0) AS charges, COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE day LIKE '2026-04-%'");
+      return { cost: Number(month[0]!.cost) + Number(days[0]!.cost), charges: Number(month[0]!.charges) + Number(days[0]!.charges), ms: Number(month[0]!.ms) + Number(days[0]!.ms) };
+    };
+    const whole = { cost: 1_500, charges: 10, ms: 5_000 };
+    let nights = 0;
+    while ((await rows("SELECT COUNT(*) AS n FROM usage_day"))[0]!.n !== 0) {
+      nights += 1;
+      expect(nights).toBeLessThan(5);
+      // Three statements: the other passes keep the fold's share free, and it affords one chunk.
+      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(3), 2);
+      expect(result.months?.chunks).toBe(1);
+      expect(await april()).toEqual(whole);
+    }
+    expect(nights).toBe(3);
+    expect(await rows("SELECT cost_nano, charges, session_ms FROM usage_month")).toEqual([{ cost_nano: 1_500, charges: 10, session_ms: 5_000 }]);
+  });
+
   it("adds a day that arrives later to its month row", async () => {
     await day("2026-04-01", { cost: 1_000 });
     await runUsageRetention(env.DB, NOW, budget());
@@ -309,8 +396,8 @@ describe("usage retention: day rollups into months", () => {
 
 describe("the query budget", () => {
   it("never issues more statements than the allowance, and goes on where it stopped the next night", async () => {
-    // Twenty statements leave the charges one chunk of two a night, after the shares kept for the other passes.
-    await insert(...Array.from({ length: 8 }, () => charge({ usedAt: OLD })));
+    // Of twenty statements, the charges get eleven chunks of two a night, after the shares kept for the other passes.
+    await insert(...Array.from({ length: 40 }, () => charge({ usedAt: OLD })));
     const allowances: number[] = [];
     let runs = 0;
     while ((await chargeIds()).length > 0) {
@@ -322,7 +409,7 @@ describe("the query budget", () => {
       expect(nightly.spent).toBeLessThanOrEqual(20);
       if (runs === 1) expect(result.charges?.caughtUp).toBe(false);
     }
-    expect(runs).toBe(4);
+    expect(runs).toBe(2);
     expect(allowances.every((spent) => spent <= 20)).toBe(true);
   });
 
@@ -385,17 +472,44 @@ describe("the nightly run", () => {
 
   it("goes on with the other jobs when one fails", async () => {
     const warnings = warningCodes();
-    const broken = {
-      get: () => Promise.reject(new Error("R2 is down")),
-    } as unknown as R2Bucket;
     await insert(charge({ usedAt: OLD }));
-    const oldEvent = await authEvent(OLD);
+    await authEvent(OLD);
+    await rejection(OLD);
+    // A database on which deleting auth events fails.
+    const failing = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (sql: string) => {
+            if (sql.startsWith("DELETE FROM app_auth_event")) throw new Error("auth event statements fail");
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
 
-    await runNightly({ ...env, CONVERSATIONS: broken } as Env, NOW, new QueryBudget(49));
+    await runNightly({ ...env, DB: failing } as Env, NOW, new QueryBudget(49));
 
-    expect(warnings).toContain("conversations_prune_failed");
+    expect(warnings).toContain("auth_events_prune_failed");
     expect(await chargeIds()).toEqual([]);
-    expect(await rows("SELECT id FROM app_auth_event WHERE id = ?", oldEvent)).toEqual([]);
+    expect(await rows("SELECT id FROM app_rejection_event")).toEqual([]);
+  });
+
+  it("deletes a backlog of events larger than a chunk over several statements", async () => {
+    for (let index = 0; index < 12_000; index += 4_000) {
+      await env.DB.prepare(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000)
+         INSERT INTO app_rejection_event (id, app_id, reason, created_at) SELECT 'bulk_' || (? + i), 'app_retention', 'model_not_allowed', ? FROM n`,
+      )
+        .bind(index, OLD)
+        .run();
+    }
+    const allowance = new QueryBudget(49);
+
+    await runNightly(env, NOW, allowance);
+
+    expect(await rows("SELECT COUNT(*) AS n FROM app_rejection_event")).toEqual([{ n: 0 }]);
   });
 
   it("goes on with the other usage passes when one fails", async () => {
@@ -407,7 +521,7 @@ describe("the nightly run", () => {
       get(target, property) {
         if (property === "prepare") {
           return (sql: string) => {
-            if (/FROM charge/.test(sql) && !/EXISTS \(SELECT 1 FROM charge/.test(sql)) throw new Error("charge statements fail");
+            if (sql.startsWith("DELETE FROM charge")) throw new Error("charge statements fail");
             return target.prepare(sql);
           };
         }
@@ -424,7 +538,7 @@ describe("the nightly run", () => {
     expect(result.months).toMatchObject({ caughtUp: true });
   });
 
-  it("runs from the hourly cron at 03:17 UTC only; the hourly clean-up runs every hour", async () => {
+  it("runs from the hourly cron at 04:17 UTC only; the hourly clean-up runs every hour", async () => {
     await insert(charge({ usedAt: OLD }));
     const appId = await seedApp(attestAuthentication());
     await env.DB.prepare("INSERT INTO app_auth_challenge (challenge, app_id, expires_at, attempted) VALUES (?, ?, 1000, 0)")
@@ -443,5 +557,22 @@ describe("the nightly run", () => {
     await worker.scheduled!(createScheduledController({ cron: "17 * * * *", scheduledTime: at(NIGHTLY_HOUR_UTC) }), env, nightly);
     await waitOnExecutionContext(nightly);
     expect(await chargeIds()).toEqual([]);
+  });
+});
+
+describe("retention queries", () => {
+  const plan = async (sql: string, ...params: unknown[]) =>
+    (await rows(`EXPLAIN QUERY PLAN ${sql}`, ...params)).map((row) => String(row.detail)).join("\n");
+
+  it("picks every pass's rows through an index, never a scan of the whole table", async () => {
+    const rules = usageRetentionRules(NOW);
+    const indexes = { gaveUpWork: "open_work_gave_up", charges: "charge_usage_day", sessions: "session_started", budgetDays: "budget_day_day" };
+    for (const [name, rule] of Object.entries(rules)) {
+      const detail = await plan(`${rule.rowids} LIMIT 1`, ...rule.params);
+      expect(detail, name).toContain(indexes[name as keyof typeof indexes]);
+    }
+    expect(await plan(FOLD_PICK, "2026-05-01", 1)).toContain("usage_day_day");
+    expect(await plan("SELECT rowid FROM app_auth_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_auth_event_created");
+    expect(await plan("SELECT rowid FROM app_rejection_event WHERE created_at < ? LIMIT 1", NOW)).toContain("app_rejection_event_created");
   });
 });

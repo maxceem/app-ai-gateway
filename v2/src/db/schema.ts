@@ -365,6 +365,8 @@ export const charge = sqliteTable(
     index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),
     index("charge_owner").on(table.ownerType, table.ownerId),
     index("charge_corrects").on(table.correctsChargeId),
+    // Charges past their retention, for the nightly maintenance.
+    index("charge_usage_day").on(table.usageDay),
     // An app's jobs, newest first (the management API's job list), without
     // scanning the app's call charges.
     index("charge_job_estimates")
@@ -433,6 +435,8 @@ export const usageDay = sqliteTable(
       ],
     }),
     index("usage_day_account").on(table.accountId, table.day),
+    // Days past their retention, for the nightly maintenance.
+    index("usage_day_day").on(table.day),
     check("usage_day_outcome", oneOf(table.outcome, ["ok", "failed"])),
     check("usage_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
@@ -507,6 +511,8 @@ export const budgetDay = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.appId, table.scope, table.scopeId, table.day] }),
+    // Days past their retention, for the nightly maintenance.
+    index("budget_day_day").on(table.day),
     check("budget_day_scope", oneOf(table.scope, BUDGET_SCOPES)),
     check("budget_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
@@ -542,6 +548,8 @@ export const openWork = sqliteTable(
   (table) => [
     index("open_work_due").on(table.dueAt),
     index("open_work_owner").on(table.ownerType, table.ownerId),
+    // Work given up long ago, for the nightly maintenance.
+    index("open_work_gave_up").on(table.gaveUpAt).where(sql`gave_up_at IS NOT NULL`),
     check("open_work_kind", oneOf(table.kind, OPEN_WORK_KINDS)),
     check("open_work_owner_type", oneOf(table.ownerType, OWNER_TYPES)),
   ],
@@ -598,6 +606,8 @@ export const session = sqliteTable(
   },
   (table) => [
     index("session_app_started").on(table.appId, table.startedAt),
+    // Sessions past their retention, for the nightly maintenance.
+    index("session_started").on(table.startedAt),
     check("session_mode", oneOf(table.mode, SESSION_MODES)),
     check("session_slot", oneOf(table.slot, SESSION_SLOTS)),
     check("session_state", oneOf(table.state, SESSION_STATES)),
