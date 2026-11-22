@@ -129,3 +129,23 @@ test("a preset is not retried after a 400: the error is passed through, one char
   assert.equal(usage.failed, 1);
   assert.equal(usage.cost_nano, 0);
 });
+
+// A request the app's own settings refuse is answered as before and shows up
+// as a refusal sample, so a developer can see what their app asked for (v1's
+// endpoints.smoke.ts). Samples are one a minute per caller and reason.
+test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: 90_000 }, async () => {
+  const user = `missing-${run}`;
+  const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
+  assert.equal(answer.status, 404);
+  assert.equal(answer.body.error.code, "preset_not_found");
+  let sample: { reason: string; user_id: string | null } | undefined;
+  for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {
+    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const found = await admin("GET", `/v2/admin/apps/${appId}/rejection-events?reason=preset_not_found&user=${encodeURIComponent(user)}`);
+    assert.equal(found.status, 200, JSON.stringify(found.body));
+    sample = found.body.events[0];
+  }
+  assert.ok(sample, "no refusal sample was recorded within a minute");
+  assert.equal(sample.reason, "preset_not_found");
+  assert.equal(sample.user_id, user);
+});
