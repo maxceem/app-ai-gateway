@@ -37,13 +37,13 @@ type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
 const DAY_MS = 86_400_000;
 
-function parseQuery<T>(c: AdminContext, schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: readonly { message: string }[] } } }): T {
+export function parseQuery<T>(c: AdminContext, schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: readonly { message: string }[] } } }): T {
   const parsed = schema.safeParse(c.req.query());
   if (parsed.success) return parsed.data;
   throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "The query is invalid");
 }
 
-async function appExists(db: D1Database, accountId: string, appId: string): Promise<void> {
+export async function appExists(db: D1Database, accountId: string, appId: string): Promise<void> {
   const row = await db.prepare("SELECT 1 AS found FROM app WHERE id = ? AND account_id = ?").bind(appId, accountId).first();
   if (row === null) throw new GatewayError(404, "app_not_found", "App is not registered");
 }
@@ -146,7 +146,7 @@ function totals(row: Partial<SumRow> | null | undefined): UsageTotals {
  * fewer, within `maxDays`); at most `maxDays` days. Each day is a real one:
  * the query schemas check that (`DaySchema`).
  */
-function dayRange(from: string | undefined, to: string | undefined, maxDays = USAGE_RANGE_MAX_DAYS, now = Date.now()): { from: string; to: string } {
+export function dayRange(from: string | undefined, to: string | undefined, maxDays = USAGE_RANGE_MAX_DAYS, now = Date.now()): { from: string; to: string } {
   const end = to ?? new Date(now).toISOString().slice(0, 10);
   const endMs = Date.parse(`${end}T00:00:00Z`);
   // A default start never goes before the first day a range may name.

@@ -274,7 +274,7 @@ describe("usage retention: charges", () => {
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
     const other = charge({ usedAt: OLD, costNano: nano(500) });
     await insert(original, fix, other);
-    const read = async () => (await usageByUser(env.DB, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
+    const read = async () => (await usageByUser(env.DB, ACCOUNT_ID, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
     expect(await read()).toMatchObject({ charges: 2, cost_nano: 750 });
 
     // One charge a chunk, one chunk of each pass a night, and a read after every night.
@@ -935,7 +935,8 @@ describe("the nightly run", () => {
 
     const [auth] = await rows("SELECT COUNT(*) AS n FROM app_auth_event");
     const [rejections] = await rows("SELECT COUNT(*) AS n FROM app_rejection_event");
-    const eventsDeleted = 6_000 - Number(auth!.n) - Number(rejections!.n);
+    const authDeleted = 3_000 - Number(auth!.n);
+    const rejectionsDeleted = 3_000 - Number(rejections!.n);
     // The passes after the events ran: the charge, its budget total and the old day are gone.
     expect(await chargeIds()).toEqual([]);
     expect(budgetDays).toBeGreaterThan(0);
@@ -943,7 +944,8 @@ describe("the nightly run", () => {
     expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-01", cost_nano: 9 }]);
     // Within the allowance, the charge, its budget total, the old day and its month row included, and most of it used.
     const written =
-      eventsDeleted * ROW_WRITES.app_auth_event +
+      authDeleted * ROW_WRITES.app_auth_event +
+      rejectionsDeleted * ROW_WRITES.app_rejection_event +
       ROW_WRITES.charge +
       budgetDays * ROW_WRITES.budget_day +
       ROW_WRITES.usage_day +

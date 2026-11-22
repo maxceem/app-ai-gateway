@@ -33,6 +33,8 @@ import { invalidateRegisteredKey } from "./request-proof.ts";
 export interface AuthAttempt {
   authMethod: AuthMethod | null;
   userId: string | null;
+  /** The account that owned the app when the attempt read it: its auth event is recorded under it. */
+  accountId: string | null;
 }
 
 export interface IssuedToken {

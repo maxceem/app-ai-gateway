@@ -97,7 +97,7 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
 
 - At 03:17 UTC it deletes stored conversations past each app's retention. It goes round every
   app once, with at most 500 R2 calls and the D1 queries `MAINTENANCE_QUERY_BUDGET` leaves after
-  the hourly clean-up: 43 by default, one per page of conversations it deletes. That keeps up with
+  the hourly clean-up: 42 by default, one per page of conversations it deletes. That keeps up with
   about 40 apps that each have one page expire a night. Where it runs out before every
   app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90

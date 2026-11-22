@@ -13,7 +13,10 @@
  * has only a few to share between all its Workers.
  *
  * Every hour:
- * - expired App Attest challenges are recorded as abandoned and deleted;
+ * - expired App Attest challenges are recorded as abandoned and deleted, up
+ *   to `CHALLENGE_DRAIN_BATCHES` batches of 1,000 while they come back full;
+ *   one batch in the 03:17 and 04:17 runs, whose statements the other jobs
+ *   there need;
  * - the sign-in library's clean-up runs (expired approvals, ended OAuth
  *   connections' tokens).
  *
@@ -33,7 +36,7 @@
  * Each job and each pass fails on its own: a failure leaves the others to
  * run, and is logged as `warn`.
  */
-import { authEventsPass, settleExpiredChallenges } from "../client-auth/auth-events.ts";
+import { authEventsPass, drainExpiredChallenges } from "../client-auth/auth-events.ts";
 import { RETENTION_HOUR_UTC, runConversationRetention } from "../conversations/retention.ts";
 import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -92,17 +95,24 @@ function sweepSignIn(env: Env): Promise<void> {
   );
 }
 
-/** Expired App Attest challenges, recorded as abandoned and deleted. */
-function settleChallenges(db: D1Database): Promise<void> {
-  return job("auth_challenges_settled", "auth_challenges_prune_failed", () => settleExpiredChallenges(db), (settled) => ({ ...settled }));
+/** Expired App Attest challenges, recorded as abandoned and deleted, at most `batches` batches. */
+function settleChallenges(db: D1Database, batches: number): Promise<void> {
+  return job("auth_challenges_settled", "auth_challenges_prune_failed", () => drainExpiredChallenges(db, batches), (settled) => ({ ...settled }));
 }
 
-/** Statements the App Attest challenge clean-up issues: one batch of two. */
-export const CHALLENGE_SETTLE_STATEMENTS = 2;
+/** Statements one batch of the App Attest challenge clean-up issues: one read of a bounded batch of challenges, then one batch of two. */
+export const CHALLENGE_SETTLE_STATEMENTS = 3;
+
+/**
+ * Batches of expired challenges an ordinary hour settles while they come back
+ * full: 5,000 challenges, 15 statements beside the sign-in clean-up's 4, well
+ * inside the 50 D1 queries one invocation may make on the Free plan.
+ */
+export const CHALLENGE_DRAIN_BATCHES = 5;
 
 /**
  * Conversation retention's D1 queries: what `MAINTENANCE_QUERY_BUDGET` leaves
- * once the hourly clean-up in the same 03:17 run has had its statements. 43 at
+ * once the hourly clean-up in the same 03:17 run has had its statements. 42 at
  * the default of 50, and more where a deployment on the Paid plan raises it.
  */
 export function conversationReadBudget(env: Env): QueryBudget {
@@ -130,7 +140,7 @@ export function nightlyPasses(now: number): Pass[] {
 
 /** The nightly jobs, within `budget`'s statements and `rowLimit` rows written. */
 export async function runNightly(env: Env, now: number, budget: QueryBudget, rowLimit: number): Promise<void> {
-  await settleChallenges(budget.database(env.DB));
+  await settleChallenges(budget.database(env.DB), 1);
   if (budget.affords(STUCK_SESSION_STATEMENTS)) {
     await job("ledger_sessions_checked", "ledger_sessions_check_failed", () => warnStuckSessions(budget.database(env.DB), now), (stuck) => ({ stuck }));
   }
@@ -144,7 +154,8 @@ export function runHourly(env: Env, scheduledTime: number, waitUntil: (work: Pro
   const hour = new Date(scheduledTime).getUTCHours();
   if (hour === RETENTION_HOUR_UTC) waitUntil(pruneConversations(env, scheduledTime));
   if (hour !== NIGHTLY_HOUR_UTC) {
-    waitUntil(settleChallenges(env.DB));
+    // In the conversations' hour, one batch: their D1 allowance counts on it (`conversationReadBudget`).
+    waitUntil(settleChallenges(env.DB, hour === RETENTION_HOUR_UTC ? 1 : CHALLENGE_DRAIN_BATCHES));
     return;
   }
   const budget = maintenanceStatementBudget(env);

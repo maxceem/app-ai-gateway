@@ -57,7 +57,9 @@ export const CHUNK_ROWS = 5_000;
  * of a text primary key included). A test checks each against the schema.
  */
 export const ROW_WRITES = {
-  app_auth_event: 5,
+  // An upper bound: 5 for most rows; a sign-in that closed a claim wait has one
+  // more, in `app_auth_event_claim_delay`.
+  app_auth_event: 6,
   app_rejection_event: 5,
   open_work: 5,
   // 9 for most charges; a correction has one more, in `charge_correction_day`.

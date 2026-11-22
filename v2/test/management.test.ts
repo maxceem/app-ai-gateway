@@ -573,7 +573,11 @@ describe("plan ceilings on saved settings", () => {
 
 describe("end users", () => {
   let chargeCount = 0;
-  async function seedCharge(appId: string, endUserId: string | null, values: { usedAt: number; cost?: number | null; status?: string; kind?: string }) {
+  async function seedCharge(
+    appId: string,
+    endUserId: string | null,
+    values: { usedAt: number; cost?: number | null; status?: string; kind?: string; accountId?: string },
+  ) {
     chargeCount += 1;
     const kind = values.kind ?? "attempt";
     await env.DB.prepare(
@@ -584,7 +588,7 @@ describe("end users", () => {
       .bind(
         `ch_${chargeCount}_${crypto.randomUUID().slice(0, 6)}`,
         kind,
-        ACCOUNT_ID,
+        values.accountId ?? ACCOUNT_ID,
         appId,
         endUserId,
         `call_${chargeCount}`,
@@ -613,9 +617,21 @@ describe("end users", () => {
     await seedCharge(appId, "header-user", { usedAt: lastMonth, cost: 9_999 });
     await seedCharge(appId, "100%_user", { usedAt: now - 3_000 });
     await seedCharge(appId, null, { usedAt: now - 3_000 });
-    await env.DB.prepare("INSERT INTO app_rejection_event (id, app_id, user_id, reason, created_at) VALUES (?, ?, 'refused-only', 'model_not_allowed', ?)")
-      .bind(crypto.randomUUID(), appId, now - 4_000)
+    await env.DB.prepare(
+      "INSERT INTO app_rejection_event (id, app_id, account_id, user_id, reason, created_at) VALUES (?, ?, ?, 'refused-only', 'model_not_allowed', ?)",
+    )
+      .bind(crypto.randomUUID(), appId, ACCOUNT_ID, now - 4_000)
       .run();
+    // Refusals recorded under another account, or with none (recorded before events carried one), are never read (Sol 7b-4 round 2).
+    for (const [user, account] of [["their-user", "another-account"], ["old-user", null]] as const) {
+      await env.DB.prepare("INSERT INTO app_rejection_event (id, app_id, account_id, user_id, reason, created_at) VALUES (?, ?, ?, ?, 'model_not_allowed', ?)")
+        .bind(crypto.randomUUID(), appId, account, user, now - 4_000)
+        .run();
+    }
+
+    // Charges recorded under another account are never read either: not as a user, nor in a user's usage (Sol 7b-4 round 3).
+    await seedCharge(appId, "their-charge-user", { usedAt: now - 1_000, accountId: "another-account" });
+    await seedCharge(appId, "header-user", { usedAt: now - 1_000, cost: 70_000, accountId: "another-account" });
 
     const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users`);
     expect(listed.status).toBe(200);
@@ -641,6 +657,16 @@ describe("end users", () => {
     expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 1, users: [{ id: "100%_user" }] });
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users?month=2026-13`)).status).toBe(400);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/nobody`)).status).toBe(404);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-user`)).status).toBe(404);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/old-user`)).status).toBe(404);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-charge-user`)).status).toBe(404);
+  });
+
+  it("reads a user's charges through the app-and-user index, the account checked on the rows it finds (Sol 7b-4 round 3)", async () => {
+    const plan = async (sql: string) =>
+      ((await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind("app", "acct", "u").all<{ detail: string }>()).results ?? []).map((row) => row.detail).join(" | ");
+    expect(await plan("SELECT MIN(used_at) FROM charge WHERE app_id = ?1 AND +account_id = ?2 AND end_user_id = ?3")).toContain("charge_app_user_used");
+    expect(await plan("SELECT 1 FROM charge WHERE app_id = ?1 AND +account_id = ?2 AND end_user_id = ?3")).toContain("charge_app_user_used");
   });
 
   it("blocks and unblocks a user with a row, and refuses a virtual one", async () => {

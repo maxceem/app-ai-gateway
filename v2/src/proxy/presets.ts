@@ -35,6 +35,7 @@ import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contra
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
+import { UNRECOGNIZED } from "../diagnostics/rejection-events.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { priceSources, resolvePresetTarget } from "../pricing/billability.ts";
 import {
@@ -289,7 +290,8 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
     {
       app,
       startedAt,
-      providerSlug: preset?.provider ?? slug,
+      // A preset the app does not have is the caller's text: never stored.
+      providerSlug: preset?.provider ?? UNRECOGNIZED,
       ...(firstDescription === null ? {} : { providerAuthHeader: firstDescription.auth.header }),
     },
     async (caller) => {

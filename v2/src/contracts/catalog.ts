@@ -95,6 +95,14 @@ import {
   UsageRangeQuerySchema,
   UsageTimeseriesResponseSchema,
 } from "./usage.ts";
+import {
+  AuthEventListQuerySchema,
+  AuthEventListResponseSchema,
+  AuthEventSummaryQuerySchema,
+  AuthEventSummaryResponseSchema,
+  RejectionEventListQuerySchema,
+  RejectionEventListResponseSchema,
+} from "./diagnostics.ts";
 import { CliToolCallRequestSchema, CliToolCallResponseSchema, CliToolCatalogResponseSchema } from "./cli.ts";
 import type { OperationSpec } from "./operation.ts";
 
@@ -452,6 +460,51 @@ export const CATALOG = {
     query: ChargeListQuerySchema,
     response: ChargeListResponseSchema,
     responseDescription: "One page of charges.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppAuthEventSummary: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/auth-events/summary",
+    params: APP_PARAM,
+    tags: ["Admin diagnostics"],
+    summary: "Summarize an app's sign-in health",
+    description:
+      "Over a trailing window of UTC days ending today: sign-in attempts per day by event, outcome and reason; the networks failures came from; failed charges and sampled refusals per day; the token-exchange success rate; how long users waited for an entitlement claim to reach the issuer; and how many are waiting now. Events are kept 90 days.",
+    security: "management",
+    query: AuthEventSummaryQuerySchema,
+    response: AuthEventSummaryResponseSchema,
+    responseDescription: "The app's sign-in health over the window.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppAuthEvents: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/auth-events",
+    params: APP_PARAM,
+    tags: ["Admin diagnostics"],
+    summary: "List an app's sign-in attempts",
+    description:
+      "One row per sign-in attempt, successful or refused: challenges nobody used, App Attest registrations and token exchanges, with the outcome and reason. Newest first, kept 90 days. Only events recorded while this account owned the app are shown. Without filters, or with user, from and to each bound the read on their own, so to alone reads every event kept up to that day. An event or outcome filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
+    security: "management",
+    query: AuthEventListQuerySchema,
+    response: AuthEventListResponseSchema,
+    responseDescription: "One page of sign-in attempts.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppRejectionEvents: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/rejection-events",
+    params: APP_PARAM,
+    tags: ["Admin diagnostics"],
+    summary: "List an app's refused requests",
+    description:
+      "Samples of the requests the gateway refused before they reached a provider: a limit, a model or path the app does not allow, a blocked user. At most one sample a minute per caller (and per reason, for a refusal caused by the app's settings), so counts are not exact totals. The requested model is shown only when it names a model the gateway knows, and as unrecognized otherwise: a caller's own text is never stored. Newest first, kept 90 days. Only refusals recorded while this account owned the app are shown. Without filters, or with user, from and to each bound the read on their own. A reason or scope filter has no index of its own: unless user is given too, it is read inside at most 31 days, by default the last 30.",
+    security: "management",
+    query: RejectionEventListQuerySchema,
+    response: RejectionEventListResponseSchema,
+    responseDescription: "One page of refusal samples.",
     errors: ADMIN_ERRORS,
   },
 

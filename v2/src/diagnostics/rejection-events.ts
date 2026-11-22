@@ -38,14 +38,37 @@ export const REJECTION_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 export const REJECTION_SAMPLE_WINDOW_MS = 60_000;
+
+/**
+ * What a refusal records instead of a requested model the gateway does not
+ * know (`knownModel`), or a provider or preset the app does not have: those
+ * are the caller's text, and a key or a prompt put there by mistake must
+ * never be stored or shown.
+ *
+ * So every stored `model` and `provider_slug` was checked by this writer, and
+ * a read shows them as stored. Only this writer sets `account_id`, and a read
+ * never shows a row without one; a copy from v1 must check its models the
+ * same way, or store this marker, before it sets an account.
+ */
+export const UNRECOGNIZED = "unrecognized";
 export const REJECTION_RETENTION_DAYS = 90;
 
 export interface RejectionEventInput {
   readonly identity: GatewayIdentity;
+  /** The account that owns the app, as the request read it. */
+  readonly accountId: string;
   readonly reason: string;
   readonly scope: string | null;
+  /** A provider or preset the app has, or {@link UNRECOGNIZED}. */
   readonly providerSlug: string | null;
+  /** The model the request named. Stored only when trusted, or when `modelKnown` says the gateway knows it. */
   readonly model: string | null;
+  /**
+   * For a model that is the caller's text: whether the gateway knows it.
+   * Asked only once a refusal is sampled, so a served request never pays for
+   * it; a model from the app's settings or a signed job id needs none.
+   */
+  readonly modelKnown?: () => boolean;
   readonly operation: string | null;
   readonly appVersion: string | null;
   readonly latencyMs: number;
@@ -69,30 +92,36 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
   }
   const id = timeOrderedId();
   try {
+    const model = input.model === null || input.modelKnown === undefined || input.modelKnown() ? input.model : UNRECOGNIZED;
     await env.DB.prepare(
+      // Under the account the caller was verified for, and only while that
+      // account still owns the app: an app id that comes back in another
+      // account never shows this row.
       `INSERT INTO app_rejection_event
-        (id, app_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
+        (id, app_id, account_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
          app_version, auth_method, latency_ms, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM app WHERE id = ?)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM app WHERE id = ? AND account_id = ?)
        ON CONFLICT(id) DO NOTHING`,
     )
       .bind(
         id,
         identity.appId,
+        input.accountId,
         identity.userId,
         identity.installId,
         identity.apiKeyId ?? null,
         input.reason,
         input.scope,
         input.providerSlug,
-        input.model,
+        model,
         input.operation,
         storedAppVersion(input.appVersion),
         identity.authMethod,
         input.latencyMs,
         Date.now(),
         identity.appId,
+        input.accountId,
       )
       .run();
   } catch (error) {

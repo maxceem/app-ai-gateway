@@ -4,7 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
   attestAuthentication,
@@ -292,6 +292,37 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
     });
   });
 
+  it("measures how long a user waited for the entitlement claim, from the first refusal to the sign-in that ends it (step 7b-4)", async () => {
+    // A frozen clock, moved by hand: each attempt is recorded at an exact time.
+    const start = Date.parse("2026-11-20T15:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    try {
+      const { appId, issuerToken } = await issuerApp();
+      const key = await seedAppKey(appId);
+      const pendingSince = () =>
+        env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = 'person-1'").bind(appId).first<{ since: number | null }>();
+      // Two refusals: only the first opens the wait.
+      expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+      expect((await pendingSince())?.since).toBe(start);
+      vi.setSystemTime(start + 1_000);
+      expect((await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({}) })).status).toBe(403);
+      expect((await pendingSince())?.since).toBe(start);
+      // Five seconds after the first refusal, the sign-in that succeeds closes the wait and records it.
+      vi.setSystemTime(start + 5_000);
+      const ok = await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+      expect(ok.status).toBe(200);
+      expect((await pendingSince())?.since).toBeNull();
+      expect((await authEvents(appId)).at(-1)).toMatchObject({ outcome: "ok", claim_delay_ms: 5_000 });
+      // A later sign-in has no wait to close.
+      vi.setSystemTime(start + 6_000);
+      await post(`/v2/apps/${appId}/auth/token`, { api_key: key.key, issuer_token: await issuerToken({ entitlements: ["pro"] }) });
+      expect(((await authEvents(appId)).at(-1) as { claim_delay_ms: number | null }).claim_delay_ms).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses an app key of another app", async () => {
     const { appId, issuerToken } = await issuerApp();
     const otherApp = await seedApp({ type: "api_key", end_user: { source: "none" } });
@@ -408,10 +439,117 @@ describe("expired challenges", () => {
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-tried', ?, ?, 1)").bind(appId, now - 1000),
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('fresh', ?, ?, 0)").bind(appId, now + 60_000),
     ]);
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2 });
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0 });
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
     const events = await authEvents(appId);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ id: "challenge:old-unused", outcome: "abandoned", created_at: now - 1000 - 300_000 });
   });
+
+  it("copies a challenge's version only when it is shaped like one: a challenge written before the check may hold any text (Sol 7b-4 round 3)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      [
+        ["free-text", "sk-proj-0123456789abcdef"],
+        ["version", "1.2.3 (45)"],
+        ["none", null],
+      ].map(([challenge, version]) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted, app_version) VALUES (?, ?, ?, 0, ?)").bind(
+          challenge,
+          appId,
+          now - 1000,
+          version,
+        ),
+      ),
+    );
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
+    const versions = Object.fromEntries((await authEvents(appId)).map((event: any) => [event.id, event.app_version]));
+    expect(versions).toEqual({ "challenge:free-text": null, "challenge:version": "1.2.3 (45)", "challenge:none": null });
+  });
+
+  it("settles a backlog a bounded batch at a time, oldest first, and says when one is left (Sol 7b-4 round 4)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      Array.from({ length: 5 }, (_, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted, app_version) VALUES (?, ?, ?, ?, ?)").bind(
+          `backlog-${index}`,
+          appId,
+          now - 10_000 + index,
+          index === 1 ? 1 : 0,
+          `1.0.${index}`,
+        ),
+      ),
+    );
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    // A batch of 2 stands in for 1,000: the oldest two go first.
+    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    const left = await env.DB.prepare("SELECT challenge FROM app_auth_challenge ORDER BY expires_at").all<{ challenge: string }>();
+    expect(left.results.map((row) => row.challenge)).toEqual(["backlog-2", "backlog-3", "backlog-4"]);
+    // The hourly drain goes on while batches come back full, up to its limit, and says a backlog is left.
+    expect(await drainExpiredChallenges(env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
+    // With room for more batches it clears the rest in one run, and stops at the first batch that is not full.
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
+    const versions = (await authEvents(appId)).map((event: any) => event.app_version).sort();
+    expect(versions).toEqual(["1.0.0", "1.0.2", "1.0.3", "1.0.4"]);
+  });
+
+  it("clears a burst in one hourly run, a full batch after another (Sol 7b-4 round 5)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      Array.from({ length: 5 }, (_, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES (?, ?, ?, 0)").bind(`burst-${index}`, appId, now - 10_000 + index),
+      ),
+    );
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
+    expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toEqual([]);
+  });
+
+  it("keeps draining when another clean-up deleted part of a full batch first (Sol 7b-4 round 6)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      Array.from({ length: 5 }, (_, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES (?, ?, ?, 0)").bind(`race-${index}`, appId, now - 10_000 + index),
+      ),
+    );
+    // The first batch selects race-0 and race-1; a clean-up started by a challenge request deletes race-0 before it writes.
+    let raced = false;
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
+        return async (statements: D1PreparedStatement[]) => {
+          if (!raced) {
+            raced = true;
+            await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
+          }
+          return target.batch(statements);
+        };
+      },
+    });
+    expect(await drainExpiredChallenges(db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
+  });
+
+  it("picks a batch through the expiry index, with no sort", async () => {
+    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${EXPIRED_CHALLENGES_SQL}`).bind(Date.now(), 1000).all<{ detail: string }>()).results
+      .map((row) => row.detail)
+      .join("\n");
+    expect(plan).toContain("app_auth_challenge_expiry");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
 });
+

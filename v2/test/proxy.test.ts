@@ -245,6 +245,41 @@ describe("OpenAI chat through the proxy", () => {
     expect(event).toEqual({ reason: "model_not_allowed", model: "gpt-4o", operation: "openai.chat", user_id: "user-7" });
   });
 
+  it("records a path the app does not allow, samples once a minute per user and reason, and records nothing for an unproven caller (v1 config-refusals)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const rejections = async () =>
+      (await env.DB.prepare("SELECT reason, user_id, operation FROM app_rejection_event WHERE app_id = ? ORDER BY id").bind(appId).all()).results;
+    // The sampling is per wall-clock minute: the clock is held inside one, a second
+    // apart per call so the rows keep their order (Gemini Neon 7b-4).
+    let clock = Date.parse("2026-11-20T12:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const send = async (path: string, model: string, extra: Record<string, string> = {}, bearer = key) => {
+      vi.setSystemTime((clock += 1_000));
+      const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/${path}`, chatRequest(bearer, { model }, extra));
+      await waitOnExecutionContext(ctx);
+      return response.status;
+    };
+    try {
+      // A path the app does not allow: recorded, with no operation, since none matched.
+      expect(await send("v1/files", "gpt-4o-mini")).toBe(403);
+      // Two refused models in the same minute: one sample. Another reason for the same user is still recorded.
+      expect(await send("v1/chat/completions", "gpt-4o")).toBe(403);
+      expect(await send("v1/chat/completions", "gpt-4.1")).toBe(403);
+      // Another user is sampled on their own.
+      expect(await send("v1/chat/completions", "gpt-4o", { "x-end-user-id": "user-8" })).toBe(403);
+      // A caller that never proved who it is records nothing.
+      expect(await send("v1/chat/completions", "gpt-4o", {}, "agw_app_not-a-real-key")).toBe(401);
+      expect(await rejections()).toEqual([
+        { reason: "path_not_allowed", user_id: "user-7", operation: null },
+        { reason: "model_not_allowed", user_id: "user-7", operation: "openai.chat" },
+        { reason: "model_not_allowed", user_id: "user-8", operation: "openai.chat" },
+      ]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses an operation the app does not allow, a refused path and an undeclared path", async () => {
     const { appId, slug, key } = await setup({ operations: ["openai.realtime"] });
     for (const path of ["v1/chat/completions", "v1/organization/users", "v1/files", "v1/../v1/chat/completions"]) {
@@ -494,24 +529,49 @@ describe("second review fixes", () => {
     expect(upstreamRequest().headers.get("content-type")).toBe("application/json");
   });
 
-  it("stores the app version cut to its limit (F2)", async () => {
+  it("stores the app version only when it is shaped like a version, with a build number in parentheses, never other caller text (F2, Sol 7b-4 rounds 2 and 3)", async () => {
     const { appId, slug, key } = await setup();
-    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
-    const { response, ctx } = await call(
-      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
-      chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": "9".repeat(100) }),
-    );
-    await response.text();
-    await waitOnExecutionContext(ctx);
-    expect(await chargesOf(appId)).toMatchObject([{ app_version: "9".repeat(64) }]);
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], usage: USAGE }));
+    for (const version of ["v2.0.0-beta.3", "9".repeat(100), "sk-proj-0123456789abcdef", "1.2.3 (45)", "1.0 (12345678901)", "1.0 (key)"]) {
+      const { response, ctx } = await call(
+        `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+        chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": version }),
+      );
+      expect(response.status, version).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    const stored = (await chargesOf(appId)).map((row: any) => row.app_version as string | null);
+    expect(stored.filter((version) => version !== null).sort()).toEqual(["1.2.3 (45)", "v2.0.0-beta.3"]);
+    expect(stored).toHaveLength(6);
   });
 
-  it("stores a refused request's model cut to 200 characters (F3)", async () => {
-    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
-    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "m".repeat(300) }));
+  it("records a refused request's provider only when the app has it, never the caller's own text (Sol 7b-4 round 2)", async () => {
+    const { appId, key } = await setup();
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/sk-live-0123456789/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
     await waitOnExecutionContext(ctx);
-    const event = await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string }>();
-    expect(event?.model).toHaveLength(200);
+    const event = await env.DB.prepare("SELECT provider_slug, reason FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    expect(event).toEqual({ provider_slug: "unrecognized", reason: "provider_not_configured" });
+  });
+
+  it("records a refused request's model only when the gateway knows it, never the caller's own text (F3, Sol 7b-4)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const models = async () =>
+      (await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at").bind(appId).all<{ model: string }>()).results.map(
+        (row) => row.model,
+      );
+    // A key put in the model field by mistake is never stored.
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "sk-proj-not-a-model-0123456789" }));
+    await waitOnExecutionContext(ctx);
+    expect(await models()).toEqual(["unrecognized"]);
+  });
+
+  it("records a refused request's model when it has a price, though the app does not allow it (Sol 7b-4)", async () => {
+    const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o" }));
+    await waitOnExecutionContext(ctx);
+    const event = await env.DB.prepare("SELECT model, account_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string; account_id: string }>();
+    expect(event).toEqual({ model: "gpt-4o", account_id: ACCOUNT_ID });
   });
 
   it("refuses a provider slug that is not valid percent-encoding (F4)", async () => {

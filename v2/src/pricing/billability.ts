@@ -544,6 +544,27 @@ function listOf(route: RouteModels): ReadonlySet<string> | null {
 }
 
 /**
+ * Whether `model` is a name the gateway knows on this route: the app lists or
+ * rewrites it, or it has a price (ours or the customer's). A diagnostic
+ * records a requested model only then, so text a caller put in the model
+ * field by mistake (a key, a prompt) is never stored or shown. Never throws.
+ */
+export function knownModel(
+  route: RouteModels,
+  rewrites: Readonly<Record<string, string>> | undefined,
+  sources: PriceSources,
+  model: string,
+): boolean {
+  if (listOf(route)?.has(model) === true) return true;
+  if (rewrites !== undefined && Object.hasOwn(rewrites, model)) return true;
+  try {
+    return resolve(sources, model) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The model names a request to `operation` on a route can carry: its fixed
  * model, when it has one; otherwise the route's model list, or, with none,
  * every model it could name that has a price of the connection's own or a

@@ -274,6 +274,20 @@ describe("usage reads with a read grant", () => {
     expect(viaCli.status).toBe(200);
     const body = (await viaCli.json()) as { result: { apps: { app_id: string; charges: number }[] } };
     expect(body.result.apps).toEqual([expect.objectContaining({ app_id: appId, charges: 1 })]);
+
+    // The diagnostics reads take the same read grant (step 7b-4).
+    await env.DB.prepare(
+      "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, created_at) VALUES (?, ?, ?, 'token_exchange', 'ok', ?)",
+    )
+      .bind(`ae_${crypto.randomUUID().slice(0, 8)}`, appId, human.accountId, Date.now())
+      .run();
+    const attempts = await callTool(access_token, "list_auth_events", { app: appId });
+    expect(attempts.isError).not.toBe(true);
+    expect(attempts.structuredContent.events).toHaveLength(1);
+    const summary = await callTool(access_token, "get_auth_event_summary", { app: appId });
+    expect(summary.structuredContent.token_exchange).toMatchObject({ total: 1, ok: 1 });
+    const refusals = await send({ base: API, path: "/v2/cli/tools/list_rejection_events", headers: bearer(access_token), body: { app: appId } });
+    expect(refusals.status).toBe(200);
   });
 });
 
