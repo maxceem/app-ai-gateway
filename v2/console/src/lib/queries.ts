@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OperationQuery, OperationRequest, OperationResponse } from "@contracts/catalog";
-import { ApiError, call } from "./api";
+import type { OperationQuery, OperationRequest } from "@contracts/catalog";
+import { call } from "./api";
 import {
   changePassword,
   plainlySignedOut,
@@ -358,155 +358,37 @@ export function useAccountUsage(month: string, refetchInterval?: number) {
   });
 }
 
-/** How often the overview asks again while the app has made no call yet. */
-export const FIRST_CALL_POLL_MS = 10_000;
-/** How many times it asks at most: 15 minutes, then a reload asks again. */
-export const FIRST_CALL_MAX_POLLS = 90;
-
-interface PollState {
-  error: unknown;
-  dataUpdateCount: number;
-  errorUpdateCount: number;
-}
-
-/** A refusal asking again cannot change: the app is gone, or this login may not read it. */
-const permanent = (error: unknown) => error instanceof ApiError && error.status >= 400 && error.status < 500;
-
 /**
- * When to ask again for a first call: never once it is found, never after a
- * permanent refusal, and never past {@link FIRST_CALL_MAX_POLLS} (Sol 7b-6).
- * Exported for its test.
- */
-export function firstCallInterval(state: PollState, found: boolean): number | false {
-  if (found || permanent(state.error)) return false;
-  if (state.dataUpdateCount + state.errorUpdateCount >= FIRST_CALL_MAX_POLLS) return false;
-  return FIRST_CALL_POLL_MS;
-}
-
-/**
- * The apps whose first-call check has stopped without finding a call (the cap,
- * or a refusal), for the life of the page. The query cache forgets an entry
- * five minutes after the card leaves, and a fresh entry would start asking
- * again; this does not forget until a reload (Sol 7b-6 round 4).
- */
-const firstCallStopped = new Set<string>();
-/** How many answers each first-call read has had on this page, per app and read. */
-const firstCallAnswers = new Map<string, number>();
-/** Forgets every stop, as a reload does. For tests. */
-export const forgetFirstCallStops = () => {
-  firstCallStopped.clear();
-  firstCallAnswers.clear();
-};
-
-/**
- * One first-call read, which records its own stop as it settles: a refusal
- * asking again cannot change, or the {@link FIRST_CALL_MAX_POLLS}th answer
- * without a call. It runs in the request, not in the card, so a read that
- * settles after the card has gone still records the stop, and coming back
- * once the cache has forgotten the entry does not ask again (Sol 7b-6 round 5).
- * A transient failure is not counted here: it is retried, and the card, while
- * shown, stops on the query's own count.
- */
-async function askFirstCall<T>(appId: string, read: string, ask: () => Promise<T>, found: (data: T | undefined) => boolean): Promise<T> {
-  try {
-    const data = await ask();
-    const answers = (firstCallAnswers.get(`${appId} ${read}`) ?? 0) + 1;
-    firstCallAnswers.set(`${appId} ${read}`, answers);
-    if (!found(data) && answers >= FIRST_CALL_MAX_POLLS) firstCallStopped.add(appId);
-    return data;
-  } catch (error) {
-    if (permanent(error)) firstCallStopped.add(appId);
-    throw error;
-  }
-}
-
-/**
- * The timer for one of the first-call reads. Where it stops without having
- * found what it asks for, the stop is remembered for the page's life, here,
- * as the query decides it, whether or not the card renders again first.
- */
-const pollFor =
-  <T,>(appId: string, found: (data: T | undefined) => boolean) =>
-  (query: { state: PollState & { data: T | undefined } }): number | false => {
-    const next = firstCallInterval(query.state, found(query.state.data));
-    if (next === false && !found(query.state.data)) firstCallStopped.add(appId);
-    return next;
-  };
-
-const retryTransient = (count: number, error: unknown) => !permanent(error) && count < 2;
-
-/**
- * Whether a reconnect, a return to the tab, or the card mounting again may
- * ask again: only while the timer would (Sol 7b-6 rounds 2 and 3). Otherwise
- * a 403 or the cap stops the timer, and coming back starts the asking over.
- */
-const mayAskAgain =
-  <T,>(found: (data: T | undefined) => boolean) =>
-  (query: { state: PollState & { data: T | undefined } }): boolean =>
-    firstCallInterval(query.state, found(query.state.data)) !== false;
-
-type AppUsage = OperationResponse<"getAppUsage">;
-type ChargePage = OperationResponse<"listAppCharges">;
-/** A usage answer settles the question: a first day, or none from an older gateway, where the charges take over. */
-const usageAnswered = (data: AppUsage | undefined) => data !== undefined && data.first_usage_day !== null;
-const chargeFound = (data: ChargePage | undefined) => (data?.charges.length ?? 0) > 0;
-
-/**
- * Whether an app has ever made a call, v1's first-request check, asked again
- * every {@link FIRST_CALL_POLL_MS} until it has. Read from the app's usage
+ * Whether an app has ever made a call, v1's first-request check, read once
+ * when the page loads, and again only when the person asks (`refresh`): no
+ * live check (owner, 2026-11-22). Read from the app's usage
  * totals (`first_usage_day`), which outlive its charges: an app whose last
  * charge aged out still has made calls. A gateway from before that field
  * answers without it, and then the newest charge stands in.
  */
 export function useFirstCall(appId: string) {
-  const halted = firstCallStopped.has(appId);
   const usage = useQuery({
     queryKey: keys.appUsage(appId),
-    queryFn: () => askFirstCall(appId, "usage", () => call("getAppUsage", { params: { app: appId }, query: {} }), usageAnswered),
-    // Stopped earlier on this page: never asked again, even after the cache forgot the stop.
-    enabled: !halted,
-    // Absent (an older gateway) is an answer too: the charge read below takes over.
-    refetchInterval: pollFor(appId, usageAnswered),
-    refetchOnReconnect: mayAskAgain(usageAnswered),
-    refetchOnWindowFocus: mayAskAgain(usageAnswered),
-    refetchOnMount: mayAskAgain(usageAnswered),
-    // A cached refusal is not asked again just because the card mounts again.
-    retryOnMount: false,
-    retry: retryTransient,
+    queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
   });
   const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
   const charges = useQuery({
     queryKey: keys.charges(appId, { limit: 1 }),
-    queryFn: () => askFirstCall(appId, "charges", () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }), chargeFound),
-    enabled: legacy && !halted,
-    refetchInterval: pollFor(appId, chargeFound),
-    refetchOnReconnect: mayAskAgain(chargeFound),
-    refetchOnWindowFocus: mayAskAgain(chargeFound),
-    refetchOnMount: mayAskAgain(chargeFound),
-    // A cached refusal is not asked again just because the card mounts again.
-    retryOnMount: false,
-    retry: retryTransient,
+    queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
+    enabled: legacy,
   });
-  const client = useQueryClient();
   const source = legacy ? charges : usage;
-  const firstDay = legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null);
-  // Read from the result, so the card renders again after every answer, even one
-  // equal to the last: the count that stops the asking is the query's, and an
-  // unchanged answer alone would never show that it stopped (Sol 7b-6 round 2).
-  const answeredAt = Math.max(source.dataUpdatedAt, source.errorUpdatedAt);
-  const state = client.getQueryState(legacy ? keys.charges(appId, { limit: 1 }) : keys.appUsage(appId));
-  const stopped = halted || (firstDay === null && answeredAt > 0 && state !== undefined && firstCallInterval(state, false) === false);
-  // Remembered for the page's life, so coming back after the cache forgot it does not ask again.
-  if (stopped) firstCallStopped.add(appId);
   return {
-    isPending: halted ? false : source.isPending,
-    isError: source.isError && source.data === undefined,
+    isPending: usage.isPending || (legacy && charges.isPending),
+    isError: source.isError,
+    /** A read is running: the first one, or one the person asked for. */
+    isFetching: source.isFetching,
+    /** Reads it once more, from the same place the card's answer came from. */
+    refresh: () => void source.refetch(),
     /** The day of the app's first call kept; from an older gateway, of its newest charge. */
-    firstDay,
+    firstDay: legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null),
     /** Whether `firstDay` is the first call's, rather than the newest charge's. */
     isFirst: !legacy,
-    /** Asking stopped without finding one: the cap, or a refusal. */
-    stopped,
   };
 }
 

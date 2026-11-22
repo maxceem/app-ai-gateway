@@ -1,6 +1,5 @@
 import { cleanup, configure } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
-import { forgetFirstCallStops } from "@/lib/queries";
 
 // `testTimeout` in the Vitest config sizes the whole test; this sizes one
 // `findBy*`/`waitFor` inside it, and Testing Library defaults it to one second
@@ -113,6 +112,4 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  // A stopped first-call check lasts the page's life; each test is a fresh page.
-  forgetFirstCallStops();
 });

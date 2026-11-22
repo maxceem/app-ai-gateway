@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -182,12 +182,23 @@ export function AppDetailPage() {
 // Overview
 
 /**
- * Whether the app has made a call, v1's first-request check (`useFirstCall`):
- * asked again every ten seconds until it has, so the first call shows without
- * a reload, and never past a refusal or fifteen minutes.
+ * Whether the app has made a call, v1's first-request check (`useFirstCall`),
+ * read once when the page loads. No live check: "Check again" reads it once more.
  */
 export function FirstCall({ app }: { app: App }) {
   const first = useFirstCall(app.id);
+  const checkAgain = (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label="Check again"
+      title="Check again"
+      disabled={first.isFetching}
+      onClick={first.refresh}
+    >
+      <RefreshCw className={cn(first.isFetching && "animate-spin")} />
+    </Button>
+  );
   return (
     <Card>
       <CardHeader>
@@ -198,7 +209,10 @@ export function FirstCall({ app }: { app: App }) {
         {first.isPending ? (
           <Skeleton className="h-5 w-48" />
         ) : first.isError ? (
-          <p className="text-destructive">Could not check for calls.</p>
+          <p className="flex items-center gap-2 text-destructive">
+            Could not check for calls.
+            {checkAgain}
+          </p>
         ) : first.firstDay ? (
           <p className="flex items-center gap-2">
             <CheckCircle2 className="size-4 text-primary" />
@@ -207,12 +221,10 @@ export function FirstCall({ app }: { app: App }) {
               <Link className="underline" to={`/apps/${encodeURIComponent(app.id)}/usage`}>See usage</Link>.
             </span>
           </p>
-        ) : first.stopped ? (
-          <p className="text-muted-foreground">No calls yet. Reload the page to check again.</p>
         ) : (
           <p className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            No calls yet. The first one shows here within a few seconds of arriving.
+            No calls yet.
+            {checkAgain}
           </p>
         )}
       </CardContent>
