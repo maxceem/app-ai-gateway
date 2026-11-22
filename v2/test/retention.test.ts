@@ -481,6 +481,8 @@ describe("the late-booking rule", () => {
 
   it("is about three times the longest wait any booking has on purpose, and well inside retention", () => {
     // The failed-write store's keep, the sweep's longest run of tries (a job's saved figure), and a job's checks.
+    // Not a session's length: nothing serves sessions yet. The session relay must cap a
+    // session far below this window, and add that cap here, before it is wired.
     let figureTries = 0;
     for (let tries = 1; tries < FIGURE_MAX_TRIES; tries += 1) figureTries += retryDelay(tries);
     let otherWork = 0;

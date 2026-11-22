@@ -177,6 +177,8 @@ function correctionFor(
 async function writeCorrection(
   db: D1Database,
   correction: ChargeRow,
+  /** The real time of writing: the late-booking rule is judged against it, never the row's own. */
+  now: number,
   finalCost: NanoDollars,
   doneWork: string | null,
   unlessSettled = false,
@@ -184,11 +186,10 @@ async function writeCorrection(
 ): Promise<ChargeRow | null> {
   const correctedId = correction.correctsChargeId!;
   const statements = [
-    // `writtenAt` is now: a correction is worked out and written at once, never replayed.
     insertChargeWithCostStatement(
       db,
       correction,
-      correction.writtenAt,
+      now,
       `? - COALESCE((SELECT cost_nano FROM charge WHERE id = ?), 0)
          - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE corrects_charge_id = ?), 0)`,
       [finalCost, correctedId, correctedId],
@@ -229,7 +230,7 @@ export async function settleCharge(
   if (original === null) return { status: "charge_missing" };
   const built = correctionFor(original, input.final, chargeSettlementId(original.id), input.now);
   if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
-  const written = await writeCorrection(db, built.correction, built.finalCost, input.doneWork ?? null);
+  const written = await writeCorrection(db, built.correction, input.now, built.finalCost, input.doneWork ?? null);
   return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
@@ -273,7 +274,7 @@ export async function settleJobFrom(
   const jobId = estimate.ownerId;
   const built = correctionFor(estimate, final, jobSettlementId(jobId), now);
   if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
-  const written = await writeCorrection(db, built.correction, built.finalCost, null, false, jobId);
+  const written = await writeCorrection(db, built.correction, now, built.finalCost, null, false, jobId);
   return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
@@ -361,6 +362,6 @@ export async function priceUnresolvedCharge(
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.
-  const written = await writeCorrection(db, correction, priced.cost, input.doneWork ?? null, true);
+  const written = await writeCorrection(db, correction, input.now, priced.cost, input.doneWork ?? null, true);
   return written !== null ? { status: "priced", correction: written } : { status: "already" };
 }

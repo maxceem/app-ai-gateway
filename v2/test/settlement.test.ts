@@ -295,6 +295,21 @@ describe("checkpoints", () => {
     expect(warned.filter((line) => line.includes('"message":"ledger_booking_too_late"'))).toHaveLength(1);
   });
 
+  it("books a slice inside the window even when its session started a day earlier, past it (Astra 7b-2 date rule)", async () => {
+    // The session starts a minute before midnight; its unbooked slice is dated just after.
+    const midnight = Date.parse("2026-11-20T00:00:00Z");
+    const session = sessionRow({ expectsSessionTotal: false, startedAt: midnight - 60_000 });
+    const first = slice(session, 1, 1_000, { usedAt: midnight - 30_000, usageDay: utcDay(midnight - 30_000) });
+    expect(await writeCheckpoint(env.DB, { session, slice: first, budgets: [], planMinutes: null, now: midnight - 30_000 })).toMatchObject({
+      written: true,
+    });
+    const late = slice(session, 2, 2_000, { usedAt: midnight + 30_000, usageDay: utcDay(midnight + 30_000) });
+    // Replayed 30 days on: the slice's own day is inside the window, its session's start is not.
+    const answer = await writeCheckpoint(env.DB, { session, slice: late, budgets: [], planMinutes: null, now: midnight + 30 * 86_400_000 + 60_000 });
+    expect(answer).toMatchObject({ written: true });
+    expect(await chargesOf(session.id)).toHaveLength(2);
+  });
+
   it("a slice replayed while retention has deleted it but not yet its ended session books nothing (Astra 7b-2 round 5)", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);

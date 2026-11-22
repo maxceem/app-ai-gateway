@@ -197,18 +197,16 @@ export async function writeCheckpoint(
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
     // A slice after settlement is $0 when a session-level dollar total covers it (S8).
-    // Written only under a session row that started inside the late-booking
-    // window (`./late-booking.ts`); the slice's own day is judged by the insert.
+    // Written only under a session row. The slice's own day is judged by the insert
+    // (`./late-booking.ts`), which logs a refusal: a slice inside the window cannot
+    // have been deleted by retention, so its id still guards against a repeat.
     insertChargeWithCostStatement(
       db,
       slice,
       now,
       "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
       [session.id, slice.costNano],
-      {
-        sql: "EXISTS (SELECT 1 FROM session WHERE id = ?) AND ?",
-        params: [session.id, sessionStartTakesBookings(session.startedAt, now) ? 1 : 0],
-      },
+      { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
     ),
   ];
   if (slice.priceSource === "unresolved") {

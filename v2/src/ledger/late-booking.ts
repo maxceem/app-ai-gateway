@@ -26,7 +26,8 @@
  * - the failed-write store keeps an entry 7 days (`../do/ChargeStore.ts`);
  * - the sweep retries a job's saved figure for about 8 days, and other work
  *   for less (`./sweep.ts`, `../jobs/jobs.ts`);
- * - a session lasts its time cap, hours at most.
+ * - a session lasts its time cap. Nothing serves sessions yet; the session
+ *   relay must cap a session far below this window before it is wired.
  *
  * A row refused here is not an error, and never fails or holds up an app's
  * request: the request was served long before. Nothing is written, and
