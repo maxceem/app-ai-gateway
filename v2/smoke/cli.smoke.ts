@@ -115,7 +115,7 @@ const JWK = "eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6ImY4M09KM0QyeEYxQmc4dnViOXR
  * that adds an optional app setting adds it here too: these are what
  * published CLIs are asked to keep.
  */
-function everyOption(slug: string, mock: string): Record<string, unknown>[] {
+function everyOption(slug: string, mock: string, store: boolean): Record<string, unknown>[] {
   const issuer = {
     jwks_url: `${mock}jwks/${JWK}`,
     issuer: ["https://smoke.app-ai-gateway.invalid"],
@@ -144,8 +144,9 @@ function everyOption(slug: string, mock: string): Record<string, unknown>[] {
       fallback: [{ provider: slug, operation: "openai.chat", model: "gpt-4o-mini" }],
     },
   };
-  // Each away from its default: storing is off and every kind is kept by default.
-  const conversations = { store: true, keep: { images: false, audio: false, files: false }, retention_days: 30 };
+  // Each away from its default: every kind is kept, and kept 90 days, by default. Storing (off by
+  // default) is turned on only where the deployment and the plan offer it (see below).
+  const conversations = { store, keep: { images: false, audio: false, files: false }, retention_days: 30 };
   return [
     {
       authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
@@ -196,8 +197,21 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     assert.ok(prices?.openai, "agw model list gave no OpenAI prices");
     assert.equal(typeof prices.openai["gpt-4o-mini"]?.input, "number");
 
-    for (const [index, config] of everyOption(slug, mock).entries()) {
-      const app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
+    // Conversation storage is optional: a deployment without a CONVERSATIONS bucket, or a plan
+    // without it, refuses an app that turns it on. The round trip runs either way; storing is
+    // exercised where it is offered.
+    const capabilities = await fetch(new URL("/v2/console/capabilities", base));
+    assert.equal(capabilities.status, 200, `capabilities answered ${capabilities.status}`);
+    let store = ((await readJson(capabilities)) as { conversationStorage?: unknown }).conversationStorage === true;
+    for (const index of [0, 1]) {
+      let config = everyOption(slug, mock, store)[index]!;
+      let app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
+      if (store && app.status === 403 && app.body?.error?.code === "billing_feature_not_included") {
+        store = false;
+        config = everyOption(slug, mock, store)[index]!;
+        app = await admin("POST", "/v2/admin/apps", { name: `agw smoke every option ${index}`, config });
+      }
+      if (index === 0) console.log(`conversation storage in the round trip: ${store ? "on" : "off"}`);
       assert.equal(app.status, 201, outcome(app));
       const id = app.body.app.id as string;
       created.push(id);

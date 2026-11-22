@@ -22,7 +22,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, keyMark, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
+import { cleanUp, keyMark, outcome, readJson, responseOutcome, sameJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -110,7 +110,7 @@ for (const status of [429, 500]) {
     assert.equal(response.status, status);
     assertProviderSawOnlyItsKey(response);
     // The provider's own error, not one the gateway made up in its place.
-    assert.deepEqual(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR);
+    assert.ok(sameJson(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR), "the app did not get the provider's own error");
     const charges = await chargesOf(app.id, trace);
     assert.equal(charges.length, 1);
     assert.equal(charges[0].status, "provider_error");

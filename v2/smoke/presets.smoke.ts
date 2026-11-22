@@ -104,7 +104,7 @@ test("a rewritten model is sent and billed as its target", { skip }, async () =>
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
   assert.equal(answer.status, 200, outcome(answer));
   // The mock answers with the model it was sent.
-  assert.equal(answer.body.model, "gpt-4o-mini");
+  assert.ok(answer.body.model === "gpt-4o-mini", "the answer is not from the preset's model");
   const usage = await usageOf(user, 1);
   assert.equal(usage.charges, 1);
   assert.ok(usage.cost_nano > 0, "billed at the rewritten model's price");
@@ -124,7 +124,7 @@ test("a preset is not retried after a 400: the error is passed through, one char
   const user = `strict-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/strict`, { messages: [{ role: "user", content: "hi" }] }, user);
   assert.equal(answer.status, 400);
-  assert.equal(answer.body.error.code, "mock_failure");
+  assert.ok(answer.body.error?.code === "mock_failure", `not the provider's error: ${outcome(answer)}`);
   const usage = await usageOf(user, 1);
   assert.equal(usage.charges, 1);
   assert.equal(usage.failed, 1);
@@ -138,7 +138,7 @@ test("a preset the app does not have is refused and recorded as a refusal sample
   const user = `missing-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
   assert.equal(answer.status, 404);
-  assert.equal(answer.body.error.code, "preset_not_found");
+  assert.ok(answer.body.error?.code === "preset_not_found", `not preset_not_found: ${outcome(answer)}`);
   let sample: { reason: string; user_id: string | null } | undefined;
   for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {
     if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));

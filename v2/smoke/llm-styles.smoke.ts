@@ -77,18 +77,21 @@ after(async () => {
 /** Each provider type's key header, as the provider itself reads it (v1's key-and-header check). */
 const KEY_HEADERS: Record<Type, string> = { openai: "authorization", anthropic: "x-api-key", gemini: "x-goog-api-key", openrouter: "authorization" };
 
-async function call(type: Type, path: string, body: Record<string, unknown>, user: string): Promise<string> {
+/** Calls a proxy path; checks the status and the key the mock saw. Returns the response, its body unread. */
+async function call(type: Type, path: string, body: Record<string, unknown>, user: string): Promise<Response> {
   const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${slugs[type]}/${path}`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": user },
     body: JSON.stringify(body),
   });
-  const text = await response.text();
-  assert.equal(response.status, 200, `answered ${response.status}`);
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    assert.fail(`answered ${response.status}`);
+  }
   // The connection's own key, alone, in its provider's own header and scheme; never the app's key.
-  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], `fixture-${type}`));
-  assert.equal(response.headers.get("x-mock-client-credentials"), "none");
-  return text;
+  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], `fixture-${type}`), "the provider did not get its own key in its own header");
+  assert.equal(response.headers.get("x-mock-client-credentials"), "none", "a client credential reached the provider");
+  return response;
 }
 
 /** The user's usage once its one charge is written (it is written after the answer). */
@@ -132,20 +135,21 @@ for (const style of STYLES) {
   for (const stream of [false, true]) {
     test(`${style.name}${stream ? ", streamed," : ""} is written as one priced charge with its tokens`, { skip }, async () => {
       const user = `smoke-${style.type}-${stream ? "s" : "j"}-${style.name.length}-${run}`;
-      await call(style.type, style.path(stream), style.body(stream), user);
+      // Read to the end: a streamed answer is charged once it is whole. Never printed.
+      await (await call(style.type, style.path(stream), style.body(stream), user)).text();
       const usage = await usageOf(user);
-      assert.equal(usage.charges, 1);
-      assert.ok(usage.input_tokens > 0, JSON.stringify(usage));
-      assert.equal(usage.output_tokens, 5);
-      assert.ok(usage.cost_nano > 0, JSON.stringify(usage));
+      assert.equal(usage.charges, 1, "not exactly one charge");
+      assert.ok(usage.input_tokens > 0, "no input tokens on the charge");
+      assert.equal(usage.output_tokens, 5, "the charge's output tokens are not the mock's");
+      assert.ok(usage.cost_nano > 0, "the charge has no cost");
     });
   }
 }
 
 test("OpenRouter is billed at the cost its answer reports", { skip }, async () => {
   const user = `smoke-openrouter-${run}`;
-  const text = await call("openrouter", "v1/chat/completions", { model: "mock-lab/unlisted-model", messages: [{ role: "user", content: "Hi" }] }, user);
-  const reported = (JSON.parse(text) as { usage: { prompt_tokens: number; cost: number } }).usage;
+  const response = await call("openrouter", "v1/chat/completions", { model: "mock-lab/unlisted-model", messages: [{ role: "user", content: "Hi" }] }, user);
+  const reported = ((await readJson(response)) as { usage: { prompt_tokens: number; cost: number } }).usage;
   const usage = await usageOf(user);
   assert.equal(usage.charges, 1);
   // The mock reports $1 per million prompt tokens: 1,000 nano-dollars a token.

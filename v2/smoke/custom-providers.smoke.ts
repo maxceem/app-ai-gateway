@@ -17,7 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome, readJson, uniqueSlug } from "./support.ts";
+import { holds, outcome, readJson, responseOutcome, sameJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -102,10 +102,10 @@ async function usageOf(user: string, count = 1): Promise<{ charges: number; cost
 
 test("a custom provider shows its base URL, key header and paths back, never its key", { skip }, async () => {
   const read = await admin("GET", `/v2/admin/providers/${providerIds[0]}`);
-  assert.equal(read.status, 200);
+  assert.equal(read.status, 200, outcome(read));
   assert.equal(read.body.provider.type, "custom");
-  assert.deepEqual(read.body.provider.auth, AUTH);
-  assert.deepEqual(read.body.provider.passthrough, PATHS);
+  assert.ok(sameJson(read.body.provider.auth, AUTH), "the provider's key header is not what was saved");
+  assert.ok(sameJson(read.body.provider.passthrough, PATHS), "the provider's paths are not what was saved");
   assert.ok(!holds(read.body, "sk-mock-smoke-custom-key"), "the provider read response holds its key");
 });
 
@@ -113,9 +113,8 @@ test("a path with an API style is metered by that style, at the connection's rat
   const user = `smoke-custom-chat-${run}`;
   const body = JSON.stringify({ model: "local-llm", messages: [{ role: "user", content: "hi" }] });
   const response = await call("POST", "v1/chat/completions", user, { body, headers: { "content-type": "application/json" } });
-  const text = await response.text();
-  assert.equal(response.status, 200, text);
-  const usage = (JSON.parse(text) as { usage: { prompt_tokens: number; completion_tokens: number } }).usage;
+  assert.equal(response.status, 200, await responseOutcome(response));
+  const usage = ((await readJson(response)) as { usage: { prompt_tokens: number; completion_tokens: number } }).usage;
   const charged = await usageOf(user);
   assert.equal(charged.charges, 1);
   // 1,000 nano-dollars per input token, 2,000 per output token.
@@ -125,18 +124,17 @@ test("a path with an API style is metered by that style, at the connection's rat
 test("a plain path is passed through with the key in the named header, and charged unpriced", { skip }, async () => {
   const user = `smoke-custom-echo-${run}`;
   const response = await call("GET", "v1/echo/abc", user);
-  const text = await response.text();
-  assert.equal(response.status, 200, text);
-  const echoed = JSON.parse(text) as { method: string; path: string; forwarded: string[] };
-  assert.equal(echoed.path, "/v1/echo/abc");
-  assert.ok(echoed.forwarded.includes("x-api-key"), text);
+  assert.equal(response.status, 200, await responseOutcome(response));
+  const echoed = (await readJson(response)) as { method: string; path: string; forwarded: string[] };
+  assert.ok(echoed.path === "/v1/echo/abc", "the provider was sent another path");
+  assert.ok(echoed.forwarded.includes("x-api-key"), "the provider got no key in the named header");
   const charged = await usageOf(user);
   assert.equal(charged.cost_nano, 0);
 });
 
 test("a path the custom provider does not list is refused, and nothing is sent", { skip }, async () => {
   const response = await call("POST", "v1/responses", `smoke-custom-closed-${run}`, { body: "{}", headers: { "content-type": "application/json" } });
-  assert.equal(response.status, 403, await response.text());
+  assert.equal(response.status, 403, await responseOutcome(response));
 });
 
 test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip }, async () => {

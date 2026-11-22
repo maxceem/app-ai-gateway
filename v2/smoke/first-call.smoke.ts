@@ -87,8 +87,9 @@ test("a streamed chat call ends with its usage", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", stream: true, messages: [{ role: "user", content: "Hi" }] });
   assert.equal(response.status, 200);
   const text = await response.text();
-  assert.match(text, /"usage"/u);
-  assert.match(text, /data: \[DONE\]/u);
+  // Tested, never printed: a stream is the provider's text.
+  assert.ok(/"usage"/u.test(text), "the stream has no usage");
+  assert.ok(/data: \[DONE\]/u.test(text), "the stream does not end with [DONE]");
 });
 
 test("a model the app does not allow is refused", { skip }, async () => {
