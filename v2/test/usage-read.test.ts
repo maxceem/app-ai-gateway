@@ -166,6 +166,8 @@ describe("month totals", () => {
     expect(app.body).toEqual({
       app_id: appId,
       month: "2025-03",
+      // Its oldest usage is the folded March total.
+      first_usage_day: "2025-03",
       charges: 43,
       failed: 1,
       unpriced: 1,
@@ -188,6 +190,18 @@ describe("month totals", () => {
     ]);
     // The oldest usage kept is a month total, which sorts before the days of its month.
     expect(account.body.first_usage_day <= "2025-03").toBe(true);
+  });
+
+  it("name an app's first usage kept, from its day or month totals, long after its charges are gone (Sol 7b-6)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-06`)).body.first_usage_day).toBeNull();
+    await seed({ appId, usedAt: at("2025-06-03") });
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-06`)).body.first_usage_day).toBe("2025-06-03");
+    // A month folded long ago is older still; the charges themselves may be gone.
+    await env.DB.prepare("DELETE FROM charge WHERE app_id = ?").bind(appId).run();
+    await monthRow(appId, "2024-01", { charges: 1, cost: 10 });
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-06`)).body.first_usage_day).toBe("2024-01");
   });
 
   it("refuses a month that is not one, and answers nothing for a month with no usage", async () => {
@@ -270,8 +284,8 @@ describe("charges", () => {
     const second = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=2&before=${encodeURIComponent(first.body.next_before)}`);
     expect(second.body.charges.map((row: any) => row.id)).toEqual(["ch_a", "ch_d"]);
     expect(second.body.charges[0]).toMatchObject({ kind: "correction", corrects_charge_id: "ch_b", cost_nano: -250 });
-    const last = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=2&before=${encodeURIComponent(second.body.next_before)}`);
-    expect(last.body).toMatchObject({ charges: [], next_before: null });
+    // The last page hands out no cursor to an empty one (Sol 7b-6).
+    expect(second.body.next_before).toBeNull();
 
     // Filters with no index of their own read inside a range (by default the last 30 days).
     const june = "from=2025-05-31&to=2025-06-01";
@@ -284,6 +298,22 @@ describe("charges", () => {
     const range = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-06-02&to=2025-06-03`);
     expect(range.body.charges).toEqual([]);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/charges?before=nonsense`)).status).toBe(400);
+  });
+
+  it("hand out a cursor only when an older charge exists: none after exactly a full page (Sol 7b-6)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    for (let index = 0; index < 25; index += 1) await seed({ appId, usedAt: at("2025-06-01") + index });
+    const full = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=25`);
+    expect(full.body.charges).toHaveLength(25);
+    expect(full.body.next_before).toBeNull();
+    await seed({ appId, usedAt: at("2025-05-31") });
+    const first = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=25`);
+    expect(first.body.charges).toHaveLength(25);
+    expect(first.body.next_before).not.toBeNull();
+    const rest = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=25&before=${encodeURIComponent(first.body.next_before)}`);
+    expect(rest.body.charges).toHaveLength(1);
+    expect(rest.body.next_before).toBeNull();
   });
 
   it("show the jobs whose estimate was never settled", async () => {
@@ -606,6 +636,7 @@ describe("month totals after the nightly fold", () => {
     await runUsageRetention(env.DB, Date.parse("2026-06-01T12:00:00Z"), new QueryBudget(1_000));
     const days = await env.DB.prepare("SELECT COUNT(*) AS n FROM usage_day WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).first("n");
     expect(days).toBe(0);
-    expect(await read()).toEqual(before);
+    // The totals read the same; the first day kept is now the month's, the only form left.
+    expect(await read()).toEqual({ ...before, first_usage_day: "2024-02" });
   });
 });

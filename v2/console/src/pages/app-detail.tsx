@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import { dollarsToNano, nanoToDollarText, nanoToDollars } from "@/lib/money";
 import { operationsOf, providerLabel } from "@/lib/providers";
 import {
   useApp,
+  useFirstCall,
   useAppCheck,
   useAppJobs,
   JOBS_REFRESH_MS,
@@ -43,7 +44,11 @@ import {
 import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
+import { ErrorsTab } from "@/pages/app-errors";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
+
+/** The Usage tab carries the chart library, so it loads only when opened. */
+const UsageTab = lazy(async () => ({ default: (await import("@/pages/app-usage")).UsageTab }));
 
 interface Tab {
   slug: string;
@@ -54,6 +59,8 @@ interface Tab {
 
 const TABS: Tab[] = [
   { slug: "overview", label: "Overview" },
+  { slug: "usage", label: "Usage" },
+  { slug: "errors", label: "Errors" },
   { slug: "providers", label: "Providers" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
@@ -154,13 +161,23 @@ export function AppDetailPage() {
         ))}
       </nav>
 
-      {active.slug === "overview" ? <OverviewTab app={data} /> : null}
-      {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
-      {active.slug === "limits" ? <LimitsTab app={data} /> : null}
-      {active.slug === "users" ? <UsersTab app={data} /> : null}
-      {active.slug === "jobs" ? <JobsTab app={data} /> : null}
-      {active.slug === "keys" ? <KeysTab app={data} /> : null}
-      {active.slug === "settings" ? <SettingsTab app={data} /> : null}
+      {/* Keyed by the app, so moving straight from one cached app to another starts every
+          tab afresh: no page cursor, filter or draft carries over to the wrong app. */}
+      <Fragment key={data.id}>
+        {active.slug === "overview" ? <OverviewTab app={data} /> : null}
+        {active.slug === "usage" ? (
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <UsageTab app={data} />
+          </Suspense>
+        ) : null}
+        {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
+        {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
+        {active.slug === "limits" ? <LimitsTab app={data} /> : null}
+        {active.slug === "users" ? <UsersTab app={data} /> : null}
+        {active.slug === "jobs" ? <JobsTab app={data} /> : null}
+        {active.slug === "keys" ? <KeysTab app={data} /> : null}
+        {active.slug === "settings" ? <SettingsTab app={data} /> : null}
+      </Fragment>
     </div>
   );
 }
@@ -168,11 +185,64 @@ export function AppDetailPage() {
 // ---------------------------------------------------------------------------
 // Overview
 
+/**
+ * Whether the app has made a call, v1's first-request check (`useFirstCall`),
+ * read once when the page loads. No live check: "Check again" reads it once more.
+ */
+export function FirstCall({ app }: { app: App }) {
+  const first = useFirstCall(app.id);
+  const checkAgain = (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label="Check again"
+      title="Check again"
+      disabled={first.isFetching}
+      onClick={first.refresh}
+    >
+      <RefreshCw className={cn(first.isFetching && "animate-spin")} />
+    </Button>
+  );
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">First call</CardTitle>
+        <CardDescription>Whether this app has called a provider through the gateway.</CardDescription>
+      </CardHeader>
+      <CardContent className="text-sm">
+        {first.isPending ? (
+          <Skeleton className="h-5 w-48" />
+        ) : first.isError ? (
+          <p className="flex items-center gap-2 text-destructive">
+            Could not check for calls.
+            {checkAgain}
+          </p>
+        ) : first.firstDay ? (
+          <p className="flex items-center gap-2">
+            <CheckCircle2 className="size-4 text-primary" />
+            <span>
+              {/* A first day from month totals alone is a month, `YYYY-MM`: "in" it, not "on" it. */}
+              This app has made calls, {first.isFirst ? "the first" : "one"} {first.firstDay.length === 7 ? "in" : "on"} {first.firstDay}.{" "}
+              <Link className="underline" to={`/apps/${encodeURIComponent(app.id)}/usage`}>See usage</Link>.
+            </span>
+          </p>
+        ) : (
+          <p className="flex items-center gap-2 text-muted-foreground">
+            No calls yet.
+            {checkAgain}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function OverviewTab({ app }: { app: App }) {
   const check = useAppCheck(app.id);
   const base = `${window.location.origin}/v2/apps/${encodeURIComponent(app.id)}/proxy/`;
   return (
     <div className="space-y-4">
+      <FirstCall app={app} />
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Ready to serve</CardTitle>

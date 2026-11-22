@@ -208,10 +208,26 @@ export async function getAppUsage(c: AdminContext): Promise<Response> {
   const month = parseQuery(c, UsageMonthQuerySchema).month ?? currentMonth();
   await appExists(c.env.DB, actor.accountId, appId);
   const { first, next } = monthDays(month);
-  const row = await c.env.DB.prepare(`SELECT ${ROLLUP_SUMS} FROM (${monthUsageSql(true)})`)
-    .bind(actor.accountId, month, first, next, appId)
-    .first<SumRow>();
-  return c.json({ app_id: appId, month, ...totals(row) } satisfies OperationResponse<"getAppUsage">);
+  const db = c.env.DB;
+  const [sums, oldest] = await db.batch([
+    db.prepare(`SELECT ${ROLLUP_SUMS} FROM (${monthUsageSql(true)})`).bind(actor.accountId, month, first, next, appId),
+    // The app's oldest usage kept, read through the rollups' keys: whether it
+    // has ever made a call, long after its charges are gone (Sol 7b-6).
+    db
+      .prepare(
+        `SELECT min(COALESCE(d, m), COALESCE(m, d)) AS first FROM (
+           SELECT (SELECT MIN(day) FROM usage_day WHERE account_id = ?1 AND app_id = ?2) AS d,
+                  (SELECT MIN(month) FROM usage_month WHERE account_id = ?1 AND app_id = ?2) AS m)`,
+      )
+      .bind(actor.accountId, appId),
+  ]);
+  const row = (sums?.results[0] ?? null) as SumRow | null;
+  return c.json({
+    app_id: appId,
+    month,
+    ...totals(row),
+    first_usage_day: ((oldest?.results[0] as { first?: string | null } | undefined)?.first ?? null),
+  } satisfies OperationResponse<"getAppUsage">);
 }
 
 export async function getAppUsageTimeseries(c: AdminContext): Promise<Response> {
@@ -393,14 +409,16 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
       ORDER BY used_at DESC, id DESC
       LIMIT ?`,
   )
-    .bind(...params, query.limit)
+    // One row past the page says whether an older page exists (Sol 7b-6).
+    .bind(...params, query.limit + 1)
     .all<ChargeRowOut>();
-  const last = results.at(-1);
+  const page = results.slice(0, query.limit);
+  const last = page.at(-1);
   return c.json({
     app_id: appId,
     limit: query.limit,
-    next_before: results.length === query.limit && last !== undefined ? `${last.used_at}.${last.id}` : null,
-    charges: results.map((row) => ({
+    next_before: results.length > query.limit && last !== undefined ? `${last.used_at}.${last.id}` : null,
+    charges: page.map((row) => ({
       ...row,
       cost_usd: row.cost_nano === null ? null : row.cost_nano / 1e9,
       price_is_estimate: row.price_is_estimate === 1,

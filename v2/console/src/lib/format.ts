@@ -1,3 +1,5 @@
+import { MILLI_SCALE, MILLI_SCALED_UNITS } from "@contracts/usage";
+
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const plain = new Intl.NumberFormat("en-US");
 const percent = new Intl.NumberFormat("en-US", {
@@ -10,30 +12,33 @@ export const formatNumber = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : plain.format(value);
 
 export const formatCompact = (value: number | null | undefined): string =>
-  value === null || value === undefined ? "—" : value < 10_000 ? plain.format(value) : compact.format(value);
+  value === null || value === undefined ? "—" : Math.abs(value) < 10_000 ? plain.format(value) : compact.format(value);
 
 export const formatPercent = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : percent.format(value);
 
-/** Gateway costs are often fractions of a cent, so small values keep more digits. */
+const dollars = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Dollars, the one way the console shows money. A cent or more
+ * keeps its cents, however large: `$1,234.56`. Under a cent, two significant
+ * digits, down to the gateway's nano-dollar: a request's whole cost often
+ * lives there, and a nonzero amount never reads as zero. A correction's
+ * negative amount keeps its sign in front: `-$0.0042`.
+ */
 export function formatCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (value === 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  return formatCostToCent(value);
-}
-
-/**
- * The same to the nearest cent, with no sub-cent case. For totals — a day's
- * spend on one provider — where a hundredth of a cent is noise, and a column
- * of amounts that change length row by row is harder to read than that
- * precision is worth. A single request's cost keeps {@link formatCost}, where
- * the fraction of a cent is the whole answer.
- */
-export function formatCostToCent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  if (value < 100) return `$${value.toFixed(2)}`;
-  return `$${plain.format(Math.round(value))}`;
+  const sign = value < 0 ? "-" : "";
+  const size = Math.abs(value);
+  if (size >= 0.01) return `${sign}$${dollars.format(size)}`;
+  const significant = Number(size.toPrecision(2));
+  // Enough decimals for two significant digits, at most nine (one nano-dollar).
+  const decimals = Math.min(9, Math.max(3, 1 - Math.floor(Math.log10(significant))));
+  const text = significant.toFixed(decimals).replace(/0+$/u, "");
+  // Under half a nano-dollar rounds to no digit at all: say so, never `$0.`.
+  if (!/[1-9]/u.test(text)) return sign ? ">-$0.000000001" : "<$0.000000001";
+  return `${sign}$${text}`;
 }
 
 /** A duration a person reads at a glance: seconds under a minute, else minutes. */
@@ -143,3 +148,20 @@ export function recentMonths(count: number): string[] {
   }
   return months;
 }
+
+const MILLI_SCALED: ReadonlySet<string> = new Set(MILLI_SCALED_UNITS);
+const TIME_UNITS: ReadonlySet<string> = new Set(["audio_seconds", "video_seconds", "session_seconds"]);
+
+/**
+ * A count of a billed unit other than tokens, as a person reads it. The
+ * gateway stores fractional units at a thousandth (`MILLI_SCALED_UNITS`), so
+ * 2.7 seconds arrives as 2700: seconds read as a duration, other such units
+ * as their real amount. A correction's negative count keeps its sign.
+ */
+export function formatUnits(unit: string, units: number): string {
+  const sign = units < 0 ? "-" : "";
+  if (TIME_UNITS.has(unit)) return `${sign}${formatDuration(Math.abs(units))}`;
+  const amount = MILLI_SCALED.has(unit) ? units / MILLI_SCALE : units;
+  return `${formatCompact(amount)} ${unit.replaceAll("_", " ")}`;
+}
+

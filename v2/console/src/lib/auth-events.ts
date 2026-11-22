@@ -1,0 +1,63 @@
+/**
+ * The sign-in summary as the failures table reads it (v1's fold, on v2's summary).
+ *
+ * The API answers with buckets (per day, per event, per outcome and reason),
+ * which is the right shape to aggregate and the wrong shape to show. Folding
+ * them into one row per distinct failure is arithmetic with several rules in
+ * it, so it is kept away from the table that renders the result.
+ */
+
+import type { AuthEventSummary } from "@/lib/types";
+
+export interface OutcomeRow {
+  outcome: string;
+  reason: string | null;
+  sampled: boolean;
+  total: number;
+  /** One entry per distinct day the failure occurred on, ascending. */
+  days: { date: string; count: number }[];
+}
+
+/**
+ * Collapses the per-day buckets into one row per distinct failure.
+ *
+ * `ok` is dropped: the success rate above already says how much of the window
+ * succeeded. So is `client_recovered`: the app got past it on its own, which
+ * is not a failure. Days are merged, not appended: the API groups by event as well,
+ * so one day can arrive as two buckets for the same failure.
+ *
+ * v1 split failed proxied requests by their status; v2's summary counts them
+ * per day only (`failed_charges`, from the usage totals), so they fold into
+ * one row. The usage breakdown by status splits them further.
+ */
+export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[] {
+  const rows = new Map<string, { outcome: string; reason: string | null; sampled: boolean; days: Map<string, number> }>();
+  const add = (key: string, outcome: string, reason: string | null, date: string, count: number, sampled = false): void => {
+    const row = rows.get(key) ?? { outcome, reason, sampled, days: new Map<string, number>() };
+    row.days.set(date, (row.days.get(date) ?? 0) + count);
+    rows.set(key, row);
+  };
+
+  for (const bucket of summary?.daily ?? []) {
+    if (bucket.outcome === "ok" || bucket.outcome === "client_recovered") continue;
+    add(`auth:${bucket.outcome}:${bucket.reason ?? ""}`, bucket.outcome, bucket.reason, bucket.date, bucket.count);
+  }
+  for (const bucket of summary?.failed_charges ?? []) {
+    if (bucket.count > 0) add("charges:failed", "failed", "proxied request", bucket.date, bucket.count);
+  }
+  for (const bucket of summary?.rejection_samples ?? []) {
+    add(`rejection:${bucket.reason}:${bucket.scope ?? "unknown"}`, bucket.reason, bucket.scope ?? "scope unknown", bucket.date, bucket.count, true);
+  }
+
+  return [...rows.values()]
+    .map((row): OutcomeRow => ({
+      outcome: row.outcome,
+      reason: row.reason,
+      sampled: row.sampled,
+      total: [...row.days.values()].reduce((sum, count) => sum + count, 0),
+      days: [...row.days.entries()]
+        .map(([date, count]) => ({ date, count }))
+        .sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0)),
+    }))
+    .sort((left, right) => right.total - left.total || (left.outcome < right.outcome ? -1 : left.outcome > right.outcome ? 1 : 0));
+}

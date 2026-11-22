@@ -20,6 +20,13 @@ export type ChargeKind = (typeof CHARGE_KINDS)[number];
 
 /** What a charge belongs to. Settlement happens once per owner. */
 export const OWNER_TYPES = ["call", "session", "job"] as const;
+
+/**
+ * Units a charge stores at `MILLI_SCALE` (`../money.ts`), because they can be
+ * fractional: 2.7 seconds is 2700. Every other unit is a plain count. The
+ * console reads the same list (through `../contracts/usage.ts`) to show them.
+ */
+export const MILLI_SCALED_UNITS = ["audio_seconds", "session_seconds", "video_seconds", "model_units", "credits", "megapixels"] as const;
 export type OwnerType = (typeof OWNER_TYPES)[number];
 
 /** How complete the usage behind a charge is. */

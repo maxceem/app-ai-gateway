@@ -15,6 +15,31 @@ export const DIAGNOSTICS_RETENTION_DAYS = 90;
 /** The events an auth event records. */
 export const AUTH_EVENT_NAMES = ["challenge", "register", "token_exchange"] as const;
 
+/**
+ * The outcomes a sign-in attempt is recorded with today, for a filter to offer:
+ * ok, the error codes the sign-in routes answer with, and what became of an
+ * App Attest challenge. The field stays a string, so an outcome added later
+ * still lists and filters by its text.
+ */
+export const AUTH_EVENT_OUTCOMES = [
+  "ok",
+  "issuer_claims_missing",
+  "issuer_token_rejected",
+  "issuer_verification_unavailable",
+  "auth_method_not_supported",
+  "attest_failed",
+  "assertion_required",
+  "auth_required",
+  "app_disabled",
+  "invalid_request",
+  "payload_too_large",
+  "service_unavailable",
+  "internal_error",
+  "abandoned",
+  "client_failed",
+  "client_recovered",
+] as const;
+
 /** Whose limit refused a request, where a limit did. */
 export const REJECTION_SCOPES = ["user", "install", "apple_account", "app", "account"] as const;
 
@@ -129,5 +154,10 @@ export const AuthEventSummaryResponseSchema = z
       .object({ count: z.number().int(), avg_ms: z.number().nullable(), p50_ms: z.number().nullable(), p95_ms: z.number().nullable() })
       .meta({ description: "How long users waited for an entitlement claim to reach the issuer, for the waits that ended in the window." }),
     pending_users: z.number().int().meta({ description: "Active users waiting on an entitlement claim right now, counting waits that began within the last 90 days (as long as events are kept)." }),
+    apple_failures: z
+      .object({ count: z.number().int(), last_seen: z.string() })
+      .nullable()
+      .optional()
+      .meta({ description: "Failed sign-ins in the window from Apple's own network (714), where App Review tests apps, counted on their own so busier networks never hide them. Null when there were none; absent from older gateways." }),
   })
   .meta({ id: "AuthEventSummaryResponse" });

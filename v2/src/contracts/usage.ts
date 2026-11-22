@@ -10,6 +10,10 @@ import { z } from "zod";
 import { CHARGE_KINDS, CHARGE_STATUSES, MEASURED, OWNER_TYPES, PRICE_SOURCES } from "../ledger/labels.ts";
 import { DaySchema, MonthSchema } from "./admin.ts";
 
+/** Units stored at `MILLI_SCALE` (a thousandth each), for clients that show counts. */
+export { MILLI_SCALED_UNITS } from "../ledger/labels.ts";
+export { MILLI_SCALE } from "../money.ts";
+
 const LimitSchema = z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50);
 
 /** The longest day range one read covers: as far back as day totals are kept. */
@@ -27,7 +31,7 @@ export const UsageTotalsSchema = z
   .object({
     charges: z.number().int().meta({ description: "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted." }),
     failed: z.number().int().meta({ description: "Of those, attempts that did not end with success." }),
-    unpriced: z.number().int().meta({ description: "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count." }),
+    unpriced: z.number().int().meta({ description: "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count. It may also count failed attempts that cost nothing, where the provider reports its own price and a failure reported none." }),
     cost_nano: z.number().int().meta({ description: "What it cost, in nano-dollars (1 = $0.000000001), corrections included." }),
     cost_usd: z.number().meta({ description: "The same cost in dollars, for display." }),
     input_tokens: z.number().int(),
@@ -52,6 +56,11 @@ export const UsageRangeQuerySchema = z.object({
 export const AppUsageResponseSchema = z
   .object({ app_id: z.string(), month: z.string() })
   .extend(UsageTotalsSchema.shape)
+  .extend({
+    first_usage_day: z.string().nullable().optional().meta({
+      description: "The UTC day of the app's oldest usage still kept (YYYY-MM-DD, or YYYY-MM once it is only in month totals). Null when the app has never made a call; absent from older gateways.",
+    }),
+  })
   .meta({ id: "AppUsageResponse" });
 
 export const AccountUsageResponseSchema = z

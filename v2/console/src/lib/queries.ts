@@ -24,6 +24,14 @@ export const keys = {
   usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
   jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
+  accountUsage: (month: string) => ["account-usage", month] as const,
+  appUsage: (appId: string) => ["app-usage", appId] as const,
+  timeseries: (appId: string, query: unknown) => ["usage-timeseries", appId, query] as const,
+  breakdown: (appId: string, query: unknown) => ["usage-breakdown", appId, query] as const,
+  charges: (appId: string, query: unknown) => ["charges", appId, query] as const,
+  authSummary: (appId: string, days: number) => ["auth-summary", appId, days] as const,
+  authEvents: (appId: string, query: unknown) => ["auth-events", appId, query] as const,
+  rejections: (appId: string, query: unknown) => ["rejection-events", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
 };
@@ -335,5 +343,102 @@ export function usePrices() {
     queryKey: keys.prices,
     queryFn: () => call("listModelPrices"),
     staleTime: 5 * 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Usage and diagnostics: read-only, so nothing here invalidates anything
+
+/** The whole account's usage in one UTC month, with a line per app, deleted apps included. */
+export function useAccountUsage(month: string) {
+  return useQuery({
+    queryKey: keys.accountUsage(month),
+    queryFn: () => call("getAccountUsage", { query: { month } }),
+  });
+}
+
+/**
+ * Whether an app has ever made a call, v1's first-request check, read once
+ * when the page loads, and again only when the person asks (`refresh`): no
+ * live check (owner, 2026-11-22). Read from the app's usage
+ * totals (`first_usage_day`), which outlive its charges: an app whose last
+ * charge aged out still has made calls. A gateway from before that field
+ * answers without it, and then the newest charge stands in.
+ */
+export function useFirstCall(appId: string) {
+  const usage = useQuery({
+    queryKey: keys.appUsage(appId),
+    queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
+    // One read per load or click: a failed read shows its error, never retried behind the person's back.
+    retry: false,
+  });
+  const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
+  const charges = useQuery({
+    queryKey: keys.charges(appId, { limit: 1 }),
+    queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
+    enabled: legacy,
+    retry: false,
+  });
+  const source = legacy ? charges : usage;
+  return {
+    isPending: usage.isPending || (legacy && charges.isPending),
+    isError: source.isError,
+    /** A read is running: the first one, or one the person asked for. */
+    isFetching: source.isFetching,
+    /** Reads it once more, from the same place the card's answer came from. */
+    // A second click while a read runs joins it rather than starting another.
+    refresh: () => void source.refetch({ cancelRefetch: false }),
+    /** The day of the app's first call kept; from an older gateway, of its newest charge. */
+    firstDay: legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null),
+    /** Whether `firstDay` is the first call's, rather than the newest charge's. */
+    isFirst: !legacy,
+  };
+}
+
+export function useUsageTimeseries(appId: string, query: OperationQuery<"getAppUsageTimeseries">) {
+  return useQuery({
+    queryKey: keys.timeseries(appId, query),
+    queryFn: () => call("getAppUsageTimeseries", { params: { app: appId }, query }),
+  });
+}
+
+export function useUsageBreakdown(appId: string, query: OperationQuery<"getAppUsageBreakdown">) {
+  return useQuery({
+    queryKey: keys.breakdown(appId, query),
+    queryFn: () => call("getAppUsageBreakdown", { params: { app: appId }, query }),
+  });
+}
+
+export type ChargeQuery = OperationQuery<"listAppCharges">;
+
+export function useAppCharges(appId: string, query: ChargeQuery) {
+  return useQuery({
+    queryKey: keys.charges(appId, query),
+    queryFn: () => call("listAppCharges", { params: { app: appId }, query }),
+  });
+}
+
+export function useAuthEventSummary(appId: string, days: number) {
+  return useQuery({
+    queryKey: keys.authSummary(appId, days),
+    queryFn: () => call("getAppAuthEventSummary", { params: { app: appId }, query: { days } }),
+  });
+}
+
+export type AuthEventQuery = OperationQuery<"listAppAuthEvents">;
+
+export function useAuthEvents(appId: string, query: AuthEventQuery) {
+  return useQuery({
+    queryKey: keys.authEvents(appId, query),
+    queryFn: () => call("listAppAuthEvents", { params: { app: appId }, query }),
+  });
+}
+
+export type RejectionQuery = OperationQuery<"listAppRejectionEvents">;
+
+export function useRejectionEvents(appId: string, query: RejectionQuery) {
+  return useQuery({
+    queryKey: keys.rejections(appId, query),
+    queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query }),
   });
 }

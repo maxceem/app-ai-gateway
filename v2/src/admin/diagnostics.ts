@@ -34,6 +34,9 @@ type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
 const DAY_MS = 86_400_000;
 
+
+/** Apple's own network, from which App Review tests apps. */
+const APPLE_ASN = 714;
 /** A UTC day from a `created_at` in milliseconds, in SQL. */
 const DAY_OF = (column: string) => `strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch')`;
 
@@ -98,12 +101,15 @@ async function listEvents<Row extends { id: string; created_at: number }>(
     where.push("(created_at, id) < (?, ?)");
     params.push(before.at, before.id);
   }
+  // One row past the page says whether an older page exists: a full last page
+  // hands out no cursor to an empty one (Sol 7b-6).
   const { results } = await db
     .prepare(`SELECT ${input.columns} FROM ${input.table} WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`)
-    .bind(...params, query.limit)
+    .bind(...params, query.limit + 1)
     .all<Row>();
-  const last = results.at(-1);
-  return { rows: results, nextBefore: results.length === query.limit && last !== undefined ? `${last.created_at}.${last.id}` : null };
+  const rows = results.slice(0, query.limit);
+  const last = rows.at(-1);
+  return { rows, nextBefore: results.length > query.limit && last !== undefined ? `${last.created_at}.${last.id}` : null };
 }
 
 type AuthEventRow = Omit<OperationResponse<"listAppAuthEvents">["events"][number], "created_at"> & { created_at: number };
@@ -200,6 +206,15 @@ export const FAILING_NETWORKS = `SELECT network_asn, MAX(network_name) AS networ
     AND outcome NOT IN ('ok', 'client_recovered') AND network_asn IS NOT NULL
   GROUP BY network_asn ORDER BY count DESC, network_asn ASC LIMIT 10`;
 
+/**
+ * Failed sign-ins from Apple's own network (714), where App Review tests apps:
+ * read on their own, so ten busier networks never hide them (Sol 7b-6).
+ */
+export const APPLE_FAILURES = `SELECT COUNT(*) AS count, MAX(created_at) AS last_seen
+   FROM app_auth_event
+  WHERE app_id = ?1 AND account_id = ?2 AND created_at >= ?3 AND created_at < ?4
+    AND outcome NOT IN ('ok', 'client_recovered') AND network_asn = ${APPLE_ASN}`;
+
 /** Active users waiting on a claim since `?2`, through `app_end_user_claim_pending`. Exported for its query-plan test. */
 export const PENDING_USERS =
   "SELECT COUNT(*) AS count FROM app_end_user WHERE app_id = ?1 AND status = 'active' AND claim_pending_since IS NOT NULL AND claim_pending_since >= ?2";
@@ -225,7 +240,7 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
   const from = new Date(start).toISOString().slice(0, 10);
   const db = c.env.DB;
   const window = "app_id = ?1 AND account_id = ?2 AND created_at >= ?3 AND created_at < ?4";
-  const [auth, networks, failed, rejections, waitTotals, p50, p95, pending] = await db.batch([
+  const [auth, networks, failed, rejections, waitTotals, p50, p95, pending, appleRow] = await db.batch([
     db
       .prepare(
         `SELECT ${DAY_OF("created_at")} AS date, event, outcome, reason, COUNT(*) AS count
@@ -255,6 +270,7 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
     // began inside the events' retention: an older one belongs to a user who has
     // not been back since, and its events are gone (Fable 7b-4).
     db.prepare(PENDING_USERS).bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS),
+    db.prepare(APPLE_FAILURES).bind(appId, actor.accountId, start, end),
   ]);
   const all = <T>(result: D1Result | undefined) => (result?.results ?? []) as T[];
   const dailyRows = all<Summary["daily"][number]>(auth);
@@ -294,5 +310,9 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
       p95_ms: at(p95),
     },
     pending_users: all<{ count: number }>(pending)[0]?.count ?? 0,
+    apple_failures: (() => {
+      const row = all<{ count: number; last_seen: number | null }>(appleRow)[0];
+      return row && row.count > 0 && row.last_seen !== null ? { count: row.count, last_seen: new Date(row.last_seen).toISOString() } : null;
+    })(),
   } satisfies Summary);
 }
