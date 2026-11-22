@@ -13,6 +13,7 @@ import { testQueryClient } from "@/test/render";
 import { FirstCall } from "@/pages/app-detail";
 import type { App } from "@/lib/types";
 import { useFirstCall } from "./queries";
+import { createConsoleQueryClient } from "./query-client";
 
 const USAGE_URL = "/v2/admin/apps/my-app/usage";
 const CHARGES_URL = "/v2/admin/apps/my-app/charges";
@@ -71,6 +72,34 @@ describe("the first-call check", () => {
     const { result } = renderFirstCall();
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.firstDay).toBeNull();
+  });
+
+  it("does not retry a failed read, even with the console's own retry policy (Sol 7b-6 round 7)", async () => {
+    const fetchMock = stub({ status: 503, body: { error: { code: "unavailable", message: "Busy" } } });
+    const client = createConsoleQueryClient({ redirectToLogin: () => undefined, currentPath: () => ({ pathname: "/apps/my-app", search: "" }) });
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useFirstCall("my-app"), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("joins a read already running when Check again is asked twice at once (Sol 7b-6 round 7)", async () => {
+    const answer = () => new Response(JSON.stringify({ app_id: "my-app", month: "2026-11", ...NO_USAGE, first_usage_day: null }), { status: 200 });
+    let release: (() => void) | undefined;
+    const fetchMock = vi.fn(async () => {
+      if (fetchMock.mock.calls.length === 1) return answer();
+      await new Promise<void>((done) => (release = done));
+      return answer();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderFirstCall();
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    result.current.refresh();
+    result.current.refresh();
+    await waitFor(() => expect(release).toBeDefined());
+    release!();
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("reads once more when the person clicks Check again, and shows the new answer", async () => {

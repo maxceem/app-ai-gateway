@@ -370,12 +370,15 @@ export function useFirstCall(appId: string) {
   const usage = useQuery({
     queryKey: keys.appUsage(appId),
     queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
+    // One read per load or click: a failed read shows its error, never retried behind the person's back.
+    retry: false,
   });
   const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
   const charges = useQuery({
     queryKey: keys.charges(appId, { limit: 1 }),
     queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
     enabled: legacy,
+    retry: false,
   });
   const source = legacy ? charges : usage;
   return {
@@ -384,7 +387,8 @@ export function useFirstCall(appId: string) {
     /** A read is running: the first one, or one the person asked for. */
     isFetching: source.isFetching,
     /** Reads it once more, from the same place the card's answer came from. */
-    refresh: () => void source.refetch(),
+    // A second click while a read runs joins it rather than starting another.
+    refresh: () => void source.refetch({ cancelRefetch: false }),
     /** The day of the app's first call kept; from an older gateway, of its newest charge. */
     firstDay: legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null),
     /** Whether `firstDay` is the first call's, rather than the newest charge's. */
