@@ -293,6 +293,34 @@ describe("checkpoints", () => {
     expect(warned.filter((line) => line.includes('"message":"ledger_checkpoint_frozen"'))).toHaveLength(1);
   });
 
+  it("a slice replayed while retention has deleted it but not yet its ended session books nothing (Astra 7b-2 round 5)", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const session = sessionRow({ expectsSessionTotal: false });
+    expect(await checkpoint(session, 1, 1_000)).toEqual({ decision: "continue", written: true });
+    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0, now: T0 });
+    const rollup = () => env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
+    const before = (await rollup()).results;
+    // The sweep settles it; then retention's first chunk deletes the slice, and the
+    // settled session row waits for a later one.
+    await env.DB.prepare("UPDATE session SET settlement = 'settled' WHERE id = ?").bind(session.id).run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
+      env.DB.prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
+    ]);
+    expect(await sessionState(session.id)).toMatchObject({ state: "ended" });
+    await checkpoint(session, 1, 1_000, { now: T0 + 91 * 86_400_000 });
+    expect(await env.DB.prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect((await rollup()).results).toEqual(before);
+  });
+
+  it("an open session past the freeze still books its slices", async () => {
+    const session = sessionRow({ expectsSessionTotal: false });
+    expect(await checkpoint(session, 1, 1_000)).toEqual({ decision: "continue", written: true });
+    expect(await checkpoint(session, 2, 1_000, { now: T0 + 61 * 86_400_000 })).toMatchObject({ written: true });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ?").bind(session.id).first("n")).toBe(2);
+  });
+
   it("answers stop when the plan minutes, the user, the key or a newer session say so", async () => {
     await seedAccount();
     const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });

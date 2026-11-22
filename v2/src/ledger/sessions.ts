@@ -26,7 +26,7 @@ import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
 import { utcMonthDays } from "../limits/spend.ts";
-import { startTakesBookings } from "./freeze.ts";
+import { freezeCutoffDay, ownerLiveSql, startTakesBookings } from "./freeze.ts";
 import { insertChargeWithCostStatement, utcDay, type ChargeRow } from "./write.ts";
 
 /**
@@ -198,12 +198,18 @@ export async function writeCheckpoint(
       .bind(now, session.id),
     // A slice after settlement is $0 when a session-level dollar total covers it (S8).
     // Written only under a session row: none is there for a frozen replay (see insertSessionStatements).
+    // And only while the session takes bookings (`./freeze.ts`): it started inside the
+    // window, or it is still live. Retention may have deleted this slice and left the
+    // ended session row for a later chunk; a replay must not book the slice again.
     insertChargeWithCostStatement(
       db,
       slice,
       "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
       [session.id, slice.costNano],
-      { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
+      {
+        sql: `EXISTS (SELECT 1 FROM session WHERE id = ?) AND (? OR ${ownerLiveSql("'session'", "?", "?")})`,
+        params: [session.id, startTakesBookings(session.startedAt, now) ? 1 : 0, session.id, session.id, session.id, freezeCutoffDay(now)],
+      },
     ),
   ];
   if (slice.priceSource === "unresolved") {

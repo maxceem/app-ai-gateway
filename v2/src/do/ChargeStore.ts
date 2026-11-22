@@ -147,7 +147,16 @@ export class ChargeStore extends DurableObject<Env> {
     // said so: it was kept through an outage and never booked (`../ledger/freeze.ts`).
     const frozen = work.filter((_, index) => outcomes[index] === "frozen").map((one) => one.id);
     if (frozen.length > 0) log("warn", "charge_store_figure_frozen", { frozen: frozen.length, ids: frozen.slice(0, 10) });
-    log("info", "charge_store_written", { written: rows.length + work.length - frozen.length });
+    // Entries processed, and what became of each open-work row: a repeat whose
+    // first write committed before its reply was lost counts as skipped, not written.
+    const count = (outcome: OpenWorkOutcome) => outcomes.filter((one) => one === outcome).length;
+    log("info", "charge_store_written", {
+      processed: rows.length + work.length,
+      entries: rows.length,
+      written: count("written"),
+      skipped: count("skipped"),
+      frozen: frozen.length,
+    });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());
