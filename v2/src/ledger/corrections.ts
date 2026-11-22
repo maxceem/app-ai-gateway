@@ -166,13 +166,19 @@ function correctionFor(
 /**
  * Writes a correction whose cost is `finalCost` minus what is already booked
  * for the charge it corrects (the charge and its earlier corrections), worked
- * out inside the insert. With `unlessSettled`, it is not written once any
- * final settlement (a charge's or a job's) corrects the same charge. Returns
- * the row as written, or null when it was not written.
+ * out inside the insert. It is written only while the charge it corrects is
+ * in the ledger, so the difference is never worked out against a charge not
+ * written yet, and never past the ledger's late-booking rule: a correction is
+ * dated on its charge's day (`./late-booking.ts`).
+ * With `unlessSettled`, it is not written once any final settlement (a
+ * charge's or a job's) corrects the same charge. Returns the row as written,
+ * or null when it was not written.
  */
 async function writeCorrection(
   db: D1Database,
   correction: ChargeRow,
+  /** The real time of writing: the late-booking rule is judged against it, never the row's own. */
+  now: number,
   finalCost: NanoDollars,
   doneWork: string | null,
   unlessSettled = false,
@@ -183,19 +189,23 @@ async function writeCorrection(
     insertChargeWithCostStatement(
       db,
       correction,
+      now,
       `? - COALESCE((SELECT cost_nano FROM charge WHERE id = ?), 0)
          - COALESCE((SELECT SUM(cost_nano) FROM charge WHERE corrects_charge_id = ?), 0)`,
       [finalCost, correctedId, correctedId],
-      unlessSettled
-        ? {
-            // No final settlement of this charge (its own, or its job's), and no
-            // session-level total that already covers it (the session it belongs
-            // to, settled with a provider total).
-            sql: `NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
-              AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`,
-            params: [correctedId, correction.ownerType, correction.ownerId],
-          }
-        : undefined,
+      {
+        // Only while the charge it corrects is in the ledger.
+        sql: `EXISTS (SELECT 1 FROM charge WHERE id = ?)${
+          unlessSettled
+            ? // No final settlement of this charge (its own, or its job's), and no
+              // session-level total that already covers it (the session it belongs
+              // to, settled with a provider total).
+              ` AND NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
+              AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`
+            : ""
+        }`,
+        params: unlessSettled ? [correctedId, correctedId, correction.ownerType, correction.ownerId] : [correctedId],
+      },
     ),
   ];
   if (doneWork !== null) statements.push(db.prepare("DELETE FROM open_work WHERE id = ?").bind(doneWork));
@@ -220,7 +230,7 @@ export async function settleCharge(
   if (original === null) return { status: "charge_missing" };
   const built = correctionFor(original, input.final, chargeSettlementId(original.id), input.now);
   if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
-  const written = await writeCorrection(db, built.correction, built.finalCost, input.doneWork ?? null);
+  const written = await writeCorrection(db, built.correction, input.now, built.finalCost, input.doneWork ?? null);
   return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
@@ -264,7 +274,7 @@ export async function settleJobFrom(
   const jobId = estimate.ownerId;
   const built = correctionFor(estimate, final, jobSettlementId(jobId), now);
   if ("noRate" in built) return { status: "no_rate", bucket: built.noRate };
-  const written = await writeCorrection(db, built.correction, built.finalCost, null, false, jobId);
+  const written = await writeCorrection(db, built.correction, now, built.finalCost, null, false, jobId);
   return written !== null ? { status: "settled", correction: written } : { status: "already" };
 }
 
@@ -352,6 +362,6 @@ export async function priceUnresolvedCharge(
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.
-  const written = await writeCorrection(db, correction, priced.cost, input.doneWork ?? null, true);
+  const written = await writeCorrection(db, correction, input.now, priced.cost, input.doneWork ?? null, true);
   return written !== null ? { status: "priced", correction: written } : { status: "already" };
 }

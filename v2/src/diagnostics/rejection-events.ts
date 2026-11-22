@@ -12,6 +12,7 @@ import { errorFacts } from "../core/error-facts.ts";
 import { claimDiagnosticSample } from "../core/flood-limit.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
+import { deletePass, type Pass } from "../core/chunked-delete.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 
 /** Refusals caused by how the app is set up, rather than by who asked or how much. */
@@ -99,9 +100,14 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
   }
 }
 
-/** Deletes rejection events older than the retention. Called by the retention step (later). */
-export async function pruneRejectionEvents(db: D1Database, now = Date.now()): Promise<number> {
-  const cutoff = now - REJECTION_RETENTION_DAYS * 86_400_000;
-  const result = await db.prepare("DELETE FROM app_rejection_event WHERE created_at < ?").bind(cutoff).run();
-  return result.meta.changes;
+/**
+ * The nightly pass deleting rejection events older than the retention, a chunk at
+ * a time (`../core/chunked-delete.ts`). Served by `app_rejection_event_created`.
+ */
+export function rejectionEventsPass(now: number): Pass {
+  return deletePass("rejection_events_prune", {
+    table: "app_rejection_event",
+    rowids: "SELECT rowid FROM app_rejection_event WHERE created_at < ?",
+    params: [now - REJECTION_RETENTION_DAYS * 86_400_000],
+  });
 }

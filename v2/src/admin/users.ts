@@ -127,8 +127,8 @@ function identities(oneUser: boolean): string {
     )`;
 }
 
-/** Each listed user's usage in a month, from the ledger. One bound list, so any page size fits D1's limit on bound values. */
-async function usageByUser(db: D1Database, appId: string, ids: readonly string[], month: string): Promise<Map<string, typeof EMPTY_USAGE>> {
+/** Each listed user's usage in a month, from the ledger. One bound list, so any page size fits D1's limit on bound values. Exported for the retention tests. */
+export async function usageByUser(db: D1Database, appId: string, ids: readonly string[], month: string): Promise<Map<string, typeof EMPTY_USAGE>> {
   const usage = new Map<string, typeof EMPTY_USAGE>();
   if (ids.length === 0) return usage;
   const { from, to } = monthBounds(month);

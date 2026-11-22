@@ -24,7 +24,9 @@
     "logs": { "enabled": true, "head_sampling_rate": 1 },
     "traces": { "enabled": true, "head_sampling_rate": 0.01 }
   },
-  // Hourly: settle expired App Attest challenges.
+  // Every minute: the sweep of open work. Hourly, at minute 17: clean-ups,
+  // at 03:17 UTC conversation retention, and at 04:17 UTC the nightly
+  // maintenance (`src/maintenance/nightly.ts`).
   "triggers": { "crons": ["* * * * *", "17 * * * *"] },
   "durable_objects": {
     "bindings": [

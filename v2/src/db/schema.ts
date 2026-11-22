@@ -365,6 +365,10 @@ export const charge = sqliteTable(
     index("charge_app_user_used").on(table.appId, table.endUserId, table.usedAt),
     index("charge_owner").on(table.ownerType, table.ownerId),
     index("charge_corrects").on(table.correctsChargeId),
+    // Charges past their retention, for the nightly maintenance.
+    index("charge_usage_day").on(table.usageDay),
+    // Corrections past their retention, which go before the charges they correct.
+    index("charge_correction_day").on(table.usageDay).where(sql`kind = 'correction'`),
     // An app's jobs, newest first (the management API's job list), without
     // scanning the app's call charges.
     index("charge_job_estimates")
@@ -433,8 +437,62 @@ export const usageDay = sqliteTable(
       ],
     }),
     index("usage_day_account").on(table.accountId, table.day),
+    // Days past their retention, for the nightly maintenance.
+    index("usage_day_day").on(table.day),
     check("usage_day_outcome", oneOf(table.outcome, ["ok", "failed"])),
     check("usage_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
+  ],
+);
+
+/**
+ * Usage summed per app and UTC month, for days past the day rollup's
+ * retention (400 days, as v1). The nightly retention moves each such
+ * `usage_day` row here in the same transaction that deletes it, so a day is
+ * counted in exactly one of the two tables. A month's total is its row here
+ * plus any `usage_day` rows still dated in it (a late correction can add one).
+ *
+ * The same key as `usage_day`, with the account in it as well.
+ */
+export const usageMonth = sqliteTable(
+  "usage_month",
+  {
+    accountId: text("account_id").notNull(),
+    appId: text("app_id").notNull(),
+    /** `YYYY-MM`. */
+    month: text("month").notNull(),
+    providerType: text("provider_type").notNull(),
+    providerConnectionId: text("provider_connection_id").notNull(),
+    model: text("model").notNull(),
+    outcome: text("outcome").$type<"ok" | "failed">().notNull(),
+    unit: text("unit").notNull(),
+
+    charges: integer("charges").notNull().default(0),
+    unpricedCharges: integer("unpriced_charges").notNull().default(0),
+    costNano: integer("cost_nano").notNull().default(0),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    units: integer("units").notNull().default(0),
+    sessionMs: integer("session_ms").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.accountId,
+        table.appId,
+        table.month,
+        table.providerType,
+        table.providerConnectionId,
+        table.model,
+        table.outcome,
+        table.unit,
+      ],
+    }),
+    index("usage_month_account").on(table.accountId, table.month),
+    check("usage_month_outcome", oneOf(table.outcome, ["ok", "failed"])),
+    check("usage_month_month", sql`length(${table.month}) = 7`),
+    check("usage_month_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
 );
 
@@ -455,6 +513,8 @@ export const budgetDay = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.appId, table.scope, table.scopeId, table.day] }),
+    // Days past their retention, for the nightly maintenance.
+    index("budget_day_day").on(table.day),
     check("budget_day_scope", oneOf(table.scope, BUDGET_SCOPES)),
     check("budget_day_cost_integer", sql`typeof(${table.costNano}) = 'integer'`),
   ],
@@ -490,6 +550,8 @@ export const openWork = sqliteTable(
   (table) => [
     index("open_work_due").on(table.dueAt),
     index("open_work_owner").on(table.ownerType, table.ownerId),
+    // Work given up long ago, for the nightly maintenance.
+    index("open_work_gave_up").on(table.gaveUpAt).where(sql`gave_up_at IS NOT NULL`),
     check("open_work_kind", oneOf(table.kind, OPEN_WORK_KINDS)),
     check("open_work_owner_type", oneOf(table.ownerType, OWNER_TYPES)),
   ],
@@ -546,6 +608,8 @@ export const session = sqliteTable(
   },
   (table) => [
     index("session_app_started").on(table.appId, table.startedAt),
+    // Sessions past their retention, for the nightly maintenance.
+    index("session_started").on(table.startedAt),
     check("session_mode", oneOf(table.mode, SESSION_MODES)),
     check("session_slot", oneOf(table.slot, SESSION_SLOTS)),
     check("session_state", oneOf(table.state, SESSION_STATES)),

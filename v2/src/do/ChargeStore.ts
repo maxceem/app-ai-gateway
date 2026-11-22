@@ -40,11 +40,14 @@ export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
  * One retry of what the store holds: charges first, then open-work rows. Each
  * write has the ledger's deadline, so a stalled D1 batch rejects and the alarm
  * falls through to its backoff instead of hanging. Stable ids make a late
- * commit safe.
+ * commit safe. `now` is the time of this retry: the ledger judges a late
+ * charge by when it is written, not by when it was first kept
+ * (`../ledger/late-booking.ts`).
  */
-export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[]): Promise<void> {
-  await withDeadline(writeToLedger(db, entries), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
-  await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<number> {
+  const charges = await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+  const work = await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+  return charges + work;
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -120,11 +123,13 @@ export class ChargeStore extends DurableObject<Env> {
       this.setDelay(0);
       return;
     }
+    let d1Changes: number;
     try {
-      await retryStored(
+      d1Changes = await retryStored(
         this.env.DB,
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
+        now,
       );
     } catch (error) {
       const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(FIRST_RETRY_DELAY_MS, this.delay() * 2));
@@ -135,7 +140,11 @@ export class ChargeStore extends DurableObject<Env> {
     }
     for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
     for (const one of work) this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
-    log("info", "charge_store_written", { written: rows.length + work.length });
+    // Processed, not necessarily written: a repeat whose first write committed
+    // is skipped by the ledger, and a charge past the late-booking window is
+    // refused (and logged there). `d1Changes` is D1's count of rows changed,
+    // rollup triggers included: 0 means every entry was a repeat.
+    log("info", "charge_store_written", { processed: rows.length + work.length, d1Changes });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());

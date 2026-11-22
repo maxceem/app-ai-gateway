@@ -91,6 +91,52 @@ All optional, as Worker variables (see `src/auth/settings.ts`):
 - Set secrets with `wrangler secret put <NAME>`, never in a file that is committed. `.dev.vars.example`
   lists every secret.
 
+## Nightly maintenance
+
+The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in its own hour:
+
+- At 03:17 UTC it deletes stored conversations past each app's retention. It goes round every
+  app once, with at most 500 R2 calls and the D1 queries `MAINTENANCE_QUERY_BUDGET` leaves after
+  the hourly clean-up: 43 by default, one per page of conversations it deletes. That keeps up with
+  about 40 apps that each have one page expire a night. Where it runs out before every
+  app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
+- At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
+  days, and detailed usage after 90 days: charges, settled sessions and budget totals. A call's,
+  job's or session's corrections are deleted before its other charges, so a user's usage never
+  shows a correction without its charge. Day totals stay 400 days, then move into month totals.
+  It also logs `ledger_sessions_stuck_open` when a session past 90 days is still open with nothing
+  left to settle it: it is kept, with its charges, until someone looks.
+
+The ledger takes no charge dated more than 30 days back, such as a job's settlement that arrives
+after that, or an old charge replayed. That is 60 days before retention may delete anything, so a
+late result can never be counted twice. The app is still served as usual. Nothing is booked, and
+`ledger_booking_too_late` is logged as a warning. A session whose provider total comes too late
+keeps its slices' estimate and is marked `estimate_kept`. The longest wait a booking has on purpose
+is about 8 days, a job's saved result retried by the sweep, so in practice nothing is refused.
+
+Each kind of old row is a pass, and the passes take turns: each round, every pass with rows left
+deletes one chunk of at most 5,000 rows. So a large backlog of one kind never keeps the others
+waiting. The run stops when every pass is done, or when one of two allowances runs out:
+
+- **D1 statements:** at most 50, the Workers Free plan's limit per run.
+- **Rows written:** at most 20,000. D1 counts each deleted row and each of its index entries. The
+  Free plan allows 100,000 row writes a day for the whole account, and the apps need the rest.
+  This allowance covers the retention passes only. The hourly clean-up of expired App Attest
+  challenges is not counted in it: each hour it settles about one hour of challenges.
+
+At the defaults, a night deletes about 2,000 charges when charges are the only backlog, because
+each charge is counted as 10 row writes with its index entries. A deployment that serves more than about
+2,000 requests a day falls behind and logs `maintenance_backlog_left` every night. It should raise
+`MAINTENANCE_ROW_BUDGET`. On the Free plan, the apps' own writes leave little room to do that, so
+past about 2,000 requests a day the Paid plan is the better fit.
+
+A backlog left over is cleared over the next nights, and the run logs `maintenance_backlog_left` as
+a warning. On the Workers Paid plan, two optional Worker variables clear it faster:
+
+- `MAINTENANCE_QUERY_BUDGET` (for example `1000`). A value above 1,000, D1's limit on that plan, is
+  lowered to 1,000. It also raises conversation retention's D1 queries.
+- `MAINTENANCE_ROW_BUDGET` (for example `1000000`). A value above 5,000,000 is lowered to 5,000,000.
+
 ## Deploying
 
 `wrangler.jsonc` holds what every deployment shares. A deployment's own Worker

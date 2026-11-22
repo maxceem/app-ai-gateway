@@ -6,21 +6,23 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { timeOrderedId } from "../src/core/ids.ts";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
+import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
 import { applyFinalResult, boundedJson, checkJob, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, JOB_POLL_TIMEOUT_MS, jobCheckId, jobEstimate, jobFinalFigure, providerRequestId, readResultFacts, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
-import { chargeFromRow, readCharge, writeToLedger, type ChargeRow } from "../src/ledger/write.ts";
+import { chargeFromRow, readCharge, type ChargeRow } from "../src/ledger/write.ts";
 import { assertModesSelectable, ratesFromPricing } from "../src/admin/providers.ts";
 import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, writeAtTheirTime } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -71,7 +73,8 @@ async function call(method: string, path: string, key: string, init: { body?: st
 }
 
 async function charges(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  // Each charge before its corrections, whatever times the test gave them.
+  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY kind = 'correction', written_at, id").bind(appId).all();
   return results;
 }
 
@@ -330,6 +333,23 @@ describe("polling a job", () => {
     expect(await openWork(appId)).toEqual([]);
   });
 
+  it("serves a client's poll past the ledger's late-booking window as usual, and books nothing: a job id never expires (Astra 7b-2 round 4)", async () => {
+    const { appId, key, jobId } = await submitted();
+    // The sweep's check ended long ago; only the client still polls.
+    await env.DB.prepare("DELETE FROM open_work WHERE app_id = ?").bind(appId).run();
+    const before = await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + (LEDGER_LATE_BOOKING_DAYS + 1) * 86_400_000);
+    falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "3" } }) });
+    const { response, json } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(response.status).toBe(200);
+    expect(json).toEqual({ images: [{}, {}] });
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+    expect(await openWork(appId)).toEqual([]);
+    expect((await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results).toEqual(before.results);
+    expect(logged("ledger_booking_too_late")).toBe(true);
+  });
+
   it("settles once however often the result is read: a second poll and the sweep add nothing", async () => {
     const { appId, key, jobId } = await submitted();
     falAnswers({ result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "1" } }) });
@@ -451,8 +471,8 @@ describe("the sweep and the four failure cases", () => {
   it("a lost ledger reply: the estimate written again is skipped, with its check, so nothing counts twice", async () => {
     const { appId } = await setup();
     const entry = jobEstimate(attempt(appId, `job_${crypto.randomUUID()}`), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "j1.x.y", now: 2_000 });
-    await writeToLedger(env.DB, [entry]);
-    await writeToLedger(env.DB, [entry]);
+    await writeAtTheirTime([entry]);
+    await writeAtTheirTime([entry]);
     expect(await charges(appId)).toHaveLength(1);
     expect(await openWork(appId)).toHaveLength(1);
   });
@@ -491,15 +511,31 @@ describe("the sweep and the four failure cases", () => {
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     const facts = { status: 200, units: 3, outputs: { images: 0 } };
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("waiting");
-    await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
+    await writeAtTheirTime([jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("settled");
     expect((await charges(appId)).map((row) => row.cost_nano)).toEqual([50_000_000, 25_000_000]);
+  });
+
+  it("a figure for a job past the late-booking window, with no estimate left, ends at once instead of waiting (Sol 7b-2 date rule)", async () => {
+    const { appId } = await setup();
+    const now = Date.parse("2026-11-22T12:00:00Z");
+    const recent = timeOrderedId(now - 29 * 86_400_000);
+    const old = timeOrderedId(now - 31 * 86_400_000);
+    const facts = { status: 200, units: 3, outputs: { images: 0 } };
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    // Inside the window the estimate may still land: the figure waits for it.
+    expect(await settleFigure(env, { job: recent, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("waiting");
+    // Past it, an estimate would be refused anyway (or retention deleted it): nothing to wait for.
+    expect(await settleFigure(env, { job: old, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("estimate_kept");
+    expect(warned.filter((line) => line.includes('"message":"ledger_booking_too_late"'))).toHaveLength(1);
+    expect(await charges(appId)).toEqual([]);
   });
 
   it("a duplicate completion: a client poll and the sweep settling at once write one correction", async () => {
     const { appId } = await setup();
     const job = `job_${crypto.randomUUID()}`;
-    await writeToLedger(env.DB, [jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
+    await writeAtTheirTime([jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     const facts = { status: 200, units: 4, outputs: { images: 0 } };
     expect(await Promise.all([settleFigure(env, ref, facts, 3_000), settleFigure(env, ref, facts, 3_001)])).toEqual(["settled", "settled"]);
@@ -632,7 +668,7 @@ function onlyThisApp(appId: string) {
 }
 
 describe("a figure is its own row, written once and never changed (review fixes, round 3)", () => {
-  function attemptFor(appId: string, requestId: string): CallAttempt {
+  function attemptFor(appId: string, requestId: string, startedAt = 1_000): CallAttempt {
     return {
       requestId,
       seq: 1,
@@ -647,16 +683,20 @@ describe("a figure is its own row, written once and never changed (review fixes,
       price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
       reportsCost: false,
       requestedMode: { tier: "standard", region: "global" } as never,
-      startedAt: 1_000,
+      startedAt,
       appVersion: null,
       clientTraceId: null,
       requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
     };
   }
 
-  /** A 2-unit estimate, with a check row when it has a job id. */
-  const estimateOf = (appId: string, job: string, jobId: string | null = null) =>
-    jobEstimate(attemptFor(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: jobId, now: 2_000 });
+  /**
+   * A 2-unit estimate, with a check row when it has a job id. Dated at the
+   * real time by default: the failed-write store and the sweep write at the
+   * real time, and the ledger's late-booking rule takes no row from 1970 then.
+   */
+  const estimateOf = (appId: string, job: string, jobId: string | null = null, at: number = Date.now()) =>
+    jobEstimate(attemptFor(appId, job, at - 1_000), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: jobId, now: at });
 
   const D1_DOWN = {
     prepare: () => {
@@ -707,7 +747,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
 
   it("keeps the estimate when no usable figure ever arrives, and saves nothing for a result with no count", async () => {
     const { appId, job, ref } = await fresh();
-    await writeToLedger(env.DB, [estimateOf(appId, job)]);
+    await writeAtTheirTime([estimateOf(appId, job)]);
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
     expect(await openWork(appId)).toEqual([]);
     // A count the estimate's rate cannot use: the estimate stays, and the row is not kept.
@@ -721,7 +761,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     const { appId, job, ref } = await fresh();
     expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_100)).toBe("done");
-    await writeToLedger(env.DB, [estimateOf(appId, job)]);
+    await writeAtTheirTime([estimateOf(appId, job)]);
     // The rate bills units: this result cannot settle it, and leaves the saved 4 alone.
     expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_200)).toBe("estimate_kept");
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
@@ -732,7 +772,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
   it("keeps a figure in the failed-write store while D1 is down, and settles it once both are written", async () => {
     const { appId, job, ref } = await fresh();
     const down = { ...env, DB: D1_DOWN } as Env;
-    await recordLedgerEntry(down, estimateOf(appId, job));
+    await recordLedgerEntry(down, estimateOf(appId, job, null, Date.now()));
     expect(await applyFinalResult(down, ref, FOUR, 3_000)).toBe("done");
     expect(logged("job_result_unrecorded")).toBe(false);
     expect(await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId))).toBe(true);
@@ -744,8 +784,8 @@ describe("a figure is its own row, written once and never changed (review fixes,
 
   it("keeps the figure when D1 took the estimate but its reply was lost, and the store writes it again", async () => {
     const { appId, job, ref } = await fresh();
-    const entry = estimateOf(appId, job);
-    await writeToLedger(env.DB, [entry]);
+    const entry = estimateOf(appId, job, null, Date.now());
+    await writeAtTheirTime([entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);
     expect(await applyFinalResult({ ...env, DB: D1_DOWN } as Env, ref, FOUR, 3_000)).toBe("done");
@@ -768,7 +808,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
-    await writeToLedger(env.DB, [estimateOf(appId, job)]);
+    await writeAtTheirTime([estimateOf(appId, job)]);
     await runSweep(broken, { now: Date.now() + 60 * 60_000 });
     const rows = await env.DB.prepare("SELECT kind, cost_nano FROM charge WHERE owner_id = ? ORDER BY kind DESC").bind(job).all();
     expect(rows.results.map((row) => [row.kind, row.cost_nano])).toEqual(SETTLED_AT_4);
@@ -780,7 +820,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
-    await writeToLedger(env.DB, [estimateOf(appId, job)]);
+    await writeAtTheirTime([estimateOf(appId, job)]);
     await env.DB.prepare("DELETE FROM provider_connection WHERE id = ?").bind(connectionId).run();
     clearCaches();
     await runSweep(env, { now: Date.now() + 60 * 60_000 });
@@ -904,7 +944,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     it(`decides every result with the estimate's rate (${rate}): settle, read again, or keep the estimate`, async () => {
       for (const [name, facts, outcome] of cases) {
         const { appId, job, ref } = await fresh();
-        await writeToLedger(env.DB, [estimateWith(appId, job, rate === "per image")]);
+        await writeAtTheirTime([estimateWith(appId, job, rate === "per image")]);
         expect(await applyFinalResult(env, ref, facts, 3_000), name).toBe(outcome);
         const kinds = (await charges(appId)).map((row) => row.kind);
         expect(kinds, name).toEqual(outcome === "done" ? ["estimate", "correction"] : ["estimate"]);
@@ -1070,7 +1110,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
       { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "signed-id", now: 2_000 },
     );
     // D1 took the batch but its reply was lost, so the store keeps a copy too.
-    await writeToLedger(env.DB, [entry]);
+    await writeAtTheirTime([entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);
     expect(await settleFigure(env, ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000)).toBe("settled");
@@ -1161,13 +1201,14 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
         price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
         reportsCost: false,
         requestedMode: { tier: "standard", region: "global" } as never,
-        startedAt: 1_000,
+        // At the real time: the failed-write store writes it at the real time too (`../src/ledger/late-booking.ts`).
+        startedAt: Date.now() - 1_000,
         appVersion: null,
         clientTraceId: null,
         requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
       } as CallAttempt,
       QUEUE,
-      { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "signed-id", now: 2_000 },
+      { status: "ok", httpStatus: 200, latencyMs: 1, signedId: "signed-id", now: Date.now() },
     );
   }
 
@@ -1447,7 +1488,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
     expect(await openWork(appId)).toEqual([]);
     // The failed-write store replays the submit batch that had committed.
-    await writeToLedger(env.DB, [entry]);
+    await writeAtTheirTime([entry]);
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
   });

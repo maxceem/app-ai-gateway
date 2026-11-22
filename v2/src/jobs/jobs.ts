@@ -28,10 +28,12 @@ import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
+import { timeOfOrderedId } from "../core/ids.ts";
+import { bookingTooLate } from "../ledger/late-booking.ts";
 import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
-import { writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { utcDay, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
@@ -707,7 +709,17 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
   const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
-  if (known === null && !countless) return "waiting";
+  if (known === null && !countless) {
+    // No estimate, and the job is past the late-booking window: its estimate,
+    // dated the day the job started, would never be taken now (retention may
+    // have deleted it). Saving the figure would only retry for days.
+    const started = timeOfOrderedId(ref.job);
+    if (started !== null && bookingTooLate(utcDay(started), now)) {
+      log("warn", "ledger_booking_too_late", { app: ref.appId, ownerType: "job", owner: ref.job, kind: "figure", usageDay: utcDay(started) });
+      return "estimate_kept";
+    }
+    return "waiting";
+  }
   const decision: FigureDecision = known === null ? { kind: "never" } : decideFigure(known, facts);
   // Only a result with a count has a figure row of its own.
   const dropFigure = async () => {

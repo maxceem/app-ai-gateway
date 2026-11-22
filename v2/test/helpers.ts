@@ -14,6 +14,7 @@ import { base64url, requestClientData } from "../src/client-auth/request-proof.t
 import { appCache } from "../src/apps/app-records.ts";
 import { clearAllCaches } from "../src/core/ttl-cache.ts";
 import { resetStallHold } from "../src/core/stale-read.ts";
+import { writeToLedger, type LedgerEntry } from "../src/ledger/write.ts";
 
 export const ACCOUNT_ID = "acc_test";
 export const TEAM_ID = "AAAAAAAAAA";
@@ -313,4 +314,13 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
   const sessions = createTestSessions(await createIdentity({ ...env, ALLOWED_REGISTRATION_EMAILS: "*" } as Env, "https://console.gateway.test"));
   const human = await sessions.human(email === undefined ? {} : { email });
   return { userId: human.userId, accountId: human.organizationId, cookie: human.cookie, email: human.user.email! };
+}
+
+/**
+ * Writes ledger entries as if now were their own write time, so a test's
+ * fixed clock and the ledger's late-booking rule (`../src/ledger/late-booking.ts`)
+ * agree.
+ */
+export function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
+  return writeToLedger(env.DB, entries, Math.max(...entries.map((entry) => entry.charge.writtenAt)));
 }
