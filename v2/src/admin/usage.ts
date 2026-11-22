@@ -21,6 +21,7 @@ import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import {
   ChargeListQuerySchema,
+  USAGE_CHARGE_RANGE_MAX_DAYS,
   USAGE_RANGE_MAX_DAYS,
   UsageBreakdownQuerySchema,
   UsageMonthQuerySchema,
@@ -59,11 +60,18 @@ const ROLLUP_SUMS = `
   COALESCE(SUM(output_tokens), 0) AS output_tokens,
   COALESCE(SUM(session_ms), 0) AS session_ms`;
 
-/** The same sums over charge rows: a correction changes the cost of a charge already counted, so it is never counted itself. */
+/**
+ * The same sums over charge rows: a correction changes the cost of a charge
+ * already counted, so it is never counted itself. A charge is unpriced while it
+ * has no price and no pricing correction has given it one, as the day totals
+ * count it (the rollup trigger takes a priced charge back out).
+ */
 const CHARGE_SUMS = `
   COALESCE(SUM(kind <> 'correction'), 0) AS charges,
   COALESCE(SUM(kind <> 'correction' AND status <> 'ok'), 0) AS failed,
-  COALESCE(SUM(kind <> 'correction' AND price_source IN ('unresolved', 'not_priced')), 0) AS unpriced,
+  COALESCE(SUM(kind <> 'correction' AND price_source IN ('unresolved', 'not_priced')
+    AND NOT EXISTS (SELECT 1 FROM charge AS priced
+                    WHERE priced.corrects_charge_id = charge.id AND priced.correction_kind = 'pricing')), 0) AS unpriced,
   COALESCE(SUM(cost_nano), 0) AS cost_nano,
   COALESCE(SUM(input_tokens), 0) AS input_tokens,
   COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
@@ -93,10 +101,12 @@ export function monthUsageSql(oneApp: boolean): string {
     SELECT ${ROLLUP_COLUMNS} FROM usage_month WHERE account_id = ?1${app} AND month = ?2`;
 }
 
-/** A month's first day and the next month's first day, `YYYY-MM-DD`. */
+/** A month's first day and the next month's first day, `YYYY-MM-DD`, worked out as text, as v1 does. */
 function monthDays(month: string): { first: string; next: string } {
-  const [year, number] = month.split("-").map(Number) as [number, number];
-  return { first: `${month}-01`, next: new Date(Date.UTC(year, number, 1)).toISOString().slice(0, 10) };
+  const year = Number(month.slice(0, 4));
+  const number = Number(month.slice(5, 7));
+  const next = number === 12 ? `${String(year + 1).padStart(4, "0")}-01` : `${month.slice(0, 4)}-${String(number + 1).padStart(2, "0")}`;
+  return { first: `${month}-01`, next: `${next}-01` };
 }
 
 type SumRow = Omit<UsageTotals, "cost_usd">;
@@ -119,17 +129,21 @@ function totals(row: Partial<SumRow> | null | undefined): UsageTotals {
   };
 }
 
-/** An inclusive range of UTC days, by default the 30 days ending today; at most {@link USAGE_RANGE_MAX_DAYS} days. */
-function dayRange(from: string | undefined, to: string | undefined, now = Date.now()): { from: string; to: string } {
+/**
+ * An inclusive range of UTC days, by default the 30 days ending today (or
+ * fewer, within `maxDays`); at most `maxDays` days. Each day is a real one:
+ * the query schemas check that (`DaySchema`).
+ */
+function dayRange(from: string | undefined, to: string | undefined, maxDays = USAGE_RANGE_MAX_DAYS, now = Date.now()): { from: string; to: string } {
   const end = to ?? new Date(now).toISOString().slice(0, 10);
   const endMs = Date.parse(`${end}T00:00:00Z`);
   if (Number.isNaN(endMs)) throw new GatewayError(400, "invalid_request", "to is not a real day");
-  const start = from ?? new Date(endMs - 29 * DAY_MS).toISOString().slice(0, 10);
+  const start = from ?? new Date(endMs - (Math.min(30, maxDays) - 1) * DAY_MS).toISOString().slice(0, 10);
   const startMs = Date.parse(`${start}T00:00:00Z`);
   if (Number.isNaN(startMs)) throw new GatewayError(400, "invalid_request", "from is not a real day");
   if (start > end) throw new GatewayError(400, "invalid_request", "from must not be after to");
-  if ((endMs - startMs) / DAY_MS + 1 > USAGE_RANGE_MAX_DAYS) {
-    throw new GatewayError(400, "invalid_request", `A range covers at most ${USAGE_RANGE_MAX_DAYS} days`);
+  if ((endMs - startMs) / DAY_MS + 1 > maxDays) {
+    throw new GatewayError(400, "invalid_request", `A range covers at most ${maxDays} days${maxDays < USAGE_RANGE_MAX_DAYS ? " for this breakdown" : ""}`);
   }
   return { from: start, to: end };
 }
@@ -240,11 +254,12 @@ export async function getAppUsageBreakdown(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const appId = c.req.param("app")!;
   const query = parseQuery(c, UsageBreakdownQuerySchema);
-  const range = dayRange(query.from, query.to);
-  await appExists(c.env.DB, actor.accountId, appId);
-  const db = c.env.DB;
   // A column name cannot be bound: each is a lookup in the tables above, never caller text.
   const totalsColumn = TOTALS_COLUMNS[query.by];
+  // A breakdown from the charges groups every charge in its range, so its range is shorter.
+  const range = dayRange(query.from, query.to, totalsColumn === undefined ? USAGE_CHARGE_RANGE_MAX_DAYS : USAGE_RANGE_MAX_DAYS);
+  await appExists(c.env.DB, actor.accountId, appId);
+  const db = c.env.DB;
   const order = "ORDER BY cost_nano DESC, charges DESC, key LIMIT ?";
   const { results } = totalsColumn !== undefined
     ? await db
@@ -350,8 +365,13 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
   const appId = c.req.param("app")!;
   const query = parseQuery(c, ChargeListQuerySchema);
   await appExists(c.env.DB, actor.accountId, appId);
-  // Served by `charge_app_used`: the app's charges by time, newest first.
-  const where = ["app_id = ?", "account_id = ?"];
+  // Served by `charge_app_account_used`: the app's charges by time, newest
+  // first, and a page position found directly by its time and id.
+  // With an owner, its few charges come from `charge_owner` instead: the `+`
+  // keeps SQLite from walking the app's index for it, which it would prefer
+  // for the order, through every charge of the app.
+  const byOwner = query.owner !== undefined ? "+" : "";
+  const where = [`${byOwner}app_id = ?`, `${byOwner}account_id = ?`];
   const params: unknown[] = [appId, actor.accountId];
   if (query.from !== undefined || query.to !== undefined) {
     const range = dayRange(query.from, query.to);
@@ -364,6 +384,8 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
     where.push(`${column} = ?`);
     params.push(value);
   }
+  // An owner is found through `charge_owner`, which starts with its type.
+  if (query.owner !== undefined) where.push("owner_type IN ('call', 'session', 'job')");
   if (query.status === "failed") where.push("status <> 'ok'");
   else if (query.status !== undefined) {
     where.push("status = ?");
@@ -371,8 +393,8 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
   }
   if (query.before !== undefined) {
     const before = parseBefore(query.before);
-    where.push("(used_at < ? OR (used_at = ? AND id < ?))");
-    params.push(before.usedAt, before.usedAt, before.id);
+    where.push("(used_at, id) < (?, ?)");
+    params.push(before.usedAt, before.id);
   }
   const { results } = await c.env.DB.prepare(
     `SELECT id, kind, owner_type, owner_id, corrects_charge_id, correction_kind, status, http_status, error_code,

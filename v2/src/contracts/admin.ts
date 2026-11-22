@@ -479,8 +479,30 @@ export const EndUserSchema = z
   })
   .meta({ id: "EndUser" });
 
-/** A UTC month, `YYYY-MM`. */
-export const MonthSchema = z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/, { error: "month must be YYYY-MM" });
+/**
+ * The years a month or day may name: 1970 (the ledger's times start there) to
+ * 2999. Outside them, month and day arithmetic in JavaScript and as text stops
+ * being plain (years before 100, and the year after 9999).
+ */
+const YEAR = "(?:19[7-9]\\d|2\\d{3})";
+
+/** A UTC month, `YYYY-MM`, from 1970-01 to 2999-12. */
+export const MonthSchema = z
+  .string()
+  .regex(new RegExp(`^${YEAR}-(?:0[1-9]|1[0-2])$`), { error: "month must be YYYY-MM, from 1970-01 to 2999-12" });
+
+/** Whether `YYYY-MM-DD` names a day the calendar has (no 2025-02-29, no 04-31). */
+function realDay(value: string): boolean {
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
+
+/** A UTC day, `YYYY-MM-DD`, a real one, from 1970-01-01 to 2999-12-31. */
+export const DaySchema = (name: string) =>
+  z
+    .string()
+    .regex(new RegExp(`^${YEAR}-\\d{2}-\\d{2}$`), { error: `${name} must be YYYY-MM-DD, from 1970-01-01 to 2999-12-31` })
+    .refine(realDay, { error: `${name} is not a real day` });
 
 export const EndUserListQuerySchema = z.object({
   month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
@@ -559,9 +581,6 @@ export const JobListResponseSchema = z
     jobs: z.array(JobSummarySchema),
   })
   .meta({ id: "JobListResponse" });
-
-/** A UTC day, `YYYY-MM-DD`. */
-const DaySchema = (name: string) => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: `${name} must be YYYY-MM-DD` });
 
 export const ConversationListQuerySchema = z.object({
   from: DaySchema("from").optional().meta({ description: "First UTC day, YYYY-MM-DD; defaults to the oldest stored." }),

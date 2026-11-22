@@ -58,6 +58,8 @@ interface Seed {
   ownerType?: "call" | "session" | "job";
   ownerId?: string;
   correctsChargeId?: string;
+  correctionKind?: "units" | "dollars" | "pricing";
+  trace?: string;
   user?: string | null;
   provider?: string;
   connection?: string | null;
@@ -80,8 +82,8 @@ async function seed(values: Seed): Promise<string> {
   await env.DB.prepare(
     `INSERT INTO charge (id, kind, account_id, app_id, end_user_id, owner_type, owner_id, provider_type, provider_connection_id,
        operation, model, status, cost_nano, measured, price_source, input_tokens, output_tokens, session_ms, measures_json,
-       correction_kind, corrects_charge_id, used_at, usage_day, written_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)`,
+       correction_kind, corrects_charge_id, client_trace_id, used_at, usage_day, written_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -102,8 +104,9 @@ async function seed(values: Seed): Promise<string> {
       values.input ?? 10,
       values.output ?? 2,
       kind === "slice" ? (values.sessionMs ?? 60_000) : null,
-      kind === "correction" ? "units" : null,
+      kind === "correction" ? (values.correctionKind ?? "units") : null,
       values.correctsChargeId ?? null,
+      values.trace ?? null,
       values.usedAt,
       new Date(values.usedAt).toISOString().slice(0, 10),
       values.usedAt,
@@ -268,9 +271,14 @@ describe("charges", () => {
   it("show the jobs whose estimate was never settled", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
-    const settledEstimate = await seed({ appId, usedAt: at("2025-07-01"), kind: "estimate", ownerType: "job", ownerId: "job_settled", provider: "fal" });
-    await seed({ appId, usedAt: at("2025-07-01"), id: "settle:job:job_settled", kind: "correction", ownerType: "job", ownerId: "job_settled", correctsChargeId: settledEstimate, provider: "fal" });
-    await seed({ appId, usedAt: at("2025-07-02"), kind: "estimate", ownerType: "job", ownerId: "job_late", provider: "fal" });
+    // The job list reads the last 89 days, from now.
+    const daysAgo = (days: number) => Date.now() - days * 86_400_000;
+    const settledEstimate = await seed({ appId, usedAt: daysAgo(3), kind: "estimate", ownerType: "job", ownerId: "job_settled", provider: "fal" });
+    await seed({ appId, usedAt: daysAgo(3), id: "settle:job:job_settled", kind: "correction", ownerType: "job", ownerId: "job_settled", correctsChargeId: settledEstimate, provider: "fal" });
+    await seed({ appId, usedAt: daysAgo(2), kind: "estimate", ownerType: "job", ownerId: "job_late", provider: "fal" });
+    // Past the window: retention deleted its settlement and has not reached its estimate yet.
+    // It must not show as unsettled, with its estimate as its total (Sol 7b-3 round 1).
+    await seed({ appId, usedAt: daysAgo(90), kind: "estimate", ownerType: "job", ownerId: "job_retiring", provider: "fal" });
 
     const unsettled = await request(key, "GET", `/v2/admin/apps/${appId}/jobs?settled=false`);
     expect(unsettled.status).toBe(200);
@@ -281,7 +289,149 @@ describe("charges", () => {
   });
 });
 
+describe("unpriced", () => {
+  it("counts a charge as unpriced until a pricing correction prices it, in the totals and from the charges (Sol 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const unresolved = await seed({ appId, usedAt: at("2025-10-02"), cost: null, priceSource: "unresolved", user: "u1" });
+    await seed({ appId, usedAt: at("2025-10-02"), cost: null, priceSource: "not_priced", user: "u1" });
+    const before = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-10`);
+    expect(before.body).toMatchObject({ charges: 2, unpriced: 2, cost_nano: 0 });
+    // The pricing correction lands under the price's unit, on the charge's day.
+    await seed({ appId, usedAt: at("2025-10-02"), kind: "correction", correctionKind: "pricing", correctsChargeId: unresolved, cost: 4_000, user: "u1" });
+    const after = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-10`);
+    expect(after.body).toMatchObject({ charges: 2, unpriced: 1, cost_nano: 4_000 });
+    const fromCharges = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?from=2025-10-01&to=2025-10-31&by=user`);
+    expect(fromCharges.body.rows).toEqual([expect.objectContaining({ key: "u1", charges: 2, unpriced: 1, cost_nano: 4_000 })]);
+  });
+});
+
+describe("dates", () => {
+  it("refuse days and months the calendar has not, and years outside 1970 to 2999 (Sol 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const status = async (path: string) => (await request(key, "GET", `/v2/admin/apps/${appId}/${path}`)).status;
+    expect(await status("charges?from=2025-02-01&to=2025-02-29")).toBe(400);
+    expect(await status("usage/breakdown?by=user&from=2025-04-31&to=2025-05-01")).toBe(400);
+    expect(await status("usage/timeseries?from=2024-02-29&to=2024-03-01")).toBe(200);
+    expect(await status("usage?month=1969-12")).toBe(400);
+    expect(await status("usage?month=0099-01")).toBe(400);
+    expect(await status("usage?month=3000-01")).toBe(400);
+    expect(await status("usage?month=2999-12")).toBe(200);
+    expect(await status("usage/timeseries?from=2999-12-31&to=2999-12-31")).toBe(200);
+  });
+
+  it("count a charge at midnight UTC on its own day, in the totals and in the charges", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: Date.parse("2025-11-30T23:59:59.999Z"), id: "ch_last" });
+    await seed({ appId, usedAt: Date.parse("2025-12-01T00:00:00.000Z"), id: "ch_first" });
+    const november = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-11`);
+    expect(november.body.charges).toBe(1);
+    const december = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
+    expect(december.body.charges).toBe(1);
+    const lastDay = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-11-30&to=2025-11-30`);
+    expect(lastDay.body.charges.map((row: any) => row.id)).toEqual(["ch_last"]);
+    const byUser = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?by=operation&from=2025-12-01&to=2025-12-01`);
+    expect(byUser.body.rows).toEqual([expect.objectContaining({ charges: 1 })]);
+  });
+
+  it("limit a breakdown from the charges to 31 days, and one from the day totals to 400", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const status = async (path: string) => (await request(key, "GET", `/v2/admin/apps/${appId}/${path}`)).status;
+    expect(await status("usage/breakdown?by=user&from=2025-01-01&to=2025-01-31")).toBe(200);
+    expect(await status("usage/breakdown?by=user&from=2025-01-01&to=2025-02-01")).toBe(400);
+    expect(await status("usage/breakdown?by=model&from=2025-01-01&to=2025-02-01")).toBe(200);
+  });
+});
+
+describe("query plans", () => {
+  /** The plan of the charge query a request really sends, with its real parameters. */
+  async function planOf(send: () => Promise<unknown>): Promise<string> {
+    const prepare = env.DB.prepare.bind(env.DB);
+    let sent: { sql: string; params: unknown[] } | undefined;
+    const spy = vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+      const statement = prepare(sql);
+      if (!/\bFROM charge\b/u.test(sql) || /^\s*SELECT 1 AS found/u.test(sql)) return statement;
+      const bind = statement.bind.bind(statement);
+      return Object.assign(statement, {
+        bind: (...params: unknown[]) => {
+          sent = { sql, params };
+          return bind(...params);
+        },
+      });
+    });
+    try {
+      await send();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent, "no charge query was sent").toBeDefined();
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sent!.sql}`).bind(...sent!.params).all<{ detail: string }>();
+    return results.map((row) => row.detail).join("\n");
+  }
+
+  it("reads an app's charges, a deep page, a trace, an owner and a breakdown through their indexes (Sol 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: at("2024-09-02"), trace: "trace-1", ownerId: "call_plan" });
+    await seed({ appId, usedAt: at("2024-09-01") });
+    const get = (path: string) => () => request(key, "GET", `/v2/admin/apps/${appId}/${path}`);
+
+    const page = await planOf(get("charges?limit=1"));
+    expect(page).toContain("charge_app_account_used");
+    expect(page).not.toContain("TEMP B-TREE");
+    const deep = await planOf(get(`charges?limit=1&before=${encodeURIComponent(`${at("2024-09-02")}.zzz`)}`));
+    expect(deep).toMatch(/charge_app_account_used \(app_id=\? AND account_id=\? AND \(used_at,id\)<\(\?,\?\)\)/u);
+    expect(await planOf(get("charges?trace=trace-1"))).toContain("charge_app_trace");
+    expect(await planOf(get("charges?owner=call_plan"))).toContain("charge_owner");
+    expect(await planOf(get("usage/breakdown?by=user&from=2024-09-01&to=2024-09-30"))).toContain("charge_app_account_used");
+  });
+});
+
 describe("isolation", () => {
+  it("keeps two accounts' totals apart when an app id comes back in another account on the same day (Sol 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const other = await seedHuman();
+    const appId = `reused-${crypto.randomUUID().slice(0, 8)}`;
+    // The first account's app was deleted; the same id now belongs to another account.
+    await seed({ appId, usedAt: at("2025-07-10"), cost: 100 });
+    await env.DB.prepare(
+      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Theirs', '{}', 1, 'active', 0, 0)",
+    )
+      .bind(appId, other.accountId)
+      .run();
+    await seed({ appId, usedAt: at("2025-07-10", 1), cost: 200, accountId: other.accountId });
+    const rows = await env.DB.prepare("SELECT account_id, charges, cost_nano FROM usage_day WHERE app_id = ? ORDER BY cost_nano").bind(appId).all();
+    expect(rows.results).toEqual([
+      { account_id: ACCOUNT_ID, charges: 1, cost_nano: 100 },
+      { account_id: other.accountId, charges: 1, cost_nano: 200 },
+    ]);
+    const mine = await request(key, "GET", "/v2/admin/usage?month=2025-07");
+    expect(mine.body.apps.filter((row: any) => row.app_id === appId)).toEqual([expect.objectContaining({ deleted: true, charges: 1, cost_nano: 100 })]);
+  });
+
+  it("never pages into another account's app with a page position from one's own", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: at("2025-08-02"), id: "ch_mine_2" });
+    await seed({ appId, usedAt: at("2025-08-01"), id: "ch_mine_1" });
+    const other = await seedHuman();
+    const foreign = `foreign-${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.prepare(
+      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Theirs', '{}', 1, 'active', 0, 0)",
+    )
+      .bind(foreign, other.accountId)
+      .run();
+    await seed({ appId: foreign, usedAt: at("2025-07-31"), accountId: other.accountId });
+    const first = await request(key, "GET", `/v2/admin/apps/${appId}/charges?limit=1`);
+    const before = encodeURIComponent(first.body.next_before);
+    expect((await request(key, "GET", `/v2/admin/apps/${foreign}/charges?before=${before}`)).status).toBe(404);
+    const next = await request(key, "GET", `/v2/admin/apps/${appId}/charges?before=${before}`);
+    expect(next.body.charges.map((row: any) => row.id)).toEqual(["ch_mine_1"]);
+  });
+
   it("answers 404 for another account's app, and leaves its usage out", async () => {
     const key = await seedManagementKey();
     const other = await seedHuman();

@@ -233,6 +233,50 @@ describe("the MCP endpoint", () => {
   });
 });
 
+describe("usage reads with a read grant", () => {
+  it("reach an account's usage and charges through MCP and the CLI's tools with a CLI sign-in's read grant (Sol 7b-3 round 1)", async () => {
+    const started = await send({ path: OAUTH_PATHS.deviceAuthorization, form: { client_id: CLI_CLIENT_ID, scope: "read" } });
+    const { device_code, user_code } = (await started.json()) as { device_code: string; user_code: string };
+    const human = await seedHuman();
+    const asConsole = (path: string, json: unknown) =>
+      send({ path, headers: { cookie: human.cookie, "x-console-request": "1", origin: CONSOLE }, body: json });
+    const { id } = (await (await asConsole("/v2/console/device/lookup", { userCode: user_code })).json()) as { id: string };
+    expect((await asConsole(`/v2/console/device/${id}/approve`, { userCode: user_code, accountId: human.accountId, grant: "read" })).status).toBe(200);
+    await env.DB.prepare("UPDATE mgmt_operation SET updated_at = updated_at - 60000 WHERE id LIKE 'oauth-device-%'").run();
+    const issued = await send({
+      path: OAUTH_PATHS.token,
+      form: { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code, client_id: CLI_CLIENT_ID },
+    });
+    const { access_token } = (await issued.json()) as { access_token: string };
+
+    // One app of the person's account, with one charge.
+    const appId = `reads-${crypto.randomUUID().slice(0, 8)}`;
+    const usedAt = Date.parse("2025-10-15T12:00:00Z");
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Reads', '{}', 1, 'active', 0, 0)",
+      ).bind(appId, human.accountId),
+      env.DB.prepare(
+        `INSERT INTO charge (id, kind, account_id, app_id, owner_type, owner_id, provider_type, operation, model, status, cost_nano,
+           measured, price_source, measures_json, used_at, usage_day, written_at)
+         VALUES (?, 'attempt', ?, ?, 'call', ?, 'openai', 'openai.chat', 'gpt-4o-mini', 'ok', 2500, 'complete', 'list_rate', '{}', ?, '2025-10-15', ?)`,
+      ).bind(`ch_${crypto.randomUUID().slice(0, 8)}`, human.accountId, appId, `call_${crypto.randomUUID().slice(0, 8)}`, usedAt, usedAt),
+    ]);
+
+    // Through MCP.
+    const usage = await callTool(access_token, "get_usage", { app: appId, month: "2025-10" });
+    expect(usage.isError).not.toBe(true);
+    expect(usage.structuredContent).toMatchObject({ app_id: appId, charges: 1, cost_nano: 2500 });
+    const charges = await callTool(access_token, "list_app_charges", { app: appId });
+    expect(charges.structuredContent.charges).toHaveLength(1);
+    // Through the CLI's tool route.
+    const viaCli = await send({ base: API, path: "/v2/cli/tools/get_usage", headers: bearer(access_token), body: { month: "2025-10" } });
+    expect(viaCli.status).toBe(200);
+    const body = (await viaCli.json()) as { result: { apps: { app_id: string; charges: number }[] } };
+    expect(body.result.apps).toEqual([expect.objectContaining({ app_id: appId, charges: 1 })]);
+  });
+});
+
 describe("tools", () => {
   it("refuse a change the credential's grant does not allow, with what to do next", async () => {
     const owner = await seedManagementKey();

@@ -1922,7 +1922,7 @@
                 },
                 "unpriced": {
                   "type": "integer",
-                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                  "description": "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count."
                 },
                 "cost_nano": {
                   "type": "integer",
@@ -1995,7 +1995,7 @@
           },
           "unpriced": {
             "type": "integer",
-            "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+            "description": "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count."
           },
           "cost_nano": {
             "type": "integer",
@@ -2054,7 +2054,7 @@
           },
           "unpriced": {
             "type": "integer",
-            "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+            "description": "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count."
           },
           "cost_nano": {
             "type": "integer",
@@ -2129,7 +2129,7 @@
                 },
                 "unpriced": {
                   "type": "integer",
-                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                  "description": "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count."
                 },
                 "cost_nano": {
                   "type": "integer",
@@ -2239,7 +2239,7 @@
                 },
                 "unpriced": {
                   "type": "integer",
-                  "description": "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them."
+                  "description": "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count."
                 },
                 "cost_nano": {
                   "type": "integer",
@@ -2450,7 +2450,7 @@
           },
           "price_is_estimate": {
             "type": "boolean",
-            "description": "Priced at the closest known price, for a service mode with no exact one."
+            "description": "The cost is not exact: a job's estimate, before its final figure corrects it, or the closest known price for a service mode with no exact one."
           },
           "input_tokens": {
             "type": [
@@ -8075,7 +8075,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-(?:0[1-9]|1[0-2])$",
               "description": "YYYY-MM; defaults to the current UTC month."
             },
             "required": false,
@@ -8224,7 +8224,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-(?:0[1-9]|1[0-2])$",
               "description": "YYYY-MM; defaults to the current UTC month."
             },
             "required": false,
@@ -8477,7 +8477,7 @@
         ],
         "operationId": "listAppJobs",
         "summary": "List an app's jobs",
-        "description": "Jobs the app submitted through the gateway, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands.",
+        "description": "Jobs the app submitted through the gateway in the last 89 days, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands. Older jobs are only in the usage totals: their charges are kept 90 days.",
         "security": [
           {
             "ManagementBearer": []
@@ -8610,7 +8610,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-(?:0[1-9]|1[0-2])$",
               "description": "YYYY-MM; defaults to the current UTC month."
             },
             "required": false,
@@ -8703,7 +8703,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-(?:0[1-9]|1[0-2])$",
               "description": "YYYY-MM; defaults to the current UTC month."
             },
             "required": false,
@@ -8796,7 +8796,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
             },
             "required": false,
@@ -8807,7 +8807,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
             },
             "required": false,
@@ -8877,7 +8877,7 @@
         ],
         "operationId": "getAppUsageBreakdown",
         "summary": "Get an app's usage by one dimension",
-        "description": "Totals grouped by one dimension over a day range of at most 400 days, largest cost first.",
+        "description": "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
         "security": [
           {
             "ManagementBearer": []
@@ -8900,7 +8900,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
             },
             "required": false,
@@ -8911,7 +8911,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
             },
             "required": false,
@@ -9040,7 +9040,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "First UTC day, YYYY-MM-DD; defaults to 29 days before `to`."
             },
             "required": false,
@@ -9051,7 +9051,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
             },
             "required": false,
@@ -9311,7 +9311,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "First UTC day, YYYY-MM-DD; defaults to the oldest stored."
             },
             "required": false,
@@ -9322,7 +9322,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-\\d{2}-\\d{2}$",
               "description": "Last UTC day, YYYY-MM-DD, inclusive; defaults to today."
             },
             "required": false,

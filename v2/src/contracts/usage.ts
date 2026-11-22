@@ -8,21 +8,21 @@
  */
 import { z } from "zod";
 import { CHARGE_KINDS, CHARGE_STATUSES, MEASURED, OWNER_TYPES, PRICE_SOURCES } from "../ledger/labels.ts";
-import { MonthSchema } from "./admin.ts";
-
-/** A UTC day, `YYYY-MM-DD`. */
-const DaySchema = (name: string) => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: `${name} must be YYYY-MM-DD` });
+import { DaySchema, MonthSchema } from "./admin.ts";
 
 const LimitSchema = z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50);
 
 /** The longest day range one read covers: as far back as day totals are kept. */
 export const USAGE_RANGE_MAX_DAYS = 400;
 
+/** The longest range of a breakdown read from the charges themselves, which groups every charge in it. */
+export const USAGE_CHARGE_RANGE_MAX_DAYS = 31;
+
 export const UsageTotalsSchema = z
   .object({
     charges: z.number().int().meta({ description: "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted." }),
     failed: z.number().int().meta({ description: "Of those, attempts that did not end with success." }),
-    unpriced: z.number().int().meta({ description: "Of those, charges with no price: not priced yet, or a passthrough path with no price. Their cost counts as 0 until a correction prices them." }),
+    unpriced: z.number().int().meta({ description: "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count." }),
     cost_nano: z.number().int().meta({ description: "What it cost, in nano-dollars (1 = $0.000000001), corrections included." }),
     cost_usd: z.number().meta({ description: "The same cost in dollars, for display." }),
     input_tokens: z.number().int(),
@@ -153,7 +153,7 @@ export const ChargeSchema = z
     cost_usd: z.number().nullable(),
     measured: z.enum(MEASURED),
     price_source: z.enum(PRICE_SOURCES),
-    price_is_estimate: z.boolean().meta({ description: "Priced at the closest known price, for a service mode with no exact one." }),
+    price_is_estimate: z.boolean().meta({ description: "The cost is not exact: a job's estimate, before its final figure corrects it, or the closest known price for a service mode with no exact one." }),
     input_tokens: z.number().int().nullable(),
     cached_input_tokens: z.number().int().nullable(),
     cache_write_tokens: z.number().int().nullable(),

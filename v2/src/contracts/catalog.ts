@@ -375,7 +375,7 @@ export const CATALOG = {
     tags: ["Admin jobs"],
     summary: "List an app's jobs",
     description:
-      "Jobs the app submitted through the gateway, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands.",
+      "Jobs the app submitted through the gateway in the last 89 days, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands. Older jobs are only in the usage totals: their charges are kept 90 days.",
     security: "management",
     query: JobListQuerySchema,
     response: JobListResponseSchema,
@@ -431,7 +431,8 @@ export const CATALOG = {
     params: APP_PARAM,
     tags: ["Admin usage"],
     summary: "Get an app's usage by one dimension",
-    description: "Totals grouped by one dimension over a day range of at most 400 days, largest cost first.",
+    description:
+      "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
     security: "management",
     query: UsageBreakdownQuerySchema,
     response: UsageBreakdownResponseSchema,

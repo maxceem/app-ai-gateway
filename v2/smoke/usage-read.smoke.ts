@@ -88,7 +88,8 @@ test("a call is read back as a charge, in the app's and the account's month, and
   assert.equal(charge.model, "gpt-4o-mini");
   assert.ok(charge.cost_nano > 0);
 
-  const month = new Date().toISOString().slice(0, 7);
+  // The charge's own month, so a call made just before midnight on a month's last day still matches.
+  const month = String(charge.usage_day).slice(0, 7);
   const usage = await admin("GET", `/v2/admin/apps/${appId}/usage?month=${month}`);
   assert.equal(usage.status, 200);
   assert.equal(usage.body.charges, 1);
