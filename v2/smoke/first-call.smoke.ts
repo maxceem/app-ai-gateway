@@ -12,7 +12,7 @@
  * Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, expectCode, expectResponse, expectStatus, holds, readJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, holds, readJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -54,8 +54,10 @@ before(async () => {
 });
 
 after(async () => {
-  if (appId !== "") await admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`);
-  if (providerId !== "") await admin("DELETE", `/v2/admin/providers/${providerId}`);
+  await cleanUp([
+    ...(appId !== "" ? [() => admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)] : []),
+    ...(providerId !== "" ? [() => admin("DELETE", `/v2/admin/providers/${providerId}`)] : []),
+  ]);
 });
 
 function chat(body: Record<string, unknown>): Promise<Response> {

@@ -14,7 +14,7 @@
  * V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -70,7 +70,7 @@ test("an iOS app is issued a challenge that says the exchange takes an App Store
   same(issued.accepts_app_transaction, true, "issued.accepts_app_transaction is not true");
 });
 
-test("a failure on the device is recorded once per challenge, and can be read back", { skip, timeout: 90_000 }, async () => {
+test("a failure on the device is recorded once per challenge, and can be read back", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const { challenge: issued } = await challenge();
   // A code no other run of this check sends, to find this run's event.
   const code = Math.floor(Math.random() * 1_000_000_000);
@@ -84,14 +84,13 @@ test("a failure on the device is recorded once per challenge, and can be read ba
 
   // The flag says it was recorded; the diagnostics read says it really was, once.
   const path = `/v2/admin/apps/${appId}/auth-events?event=challenge&outcome=client_failed&limit=50`;
-  let found: { reason: string | null; outcome: string }[] = [];
-  for (let tries = 0; tries < 30 && found.length === 0; tries += 1) {
-    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const found = await poll(async () => {
     const listed = await admin("GET", path);
     expectStatus(listed, 200, "listed");
-    found = (listed.body.events as { reason: string | null; outcome: string }[]).filter((event) => event.reason === `attest_key:smoke:${code}`);
-  }
-  same(found.length, 1, "the device's failure was not read back exactly once within a minute");
+    const mine = (listed.body.events as { reason: string | null; outcome: string }[]).filter((event) => event.reason === `attest_key:smoke:${code}`);
+    return mine.length > 0 ? mine : undefined;
+  }, "the device's failure was not read back within a minute");
+  same(found.length, 1, "the device's failure was not read back exactly once");
 });
 
 test("a forged registration is refused with attest_failed", { skip, timeout: TEST_TIMEOUT_MS }, async () => {

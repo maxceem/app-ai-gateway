@@ -16,7 +16,7 @@
  */
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, checkId, cleanUp, expectCode, expectResponse, expectStatus, keyMark, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -150,8 +150,11 @@ async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: str
 
 test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   // A call and its read that straddle UTC midnight count on two days: once more, with another fresh user.
+  // The gateway's clock decides the day, and this runner's may be a little off from it, so a count
+  // of 0 is taken as the same straddle seen only by the gateway. A real bug that counts nothing
+  // answers 0 for the second fresh user too, and fails below.
   let run = await oneCallThenMe();
-  if (!run.sameDay) run = await oneCallThenMe();
+  if (!run.sameDay || run.standing.limits.requests_today === 0) run = await oneCallThenMe();
   check(run.sameDay, "the call and /me straddled UTC midnight twice");
   const { user, standing } = run;
   // The user is the issuer's subject, and the limits are the app's configured ones, as apps and the Swift package read them.
@@ -187,19 +190,18 @@ test("a token signed by an unknown key is refused with issuer_token_rejected", {
   expectCode(await readJson(response), "issuer_token_rejected", "response");
 });
 
-test("a token exchange records the client package it names", { skip, timeout: 90_000 }, async () => {
+test("a token exchange records the client package it names", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = "smoke-sdk-user";
   const exchanged = await exchange(await userToken(user), { "x-client-sdk": CLIENT_SDK, "x-app-version": "1.0.0" });
   await expectResponse(exchanged, 200, "exchanged");
   await exchanged.arrayBuffer();
   // Recorded after the response, so it is asked for until it is there.
   const path = `/v2/admin/apps/${appId}/auth-events?event=token_exchange&user=${user}&limit=5`;
-  let recorded: { client_sdk: string | null; outcome: string } | undefined;
-  for (let tries = 0; tries < 30 && recorded === undefined; tries += 1) {
-    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
-    recorded = (await admin("GET", path)).body.events?.[0];
-  }
-  check(recorded, "no token exchange was recorded within a minute");
+  const recorded = await poll(async () => {
+    const listed = await admin("GET", path);
+    expectStatus(listed, 200, "the auth events");
+    return listed.body.events?.[0] as { client_sdk: string | null; outcome: string } | undefined;
+  }, "no token exchange was recorded within a minute");
   same(recorded.outcome, "ok", "recorded.outcome is not \"ok\"");
   same(recorded.client_sdk, CLIENT_SDK, "recorded.client_sdk is not CLIENT_SDK");
 });

@@ -21,7 +21,7 @@
  * Skipped when V2_MANAGEMENT_KEY, V2_MOCK_URL or V2_BASE_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectResponse, expectStatus, fail, keyMark, readJson, same, sameJson, send, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectResponse, expectStatus, keyMark, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -83,17 +83,15 @@ function assertProviderSawOnlyItsKey(response: Response): void {
 /** The charges of the request sent with `trace`, once written: they are written after the response. */
 async function chargesOf(appId: string, trace: string): Promise<any[]> {
   const path = `/v2/admin/apps/${appId}/charges?trace=${encodeURIComponent(trace)}`;
-  for (let tries = 0; tries < 30; tries += 1) {
-    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  return poll(async () => {
     const listed = await admin("GET", path);
     expectStatus(listed, 200, "listed");
-    if (listed.body.charges.length > 0) return listed.body.charges;
-  }
-  fail("no charge was written within a minute");
+    return listed.body.charges.length > 0 ? (listed.body.charges as any[]) : undefined;
+  }, "no charge was written within a minute");
 }
 
 for (const status of [429, 500]) {
-  test(`a provider's ${status} reaches the app as it is, and its charge says so`, { skip, timeout: 90_000 }, async () => {
+  test(`a provider's ${status} reaches the app as it is, and its charge says so`, { skip, timeout: TEST_TIMEOUT_MS }, async () => {
     const app = await newApp(`Smoke provider ${status}`);
     const trace = `smoke-${status}-${run}`;
     const response = await chat(app, trace, { mock_status: status });
@@ -111,7 +109,7 @@ for (const status of [429, 500]) {
 
 // Clients filter and group by a charge's status, so it keeps its meaning
 // however the gateway stores it.
-test("the day's totals split one failed and one served call by status", { skip, timeout: 150_000 }, async () => {
+test("the day's totals split one failed and one served call by status", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const app = await newApp("Smoke provider errors totals");
   const failedTrace = `smoke-failed-${run}`;
   const failed = await chat(app, failedTrace, { mock_status: 429 });
@@ -142,13 +140,14 @@ test("the day's totals split one failed and one served call by status", { skip, 
 type ListPrice = { input?: number; output?: number; cached_input?: number; modes?: Record<string, unknown> };
 
 /**
- * An OpenAI model with a standard token price and none for flex, read from the
- * live price list, so a flex price added to one model never fails this check:
- * gpt-4o-mini while it qualifies, else the first `gpt-` chat model in name
- * order. Null when none qualifies.
+ * OpenAI chat models the mock answers, tried in this order for one that the
+ * live price list prices by the token and not for flex, so a flex price added
+ * to one model never fails this check. A model the live list does not have is
+ * passed over.
  */
-/** OpenAI chat models the mock answers, tried in order for one with no flex price. */
-const CHAT_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano"];
+const CHAT_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
+
+/** The first of `CHAT_MODELS` the live price list prices by the token and not for flex; null when none does. */
 
 function modelWithoutFlexPrice(listed: Record<string, ListPrice>): string | null {
   const qualifies = (model: string) => {
@@ -165,7 +164,7 @@ function modelWithoutFlexPrice(listed: Record<string, ListPrice>): string | null
 // (AGENTS.md). The standard price is worked out from the provider's own
 // usage, not from what the charge recorded, so a gateway that undercounts
 // tokens is caught too.
-test("a request in a service mode with no price is served, reaches the provider in that mode, and is charged at least the standard price", { skip, timeout: 90_000 }, async (t) => {
+test("a request in a service mode with no price is served, reaches the provider in that mode, and is charged at least the standard price", { skip, timeout: TEST_TIMEOUT_MS }, async (t) => {
   const prices = await admin("GET", "/v2/admin/prices");
   expectStatus(prices, 200, "prices");
   const listed = (prices.body.prices.openai ?? {}) as Record<string, ListPrice>;

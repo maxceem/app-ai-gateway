@@ -14,7 +14,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, fail, keyMark, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectResponse, expectStatus, keyMark, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -83,12 +83,10 @@ async function call(type: Type, path: string, body: Record<string, unknown>, use
 
 /** The user's usage once its one charge is written (it is written after the answer). */
 async function usageOf(user: string): Promise<{ charges: number; cost_nano: number; input_tokens: number; output_tokens: number }> {
-  for (let tries = 0; tries < 30; tries += 1) {
+  return poll(async () => {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
-    if (found.status === 200 && found.body.user.usage.charges > 0) return found.body.user.usage;
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  fail("no charge was written within a minute");
+    return found.status === 200 && found.body.user.usage.charges > 0 ? found.body.user.usage : undefined;
+  }, "no charge was written within a minute");
 }
 
 const STYLES: { name: string; type: Type; path: (stream: boolean) => string; body: (stream: boolean) => Record<string, unknown> }[] = [

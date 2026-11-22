@@ -523,7 +523,9 @@ async function answer(request: Request): Promise<Response> {
     const path = provider === "openai" ? `/v1/${rest}` : `/${rest}`;
     const forwarded = new Request(new URL(`${path}${url.search}`, url), request);
     if (keyOf(forwarded) === null) forwarded.headers.set("authorization", "Bearer cloudflare-stored-key");
-    const response = await mock.fetch(forwarded);
+    // Answered directly: the outer `mock.fetch` already read the body once and sets the marks
+    // from the request as the gateway sent it.
+    const response = await answer(forwarded);
     const answered = new Response(response.body, response);
     answered.headers.set("x-mock-via-cloudflare", provider!);
     answered.headers.set("x-mock-cf-metadata", request.headers.get("cf-aig-metadata") ?? "");
@@ -575,8 +577,8 @@ async function answer(request: Request): Promise<Response> {
   }
   const followUp = falQueueFollowUp(request, url);
   if (followUp !== null) return followUp;
-  const answer = request.method === "POST" ? answerFor(url.pathname) : null;
-  if (answer === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
+  const reply = request.method === "POST" ? answerFor(url.pathname) : null;
+  if (reply === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
   const { bytes, text, form } = await readCounting(request);
   let body: Record<string, unknown> = form ?? {};
   try {
@@ -594,7 +596,7 @@ async function answer(request: Request): Promise<Response> {
     return Response.json({ error: { message: "Mock error", type: "mock_error", code: "mock_error" } }, { status: body.mock_status, headers });
   }
   const model = typeof body.model === "string" ? body.model : "mock-model";
-  const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
+  const response = reply({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
   for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
   // The service mode the request asked for, so a check can see it reached the provider.
   if (body.service_tier === "flex") response.headers.set("x-mock-service-tier", "flex");

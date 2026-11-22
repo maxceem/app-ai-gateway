@@ -117,6 +117,26 @@ export function expectCli<W extends string>(run: { code: number; json: unknown }
   if (run.code !== 0) stop(`${what} ${cliOutcome(run)}`);
 }
 
+/** How long a check waits for something the deployment writes after its answer. */
+export const POLL_DEADLINE_MS = 60_000;
+
+/**
+ * Asks `read` every 2 seconds until it returns something other than
+ * `undefined`, for at most `POLL_DEADLINE_MS` of wall-clock time, then fails
+ * with `message`. Bounded by the clock, not a count of tries, so slow answers
+ * never stretch the wait past the test's own limit.
+ */
+export async function poll<T, M extends string>(read: () => Promise<T | undefined>, message: Fixed<M>): Promise<T> {
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  for (;;) {
+    const value = await read();
+    if (value !== undefined) return value;
+    if (Date.now() >= deadline) stop(message);
+    // real-timer: polls a live deployment until what it waits for is written, with a deadline.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
 /** A slug no other run picks: the time, then a random part. */
 export function uniqueSlug(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;

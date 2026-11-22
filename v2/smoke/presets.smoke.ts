@@ -17,7 +17,7 @@
  * always fail. Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, expectCode, expectStatus, fail, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectCode, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -65,8 +65,10 @@ before(async () => {
 });
 
 after(async () => {
-  if (appId !== "") await admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`);
-  for (const id of providerIds) await admin("DELETE", `/v2/admin/providers/${id}`);
+  await cleanUp([
+    ...(appId !== "" ? [() => admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)] : []),
+    ...providerIds.map((id) => () => admin("DELETE", `/v2/admin/providers/${id}`)),
+  ]);
 });
 
 async function post(path: string, body: Record<string, unknown>, user: string): Promise<{ status: number; body: any }> {
@@ -80,13 +82,10 @@ async function post(path: string, body: Record<string, unknown>, user: string): 
 
 /** The user's usage once `charges` charges are written (they are written after the answer). */
 async function usageOf(user: string, charges: number): Promise<{ charges: number; failed: number; cost_nano: number }> {
-  for (let tries = 0; tries < 30; tries += 1) {
+  return poll(async () => {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
-    if (found.status === 200 && found.body.user.usage.charges >= charges) return found.body.user.usage;
-    // real-timer: polls a live deployment until the charges land, with a deadline.
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  fail("the expected charges were not written within a minute");
+    return found.status === 200 && found.body.user.usage.charges >= charges ? found.body.user.usage : undefined;
+  }, "the expected charges were not written within a minute");
 }
 
 test("a rewritten model is sent and billed as its target", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
@@ -94,7 +93,7 @@ test("a rewritten model is sent and billed as its target", { skip, timeout: TEST
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
   expectStatus(answer, 200, "answer");
   // The mock answers with the model it was sent.
-  check(answer.body.model === "gpt-4o-mini", "the answer is not from the preset's model");
+  check(answer.body.model === "gpt-4o-mini", "the answer is not from the rewritten model");
   const usage = await usageOf(user, 1);
   same(usage.charges, 1, "usage.charges is not 1");
   check(usage.cost_nano > 0, "billed at the rewritten model's price");
@@ -124,19 +123,16 @@ test("a preset is not retried after a 400: the error is passed through, one char
 // A request the app's own settings refuse is answered as before and shows up
 // as a refusal sample, so a developer can see what their app asked for (v1's
 // endpoints.smoke.ts). Samples are one a minute per caller and reason.
-test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: 90_000 }, async () => {
+test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `missing-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
   expectStatus(answer, 404, "the preset call");
   expectCode(answer.body, "preset_not_found", "a missing preset");
-  let sample: { reason: string; user_id: string | null } | undefined;
-  for (let tries = 0; tries < 30 && sample === undefined; tries += 1) {
-    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const sample = await poll(async () => {
     const found = await admin("GET", `/v2/admin/apps/${appId}/rejection-events?reason=preset_not_found&user=${encodeURIComponent(user)}`);
     expectStatus(found, 200, "found");
-    sample = found.body.events[0];
-  }
-  check(sample, "no refusal sample was recorded within a minute");
+    return found.body.events[0] as { reason: string; user_id: string | null } | undefined;
+  }, "no refusal sample was recorded within a minute");
   same(sample.reason, "preset_not_found", "sample.reason is not \"preset_not_found\"");
   same(sample.user_id, user, "sample.user_id is not user");
 });

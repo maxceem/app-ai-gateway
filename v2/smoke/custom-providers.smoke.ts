@@ -16,7 +16,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, expectResponse, expectStatus, fail, holds, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
+import { admin, check, cleanUp, expectResponse, expectStatus, holds, poll, readJson, same, sameJson, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -68,8 +68,10 @@ before(async () => {
 });
 
 after(async () => {
-  for (const id of appIds) await admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`);
-  for (const id of providerIds) await admin("DELETE", `/v2/admin/providers/${id}`);
+  await cleanUp([
+    ...appIds.map((id) => () => admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`)),
+    ...providerIds.map((id) => () => admin("DELETE", `/v2/admin/providers/${id}`)),
+  ]);
 });
 
 async function call(method: string, path: string, user: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}): Promise<Response> {
@@ -82,12 +84,10 @@ async function call(method: string, path: string, user: string, init: { body?: B
 
 /** The user's usage once `count` charges are written (they are written after the answer). */
 async function usageOf(user: string, count = 1): Promise<{ charges: number; cost_nano: number }> {
-  for (let tries = 0; tries < 30; tries += 1) {
+  return poll(async () => {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
-    if (found.status === 200 && found.body.user.usage.charges >= count) return found.body.user.usage;
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  fail("no charge was written within a minute");
+    return found.status === 200 && found.body.user.usage.charges >= count ? found.body.user.usage : undefined;
+  }, "no charge was written within a minute");
 }
 
 test("a custom provider shows its base URL, key header and paths back, never its key", { skip, timeout: TEST_TIMEOUT_MS }, async () => {

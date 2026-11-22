@@ -103,8 +103,12 @@ describe("smoke checks print nothing a deployment answered", () => {
     expect(() => same(1, 2, "got " + value)).toThrow();
     // @ts-expect-error a code read from a value
     expect(() => expectCode({}, value, "the call")).toThrow();
-    // @ts-expect-error a note built from a value
-    note(`storage: ${value}`);
+    // Never called: it would print. Only the compiler's refusal is checked.
+    const neverCalled = () => {
+      // @ts-expect-error a note built from a value
+      note(`storage: ${value}`);
+    };
+    expect(typeof neverCalled).toBe("function");
     // Fixed text, or a choice of it, compiles.
     expect(() => check(true, "fixed")).not.toThrow();
     expect(() => same(1, 1, value === "" ? "one" : "other")).not.toThrow();

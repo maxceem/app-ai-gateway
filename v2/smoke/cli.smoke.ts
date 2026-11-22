@@ -44,12 +44,20 @@ function consoleOrigin(): string {
 function agw(home: string, ...argv: string[]): Promise<{ code: number; json: any }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, ...argv, "--json"], {
+      // Only what agw needs, as v1's check gives it: its state and cache in this run's own
+      // directory on every system (Windows reads LOCALAPPDATA), and nothing else from this
+      // process's environment.
+      // (Cast: the Worker's generated types make its secrets required on `ProcessEnv`, and a
+      // child's environment must hold none of them.)
       env: {
-        ...process.env,
+        PATH: process.env.PATH ?? "",
+        HOME: home,
         XDG_STATE_HOME: join(home, "state"),
         XDG_CACHE_HOME: join(home, "cache"),
+        LOCALAPPDATA: join(home, "local"),
+        NO_COLOR: "1",
         AGW_MANAGEMENT_KEY: managementKey,
-      },
+      } as Record<string, string> as NodeJS.ProcessEnv,
       // Never read, so never piped: a full pipe would stall the run.
       stdio: ["ignore", "pipe", "ignore"],
       timeout: REQUEST_TIMEOUT_MS,
@@ -158,8 +166,9 @@ function everyOption(slug: string, mock: string, storage: Storage): Record<strin
       fallback: [{ provider: slug, operation: "openai.chat", model: "gpt-4o-mini" }],
     },
   };
-  // Each away from its default: every kind is kept, and kept 90 days, by default. Storing (off by
-  // default) is turned on only where the deployment and the plan offer it (see below).
+  // Each away from its default: every kind is kept, and kept 180 days, by default
+  // (`CONVERSATION_RETENTION_DAYS` in `src/contracts/app-config.ts`). Storing (off by default) is
+  // turned on only where the deployment and the plan offer it (see below).
   const conversations =
     storage === "absent" ? {} : { conversations: { store: storage === "on", keep: { images: false, audio: false, files: false }, retention_days: 30 } };
   return [
@@ -192,7 +201,7 @@ function everyOption(slug: string, mock: string, storage: Storage): Record<strin
   ];
 }
 
-test("agw 2 renames an app with every option set, and writes its settings back intact; model list runs", { skip: skipRoundTrip, timeout: TEST_TIMEOUT_MS }, async () => {
+test("agw 2 reads an app with every option set whole, renames it without losing a setting, and the whole app written back keeps every setting; model list runs", { skip: skipRoundTrip, timeout: TEST_TIMEOUT_MS }, async () => {
   const home = await mkdtemp(join(tmpdir(), "agw-smoke-"));
   const slug = uniqueSlug("smoke-cli");
   const mock = mockUrl.endsWith("/") ? mockUrl : `${mockUrl}/`;
@@ -219,7 +228,8 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     // at all): the block is left out, since its schema refuses it.
     // Only a missing route (404) or a missing field means such a deployment: any other answer
     // fails, so a broken endpoint never passes with less covered.
-    const capabilities = await send("/v2/console/capabilities", base);
+    // Asked of the console's host, where agw connects and the other checks ask too.
+    const capabilities = await send("/v2/console/capabilities", consoleOrigin());
     let offered: unknown;
     if (capabilities.status === 404) {
       await capabilities.body?.cancel();
@@ -258,19 +268,31 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       expectStatus(before, 200, "before");
       assertHolds(before.body.app.config, config, "the saved config does not hold every fixture value");
       const baseline = before.body.app.config;
-      // What agw reads before it writes: \`agw app show\` gives the baseline, whole.
+      // What agw reads before it writes: `agw app show` gives the baseline, whole.
       const shown = await agw(home, "app", "show", id);
       expectCli(shown, "agw shown");
       same(shown.json.result?.app?.config, baseline, "the config agw app show printed is not the saved one");
+      // `agw app update --name` sends only the new name (a JSON Patch): the server must keep every
+      // setting it was not asked to change, and agw must print them all back.
       const renamed = await agw(home, "app", "update", id, "--name", `agw smoke every option ${index} renamed`);
       expectCli(renamed, "agw renamed");
-      // What agw printed, and what the server holds after the rename: the baseline, whole.
       same(renamed.json.result?.app?.name, `agw smoke every option ${index} renamed`, "renamed.json.result?.app?.name is not `agw smoke every option ${index} renamed`");
       same(renamed.json.result?.app?.config, baseline, "the config agw app update printed is not the saved one");
       const after = await admin("GET", `/v2/admin/apps/${id}`);
       expectStatus(after, 200, "after");
       same(after.body.app.name, `agw smoke every option ${index} renamed`, "after.body.app.name is not `agw smoke every option ${index} renamed`");
       same(after.body.app.config, baseline, "the config after the rename is not the saved one");
+      // The whole document written back as `agw app show` printed it (PUT, as v1's `agw app replace`
+      // and any client that edits a saved app file do): every setting survives the round trip.
+      const reread = await agw(home, "app", "show", id);
+      expectCli(reread, "agw reread");
+      const printed = reread.json.result?.app as { name: unknown; config: unknown; status: unknown; revision: unknown } | undefined;
+      check(printed !== undefined, "agw app show printed no app");
+      const replaced = await admin("PUT", `/v2/admin/apps/${id}`, { name: printed.name, config: printed.config, status: printed.status, revision: printed.revision });
+      expectStatus(replaced, 200, "the whole app written back");
+      const final = await admin("GET", `/v2/admin/apps/${id}`);
+      expectStatus(final, 200, "final");
+      same(final.body.app.config, baseline, "the config after the whole app was written back is not the saved one");
     }
   } finally {
     // The remote clean-up and the local one each run, whatever the other did.
