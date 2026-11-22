@@ -28,7 +28,7 @@
  * - A provider redirect is never passed on: one to this job's status or
  *   result becomes the gateway's own link, and any other is a provider error.
  */
-import { assertAppActive, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
@@ -74,7 +74,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
     const jobId = c.req.param("job");
     if (!appId || !jobId) throw new GatewayError(400, "invalid_request", "App id and job id are required");
     const app = await loadApp(c.env, appId);
-    assertAppActive(app);
+    assertAppServes(c.env, app);
     // The signature is checked before the caller, at no D1 cost, so a made-up
     // id loads nothing. Its answer waits until the caller is known.
     const claims = await readJobId(c.env.JWT_SECRET, jobId);

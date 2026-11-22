@@ -10,7 +10,7 @@
  * side, and is ported with it.
  */
 import type { Context } from "hono";
-import { assertAppActive, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { authenticateRequest } from "../client-auth/client-auth.ts";
 import { useAssertionCounter } from "../client-auth/replay.ts";
 import { appUserBlocked } from "../client-auth/user-status.ts";
@@ -27,7 +27,7 @@ export async function meHandler(c: Context<{ Bindings: Env; Variables: DeadlineV
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
-  assertAppActive(app);
+  assertAppServes(c.env, app);
   const { identity, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,

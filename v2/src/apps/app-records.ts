@@ -3,8 +3,11 @@
  * or failing, the last known record is served (and `known_record_served` is
  * logged), as in v1.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
+import { accountPendingSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
+import { withDeadline } from "../core/background.ts";
+import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
@@ -15,22 +18,57 @@ import { database } from "../db/index.ts";
 import { app } from "../db/schema.ts";
 
 const APP_CACHE_TTL_MS = 60_000;
+/**
+ * How long a cached app whose account is waiting for its owner's address is
+ * trusted: its owner may verify at any moment, and this isolate may not be the
+ * one that hears of it. Every other entry keeps the full minute.
+ */
+const PENDING_ACTIVATION_TTL_MS = 10_000;
 
 export const appCache = ttlCache<string, AppRecord>({ name: "app", ttlMs: APP_CACHE_TTL_MS, maxEntries: 10_000 });
 
 /** Bumped by every invalidation, so a read that started before one does not store an old record. */
 let invalidations = 0;
 
+/** How long a read that replaces an expired pending record may take before the request is told to retry. */
+export const PENDING_REFRESH_DEADLINE_MS = 5_000;
+
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appCache.get(appId);
   if (cached) return cached;
-  return readOrKnown("app", appCache.peek(appId), () => readApp(env, appId));
+  const known = appCache.peek(appId);
+  if (known !== undefined && known.value.accountPending && emailVerificationRequired(env)) {
+    // A record of an account still waiting on its owner's address is never
+    // served past its life, not even through a stall: the owner may have
+    // verified since, and serving it would refuse their apps for up to the
+    // stale window. If the fresh read cannot be had, the request is told to
+    // retry, never that the account is unverified. Every other record keeps
+    // the stale fallback below.
+    try {
+      return await withDeadline(readApp(env, appId), PENDING_REFRESH_DEADLINE_MS, "reading the app");
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      log("warn", "app_pending_refresh_failed", { app: appId, error: errorFacts(error) });
+      throw new GatewayError(503, "service_unavailable", "The app could not be read just now; retry shortly", { "Retry-After": "5" });
+    }
+  }
+  return readOrKnown("app", known, () => readApp(env, appId));
 }
 
 async function readApp(env: Env, appId: string): Promise<AppRecord> {
   const startedAt = Date.now();
   const generation = invalidations;
-  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
+  // Whether the account waits for its owner's address comes in the same query, so the gate costs no read of its own.
+  // Asked only where the deployment verifies addresses: elsewhere the app read never touches the gate's table,
+  // so nothing about the gate can fail a request where the gate is not used.
+  const gated = emailVerificationRequired(env);
+  const apps = database(env.DB).query.app;
+  const row = gated
+    ? await apps.findFirst({
+        where: eq(app.id, appId),
+        extras: { accountPending: sql<number>`${sql.raw(accountPendingSql('"app"."account_id"'))}`.as("account_pending") },
+      })
+    : await apps.findFirst({ where: eq(app.id, appId) });
   if (!row) {
     appCache.delete(appId);
     throw new GatewayError(404, "app_not_found", "App is not registered");
@@ -60,8 +98,12 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     limits: config.limits,
     presets: config.presets ?? {},
     conversations: config.conversations?.store === true ? config.conversations : null,
+    accountPending: "accountPending" in row && Boolean(row.accountPending),
   };
-  if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
+  if (generation === invalidations) {
+    const pending = value.accountPending && emailVerificationRequired(env);
+    appCache.set(appId, value, { storedAt: startedAt, ...(pending ? { ttlMs: PENDING_ACTIVATION_TTL_MS } : {}) });
+  }
   return value;
 }
 
@@ -82,6 +124,16 @@ export async function readSavedConversations(env: Env, accountId: string, appId:
   return conversations?.store === true ? conversations.keep : null;
 }
 
+/**
+ * Forgets every cached app of an account whose owner just verified their
+ * address, so this isolate serves them at once. Others catch up within
+ * `PENDING_ACTIVATION_TTL_MS`.
+ */
+export function invalidateAccountApps(accountId: string): void {
+  invalidations += 1;
+  for (const appId of appCache.keys()) if (appCache.peek(appId)?.value.accountId === accountId) appCache.delete(appId);
+}
+
 /** Forgets a cached app, after its settings change. */
 export function invalidateApp(appId: string): void {
   invalidations += 1;
@@ -90,4 +142,14 @@ export function invalidateApp(appId: string): void {
 
 export function assertAppActive(value: AppRecord): void {
   if (value.status !== "active") throw new GatewayError(403, "app_disabled", "App is disabled");
+}
+
+/**
+ * Whether the app may serve its traffic now: it is active, and its account
+ * may serve (`../core/account-standing.ts`, where the deployment verifies
+ * email). Every app-traffic path asks this one function.
+ */
+export function assertAppServes(env: Env, value: AppRecord): void {
+  assertAppActive(value);
+  assertAccountServes(env, value.accountPending);
 }

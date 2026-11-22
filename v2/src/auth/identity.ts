@@ -9,8 +9,9 @@
  *
  * This is the only module that imports the library at run time.
  */
-import type { AuthState, CfAuth, CfAuthError, CfAuthEvent } from "@maxceem/cf-auth";
+import type { AuthState, CfAuth, CfAuthError } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../db/schema.ts";
+import { emailVerificationRequired } from "../core/account-standing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -96,15 +97,50 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
 }
 
 /**
- * Lets an account serve traffic whatever its owner's email. This deployment
- * does not verify addresses yet, so every new account is activated as it is
- * made, and adding email verification later stops none of them (v1's rule).
+ * Settles the waiting mark of a person about to be made (`../core/account-standing.ts`).
+ * It runs before the person is written, so before their account and its
+ * membership exist: no request can see the account unmarked.
+ *
+ * First, any mark already on the address is removed: one left by a sign-up
+ * whose person was never written would otherwise hold back whoever signs up
+ * with the address next, even where nothing is verified (Sol 7b-7 round 5).
+ * Then the address is marked, where the deployment verifies addresses and the
+ * person's is not verified yet: a password sign-up. Google's arrive verified,
+ * and a key-made account never comes here. Both are one batch. Neither ever
+ * touches an address that already belongs to someone: a sign-up attempt with
+ * another person's address must not clear or set their mark.
+ *
+ * An address changed outside the app, by hand in the database, keeps or loses
+ * its mark with it; nothing here follows such a change.
+ *
+ * If the batch fails while marking, the account serves, as every unmarked one
+ * does, and the failure is logged for the monitor: never an account refused
+ * that should serve. If it fails while only clearing, for an unverified
+ * address, the sign-up is refused (a retryable 503): a stale mark left in place
+ * would hold the new account back once verification is turned on (Sol 7b-7
+ * round 6). A verified address is never held back by a mark, so it goes on.
  */
-async function activateAccount(db: D1Database, accountId: string): Promise<void> {
-  await db
-    .prepare("INSERT OR IGNORE INTO account_activation(account_id, activated_at) SELECT id, ? FROM mgmt_organization WHERE id = ?")
-    .bind(Date.now(), accountId)
-    .run();
+async function settlePendingMark(db: D1Database, email: string, mark: boolean, verified: boolean): Promise<void> {
+  const free = "NOT EXISTS (SELECT 1 FROM mgmt_user WHERE email = ?1 COLLATE NOCASE)";
+  try {
+    const statements = [db.prepare(`DELETE FROM email_pending_verification WHERE email = lower(?1) AND ${free}`).bind(email)];
+    if (mark) {
+      statements.push(
+        db
+          .prepare(`INSERT OR IGNORE INTO email_pending_verification(email) SELECT lower(?1) WHERE ${free}`)
+          .bind(email),
+      );
+    }
+    await db.batch(statements);
+  } catch (error) {
+    log("warn", "email_pending_mark_failed", { error: errorFacts(error) });
+    if (!mark && !verified) {
+      // Better Auth's own error, as `registrationDenied` throws: any other error
+      // inside its hook comes back as 422 FAILED_TO_CREATE_USER, not a retryable 503.
+      const { APIError } = await import("better-auth/api");
+      throw APIError.from("SERVICE_UNAVAILABLE", { code: "SIGN_UP_UNAVAILABLE", message: "Sign-up could not finish; try again in a moment" });
+    }
+  }
 }
 
 export interface IdentityOptions {
@@ -142,6 +178,7 @@ export async function createIdentity(
     userHooks: {
       beforeCreate: async (user) => {
         if (!registrationAllowed(env, user.email)) await registrationDenied(options.onRegistrationDenied);
+        if (user.email) await settlePendingMark(env.DB, user.email, !user.emailVerified && emailVerificationRequired(env), user.emailVerified === true);
       },
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
@@ -156,9 +193,6 @@ export async function createIdentity(
     onError: (error, { scope }) =>
       log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) }),
     logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
-    onEvent: async (event: CfAuthEvent) => {
-      if (event.type === "organization.created") await activateAccount(env.DB, event.organizationId);
-    },
     // Browser approvals: the OAuth flows, and the writes an agent hands to a
     // person (a key entered in a browser, a created key revealed on a page).
     ...(realm === null

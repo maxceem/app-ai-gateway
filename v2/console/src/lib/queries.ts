@@ -77,7 +77,7 @@ export function useSignIn() {
 export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: SignUpInput) => signUpWithPassword(input),
+    mutationFn: ({ returnPath, ...input }: SignUpInput & { returnPath?: string }) => signUpWithPassword(input, returnPath),
     onSuccess: () => client.invalidateQueries(),
   });
 }
@@ -98,6 +98,27 @@ export function useChangePassword() {
   return useMutation({
     mutationFn: (input: { currentPassword: string; newPassword: string }) =>
       changePassword({ ...input, revokeOtherSessions: true }),
+  });
+}
+
+/**
+ * Sends the signed-in person a new verification link. Their session is read
+ * again afterwards, in case the address was verified meanwhile.
+ */
+export function useSendVerificationEmail() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (returnTo?: string) => call("sendVerificationEmail", { body: returnTo === undefined ? {} : { returnTo } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.session }),
+  });
+}
+
+/** Confirms the link a verification email carried. Needs no sign-in: the link is the proof. */
+export function useConfirmEmailVerification() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) => call("confirmEmailVerification", { body: { token } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.session }),
   });
 }
 

@@ -45,7 +45,7 @@ export function SignupPage() {
     event.preventDefault();
     if (!ready) return;
     try {
-      await signUp.mutateAsync({ name: name.trim(), email: email.trim(), password });
+      await signUp.mutateAsync({ name: name.trim(), email: email.trim(), password, returnPath: destination });
       await navigate(destination, { replace: true });
     } catch {
       // Rendered inline below.

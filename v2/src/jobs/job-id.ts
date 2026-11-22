@@ -28,6 +28,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
+import { secretStrongEnough } from "../core/secret-strength.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
 
 /** What a job id says. Short names keep the id short: it is a URL path segment. */
@@ -71,12 +72,9 @@ const decoder = new TextDecoder();
 /** Derived keys by secret, made once each. */
 const keys = ttlCache<string, Promise<CryptoKey>>({ name: "job-id-key", ttlMs: Number.POSITIVE_INFINITY, maxEntries: 8 });
 
-/** The shortest secret job ids are signed with, the same as for gateway tokens. */
-const MIN_SECRET_BYTES = 32;
-
-/** Whether `secret` can sign and verify job ids. */
+/** Whether `secret` can sign and verify job ids: the same length rule as every signing secret. */
 export function jobSigningReady(secret: string | undefined): secret is string {
-  return typeof secret === "string" && encoder.encode(secret).byteLength >= MIN_SECRET_BYTES;
+  return secretStrongEnough(secret);
 }
 
 /** The error for a gateway whose `JWT_SECRET` cannot sign job ids. Logged, so the monitor alerts. */

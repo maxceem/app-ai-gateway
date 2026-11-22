@@ -6,7 +6,7 @@ describe("the v2 Worker", () => {
   it("answers the health check", async () => {
     const response = await exports.default.fetch("https://gateway.test/v2/healthz");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
+    expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok", email: "off" });
   });
 
   it("reports a key vault that is not set up as misconfigured, and still answers", async () => {
@@ -30,7 +30,7 @@ describe("the v2 Worker", () => {
   // own: the Worker hands it to the console's static files, which route it.
   // The test runs without a console build, so the files answer 404, but not
   // with the API's JSON.
-  it.each(["/v2/access", "/v2/oauth/consent?id=x", "/v2/device?user_code=ABCD-EFGH", "/v2/settings/password", "/v2/login/", "/v2/settings/password/", "/v2/apps", "/v2/apps/my-app/limits", "/v2/providers", "/v2/prices", "/v2/approve/5ee48248-54f1", "/v2/reveal/5ee48248-54f1"])(
+  it.each(["/v2/access", "/v2/oauth/consent?id=x", "/v2/device?user_code=ABCD-EFGH", "/v2/settings/password", "/v2/login/", "/v2/settings/password/", "/v2/apps", "/v2/apps/my-app/limits", "/v2/providers", "/v2/prices", "/v2/approve/5ee48248-54f1", "/v2/reveal/5ee48248-54f1", "/v2/verify-email"])(
     "hands a browser's %s to the console",
     async (path) => {
       const response = await exports.default.fetch(`https://gateway.test${path}`, {

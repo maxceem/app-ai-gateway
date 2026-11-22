@@ -7,13 +7,20 @@
  * - a sign-up the deployment does not admit is refused with
  *   `registration_disabled`, as JSON for a script and as a redirect to the
  *   console's sign-in page for a browser coming back from Google;
- * - with `OAUTH_RELAY_URL`, Google's authorization URL is wrapped in the relay.
+ * - with `OAUTH_RELAY_URL`, Google's authorization URL is wrapped in the relay;
+ * - where the deployment sends email, a password sign-up is sent its first
+ *   verification link (`../auth/email-verification.ts`).
  */
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { createIdentity, IDENTITY_BASE_PATH, oauthRelayOrigin } from "../auth/identity.ts";
-import { registrationAllowed, V2_PATH } from "../auth/settings.ts";
+import { consoleReturnPath, personToVerify, sendFirstVerificationEmail } from "../auth/email-verification.ts";
+import { consoleOrigin, registrationAllowed, V2_PATH } from "../auth/settings.ts";
+import { emailVerificationRequired } from "../core/account-standing.ts";
+import { GatewayError } from "../core/errors.ts";
 import { clientAddress, enforceEndpointRateLimit } from "../core/flood-limit.ts";
+import { log } from "../core/log.ts";
+import { emailSetup } from "../email/sender.ts";
 
 export const identityRoutes = new Hono<{ Bindings: Env; Variables: { identity: Promise<CfAuth> } }>();
 
@@ -131,7 +138,17 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   if (signUp) {
     await enforceEndpointRateLimit(c.env, "sign_up_address", clientAddress(request));
     if (!registrationAllowed(c.env, await submittedEmail(request))) return c.json(registrationDisabled(), 403);
+    // A password sign-in here would wait for a link this deployment cannot send
+    // or that could not open: refuse it until the email settings are complete,
+    // rather than make an account that can never serve. Google's sign-ins
+    // arrive verified and are not affected.
+    if (emailSetup(c.env).state === "misconfigured") {
+      log("error", "sign_up_email_unconfigured", { reason: (emailSetup(c.env) as { problem: string }).problem });
+      throw new GatewayError(503, "email_unavailable", "Sign-up with a password is unavailable: this deployment's email settings are incomplete");
+    }
   }
+  // Where the first verification link continues: the console path the sign-up came from.
+  const signUpCallback = signUp && emailVerificationRequired(c.env) ? await submittedField(request, "callbackURL") : undefined;
   let denied = false;
   const identity = await createIdentity(c.env, c.req.url, { onRegistrationDenied: () => { denied = true; } }, c.req.header("cf-ray") ?? null);
   const handled = await identity.handler(request);
@@ -139,6 +156,13 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   if (denied || (await isDisabledSignup(response))) {
     // Google's callback is a page load: a JSON error would strand the person on it.
     return isTopLevelNavigation(request) ? registrationDisabledRedirect(response) : c.json(registrationDisabled(), 403);
+  }
+  const origin = consoleOrigin(c.env);
+  if (signUp && response.ok && origin !== null && emailVerificationRequired(c.env)) {
+    // Sent after the answer, so a slow mail server never holds the sign-up up. The person is
+    // read from the answer once, now; a failure is logged there, as before.
+    const person = await personToVerify(response);
+    if (person !== null) c.executionCtx.waitUntil(sendFirstVerificationEmail(c.env, origin, person, consoleReturnPath(signUpCallback)));
   }
   return response;
 });

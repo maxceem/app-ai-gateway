@@ -438,6 +438,9 @@ importers:
       '@maxceem/cf-kms':
         specifier: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
         version: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
+      '@maxceem/worker-mailer':
+        specifier: https://github.com/maxceem/worker-mailer/releases/download/v1.4.4/maxceem-worker-mailer-1.4.4.tgz
+        version: https://github.com/maxceem/worker-mailer/releases/download/v1.4.4/maxceem-worker-mailer-1.4.4.tgz
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0

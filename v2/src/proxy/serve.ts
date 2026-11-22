@@ -29,7 +29,7 @@
  * conversation storage on (`storeConversation`, `../conversations/capture.ts`).
  */
 import type { Context } from "hono";
-import { assertAppActive, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { markApiKeyUsed } from "../client-auth/api-keys.ts";
 import { authenticateRequest, clientAuth } from "../client-auth/client-auth.ts";
 import { PROOF_HEADER } from "../client-auth/request-proof.ts";
@@ -258,7 +258,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const url = new URL(c.req.url);
   const target = proxyTarget(url);
   const app = await loadApp(c.env, appId);
-  assertAppActive(app);
+  assertAppServes(c.env, app);
   // Only a slug the app lists is looked up: the caller is not verified yet, so
   // an unlisted one costs no D1 read and leaves nothing in the cache. It is
   // refused below, once the caller is known.

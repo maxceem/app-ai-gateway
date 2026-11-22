@@ -56,6 +56,8 @@ import {
   ConsentDetailsResponseSchema,
   ConsentProofSchema,
   ConsentRedirectResponseSchema,
+  ConfirmEmailVerificationRequestSchema,
+  ConfirmEmailVerificationResponseSchema,
   ConsoleCapabilitiesSchema,
   CreatedManagementKeyResponseSchema,
   CredentialListResponseSchema,
@@ -67,6 +69,8 @@ import {
   DeviceLookupRequestSchema,
   DeviceLookupResponseSchema,
   ManagementKeyCreateRequestSchema,
+  SendVerificationEmailRequestSchema,
+  SendVerificationEmailResponseSchema,
 } from "./access.ts";
 import { CLIENT_CATALOG } from "./client-catalog.ts";
 import {
@@ -976,6 +980,47 @@ export const CATALOG = {
     response: HandoffAnswerResponseSchema,
     responseDescription: "Declined.",
     errors: CONSOLE_PAGE_ERRORS,
+  },
+
+  /*
+   * Email verification, on a deployment that sends email (v1's). Both are the
+   * console's own and run on its origin alone.
+   */
+  sendVerificationEmail: {
+    method: "POST",
+    path: "/v2/console/email-verification/send",
+    tags: ["Console"],
+    summary: "Email verification: send a link",
+    description: "Sends a verification link to the address of the person signed in to this browser, for their console session only. Where the deployment verifies email addresses, an account's apps serve requests only once an owner has verified theirs; reading and changing settings never waits for it. A link lasts 24 hours, and a sign-up with a password sends the first one itself. Counted per person.",
+    security: "public",
+    request: SendVerificationEmailRequestSchema,
+    response: SendVerificationEmailResponseSchema,
+    responseDescription: "Whether a link went out, and to which address.",
+    errors: {
+      401: "No person is signed in to this browser (`session_required`).",
+      403: "The request did not come from the console's own page.",
+      404: "Not served here (only on the console's origin).",
+      409: "This deployment does not verify email addresses, or the sign-in has no address of its own (`conflict`).",
+      429: "Too many links were sent for this sign-in. Carries Retry-After.",
+      503: "The deployment could not send the email (`email_unavailable`).",
+    },
+  },
+
+  confirmEmailVerification: {
+    method: "POST",
+    path: "/v2/console/email-verification/confirm",
+    tags: ["Console"],
+    summary: "Email verification: confirm a link",
+    description: "Verifies the address a verification link was sent to. The link alone is the proof, so no sign-in is needed; it is bound to the sign-in and the address it was sent for, and stops working once it expires or the address changes. Confirming a link again answers the same.",
+    security: "public",
+    request: ConfirmEmailVerificationRequestSchema,
+    response: ConfirmEmailVerificationResponseSchema,
+    responseDescription: "The address verified, and where to continue.",
+    errors: {
+      400: "The link is malformed, has expired, or no longer matches the sign-in's address (`invalid_request`).",
+      403: "The request did not come from the console's own page.",
+      404: "Not served here (only on the console's origin).",
+    },
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;
 

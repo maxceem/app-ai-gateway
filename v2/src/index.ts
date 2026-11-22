@@ -14,6 +14,7 @@
  * (`./management/app.ts`), and so is the MCP endpoint (`./mcp/app.ts`). The
  * OAuth discovery documents live under `/.well-known/`, outside `/v2`.
  */
+import { emailSetup } from "./email/sender.ts";
 import { Hono, type Context } from "hono";
 import { CLIENT_CATALOG, honoPath, type ClientOperationName, type ClientOperationResponse } from "./contracts/client-catalog.ts";
 import type { ErrorResponse } from "./contracts/operation.ts";
@@ -66,6 +67,7 @@ const CONSOLE_ROUTES = [
   "/apps/:app/:tab",
   "/providers",
   "/prices",
+  "/verify-email",
 ] as const;
 
 const CONSOLE_ROUTE_SEGMENTS = CONSOLE_ROUTES.map((route) => route.slice(1).split("/"));
@@ -100,6 +102,7 @@ app.get(routePath("getHealth"), (c) =>
     service: "app-ai-gateway",
     api: "v2",
     vault: vaultStatus(c.env),
+    email: emailSetup(c.env).state,
   } satisfies ClientOperationResponse<"getHealth">),
 );
 

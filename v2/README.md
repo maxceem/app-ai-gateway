@@ -83,7 +83,9 @@ Inside `v2/`:
 All optional, as Worker variables (see `src/auth/settings.ts`):
 
 - `CONSOLE_ORIGIN`: where the console is served. The OAuth issuer is this origin plus `/v2`. Without
-  it, the CLI and MCP clients cannot sign in.
+  it, the CLI and MCP clients cannot sign in. A deployment that sends email needs it too: the
+  verification links open there. Without it, health reports `email: "misconfigured"` and sign-up
+  with a password answers `email_unavailable`.
 - `ALLOWED_REGISTRATION_EMAILS`: on a self-hosted deployment, who may sign up (`*` for anyone).
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `OAUTH_RELAY_URL`: Google sign-in.
 - `OAUTH_CLIENTS`, `OAUTH_CIMD`, `MCP_ALLOWED_ORIGINS`, `DEPLOYMENT_ID`, `TERMS_OF_SERVICE_URL`,
@@ -149,6 +151,16 @@ deploy: the Worker uploads `console/dist/` as its static files.
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,
 then apply `0005`. The new Worker works with the column still there.
+Migration `0011_email_pending_verification.sql` follows the usual order: apply it, then deploy.
+The old `account_activation` table stays for now: this Worker no longer writes it, while older
+ones still do. A later release drops it, once every deployment runs a Worker that does not.
+
+Email verification can be turned on at any time. Only an account a password sign-up makes while it
+is on waits for its owner's address, and only until that address is verified: by the emailed link,
+or by signing in with a Google account linked to the same address. Linking Google alone does not
+verify it; the owner signs in with it once. Apps may then wait up to 10 seconds more on servers
+that cached the refusal. Every account made before, or by `management-key.ts --create-account`,
+keeps serving its apps.
 
 On a host shared with v1, the v2 Worker needs these routes, while v1 keeps its own paths
 (`/.well-known/oauth-*` without `/v2` included):

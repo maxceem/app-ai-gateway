@@ -204,9 +204,9 @@ describe("console sign-in", () => {
     expect(body.session.user.email).toBe(email);
     expect(body.session.credentialType).toBe("session");
     expect(body.session.role).toBe("owner");
-    // The new account may serve traffic: this deployment verifies no addresses.
-    const activated = await env.DB.prepare("SELECT 1 FROM account_activation WHERE account_id = ?").bind(body.session.account.id).first();
-    expect(activated).not.toBeNull();
+    // The new account serves traffic: this deployment verifies no addresses, so nothing marks it as waiting.
+    const pending = await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(email).first();
+    expect(pending).toBeNull();
 
     // A cookie alone is not enough: a page on another site could send it.
     const bare = await call("/v2/admin/session", { headers: { cookie } });

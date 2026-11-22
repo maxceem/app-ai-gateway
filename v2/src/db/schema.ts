@@ -84,12 +84,26 @@ export const {
   organizationInvitation: mgmtOrganizationInvitation,
 } = mgmtAuthTables;
 
-/** Accounts allowed to serve traffic before their owner's email is verified. */
+/**
+ * The account activation v2 wrote before email verification became a mark on
+ * the address. Nothing reads or writes it any more; a later migration drops it,
+ * once every deployment runs a Worker that no longer writes it.
+ */
 export const accountActivation = sqliteTable("account_activation", {
   accountId: text("account_id")
     .primaryKey()
     .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
   activatedAt: integer("activated_at").notNull(),
+});
+
+/**
+ * Addresses waiting to be verified: written, lower-cased, by a password
+ * sign-up while the deployment verifies addresses, before the person or their
+ * account exists. An account's app traffic waits while every active owner's
+ * address is marked here and not verified (`../core/account-standing.ts`).
+ */
+export const emailPendingVerification = sqliteTable("email_pending_verification", {
+  email: text("email").primaryKey(),
 });
 
 // ---------------------------------------------------------------------------

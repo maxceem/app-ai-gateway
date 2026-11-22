@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { signOut, startGoogleSignIn } from "./auth";
+import { signOut, signUpWithPassword, startGoogleSignIn } from "./auth";
 
 function stubSocial(url = "https://accounts.google.test/o/oauth2/auth") {
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -29,6 +29,28 @@ describe("signOut", () => {
     expect(String(url)).toBe("/v2/auth/sign-out");
     expect(init!.body).toBe("{}");
     expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
+  });
+});
+
+describe("signUpWithPassword", () => {
+  function stubSignUp() {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    return (call = 0) => JSON.parse(String(fetchMock.mock.calls[call]![1]!.body));
+  }
+
+  it("names where the verification link continues: the page the person was headed for (Sol 7b-7 round 2)", async () => {
+    const body = stubSignUp();
+    await signUpWithPassword({ name: "A", email: "a@example.test", password: "secret-password" }, "/apps/my-app/usage");
+    expect(body()).toMatchObject({ email: "a@example.test", callbackURL: "/v2/apps/my-app/usage" });
+  });
+
+  it("names the landing page for no destination or an unsafe one", async () => {
+    const body = stubSignUp();
+    await signUpWithPassword({ name: "A", email: "a@example.test", password: "secret-password" });
+    await signUpWithPassword({ name: "A", email: "a@example.test", password: "secret-password" }, "//evil.example");
+    expect(body(0)).toMatchObject({ callbackURL: "/v2/apps" });
+    expect(body(1)).toMatchObject({ callbackURL: "/v2/apps" });
   });
 });
 

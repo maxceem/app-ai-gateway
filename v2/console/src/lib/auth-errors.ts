@@ -18,6 +18,7 @@ const AUTH_MESSAGES: Record<string, string> = {
   SESSION_EXPIRED: "Your session expired. Sign in again.",
   // Surfaced by the gateway rather than Better Auth, but shown on the same screens.
   registration_disabled: "This email address is not allowed to register on this gateway.",
+  email_unavailable: "The gateway could not send the email. Try again in a few minutes.",
 };
 
 export const SIGN_UP_DISABLED_CODE = "registration_disabled";

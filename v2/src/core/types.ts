@@ -18,6 +18,12 @@ export interface AppRecord {
   presets: PresetsConfig;
   /** Conversation storage, where the app turned it on (`conversations.store`); null otherwise. */
   conversations: ConversationsConfig | null;
+  /**
+   * Whether the app's account is waiting for its owner's email address, so
+   * refused where the deployment verifies email (`../core/account-standing.ts`),
+   * read with the app itself.
+   */
+  accountPending: boolean;
 }
 
 interface GatewayIdentityFields {

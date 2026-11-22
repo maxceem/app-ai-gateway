@@ -64,5 +64,9 @@ export const HealthResponseSchema = z
       description:
         "Whether the key vault is set up: `ok`, or `misconfigured` when its settings are missing or invalid. No provider key can be opened while it is `misconfigured`. Optional: older deployments leave it out.",
     }),
+    email: z.enum(["off", "ok", "misconfigured"]).optional().meta({
+      description:
+        "Whether the deployment can send verification email: `off` when no email is set up (addresses are not verified), `ok`, or `misconfigured` when it is meant to send but its settings are incomplete. Which setting is wrong is logged, never shown here. Optional: older deployments leave it out.",
+    }),
   })
   .meta({ id: "HealthResponse" });
