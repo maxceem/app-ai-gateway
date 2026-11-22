@@ -99,7 +99,7 @@ export function UsageTab({ app }: { app: App }) {
   const installs = namesInstalls(app);
   const breakdowns = BREAKDOWNS.filter((entry) => entry.value !== "install" || installs);
   const [days, setDays] = useState("30");
-  const [metric, setMetric] = useState<Metric>("cost_usd");
+  const [metric, setMetric] = useState<Metric>("cost_nano");
   const [dimension, setDimension] = useState<UsageDimension>("model");
   const [status, setStatus] = useState<string>("all");
   const [cursors, setCursors] = useState<string[]>([]);
@@ -130,7 +130,7 @@ export function UsageTab({ app }: { app: App }) {
       { label: provider === OTHER ? `Other (${chart.foldedCount})` : provider, color: colorOf(provider, index) },
     ]),
   );
-  const formatMetric = (value: number) => (metric === "cost_usd" ? formatCost(value) : formatCompact(value));
+  const formatMetric = (value: number) => (metric === "cost_nano" ? formatCost(value / 1e9) : formatCompact(value));
 
   return (
     <div className="space-y-4">
@@ -146,7 +146,7 @@ export function UsageTab({ app }: { app: App }) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="cost_usd">Cost</SelectItem>
+                    <SelectItem value="cost_nano">Cost</SelectItem>
                     <SelectItem value="charges">Charges</SelectItem>
                     <SelectItem value="tokens">Tokens</SelectItem>
                   </SelectContent>
@@ -168,7 +168,7 @@ export function UsageTab({ app }: { app: App }) {
               <BarChart data={chart.rows} margin={{ left: 4, right: 4 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={(value: string) => value.slice(5)} />
-                <YAxis tickLine={false} axisLine={false} width={56} tickFormatter={(value: number) => formatMetric(value)} />
+                <YAxis tickLine={false} axisLine={false} width={56} allowDecimals={false} tickFormatter={(value: number) => formatMetric(value)} />
                 <ChartTooltip content={<ChartTooltipContent valueFormatter={(value) => formatMetric(Number(value))} />} />
                 <ChartLegend content={<ChartLegendContent />} />
                 {chart.series.map(({ key, provider }, index) => (
@@ -259,7 +259,7 @@ export function UsageTab({ app }: { app: App }) {
                       {formatCost(row.cost_usd)}
                       {/* Charges still without a price count as $0 here; saying how many keeps the total honest. */}
                       {row.unpriced > 0 ? (
-                        <Hint content="Charges with no price yet count as $0 until a correction prices them.">
+                        <Hint content="Charges with no price yet count as $0 until a correction prices them. This may include failed attempts that cost nothing, where the provider reports its own price.">
                           <span className="block text-[11px] text-amber-600 dark:text-amber-400">{formatNumber(row.unpriced)} unpriced</span>
                         </Hint>
                       ) : null}

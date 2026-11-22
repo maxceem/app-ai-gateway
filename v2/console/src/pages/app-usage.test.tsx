@@ -176,11 +176,12 @@ describe("Usage tab", () => {
     const earlier = screen.getByRole("button", { name: "Earlier days" });
     await user.click(earlier);
     await waitFor(() => expect(filtered().some((params) => params.get("to")! < first.get("from")!)).toBe(true));
-    // Twice back reaches the oldest day kept: 90 days in all, then no further.
+    // Twice back reaches the oldest day kept, today and the 90 days before it, then no further (Sol 7b-6 round 2).
     await user.click(earlier);
     await waitFor(() => expect(earlier.hasAttribute("disabled")).toBe(true));
     const last = filtered().at(-1)!;
-    expect((Date.parse(first.get("to")!) - Date.parse(last.get("from")!)) / 86_400_000 + 1).toBe(90);
+    expect((Date.parse(first.get("to")!) - Date.parse(last.get("from")!)) / 86_400_000 + 1).toBe(91);
+    expect(span(last)).toBeLessThanOrEqual(31);
     expect(filtered().every((params) => !params.has("before"))).toBe(true);
   });
 });

@@ -89,14 +89,16 @@ export function ErrorsTab({ appId }: { appId: string }) {
   const [rejectionReason, setRejectionReason] = useState("all");
   const [rejectionScope, setRejectionScope] = useState("all");
   const [rejectionUser, setRejectionUser] = useState("");
-  const [rejectionCursors, setRejectionCursors] = useState<string[]>([]);
+  const [rejectionPaging, setRejectionPaging] = useState<{ user: string; cursors: string[] }>({ user: "", cursors: [] });
   const eventWindow = useDateWindow();
   const rejectionWindow = useDateWindow();
   const rejectionUserFilter = useDebounced(rejectionUser.trim(), USER_FILTER_DEBOUNCE_MS);
-  // The settled user filter starts the refusal pages again.
-  useEffect(() => {
-    setRejectionCursors([]);
-  }, [rejectionUserFilter]);
+  // Pages belong to the user filter they were read under, so a newly settled
+  // filter starts at page one in the same render: its first request never
+  // carries the old filter's cursor (Sol 7b-6 round 2).
+  const rejectionCursors = rejectionPaging.user === rejectionUserFilter ? rejectionPaging.cursors : [];
+  const setRejectionCursors = (next: string[] | ((current: string[]) => string[])) =>
+    setRejectionPaging({ user: rejectionUserFilter, cursors: typeof next === "function" ? next(rejectionCursors) : next });
 
   const summary = useAuthEventSummary(appId, Number(days));
   // A filter with no index of its own reads a window of days, which the list shows and moves (Sol 7b-6).

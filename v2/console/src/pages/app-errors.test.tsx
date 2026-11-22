@@ -209,6 +209,21 @@ describe("Errors tab", () => {
     expect(urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=")).length).toBe(1);
   });
 
+  it("starts a newly typed user at page one, never with the previous page's cursor (Sol 7b-6 round 2)", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
+    await screen.findByText("model_not_allowed");
+    const older = screen.getAllByRole("button", { name: "Older" })[0]!;
+    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+    await user.click(older);
+    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
+    await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
+    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
+    const withUser = urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=user-9"));
+    expect(withUser).toHaveLength(1);
+    expect(withUser[0]).not.toContain("before=");
+  });
+
   it("offers a retry when the refusal samples cannot be read", async () => {
     renderTab({ refusalStatus: 500 });
     expect(await screen.findByText(/Could not load refusal samples/u)).toBeTruthy();

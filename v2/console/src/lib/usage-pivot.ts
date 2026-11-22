@@ -10,8 +10,13 @@
 import { totalTokens } from "@/lib/format";
 import type { TimeseriesBucket } from "@/lib/types";
 
-/** Which number of a bucket the chart is drawing. `charges` is v1's requests. */
-export type Metric = "cost_usd" | "charges" | "tokens";
+/**
+ * Which number of a bucket the chart is drawing. `charges` is v1's requests.
+ * Cost is drawn in whole nano-dollars, so the axis can ask for whole ticks: a
+ * tick between two nano-dollars would read as `$0.` or repeat its neighbour's
+ * label (Sol 7b-6 round 2). The page shows it in dollars.
+ */
+export type Metric = "cost_nano" | "charges" | "tokens";
 
 /**
  * A band of the chart. Its key is generated (`s0`, `s1`…), never the provider's
@@ -44,7 +49,7 @@ export const OTHER = "__other";
 export const MAX_SERIES = 7;
 
 const metricOf = (bucket: TimeseriesBucket, metric: Metric): number =>
-  metric === "tokens" ? totalTokens(bucket) : metric === "charges" ? bucket.charges : bucket.cost_usd;
+  metric === "tokens" ? totalTokens(bucket) : metric === "charges" ? bucket.charges : bucket.cost_nano;
 
 /**
  * Turns `(day, provider_type)` rows into one row per day with a column per

@@ -27,7 +27,7 @@ export const UsageTotalsSchema = z
   .object({
     charges: z.number().int().meta({ description: "Calls, session slices and job estimates. Corrections are not counted: they change the cost of a charge already counted." }),
     failed: z.number().int().meta({ description: "Of those, attempts that did not end with success." }),
-    unpriced: z.number().int().meta({ description: "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count." }),
+    unpriced: z.number().int().meta({ description: "Of those, charges that still have no price: not priced yet, or a passthrough path with no price. Their cost counts as 0. Once a pricing correction prices one, its cost is added and it leaves this count. It may also count failed attempts that cost nothing, where the provider reports its own price and a failure reported none." }),
     cost_nano: z.number().int().meta({ description: "What it cost, in nano-dollars (1 = $0.000000001), corrections included." }),
     cost_usd: z.number().meta({ description: "The same cost in dollars, for display." }),
     input_tokens: z.number().int(),

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OperationQuery, OperationRequest } from "@contracts/catalog";
+import type { OperationQuery, OperationRequest, OperationResponse } from "@contracts/catalog";
 import { ApiError, call } from "./api";
 import {
   changePassword,
@@ -386,6 +386,22 @@ export function firstCallInterval(state: PollState, found: boolean): number | fa
 const retryTransient = (count: number, error: unknown) => !permanent(error) && count < 2;
 
 /**
+ * Whether a reconnect or a return to the tab may ask again: only while the
+ * timer would (Sol 7b-6 round 2). Otherwise a 403 or the cap stops the timer,
+ * and coming back online starts the asking all over.
+ */
+const mayAskAgain =
+  <T,>(found: (data: T | undefined) => boolean) =>
+  (query: { state: PollState & { data: T | undefined } }): boolean =>
+    firstCallInterval(query.state, found(query.state.data)) !== false;
+
+type AppUsage = OperationResponse<"getAppUsage">;
+type ChargePage = OperationResponse<"listAppCharges">;
+/** A usage answer settles the question: a first day, or none from an older gateway, where the charges take over. */
+const usageAnswered = (data: AppUsage | undefined) => data !== undefined && data.first_usage_day !== null;
+const chargeFound = (data: ChargePage | undefined) => (data?.charges.length ?? 0) > 0;
+
+/**
  * Whether an app has ever made a call, v1's first-request check, asked again
  * every {@link FIRST_CALL_POLL_MS} until it has. Read from the app's usage
  * totals (`first_usage_day`), which outlive its charges: an app whose last
@@ -397,7 +413,9 @@ export function useFirstCall(appId: string) {
     queryKey: keys.appUsage(appId),
     queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
     // Absent (an older gateway) is an answer too: the charge read below takes over.
-    refetchInterval: (query) => firstCallInterval(query.state, query.state.data !== undefined && query.state.data.first_usage_day !== null),
+    refetchInterval: (query) => firstCallInterval(query.state, usageAnswered(query.state.data)),
+    refetchOnReconnect: mayAskAgain(usageAnswered),
+    refetchOnWindowFocus: mayAskAgain(usageAnswered),
     retry: retryTransient,
   });
   const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
@@ -405,12 +423,18 @@ export function useFirstCall(appId: string) {
     queryKey: keys.charges(appId, { limit: 1 }),
     queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
     enabled: legacy,
-    refetchInterval: (query) => firstCallInterval(query.state, (query.state.data?.charges.length ?? 0) > 0),
+    refetchInterval: (query) => firstCallInterval(query.state, chargeFound(query.state.data)),
+    refetchOnReconnect: mayAskAgain(chargeFound),
+    refetchOnWindowFocus: mayAskAgain(chargeFound),
     retry: retryTransient,
   });
   const client = useQueryClient();
   const source = legacy ? charges : usage;
   const firstDay = legacy ? (charges.data?.charges[0]?.usage_day ?? null) : (usage.data?.first_usage_day ?? null);
+  // Read from the result, so the card renders again after every answer, even one
+  // equal to the last: the count that stops the asking is the query's, and an
+  // unchanged answer alone would never show that it stopped (Sol 7b-6 round 2).
+  const answeredAt = Math.max(source.dataUpdatedAt, source.errorUpdatedAt);
   const state = client.getQueryState(legacy ? keys.charges(appId, { limit: 1 }) : keys.appUsage(appId));
   return {
     isPending: source.isPending,
@@ -420,7 +444,7 @@ export function useFirstCall(appId: string) {
     /** Whether `firstDay` is the first call's, rather than the newest charge's. */
     isFirst: !legacy,
     /** Asking stopped without finding one: the cap, or a refusal. */
-    stopped: firstDay === null && state !== undefined && firstCallInterval(state, false) === false,
+    stopped: firstDay === null && answeredAt > 0 && state !== undefined && firstCallInterval(state, false) === false,
   };
 }
 

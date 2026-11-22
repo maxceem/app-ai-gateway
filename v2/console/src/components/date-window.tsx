@@ -25,10 +25,17 @@ export interface DateWindow {
   reset: () => void;
 }
 
+/**
+ * The oldest UTC day the gateway still keeps: the day {@link KEPT_DAYS} before
+ * today, as its retention cuts it (`detailCutoffDay`, and events dropped only
+ * once older than 90 days to the millisecond). A list must reach it (Sol 7b-6 round 2).
+ */
+export const oldestKeptDay = () => daysAgo(KEPT_DAYS);
+
 /** The newest slice first; each step back is the 31 days before it, cut at the oldest day kept. */
 export function useDateWindow(): DateWindow {
   const [step, setStep] = useState(0);
-  const oldest = daysAgo(KEPT_DAYS - 1);
+  const oldest = oldestKeptDay();
   const to = daysAgo(step * WINDOW_DAYS);
   const start = daysAgo(step * WINDOW_DAYS + WINDOW_DAYS - 1);
   const from = start < oldest ? oldest : start;

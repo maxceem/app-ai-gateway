@@ -186,7 +186,7 @@ export function AppDetailPage() {
  * asked again every ten seconds until it has, so the first call shows without
  * a reload, and never past a refusal or fifteen minutes.
  */
-function FirstCall({ app }: { app: App }) {
+export function FirstCall({ app }: { app: App }) {
   const first = useFirstCall(app.id);
   return (
     <Card>

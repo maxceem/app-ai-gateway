@@ -4,10 +4,13 @@
  * On fake timers: ten-second waits are advanced, never slept.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { testQueryClient } from "@/test/render";
+import { FirstCall } from "@/pages/app-detail";
+import type { App } from "@/lib/types";
 import { FIRST_CALL_MAX_POLLS, FIRST_CALL_POLL_MS, firstCallInterval, useFirstCall } from "./queries";
 
 const USAGE_URL = "/v2/admin/apps/my-app/usage";
@@ -30,8 +33,7 @@ function stubUsage(answers: { status?: number; firstDay?: string | null }[]) {
   return fetchMock;
 }
 
-function renderFirstCall() {
-  const client = testQueryClient();
+function renderFirstCall(client: QueryClient = testQueryClient()) {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   return renderHook(() => useFirstCall("my-app"), { wrapper });
 }
@@ -44,6 +46,7 @@ beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setI
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  onlineManager.setOnline(true);
 });
 
 describe("the first-call check", () => {
@@ -78,6 +81,49 @@ describe("the first-call check", () => {
     unmount();
     await advance(FIRST_CALL_POLL_MS * 6);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the reload message on the mounted card after the cap, though every answer was the same (Sol 7b-6 round 2)", async () => {
+    const fetchMock = stubUsage([{ firstDay: null }]);
+    const client = testQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <FirstCall app={{ id: "my-app" } as App} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await advance(0);
+    for (let poll = 1; poll < FIRST_CALL_MAX_POLLS; poll += 1) await advance(FIRST_CALL_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    await vi.waitFor(() => expect(screen.getByText("No calls yet. Reload the page to check again.")).toBeTruthy());
+    await advance(FIRST_CALL_POLL_MS * 6);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+  });
+
+  it("does not ask again on reconnect after a refusal (Sol 7b-6 round 2)", async () => {
+    const fetchMock = stubUsage([{ status: 403 }]);
+    // As the console's own client: answers go stale, so a reconnect would refetch them.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    renderFirstCall(client);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    await advance(FIRST_CALL_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still asks again on reconnect while it is asking", async () => {
+    const fetchMock = stubUsage([{ firstDay: null }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    renderFirstCall(client);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    act(() => onlineManager.setOnline(false));
+    act(() => onlineManager.setOnline(true));
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("gives up after its cap, saying it stopped", () => {
