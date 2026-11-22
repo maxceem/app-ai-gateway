@@ -15,25 +15,31 @@
  * - the sign-in library's clean-up runs (expired approvals, ended OAuth
  *   connections' tokens).
  *
- * Every night, besides, in the nightly maintenance:
+ * Every night, besides, in the nightly maintenance, a set of passes taking
+ * turns (`../core/chunked-delete.ts`):
  * - auth events and rejection events past their 90 days are deleted;
- * - usage retention runs (`../ledger/retention.ts`).
+ * - usage retention (`../ledger/retention.ts`).
  *
- * The nightly maintenance has one allowance of D1 queries
- * (`MAINTENANCE_QUERY_BUDGET`, 50 by default, as v1). v1 chose 50 because a
- * Worker on the Workers Free plan may make only 50 D1 queries per invocation,
- * and this gateway must run on the Free plan out of the box. Each job runs in
- * its own try/catch, so a failure in one leaves the others to run; failures
- * are logged as `warn`.
+ * The nightly maintenance has two allowances:
+ * - D1 statements (`MAINTENANCE_QUERY_BUDGET`, 50 by default, as v1). v1
+ *   chose 50 because a Worker on the Workers Free plan may make only 50 D1
+ *   queries per invocation, and this gateway must run on the Free plan out of
+ *   the box.
+ * - rows written (`MAINTENANCE_ROW_BUDGET`, 20,000 by default): the Free plan
+ *   allows 100,000 a day for the whole account, and the apps need the rest.
+ *
+ * Each job and each pass fails on its own: a failure leaves the others to
+ * run, and is logged as `warn`.
  */
-import { pruneAuthEvents, settleExpiredChallenges, AUTH_EVENT_RETENTION_DAYS } from "../client-auth/auth-events.ts";
+import { authEventsPass, settleExpiredChallenges } from "../client-auth/auth-events.ts";
 import { RETENTION_HOUR_UTC, runConversationRetention } from "../conversations/retention.ts";
 import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
-import { maintenanceQueryBudget, QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
-import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "../diagnostics/rejection-events.ts";
-import { runUsageRetention } from "../ledger/retention.ts";
+import { runPasses, type Pass } from "../core/chunked-delete.ts";
+import { maintenanceRowLimit, maintenanceStatementBudget, QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
+import { rejectionEventsPass } from "../diagnostics/rejection-events.ts";
+import { usageRetentionPasses } from "../ledger/retention.ts";
 
 /**
  * The UTC hour whose run of the hourly cron also runs the nightly
@@ -96,33 +102,19 @@ function pruneConversations(env: Env, now: number): Promise<void> {
   return job("conversations_pruned", "conversations_prune_failed", () => runConversationRetention(bucket, env.DB, now), (pruned) => ({ ...pruned }));
 }
 
-/** The nightly jobs, in order, within `budget`. */
-export async function runNightly(env: Env, now: number, budget: QueryBudget): Promise<void> {
-  const db = budget.database(env.DB);
-  await settleChallenges(db);
-  // The event passes are each kept a share, so a large backlog of one never
-  // starves usage retention, which is offered everything left.
-  const eventShare = () => budget.limited(Math.floor(budget.remaining / 3));
-  await job(
-    "auth_events_pruned",
-    "auth_events_prune_failed",
-    () => {
-      const share = eventShare();
-      return pruneAuthEvents(share.database(env.DB), share, now);
-    },
-    (pruned) => ({ ...pruned, retentionDays: AUTH_EVENT_RETENTION_DAYS }),
-  );
-  await job(
-    "rejection_events_pruned",
-    "rejection_events_prune_failed",
-    () => {
-      const share = eventShare();
-      return pruneRejectionEvents(share.database(env.DB), share, now);
-    },
-    (pruned) => ({ ...pruned, retentionDays: REJECTION_RETENTION_DAYS }),
-  );
+/** Statements the App Attest challenge clean-up issues: one batch of two. */
+export const CHALLENGE_SETTLE_STATEMENTS = 2;
+
+/** The nightly passes at `now`, in the order they take their turns. */
+export function nightlyPasses(now: number): Pass[] {
+  return [authEventsPass(now), rejectionEventsPass(now), ...usageRetentionPasses(now)];
+}
+
+/** The nightly jobs, within `budget`'s statements and `rowLimit` rows written. */
+export async function runNightly(env: Env, now: number, budget: QueryBudget, rowLimit: number): Promise<void> {
+  await settleChallenges(budget.database(env.DB));
   // Logs each pass itself, and never throws.
-  await runUsageRetention(env.DB, now, budget);
+  await runPasses(env.DB, budget, rowLimit, nightlyPasses(now));
 }
 
 /** The hourly cron. `waitUntil` keeps the work alive after the handler returns. */
@@ -134,8 +126,8 @@ export function runHourly(env: Env, scheduledTime: number, waitUntil: (work: Pro
     waitUntil(settleChallenges(env.DB));
     return;
   }
-  const budget = maintenanceQueryBudget(env);
+  const budget = maintenanceStatementBudget(env);
   // The sign-in clean-up beside this run spends from the same invocation's limit.
   budget.charge(SIGN_IN_SWEEP_STATEMENTS);
-  waitUntil(runNightly(env, scheduledTime, budget));
+  waitUntil(runNightly(env, scheduledTime, budget, maintenanceRowLimit(env)));
 }

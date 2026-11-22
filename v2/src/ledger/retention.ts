@@ -26,13 +26,13 @@
  * gone, nothing more is written against it (`./corrections.ts`).
  *
  * Every pass picks its rows straight from its rule, through an index, a chunk
- * at a time (`../core/chunked-delete.ts`). A row kept back is never picked, so
- * it never holds up the rows after it, and nothing is saved between runs.
+ * at a time, taking turns with the nightly run's other passes
+ * (`../core/chunked-delete.ts`). A row kept back is never picked, so it never
+ * holds up the rows after it, and nothing is saved between runs.
  */
 import { log } from "../core/log.ts";
-import { errorFacts } from "../core/error-facts.ts";
-import { CHUNK_ROWS, deleteInChunks, type ChunkedDeleteResult, type Deletable } from "../core/chunked-delete.ts";
-import { QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
+import { CHUNK_ROWS, deletePass, ROW_WRITES, runPasses, type ChunkedDeleteResult, type Deletable, type Pass } from "../core/chunked-delete.ts";
+import type { QueryBudget } from "../core/query-budget.ts";
 
 /** How long a charge, a session row and a budget total survive, as v1's usage events. */
 export const USAGE_DETAIL_RETENTION_DAYS = 90;
@@ -155,7 +155,8 @@ const INT_MIN = "(-9223372036854775807 - 1)";
  * - every other key is summed exactly, as before;
  * - adding to a month row that is already there stops at the largest (or
  *   smallest) integer instead of failing: SQLite turns an integer sum that
- *   overflows into a float, and `min`/`max` bring it back in range.
+ *   overflows into a float, `min`/`max` bring it back in range, and the cast
+ *   makes it an integer again (the column accepts integers only).
  *
  * The first statement counts the keys this chunk takes near the limit, so the
  * run can warn about it.
@@ -188,7 +189,7 @@ function foldStatements(db: D1Database) {
        FROM chunk WHERE (${key}) IN (SELECT ${key} FROM big) GROUP BY ${key}
      ) WHERE true
      ON CONFLICT (${key}) DO UPDATE SET
-       ${ROLLUP_SUMS.map((column) => `${column} = max(min(${column} + excluded.${column}, ${INT_MAX}), ${INT_MIN})`).join(",\n       ")}`,
+       ${ROLLUP_SUMS.map((column) => `${column} = CAST(max(min(${column} + excluded.${column}, ${INT_MAX}), ${INT_MIN}) AS INTEGER)`).join(",\n       ")}`,
   );
   const remove = db.prepare(`DELETE FROM usage_day WHERE rowid IN (${FOLD_PICK})`);
   return { detect, add, remove };
@@ -196,7 +197,7 @@ function foldStatements(db: D1Database) {
 
 /**
  * Moves day rollups of whole months past the window into their month rows, a
- * chunk at a time while `budget` lasts. `db` charges `budget`.
+ * chunk per turn. `firstKeptDay` is the first day kept as a day rollup.
  *
  * A chunk is one batch, so one transaction: its days are added to their
  * month rows and deleted together, and a day is always in exactly one of the
@@ -206,44 +207,33 @@ function foldStatements(db: D1Database) {
  * total is always its `usage_month` row plus whatever of that month is still
  * in `usage_day`.
  */
-async function foldMonths(db: D1Database, budget: QueryBudget, firstKeptDay: string, chunkRows: number): Promise<ChunkedDeleteResult> {
-  const { detect, add, remove } = foldStatements(db);
-  const result: ChunkedDeleteResult = { chunks: 0, deleted: 0, caughtUp: false };
+function foldMonthsPass(firstKeptDay: string): Pass {
   let largeKeys = 0;
-  try {
-    while (budget.affords(FOLD_STATEMENTS)) {
+  return {
+    name: "usage_retention_months",
+    statements: FOLD_STATEMENTS,
+    // Each day row deleted, and at most one month row written for it.
+    rowWrites: ROW_WRITES.usage_day + ROW_WRITES.usage_month,
+    async chunk(db, rows) {
+      const { detect, add, remove } = foldStatements(db);
       const [found, , removed] = await db.batch([
-        detect.bind(firstKeptDay, chunkRows),
-        add.bind(firstKeptDay, chunkRows),
-        remove.bind(firstKeptDay, chunkRows),
+        detect.bind(firstKeptDay, rows),
+        add.bind(firstKeptDay, rows),
+        remove.bind(firstKeptDay, rows),
       ]);
       largeKeys += Number((found?.results[0] as { large?: number } | undefined)?.large ?? 0);
-      const deleted = removed?.meta.changes ?? 0;
-      result.chunks += 1;
-      result.deleted += deleted;
-      if (deleted < chunkRows) {
-        result.caughtUp = true;
-        break;
-      }
-    }
-  } finally {
-    // Once a run, so the monitor alerts: these totals may no longer be exact.
-    if (largeKeys > 0) log("warn", "usage_month_total_too_large", { keys: largeKeys });
-  }
-  return result;
+      return removed?.meta.changes ?? 0;
+    },
+    finish() {
+      // Once a run, so the monitor alerts: these totals may no longer be exact.
+      if (largeKeys > 0) log("warn", "usage_month_total_too_large", { keys: largeKeys });
+    },
+  };
 }
 
 /** The first day of the month of `now - days`: every day before it is in a month wholly past the window. */
 function firstKeptMonthDay(now: number, days: number): string {
   return `${dayBefore(now, days).slice(0, 7)}-01`;
-}
-
-export interface UsageRetentionResult {
-  gaveUpWork: ChunkedDeleteResult | null;
-  charges: ChunkedDeleteResult | null;
-  sessions: ChunkedDeleteResult | null;
-  budgetDays: ChunkedDeleteResult | null;
-  months: ChunkedDeleteResult | null;
 }
 
 /** The rows each delete pass picks at `now`, in the order the passes run. */
@@ -257,57 +247,49 @@ export function usageRetentionRules(now: number) {
   } as const;
 }
 
-/** Runs one pass and logs what it did; a failure is logged and leaves the passes after it to run. */
-async function pass(name: string, run: () => Promise<ChunkedDeleteResult>): Promise<ChunkedDeleteResult | null> {
-  try {
-    const value = await run();
-    log("info", `usage_retention_${name}`, { ...value });
-    return value;
-  } catch (error) {
-    if (error instanceof QueryBudgetExhausted) {
-      log("warn", "maintenance_budget_exhausted", { sweep: `usage_retention_${name}`, limit: error.limit });
-    } else {
-      log("warn", `usage_retention_${name}_failed`, { error: errorFacts(error) });
-    }
-    return null;
-  }
+/**
+ * The usage retention passes at `now`, in the order they take their turns:
+ * open work given up long ago first, so the charges it held are free to go in
+ * the same round; the charges before the sessions they belong to.
+ */
+export function usageRetentionPasses(now: number): Pass[] {
+  const rules = usageRetentionRules(now);
+  return [
+    deletePass("usage_retention_gave_up_work", rules.gaveUpWork),
+    deletePass("usage_retention_charges", rules.charges),
+    deletePass("usage_retention_sessions", rules.sessions),
+    deletePass("usage_retention_budget_days", rules.budgetDays),
+    foldMonthsPass(firstKeptMonthDay(now, USAGE_DAY_RETENTION_DAYS)),
+  ];
+}
+
+export interface UsageRetentionResult {
+  gaveUpWork: ChunkedDeleteResult | null;
+  charges: ChunkedDeleteResult | null;
+  sessions: ChunkedDeleteResult | null;
+  budgetDays: ChunkedDeleteResult | null;
+  months: ChunkedDeleteResult | null;
 }
 
 /**
- * Statements each pass may count on, however large the backlog of the passes
- * before it: two chunks each (the fold's chunk is three statements).
- */
-const RESERVED = { charges: 2, sessions: 2, budgetDays: 2, months: 2 * FOLD_STATEMENTS } as const;
-
-/**
- * Every usage retention pass, within `budget`. Each pass reports under its own
- * code, and a failure in one leaves the others to run.
+ * The usage retention passes on their own, within `statements` and
+ * `rowLimit`. The nightly run runs them with the other passes instead
+ * (`../maintenance/nightly.ts`).
  */
 export async function runUsageRetention(
   db: D1Database,
   now: number,
-  budget: QueryBudget,
+  statements: QueryBudget,
   chunkRows: number = CHUNK_ROWS,
+  rowLimit: number = Number.MAX_SAFE_INTEGER,
 ): Promise<UsageRetentionResult> {
-  const rules = usageRetentionRules(now);
-  /** What is left, less what the passes after this one are kept. */
-  const share = (heldBack: number) => budget.limited(Math.max(0, budget.remaining - heldBack));
-  const run = (heldBack: number, spec: Deletable) => () => {
-    const own = share(heldBack);
-    return deleteInChunks(own.database(db), own, spec, chunkRows);
+  const results = await runPasses(db, statements, rowLimit, usageRetentionPasses(now), chunkRows);
+  const of = (name: string) => results.get(`usage_retention_${name}`) ?? null;
+  return {
+    gaveUpWork: of("gave_up_work"),
+    charges: of("charges"),
+    sessions: of("sessions"),
+    budgetDays: of("budget_days"),
+    months: of("months"),
   };
-
-  // First, so the charges whose work was given up long ago are free to go.
-  const gaveUp = pass(
-    "gave_up_work",
-    run(RESERVED.charges + RESERVED.sessions + RESERVED.budgetDays + RESERVED.months, rules.gaveUpWork),
-  );
-  const result: UsageRetentionResult = { gaveUpWork: await gaveUp, charges: null, sessions: null, budgetDays: null, months: null };
-  result.charges = await pass("charges", run(RESERVED.sessions + RESERVED.budgetDays + RESERVED.months, rules.charges));
-  result.sessions = await pass("sessions", run(RESERVED.budgetDays + RESERVED.months, rules.sessions));
-  result.budgetDays = await pass("budget_days", run(RESERVED.months, rules.budgetDays));
-  result.months = await pass("months", () =>
-    foldMonths(budget.database(db), budget, firstKeptMonthDay(now, USAGE_DAY_RETENTION_DAYS), chunkRows),
-  );
-  return result;
 }

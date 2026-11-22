@@ -101,10 +101,20 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
   days, and detailed usage after 90 days: charges, settled sessions and budget totals. Day totals
   stay 400 days, then move into month totals.
 
-The nightly maintenance makes at most 50 D1 queries, the Workers Free plan's limit per run. Each
-query deletes at most 5,000 rows, so a large backlog is cleared over several nights. On the Workers
-Paid plan, set the optional Worker variable `MAINTENANCE_QUERY_BUDGET` (for example `1000`) to
-clear it faster. A value above 1,000, D1's limit on that plan, is lowered to 1,000.
+Each kind of old row is a pass, and the passes take turns: each round, every pass with rows left
+deletes one chunk of at most 5,000 rows. So a large backlog of one kind never keeps the others
+waiting. The run stops when every pass is done, or when one of two allowances runs out:
+
+- **D1 statements:** at most 50, the Workers Free plan's limit per run.
+- **Rows written:** at most 20,000. D1 counts each deleted row and each of its index entries. The
+  Free plan allows 100,000 row writes a day for the whole account, and the apps need the rest.
+
+A backlog left over is cleared over the next nights, and the run logs `maintenance_backlog_left` as
+a warning. On the Workers Paid plan, two optional Worker variables clear it faster:
+
+- `MAINTENANCE_QUERY_BUDGET` (for example `1000`). A value above 1,000, D1's limit on that plan, is
+  lowered to 1,000.
+- `MAINTENANCE_ROW_BUDGET` (for example `1000000`). A value above 5,000,000 is lowered to 5,000,000.
 
 ## Deploying
 

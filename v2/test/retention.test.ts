@@ -10,11 +10,22 @@ import { createExecutionContext, createScheduledController, waitOnExecutionConte
 import { oauthSweepStatementCount, operationSweepStatementCount } from "@maxceem/cf-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { MAINTENANCE_SLACK_QUERIES, MAXIMUM_MAINTENANCE_QUERY_BUDGET, maintenanceQueryBudget, QueryBudget } from "../src/core/query-budget.ts";
+import { ROW_WRITES } from "../src/core/chunked-delete.ts";
+import {
+  DEFAULT_MAINTENANCE_ROWS,
+  MAINTENANCE_SLACK_STATEMENTS,
+  MAXIMUM_MAINTENANCE_ROWS,
+  MAXIMUM_MAINTENANCE_STATEMENTS,
+  maintenanceRowLimit,
+  maintenanceStatementBudget,
+  MINIMUM_MAINTENANCE_ROWS,
+  MINIMUM_MAINTENANCE_STATEMENTS,
+  QueryBudget,
+} from "../src/core/query-budget.ts";
 import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
 import { FOLD_PICK, runUsageRetention, usageRetentionRules, USAGE_DAY_RETENTION_DAYS, USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
-import { NIGHTLY_HOUR_UTC, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
+import { CHALLENGE_SETTLE_STATEMENTS, NIGHTLY_HOUR_UTC, nightlyPasses, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
 import { nano } from "../src/money.ts";
 import { ACCOUNT_ID, attestAuthentication, seedApp } from "./helpers.ts";
 
@@ -374,8 +385,8 @@ describe("usage retention: day rollups into months", () => {
     while ((await rows("SELECT COUNT(*) AS n FROM usage_day"))[0]!.n !== 0) {
       nights += 1;
       expect(nights).toBeLessThan(5);
-      // Three statements: the other passes keep the fold's share free, and it affords one chunk.
-      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(3), 2);
+      // Seven statements: one each for the four delete passes, which have nothing to do, and one chunk of the fold.
+      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(7), 2);
       expect(result.months?.chunks).toBe(1);
       expect(await april()).toEqual(whole);
     }
@@ -434,6 +445,26 @@ describe("usage retention: day rollups into months", () => {
       expect(await rows("SELECT COUNT(*) AS n FROM usage_day")).toEqual([{ n: 0 }]);
       expect(codes.filter((code) => code === "usage_month_total_too_large")).toHaveLength(1);
     });
+    it("stops at the smallest integer too, and still folds the other keys in the same chunk (Sol 7b-2 round 3)", async () => {
+      const MIN = -9223372036854775808n;
+      await env.DB.prepare(
+        `INSERT INTO usage_month (account_id, app_id, month, provider_type, provider_connection_id, model, outcome, unit, charges, cost_nano)
+         VALUES (?, 'app_low', '2026-04', 'openai', '', 'gpt-4o-mini', 'ok', '', 1, CAST(? AS INTEGER))`,
+      )
+        .bind(ACCOUNT_ID, MIN.toString())
+        .run();
+      await day("2026-04-01", { app: "app_low", cost: -1 });
+      await day("2026-04-02", { app: "app_small", cost: 7 });
+
+      const result = await runUsageRetention(env.DB, NOW, budget());
+
+      expect(result.months).toMatchObject({ caughtUp: true });
+      expect(await months()).toEqual([
+        { app_id: "app_low", month: "2026-04", cost: MIN.toString(), type: "integer", charges: 3 },
+        { app_id: "app_small", month: "2026-04", cost: "7", type: "integer", charges: 2 },
+      ]);
+      expect(await rows("SELECT COUNT(*) AS n FROM usage_day")).toEqual([{ n: 0 }]);
+    });
   });
 
   it("adds a day that arrives later to its month row", async () => {
@@ -449,7 +480,8 @@ describe("usage retention: day rollups into months", () => {
 
 describe("the query budget", () => {
   it("never issues more statements than the allowance, and goes on where it stopped the next night", async () => {
-    // Of twenty statements, the charges get nine chunks of two a night, after the shares kept for the other passes.
+    // Of twenty statements, the first round takes one each from the four delete passes and three from the fold;
+    // the charges then have the thirteen left, so fifteen chunks of two rows the first night.
     await insert(...Array.from({ length: 36 }, () => charge({ usedAt: OLD })));
     const allowances: number[] = [];
     let runs = 0;
@@ -466,7 +498,7 @@ describe("the query budget", () => {
     expect(allowances.every((spent) => spent <= 20)).toBe(true);
   });
 
-  it("keeps a share for the passes after the charges, however large the charge backlog", async () => {
+  it("gives every pass its turn, however large the charge backlog", async () => {
     await insert(...Array.from({ length: 40 }, () => charge({ usedAt: OLD })));
     await env.DB.prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
@@ -484,10 +516,35 @@ describe("the query budget", () => {
 
   it("lowers a setting above D1's 1,000 queries a run to 1,000, with a warning", () => {
     const codes = warningCodes();
-    const nightly = maintenanceQueryBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "10000" } as Env);
-    expect(nightly.limit).toBe(MAXIMUM_MAINTENANCE_QUERY_BUDGET - MAINTENANCE_SLACK_QUERIES);
+    const nightly = maintenanceStatementBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "10000" } as Env);
+    expect(nightly.limit).toBe(MAXIMUM_MAINTENANCE_STATEMENTS - MAINTENANCE_SLACK_STATEMENTS);
     expect(codes).toEqual(["maintenance_query_budget_capped"]);
-    expect(maintenanceQueryBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "400" } as Env).limit).toBe(400 - MAINTENANCE_SLACK_QUERIES);
+    expect(maintenanceStatementBudget({ ...env, MAINTENANCE_QUERY_BUDGET: "400" } as Env).limit).toBe(400 - MAINTENANCE_SLACK_STATEMENTS);
+  });
+
+  it("reads the row allowance, lowering one too large and ignoring one too small, with a warning", () => {
+    const codes = warningCodes();
+    expect(maintenanceRowLimit(env)).toBe(DEFAULT_MAINTENANCE_ROWS);
+    expect(maintenanceRowLimit({ ...env, MAINTENANCE_ROW_BUDGET: "50000" } as Env)).toBe(50_000);
+    expect(maintenanceRowLimit({ ...env, MAINTENANCE_ROW_BUDGET: "999999999" } as Env)).toBe(MAXIMUM_MAINTENANCE_ROWS);
+    expect(maintenanceRowLimit({ ...env, MAINTENANCE_ROW_BUDGET: "10" } as Env)).toBe(DEFAULT_MAINTENANCE_ROWS);
+    expect(codes).toEqual(["maintenance_row_budget_capped", "maintenance_row_budget_invalid"]);
+  });
+
+  it("accepts no fewer statements than the hourly clean-up and one round of every pass need", () => {
+    const round = nightlyPasses(NOW).reduce((sum, pass) => sum + pass.statements, 0);
+    expect(MINIMUM_MAINTENANCE_STATEMENTS).toBeGreaterThanOrEqual(
+      MAINTENANCE_SLACK_STATEMENTS + SIGN_IN_SWEEP_STATEMENTS + CHALLENGE_SETTLE_STATEMENTS + round,
+    );
+  });
+
+  it("counts the rows D1 writes per deleted row as the row and each of its table's indexes", async () => {
+    for (const [table, writes] of Object.entries(ROW_WRITES)) {
+      const [indexes] = await rows("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND tbl_name = ?", table);
+      expect(writes, table).toBe(1 + Number(indexes!.n));
+    }
+    // No trigger runs on a delete, or on an update of a month row, to write more.
+    expect(await rows("SELECT name FROM sqlite_master WHERE type = 'trigger' AND (sql LIKE '%DELETE ON%' OR sql LIKE '%UPDATE ON%')")).toEqual([]);
   });
 
   it("charges the sign-in clean-up its library's statement count", () => {
@@ -523,7 +580,7 @@ describe("the nightly run", () => {
     await insert(charge({ usedAt: OLD }), recent);
 
     const allowance = new QueryBudget(49);
-    await runNightly(env, NOW, allowance);
+    await runNightly(env, NOW, allowance, DEFAULT_MAINTENANCE_ROWS);
 
     expect(await rows("SELECT id FROM app_auth_event")).toEqual([{ id: newEvent }]);
     expect(await rows("SELECT id FROM app_rejection_event")).toEqual([{ id: newRejection }]);
@@ -550,7 +607,7 @@ describe("the nightly run", () => {
       },
     });
 
-    await runNightly({ ...env, DB: failing } as Env, NOW, new QueryBudget(49));
+    await runNightly({ ...env, DB: failing } as Env, NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
 
     expect(warnings).toContain("auth_events_prune_failed");
     expect(await chargeIds()).toEqual([]);
@@ -568,9 +625,95 @@ describe("the nightly run", () => {
     }
     const allowance = new QueryBudget(49);
 
-    await runNightly(env, NOW, allowance);
+    await runNightly(env, NOW, allowance, MAXIMUM_MAINTENANCE_ROWS);
 
     expect(await rows("SELECT COUNT(*) AS n FROM app_rejection_event")).toEqual([{ n: 0 }]);
+  });
+
+  /** `count` events past their retention in `table`, written in one statement. */
+  async function bulkEvents(table: "app_auth_event" | "app_rejection_event", count: number): Promise<void> {
+    const columns =
+      table === "app_auth_event"
+        ? "(id, app_id, event, outcome, created_at) SELECT 'bulk_auth_' || i, 'app_retention', 'token_exchange', 'succeeded', ?"
+        : "(id, app_id, reason, created_at) SELECT 'bulk_rej_' || i, 'app_retention', 'model_not_allowed', ?";
+    await env.DB.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) INSERT INTO ${table} ${columns} FROM n`)
+      .bind(count, OLD)
+      .run();
+  }
+
+  it("stops at the row allowance with both event tables backlogged, and every other pass still gets its turn (Sol 7b-2 round 3)", async () => {
+    const codes = warningCodes();
+    await bulkEvents("app_auth_event", 3_000);
+    await bulkEvents("app_rejection_event", 3_000);
+    await insert(charge({ usedAt: OLD }));
+    await env.DB.prepare(
+      `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
+       VALUES (?, 'app_turns', '2026-01-10', 'openai', '', '', 'ok', '', 9)`,
+    )
+      .bind(ACCOUNT_ID)
+      .run();
+    // The charge's budget totals: one for the app, one for its user.
+    const budgetDays = Number((await rows("SELECT COUNT(*) AS n FROM budget_day"))[0]!.n);
+
+    await runNightly(env, NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
+
+    const [auth] = await rows("SELECT COUNT(*) AS n FROM app_auth_event");
+    const [rejections] = await rows("SELECT COUNT(*) AS n FROM app_rejection_event");
+    const eventsDeleted = 6_000 - Number(auth!.n) - Number(rejections!.n);
+    // The passes after the events ran: the charge, its budget total and the old day are gone.
+    expect(await chargeIds()).toEqual([]);
+    expect(budgetDays).toBeGreaterThan(0);
+    expect(await rows("SELECT COUNT(*) AS n FROM budget_day")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-01", cost_nano: 9 }]);
+    // Within the allowance, the charge, its budget total, the old day and its month row included, and most of it used.
+    const written =
+      eventsDeleted * ROW_WRITES.app_auth_event +
+      ROW_WRITES.charge +
+      budgetDays * ROW_WRITES.budget_day +
+      ROW_WRITES.usage_day +
+      ROW_WRITES.usage_month;
+    expect(written).toBeLessThanOrEqual(DEFAULT_MAINTENANCE_ROWS);
+    expect(written).toBeGreaterThan(DEFAULT_MAINTENANCE_ROWS * 0.9);
+    // Both tables had their turns.
+    expect(Number(auth!.n)).toBeLessThan(3_000);
+    expect(Number(rejections!.n)).toBeLessThan(3_000);
+    expect(codes).toEqual(["maintenance_backlog_left"]);
+  });
+
+  it("deletes one expired row of every kind with the smallest allowances it accepts, from the hourly cron (Sol 7b-2 round 3)", async () => {
+    const codes = warningCodes();
+    await authEvent(OLD);
+    await rejection(OLD);
+    await openWork({ ownerType: "call", ownerId: unique("call"), gaveUpAt: OLD });
+    await insert(charge({ usedAt: OLD }));
+    await session(unique("ses"), OLD, "settled");
+    await env.DB.prepare(
+      `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
+       VALUES (?, 'app_smallest', '2026-01-10', 'openai', '', '', 'ok', '', 9)`,
+    )
+      .bind(ACCOUNT_ID)
+      .run();
+    const smallest = {
+      ...env,
+      MAINTENANCE_QUERY_BUDGET: String(MINIMUM_MAINTENANCE_STATEMENTS),
+      MAINTENANCE_ROW_BUDGET: String(MINIMUM_MAINTENANCE_ROWS),
+    } as Env;
+
+    const nightly = createExecutionContext();
+    await worker.scheduled!(
+      createScheduledController({ cron: "17 * * * *", scheduledTime: Date.parse(`2027-06-15T0${NIGHTLY_HOUR_UTC}:17:00Z`) }),
+      smallest,
+      nightly,
+    );
+    await waitOnExecutionContext(nightly);
+
+    for (const table of ["app_auth_event", "app_rejection_event", "open_work", "charge", "session", "budget_day"]) {
+      expect(await rows(`SELECT COUNT(*) AS n FROM ${table}`), table).toEqual([{ n: 0 }]);
+    }
+    // The old day moved into its month; the charge's own day, 95 days back, stays a day.
+    expect(await rows("SELECT day FROM usage_day")).toEqual([{ day: utcDay(OLD) }]);
+    expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-01", cost_nano: 9 }]);
+    expect(codes).toEqual([]);
   });
 
   it("goes on with the other usage passes when one fails", async () => {
