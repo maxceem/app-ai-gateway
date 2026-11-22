@@ -3,15 +3,18 @@
  *
  * A link is self-contained: it names the sign-in, the address it was sent to,
  * when it lapses and where the console continues, signed with a key derived
- * from `BETTER_AUTH_SECRET` for this purpose alone. Nothing is stored for it,
- * because confirming one twice is harmless — it sets a flag that is already
- * set — and because it is bound to the address, a link for an address the
- * sign-in no longer has verifies nothing.
+ * from `BETTER_AUTH_SECRET` for this purpose alone. Nothing is stored for it:
+ * it does its work once, while the address is not verified yet, and because it
+ * is bound to the address, a link for an address the sign-in no longer has
+ * verifies nothing.
+ *
+ * The token travels in the link's `#` fragment, which a browser never sends,
+ * so it reaches no request log; the console page posts it in a body.
  *
  * Verifying is all a link does. What waits for it is the account gate in
  * `../core/account-standing.ts`: an account's app traffic.
  */
-import { invalidateAccountStanding } from "../core/account-standing.ts";
+import { invalidateAccountApps } from "../apps/app-records.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { enforceEndpointRateLimit } from "../core/flood-limit.ts";
@@ -158,7 +161,8 @@ export async function sendVerificationEmail(
     ...(returnTo === null ? {} : { r: returnTo }),
   });
   const link = new URL(VERIFICATION_PAGE_PATH, consoleOrigin);
-  link.searchParams.set("token", token);
+  // In the fragment, never the query: a browser does not send it, so the token never reaches a request log.
+  link.hash = new URLSearchParams({ token }).toString();
   const href = link.toString();
   try {
     await sender.send({
@@ -219,10 +223,13 @@ export async function sendFirstVerificationEmail(
 /**
  * Verifies the address a link was sent to, and answers where to continue.
  *
- * Idempotent: a link confirmed again answers the same, for as long as it has
- * not lapsed and the sign-in still has that address. The accounts the person
- * owns may serve traffic from now on, so this isolate drops their cached
- * standing; every other isolate catches up within the cache's ten seconds.
+ * The link does its work once: only the confirmation that turns the address
+ * from unverified to verified writes anything and refreshes the owner's
+ * accounts. A link opened again, while it has not lapsed and the sign-in still
+ * has that address, answers the same and does nothing more, so a reload of the
+ * page still lands well. The accounts the person owns may serve traffic from
+ * now on, so this isolate drops their cached apps; every other isolate catches
+ * up within ten seconds (`../apps/app-records.ts`).
  */
 export async function confirmEmailVerification(
   env: Env,
@@ -234,13 +241,16 @@ export async function confirmEmailVerification(
     new GatewayError(400, "invalid_request", "This verification link is not valid any more. Send a new one from the console.");
   if (!claims) throw invalid();
   const person = "id = ?1 AND email = ?2 AND kind = 'human'";
-  const [, verified, owned] = await env.DB.batch([
+  const [changed, verified, owned] = await env.DB.batch([
     env.DB.prepare(`UPDATE mgmt_user SET email_verified = 1, updated_at = ?3 WHERE ${person} AND email_verified = 0`)
       .bind(claims.u, claims.e, nowMs),
     env.DB.prepare(`SELECT id FROM mgmt_user WHERE ${person} AND email_verified = 1`).bind(claims.u, claims.e),
     env.DB.prepare("SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?1 AND role = 'owner'").bind(claims.u),
   ]);
   if ((verified?.results.length ?? 0) === 0) throw invalid();
-  for (const row of (owned?.results ?? []) as { organization_id: string }[]) invalidateAccountStanding(row.organization_id);
+  // Only the confirmation that verified the address refreshes anything; a repeat changed nothing.
+  if ((changed?.meta.changes ?? 0) > 0) {
+    for (const row of (owned?.results ?? []) as { organization_id: string }[]) invalidateAccountApps(row.organization_id);
+  }
   return { email: claims.e, returnTo: claims.r ?? null };
 }

@@ -12,7 +12,9 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { confirmEmailVerification, sendVerificationEmail, VERIFICATION_LINK_TTL_MS } from "../src/auth/email-verification.ts";
-import { accountActivated } from "../src/core/account-standing.ts";
+import { readAccountActivated } from "../src/core/account-standing.ts";
+import { appCache } from "../src/apps/app-records.ts";
+import { managementKeyStatements } from "../scripts/management-key-sql.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAppKey, seedHuman } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -23,7 +25,7 @@ const API = "https://gateway.test";
 type Sent = { from: { email: string; name: string }; to: string; subject: string; text: string; html: string };
 
 /** A deployment that sends email (or not), and what its stand-in sender was handed. */
-function deployment(options: { email?: boolean; from?: string | null } = {}) {
+function deployment(options: { email?: boolean; from?: string | null; consoleOrigin?: string } = {}) {
   const sent: Sent[] = [];
   const binding = {
     send: vi.fn(async (message: Sent) => {
@@ -32,6 +34,7 @@ function deployment(options: { email?: boolean; from?: string | null } = {}) {
     }),
   };
   const values: Record<string, unknown> = { ALLOWED_REGISTRATION_EMAILS: "*" };
+  if (options.consoleOrigin !== undefined) values.CONSOLE_ORIGIN = options.consoleOrigin;
   if (options.email) {
     values.EMAIL = binding;
     if (options.from !== null) values.EMAIL_FROM = options.from ?? "gateway@example.test";
@@ -63,7 +66,10 @@ const asConsole = (environment: Env, cookie: string, path: string, json?: unknow
 function tokenFrom(message: Sent): string {
   const link = /https?:\/\/\S+/u.exec(message.text)?.[0];
   if (!link) throw new Error("The email carried no link");
-  return new URL(link).searchParams.get("token")!;
+  const url = new URL(link);
+  // The token travels in the fragment, never the query, so no request log keeps it.
+  expect(url.search).toBe("");
+  return new URLSearchParams(url.hash.slice(1)).get("token")!;
 }
 
 async function errorCode(response: Response): Promise<string | undefined> {
@@ -167,7 +173,7 @@ describe("verification links", () => {
     await sendVerificationEmail(verifying, CONSOLE, { id: owner.userId, email: owner.email }, "/v2/apps");
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ to: owner.email, from: { email: "gateway@example.test", name: "App AI Gateway" } });
-    expect(sent[0]!.text).toContain(`${CONSOLE}/v2/verify-email?token=`);
+    expect(sent[0]!.text).toContain(`${CONSOLE}/v2/verify-email#token=`);
     const token = tokenFrom(sent[0]!);
 
     const confirm = () => call("/v2/console/email-verification/confirm", { environment: verifying, headers: { origin: CONSOLE }, json: { token } });
@@ -175,8 +181,27 @@ describe("verification links", () => {
     expect(first.status, await first.clone().text()).toBe(200);
     expect(await first.json()).toEqual({ email: owner.email, returnTo: "/v2/apps" });
     expect(await env.DB.prepare("SELECT email_verified AS v FROM mgmt_user WHERE id = ?").bind(owner.userId).first("v")).toBe(1);
-    expect(await accountActivated(verifying, owner.accountId)).toBe(true);
-    expect((await confirm()).status).toBe(200);
+    expect(await readAccountActivated(verifying, owner.accountId)).toBe(true);
+
+    // Opened again, it answers the same and does nothing more: this isolate's
+    // cached apps of the account are left alone (Sol 7b-7).
+    const app = await serverApp(owner.accountId);
+    expect((await me(verifying, app)).status).toBe(200);
+    expect(appCache.peek(app.appId)).toBeDefined();
+    const again = await confirm();
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ email: owner.email, returnTo: "/v2/apps" });
+    expect(appCache.peek(app.appId)).toBeDefined();
+  });
+
+  it("let the account's apps serve at once in the isolate that confirmed, without waiting for the cache (Sol 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: verifying, sent } = deployment({ email: true });
+    const app = await serverApp(owner.accountId);
+    expect(await errorCode(await me(verifying, app))).toBe("email_unverified");
+    await sendVerificationEmail(verifying, CONSOLE, { id: owner.userId, email: owner.email }, null);
+    await confirmEmailVerification(verifying, tokenFrom(sent[0]!));
+    expect((await me(verifying, app)).status).toBe(200);
   });
 
   it("are refused when tampered with, expired, or sent to an address the sign-in no longer has", async () => {
@@ -211,6 +236,66 @@ describe("verification links", () => {
   });
 });
 
+describe("the gate on the request path", () => {
+  it("reads the account's activation in the app's own query, with no separate read (Sol 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    await env.DB.prepare("INSERT INTO account_activation(account_id, activated_at) VALUES (?, ?)").bind(owner.accountId, Date.now()).run();
+    const app = await serverApp(owner.accountId);
+    const statements: string[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            statements.push(query);
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const verifying = { ...deployment({ email: true }).env, DB: db } as Env;
+    expect((await me(verifying, app)).status).toBe(200);
+    const gate = statements.filter((query) => query.includes("account_activation"));
+    expect(gate.length).toBeGreaterThan(0);
+    // Every statement that asks about activation is the one that loads the app.
+    for (const query of gate) expect(query).toMatch(/from "app"/u);
+  });
+});
+
+describe("accounts made with a management key", () => {
+  const run = async (write: Parameters<typeof managementKeyStatements>[0]) => {
+    for (const statement of managementKeyStatements(write)) await env.DB.prepare(statement).run();
+  };
+  const base = () => ({
+    userId: `svc_${crypto.randomUUID().slice(0, 12)}`,
+    keyId: `mk_${crypto.randomUUID().slice(0, 12)}`,
+    hash: crypto.randomUUID().replaceAll("-", ""),
+    hint: "abcd",
+    grant: "manage" as const,
+    now: Date.now(),
+  });
+
+  it("are activated as the bootstrap command makes them, since their owner has no address to verify (Sol 7b-7)", async () => {
+    const accountId = `acc_boot_${crypto.randomUUID().slice(0, 8)}`;
+    await run({ ...base(), accountId, accountName: "Bootstrapped" });
+    expect(await readAccountActivated(deployment({ email: true }).env, accountId)).toBe(true);
+  });
+
+  it("never activate an account that was waiting for its owner, by the command or by a new key (Sol 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    const verifying = deployment({ email: true }).env;
+    // The command adding a key to it, even asked to create it, finds it there and leaves it waiting.
+    await run({ ...base(), accountId: owner.accountId, accountName: "Already here" });
+    await run({ ...base(), accountId: owner.accountId });
+    expect(await readAccountActivated(verifying, owner.accountId)).toBe(false);
+    // So does a key made in the console.
+    const created = await asConsole(verifying, owner.cookie, "/v2/admin/management-keys", { name: "CI", grant: "read" });
+    expect(created.status, await created.clone().text()).toBe(201);
+    expect(await readAccountActivated(verifying, owner.accountId)).toBe(false);
+  });
+});
+
 describe("sending a link from the console", () => {
   const send = (environment: Env, cookie: string, json: unknown = {}) =>
     asConsole(environment, cookie, "/v2/console/email-verification/send", json);
@@ -232,6 +317,18 @@ describe("sending a link from the console", () => {
 
     expect((await send(deployment().env, owner.cookie)).status).toBe(409);
     expect((await send(verifying, "")).status).toBe(401);
+  });
+
+  it("sends at most five links an hour to one sign-in, and never calls the sender for a sixth (Sol 7b-7)", async () => {
+    const owner = await unverifiedOwner();
+    const { env: verifying, binding } = deployment({ email: true });
+    for (let sent = 1; sent <= 5; sent += 1) {
+      const response = await send(verifying, owner.cookie);
+      expect(response.status, await response.clone().text()).toBe(200);
+    }
+    const sixth = await send(verifying, owner.cookie);
+    expect(sixth.status).toBe(429);
+    expect(binding.send).toHaveBeenCalledTimes(5);
   });
 
   it("is served only on the console's own page", async () => {
@@ -267,11 +364,25 @@ describe("sign-up", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe(email);
     const accountId = await accountOf(email);
-    expect(await accountActivated(verifying, accountId)).toBe(false);
+    expect(await readAccountActivated(verifying, accountId)).toBe(false);
     const { returnTo } = await confirmEmailVerification(verifying, tokenFrom(sent[0]!));
     expect(returnTo).toBe("/v2/apps");
     clearCaches();
-    expect(await accountActivated(verifying, accountId)).toBe(true);
+    expect(await readAccountActivated(verifying, accountId)).toBe(true);
+  });
+
+  it("is refused with email_unavailable, making no account, where links could not open: no console origin (Sol 7b-7)", async () => {
+    const email = `no-console-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    const { env: broken, sent } = deployment({ email: true, consoleOrigin: "" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const refused = await signUp(broken, email);
+    expect(refused.status).toBe(503);
+    expect(await errorCode(refused)).toBe("email_unavailable");
+    expect(sent).toHaveLength(0);
+    expect(await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?").bind(email).first()).toBeNull();
+    const health = await call("/v2/healthz", { environment: broken, base: API });
+    expect(await health.json()).toMatchObject({ email: "misconfigured" });
   });
 
   it("activates the account as it is made where the deployment sends no email, so a sender added later stops none of it", async () => {
@@ -280,6 +391,6 @@ describe("sign-up", () => {
     const created = await signUp(trusting, email);
     expect(created.status, await created.clone().text()).toBe(200);
     expect(sent).toHaveLength(0);
-    expect(await accountActivated(deployment({ email: true }).env, await accountOf(email))).toBe(true);
+    expect(await readAccountActivated(deployment({ email: true }).env, await accountOf(email))).toBe(true);
   });
 });

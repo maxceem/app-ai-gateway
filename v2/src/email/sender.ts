@@ -18,6 +18,8 @@
  * The email settings. None is in the tracked `wrangler.jsonc` (so the deploy
  * form never asks about them), so none is in `Env`: they are read through this.
  */
+import { consoleOrigin } from "../auth/settings.ts";
+
 export interface EmailEnv {
   /** A Cloudflare Email Service `send_email` binding, or a service binding with the same `send`. */
   EMAIL?: { send(message: Record<string, unknown>): Promise<unknown> };
@@ -145,6 +147,11 @@ export function emailSetup(deployment: Env): EmailSetup {
   const replyTo = env.EMAIL_REPLY_TO?.trim() || null;
   if (replyTo !== null && !SENDER_ADDRESS.test(replyTo)) {
     return { state: "misconfigured", problem: "EMAIL_REPLY_TO is not an email address" };
+  }
+  // The links an email carries open the console, so a deployment that sends
+  // email must say where that is: without it, every link would fail.
+  if (consoleOrigin(deployment) === null) {
+    return { state: "misconfigured", problem: "CONSOLE_ORIGIN is missing or not the console's https origin: email links open there" };
   }
   return { state: "ok", transport, from, replyTo, smtp };
 }

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AuthLayout } from "@/pages/auth-shell";
 import { authErrorMessage } from "@/lib/auth-errors";
-import { DEFAULT_LANDING, isSafeReturnPath } from "@/lib/auth-redirect";
+import { DEFAULT_LANDING, isSafeReturnPath, routerPath } from "@/lib/auth-redirect";
 import { useConfirmEmailVerification } from "@/lib/queries";
 
 /**
@@ -15,14 +15,32 @@ import { useConfirmEmailVerification } from "@/lib/queries";
  * Outside the console's shell, like the approval page: a person is sent here
  * by a link, often on another device than the one that asked for it, and the
  * link alone proves the address, so nobody has to be signed in. The token is
- * read once and taken out of the address bar, so it is not left in the
- * browser's history; confirming it again is harmless, which is what lets a
- * remount or a reload confirm it a second time.
+ * in the link's `#` fragment, which the browser never sends to the server, so
+ * it reaches no request log; it is read once, posted in a body, and taken out
+ * of the address bar, so it is not left in the browser's history either.
+ * Confirming it again answers the same, which is what lets a remount or a
+ * reload land well.
  */
+
+/** The token from a link's fragment, `#token=…`. */
+export function tokenFromHash(hash: string): string | null {
+  return new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash).get("token");
+}
+
+/**
+ * Where Continue goes: the console path the link names, as the router sees it.
+ * The server writes it as a browser path, under the console's `/v2` base,
+ * which the router adds itself.
+ */
+export function continuePath(returnTo: string | null | undefined): string | null {
+  if (!isSafeReturnPath(returnTo)) return null;
+  const url = new URL(returnTo, "https://console.invalid");
+  return `${routerPath(url.pathname)}${url.search}`;
+}
 export function VerifyEmailPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [token] = useState(() => new URLSearchParams(location.search).get("token"));
+  const [token] = useState(() => tokenFromHash(location.hash));
   const confirm = useConfirmEmailVerification();
   const started = useRef(false);
 
@@ -51,9 +69,9 @@ export function VerifyEmailPage() {
                   {confirm.data.email} is verified. Your apps serve requests from now on.
                 </AlertDescription>
               </Alert>
-              {confirm.data.returnTo && isSafeReturnPath(confirm.data.returnTo) ? (
+              {continuePath(confirm.data.returnTo) !== null ? (
                 <Button asChild className="w-full">
-                  <Link to={confirm.data.returnTo}>Continue</Link>
+                  <Link to={continuePath(confirm.data.returnTo)!}>Continue</Link>
                 </Button>
               ) : (
                 <Button asChild variant="outline" className="w-full">

@@ -74,7 +74,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
     const jobId = c.req.param("job");
     if (!appId || !jobId) throw new GatewayError(400, "invalid_request", "App id and job id are required");
     const app = await loadApp(c.env, appId);
-    await assertAppServes(c.env, app);
+    assertAppServes(c.env, app);
     // The signature is checked before the caller, at no D1 cost, so a made-up
     // id loads nothing. Its answer waits until the caller is known.
     const claims = await readJobId(c.env.JWT_SECRET, jobId);

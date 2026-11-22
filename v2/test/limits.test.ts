@@ -107,6 +107,7 @@ function app(limits: Record<string, unknown> = {}, authentication: Record<string
     limits: config.limits,
     presets: config.presets ?? {},
     conversations: null,
+    accountActivated: true,
   };
 }
 

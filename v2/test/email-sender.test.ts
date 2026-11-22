@@ -179,7 +179,7 @@ describe("the SMTP transport", () => {
     await sendVerificationEmail(testEnv, ORIGIN, { id: "user-1", email: "person@example.test" }, null);
     const sent = (mailer.send.mock.calls as unknown as Array<[{ to: string; text: string }]>)[0]![0];
     expect(sent.to).toBe("person@example.test");
-    expect(sent.text).toContain(`${ORIGIN}/v2/verify-email?token=`);
+    expect(sent.text).toContain(`${ORIGIN}/v2/verify-email#token=`);
 
     const logged = vi.spyOn(console, "log").mockImplementation(() => {});
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});

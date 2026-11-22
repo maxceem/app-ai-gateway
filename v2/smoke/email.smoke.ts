@@ -68,8 +68,10 @@ test("a sign-up is sent a verification link, and its apps serve requests once it
   const url = new URL(link);
   same(url.origin, origin, "the link does not open the console");
   same(url.pathname, "/v2/verify-email", "the link does not open the verify page");
-  const token = url.searchParams.get("token");
-  check(token !== null && token.length > 0, "the link carries no token");
+  // The token travels in the fragment, which no request carries, so no log keeps it.
+  same(url.search, "", "the link carries a query string");
+  const token = new URLSearchParams(url.hash.slice(1)).get("token");
+  check(token !== null && token.length > 0, "the link carries no token in its fragment");
 
   const session = async () => {
     const response = await asConsole(cookie, "/v2/admin/session");

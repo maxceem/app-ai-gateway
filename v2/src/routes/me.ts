@@ -27,7 +27,7 @@ export async function meHandler(c: Context<{ Bindings: Env; Variables: DeadlineV
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadApp(c.env, appId);
-  await assertAppServes(c.env, app);
+  assertAppServes(c.env, app);
   const { identity, assertionCounter } = await authenticateRequest({
     env: c.env,
     app,

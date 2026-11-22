@@ -13,7 +13,7 @@ import { z } from "zod";
 import { CLI_CLIENT_ID } from "../auth/identity.ts";
 import { AccountSelectRequestSchema, CredentialSchema, ManagementKeyCreateRequestSchema } from "../contracts/access.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { accountActivated, emailVerificationRequired } from "../core/account-standing.ts";
+import { emailVerificationRequired, readAccountActivated } from "../core/account-standing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { requireConsoleSession, type AdminActor, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -34,7 +34,7 @@ export function activeAccounts(memberships: readonly OrganizationMembership[]): 
  * verified theirs and the account was not activated without one.
  */
 async function verificationPending(env: Env, accountId: string): Promise<boolean> {
-  return emailVerificationRequired(env) && !(await accountActivated(env, accountId));
+  return emailVerificationRequired(env) && !(await readAccountActivated(env, accountId));
 }
 
 function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): OperationResponse<"getAdminSession">["session"] {

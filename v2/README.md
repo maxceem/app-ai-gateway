@@ -83,7 +83,9 @@ Inside `v2/`:
 All optional, as Worker variables (see `src/auth/settings.ts`):
 
 - `CONSOLE_ORIGIN`: where the console is served. The OAuth issuer is this origin plus `/v2`. Without
-  it, the CLI and MCP clients cannot sign in.
+  it, the CLI and MCP clients cannot sign in. A deployment that sends email needs it too: the
+  verification links open there. Without it, health reports `email: "misconfigured"` and sign-up
+  with a password answers `email_unavailable`.
 - `ALLOWED_REGISTRATION_EMAILS`: on a self-hosted deployment, who may sign up (`*` for anyone).
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `OAUTH_RELAY_URL`: Google sign-in.
 - `OAUTH_CLIENTS`, `OAUTH_CIMD`, `MCP_ALLOWED_ORIGINS`, `DEPLOYMENT_ID`, `TERMS_OF_SERVICE_URL`,

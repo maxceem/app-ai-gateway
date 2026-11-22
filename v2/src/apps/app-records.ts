@@ -3,9 +3,9 @@
  * or failing, the last known record is served (and `known_record_served` is
  * logged), as in v1.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
-import { assertAccountServes } from "../core/account-standing.ts";
+import { accountActivatedSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { readOrKnown } from "../core/stale-read.ts";
@@ -16,6 +16,13 @@ import { database } from "../db/index.ts";
 import { app } from "../db/schema.ts";
 
 const APP_CACHE_TTL_MS = 60_000;
+/**
+ * How long a cached app whose account is not activated yet is trusted: its
+ * owner may verify at any moment, and this isolate may not be the one that
+ * hears of it. Activation only ever turns on, so an activated entry keeps the
+ * full minute.
+ */
+const PENDING_ACTIVATION_TTL_MS = 10_000;
 
 export const appCache = ttlCache<string, AppRecord>({ name: "app", ttlMs: APP_CACHE_TTL_MS, maxEntries: 10_000 });
 
@@ -31,7 +38,11 @@ export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
 async function readApp(env: Env, appId: string): Promise<AppRecord> {
   const startedAt = Date.now();
   const generation = invalidations;
-  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
+  // The account's activation comes in the same query, so the gate costs no read of its own.
+  const row = await database(env.DB).query.app.findFirst({
+    where: eq(app.id, appId),
+    extras: { accountActivated: sql<number>`${sql.raw(accountActivatedSql('"app"."account_id"'))}`.as("account_activated") },
+  });
   if (!row) {
     appCache.delete(appId);
     throw new GatewayError(404, "app_not_found", "App is not registered");
@@ -61,8 +72,12 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     limits: config.limits,
     presets: config.presets ?? {},
     conversations: config.conversations?.store === true ? config.conversations : null,
+    accountActivated: Boolean(row.accountActivated),
   };
-  if (generation === invalidations) appCache.set(appId, value, { storedAt: startedAt });
+  if (generation === invalidations) {
+    const pending = !value.accountActivated && emailVerificationRequired(env);
+    appCache.set(appId, value, { storedAt: startedAt, ...(pending ? { ttlMs: PENDING_ACTIVATION_TTL_MS } : {}) });
+  }
   return value;
 }
 
@@ -83,6 +98,16 @@ export async function readSavedConversations(env: Env, accountId: string, appId:
   return conversations?.store === true ? conversations.keep : null;
 }
 
+/**
+ * Forgets every cached app of an account whose owner just verified their
+ * address, so this isolate serves them at once. Others catch up within
+ * `PENDING_ACTIVATION_TTL_MS`.
+ */
+export function invalidateAccountApps(accountId: string): void {
+  invalidations += 1;
+  for (const appId of appCache.keys()) if (appCache.peek(appId)?.value.accountId === accountId) appCache.delete(appId);
+}
+
 /** Forgets a cached app, after its settings change. */
 export function invalidateApp(appId: string): void {
   invalidations += 1;
@@ -98,7 +123,7 @@ export function assertAppActive(value: AppRecord): void {
  * may serve (`../core/account-standing.ts`, where the deployment verifies
  * email). Every app-traffic path asks this one function.
  */
-export async function assertAppServes(env: Env, value: AppRecord): Promise<void> {
+export function assertAppServes(env: Env, value: AppRecord): void {
   assertAppActive(value);
-  await assertAccountServes(env, value.accountId);
+  assertAccountServes(env, value.accountActivated);
 }

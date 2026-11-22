@@ -195,7 +195,7 @@ export function appAuthFloodLimit(
 export async function challengeHandler(c: AuthContext): Promise<Response> {
   const appId = appIdOf(c);
   const app = await loadApp(c.env, appId);
-  await assertAppServes(c.env, app);
+  assertAppServes(c.env, app);
   assertAppAttest(app);
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -286,7 +286,7 @@ export async function registerHandler(c: AuthContext): Promise<Response> {
     const appId = appIdOf(c);
     const app = await loadApp(c.env, appId);
     attempt.accountId = app.accountId;
-    await assertAppServes(c.env, app);
+    assertAppServes(c.env, app);
     const { exchange } = clientAuth(app);
     if (exchange === null) throw attestNotSupported();
     const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
@@ -301,7 +301,7 @@ export async function tokenHandler(c: AuthContext): Promise<Response> {
     const appId = appIdOf(c);
     const app = await loadApp(c.env, appId);
     attempt.accountId = app.accountId;
-    await assertAppServes(c.env, app);
+    assertAppServes(c.env, app);
     const { exchange } = clientAuth(app);
     if (exchange === null) {
       throw new GatewayError(400, "auth_method_not_supported", "API key token exchange requires an issuer end-user source");

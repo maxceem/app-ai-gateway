@@ -108,7 +108,7 @@ describe("SMTP on the wire", () => {
     const wire = server.written();
     expect(wire).toContain(`RCPT TO: <${RECIPIENT}>`);
     expect(wire).toContain("Subject: Verify your email address");
-    expect(wire).toContain(`${ORIGIN}/v2/verify-email?token=`);
+    expect(wire).toContain(`${ORIGIN}/v2/verify-email#token=`);
     expect(wire).not.toMatch(/^BCC:/im);
     expect(wire).toMatch(/QUIT\r\n$/);
     expect(server.socket.close).toHaveBeenCalledOnce();

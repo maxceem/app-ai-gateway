@@ -258,7 +258,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const url = new URL(c.req.url);
   const target = proxyTarget(url);
   const app = await loadApp(c.env, appId);
-  await assertAppServes(c.env, app);
+  assertAppServes(c.env, app);
   // Only a slug the app lists is looked up: the caller is not verified yet, so
   // an unlisted one costs no D1 read and leaves nothing in the cache. It is
   // refused below, once the caller is known.
