@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { cleanUp, outcome, uniqueSlug } from "./support.ts";
+import { assertHolds, cleanUp, cliOutcome, outcome, uniqueSlug } from "./support.ts";
 
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -57,25 +57,25 @@ test("agw 2 connects with a management key and manages an app", { skip }, async 
   let created: string | undefined;
   try {
     const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
-    assert.equal(connected.code, 0, JSON.stringify(connected.json.error));
+    assert.equal(connected.code, 0, cliOutcome(connected));
     assert.equal(connected.json.result.credential, "environment");
 
     const listed = await agw(home, "app", "list");
-    assert.equal(listed.code, 0, JSON.stringify(listed.json.error));
+    assert.equal(listed.code, 0, cliOutcome(listed));
     assert.ok(Array.isArray(listed.json.result.apps));
 
     const added = await agw(home, "app", "add", "--type", "ios", "--name", "agw smoke", "--team-id", "ABCDE12345", "--bundle-id", "com.example.agwsmoke");
-    assert.equal(added.code, 0, JSON.stringify(added.json.error));
+    assert.equal(added.code, 0, cliOutcome(added));
     created = added.json.result.app.id as string;
     assert.equal(added.json.result.key, null);
 
     const paused = await agw(home, "app", "update", created, "--status", "disabled");
-    assert.equal(paused.code, 0, JSON.stringify(paused.json.error));
+    assert.equal(paused.code, 0, cliOutcome(paused));
     assert.equal(paused.json.result.app.status, "disabled");
   } finally {
     if (created) {
       const removed = await agw(home, "app", "remove", created, "--yes");
-      assert.equal(removed.code, 0, JSON.stringify(removed.json.error));
+      assert.equal(removed.code, 0, cliOutcome(removed));
     }
     await rm(home, { recursive: true, force: true });
   }
@@ -175,11 +175,11 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     assert.equal(provider.status, 201, outcome(provider));
     providerId = provider.body.provider.id;
     const connected = await agw(home, "deployment", "connect", "--url", new URL(consoleUrl).origin);
-    assert.equal(connected.code, 0, JSON.stringify(connected.json.error));
+    assert.equal(connected.code, 0, cliOutcome(connected));
 
     // The price list itself, as v1's check reads it: a known provider, and a number for a known model.
     const models = await agw(home, "model", "list");
-    assert.equal(models.code, 0, JSON.stringify(models.json.error));
+    assert.equal(models.code, 0, cliOutcome(models));
     const prices = (models.json.result as { prices?: Record<string, Record<string, { input?: unknown }>> } | null)?.prices;
     assert.ok(prices?.openai, "agw model list gave no OpenAI prices");
     assert.equal(typeof prices.openai["gpt-4o-mini"]?.input, "number");
@@ -189,18 +189,36 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       assert.equal(app.status, 201, outcome(app));
       const id = app.body.app.id as string;
       created.push(id);
+      // The baseline: what the server saved, checked to hold every value the fixture set,
+      // so a setting dropped on creation is not compared against itself below.
       const before = await admin("GET", `/v2/admin/apps/${id}`);
+      assert.equal(before.status, 200, outcome(before));
+      assertHolds(before.body.app.config, config, `app ${index} config`);
+      const baseline = before.body.app.config;
       const renamed = await agw(home, "app", "update", id, "--name", `agw smoke every option ${index} renamed`);
-      assert.equal(renamed.code, 0, JSON.stringify(renamed.json.error));
+      assert.equal(renamed.code, 0, cliOutcome(renamed));
+      // What agw printed, and what the server holds after the rename: the baseline, whole.
+      assert.equal(renamed.json.result?.app?.name, `agw smoke every option ${index} renamed`);
+      assertHolds(renamed.json.result?.app?.config, baseline, `app ${index} config agw printed`);
+      assertHolds(baseline, renamed.json.result?.app?.config, `app ${index} config agw printed`);
       const after = await admin("GET", `/v2/admin/apps/${id}`);
+      assert.equal(after.status, 200, outcome(after));
       assert.equal(after.body.app.name, `agw smoke every option ${index} renamed`);
-      assert.deepEqual(after.body.app.config, before.body.app.config);
+      assertHolds(after.body.app.config, baseline, `app ${index} config after the rename`);
+      assertHolds(baseline, after.body.app.config, `app ${index} config after the rename`);
     }
   } finally {
+    // The remote clean-up and the local one each run, whatever the other did.
+    let remote: unknown = null;
+    try {
+      await cleanUp([
+        ...created.map((id) => () => admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`)),
+        ...(providerId === "" ? [] : [() => admin("DELETE", `/v2/admin/providers/${providerId}`)]),
+      ]);
+    } catch (error) {
+      remote = error;
+    }
     await rm(home, { recursive: true, force: true });
-    await cleanUp([
-      ...created.map((id) => () => admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`)),
-      ...(providerId === "" ? [] : [() => admin("DELETE", `/v2/admin/providers/${providerId}`)]),
-    ]);
+    if (remote !== null) throw remote;
   }
 });

@@ -17,7 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome } from "./support.ts";
+import { holds, outcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -34,7 +34,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
 }
 
 const run = Date.now().toString(36);
-const slug = `smoke-custom-${run}`;
+const slug = uniqueSlug("smoke-custom");
 const providerIds: string[] = [];
 const appIds: string[] = [];
 let appId = "";
@@ -60,9 +60,10 @@ before(async () => {
     pricing: { "local-llm": { input: 1, output: 2 } },
   });
   assert.equal(created.status, 201, outcome(created));
+  // Saved first, so a failed check below still removes it.
+  providerIds.push(created.body.provider.id);
   // Write-only: the create answer never holds the key it was given.
   assert.ok(!holds(created.body, "sk-mock-smoke-custom-key"), "the provider create response holds the submitted key");
-  providerIds.push(created.body.provider.id);
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke custom",
     config: {
@@ -70,7 +71,7 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["custom.openai-chat", "passthrough"] } } },
     },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
+  assert.equal(app.status, 201, outcome(app));
   appIds.push(app.body.app.id);
   ({ id: appId } = app.body.app);
   appKey = app.body.api_key.key;
@@ -105,7 +106,7 @@ test("a custom provider shows its base URL, key header and paths back, never its
   assert.equal(read.body.provider.type, "custom");
   assert.deepEqual(read.body.provider.auth, AUTH);
   assert.deepEqual(read.body.provider.passthrough, PATHS);
-  assert.ok(!JSON.stringify(read.body).includes("sk-mock-smoke-custom-key"));
+  assert.ok(!holds(read.body, "sk-mock-smoke-custom-key"), "the provider read response holds its key");
 });
 
 test("a path with an API style is metered by that style, at the connection's rates", { skip }, async () => {
@@ -140,7 +141,7 @@ test("a path the custom provider does not list is refused, and nothing is sent",
 
 test("saving refuses a {name} part where an endpoint's name is, and addresses the origin guard does not allow", { skip }, async () => {
   const attempt = (fields: Record<string, unknown>) =>
-    admin("POST", "/v2/admin/providers", { type: "custom", name: "Smoke refused", slug: `smoke-custom-no-${run}`, secret: "sk-mock-smoke-custom-key", auth: AUTH, ...fields });
+    admin("POST", "/v2/admin/providers", { type: "custom", name: "Smoke refused", slug: uniqueSlug("smoke-custom-no"), secret: "sk-mock-smoke-custom-key", auth: AUTH, ...fields });
   for (const fields of [
     // The base URL holds `v1`, so a part right after it stands where an endpoint's name is.
     { baseUrl: "https://api.openai.com/v1/", passthrough: [{ method: "GET", path: "{thing}/details" }] },
@@ -151,6 +152,6 @@ test("saving refuses a {name} part where an endpoint's name is, and addresses th
   ]) {
     const refused = await attempt(fields);
     if (refused.status === 201) providerIds.push(refused.body.provider.id);
-    assert.equal(refused.status, 400, JSON.stringify([fields, refused.body]));
+    assert.equal(refused.status, 400, `${JSON.stringify(fields)} ${outcome(refused)}`);
   }
 });

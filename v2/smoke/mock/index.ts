@@ -44,7 +44,8 @@
  * - `mock_delay_ms`: wait this long before answering (at most 120 s), for a
  *   slow provider. A raw body (Deepgram's audio) names it in the query.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
- * - `service_tier`: echoed in `x-mock-service-tier`, so a check sees the mode arrived.
+ * - `service_tier`: exactly `flex` sets `x-mock-service-tier: flex`, so a check
+ *   sees the mode arrived. Nothing else from it is echoed.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
  *   its closing event) or the transcript, before the usage, so a check can
@@ -62,10 +63,13 @@
  * Every answer also carries two marks, so a check can judge what the gateway
  * sent without the mock ever echoing a key:
  *
- * - `x-mock-key`: each provider key header that came in, with the first 16
- *   hex characters of its key's SHA-256, such as `x-api-key:0123456789abcdef`,
- *   or `missing`. A check hashes its own test key and compares, so the wrong
- *   key, or the right key in the wrong header, is seen (v1's key check).
+ * - `x-mock-key`: each provider key header that came in, with a fixed label
+ *   for its exact value, or `missing`. Only the public fixture keys in
+ *   `FIXTURE_KEYS` get a label of their own, with the scheme for
+ *   `authorization` (`authorization:bearer fixture-openai`,
+ *   `x-api-key:fixture-anthropic`); any other value is `unexpected`. So the
+ *   wrong key, the right key in the wrong header or with the wrong scheme is
+ *   seen (v1's key check), and nothing about any other value is given away.
  * - `x-mock-client-credentials`: where a client's credential (an `agw_` key or
  *   a signed token) came in: request header names, `url` and `body`, or
  *   `none`. The gateway must never hand one to a provider.
@@ -415,10 +419,26 @@ export function clientCredentialHeaders(headers: Headers): string[] {
   return [...headers.entries()].filter(([, value]) => CLIENT_CREDENTIAL.test(value)).map(([name]) => name).sort();
 }
 
+/** A URL's text as sent, and its path segments and query names and values decoded. */
+function urlTexts(raw: string): string[] {
+  const decode = (part: string): string => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  };
+  const url = new URL(raw);
+  const texts = [raw, ...url.pathname.split("/").map(decode)];
+  // URLSearchParams decodes both names and values (`+` as a space too).
+  for (const [name, value] of url.searchParams) texts.push(name, value);
+  return texts;
+}
+
 /** Where a request carried a client's credential: header names, then `url` and `body`. */
 export function clientCredentialPlaces(request: Request, body: ArrayBuffer | null): string[] {
   const places = clientCredentialHeaders(request.headers);
-  if (CLIENT_CREDENTIAL.test(request.url)) places.push("url");
+  if (urlTexts(request.url).some((text) => CLIENT_CREDENTIAL.test(text))) places.push("url");
   if (body !== null && CLIENT_CREDENTIAL.test(new TextDecoder().decode(body))) places.push("body");
   return places;
 }
@@ -426,20 +446,32 @@ export function clientCredentialPlaces(request: Request, body: ArrayBuffer | nul
 /** The headers a provider key comes in. */
 const KEY_HEADERS = ["authorization", "x-api-key", "x-goog-api-key", "xi-api-key"] as const;
 
-/** The first 16 hex characters of a key's SHA-256: enough to tell keys apart, never the key. */
-export async function keyFingerprint(key: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
-  return [...digest.slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+/**
+ * The public test keys the smoke checks give their connections, and the label
+ * each is reported as. Public on purpose: they are in this repository.
+ */
+export const FIXTURE_KEYS: ReadonlyMap<string, string> = new Map([
+  ["sk-mock-smoke-key", "fixture-smoke"],
+  ["sk-mock-smoke-openai", "fixture-openai"],
+  ["sk-mock-smoke-anthropic", "fixture-anthropic"],
+  ["sk-mock-smoke-gemini", "fixture-gemini"],
+  ["sk-mock-smoke-openrouter", "fixture-openrouter"],
+]);
+
+/** The label for one key header's exact value: the scheme and fixture label, or `unexpected`. */
+export function keyLabel(name: string, value: string): string {
+  if (name !== "authorization") return FIXTURE_KEYS.get(value) ?? "unexpected";
+  const parts = /^(Bearer|Token|Key) (.+)$/u.exec(value);
+  const label = parts === null ? undefined : FIXTURE_KEYS.get(parts[2]!);
+  return label === undefined ? "unexpected" : `${parts![1]!.toLowerCase()} ${label}`;
 }
 
-/** `x-mock-key`: each key header that came in, with its key's fingerprint, or `missing`. */
-export async function keyMarks(headers: Headers): Promise<string> {
+/** `x-mock-key`: each key header that came in, with its label, or `missing`. */
+export function keyMarks(headers: Headers): string {
   const marks: string[] = [];
   for (const name of KEY_HEADERS) {
     const value = headers.get(name);
-    if (value === null) continue;
-    const key = name === "authorization" ? value.replace(/^(?:Bearer|Token|Key) /u, "") : value;
-    marks.push(`${name}:${await keyFingerprint(key)}`);
+    if (value !== null) marks.push(`${name}:${keyLabel(name, value)}`);
   }
   return marks.length === 0 ? "missing" : marks.join(",");
 }
@@ -450,7 +482,7 @@ const mock = {
     const body = request.body === null ? null : await request.arrayBuffer();
     const forwarded = body === null ? request : new Request(request, { body });
     const leaked = clientCredentialPlaces(request, body);
-    const keys = await keyMarks(request.headers);
+    const keys = keyMarks(request.headers);
     const response = await answer(forwarded);
     // A WebSocket upgrade or an opaque answer keeps its own headers.
     if (response.status === 101) return response;
@@ -554,7 +586,7 @@ async function answer(request: Request): Promise<Response> {
   const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
   for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
   // The service mode the request asked for, so a check can see it reached the provider.
-  if (typeof body.service_tier === "string") response.headers.set("x-mock-service-tier", body.service_tier);
+  if (body.service_tier === "flex") response.headers.set("x-mock-service-tier", "flex");
   // Vercel AI Gateway's spend attribution, for the smoke checks to see.
   const tags = request.headers.get("ai-reporting-tags");
   if (tags !== null) response.headers.set("x-mock-reporting-tags", tags);

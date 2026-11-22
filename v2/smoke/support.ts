@@ -7,7 +7,7 @@
  * gateway token or a provider key.
  */
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 /** A slug no other run picks: the time, then a random part. */
 export function uniqueSlug(prefix: string): string {
@@ -25,6 +25,25 @@ export function outcome(response: { status: number; body: unknown }): string {
   return `answered ${response.status} (${errorCode(response.body)})`;
 }
 
+/** What a failed check may say about an `agw --json` run: its exit code and error code. */
+export function cliOutcome(run: { code: number; json: unknown }): string {
+  return `exited ${run.code} (${errorCode(run.json)})`;
+}
+
+/**
+ * Fails unless `actual` holds every value `expected` sets, at the same place:
+ * objects may hold more, arrays and other values must be equal. Says only
+ * where it differs, never the values, since settings can name a key's header.
+ */
+export function assertHolds(actual: unknown, expected: unknown, where = "config"): void {
+  if (expected !== null && typeof expected === "object" && !Array.isArray(expected)) {
+    assert.ok(actual !== null && typeof actual === "object" && !Array.isArray(actual), `${where} is not an object`);
+    for (const [name, value] of Object.entries(expected)) assertHolds((actual as Record<string, unknown>)[name], value, `${where}.${name}`);
+    return;
+  }
+  assert.ok(JSON.stringify(actual) === JSON.stringify(expected), `${where} is not what was saved`);
+}
+
 /** The same for a raw response, read from a copy so the caller can still read it. */
 export async function responseOutcome(response: Response): Promise<string> {
   let body: unknown = null;
@@ -36,9 +55,13 @@ export async function responseOutcome(response: Response): Promise<string> {
   return outcome({ status: response.status, body });
 }
 
-/** The mock's `x-mock-key` for a test key sent in `header`: never the key itself. */
-export function keyMark(header: string, key: string): string {
-  return `${header}:${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+/**
+ * The mock's `x-mock-key` for a fixture key's `label` sent in `header`, as
+ * `smoke/mock/index.ts` (`FIXTURE_KEYS`) reports it: in `authorization`, after
+ * the `Bearer` scheme.
+ */
+export function keyMark(header: string, label: string): string {
+  return header === "authorization" ? `${header}:bearer ${label}` : `${header}:${label}`;
 }
 
 /** Whether a parsed body holds `secret` anywhere, said without printing either. */

@@ -26,6 +26,10 @@ const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEM
 
 const ISSUER = "https://smoke.app-ai-gateway.invalid";
 const PROVIDER_KEY = "sk-mock-smoke-key";
+/** Each user's limits on this app, away from their defaults, so `/me` shows the configured values. */
+const PER_MINUTE = 60;
+const PER_DAY = 1000;
+const BUDGET_NANO = 5_000_000_000;
 const AUDIENCE = "app-ai-gateway-smoke";
 const CLIENT_SDK = "app-ai-gateway-swift/1.7.0";
 
@@ -102,6 +106,12 @@ before(async () => {
         },
       },
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
+      limits: {
+        per_user: {
+          requests: { per_minute: PER_MINUTE, per_day: PER_DAY },
+          spending: { monthly_nano: BUDGET_NANO, scope: "user" },
+        },
+      },
     },
   });
   assert.equal(app.status, 201, outcome(app));
@@ -127,18 +137,24 @@ test("a signed-in user exchanges a token, calls a provider, and reads /me", { sk
   // The gateway token is the gateway's own: it never reaches the provider,
   // and the provider gets the connection's key, in its own header.
   assert.equal(response.headers.get("x-mock-client-credentials"), "none");
-  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", PROVIDER_KEY));
+  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"));
   await response.arrayBuffer();
 
   const me = await fetch(new URL(`/v2/apps/${appId}/me`, base), { headers: { authorization: `Bearer ${token}` } });
   assert.equal(me.status, 200, await responseOutcome(me));
   const standing = (await me.json()) as { user_id: string; limits: Record<string, unknown> };
-  // The user is the issuer's subject, and the limits are the ones apps and the Swift package read.
+  // The user is the issuer's subject, and the limits are the app's configured ones, as apps and the Swift package read them.
   assert.equal(standing.user_id, "smoke-user");
-  for (const field of ["requests_today", "requests_remaining", "requests_per_minute", "requests_per_day", "monthly_cost_usd", "monthly_budget_usd", "budget_scope", "blocked"]) {
-    assert.ok(field in standing.limits, `/me has no limits.${field}`);
-  }
-  assert.equal(standing.limits.blocked, false);
+  const { limits } = standing;
+  assert.equal(limits.requests_per_minute, PER_MINUTE);
+  assert.equal(limits.requests_per_day, PER_DAY);
+  assert.equal(limits.monthly_budget_usd, BUDGET_NANO / 1e9);
+  assert.equal(limits.budget_scope, "user");
+  assert.equal(limits.blocked, false);
+  // The call above is counted, and what is left is the day's limit less what was used.
+  assert.ok(typeof limits.requests_today === "number" && limits.requests_today >= 1, "/me counts no request today");
+  assert.equal(limits.requests_remaining, PER_DAY - (limits.requests_today as number));
+  assert.ok(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
 });
 
 test("the app key alone is refused once users must sign in", { skip }, async () => {

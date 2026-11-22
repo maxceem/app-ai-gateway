@@ -47,12 +47,12 @@ let slug = "";
 const run = Date.now().toString(36);
 
 /** An app of its own, so its day totals hold only this check's calls. */
-async function newApp(name: string): Promise<{ id: string; key: string }> {
+async function newApp(name: string, model = "gpt-4o-mini"): Promise<{ id: string; key: string }> {
   const app = await admin("POST", "/v2/admin/apps", {
     name,
     config: {
       authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: [model] } } },
     },
   });
   assert.equal(app.status, 201, outcome(app));
@@ -87,7 +87,7 @@ function chat(app: { id: string; key: string }, trace: string, body: Record<stri
 /** What reached the provider: the connection's key in its header, and no client credential anywhere. */
 function assertProviderSawOnlyItsKey(response: Response): void {
   assert.equal(response.headers.get("x-mock-client-credentials"), "none");
-  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", PROVIDER_KEY));
+  assert.equal(response.headers.get("x-mock-key"), keyMark("authorization", "fixture-smoke"));
 }
 
 /** The charges of the request sent with `trace`, once written: they are written after the response. */
@@ -149,30 +149,58 @@ test("the day's totals split one failed and one served call by status", { skip, 
   assert.deepEqual(rows, { failed: { charges: 1, failed: 1 }, ok: { charges: 1, failed: 0 } });
 });
 
-// gpt-4o-mini has a price but none for flex: the request is served at the
+type ListPrice = { input?: number; output?: number; cached_input?: number; modes?: Record<string, unknown> };
+
+/**
+ * An OpenAI model with a standard token price and none for flex, read from the
+ * live price list, so a flex price added to one model never fails this check:
+ * gpt-4o-mini while it qualifies, else the first `gpt-` chat model in name
+ * order. Null when none qualifies.
+ */
+function modelWithoutFlexPrice(listed: Record<string, ListPrice>): string | null {
+  const qualifies = (model: string) => {
+    const price = listed[model];
+    return price !== undefined && typeof price.input === "number" && typeof price.output === "number" && price.modes?.flex === undefined;
+  };
+  if (qualifies("gpt-4o-mini")) return "gpt-4o-mini";
+  return Object.keys(listed).sort().find((model) => model.startsWith("gpt-") && qualifies(model)) ?? null;
+}
+
+// A model with a price but none for flex: the request is served at the
 // closest known price, never below the standard one, and marked an estimate
-// (AGENTS.md). The price list is read first, so a flex price added later
-// says this fixture needs another mode, not that the gateway is wrong.
-test("a request in a service mode with no price is served, reaches the provider in that mode, and is charged at least the standard price", { skip, timeout: 90_000 }, async () => {
+// (AGENTS.md). The standard price is worked out from the provider's own
+// usage, not from what the charge recorded, so a gateway that undercounts
+// tokens is caught too.
+test("a request in a service mode with no price is served, reaches the provider in that mode, and is charged at least the standard price", { skip, timeout: 90_000 }, async (t) => {
   const prices = await admin("GET", "/v2/admin/prices");
   assert.equal(prices.status, 200, outcome(prices));
-  const price = prices.body.prices.openai?.["gpt-4o-mini"] as { input: number; output: number; cached_input?: number; modes?: Record<string, unknown> } | undefined;
-  assert.ok(price, "gpt-4o-mini is no longer in the price list: pick another fixture model");
-  assert.equal(price.modes?.flex, undefined, "gpt-4o-mini now has a flex price: pick a mode with none for this check");
+  const listed = (prices.body.prices.openai ?? {}) as Record<string, ListPrice>;
+  const model = modelWithoutFlexPrice(listed);
+  if (model === null) {
+    t.skip("every OpenAI model in the price list now has a flex price: this check needs a mode with none");
+    return;
+  }
+  const price = listed[model]!;
 
-  const app = await newApp("Smoke provider errors flex");
+  const app = await newApp("Smoke provider errors flex", model);
   const trace = `smoke-flex-${run}`;
-  const response = await chat(app, trace, { service_tier: "flex" });
+  const response = await chat(app, trace, { model, service_tier: "flex" });
   assert.equal(response.status, 200, await responseOutcome(response));
   assert.equal(response.headers.get("x-mock-service-tier"), "flex");
-  await response.arrayBuffer();
+  // What the provider counted: OpenAI's prompt tokens include the cached ones.
+  const usage = ((await response.json()) as { usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
+  const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
+  const uncached = usage.prompt_tokens - cached;
+  assert.ok(uncached > 0 && usage.completion_tokens > 0, "the provider answered no usage");
+
   const [charge] = await chargesOf(app.id, trace);
   assert.equal(charge.status, "ok");
   assert.equal(charge.price_is_estimate, true);
+  // The charge holds the provider's counts: input without the cached tokens, which are apart.
+  assert.equal(charge.input_tokens, uncached);
+  assert.equal(charge.cached_input_tokens ?? 0, cached);
+  assert.equal(charge.output_tokens, usage.completion_tokens);
   // Dollars per million tokens are nano-dollars per thousandth of a token: x 1,000 per token.
-  const cached = charge.cached_input_tokens ?? 0;
-  const standard =
-    (charge.input_tokens - cached) * price.input * 1000 + cached * (price.cached_input ?? price.input) * 1000 + charge.output_tokens * price.output * 1000;
-  assert.ok(charge.input_tokens > 0 && charge.output_tokens > 0, "the charge has no measured tokens");
+  const standard = uncached * price.input! * 1000 + cached * (price.cached_input ?? price.input!) * 1000 + usage.completion_tokens * price.output! * 1000;
   assert.ok(charge.cost_nano >= Math.floor(standard), `charged ${charge.cost_nano} nano-dollars, below the standard ${standard}`);
 });

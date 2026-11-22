@@ -18,7 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { outcome } from "./support.ts";
+import { outcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -38,7 +38,7 @@ const run = Date.now().toString(36);
 const providerIds: string[] = [];
 let appId = "";
 let appKey = "";
-const slugs = { working: `smoke-ok-${run}`, busy: `smoke-503-${run}`, refusing: `smoke-400-${run}` };
+const slugs = { working: uniqueSlug("smoke-ok"), busy: uniqueSlug("smoke-503"), refusing: uniqueSlug("smoke-400") };
 
 before(async () => {
   if (skip !== false) return;
@@ -52,7 +52,7 @@ before(async () => {
       secret: "sk-mock-smoke-key",
       baseUrl: urls[name],
     });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.status, 201, outcome(created));
     providerIds.push(created.body.provider.id);
   }
   const app = await admin("POST", "/v2/admin/apps", {
@@ -69,7 +69,7 @@ before(async () => {
       },
     },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
+  assert.equal(app.status, 201, outcome(app));
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -102,7 +102,7 @@ async function usageOf(user: string, charges: number): Promise<{ charges: number
 test("a rewritten model is sent and billed as its target", { skip }, async () => {
   const user = `rewrite-${run}`;
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.status, 200, outcome(answer));
   // The mock answers with the model it was sent.
   assert.equal(answer.body.model, "gpt-4o-mini");
   const usage = await usageOf(user, 1);
@@ -113,7 +113,7 @@ test("a rewritten model is sent and billed as its target", { skip }, async () =>
 test("a preset falls back after a 503: two charges, the failed one with no cost", { skip }, async () => {
   const user = `fallback-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/chain`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.status, 200, outcome(answer));
   const usage = await usageOf(user, 2);
   assert.equal(usage.charges, 2);
   assert.equal(usage.failed, 1);

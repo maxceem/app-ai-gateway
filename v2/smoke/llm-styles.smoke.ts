@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { keyMark } from "./support.ts";
+import { keyMark, outcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -49,9 +49,10 @@ let appKey = "";
 before(async () => {
   if (skip !== false) return;
   for (const type of Object.keys(CONNECTIONS) as Type[]) {
-    const slug = `smoke-${type}-${run}`;
-    const created = await admin("POST", "/v2/admin/providers", { type, name: `Smoke ${type}`, slug, secret: "sk-mock-smoke-key", baseUrl: mockUrl });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const slug = uniqueSlug(`smoke-${type}`);
+    // Each connection its own fixture key, so a gateway that sends another connection's key is seen.
+    const created = await admin("POST", "/v2/admin/providers", { type, name: `Smoke ${type}`, slug, secret: `sk-mock-smoke-${type}`, baseUrl: mockUrl });
+    assert.equal(created.status, 201, outcome(created));
     providerIds.push(created.body.provider.id);
     slugs[type] = slug;
   }
@@ -60,7 +61,7 @@ before(async () => {
     name: "Smoke LLM styles",
     config: { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers } },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
+  assert.equal(app.status, 201, outcome(app));
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });
@@ -81,8 +82,8 @@ async function call(type: Type, path: string, body: Record<string, unknown>, use
   });
   const text = await response.text();
   assert.equal(response.status, 200, `answered ${response.status}`);
-  // The connection's key, alone and in its provider's own header; never the app's key.
-  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], "sk-mock-smoke-key"));
+  // The connection's own key, alone, in its provider's own header and scheme; never the app's key.
+  assert.equal(response.headers.get("x-mock-key"), keyMark(KEY_HEADERS[type], `fixture-${type}`));
   assert.equal(response.headers.get("x-mock-client-credentials"), "none");
   return text;
 }

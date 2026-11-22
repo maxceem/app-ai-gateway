@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome } from "./support.ts";
+import { holds, outcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -36,7 +36,7 @@ let slug = "";
 
 before(async () => {
   if (skip !== false) return;
-  slug = `smoke-${Date.now().toString(36)}`;
+  slug = uniqueSlug("smoke");
   const provider = await admin("POST", "/v2/admin/providers", {
     type: "openai",
     name: "Smoke mock",
@@ -45,10 +45,12 @@ before(async () => {
     baseUrl: mockUrl,
   });
   assert.equal(provider.status, 201, outcome(provider));
-  assert.equal(provider.body.provider.secretHint, "-key");
-  // Write-only: the create answer holds the hint, never the key itself.
-  assert.ok(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
+  // Saved first, so a failed check below still removes it.
   providerId = provider.body.provider.id;
+  // Write-only: the create answer holds the hint, never the key itself. Checked
+  // before the hint, so a key copied into the hint is never printed.
+  assert.ok(!holds(provider.body, "sk-mock-smoke-key"), "the provider create response holds the submitted key");
+  assert.ok(provider.body.provider.secretHint === "-key", "the provider create response has the wrong key hint");
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke first call",
     config: {
@@ -56,7 +58,7 @@ before(async () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
+  assert.equal(app.status, 201, outcome(app));
   appId = app.body.app.id;
   appKey = app.body.api_key.key;
 });

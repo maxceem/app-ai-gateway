@@ -5,7 +5,6 @@
  * credential that reached the provider.
  */
 import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
 import mock, { clientCredentialHeaders, clientCredentialPlaces, jwksFromPath, keyMarks } from "../smoke/mock/index.ts";
 import { keyMark } from "../smoke/support.ts";
 
@@ -61,36 +60,55 @@ describe("the smoke mock", () => {
     expect(clientCredentialPlaces(new Request("https://mock.test/v1/models"), null)).toEqual([]);
   });
 
-  it("marks each provider key header with a fingerprint of its key, never the key", async () => {
-    const fingerprint = createHash("sha256").update("sk-mock-smoke-key").digest("hex").slice(0, 16);
-    expect(await keyMarks(new Headers({ authorization: "Bearer sk-mock-smoke-key" }))).toBe(`authorization:${fingerprint}`);
-    expect(await keyMarks(new Headers({ "x-api-key": "sk-mock-smoke-key" }))).toBe(`x-api-key:${fingerprint}`);
-    expect(await keyMarks(new Headers({ "x-goog-api-key": "sk-mock-other" }))).not.toBe(`x-goog-api-key:${fingerprint}`);
-    expect(await keyMarks(new Headers({ authorization: "Bearer a", "x-api-key": "b" }))).toMatch(/^authorization:[0-9a-f]{16},x-api-key:[0-9a-f]{16}$/u);
-    expect(await keyMarks(new Headers())).toBe("missing");
-    // What a smoke check compares with: the same fingerprint, worked out from its own test key.
-    expect(keyMark("x-api-key", "sk-mock-smoke-key")).toBe(`x-api-key:${fingerprint}`);
+  it("marks a client credential that was percent-encoded in the path or the query", () => {
+    expect(clientCredentialPlaces(new Request("https://mock.test/v1/models?t=%61gw_app_0123456789"), null)).toEqual(["url"]);
+    expect(clientCredentialPlaces(new Request("https://mock.test/v1/%61gw_app_0123456789/models"), null)).toEqual(["url"]);
+    expect(clientCredentialPlaces(new Request("https://mock.test/v1/models?%61gw_app_0123456789=1"), null)).toEqual(["url"]);
+    // A path part that does not decode is looked at as it came.
+    expect(clientCredentialPlaces(new Request("https://mock.test/v1/%E0%A4%A/models"), null)).toEqual([]);
+  });
+
+  it("marks each provider key header with a fixed label for a fixture key, and `unexpected` for anything else", async () => {
+    expect(keyMarks(new Headers({ authorization: "Bearer sk-mock-smoke-openai" }))).toBe("authorization:bearer fixture-openai");
+    expect(keyMarks(new Headers({ authorization: "Token sk-mock-smoke-openai" }))).toBe("authorization:token fixture-openai");
+    expect(keyMarks(new Headers({ "x-api-key": "sk-mock-smoke-anthropic" }))).toBe("x-api-key:fixture-anthropic");
+    // A fixture key with a scheme where none belongs, an unknown key, or one only the prototype knows.
+    expect(keyMarks(new Headers({ "x-goog-api-key": "Bearer sk-mock-smoke-gemini" }))).toBe("x-goog-api-key:unexpected");
+    expect(keyMarks(new Headers({ authorization: "Bearer sk-live-0123456789" }))).toBe("authorization:unexpected");
+    expect(keyMarks(new Headers({ authorization: "sk-mock-smoke-key" }))).toBe("authorization:unexpected");
+    expect(keyMarks(new Headers({ "x-api-key": "constructor" }))).toBe("x-api-key:unexpected");
+    expect(keyMarks(new Headers({ authorization: "Bearer a", "x-api-key": "b" }))).toBe("authorization:unexpected,x-api-key:unexpected");
+    expect(keyMarks(new Headers())).toBe("missing");
+    // What a smoke check compares with.
+    expect(keyMark("authorization", "fixture-openai")).toBe("authorization:bearer fixture-openai");
+    expect(keyMark("x-api-key", "fixture-anthropic")).toBe("x-api-key:fixture-anthropic");
 
     const answered = await mock.fetch(
       new Request("https://mock.test/v1/messages", {
         method: "POST",
-        headers: { "x-api-key": "sk-mock-smoke-key", "content-type": "application/json" },
+        headers: { "x-api-key": "sk-mock-smoke-anthropic", "content-type": "application/json" },
         body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 16, messages: [{ role: "user", content: "Hi" }] }),
       }),
     );
     expect(answered.status).toBe(200);
-    expect(answered.headers.get("x-mock-key")).toBe(`x-api-key:${fingerprint}`);
-    expect(JSON.stringify([...answered.headers])).not.toContain("sk-mock-smoke-key");
+    expect(answered.headers.get("x-mock-key")).toBe("x-api-key:fixture-anthropic");
+    expect(JSON.stringify([...answered.headers])).not.toContain("sk-mock-smoke-anthropic");
   });
 
-  it("says which service mode reached it", async () => {
-    const answered = await mock.fetch(
-      new Request("https://mock.test/v1/chat/completions", {
-        method: "POST",
-        headers: { authorization: "Bearer sk-mock-smoke-key", "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-4o-mini", service_tier: "flex", messages: [{ role: "user", content: "Hi" }] }),
-      }),
-    );
-    expect(answered.headers.get("x-mock-service-tier")).toBe("flex");
+  it("says flex reached it, and echoes no other service mode", async () => {
+    const tier = async (value: unknown) =>
+      (
+        await mock.fetch(
+          new Request("https://mock.test/v1/chat/completions", {
+            method: "POST",
+            headers: { authorization: "Bearer sk-mock-smoke-key", "content-type": "application/json" },
+            body: JSON.stringify({ model: "gpt-4o-mini", service_tier: value, messages: [{ role: "user", content: "Hi" }] }),
+          }),
+        )
+      ).headers.get("x-mock-service-tier");
+    expect(await tier("flex")).toBe("flex");
+    expect(await tier("priority")).toBeNull();
+    expect(await tier("sk-live-0123456789")).toBeNull();
+    expect(await tier("flex\nx-evil: 1")).toBeNull();
   });
 });
