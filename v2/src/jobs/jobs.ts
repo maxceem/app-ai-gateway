@@ -31,7 +31,7 @@ import { timeOfOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
 import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
-import { USAGE_DETAIL_RETENTION_DAYS } from "../ledger/retention.ts";
+import { LEDGER_FREEZE_DAYS } from "../ledger/freeze.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
 import { writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
@@ -696,16 +696,16 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
 }
 
 /**
- * Whether usage retention may already have deleted the job's charges: it
- * started longer ago than charges are kept. The gateway's job id is a
- * time-ordered id (`timeOrderedId`), so this needs no lookup. Such a job gets
- * no new open work ({@link keepFigure}): open work would hold its owner back
- * from retention while part of its ledger may already be gone. A correction
- * of its charges is refused in the ledger itself (`../ledger/corrections.ts`).
+ * Whether the job started before its ledger could freeze (`../ledger/freeze.ts`).
+ * The gateway's job id is a time-ordered id (`timeOrderedId`), so this needs
+ * no lookup. Only used where the job's estimate is already gone, so it never
+ * drops a figure the ledger could still settle; and to say why a figure was
+ * not kept. Whether anything is booked is decided only inside the ledger's
+ * own inserts.
  */
 export function jobRetired(job: string, now: number): boolean {
   const started = timeOfOrderedId(job);
-  return started !== null && started < now - USAGE_DETAIL_RETENTION_DAYS * 86_400_000;
+  return started !== null && started < now - LEDGER_FREEZE_DAYS * 86_400_000;
 }
 
 /**
@@ -763,17 +763,15 @@ export const FIGURE_D1_DEADLINE_MS = 3_000;
  * Keeps a figure that could not settle yet, for the sweep: as its own row in
  * D1; while D1 cannot take it, in the failed-write store; when neither works,
  * logged in full, to be settled by hand. True when it was kept somewhere the
- * sweep will find it, or needs no keeping: a job past the retention window.
+ * sweep will find it, or needs no keeping: the ledger itself declines a figure
+ * for a job settled or frozen (`../ledger/write.ts`), and that decides alone.
  */
 export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
-  if (jobRetired(ref.job, now)) {
-    // Past the window: nothing will settle against it again, so there is nothing to keep.
-    log("warn", "job_retired", { app: ref.appId, job: ref.job });
-    return true;
-  }
   const row = figureWork(ref, facts, now);
   try {
-    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");
+    const written = await withDeadline(writeOpenWork(env.DB, [row], now), FIGURE_D1_DEADLINE_MS, "saving the figure");
+    // Not written for an old job: its ledger is frozen, and nothing more will settle against it.
+    if (written === 0 && jobRetired(ref.job, now)) log("warn", "job_retired", { app: ref.appId, job: ref.job });
     return true;
   } catch (error) {
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });

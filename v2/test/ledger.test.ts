@@ -201,7 +201,7 @@ describe("the failed-write store", () => {
     vi.useFakeTimers();
     try {
       const stalled = { prepare: (query: string) => env.DB.prepare(query), batch: () => new Promise<never>(() => undefined) } as unknown as D1Database;
-      const retry = retryStored(stalled, [entry()], []);
+      const retry = retryStored(stalled, [entry()], [], 0);
       const outcome = retry.then(
         () => "written",
         (error: unknown) => (error as Error).message,

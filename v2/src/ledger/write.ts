@@ -16,6 +16,7 @@
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { freezeCutoffDay, ownerTakesBookingsSql } from "./freeze.ts";
 import type { NanoDollars } from "../money.ts";
 import type {
   ChargeKind,
@@ -151,16 +152,27 @@ const INSERT_CHARGE = `INSERT INTO charge (${CHARGE_COLUMNS.map(([column]) => co
  *   brings back work the sweep or a settlement has since ended.
  * - A job's row is not written once the job is settled (its
  *   `settle:job:<job>` correction exists).
+ * - No row is written for an owner that has charges but no longer takes
+ *   bookings (`./freeze.ts`): open work would make it live again, and let a
+ *   correction be worked out against a ledger retention may already have cut.
+ *   This covers a figure replayed from the failed-write store after its
+ *   job's settlement was deleted.
  */
 const INSERT_OPEN_WORK = `INSERT INTO open_work
   (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?
   WHERE NOT (?5 = 'job' AND EXISTS (SELECT 1 FROM charge WHERE id = 'settle:job:' || ?6))
     AND (?7 IS NULL OR NOT EXISTS (SELECT 1 FROM charge WHERE id = ?7))
+    AND ${ownerTakesBookingsSql("?5", "?6", "?11")}
   ON CONFLICT(id) DO NOTHING`;
 
-/** The statement that writes one open-work row, once: a row already there is never changed. */
-function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStatement {
+/**
+ * The statement that writes one open-work row, once: a row already there is
+ * never changed. `writtenAt` is when it is written, for the freeze: a row
+ * replayed from the failed-write store is judged at its replay, not at the
+ * time it was first made.
+ */
+function openWorkStatement(db: D1Database, work: OpenWorkRow, writtenAt: number = work.createdAt): D1PreparedStatement {
   return db
     .prepare(INSERT_OPEN_WORK)
     .bind(
@@ -174,30 +186,36 @@ function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStateme
       work.detail === null ? null : JSON.stringify(work.detail),
       work.dueAt,
       work.createdAt,
+      freezeCutoffDay(Math.max(work.createdAt, writtenAt)),
     );
 }
 
-/** Writes open-work rows that have no charge (a job's saved figure). Throws when D1 cannot take them. */
-export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<void> {
-  if (rows.length === 0) return;
-  await db.batch(rows.map((row) => openWorkStatement(db, row)));
+/**
+ * Writes open-work rows that have no charge (a job's saved figure). Returns
+ * how many were written: a row already there, or for an owner settled or
+ * frozen, is not. Throws when D1 cannot take them.
+ */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[], now?: number): Promise<number> {
+  if (rows.length === 0) return 0;
+  const results = await db.batch(rows.map((row) => openWorkStatement(db, row, now)));
+  return results.reduce((written, result) => written + (result.meta.changes ?? 0), 0);
 }
 
 /** The statements that write some entries, in one batch. */
-export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]): D1PreparedStatement[] {
+export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[], now?: number): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const { charge, openWork } of entries) {
     // The work first: it is written only while its charge is not there yet (see INSERT_OPEN_WORK).
-    for (const work of openWork) statements.push(openWorkStatement(db, work));
+    for (const work of openWork) statements.push(openWorkStatement(db, work, now));
     statements.push(db.prepare(INSERT_CHARGE).bind(...CHARGE_COLUMNS.map(([, read]) => read(charge))));
   }
   return statements;
 }
 
 /** Writes entries to D1 in one batch. Throws if D1 refuses or fails. */
-export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[]): Promise<void> {
+export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now?: number): Promise<void> {
   if (entries.length === 0) return;
-  await db.batch(ledgerStatements(db, entries));
+  await db.batch(ledgerStatements(db, entries, now));
 }
 
 /** How long `recordLedgerEntry` waits for D1 before the entry goes to the failed-write store. */

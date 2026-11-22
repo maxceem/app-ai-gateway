@@ -102,9 +102,11 @@ The hourly cron (`src/maintenance/nightly.ts`) also runs two daily jobs, each in
   app had its turn, it logs `conversation_retention_incomplete` as a warning and goes on the next night where it stopped.
 - At 04:17 UTC it runs the nightly maintenance. This deletes auth and rejection events after 90
   days, and detailed usage after 90 days: charges, settled sessions and budget totals. Once all of
-  a call's, job's or session's charges are past 90 days, nothing more is booked against it, and its
-  corrections are deleted before its other charges, so a user's usage never shows a correction
-  without its charge. Day totals stay 400 days, then move into month totals.
+  a call's, job's or session's charges are past 60 days and nothing is left to settle it, nothing
+  more is booked against it (`ledger_correction_frozen`, `job_retired`): 30 days before retention
+  may delete it, so a late result can never be counted twice. Its corrections are deleted before
+  its other charges, so a user's usage never shows a correction without its charge. Day totals stay
+  400 days, then move into month totals.
   It also logs `ledger_sessions_stuck_open` when a session past 90 days is still open with nothing
   left to settle it: it is kept, with its charges, until someone looks.
 

@@ -42,9 +42,10 @@ export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
  * falls through to its backoff instead of hanging. Stable ids make a late
  * commit safe.
  */
-export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[]): Promise<void> {
-  await withDeadline(writeToLedger(db, entries), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
-  await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<void> {
+  // `now`: open work is judged by the ledger's freeze at its replay (`../ledger/freeze.ts`).
+  await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+  await withDeadline(writeOpenWork(db, rows, now), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -125,6 +126,7 @@ export class ChargeStore extends DurableObject<Env> {
         this.env.DB,
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
+        now,
       );
     } catch (error) {
       const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(FIRST_RETRY_DELAY_MS, this.delay() * 2));

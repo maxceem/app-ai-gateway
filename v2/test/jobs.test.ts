@@ -10,7 +10,7 @@ import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
 import { timeOrderedId } from "../src/core/ids.ts";
-import { USAGE_DETAIL_RETENTION_DAYS } from "../src/ledger/retention.ts";
+import { LEDGER_FREEZE_DAYS } from "../src/ledger/freeze.ts";
 import { applyFinalResult, boundedJson, checkJob, fetchJob, jobContext, FIGURE_D1_DEADLINE_MS, figureWork, JOB_BODY_READ_DEADLINE_MS, JOB_POLL_TIMEOUT_MS, jobCheckId, jobEstimate, jobFinalFigure, providerRequestId, readResultFacts, settleFigure, type JobRef } from "../src/jobs/jobs.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, writeOpenWork } from "../src/ledger/write.ts";
 import { MAX_PENDING } from "../src/do/ChargeStore.ts";
@@ -498,17 +498,17 @@ describe("the sweep and the four failure cases", () => {
     expect((await charges(appId)).map((row) => row.cost_nano)).toEqual([50_000_000, 25_000_000]);
   });
 
-  it("keeps no figure for a job older than charges are kept: its estimate is gone, not on its way", async () => {
+  it("keeps no figure for a job older than its ledger can freeze: its estimate is gone, not on its way", async () => {
     const now = Date.parse("2027-06-15T04:17:00Z");
     const figures = async (job: string) =>
       (await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ?").bind(job).all()).results.map((row) => row.id);
     const facts = { status: 200, units: 3, outputs: { images: 0 } };
-    const retired: JobRef = { job: timeOrderedId(now - (USAGE_DETAIL_RETENTION_DAYS + 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
+    const retired: JobRef = { job: timeOrderedId(now - (LEDGER_FREEZE_DAYS + 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
     expect(await applyFinalResult(env, retired, facts, now)).toBe("estimate_kept");
     expect(await figures(retired.job)).toEqual([]);
     expect(logged("job_retired")).toBe(true);
     // A job inside the window whose estimate is not in the ledger yet still keeps its figure.
-    const recent: JobRef = { job: timeOrderedId(now - (USAGE_DETAIL_RETENTION_DAYS - 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
+    const recent: JobRef = { job: timeOrderedId(now - (LEDGER_FREEZE_DAYS - 1) * 86_400_000), accountId: ACCOUNT_ID, appId: "app_retired" };
     expect(await applyFinalResult(env, recent, facts, now)).toBe("done");
     expect(await figures(recent.job)).toHaveLength(1);
     // Not left for the sweeps of the tests after this one.
@@ -651,7 +651,7 @@ function onlyThisApp(appId: string) {
 }
 
 describe("a figure is its own row, written once and never changed (review fixes, round 3)", () => {
-  function attemptFor(appId: string, requestId: string): CallAttempt {
+  function attemptFor(appId: string, requestId: string, startedAt = 1_000): CallAttempt {
     return {
       requestId,
       seq: 1,
@@ -666,16 +666,20 @@ describe("a figure is its own row, written once and never changed (review fixes,
       price: { price: { rates: { per_unit: 25_000_000 } } as never, source: "list_rate" },
       reportsCost: false,
       requestedMode: { tier: "standard", region: "global" } as never,
-      startedAt: 1_000,
+      startedAt,
       appVersion: null,
       clientTraceId: null,
       requestUsage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, noTokens: true, units: { model_units: 2000 }, estimatedUnits: ["model_units"] as never },
     };
   }
 
-  /** A 2-unit estimate, with a check row when it has a job id. */
-  const estimateOf = (appId: string, job: string, jobId: string | null = null) =>
-    jobEstimate(attemptFor(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: jobId, now: 2_000 });
+  /**
+   * A 2-unit estimate, with a check row when it has a job id. `at`: a figure
+   * the failed-write store replays is judged by the ledger's freeze at the
+   * replay, so a test that replays dates its estimate then, not in 1970.
+   */
+  const estimateOf = (appId: string, job: string, jobId: string | null = null, at?: number) =>
+    jobEstimate(attemptFor(appId, job, at ?? 1_000), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: jobId, now: at ?? 2_000 });
 
   const D1_DOWN = {
     prepare: () => {
@@ -751,7 +755,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
   it("keeps a figure in the failed-write store while D1 is down, and settles it once both are written", async () => {
     const { appId, job, ref } = await fresh();
     const down = { ...env, DB: D1_DOWN } as Env;
-    await recordLedgerEntry(down, estimateOf(appId, job));
+    await recordLedgerEntry(down, estimateOf(appId, job, null, Date.now()));
     expect(await applyFinalResult(down, ref, FOUR, 3_000)).toBe("done");
     expect(logged("job_result_unrecorded")).toBe(false);
     expect(await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId))).toBe(true);
@@ -763,7 +767,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
 
   it("keeps the figure when D1 took the estimate but its reply was lost, and the store writes it again", async () => {
     const { appId, job, ref } = await fresh();
-    const entry = estimateOf(appId, job);
+    const entry = estimateOf(appId, job, null, Date.now());
     await writeToLedger(env.DB, [entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);

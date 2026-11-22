@@ -26,7 +26,9 @@ import {
 } from "../src/core/query-budget.ts";
 import { settleJob, settleJobFrom } from "../src/ledger/corrections.ts";
 import { timeOrderedId } from "../src/core/ids.ts";
-import { keepFigure } from "../src/jobs/jobs.ts";
+import { figureWork, keepFigure } from "../src/jobs/jobs.ts";
+import { retryStored } from "../src/do/ChargeStore.ts";
+import { LEDGER_FREEZE_DAYS } from "../src/ledger/freeze.ts";
 import {
   FOLD_PICK,
   runUsageRetention,
@@ -262,7 +264,10 @@ describe("usage retention: charges", () => {
     expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
   });
 
-  it("never shows a user a correction without its charge, or a negative cost, between chunks (Astra 7b-2 rounds 1 and 2)", async () => {
+  // What a reader of per-user detail may see between chunks: never a correction without its charge.
+  // An owner with several corrections may show a partial total, even a negative one, but only in a
+  // month already past the 90 days usage per user is kept; day and month rollups never change (Astra 7b-2 round 3).
+  it("never shows a user a correction without its charge between chunks, and with one correction never a negative cost (Astra 7b-2 rounds 1 and 2)", async () => {
     const original = charge({ usedAt: OLD, costNano: nano(1_000) });
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
     const other = charge({ usedAt: OLD, costNano: nano(500) });
@@ -410,6 +415,68 @@ describe("usage retention: charges", () => {
     const settled = await settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
     expect(settled).toMatchObject({ status: "settled" });
     expect((await rows("SELECT SUM(cost_nano) AS cost FROM charge"))[0]?.cost).toBe(700);
+  });
+
+  it("never books a figure replayed from the failed-write store after retention deleted its job's settlement (Astra 7b-2 round 3)", async () => {
+    const job = timeOrderedId(OLD);
+    const ref = { job, accountId: ACCOUNT_ID, appId: "app_retention" };
+    const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(100) });
+    await insert(estimate);
+    const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
+    // A poll settles 100 at 120; its figure also went to the failed-write store, as after a D1 timeout on a write that committed.
+    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: OLD + DAY })).toMatchObject({ status: "settled" });
+    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof figureWork>[1];
+    const stored = figureWork(ref, facts, OLD + DAY);
+    expect(await total()).toBe(120);
+
+    // A night whose allowance ran out after the corrections pass: the settlement is gone, the estimate stays.
+    await runUsageRetention(env.DB, NOW, new QueryBudget(2));
+    expect(await chargeIds()).toEqual([estimate.id]);
+
+    // The store replays the figure: the job's ledger is frozen, so no work comes back, and nothing is booked.
+    await retryStored(env.DB, [], [stored], NOW);
+    expect(await rows("SELECT id FROM open_work")).toEqual([]);
+    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: NOW })).toEqual({ status: "already" });
+    expect(await total()).toBe(120);
+  });
+
+  it("keeps a figure for a job still inside the freeze window, and settles it from there later (Astra 7b-2 round 3)", async () => {
+    // A job on its last day before the freeze, whose check gave up long ago: a poll's settlement read failed, so the figure is kept.
+    const started = NOW - (LEDGER_FREEZE_DAYS - 1) * DAY;
+    const job = timeOrderedId(started);
+    const estimate = charge({ usedAt: started, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(100) });
+    await insert(estimate);
+    await openWork({ ownerType: "job", ownerId: job, gaveUpAt: started + 3 * DAY });
+    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
+    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
+    expect(await rows("SELECT id FROM open_work WHERE gave_up_at IS NULL")).toHaveLength(1);
+
+    // Days later, past the freeze, the kept figure still holds the job live, and it settles.
+    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(130) }, now: NOW + 3 * DAY })).toMatchObject({ status: "settled" });
+    expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(130);
+  });
+
+  it("books nothing against an owner frozen at 61 days, and still books at 59", async () => {
+    const codes = warningCodes();
+    const book = async (days: number) => {
+      const original = charge({ usedAt: NOW - days * DAY, priceSource: "unresolved", costNano: nano(0) });
+      await insert(original);
+      const { settleCharge } = await import("../src/ledger/corrections.ts");
+      return settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW });
+    };
+    expect(await book(LEDGER_FREEZE_DAYS - 1)).toMatchObject({ status: "settled" });
+    expect(codes).not.toContain("ledger_correction_frozen");
+    expect(await book(LEDGER_FREEZE_DAYS + 1)).not.toMatchObject({ status: "settled" });
+    expect(codes).toContain("ledger_correction_frozen");
+    expect((await rows("SELECT SUM(cost_nano) AS cost FROM charge"))[0]?.cost).toBe(700);
+
+    // Nor does a figure saved for a frozen job come back as open work.
+    const job = timeOrderedId(NOW - (LEDGER_FREEZE_DAYS + 1) * DAY);
+    await insert(charge({ usedAt: NOW - (LEDGER_FREEZE_DAYS + 1) * DAY, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending" }));
+    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
+    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
+    expect(await rows("SELECT id FROM open_work")).toEqual([]);
+    expect(codes).toContain("job_retired");
   });
 });
 

@@ -20,18 +20,23 @@
  * days, so in practice nothing old is held back. Work given up is kept 90
  * days, so the console can show it, and is then deleted.
  *
- * Charges go by owner (a call, a job or a session). Once every charge of an
- * owner is past the window, with no open work and no open session, the owner
- * is frozen: nothing more is written against it (`./corrections.ts` refuses a
- * correction of a charge past the window; `../jobs/jobs.ts` keeps no figure
- * for a job past it). Its charges are then deleted in two plain, bounded
- * passes: its corrections first, then the rest once no correction is left.
- * A correction always has its charge's owner and usage date, and a session's
- * total is a correction of the session. So a reader between chunks never sees
- * a correction without what it corrects, and a cost never turns negative. It
- * may briefly see a charge without its correction (an estimate without its
- * settlement), but only in months already past the 90 days usage per user is
- * kept, as documented.
+ * Charges go by owner (a call, a job or a session). An owner stops taking
+ * bookings 60 days after its last charge, once it has no open work and is no
+ * open session (`./freeze.ts`): no correction, and no open work that would
+ * make it live again. Retention deletes it only at 90 days, by the same rule,
+ * so nothing is ever booked against an owner retention has started on. Its
+ * charges are then deleted in two plain, bounded passes: its corrections
+ * first, then the rest once no correction is left. A correction always has
+ * its charge's owner and usage date, and a session's total is a correction of
+ * the session, so a reader between chunks never sees a charge's correction
+ * without the charge.
+ *
+ * Between chunks, a reader of per-user detail may still see a partial total
+ * for such an owner: an estimate without its settlement, or, for an owner with
+ * several corrections (a pricing correction of +100 and a settlement of -80),
+ * one of them without the other, even a negative cost. Only for months already
+ * past the 90 days usage per user is kept, as documented. The day and month
+ * rollups are never touched by deleting charges.
  *
  * Every pass picks its rows straight from its rule, through an index, a chunk
  * at a time, taking turns with the nightly run's other passes
@@ -41,6 +46,7 @@
 import { log } from "../core/log.ts";
 import { CHUNK_ROWS, deletePass, ROW_WRITES, runPasses, type ChunkedDeleteResult, type Deletable, type Pass } from "../core/chunked-delete.ts";
 import type { QueryBudget } from "../core/query-budget.ts";
+import { ownerLiveSql } from "./freeze.ts";
 
 /** How long a charge, a session row and a budget total survive, as v1's usage events. */
 export const USAGE_DETAIL_RETENTION_DAYS = 90;
@@ -73,17 +79,10 @@ export function detailCutoffDay(now: number): string {
 }
 
 /**
- * Whether charge `c`'s owner is frozen: no open work the sweep has not
- * finished or given up on, not a session still open, and no charge on or
- * after `?1`. Served by `open_work_owner`, the session's key and
- * `charge_owner`.
+ * Whether charge `c`'s owner may go: no longer live at `?1`, the retention
+ * cutoff (`./freeze.ts`, the same rule bookings use, 30 days earlier).
  */
-const FROZEN_OWNER = `NOT EXISTS (SELECT 1 FROM open_work AS w
-                        WHERE w.owner_type = c.owner_type AND w.owner_id = c.owner_id AND w.gave_up_at IS NULL)
-        AND NOT (c.owner_type = 'session'
-                 AND EXISTS (SELECT 1 FROM session AS s WHERE s.id = c.owner_id AND s.settlement = 'open'))
-        AND NOT EXISTS (SELECT 1 FROM charge AS y
-                        WHERE y.owner_type = c.owner_type AND y.owner_id = c.owner_id AND y.usage_day >= ?1)`;
+const FROZEN_OWNER = `NOT ${ownerLiveSql("c.owner_type", "c.owner_id", "?1")}`;
 
 /** Corrections dated before `?1` of frozen owners. Served by `charge_correction_day`. */
 function oldCorrections(cutoffDay: string): Deletable {
