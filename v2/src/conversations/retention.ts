@@ -24,13 +24,18 @@
  * Runs once a day, from the hourly cron (`../index.ts`).
  */
 import { CONVERSATION_RETENTION_DAYS } from "../contracts/app-config.ts";
+import { QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
 import { appFolderName, CONVERSATIONS_ROOT, dayBefore, parseAppFolderName } from "./storage.ts";
 
 const DAY_FOLDER = /^(\d{4}-\d{2}-\d{2})\/$/;
 const R2_PAGE = 1000;
 /** The app folder the last run finished last. Not a folder itself, so never listed as an app. */
 export const RETENTION_CURSOR = `${CONVERSATIONS_ROOT}.retention-cursor`;
-/** R2 calls one run may make: well under a Worker invocation's subrequest limit. */
+/**
+ * R2 calls one run may make: well under a Worker invocation's limit of 1,000
+ * calls to Cloudflare services. Counted with the same {@link QueryBudget} as
+ * the nightly D1 maintenance, but a run of its own, in its own hour.
+ */
 export const RETENTION_CALLS = 500;
 /** The UTC hour of the day the hourly cron runs retention in. */
 export const RETENTION_HOUR_UTC = 3;
@@ -38,28 +43,6 @@ export const RETENTION_HOUR_UTC = 3;
 export interface ConversationRetentionResult {
   deletedObjects: number;
   removedApps: number;
-}
-
-/** Thrown instead of making an R2 call the run cannot pay for. */
-class CallsExhausted extends Error {}
-
-/** A run's allowance of R2 calls, counting the calls actually made. */
-export class CallBudget {
-  #spent = 0;
-  constructor(readonly limit: number) {}
-
-  get remaining(): number {
-    return this.limit - this.#spent;
-  }
-
-  affords(calls: number): boolean {
-    return this.#spent + calls <= this.limit;
-  }
-
-  charge(calls: number): void {
-    if (!this.affords(calls)) throw new CallsExhausted();
-    this.#spent += calls;
-  }
 }
 
 /** An app's retention in days from its stored settings; unreadable settings give the default, rather than losing everything. */
@@ -117,7 +100,7 @@ async function appNow(db: D1Database, accountId: string, appId: string): Promise
 async function deleteAll(
   bucket: R2Bucket,
   prefix: string,
-  budget: CallBudget,
+  budget: QueryBudget,
   pageSize: number,
   stillExpired?: () => Promise<boolean>,
 ): Promise<{ deleted: number; stopped: boolean }> {
@@ -135,7 +118,7 @@ async function deleteAll(
 }
 
 /** The folders directly under `prefix`, such as an app's day folders. */
-async function folders(bucket: R2Bucket, prefix: string, budget: CallBudget, pageSize: number): Promise<string[]> {
+async function folders(bucket: R2Bucket, prefix: string, budget: QueryBudget, pageSize: number): Promise<string[]> {
   const found: string[] = [];
   let cursor: string | undefined;
   do {
@@ -151,7 +134,7 @@ export async function runConversationRetention(
   bucket: R2Bucket,
   db: D1Database,
   now: number,
-  budget: CallBudget = new CallBudget(RETENTION_CALLS),
+  budget: QueryBudget = new QueryBudget(RETENTION_CALLS),
   /** Keys listed per R2 call: R2's most, except in tests. */
   pageSize: number = R2_PAGE,
 ): Promise<ConversationRetentionResult> {
@@ -167,7 +150,7 @@ export async function runConversationRetention(
     resume = last;
     const retention = await appRetention(db);
     // The cursor is written with the one call kept back for it.
-    const work = new CallBudget(Math.max(0, budget.remaining - 1));
+    const work = new QueryBudget(Math.max(0, budget.remaining - 1));
     try {
       let cursor: string | undefined;
       for (;;) {
@@ -226,7 +209,7 @@ export async function runConversationRetention(
     }
   } catch (error) {
     // Out of allowance: what was deleted stays deleted, and the rest waits for the next run.
-    if (!(error instanceof CallsExhausted)) throw error;
+    if (!(error instanceof QueryBudgetExhausted)) throw error;
     // The next run starts after the app it ran out in, so one busy app never holds up
     // those after it; a later pass comes back to it and goes on where this one stopped.
     if (current !== null) resume = current;
