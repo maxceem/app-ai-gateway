@@ -549,6 +549,34 @@ describe("sign-up", () => {
     expect((await me(verifying, app)).status).toBe(200);
   });
 
+  it("refuses a sign-up whose stale mark cannot be cleared, so no account inherits it (Sol 7b-7 round 6)", async () => {
+    const email = `uncleared-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A mark a failed sign-up left behind.
+    await env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (lower(?), ?)").bind(email, Date.now()).run();
+    const failing = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            if (query.includes("DELETE FROM email_pending_verification")) throw new Error("D1 is down");
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    // Nothing is verified here, and the mark cannot be cleared: the person is not made.
+    expect((await signUp({ ...deployment().env, DB: failing } as Env, email)).status).not.toBe(200);
+    expect(await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?").bind(email).first()).toBeNull();
+    // Once D1 answers, the same sign-up clears the mark and goes through.
+    const created = await signUp(deployment().env, email);
+    expect(created.status, await created.clone().text()).toBe(200);
+    expect(await env.DB.prepare("SELECT 1 FROM email_pending_verification WHERE email = lower(?)").bind(email).first()).toBeNull();
+  });
+
   it("continues the first link where the sign-up form was headed (Sol 7b-7 round 2)", async () => {
     const email = `deep-${crypto.randomUUID().slice(0, 8)}@example.test`;
     const { env: verifying, sent } = deployment({ email: true });

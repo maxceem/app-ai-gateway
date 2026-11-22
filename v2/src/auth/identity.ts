@@ -113,10 +113,14 @@ function reportBetterAuthLog(requestId: string | null, level: "debug" | "info" |
  * An address changed outside the app, by hand in the database, keeps or loses
  * its mark with it; nothing here follows such a change.
  *
- * If the batch fails, the account serves, as every unmarked one does, and the
- * failure is logged for the monitor: never an account refused that should serve.
+ * If the batch fails while marking, the account serves, as every unmarked one
+ * does, and the failure is logged for the monitor: never an account refused
+ * that should serve. If it fails while only clearing, for an unverified
+ * address, the sign-up is refused (a retryable 503): a stale mark left in place
+ * would hold the new account back once verification is turned on (Sol 7b-7
+ * round 6). A verified address is never held back by a mark, so it goes on.
  */
-async function settlePendingMark(db: D1Database, email: string, mark: boolean): Promise<void> {
+async function settlePendingMark(db: D1Database, email: string, mark: boolean, verified: boolean): Promise<void> {
   const free = "NOT EXISTS (SELECT 1 FROM mgmt_user WHERE email = ?1 COLLATE NOCASE)";
   try {
     const statements = [db.prepare(`DELETE FROM email_pending_verification WHERE email = lower(?1) AND ${free}`).bind(email)];
@@ -130,6 +134,9 @@ async function settlePendingMark(db: D1Database, email: string, mark: boolean): 
     await db.batch(statements);
   } catch (error) {
     log("warn", "email_pending_mark_failed", { error: errorFacts(error) });
+    if (!mark && !verified) {
+      throw new GatewayError(503, "service_unavailable", "Sign-up could not finish; try again in a moment");
+    }
   }
 }
 
@@ -168,7 +175,7 @@ export async function createIdentity(
     userHooks: {
       beforeCreate: async (user) => {
         if (!registrationAllowed(env, user.email)) await registrationDenied(options.onRegistrationDenied);
-        if (user.email) await settlePendingMark(env.DB, user.email, !user.emailVerified && emailVerificationRequired(env));
+        if (user.email) await settlePendingMark(env.DB, user.email, !user.emailVerified && emailVerificationRequired(env), user.emailVerified === true);
       },
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
