@@ -186,10 +186,15 @@ function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStateme
     );
 }
 
-/** Writes open-work rows that have no charge (a job's saved figure). Throws when D1 cannot take them. */
-export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<void> {
-  if (rows.length === 0) return;
-  await db.batch(rows.map((row) => openWorkStatement(db, row)));
+/** The rows a batch really inserted: a repeat whose first write committed inserts none. */
+function rowsWritten(results: readonly D1Result[]): number {
+  return results.reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
+}
+
+/** Writes open-work rows that have no charge (a job's saved figure); returns how many were new. Throws when D1 cannot take them. */
+export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  return rowsWritten(await db.batch(rows.map((row) => openWorkStatement(db, row))));
 }
 
 /** The statements that write some entries at `now`, in one batch. */
@@ -205,12 +210,13 @@ export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]
 
 /**
  * Writes entries to D1 in one batch, at `now`: the time they are written,
- * which judges a replayed entry by its replay (`./late-booking.ts`). Throws if
- * D1 refuses or fails.
+ * which judges a replayed entry by its replay (`./late-booking.ts`). Returns
+ * the rows it really inserted (charges and their work). Throws if D1 refuses
+ * or fails.
  */
-export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now: number): Promise<void> {
-  if (entries.length === 0) return;
-  await db.batch(ledgerStatements(db, entries, now));
+export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now: number): Promise<number> {
+  if (entries.length === 0) return 0;
+  return rowsWritten(await db.batch(ledgerStatements(db, entries, now)));
 }
 
 /** How long `recordLedgerEntry` waits for D1 before the entry goes to the failed-write store. */

@@ -321,6 +321,6 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
  * fixed clock and the ledger's late-booking rule (`../src/ledger/late-booking.ts`)
  * agree.
  */
-export function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<void> {
+export function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
   return writeToLedger(env.DB, entries, Math.max(...entries.map((entry) => entry.charge.writtenAt)));
 }

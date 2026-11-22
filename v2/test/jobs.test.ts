@@ -6,6 +6,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { timeOrderedId } from "../src/core/ids.ts";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
 import { BODY_READ_LIMIT } from "../src/core/bounded-body.ts";
@@ -513,6 +514,22 @@ describe("the sweep and the four failure cases", () => {
     await writeAtTheirTime([jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     expect(await settleFigure(env, ref, facts, 3_000)).toBe("settled");
     expect((await charges(appId)).map((row) => row.cost_nano)).toEqual([50_000_000, 25_000_000]);
+  });
+
+  it("a figure for a job past the late-booking window, with no estimate left, ends at once instead of waiting (Sol 7b-2 date rule)", async () => {
+    const { appId } = await setup();
+    const now = Date.parse("2026-11-22T12:00:00Z");
+    const recent = timeOrderedId(now - 29 * 86_400_000);
+    const old = timeOrderedId(now - 31 * 86_400_000);
+    const facts = { status: 200, units: 3, outputs: { images: 0 } };
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    // Inside the window the estimate may still land: the figure waits for it.
+    expect(await settleFigure(env, { job: recent, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("waiting");
+    // Past it, an estimate would be refused anyway (or retention deleted it): nothing to wait for.
+    expect(await settleFigure(env, { job: old, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("estimate_kept");
+    expect(warned.filter((line) => line.includes('"message":"ledger_booking_too_late"'))).toHaveLength(1);
+    expect(await charges(appId)).toEqual([]);
   });
 
   it("a duplicate completion: a client poll and the sweep settling at once write one correction", async () => {

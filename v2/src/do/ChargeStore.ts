@@ -44,9 +44,10 @@ export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
  * charge by when it is written, not by when it was first kept
  * (`../ledger/late-booking.ts`).
  */
-export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<void> {
-  await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
-  await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<number> {
+  const charges = await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+  const work = await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+  return charges + work;
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -122,8 +123,9 @@ export class ChargeStore extends DurableObject<Env> {
       this.setDelay(0);
       return;
     }
+    let rowsWritten: number;
     try {
-      await retryStored(
+      rowsWritten = await retryStored(
         this.env.DB,
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
@@ -138,8 +140,10 @@ export class ChargeStore extends DurableObject<Env> {
     }
     for (const row of rows) this.ctx.storage.sql.exec("DELETE FROM pending WHERE id = ?", row.id);
     for (const one of work) this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
-    // Processed, not necessarily written: a repeat whose first write committed is skipped by the ledger.
-    log("info", "charge_store_written", { processed: rows.length + work.length });
+    // Processed, not necessarily written: a repeat whose first write committed
+    // is skipped by the ledger, and a charge past the late-booking window is
+    // refused (and logged there). `rowsWritten` counts the rows really inserted.
+    log("info", "charge_store_written", { processed: rows.length + work.length, rowsWritten });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());
