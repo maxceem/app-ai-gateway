@@ -445,4 +445,27 @@ describe("expired challenges", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ id: "challenge:old-unused", outcome: "abandoned", created_at: now - 1000 - 300_000 });
   });
+
+  it("copies a challenge's version only when it is shaped like one: a challenge written before the check may hold any text (Sol 7b-4 round 3)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      [
+        ["free-text", "sk-proj-0123456789abcdef"],
+        ["version", "1.2.3 (45)"],
+        ["none", null],
+      ].map(([challenge, version]) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted, app_version) VALUES (?, ?, ?, 0, ?)").bind(
+          challenge,
+          appId,
+          now - 1000,
+          version,
+        ),
+      ),
+    );
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3 });
+    const versions = Object.fromEntries((await authEvents(appId)).map((event: any) => [event.id, event.app_version]));
+    expect(versions).toEqual({ "challenge:free-text": null, "challenge:version": "1.2.3 (45)", "challenge:none": null });
+  });
 });

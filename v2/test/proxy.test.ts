@@ -520,10 +520,10 @@ describe("second review fixes", () => {
     expect(upstreamRequest().headers.get("content-type")).toBe("application/json");
   });
 
-  it("stores the app version only when it is shaped like a version, never other caller text (F2, Sol 7b-4 round 2)", async () => {
+  it("stores the app version only when it is shaped like a version, with a build number in parentheses, never other caller text (F2, Sol 7b-4 rounds 2 and 3)", async () => {
     const { appId, slug, key } = await setup();
     fetchSpy.mockImplementation(async () => Response.json({ choices: [], usage: USAGE }));
-    for (const version of ["v2.0.0-beta.3", "9".repeat(100), "sk-proj-0123456789abcdef", "1.0 (12)"]) {
+    for (const version of ["v2.0.0-beta.3", "9".repeat(100), "sk-proj-0123456789abcdef", "1.2.3 (45)", "1.0 (12345678901)", "1.0 (key)"]) {
       const { response, ctx } = await call(
         `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
         chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": version }),
@@ -533,8 +533,8 @@ describe("second review fixes", () => {
       await waitOnExecutionContext(ctx);
     }
     const stored = (await chargesOf(appId)).map((row: any) => row.app_version as string | null);
-    expect(stored.filter((version) => version !== null)).toEqual(["v2.0.0-beta.3"]);
-    expect(stored).toHaveLength(4);
+    expect(stored.filter((version) => version !== null).sort()).toEqual(["1.2.3 (45)", "v2.0.0-beta.3"]);
+    expect(stored).toHaveLength(6);
   });
 
   it("records a refused request's provider only when the app has it, never the caller's own text (Sol 7b-4 round 2)", async () => {

@@ -573,7 +573,11 @@ describe("plan ceilings on saved settings", () => {
 
 describe("end users", () => {
   let chargeCount = 0;
-  async function seedCharge(appId: string, endUserId: string | null, values: { usedAt: number; cost?: number | null; status?: string; kind?: string }) {
+  async function seedCharge(
+    appId: string,
+    endUserId: string | null,
+    values: { usedAt: number; cost?: number | null; status?: string; kind?: string; accountId?: string },
+  ) {
     chargeCount += 1;
     const kind = values.kind ?? "attempt";
     await env.DB.prepare(
@@ -584,7 +588,7 @@ describe("end users", () => {
       .bind(
         `ch_${chargeCount}_${crypto.randomUUID().slice(0, 6)}`,
         kind,
-        ACCOUNT_ID,
+        values.accountId ?? ACCOUNT_ID,
         appId,
         endUserId,
         `call_${chargeCount}`,
@@ -625,6 +629,10 @@ describe("end users", () => {
         .run();
     }
 
+    // Charges recorded under another account are never read either: not as a user, nor in a user's usage (Sol 7b-4 round 3).
+    await seedCharge(appId, "their-charge-user", { usedAt: now - 1_000, accountId: "another-account" });
+    await seedCharge(appId, "header-user", { usedAt: now - 1_000, cost: 70_000, accountId: "another-account" });
+
     const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users`);
     expect(listed.status).toBe(200);
     expect(listed.body.total).toBe(4);
@@ -651,6 +659,14 @@ describe("end users", () => {
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/nobody`)).status).toBe(404);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-user`)).status).toBe(404);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/old-user`)).status).toBe(404);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-charge-user`)).status).toBe(404);
+  });
+
+  it("reads a user's charges through the app-and-user index, the account checked on the rows it finds (Sol 7b-4 round 3)", async () => {
+    const plan = async (sql: string) =>
+      ((await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind("app", "acct", "u").all<{ detail: string }>()).results ?? []).map((row) => row.detail).join(" | ");
+    expect(await plan("SELECT MIN(used_at) FROM charge WHERE app_id = ?1 AND +account_id = ?2 AND end_user_id = ?3")).toContain("charge_app_user_used");
+    expect(await plan("SELECT 1 FROM charge WHERE app_id = ?1 AND +account_id = ?2 AND end_user_id = ?3")).toContain("charge_app_user_used");
   });
 
   it("blocks and unblocks a user with a row, and refuses a virtual one", async () => {

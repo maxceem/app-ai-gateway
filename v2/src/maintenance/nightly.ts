@@ -97,12 +97,12 @@ function settleChallenges(db: D1Database): Promise<void> {
   return job("auth_challenges_settled", "auth_challenges_prune_failed", () => settleExpiredChallenges(db), (settled) => ({ ...settled }));
 }
 
-/** Statements the App Attest challenge clean-up issues: one batch of two. */
-export const CHALLENGE_SETTLE_STATEMENTS = 2;
+/** Statements the App Attest challenge clean-up issues: one read of its versions, then one batch of two. */
+export const CHALLENGE_SETTLE_STATEMENTS = 3;
 
 /**
  * Conversation retention's D1 queries: what `MAINTENANCE_QUERY_BUDGET` leaves
- * once the hourly clean-up in the same 03:17 run has had its statements. 43 at
+ * once the hourly clean-up in the same 03:17 run has had its statements. 42 at
  * the default of 50, and more where a deployment on the Paid plan raises it.
  */
 export function conversationReadBudget(env: Env): QueryBudget {

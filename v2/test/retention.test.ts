@@ -274,7 +274,7 @@ describe("usage retention: charges", () => {
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
     const other = charge({ usedAt: OLD, costNano: nano(500) });
     await insert(original, fix, other);
-    const read = async () => (await usageByUser(env.DB, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
+    const read = async () => (await usageByUser(env.DB, ACCOUNT_ID, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
     expect(await read()).toMatchObject({ charges: 2, cost_nano: 750 });
 
     // One charge a chunk, one chunk of each pass a night, and a read after every night.

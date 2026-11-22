@@ -74,21 +74,23 @@ async function appExists(db: D1Database, accountId: string, appId: string): Prom
 /**
  * The `identities` table of one app, as common table expressions. `?1` is the
  * app id; with `oneUser`, `?2` is the user id and nothing is scanned.
- * `account` is the placeholder of the caller's account: refusals are read
- * only as recorded under it, and a row with no account (recorded before
- * events carried one) is never read.
+ * `account` is the placeholder of the caller's account: charges and refusals
+ * are read only as recorded under it, and a refusal with no account (recorded
+ * before events carried one) is never read. `+account_id` keeps the planner on
+ * the app-and-user indexes: the account is checked on the rows they find.
  */
 function identities(oneUser: boolean, account: string): string {
   const refusals = `app_rejection_event WHERE app_id = ?1 AND account_id = ${account}`;
+  const charges = `charge WHERE app_id = ?1 AND +account_id = ${account}`;
   const named = oneUser
     ? `named(user_id) AS (
-         SELECT ?2 WHERE EXISTS (SELECT 1 FROM charge WHERE app_id = ?1 AND end_user_id = ?2)
+         SELECT ?2 WHERE EXISTS (SELECT 1 FROM ${charges} AND end_user_id = ?2)
                       OR EXISTS (SELECT 1 FROM ${refusals} AND user_id = ?2)
        )`
     : `used(user_id) AS (
-         SELECT (SELECT MIN(end_user_id) FROM charge WHERE app_id = ?1)
+         SELECT (SELECT MIN(end_user_id) FROM ${charges})
          UNION ALL
-         SELECT (SELECT MIN(end_user_id) FROM charge WHERE app_id = ?1 AND end_user_id > used.user_id)
+         SELECT (SELECT MIN(end_user_id) FROM ${charges} AND end_user_id > used.user_id)
            FROM used WHERE used.user_id IS NOT NULL
        ),
        refused(user_id) AS (
@@ -106,8 +108,8 @@ function identities(oneUser: boolean, account: string): string {
   return `WITH RECURSIVE ${named},
     seen AS (
       SELECT named.user_id,
-             (SELECT MIN(used_at) FROM charge WHERE app_id = ?1 AND end_user_id = named.user_id) AS used_first,
-             (SELECT MAX(used_at) FROM charge WHERE app_id = ?1 AND end_user_id = named.user_id) AS used_last,
+             (SELECT MIN(used_at) FROM ${charges} AND end_user_id = named.user_id) AS used_first,
+             (SELECT MAX(used_at) FROM ${charges} AND end_user_id = named.user_id) AS used_last,
              (SELECT MIN(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_first,
              (SELECT MAX(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_last
         FROM named
@@ -132,7 +134,13 @@ function identities(oneUser: boolean, account: string): string {
 }
 
 /** Each listed user's usage in a month, from the ledger. One bound list, so any page size fits D1's limit on bound values. Exported for the retention tests. */
-export async function usageByUser(db: D1Database, appId: string, ids: readonly string[], month: string): Promise<Map<string, typeof EMPTY_USAGE>> {
+export async function usageByUser(
+  db: D1Database,
+  accountId: string,
+  appId: string,
+  ids: readonly string[],
+  month: string,
+): Promise<Map<string, typeof EMPTY_USAGE>> {
   const usage = new Map<string, typeof EMPTY_USAGE>();
   if (ids.length === 0) return usage;
   const { from, to } = monthBounds(month);
@@ -146,10 +154,10 @@ export async function usageByUser(db: D1Database, appId: string, ids: readonly s
               COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
               COALESCE(SUM(output_tokens), 0) AS output_tokens
          FROM charge
-        WHERE app_id = ? AND end_user_id IN (SELECT value FROM json_each(?)) AND used_at >= ? AND used_at < ?
+        WHERE app_id = ? AND +account_id = ? AND end_user_id IN (SELECT value FROM json_each(?)) AND used_at >= ? AND used_at < ?
         GROUP BY end_user_id`,
     )
-    .bind(appId, JSON.stringify(ids), from, to)
+    .bind(appId, accountId, JSON.stringify(ids), from, to)
     .all<UsageRow>();
   for (const { end_user_id: id, ...totals } of results) usage.set(id, totals);
   return usage;
@@ -190,7 +198,7 @@ export async function listAppUsers(c: AdminContext): Promise<Response> {
     ).bind(...binds, query.limit, query.offset, actor.accountId),
   ]);
   const listed = (rows?.results ?? []) as IdentityRow[];
-  const usage = await usageByUser(c.env.DB, appId, listed.map((row) => row.id), month);
+  const usage = await usageByUser(c.env.DB, actor.accountId, appId, listed.map((row) => row.id), month);
   return c.json({
     app_id: appId,
     month,
@@ -210,7 +218,7 @@ export async function getAppUser(c: AdminContext): Promise<Response> {
   const month = query.month ?? currentMonth();
   const row = await c.env.DB.prepare(`${identities(true, "?3")} SELECT * FROM identities`).bind(appId, userId, actor.accountId).first<IdentityRow>();
   if (row === null) throw new GatewayError(404, "not_found", "User was not found");
-  const usage = await usageByUser(c.env.DB, appId, [userId], month);
+  const usage = await usageByUser(c.env.DB, actor.accountId, appId, [userId], month);
   return c.json({ app_id: appId, month, user: userView(row, usage.get(userId)) } satisfies OperationResponse<"getAppUser">);
 }
 

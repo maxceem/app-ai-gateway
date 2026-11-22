@@ -180,11 +180,21 @@ export async function markChallengeAttempted(env: Env, appId: string, challenge:
  * Records every expired challenge nobody used as an `abandoned` event, then
  * deletes all expired challenges. The event id comes from the challenge, so
  * running this twice records each one once.
+ *
+ * A challenge's version is copied only when `storedAppVersion` keeps it, the
+ * same check every other writer uses: a challenge written before that check
+ * existed may hold any text the caller sent (Sol 7b-4 round 3). The distinct
+ * versions are few, so they are read first and judged here.
  */
 export async function settleExpiredChallenges(
   db: D1Database,
   now: number = Date.now(),
 ): Promise<{ abandoned: number; deleted: number }> {
+  const { results } = await db
+    .prepare("SELECT DISTINCT app_version FROM app_auth_challenge WHERE expires_at < ? AND attempted = 0 AND app_version IS NOT NULL")
+    .bind(now)
+    .all<{ app_version: string }>();
+  const kept = (results ?? []).map((row) => row.app_version).filter((version) => storedAppVersion(version) === version);
   const [recorded, deleted] = await db.batch([
     db
       .prepare(
@@ -192,12 +202,13 @@ export async function settleExpiredChallenges(
            (id, app_id, account_id, event, outcome, reason, app_version, client_sdk, network_asn, network_name, created_at)
          SELECT 'challenge:' || challenge, app_id, (SELECT account_id FROM app WHERE app.id = app_auth_challenge.app_id),
                 'challenge', 'abandoned', 'challenge_unused',
-                app_version, client_sdk, network_asn, network_name, expires_at - ?
+                CASE WHEN app_version IN (SELECT value FROM json_each(?3)) THEN app_version END,
+                client_sdk, network_asn, network_name, expires_at - ?1
            FROM app_auth_challenge
-          WHERE expires_at < ? AND attempted = 0
+          WHERE expires_at < ?2 AND attempted = 0
          ON CONFLICT (id) DO NOTHING`,
       )
-      .bind(CHALLENGE_TTL_SECONDS * 1000, now),
+      .bind(CHALLENGE_TTL_SECONDS * 1000, now, JSON.stringify(kept)),
     db.prepare("DELETE FROM app_auth_challenge WHERE expires_at < ?").bind(now),
   ]);
   return { abandoned: recorded?.meta.changes ?? 0, deleted: deleted?.meta.changes ?? 0 };
