@@ -42,6 +42,10 @@ the account, the person, their role and the grant.
 - \`check_app\`: whether an app can serve requests, without sending one.
 - \`list_app_keys\`: an app-key app's keys, as metadata.
 - \`list_app_users\`, \`get_app_user\`: an app's end users and their usage.
+- \`get_usage\`: a month's usage, for one app or the whole account.
+- \`get_usage_breakdown\`, \`get_usage_timeseries\`: an app's usage by one dimension, or by day.
+- \`list_app_charges\`: an app's charges one by one, kept 90 days.
+- \`list_app_jobs\`: an app's jobs, and which estimates never settled.
 - \`get_operation\`: where something a creating tool started stands.
 
 ## Changing

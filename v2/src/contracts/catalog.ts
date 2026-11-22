@@ -84,6 +84,17 @@ import {
   ReservedAppResponseSchema,
   RevealedOperationResponseSchema,
 } from "./handoffs.ts";
+import {
+  AccountUsageResponseSchema,
+  AppUsageResponseSchema,
+  ChargeListQuerySchema,
+  ChargeListResponseSchema,
+  UsageBreakdownQuerySchema,
+  UsageBreakdownResponseSchema,
+  UsageMonthQuerySchema,
+  UsageRangeQuerySchema,
+  UsageTimeseriesResponseSchema,
+} from "./usage.ts";
 import { CliToolCallRequestSchema, CliToolCallResponseSchema, CliToolCatalogResponseSchema } from "./cli.ts";
 import type { OperationSpec } from "./operation.ts";
 
@@ -364,11 +375,83 @@ export const CATALOG = {
     tags: ["Admin jobs"],
     summary: "List an app's jobs",
     description:
-      "Jobs the app submitted through the gateway, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands.",
+      "Jobs the app submitted through the gateway in the last 89 days, such as fal queue jobs, newest first. Each shows the estimate charged at submit, what the provider's final figure corrected it by, and where it stands. Older jobs are only in the usage totals: their charges are kept 90 days.",
     security: "management",
     query: JobListQuerySchema,
     response: JobListResponseSchema,
     responseDescription: "One page of jobs.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAccountUsage: {
+    method: "GET",
+    path: "/v2/admin/usage",
+    tags: ["Admin usage"],
+    summary: "Get the account's usage for a month",
+    description:
+      "Totals for the whole account in one UTC month, and a line per app, deleted apps included: their usage is kept. `first_usage_day` is null when the account has never made a call.",
+    security: "management",
+    query: UsageMonthQuerySchema,
+    response: AccountUsageResponseSchema,
+    responseDescription: "The account's month.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsage: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage for a month",
+    description: "One UTC month's totals for one app, from the day totals (and month totals for days older than 400).",
+    security: "management",
+    query: UsageMonthQuerySchema,
+    response: AppUsageResponseSchema,
+    responseDescription: "The app's month.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsageTimeseries: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage/timeseries",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage per day",
+    description: "Totals per UTC day and provider type over a day range of at most 400 days.",
+    security: "management",
+    query: UsageRangeQuerySchema,
+    response: UsageTimeseriesResponseSchema,
+    responseDescription: "Daily buckets, oldest first.",
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppUsageBreakdown: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/usage/breakdown",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "Get an app's usage by one dimension",
+    description:
+      "Totals grouped by one dimension, largest cost first. model, provider, connection, status and unit come from the day totals, over a range of at most 400 days. user, install, operation, preset, price_source, measured and app_version come from the charges, kept 90 days, over a range of at most 31 days. A correction groups under its own price_source and measured, so a charge priced later shows its first price_source with no cost and the price's with the cost. v1's provider_slug is connection here (its label is the slug), cost_source is price_source, route is operation and endpoint is preset. v1's provider_gateway, credential_source, model_author and service_mode have no breakdown: v2 records none of them on a charge.",
+    security: "management",
+    query: UsageBreakdownQuerySchema,
+    response: UsageBreakdownResponseSchema,
+    responseDescription: "One row per value.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppCharges: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/charges",
+    params: APP_PARAM,
+    tags: ["Admin usage"],
+    summary: "List an app's charges",
+    description:
+      "The ledger's rows, newest first: each upstream attempt, session slice and job estimate, and each correction as its own row naming the charge it corrects. Charges are kept 90 days; older usage is only in the totals. Without filters, or with owner or user, a range covers up to 400 days and by default all charges kept. Every other filter has no index of its own: unless owner or user is given too, it is read inside at most 31 days, by default the last 30.",
+    security: "management",
+    query: ChargeListQuerySchema,
+    response: ChargeListResponseSchema,
+    responseDescription: "One page of charges.",
     errors: ADMIN_ERRORS,
   },
 
