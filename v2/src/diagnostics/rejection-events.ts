@@ -41,20 +41,16 @@ export const REJECTION_SAMPLE_WINDOW_MS = 60_000;
 
 /**
  * What a refusal records instead of a requested model the gateway does not
- * know (`knownModel`): a caller's model field is their text, and a key or a
- * prompt put there by mistake must never be stored or shown.
+ * know (`knownModel`), or a provider or preset the app does not have: those
+ * are the caller's text, and a key or a prompt put there by mistake must
+ * never be stored or shown.
+ *
+ * So every stored `model` and `provider_slug` was checked by this writer, and
+ * a read shows them as stored. Only this writer sets `account_id`, and a read
+ * never shows a row without one; a copy from v1 must check its models the
+ * same way, or store this marker, before it sets an account.
  */
-export const UNRECOGNIZED_MODEL = "unrecognized";
-
-/**
- * A stored model as a read returns it: rows recorded before the rule above
- * (or copied from v1) may hold any text, so anything not shaped like a model
- * name is shown as {@link UNRECOGNIZED_MODEL}.
- */
-export function shownModel(model: string | null): string | null {
-  if (model === null) return null;
-  return /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u.test(model) ? model : UNRECOGNIZED_MODEL;
-}
+export const UNRECOGNIZED = "unrecognized";
 export const REJECTION_RETENTION_DAYS = 90;
 
 export interface RejectionEventInput {
@@ -63,8 +59,16 @@ export interface RejectionEventInput {
   readonly accountId: string;
   readonly reason: string;
   readonly scope: string | null;
+  /** A provider or preset the app has, or {@link UNRECOGNIZED}. */
   readonly providerSlug: string | null;
+  /** The model the request named. Stored only when trusted, or when `modelKnown` says the gateway knows it. */
   readonly model: string | null;
+  /**
+   * For a model that is the caller's text: whether the gateway knows it.
+   * Asked only once a refusal is sampled, so a served request never pays for
+   * it; a model from the app's settings or a signed job id needs none.
+   */
+  readonly modelKnown?: () => boolean;
   readonly operation: string | null;
   readonly appVersion: string | null;
   readonly latencyMs: number;
@@ -88,6 +92,7 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
   }
   const id = timeOrderedId();
   try {
+    const model = input.model === null || input.modelKnown === undefined || input.modelKnown() ? input.model : UNRECOGNIZED;
     await env.DB.prepare(
       // Under the account the caller was verified for, and only while that
       // account still owns the app: an app id that comes back in another
@@ -109,7 +114,7 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
         input.reason,
         input.scope,
         input.providerSlug,
-        input.model,
+        model,
         input.operation,
         storedAppVersion(input.appVersion),
         identity.authMethod,

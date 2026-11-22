@@ -118,7 +118,7 @@ async function recorded(
   const network = clientNetwork(c.req.raw);
   // Only a value the challenge route could have issued is worth a lookup.
   const challenge = typeof rawBody.challenge === "string" && rawBody.challenge.length <= 200 ? rawBody.challenge : null;
-  const attempt: AuthAttempt = { authMethod: null, userId: null };
+  const attempt: AuthAttempt = { authMethod: null, userId: null, accountId: null };
   let settled = false;
   const record = (outcome: "ok" | ErrorCode, reason?: GatewayErrorReason): void => {
     if (settled) return;
@@ -137,6 +137,7 @@ async function recorded(
         recordAuthEvent({
           env: c.env,
           appId,
+          accountId: attempt.accountId,
           event,
           userId: attempt.userId,
           authMethod: attempt.authMethod,
@@ -249,6 +250,10 @@ function failureReason(report: z.output<typeof AppAttestFailureReportSchema>): s
 export async function failureHandler(c: AuthContext): Promise<Response> {
   const appId = appIdOf(c);
   const report = parseRequest(AppAttestFailureReportSchema, await jsonObjectBody(c));
+  // The report is recorded under the account that owns the app now, read
+  // before the challenge is spent: an app gone since holds no challenges.
+  const app = await loadApp(c.env, appId).catch(() => null);
+  if (app === null) return c.json({ recorded: false } satisfies OperationResponse<"appAuthFailure">);
   const [issued] = await database(c.env.DB)
     .delete(appAuthChallenge)
     .where(and(eq(appAuthChallenge.challenge, report.challenge), eq(appAuthChallenge.appId, appId)))
@@ -262,6 +267,7 @@ export async function failureHandler(c: AuthContext): Promise<Response> {
   await recordAuthEvent({
     env: c.env,
     appId,
+    accountId: app.accountId,
     event: "challenge",
     outcome: report.recovered === true ? "client_recovered" : "client_failed",
     reason: failureReason(report),
@@ -279,6 +285,7 @@ export async function registerHandler(c: AuthContext): Promise<Response> {
   return recorded(c, "register", rawBody, async (attempt) => {
     const appId = appIdOf(c);
     const app = await loadApp(c.env, appId);
+    attempt.accountId = app.accountId;
     assertAppActive(app);
     const { exchange } = clientAuth(app);
     if (exchange === null) throw attestNotSupported();
@@ -293,6 +300,7 @@ export async function tokenHandler(c: AuthContext): Promise<Response> {
   return recorded(c, "token_exchange", rawBody, async (attempt) => {
     const appId = appIdOf(c);
     const app = await loadApp(c.env, appId);
+    attempt.accountId = app.accountId;
     assertAppActive(app);
     const { exchange } = clientAuth(app);
     if (exchange === null) {

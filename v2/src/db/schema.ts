@@ -123,6 +123,17 @@ export const app = sqliteTable(
   ],
 );
 
+/**
+ * The id of every app deleted, so no new app is ever given it (step 7b-4).
+ * Rows that name an app by id alone (rollups, events, budget totals, stored
+ * conversations) then never mix two apps' history. Never pruned: one short
+ * row per deleted app.
+ */
+export const retiredAppId = sqliteTable("retired_app_id", {
+  id: text("id").primaryKey(),
+  retiredAt: integer("retired_at").notNull(),
+});
+
 export type ProviderConnectionStatus = "active" | "disabled";
 
 /**
@@ -699,7 +710,10 @@ export const appAuthEvent = sqliteTable(
     index("app_auth_event_app_user_created").on(table.appId, table.userId, table.accountId, table.createdAt, table.id),
     index("app_auth_event_created").on(table.createdAt),
     // The few sign-ins that closed a wait, in order of the wait: the summary's percentiles read one row each.
-    index("app_auth_event_claim_delay").on(table.appId, table.accountId, table.claimDelayMs).where(sql`${table.claimDelayMs} IS NOT NULL`),
+    // Covering for the claim-wait percentiles: in wait order, with the time to filter on, so no sort and no table read.
+    index("app_auth_event_claim_delay")
+      .on(table.appId, table.accountId, table.claimDelayMs, table.createdAt)
+      .where(sql`${table.claimDelayMs} IS NOT NULL`),
   ],
 );
 

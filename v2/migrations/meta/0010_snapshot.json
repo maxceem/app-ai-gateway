@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "9f56f4d4-a8df-413f-8157-12c09fa720d1",
+  "id": "03211708-3b8a-4eff-a7bc-66a4e5d28d35",
   "prevId": "1cb1a285-1ca8-43af-9e38-dca9960bc61b",
   "tables": {
     "account_activation": {
@@ -464,7 +464,8 @@
           "columns": [
             "app_id",
             "account_id",
-            "claim_delay_ms"
+            "claim_delay_ms",
+            "created_at"
           ],
           "isUnique": false,
           "where": "\"app_auth_event\".\"claim_delay_ms\" IS NOT NULL"
@@ -2855,6 +2856,30 @@
           "value": "\"provider_connection\".\"status\" IN ('active', 'disabled')"
         }
       }
+    },
+    "retired_app_id": {
+      "name": "retired_app_id",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "retired_at": {
+          "name": "retired_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
     },
     "session": {
       "name": "session",

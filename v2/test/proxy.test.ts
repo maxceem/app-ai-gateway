@@ -520,16 +520,29 @@ describe("second review fixes", () => {
     expect(upstreamRequest().headers.get("content-type")).toBe("application/json");
   });
 
-  it("stores the app version cut to its limit (F2)", async () => {
+  it("stores the app version only when it is shaped like a version, never other caller text (F2, Sol 7b-4 round 2)", async () => {
     const { appId, slug, key } = await setup();
-    fetchSpy.mockResolvedValue(Response.json({ choices: [], usage: USAGE }));
-    const { response, ctx } = await call(
-      `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
-      chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": "9".repeat(100) }),
-    );
-    await response.text();
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], usage: USAGE }));
+    for (const version of ["v2.0.0-beta.3", "9".repeat(100), "sk-proj-0123456789abcdef", "1.0 (12)"]) {
+      const { response, ctx } = await call(
+        `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+        chatRequest(key, { model: "gpt-4o-mini" }, { "x-app-version": version }),
+      );
+      expect(response.status, version).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    const stored = (await chargesOf(appId)).map((row: any) => row.app_version as string | null);
+    expect(stored.filter((version) => version !== null)).toEqual(["v2.0.0-beta.3"]);
+    expect(stored).toHaveLength(4);
+  });
+
+  it("records a refused request's provider only when the app has it, never the caller's own text (Sol 7b-4 round 2)", async () => {
+    const { appId, key } = await setup();
+    const { ctx } = await call(`/v2/apps/${appId}/proxy/sk-live-0123456789/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
     await waitOnExecutionContext(ctx);
-    expect(await chargesOf(appId)).toMatchObject([{ app_version: "9".repeat(64) }]);
+    const event = await env.DB.prepare("SELECT provider_slug, reason FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    expect(event).toEqual({ provider_slug: "unrecognized", reason: "provider_not_configured" });
   });
 
   it("records a refused request's model only when the gateway knows it, never the caller's own text (F3, Sol 7b-4)", async () => {

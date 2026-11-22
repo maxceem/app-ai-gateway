@@ -44,7 +44,7 @@ import { timeOrderedId } from "../core/ids.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
-import { recordRejectionEvent, REJECTION_REASONS, UNRECOGNIZED_MODEL } from "../diagnostics/rejection-events.ts";
+import { recordRejectionEvent, REJECTION_REASONS, UNRECOGNIZED } from "../diagnostics/rejection-events.ts";
 import { bodyOnce } from "../http/body.ts";
 import { MAX_VALUE_BYTES, multipartBoundary, MultipartError, scanMultipart, type FieldValue } from "../http/multipart.ts";
 import { admitRequest } from "../limits/admission.ts";
@@ -142,7 +142,7 @@ export interface Caller {
   /** The request body, read once, 20 MiB at most. */
   readonly readBody: () => Promise<Uint8Array>;
   /** Set as the request is understood, for the rejection event of a refusal. */
-  readonly facts: { operation: string | null; model: string | null };
+  readonly facts: { operation: string | null; model: string | null; modelKnown?: () => boolean };
   /**
    * Whether this request's call is stored: the app turned storage on, the
    * deployment has a bucket, and the client did not opt the request out. What
@@ -240,6 +240,7 @@ export async function serveCaller(
           scope: reason.scope,
           providerSlug: input.providerSlug,
           model: facts.model,
+          ...(facts.modelKnown === undefined ? {} : { modelKnown: facts.modelKnown }),
           operation: facts.operation,
           appVersion,
           latencyMs: Date.now() - startedAt,
@@ -267,7 +268,13 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
   return serveCaller(
     c,
-    { app, startedAt, providerSlug: target.slug, ...(description === null ? {} : { providerAuthHeader: description.auth.header }) },
+    {
+      app,
+      startedAt,
+      // The caller's text too: kept only when the app has that provider.
+      providerSlug: routing === undefined ? UNRECOGNIZED : target.slug,
+      ...(description === null ? {} : { providerAuthHeader: description.auth.header }),
+    },
     async (caller) => {
       const { identity } = caller;
       if (connection === null || description === null || routing === undefined) {
@@ -306,8 +313,10 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const body = parsed.kind === "json" ? parsed.body : parsed.kind === "form" ? formFields(parsed.fields) : {};
       if (parsed.kind === "json") refuseBackground(operation, body);
       const requested = requestModel(operation, body, match.parts, url.searchParams);
-      // Kept for a refusal's diagnostic only when it names a model the gateway knows.
-      caller.facts.model = knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested) ? requested : UNRECOGNIZED_MODEL;
+      // The caller's text: a refusal's diagnostic keeps it only when it names a
+      // model the gateway knows, checked then, so a served request never pays.
+      caller.facts.model = requested;
+      caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested);
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
       const call = resolveCall(routing, app.routing.model_rewrites, priceSources(connection), operation, requested);

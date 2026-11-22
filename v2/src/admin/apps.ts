@@ -641,6 +641,32 @@ export function newAppId(name: string): string {
   return `${base}-${random}`;
 }
 
+/** Where new app ids come from; a test replaces `next` to force a repeat. */
+export const appIds = { next: newAppId };
+
+/**
+ * SQL true while the id bound at `placeholder` was never an app's: not a live
+ * app, and not a deleted one (`retired_app_id`). An app id is never given out
+ * twice, so rows that name an app by id alone (rollups, events, budget
+ * totals, stored conversations) never mix two apps' history.
+ */
+export function appIdUnusedSql(placeholder: string): string {
+  return `NOT EXISTS (SELECT 1 FROM app WHERE id = ${placeholder}) AND NOT EXISTS (SELECT 1 FROM retired_app_id WHERE id = ${placeholder})`;
+}
+
+/**
+ * A new app id no app has ever had. A random suffix repeats about once in two
+ * billion, so a few tries are plenty; the insert checks again
+ * ({@link appIdUnusedSql}).
+ */
+export async function freshAppId(db: D1Database, name: string): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const id = appIds.next(name);
+    if ((await db.prepare(`SELECT ${appIdUnusedSql("?1")} AS unused`).bind(id).first<{ unused: number }>())?.unused === 1) return id;
+  }
+  throw new GatewayError(409, "conflict", "The app could not be created; retry");
+}
+
 /** App keys belong to app-key apps only, as v1. */
 export function requireApiKeyApp(row: AppRow): void {
   const config = JSON.parse(row.config_json) as { authentication?: { type?: unknown } };
@@ -709,11 +735,11 @@ export async function createApp(c: AdminContext): Promise<Response> {
     });
   }
   const now = Date.now();
-  const id = newAppId(body.name);
+  const id = await freshAppId(c.env.DB, body.name);
   const insert = c.env.DB.prepare(
     `INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at)
-     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition}`,
-  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds);
+     SELECT ?, ?, ?, ?, 1, ?, ?, ? WHERE ${cap.condition} AND NOT EXISTS (SELECT 1 FROM retired_app_id WHERE id = ?)`,
+  ).bind(id, actor.accountId, body.name, JSON.stringify(config), body.status ?? "active", now, now, ...cap.binds, id);
   // An app-key app gets its first key, shown once, as v1. Written only if the app was.
   const key = config.authentication.type === "api_key" ? await createKey(c.env.DB, id, "Initial key", now, true) : null;
   const [written] = await c.env.DB.batch(key === null ? [insert] : [insert, key.statement]);
@@ -907,10 +933,15 @@ export async function deleteApp(c: AdminContext): Promise<Response> {
   }
   await appRow(c.env.DB, actor.accountId, appId);
   // The ledger keeps its history; everything that lets the app sign in goes.
-  // Its sign-in and refusal diagnostics age out with their 90-day retention:
-  // they are recorded under this account, so an app id that comes back in
-  // another account never shows them (`./diagnostics.ts`).
+  // Its sign-in and refusal diagnostics age out with their 90-day retention.
+  // Its id is retired, never given to another app (`freshAppId`), so nothing
+  // recorded under it ever reads as a later app's.
   await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO retired_app_id (id, retired_at)
+       SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
+       ON CONFLICT (id) DO NOTHING`,
+    ).bind(appId, Date.now(), actor.accountId),
     c.env.DB.prepare("DELETE FROM app_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_attest_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_auth_challenge WHERE app_id = ?").bind(appId),

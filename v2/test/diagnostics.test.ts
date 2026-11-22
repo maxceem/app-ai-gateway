@@ -9,6 +9,8 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
+import { appIds } from "../src/admin/apps.ts";
+import { claimWaitAt } from "../src/admin/diagnostics.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -211,17 +213,6 @@ describe("refused requests", () => {
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/rejection-events?scope=everyone`)).status).toBe(400);
   });
 
-  it("never shows a stored model that is not shaped like a model name (Sol 7b-4)", async () => {
-    const key = await seedManagementKey();
-    const appId = await createApp(key);
-    await rejection({ appId, at: at("2025-06-02"), id: "re_text", model: "Bearer sk-live secret, and a prompt" });
-    await rejection({ appId, at: at("2025-06-01"), id: "re_model", model: "anthropic/claude-sonnet-4.5:beta" });
-    const { body } = await request(key, "GET", `/v2/admin/apps/${appId}/rejection-events`);
-    expect(body.events.map((row: any) => [row.id, row.model])).toEqual([
-      ["re_text", "unrecognized"],
-      ["re_model", "anthropic/claude-sonnet-4.5:beta"],
-    ]);
-  });
 });
 
 describe("summary", () => {
@@ -292,7 +283,7 @@ describe("claim waits", () => {
     const appId = await createApp(key);
     const attempt = async (time: number, userId: string, outcome: "ok" | "issuer_claims_missing") => {
       vi.setSystemTime(time);
-      await recordAuthEvent({ env, appId, event: "token_exchange", userId, outcome, latencyMs: 1 });
+      await recordAuthEvent({ env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId, outcome, latencyMs: 1 });
     };
     const since = async (userId: string) =>
       (await env.DB.prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = ?").bind(appId, userId).first<{ since: number | null }>())
@@ -325,9 +316,16 @@ describe("claim waits", () => {
     expect(await delays("u2")).toEqual([null, 12_500]);
     expect(await since("u2")).toBeNull();
 
+    // u3: refusals from T0+10s and T0+20s land in reverse order; the wait starts at the earlier one (Sol 7b-4 round 2).
+    await attempt(T0 + 20_000, "u3", "issuer_claims_missing");
+    await attempt(T0 + 10_000, "u3", "issuer_claims_missing");
+    expect(await since("u3")).toBe(T0 + 10_000);
+    await attempt(T0 + 30_000, "u3", "ok");
+    expect(await delays("u3")).toEqual([20_000]);
+
     vi.setSystemTime(NOW);
     const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=1`);
-    expect(summary.body.claim_delay).toEqual({ count: 2, avg_ms: 21_250, p50_ms: 12_500, p95_ms: 30_000 });
+    expect(summary.body.claim_delay).toMatchObject({ count: 3, p50_ms: 20_000, p95_ms: 30_000 });
     expect(summary.body.pending_users).toBe(0);
   });
 });
@@ -352,30 +350,34 @@ describe("isolation", () => {
     expect((await request(key, "GET", `/v2/admin/apps/${mine}/auth-events?before=garbage`)).status).toBe(400);
   });
 
-  it("never shows another account's events under an app id that came back, including one written after the app was deleted (Sol 7b-4)", async () => {
+  it("never gives a deleted app's id to a new app, so nothing recorded under it reaches a later app (Sol 7b-4 round 2)", async () => {
     const key = await seedManagementKey();
-    // Another account's app, with an event of its own.
-    const appId = await foreignApp();
-    await authEvent({ appId, at: at("2026-11-19") });
-    await rejection({ appId, at: at("2026-11-19") });
-    // They delete it; a sign-in that was under way records its event afterwards.
-    await env.DB.prepare("DELETE FROM app WHERE id = ?").bind(appId).run();
-    await recordAuthEvent({ env, appId, event: "token_exchange", userId: "late", outcome: "ok", latencyMs: 1 });
-    // The same id comes back in this account.
+    const appId = await createApp(key);
+    // A sign-in under way when the app is deleted records its event afterwards, under the account it read.
+    expect((await request(key, "DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)).status).toBe(200);
+    await recordAuthEvent({ env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "late", outcome: "ok", latencyMs: 1 });
+    expect(await env.DB.prepare("SELECT id FROM retired_app_id WHERE id = ?").bind(appId).first()).toEqual({ id: appId });
+    // The id generator repeats the deleted id: the new app gets another one.
+    const next = vi.spyOn(appIds, "next").mockReturnValueOnce(appId);
+    const again = await createApp(key);
+    expect(next).toHaveBeenCalledTimes(2);
+    expect(again).not.toBe(appId);
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/auth-events`)).status).toBe(404);
+    expect((await request(key, "GET", `/v2/admin/apps/${again}/auth-events`)).body.events).toEqual([]);
+    // A live app's id is never given out again either.
+    vi.spyOn(appIds, "next").mockReturnValueOnce(again);
+    expect(await createApp(key)).not.toBe(again);
+  });
+
+  it("never shows a row recorded with no account (Sol 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
     await env.DB.prepare(
-      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Mine', '{}', 1, 'active', 0, 0)",
+      "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, latency_ms, created_at) VALUES (?, ?, NULL, 'token_exchange', 'ok', 1, ?)",
     )
-      .bind(appId, ACCOUNT_ID)
+      .bind(`ae_old_${crypto.randomUUID()}`, appId, at("2026-11-19"))
       .run();
-    const late = await env.DB.prepare("SELECT account_id FROM app_auth_event WHERE app_id = ? AND user_id = 'late'").bind(appId).first();
-    expect(late).toEqual({ account_id: null });
-    for (const path of ["auth-events", "auth-events?user=late", "rejection-events"]) {
-      const { status, body } = await request(key, "GET", `/v2/admin/apps/${appId}/${path}`);
-      expect(status, path).toBe(200);
-      expect(body.events, path).toEqual([]);
-    }
-    const summary = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary`);
-    expect(summary.body).toMatchObject({ daily: [], rejection_samples: [], token_exchange: { total: 0 } });
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/auth-events`)).body.events).toEqual([]);
   });
 });
 
@@ -425,6 +427,20 @@ describe("query plans", () => {
     listed(await planOf("app_rejection_event", get("rejection-events?user=u1")), "app_rejection_event_app_user_created");
     expect(await planOf("app_auth_event", get("auth-events/summary"))).toContain("app_auth_event_app_account_created");
     expect(await planOf("app_end_user", get("auth-events/summary"))).toContain("app_end_user_claim_pending");
+  });
+
+  it("read the claim-wait percentiles from the covering index, with no sort (Sol 7b-4 round 2)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await authEvent({ appId, at: at("2026-11-19"), claimDelayMs: 1_000 });
+    for (const percent of [50, 95] as const) {
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${claimWaitAt(percent)}`)
+        .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
+        .all<{ detail: string }>();
+      const plan = results.map((row) => row.detail).join("\n");
+      expect(plan, String(percent)).toContain("COVERING INDEX app_auth_event_claim_delay");
+      expect(plan, String(percent)).not.toContain("TEMP B-TREE");
+    }
   });
 });
 

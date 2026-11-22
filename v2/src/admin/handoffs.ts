@@ -50,7 +50,7 @@ import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
-import { appRow, checkAppConfig, checkConversations, checkNewConnection, newAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkDestination,
@@ -663,7 +663,7 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
     async (guard) => {
       cap = await liveChecks();
       const now = Date.now();
-      const id = newAppId(payload.name);
+      const id = await freshAppId(c.env.DB, payload.name);
       const app = {
         id,
         revision: 1,
@@ -678,7 +678,8 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
           db as never,
           appTable,
           { id, accountId: actor.accountId, name: payload.name, config: payload.config, revision: 1, status: payload.status, createdAt: now, updatedAt: now },
-          and(guard, capCondition(cap))!,
+          // Never an id an app has had (`freshAppId` checked; checked again in the write).
+          and(guard, capCondition(cap), sql`NOT EXISTS (SELECT 1 FROM retired_app_id WHERE id = ${id})`)!,
         ),
       ];
       let key: { id: string; name: string; key: string; key_prefix: string; created_at: string } | null = null;

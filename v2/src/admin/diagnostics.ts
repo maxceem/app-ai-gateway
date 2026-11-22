@@ -27,7 +27,6 @@ import {
 import { USAGE_CHARGE_RANGE_MAX_DAYS } from "../contracts/usage.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { AdminVariables } from "./actor.ts";
-import { shownModel } from "../diagnostics/rejection-events.ts";
 import { appExists, dayRange, parseQuery } from "./usage.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
@@ -156,7 +155,9 @@ export async function listAppRejectionEvents(c: AdminContext): Promise<Response>
     app_id: appId,
     limit: query.limit,
     next_before: nextBefore,
-    events: rows.map((row) => ({ ...row, model: shownModel(row.model), created_at: new Date(row.created_at).toISOString() })),
+    // `model` and `provider_slug` are shown as stored: the writer kept only
+    // names the gateway knows (`../diagnostics/rejection-events.ts`).
+    events: rows.map((row) => ({ ...row, created_at: new Date(row.created_at).toISOString() })),
   } satisfies OperationResponse<"listAppRejectionEvents">);
 }
 
@@ -184,11 +185,13 @@ function compareNullable(a: string | null, b: string | null): number {
 
 /**
  * The claim wait at `percent` of the window, by nearest rank as v1: one row
- * read through `app_auth_event_claim_delay`, never the whole list. The
+ * read through `app_auth_event_claim_delay`, never the whole list. The index
+ * holds the waits in order with their times, so neither the count nor the
+ * lookup sorts or reads the table. Exported for its query-plan test. The
  * percentile is written into the SQL as a whole number, so the offset is
  * worked out in integers.
  */
-function claimWaitAt(percent: 50 | 95): string {
+export function claimWaitAt(percent: 50 | 95): string {
   const waits = "app_id = ?1 AND account_id = ?2 AND claim_delay_ms IS NOT NULL AND created_at >= ?3 AND created_at < ?4";
   return `SELECT claim_delay_ms AS ms FROM app_auth_event WHERE ${waits}
    ORDER BY claim_delay_ms

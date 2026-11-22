@@ -31,6 +31,12 @@ const RECORD_RETRY_DELAY_MS = 25;
 export interface AuthEventInput {
   env: Env;
   appId: string;
+  /**
+   * The account that owned the app when the attempt read it, never looked up
+   * again when the event is written. Null when the attempt never read the app:
+   * such a row is never shown.
+   */
+  accountId: string | null;
   event: AuthEventName;
   userId?: string | null;
   authMethod?: AuthMethod | null;
@@ -54,16 +60,21 @@ function claimChange(input: AuthEventInput): "open" | "close" | null {
  * the event, and the change it makes to the user's wait for an entitlement
  * claim. The event and the state change are written together, so neither is
  * lost without the other, and both are judged at the attempt's own time
- * `now`, so writes that land out of order still apply in attempt order:
+ * `now`:
  *
- * - a refusal for a missing claim opens the wait, unless a later successful
- *   sign-in of that user is already recorded (it ended the wait first);
+ * - a refusal for a missing claim opens the wait, or moves its start earlier
+ *   (the earliest refusal wins, whatever order the writes land in), unless a
+ *   later successful sign-in of that user is already recorded (it ended the
+ *   wait first);
  * - a successful sign-in closes a wait opened before it, and records on its
  *   event how long it was open. Two at once measure it once: the first
  *   transaction clears it.
  *
- * `account_id` comes from the app row at write time: an app deleted since
- * leaves it null, and such a row is never shown.
+ * A known gap, accepted for a diagnostic: a refusal whose write lands after
+ * the write of the success that ended its wait is not measured. That needs
+ * two writes from moments apart to land in reverse order.
+ *
+ * `account_id` is the account the attempt read the app under (`accountId`).
  */
 function recordStatements(db: D1Database, input: AuthEventInput, id: string, now: number): D1PreparedStatement[] {
   const change = claimChange(input);
@@ -74,7 +85,7 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
         `INSERT INTO app_auth_event
            (id, app_id, account_id, user_id, event, auth_method, outcome, reason, app_version, client_sdk,
             network_asn, network_name, latency_ms, claim_delay_ms, created_at)
-         SELECT ?1, ?2, (SELECT account_id FROM app WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+         SELECT ?1, ?2, ?14, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ${
                   change === "close"
                     ? "(SELECT MAX(0, ?13 - claim_pending_since) FROM app_end_user WHERE app_id = ?2 AND id = ?3 AND claim_pending_since <= ?13)"
@@ -98,6 +109,7 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
         input.network?.name ?? null,
         input.latencyMs,
         now,
+        input.accountId,
       ),
   ];
   if (change === "close") {
@@ -107,7 +119,7 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
         .bind(input.appId, userId, now),
     );
   } else if (change === "open") {
-    // Never for a blocked user, whose wait could never end; only the first refusal opens it.
+    // Never for a blocked user, whose wait could never end. The earliest refusal keeps the start.
     statements.push(
       db
         .prepare(
@@ -115,8 +127,9 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
            SELECT ?1, ?2, ?3, ?3
             WHERE NOT EXISTS (SELECT 1 FROM app_auth_event
                                WHERE app_id = ?1 AND user_id = ?2 AND outcome = 'ok' AND event <> 'challenge' AND created_at > ?3)
-           ON CONFLICT (app_id, id) DO UPDATE SET claim_pending_since = excluded.claim_pending_since
-            WHERE claim_pending_since IS NULL AND status = 'active'`,
+           ON CONFLICT (app_id, id) DO UPDATE
+              SET claim_pending_since = MIN(COALESCE(claim_pending_since, excluded.claim_pending_since), excluded.claim_pending_since)
+            WHERE status = 'active'`,
         )
         .bind(input.appId, userId, now),
     );

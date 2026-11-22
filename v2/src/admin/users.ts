@@ -74,12 +74,16 @@ async function appExists(db: D1Database, accountId: string, appId: string): Prom
 /**
  * The `identities` table of one app, as common table expressions. `?1` is the
  * app id; with `oneUser`, `?2` is the user id and nothing is scanned.
+ * `account` is the placeholder of the caller's account: refusals are read
+ * only as recorded under it, and a row with no account (recorded before
+ * events carried one) is never read.
  */
-function identities(oneUser: boolean): string {
+function identities(oneUser: boolean, account: string): string {
+  const refusals = `app_rejection_event WHERE app_id = ?1 AND account_id = ${account}`;
   const named = oneUser
     ? `named(user_id) AS (
          SELECT ?2 WHERE EXISTS (SELECT 1 FROM charge WHERE app_id = ?1 AND end_user_id = ?2)
-                      OR EXISTS (SELECT 1 FROM app_rejection_event WHERE app_id = ?1 AND user_id = ?2)
+                      OR EXISTS (SELECT 1 FROM ${refusals} AND user_id = ?2)
        )`
     : `used(user_id) AS (
          SELECT (SELECT MIN(end_user_id) FROM charge WHERE app_id = ?1)
@@ -88,9 +92,9 @@ function identities(oneUser: boolean): string {
            FROM used WHERE used.user_id IS NOT NULL
        ),
        refused(user_id) AS (
-         SELECT (SELECT MIN(user_id) FROM app_rejection_event WHERE app_id = ?1)
+         SELECT (SELECT MIN(user_id) FROM ${refusals})
          UNION ALL
-         SELECT (SELECT MIN(user_id) FROM app_rejection_event WHERE app_id = ?1 AND user_id > refused.user_id)
+         SELECT (SELECT MIN(user_id) FROM ${refusals} AND user_id > refused.user_id)
            FROM refused WHERE refused.user_id IS NOT NULL
        ),
        named(user_id) AS (
@@ -104,8 +108,8 @@ function identities(oneUser: boolean): string {
       SELECT named.user_id,
              (SELECT MIN(used_at) FROM charge WHERE app_id = ?1 AND end_user_id = named.user_id) AS used_first,
              (SELECT MAX(used_at) FROM charge WHERE app_id = ?1 AND end_user_id = named.user_id) AS used_last,
-             (SELECT MIN(created_at) FROM app_rejection_event WHERE app_id = ?1 AND user_id = named.user_id) AS refused_first,
-             (SELECT MAX(created_at) FROM app_rejection_event WHERE app_id = ?1 AND user_id = named.user_id) AS refused_last
+             (SELECT MIN(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_first,
+             (SELECT MAX(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_last
         FROM named
        WHERE NOT EXISTS (SELECT 1 FROM app_end_user WHERE app_id = ?1 AND id = named.user_id)
     ),
@@ -177,13 +181,13 @@ export async function listAppUsers(c: AdminContext): Promise<Response> {
   const month = query.month ?? currentMonth();
   const filter = `WHERE (?2 IS NULL OR status = ?2) AND (?3 IS NULL OR id LIKE ?3 ESCAPE '\\')`;
   const binds = [appId, query.status ?? null, query.query ? likePattern(query.query) : null];
-  const base = identities(false);
+  const base = identities(false, "?6");
   const [total, rows] = await c.env.DB.batch([
-    c.env.DB.prepare(`${base} SELECT COUNT(*) AS value FROM identities ${filter}`).bind(...binds),
+    c.env.DB.prepare(`${base} SELECT COUNT(*) AS value FROM identities ${filter}`).bind(...binds, null, null, actor.accountId),
     c.env.DB.prepare(
       `${base} SELECT * FROM identities ${filter}
         ORDER BY COALESCE(last_seen_at, created_at) DESC, id LIMIT ?4 OFFSET ?5`,
-    ).bind(...binds, query.limit, query.offset),
+    ).bind(...binds, query.limit, query.offset, actor.accountId),
   ]);
   const listed = (rows?.results ?? []) as IdentityRow[];
   const usage = await usageByUser(c.env.DB, appId, listed.map((row) => row.id), month);
@@ -204,7 +208,7 @@ export async function getAppUser(c: AdminContext): Promise<Response> {
   const query = parseQuery(c, EndUserQuerySchema);
   await appExists(c.env.DB, actor.accountId, appId);
   const month = query.month ?? currentMonth();
-  const row = await c.env.DB.prepare(`${identities(true)} SELECT * FROM identities`).bind(appId, userId).first<IdentityRow>();
+  const row = await c.env.DB.prepare(`${identities(true, "?3")} SELECT * FROM identities`).bind(appId, userId, actor.accountId).first<IdentityRow>();
   if (row === null) throw new GatewayError(404, "not_found", "User was not found");
   const usage = await usageByUser(c.env.DB, appId, [userId], month);
   return c.json({ app_id: appId, month, user: userView(row, usage.get(userId)) } satisfies OperationResponse<"getAppUser">);
