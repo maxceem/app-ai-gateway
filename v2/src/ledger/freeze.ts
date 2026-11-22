@@ -22,7 +22,17 @@
  *   (`../do/ChargeStore.ts`);
  * - the sweep gives up on open work within days, and work it gave up on no
  *   longer keeps its owner live;
- * - a job is polled while its provider still has its result, which is days.
+ * - the sweep checks a job for about an hour (60 checks a minute apart).
+ *
+ * A client's poll has no such bound: a signed job id never expires, so a
+ * client may poll on day 91 if the provider still answers. That is safe
+ * because the bookings it could make are the ones checked here: its
+ * settlement goes through `writeCorrection`'s freeze check, and a figure it
+ * saves goes through the open-work insert's. Neither books for a frozen job,
+ * and the app is served the provider's answer as usual.
+ *
+ * A session row a late checkpoint or close would write again is checked by
+ * its start ({@link startTakesBookings}): with no row, there is nothing to ask.
  *
  * Plain charge inserts are not checked: a new charge is dated when it is
  * written, and replayed within 7 days, so its owner is live through the charge
@@ -38,6 +48,17 @@ const DAY_MS = 86_400_000;
 /** The first UTC day, `YYYY-MM-DD`, a charge must be dated on for its owner to take bookings at `now`. */
 export function freezeCutoffDay(now: number): string {
   return new Date(now - LEDGER_FREEZE_DAYS * DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Whether an owner that started at `startedAt` may still be written from
+ * scratch at `now`: the same cutoff day as {@link ownerLiveSql}, for an owner
+ * whose rows are not there to ask. A session row recreated by a late replay
+ * (`./sessions.ts`) is the one case: once retention has deleted the session
+ * and its slices, recreating it would book the replayed slice a second time.
+ */
+export function startTakesBookings(startedAt: number, now: number): boolean {
+  return new Date(startedAt).toISOString().slice(0, 10) >= freezeCutoffDay(now);
 }
 
 /**

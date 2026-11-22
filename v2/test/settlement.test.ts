@@ -267,6 +267,32 @@ describe("checkpoints", () => {
     expect(work).toEqual({ kind: "stale_session", due_at: T0 + session.timeCapMs + STALE_SESSION_GRACE_MS });
   });
 
+  it("a checkpoint or close replayed after retention deleted its session books nothing, and tells the relay to stop (Astra 7b-2 round 4)", async () => {
+    const warned: string[] = [];
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    const session = sessionRow({ expectsSessionTotal: false });
+    expect(await checkpoint(session, 1, 1_000)).toEqual({ decision: "continue", written: true });
+    const before = await env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
+    expect(before.results).toEqual([{ charges: 1, cost_nano: 1_000, session_ms: 60_000 }]);
+    // Retention deletes the session's work, its slice and its row; the day rollup stays.
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
+      env.DB.prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
+      env.DB.prepare("DELETE FROM session WHERE id = ?").bind(session.id),
+    ]);
+    const day91 = T0 + 91 * 86_400_000;
+    expect(await checkpoint(session, 1, 1_000, { now: day91 })).toEqual({ decision: "stop", reasons: ["ended"], written: true });
+    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: day91, now: day91 });
+    expect(await sessionState(session.id)).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect(await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect((await env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all()).results).toEqual(
+      before.results,
+    );
+    expect(warned.filter((line) => line.includes('"message":"ledger_checkpoint_frozen"'))).toHaveLength(1);
+  });
+
   it("answers stop when the plan minutes, the user, the key or a newer session say so", async () => {
     await seedAccount();
     const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });

@@ -26,6 +26,7 @@ import { log } from "../core/log.ts";
 import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
 import { utcMonthDays } from "../limits/spend.ts";
+import { startTakesBookings } from "./freeze.ts";
 import { insertChargeWithCostStatement, utcDay, type ChargeRow } from "./write.ts";
 
 /**
@@ -79,12 +80,16 @@ export function sessionSettlementId(sessionId: string): string {
 
 function insertSessionStatements(db: D1Database, session: SessionRow, now: number): D1PreparedStatement[] {
   return [
+    // A session row that is not there is written only while a session that
+    // started then could still take bookings (`./freeze.ts`). Past that, a
+    // missing row means retention deleted it with its slices, and a late
+    // checkpoint or close must not bring it back: its slice would count twice.
     db
       .prepare(
         `INSERT INTO session (id, account_id, app_id, end_user_id, install_id, apple_account_id, app_key_id,
            provider_type, provider_connection_id, operation, model, mode, slot, state, time_cap_ms, started_at,
            expects_session_total, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ? WHERE ?
          ON CONFLICT(id) DO NOTHING`,
       )
       .bind(
@@ -106,14 +111,16 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         session.expectsSessionTotal ? 1 : 0,
         now,
         now,
+        startTakesBookings(session.startedAt, now) ? 1 : 0,
       ),
     // The sweep settles a session that never closes, once its cap has passed.
     // Never for a session that has ended: its work may be done and removed.
+    // Never for a session whose row is not there (one too old to write again).
     db
       .prepare(
         `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
          SELECT ?, 'stale_session', ?, ?, 'session', ?, NULL, NULL, ?, 0, ?
-         WHERE NOT EXISTS (SELECT 1 FROM session WHERE id = ? AND state = 'ended')
+         WHERE EXISTS (SELECT 1 FROM session WHERE id = ?7 AND state <> 'ended')
          ON CONFLICT(id) DO NOTHING`,
       )
       .bind(
@@ -190,11 +197,13 @@ export async function writeCheckpoint(
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
     // A slice after settlement is $0 when a session-level dollar total covers it (S8).
+    // Written only under a session row: none is there for a frozen replay (see insertSessionStatements).
     insertChargeWithCostStatement(
       db,
       slice,
       "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
       [session.id, slice.costNano],
+      { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
     ),
   ];
   if (slice.priceSource === "unresolved") {
@@ -260,6 +269,13 @@ export async function writeCheckpoint(
   let index = stateAt + 1;
   const reasons: StopReason[] = [];
   const state = first(stateAt);
+  if (state === undefined) {
+    // No session row, and none written: a replay of a session past the ledger's
+    // freeze (`./freeze.ts`), long over. Nothing was booked; the relay is told
+    // to stop, so it does not send the slice again.
+    log("warn", "ledger_checkpoint_frozen", { app: session.appId, session: session.id, slice: slice.id });
+    return { decision: "stop", reasons: ["ended"], written: true };
+  }
   if (state?.replaced_by !== null && state?.replaced_by !== undefined) reasons.push("replaced");
   else if (state?.state === "ended") reasons.push("ended");
   for (const budget of input.budgets) {
