@@ -35,7 +35,13 @@ function stub(routes: Record<string, Answer> = {}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
-    const answer = routes[`${method} ${url}`] ?? (url === "/v2/admin/providers" ? { body: PROVIDERS } : { body: { app: testApp() } });
+    const answer =
+      routes[`${method} ${url}`] ??
+      (url === "/v2/admin/providers"
+        ? { body: PROVIDERS }
+        : url.startsWith(`${APP_URL}/charges`)
+          ? { body: { app_id: "my-app", limit: 1, next_before: null, charges: [] } }
+          : { body: { app: testApp() } });
     return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -310,6 +316,33 @@ describe("AppDetailPage", () => {
     renderTab("overview");
     expect(await screen.findByRole("link", { name: "Providers" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Keys" })).toBeNull();
+  });
+
+  const CHECK = { [`GET ${APP_URL}/check`]: { body: { app_id: "my-app", ready: true, providers: [], limitations: [] } } };
+
+  it("says on the overview when the app has made no call yet", async () => {
+    stub(CHECK);
+    renderTab("overview");
+    expect(await screen.findByText(/No calls yet/u)).toBeTruthy();
+  });
+
+  it("says on the overview when calls are arriving, linking to its usage", async () => {
+    stub({
+      ...CHECK,
+      [`GET ${APP_URL}/charges?limit=1`]: {
+        body: { app_id: "my-app", limit: 1, next_before: null, charges: [{ id: "c1", used_at: "2026-11-02T10:00:00.000Z" }] },
+      },
+    });
+    renderTab("overview");
+    expect(await screen.findByText(/Calls are arriving/u)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "See usage" }).getAttribute("href")).toBe("/apps/my-app/usage");
+  });
+
+  it("offers the Usage and Errors tabs beside the others", async () => {
+    stub(CHECK);
+    renderTab("overview");
+    expect((await screen.findByRole("link", { name: "Usage" })).getAttribute("href")).toBe("/apps/my-app/usage");
+    expect(screen.getByRole("link", { name: "Errors" }).getAttribute("href")).toBe("/apps/my-app/errors");
   });
 
   it("sends an explicit null configuration as typed, for the gateway to refuse", async () => {

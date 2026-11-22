@@ -13,7 +13,10 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
-import { useApps, useCreateApp } from "@/lib/queries";
+import { MonthPicker } from "@/components/pickers";
+import { StatCard } from "@/components/stat-card";
+import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
+import { useAccountUsage, useApps, useCreateApp } from "@/lib/queries";
 import type { App, CreatedApp } from "@/lib/types";
 
 /** What kind of app it is, as a person reads it. */
@@ -24,7 +27,15 @@ export function appKind(app: App): string {
 export function AppsPage() {
   const apps = useApps();
   const [creating, setCreating] = useState(false);
+  const [month, setMonth] = useState(currentMonth());
+  // The account's month, as v1's app list showed it: totals over every app,
+  // deleted ones included (their usage is kept), and a line per app.
+  const usage = useAccountUsage(month);
   const list = apps.data?.apps ?? [];
+  const usageOf = new Map((usage.data?.apps ?? []).map((line) => [line.app_id, line]));
+  const totals = usage.data?.totals;
+  const deleted = (usage.data?.apps ?? []).filter((line) => line.deleted).length;
+  const figure = (value: string) => (usage.isPending ? <Skeleton className="h-6 w-16" /> : usage.isError ? "—" : value);
 
   return (
     <div className="space-y-6">
@@ -32,12 +43,34 @@ export function AppsPage() {
         title="Apps"
         description="Each app calls AI providers through this gateway, with its own sign-in, providers and limits."
         action={
-          <GuardedButton size="sm" onClick={() => setCreating(true)}>
-            <Plus className="size-4" />
-            New app
-          </GuardedButton>
+          <>
+            <MonthPicker value={month} onChange={setMonth} />
+            <GuardedButton size="sm" onClick={() => setCreating(true)}>
+              <Plus className="size-4" />
+              New app
+            </GuardedButton>
+          </>
         }
       />
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Spend"
+          value={figure(formatCost(totals?.cost_usd))}
+          detail={deleted > 0 ? `includes ${formatNumber(deleted)} deleted ${deleted === 1 ? "app" : "apps"}` : "all your apps"}
+        />
+        <StatCard
+          label="Charges"
+          value={figure(formatNumber(totals?.charges))}
+          detail={totals && totals.failed > 0 ? `${formatNumber(totals.failed)} failed` : "calls, session slices and job estimates"}
+        />
+        <StatCard label="Tokens" value={figure(formatCompact(totals ? totalTokens(totals) : null))} detail="all buckets" />
+        <StatCard
+          label="Unpriced"
+          value={figure(formatNumber(totals?.unpriced))}
+          detail="charges still without a price, counted as $0"
+        />
+      </div>
 
       {apps.isError ? (
         <Alert variant="destructive">
@@ -54,6 +87,8 @@ export function AppsPage() {
               <TableHead>Name</TableHead>
               <TableHead>Kind</TableHead>
               <TableHead>Providers</TableHead>
+              <TableHead className="text-right">Charges</TableHead>
+              <TableHead className="text-right">Spend</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Updated</TableHead>
             </TableRow>
@@ -62,14 +97,14 @@ export function AppsPage() {
             {apps.isPending ? (
               [0, 1].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={7}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : list.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No apps yet. Create one to get started.
                 </TableCell>
               </TableRow>
@@ -86,6 +121,13 @@ export function AppsPage() {
                   <TableCell className="text-muted-foreground">
                     {Object.keys(app.config.routing.providers).join(", ") || "None yet"}
                   </TableCell>
+                  <TableCell className="tabular text-right">
+                    {usage.isSuccess ? formatNumber(usageOf.get(app.id)?.charges ?? 0) : "—"}
+                    {(usageOf.get(app.id)?.failed ?? 0) > 0 ? (
+                      <span className="block text-[11px] text-amber-600 dark:text-amber-400">{formatNumber(usageOf.get(app.id)?.failed)} failed</span>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className="tabular text-right">{usage.isSuccess ? formatCost(usageOf.get(app.id)?.cost_usd ?? 0) : "—"}</TableCell>
                   <TableCell>{app.status === "active" ? "On" : <span className="text-muted-foreground">Off</span>}</TableCell>
                   <TableCell className="text-muted-foreground">
                     <RelativeTime value={app.updated_at} />

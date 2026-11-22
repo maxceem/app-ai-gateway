@@ -27,6 +27,7 @@ import { dollarsToNano, nanoToDollarText, nanoToDollars } from "@/lib/money";
 import { operationsOf, providerLabel } from "@/lib/providers";
 import {
   useApp,
+  useAppCharges,
   useAppCheck,
   useAppJobs,
   JOBS_REFRESH_MS,
@@ -43,6 +44,8 @@ import {
 import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
+import { ErrorsTab } from "@/pages/app-errors";
+import { UsageTab } from "@/pages/app-usage";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
 
 interface Tab {
@@ -54,6 +57,8 @@ interface Tab {
 
 const TABS: Tab[] = [
   { slug: "overview", label: "Overview" },
+  { slug: "usage", label: "Usage" },
+  { slug: "errors", label: "Errors" },
   { slug: "providers", label: "Providers" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
@@ -155,6 +160,8 @@ export function AppDetailPage() {
       </nav>
 
       {active.slug === "overview" ? <OverviewTab app={data} /> : null}
+      {active.slug === "usage" ? <UsageTab app={data} /> : null}
+      {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
       {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
       {active.slug === "limits" ? <LimitsTab app={data} /> : null}
       {active.slug === "users" ? <UsersTab app={data} /> : null}
@@ -168,11 +175,58 @@ export function AppDetailPage() {
 // ---------------------------------------------------------------------------
 // Overview
 
+/** How often the overview asks again while the app has made no call yet. */
+export const FIRST_CALL_POLL_MS = 10_000;
+
+/**
+ * Whether the app has made a call, v1's first-request check: its newest
+ * charge, if any is kept. While there is none it asks again every
+ * {@link FIRST_CALL_POLL_MS}, so the first call shows without a reload, and
+ * stops once one has.
+ */
+function FirstCall({ app }: { app: App }) {
+  const [waiting, setWaiting] = useState(true);
+  const latest = useAppCharges(app.id, { limit: 1 }, waiting ? FIRST_CALL_POLL_MS : undefined);
+  const newest = latest.data?.charges[0];
+  useEffect(() => {
+    if (latest.isSuccess) setWaiting(newest === undefined);
+  }, [latest.isSuccess, newest]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">First call</CardTitle>
+        <CardDescription>Whether this app has called a provider through the gateway.</CardDescription>
+      </CardHeader>
+      <CardContent className="text-sm">
+        {latest.isPending ? (
+          <Skeleton className="h-5 w-48" />
+        ) : latest.isError ? (
+          <p className="text-destructive">Could not check for calls.</p>
+        ) : newest ? (
+          <p className="flex items-center gap-2">
+            <CheckCircle2 className="size-4 text-primary" />
+            <span>
+              Calls are arriving. The latest was <RelativeTime value={newest.used_at} />.{" "}
+              <Link className="underline" to={`/apps/${encodeURIComponent(app.id)}/usage`}>See usage</Link>.
+            </span>
+          </p>
+        ) : (
+          <p className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            No calls yet. The first one shows here within a few seconds of arriving.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function OverviewTab({ app }: { app: App }) {
   const check = useAppCheck(app.id);
   const base = `${window.location.origin}/v2/apps/${encodeURIComponent(app.id)}/proxy/`;
   return (
     <div className="space-y-4">
+      <FirstCall app={app} />
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Ready to serve</CardTitle>
