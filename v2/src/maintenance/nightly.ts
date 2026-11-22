@@ -97,7 +97,7 @@ function settleChallenges(db: D1Database): Promise<void> {
   return job("auth_challenges_settled", "auth_challenges_prune_failed", () => settleExpiredChallenges(db), (settled) => ({ ...settled }));
 }
 
-/** Statements the App Attest challenge clean-up issues: one read of its versions, then one batch of two. */
+/** Statements the App Attest challenge clean-up issues: one read of a bounded batch of challenges, then one batch of two. */
 export const CHALLENGE_SETTLE_STATEMENTS = 3;
 
 /**

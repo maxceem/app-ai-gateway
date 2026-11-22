@@ -76,6 +76,15 @@ function claimChange(input: AuthEventInput): "open" | "close" | null {
  *
  * `account_id` is the account the attempt read the app under (`accountId`).
  */
+/**
+ * A success for the user after `?3`: a refusal then opens no wait. Bound to
+ * the account, so `app_auth_event_app_user_created` seeks the time range
+ * instead of walking the user's whole history (Sol 7b-4 round 4).
+ */
+export const LATER_SUCCESS_SQL = `SELECT 1 FROM app_auth_event
+   WHERE app_id = ?1 AND user_id = ?2 AND account_id = ?4
+     AND outcome = 'ok' AND event <> 'challenge' AND created_at > ?3`;
+
 function recordStatements(db: D1Database, input: AuthEventInput, id: string, now: number): D1PreparedStatement[] {
   const change = claimChange(input);
   const userId = input.userId ?? null;
@@ -125,13 +134,12 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
         .prepare(
           `INSERT INTO app_end_user (app_id, id, created_at, claim_pending_since)
            SELECT ?1, ?2, ?3, ?3
-            WHERE NOT EXISTS (SELECT 1 FROM app_auth_event
-                               WHERE app_id = ?1 AND user_id = ?2 AND outcome = 'ok' AND event <> 'challenge' AND created_at > ?3)
+            WHERE NOT EXISTS (${LATER_SUCCESS_SQL})
            ON CONFLICT (app_id, id) DO UPDATE
               SET claim_pending_since = MIN(COALESCE(claim_pending_since, excluded.claim_pending_since), excluded.claim_pending_since)
             WHERE status = 'active'`,
         )
-        .bind(input.appId, userId, now),
+        .bind(input.appId, userId, now, input.accountId),
     );
   }
   return statements;
@@ -176,25 +184,43 @@ export async function markChallengeAttempted(env: Env, appId: string, challenge:
     .where(and(eq(appAuthChallenge.challenge, challenge), eq(appAuthChallenge.appId, appId)));
 }
 
+/** Expired challenges one settlement handles: its reads and bindings stay small whatever the backlog. */
+export const CHALLENGE_SETTLE_BATCH = 1000;
+
+/** The SQL that picks one settlement's challenges, oldest first, through `app_auth_challenge_expiry`. */
+export const EXPIRED_CHALLENGES_SQL =
+  "SELECT challenge, attempted, app_version FROM app_auth_challenge WHERE expires_at < ? ORDER BY expires_at LIMIT ?";
+
 /**
- * Records every expired challenge nobody used as an `abandoned` event, then
- * deletes all expired challenges. The event id comes from the challenge, so
- * running this twice records each one once.
+ * Records the oldest expired challenges nobody used as `abandoned` events,
+ * then deletes those expired challenges, at most `batch` of them. The event
+ * id comes from the challenge, so running this twice records each one once.
+ * Always three statements: one read, then one batch of two.
  *
  * A challenge's version is copied only when `storedAppVersion` keeps it, the
  * same check every other writer uses: a challenge written before that check
- * existed may hold any text the caller sent (Sol 7b-4 round 3). The distinct
- * versions are few, so they are read first and judged here.
+ * existed may hold any text the caller sent (Sol 7b-4 round 3). The batch
+ * bounds what is read and bound back to D1, so a large backlog never makes a
+ * statement too big to send (Sol 7b-4 round 4); it is worked down by the
+ * next runs (the hourly cron, and one challenge in a hundred), and a full
+ * batch logs `auth_challenges_backlog_left`.
  */
 export async function settleExpiredChallenges(
   db: D1Database,
   now: number = Date.now(),
+  batch: number = CHALLENGE_SETTLE_BATCH,
 ): Promise<{ abandoned: number; deleted: number }> {
   const { results } = await db
-    .prepare("SELECT DISTINCT app_version FROM app_auth_challenge WHERE expires_at < ? AND attempted = 0 AND app_version IS NOT NULL")
-    .bind(now)
-    .all<{ app_version: string }>();
-  const kept = (results ?? []).map((row) => row.app_version).filter((version) => storedAppVersion(version) === version);
+    .prepare(EXPIRED_CHALLENGES_SQL)
+    .bind(now, batch)
+    .all<{ challenge: string; attempted: number; app_version: string | null }>();
+  const rows = results ?? [];
+  if (rows.length === 0) return { abandoned: 0, deleted: 0 };
+  const challenges = JSON.stringify(rows.map((row) => row.challenge));
+  const kept = JSON.stringify([
+    ...new Set(rows.flatMap((row) => (row.app_version !== null && storedAppVersion(row.app_version) === row.app_version ? [row.app_version] : []))),
+  ]);
+  // `expires_at < now` again in both: only ever an expired challenge, whatever happened since the read.
   const [recorded, deleted] = await db.batch([
     db
       .prepare(
@@ -202,15 +228,18 @@ export async function settleExpiredChallenges(
            (id, app_id, account_id, event, outcome, reason, app_version, client_sdk, network_asn, network_name, created_at)
          SELECT 'challenge:' || challenge, app_id, (SELECT account_id FROM app WHERE app.id = app_auth_challenge.app_id),
                 'challenge', 'abandoned', 'challenge_unused',
-                CASE WHEN app_version IN (SELECT value FROM json_each(?3)) THEN app_version END,
+                CASE WHEN app_version IN (SELECT value FROM json_each(?4)) THEN app_version END,
                 client_sdk, network_asn, network_name, expires_at - ?1
            FROM app_auth_challenge
-          WHERE expires_at < ?2 AND attempted = 0
+          WHERE challenge IN (SELECT value FROM json_each(?3)) AND expires_at < ?2 AND attempted = 0
          ON CONFLICT (id) DO NOTHING`,
       )
-      .bind(CHALLENGE_TTL_SECONDS * 1000, now, JSON.stringify(kept)),
-    db.prepare("DELETE FROM app_auth_challenge WHERE expires_at < ?").bind(now),
+      .bind(CHALLENGE_TTL_SECONDS * 1000, now, challenges, kept),
+    db
+      .prepare("DELETE FROM app_auth_challenge WHERE challenge IN (SELECT value FROM json_each(?1)) AND expires_at < ?2")
+      .bind(challenges, now),
   ]);
+  if (rows.length === batch) log("warn", "auth_challenges_backlog_left", { batch });
   return { abandoned: recorded?.meta.changes ?? 0, deleted: deleted?.meta.changes ?? 0 };
 }
 
