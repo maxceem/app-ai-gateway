@@ -249,8 +249,8 @@ export function usageRetentionRules(now: number) {
 
 /**
  * The usage retention passes at `now`, in the order they take their turns:
- * open work given up long ago first, so the charges it held are free to go in
- * the same round; the charges before the sessions they belong to.
+ * open work given up long ago first (given-up work holds no charge back, so
+ * this order is only tidiness); the charges before the sessions they belong to.
  */
 export function usageRetentionPasses(now: number): Pass[] {
   const rules = usageRetentionRules(now);

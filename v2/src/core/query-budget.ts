@@ -46,9 +46,11 @@ const WRAPPED_DATABASES = new WeakMap<D1Database, D1Database>();
  * Mutable and shared rather than returned, so that a sweep which throws partway
  * still leaves an accurate count behind for the sweep after it.
  *
- * Nothing declares its own cost to this: a sweep is given
- * {@link QueryBudget.database} and is charged for what it issues, so a sweep
- * cannot drift from a constant that promised what it would spend. A loop that
+ * Charges follow what is actually issued: a sweep is given
+ * {@link QueryBudget.database} and is charged for each statement it sends.
+ * Passes also declare what a chunk costs, but only to ask
+ * {@link QueryBudget.affords} before they start one; the count itself never
+ * trusts that declaration, so it cannot drift from what was sent. A loop that
  * must finish a step it starts asks {@link QueryBudget.affords} first; anything
  * else simply runs until a statement is refused.
  */
