@@ -426,8 +426,9 @@ describe("plan periods (D18)", () => {
 describe("budget totals", () => {
   it("come from the rollups, cached and refreshed in the background every 10 s", async () => {
     const appId = `app_budget_${crypto.randomUUID().slice(0, 8)}`;
-    const day = new Date().toISOString().slice(0, 10);
-    const at = Date.now();
+    // A fixed time mid-month: the 11 s below never cross into another month's totals.
+    const at = Date.parse("2026-11-19T10:00:00Z");
+    const day = "2026-11-19";
     const add = (nano: number) =>
       env.DB.prepare(
         `INSERT INTO budget_day (app_id, scope, scope_id, day, cost_nano, session_ms) VALUES (?, 'app', ?, ?, ?, 0)

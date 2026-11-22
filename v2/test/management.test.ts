@@ -606,7 +606,11 @@ describe("end users", () => {
     const key = await seedManagementKey();
     const { body } = await createApp(key, apiKeyConfig({}, { source: "header", header: "x-end-user-id" }));
     const appId = body.app.id as string;
-    const now = Date.now();
+    // At least a minute into the UTC month, so every charge below (dated up to 5 s back) is in it,
+    // and the month is asked for by name: the run date and the server's clock never move it.
+    const monthStart = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1);
+    const now = Math.max(Date.now(), monthStart + 60_000);
+    const thisMonth = new Date(now).toISOString().slice(0, 7);
     const lastMonth = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() - 1, 15);
     await env.DB.prepare("INSERT INTO app_end_user (app_id, id, status, created_at, last_seen_at) VALUES (?, 'signed-in', 'active', ?, ?)")
       .bind(appId, now - 5_000, now - 5_000)
@@ -633,7 +637,7 @@ describe("end users", () => {
     await seedCharge(appId, "their-charge-user", { usedAt: now - 1_000, accountId: "another-account" });
     await seedCharge(appId, "header-user", { usedAt: now - 1_000, cost: 70_000, accountId: "another-account" });
 
-    const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users`);
+    const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users?month=${thisMonth}`);
     expect(listed.status).toBe(200);
     expect(listed.body.total).toBe(4);
     expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["header-user", "100%_user", "refused-only", "signed-in"]);
