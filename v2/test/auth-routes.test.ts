@@ -439,8 +439,8 @@ describe("expired challenges", () => {
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-tried', ?, ?, 1)").bind(appId, now - 1000),
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('fresh', ?, ?, 0)").bind(appId, now + 60_000),
     ]);
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2 });
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0 });
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
     const events = await authEvents(appId);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ id: "challenge:old-unused", outcome: "abandoned", created_at: now - 1000 - 300_000 });
@@ -464,7 +464,7 @@ describe("expired challenges", () => {
         ),
       ),
     );
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3 });
+    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
     const versions = Object.fromEntries((await authEvents(appId)).map((event: any) => [event.id, event.app_version]));
     expect(versions).toEqual({ "challenge:free-text": null, "challenge:version": "1.2.3 (45)", "challenge:none": null });
   });
@@ -487,7 +487,7 @@ describe("expired challenges", () => {
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     // A batch of 2 stands in for 1,000: the oldest two go first.
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2 });
+    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
     const left = await env.DB.prepare("SELECT challenge FROM app_auth_challenge ORDER BY expires_at").all<{ challenge: string }>();
     expect(left.results.map((row) => row.challenge)).toEqual(["backlog-2", "backlog-3", "backlog-4"]);
     // The hourly drain goes on while batches come back full, up to its limit, and says a backlog is left.
@@ -517,6 +517,33 @@ describe("expired challenges", () => {
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toEqual([]);
   });
 
+  it("keeps draining when another clean-up deleted part of a full batch first (Sol 7b-4 round 6)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      Array.from({ length: 5 }, (_, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES (?, ?, ?, 0)").bind(`race-${index}`, appId, now - 10_000 + index),
+      ),
+    );
+    // The first batch selects race-0 and race-1; a clean-up started by a challenge request deletes race-0 before it writes.
+    let raced = false;
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
+        return async (statements: D1PreparedStatement[]) => {
+          if (!raced) {
+            raced = true;
+            await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
+          }
+          return target.batch(statements);
+        };
+      },
+    });
+    expect(await drainExpiredChallenges(db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
+  });
+
   it("picks a batch through the expiry index, with no sort", async () => {
     const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${EXPIRED_CHALLENGES_SQL}`).bind(Date.now(), 1000).all<{ detail: string }>()).results
       .map((row) => row.detail)
@@ -527,13 +554,15 @@ describe("expired challenges", () => {
 });
 
 describe("claim waits", () => {
-  it("work out the wait from the user index, by account and time, with no sort (Sol 7b-4 rounds 4 and 5)", async () => {
+  it("work out the wait with one seek into each outcome's own index, with no sort (Sol 7b-4 rounds 4 to 6)", async () => {
     const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${PENDING_SINCE_SQL}`).bind("app", "u1", "acct").all<{ detail: string }>()).results
       .map((row) => row.detail)
       .join("\n");
-    // The refusal after the last success seeks the time range; the last success is read from the same index.
-    expect(plan).toContain("app_auth_event_app_user_created (app_id=? AND user_id=? AND account_id=? AND created_at>?)");
-    expect(plan).toContain("app_auth_event_app_user_created (app_id=? AND user_id=? AND account_id=?)");
+    // Each index holds only the rows its lookup wants, so a user with many refusals and no success
+    // still costs one seek: the first missing-claim refusal after the time, the latest success.
+    expect(plan).toContain("app_auth_event_user_claim_missing (app_id=? AND user_id=? AND account_id=? AND created_at>?)");
+    expect(plan).toContain("app_auth_event_user_success (app_id=? AND user_id=? AND account_id=?)");
+    expect(plan).not.toContain("app_auth_event_app_user_created");
     expect(plan).not.toContain("TEMP B-TREE");
     expect(plan).not.toMatch(/SCAN (r|s|app_auth_event)\b/);
   });

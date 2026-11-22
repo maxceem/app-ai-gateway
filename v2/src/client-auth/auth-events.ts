@@ -60,14 +60,20 @@ function claimChange(input: AuthEventInput): "refused" | "succeeded" | null {
  * When the user's current wait for an entitlement claim began: the earliest
  * refusal for a missing claim after their latest successful sign-in, or null.
  * `?1` the app, `?2` the user, `?3` the account. A success ends the refusals
- * at or before its own time. Both lookups seek `app_auth_event_app_user_created`
- * (app, user, account, then time) and stop at the first row they want, so they
- * walk only the user's attempts since their last success, never a sort.
+ * at or before its own time. Each lookup reads its own partial index, holding
+ * only the rows it wants (`app_auth_event_user_success`, then
+ * `app_auth_event_user_claim_missing`), so each is one seek to one row, however
+ * many attempts the user has made (Sol 7b-4 round 6). `INDEXED BY` makes the
+ * statement fail rather than fall back to a walk if an index is ever missing.
+ *
+ * The events are kept 90 days. A wait open longer than that restarts from the
+ * oldest refusal still kept: accepted for a diagnostic, since a 90-day wait for
+ * an entitlement claim is outside what it measures.
  */
-export const PENDING_SINCE_SQL = `SELECT r.created_at FROM app_auth_event AS r
+export const PENDING_SINCE_SQL = `SELECT r.created_at FROM app_auth_event AS r INDEXED BY app_auth_event_user_claim_missing
    WHERE r.app_id = ?1 AND r.user_id = ?2 AND r.account_id = ?3
      AND r.outcome = 'issuer_claims_missing' AND r.event <> 'challenge'
-     AND r.created_at > COALESCE((SELECT s.created_at FROM app_auth_event AS s
+     AND r.created_at > COALESCE((SELECT s.created_at FROM app_auth_event AS s INDEXED BY app_auth_event_user_success
                                    WHERE s.app_id = ?1 AND s.user_id = ?2 AND s.account_id = ?3
                                      AND s.outcome = 'ok' AND s.event <> 'challenge'
                                    ORDER BY s.created_at DESC LIMIT 1), -1)
@@ -211,13 +217,13 @@ export async function settleExpiredChallenges(
   db: D1Database,
   now: number = Date.now(),
   batch: number = CHALLENGE_SETTLE_BATCH,
-): Promise<{ abandoned: number; deleted: number }> {
+): Promise<{ abandoned: number; deleted: number; selected: number }> {
   const { results } = await db
     .prepare(EXPIRED_CHALLENGES_SQL)
     .bind(now, batch)
     .all<{ challenge: string; attempted: number; app_version: string | null }>();
   const rows = results ?? [];
-  if (rows.length === 0) return { abandoned: 0, deleted: 0 };
+  if (rows.length === 0) return { abandoned: 0, deleted: 0, selected: 0 };
   const challenges = JSON.stringify(rows.map((row) => row.challenge));
   const kept = JSON.stringify([
     ...new Set(rows.flatMap((row) => (row.app_version !== null && storedAppVersion(row.app_version) === row.app_version ? [row.app_version] : []))),
@@ -241,15 +247,17 @@ export async function settleExpiredChallenges(
       .prepare("DELETE FROM app_auth_challenge WHERE challenge IN (SELECT value FROM json_each(?1)) AND expires_at < ?2")
       .bind(challenges, now),
   ]);
-  return { abandoned: recorded?.meta.changes ?? 0, deleted: deleted?.meta.changes ?? 0 };
+  return { abandoned: recorded?.meta.changes ?? 0, deleted: deleted?.meta.changes ?? 0, selected: rows.length };
 }
 
 /**
  * Settles expired challenges a batch at a time while each batch comes back
  * full, at most `batches` of them, so a burst is cleared within the hour
  * rather than one batch an hour (Sol 7b-4 round 5). Each batch is three
- * statements. Logs `auth_challenges_backlog_left` when the last batch was
- * still full.
+ * statements. A batch is full when it *selected* `batch` challenges: another
+ * clean-up running at the same time may have deleted some of them first, and
+ * that must not end the drain early (Sol 7b-4 round 6). Logs
+ * `auth_challenges_backlog_left` when the last batch was still full.
  */
 export async function drainExpiredChallenges(
   db: D1Database,
@@ -266,7 +274,7 @@ export async function drainExpiredChallenges(
     abandoned += settled.abandoned;
     deleted += settled.deleted;
     runs += 1;
-    full = settled.deleted >= batch;
+    full = settled.selected >= batch;
   } while (full && runs < batches);
   if (full) log("warn", "auth_challenges_backlog_left", { batches: runs, batch });
   return { abandoned, deleted, batches: runs };

@@ -709,6 +709,15 @@ export const appAuthEvent = sqliteTable(
     index("app_auth_event_app_account_created").on(table.appId, table.accountId, table.createdAt, table.id),
     index("app_auth_event_app_user_created").on(table.appId, table.userId, table.accountId, table.createdAt, table.id),
     index("app_auth_event_created").on(table.createdAt),
+    // A user's wait for an entitlement claim (`PENDING_SINCE_SQL`): their latest
+    // success and their first missing-claim refusal after it, each one seek, however
+    // long the user's history. A row is in at most one of the two.
+    index("app_auth_event_user_success")
+      .on(table.appId, table.userId, table.accountId, table.createdAt)
+      .where(sql`${table.outcome} = 'ok' AND ${table.event} <> 'challenge'`),
+    index("app_auth_event_user_claim_missing")
+      .on(table.appId, table.userId, table.accountId, table.createdAt)
+      .where(sql`${table.outcome} = 'issuer_claims_missing' AND ${table.event} <> 'challenge'`),
     // The few sign-ins that closed a wait, in order of the wait: the summary's percentiles read one row each.
     // Covering for the claim-wait percentiles: in wait order, with the time to filter on, so no sort and no table read.
     index("app_auth_event_claim_delay")
