@@ -43,3 +43,21 @@ export type JobSummary = OperationResponse<"listAppJobs">["jobs"][number];
 export type ProviderConnection = OperationResponse<"listProviders">["providers"][number];
 export type ProviderTestResult = OperationResponse<"testProvider">;
 export type PriceList = OperationResponse<"listModelPrices">["prices"];
+
+/** Usage reads: an account's month, an app's days, a breakdown, and the charges themselves. */
+export type AccountUsage = OperationResponse<"getAccountUsage">;
+export type AppUsage = OperationResponse<"getAppUsage">;
+export type UsageTimeseries = OperationResponse<"getAppUsageTimeseries">;
+export type TimeseriesBucket = UsageTimeseries["buckets"][number];
+export type UsageBreakdown = OperationResponse<"getAppUsageBreakdown">;
+export type UsageBreakdownRow = UsageBreakdown["rows"][number];
+export type UsageDimension = UsageBreakdown["by"];
+export type ChargeList = OperationResponse<"listAppCharges">;
+export type Charge = ChargeList["charges"][number];
+
+/** Diagnostics reads: sign-in attempts, refused requests, and a summary of both. */
+export type AuthEventSummary = OperationResponse<"getAppAuthEventSummary">;
+export type AuthEventList = OperationResponse<"listAppAuthEvents">;
+export type AuthEvent = AuthEventList["events"][number];
+export type RejectionEventList = OperationResponse<"listAppRejectionEvents">;
+export type RejectionEvent = RejectionEventList["events"][number];

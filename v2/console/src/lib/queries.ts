@@ -24,6 +24,13 @@ export const keys = {
   usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
   jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
+  accountUsage: (month: string) => ["account-usage", month] as const,
+  timeseries: (appId: string, query: unknown) => ["usage-timeseries", appId, query] as const,
+  breakdown: (appId: string, query: unknown) => ["usage-breakdown", appId, query] as const,
+  charges: (appId: string, query: unknown) => ["charges", appId, query] as const,
+  authSummary: (appId: string, days: number) => ["auth-summary", appId, days] as const,
+  authEvents: (appId: string, query: unknown) => ["auth-events", appId, query] as const,
+  rejections: (appId: string, query: unknown) => ["rejection-events", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
 };
@@ -335,5 +342,66 @@ export function usePrices() {
     queryKey: keys.prices,
     queryFn: () => call("listModelPrices"),
     staleTime: 5 * 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Usage and diagnostics: read-only, so nothing here invalidates anything
+
+/** The whole account's usage in one UTC month, with a line per app, deleted apps included. */
+export function useAccountUsage(month: string, refetchInterval?: number) {
+  return useQuery({
+    queryKey: keys.accountUsage(month),
+    queryFn: () => call("getAccountUsage", { query: { month } }),
+    refetchInterval,
+  });
+}
+
+export function useUsageTimeseries(appId: string, query: OperationQuery<"getAppUsageTimeseries">) {
+  return useQuery({
+    queryKey: keys.timeseries(appId, query),
+    queryFn: () => call("getAppUsageTimeseries", { params: { app: appId }, query }),
+  });
+}
+
+export function useUsageBreakdown(appId: string, query: OperationQuery<"getAppUsageBreakdown">) {
+  return useQuery({
+    queryKey: keys.breakdown(appId, query),
+    queryFn: () => call("getAppUsageBreakdown", { params: { app: appId }, query }),
+  });
+}
+
+export type ChargeQuery = OperationQuery<"listAppCharges">;
+
+export function useAppCharges(appId: string, query: ChargeQuery, refetchInterval?: number) {
+  return useQuery({
+    queryKey: keys.charges(appId, query),
+    queryFn: () => call("listAppCharges", { params: { app: appId }, query }),
+    refetchInterval,
+  });
+}
+
+export function useAuthEventSummary(appId: string, days: number) {
+  return useQuery({
+    queryKey: keys.authSummary(appId, days),
+    queryFn: () => call("getAppAuthEventSummary", { params: { app: appId }, query: { days } }),
+  });
+}
+
+export type AuthEventQuery = OperationQuery<"listAppAuthEvents">;
+
+export function useAuthEvents(appId: string, query: AuthEventQuery) {
+  return useQuery({
+    queryKey: keys.authEvents(appId, query),
+    queryFn: () => call("listAppAuthEvents", { params: { app: appId }, query }),
+  });
+}
+
+export type RejectionQuery = OperationQuery<"listAppRejectionEvents">;
+
+export function useRejectionEvents(appId: string, query: RejectionQuery) {
+  return useQuery({
+    queryKey: keys.rejections(appId, query),
+    queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query }),
   });
 }
