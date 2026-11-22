@@ -186,12 +186,16 @@ function openWorkStatement(db: D1Database, work: OpenWorkRow): D1PreparedStateme
     );
 }
 
-/** The rows a batch really inserted: a repeat whose first write committed inserts none. */
+/**
+ * D1's count of rows a batch changed. It includes the rollup triggers' writes,
+ * so it is not a count of charges; it is 0 when every row was a repeat whose
+ * first write had committed.
+ */
 function rowsWritten(results: readonly D1Result[]): number {
   return results.reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
 }
 
-/** Writes open-work rows that have no charge (a job's saved figure); returns how many were new. Throws when D1 cannot take them. */
+/** Writes open-work rows that have no charge (a job's saved figure); returns D1's count of rows changed. Throws when D1 cannot take them. */
 export async function writeOpenWork(db: D1Database, rows: readonly OpenWorkRow[]): Promise<number> {
   if (rows.length === 0) return 0;
   return rowsWritten(await db.batch(rows.map((row) => openWorkStatement(db, row))));
@@ -211,8 +215,8 @@ export function ledgerStatements(db: D1Database, entries: readonly LedgerEntry[]
 /**
  * Writes entries to D1 in one batch, at `now`: the time they are written,
  * which judges a replayed entry by its replay (`./late-booking.ts`). Returns
- * the rows it really inserted (charges and their work). Throws if D1 refuses
- * or fails.
+ * D1's count of rows changed, rollups included: 0 when all were repeats.
+ * Throws if D1 refuses or fails.
  */
 export async function writeToLedger(db: D1Database, entries: readonly LedgerEntry[], now: number): Promise<number> {
   if (entries.length === 0) return 0;

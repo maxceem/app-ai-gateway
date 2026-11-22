@@ -123,9 +123,9 @@ export class ChargeStore extends DurableObject<Env> {
       this.setDelay(0);
       return;
     }
-    let rowsWritten: number;
+    let d1Changes: number;
     try {
-      rowsWritten = await retryStored(
+      d1Changes = await retryStored(
         this.env.DB,
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
@@ -142,8 +142,9 @@ export class ChargeStore extends DurableObject<Env> {
     for (const one of work) this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", one.id);
     // Processed, not necessarily written: a repeat whose first write committed
     // is skipped by the ledger, and a charge past the late-booking window is
-    // refused (and logged there). `rowsWritten` counts the rows really inserted.
-    log("info", "charge_store_written", { processed: rows.length + work.length, rowsWritten });
+    // refused (and logged there). `d1Changes` is D1's count of rows changed,
+    // rollup triggers included: 0 means every entry was a repeat.
+    log("info", "charge_store_written", { processed: rows.length + work.length, d1Changes });
     this.setDelay(0);
     const left = await this.pendingCount();
     if (left > 0) await this.ctx.storage.setAlarm(Date.now());
