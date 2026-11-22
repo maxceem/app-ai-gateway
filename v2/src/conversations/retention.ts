@@ -18,8 +18,10 @@
  * the previous run reached (kept in one small object) to the end of the
  * listing, where the cursor is cleared and the next run starts from the first
  * app again. So a run always makes progress, however many apps there are, and
- * one busy app never holds up the apps after it: a run that runs out in it
- * leaves the cursor after it, and a later pass comes back to it.
+ * one busy app never holds up the apps after it: a run that runs out in it,
+ * having deleted something there, leaves the cursor after it, and a later pass
+ * comes back to it. A run that runs out in an app before deleting anything
+ * there leaves the cursor before it, so the next run starts with that app.
  *
  * Runs once a day, from the hourly cron (`../index.ts`).
  */
@@ -104,27 +106,28 @@ async function appNow(db: D1Database, accountId: string, appId: string): Promise
 }
 
 /**
- * Every key under `prefix`, deleted a page at a time. Where `stillExpired` is
- * given, it is asked after each page is listed and right before that page is
- * deleted; when it answers false, deleting stops and `stopped` is true.
+ * Every key under `prefix`, deleted a page at a time, each page added to
+ * `result` as soon as it is deleted. Where `stillExpired` is given, it is
+ * asked after each page is listed and right before that page is deleted;
+ * when it answers false, deleting stops and `stopped` is true.
  */
 async function deleteAll(
   bucket: R2Bucket,
   prefix: string,
   budget: QueryBudget,
   pageSize: number,
+  result: ConversationRetentionResult,
   stillExpired?: () => Promise<boolean>,
-): Promise<{ deleted: number; stopped: boolean }> {
-  let deleted = 0;
+): Promise<{ stopped: boolean }> {
   for (;;) {
     budget.charge(1);
     const page = await bucket.list({ prefix, limit: pageSize });
-    if (page.objects.length === 0) return { deleted, stopped: false };
-    if (stillExpired !== undefined && !(await stillExpired())) return { deleted, stopped: true };
+    if (page.objects.length === 0) return { stopped: false };
+    if (stillExpired !== undefined && !(await stillExpired())) return { stopped: true };
     budget.charge(1);
     await bucket.delete(page.objects.map((object) => object.key));
-    deleted += page.objects.length;
-    if (!page.truncated) return { deleted, stopped: false };
+    result.deletedObjects += page.objects.length;
+    if (!page.truncated) return { stopped: false };
   }
 }
 
@@ -156,8 +159,12 @@ export async function runConversationRetention(
   /** Where the next run starts: after this app folder, or from the first where the pass reached the end (null). */
   let resume: string | null = null;
   let last: string | null = null;
-  /** The app folder being worked on: where the allowance runs out, the next run starts after it. */
+  /** The app folder being worked on. */
   let current: string | null = null;
+  /** Where the next run starts if this one runs out in `current` before deleting anything there. */
+  let beforeCurrent: string | null = null;
+  /** What the run had deleted when it began `current`. */
+  let deletedBeforeCurrent = 0;
   try {
     budget.charge(1);
     last = (await (await bucket.get(RETENTION_CURSOR))?.text()) || null;
@@ -178,18 +185,19 @@ export async function runConversationRetention(
         for (const folder of page.delimitedPrefixes) {
           // `startAfter` names the folder, whose own keys sort after it: it comes back first.
           if (last !== null && folder <= last) continue;
+          beforeCurrent = resume;
           resume = folder;
           const owner = parseAppFolderName(folder.slice(CONVERSATIONS_ROOT.length, -1));
           // Written before folders named their account: never served, never touched.
           if (owner === null) continue;
           const { accountId, appId } = owner;
           current = folder;
+          deletedBeforeCurrent = result.deletedObjects;
           const days = retention.get(appFolderName(accountId, appId));
           if (days === undefined) {
             // The app was missing when the sweep began; it is looked up again before each page,
             // so an app made since then keeps what it has written.
-            const outcome = await deleteAll(bucket, folder, work, pageSize, async () => (await appNow(db, accountId, appId)).state === "absent");
-            result.deletedObjects += outcome.deleted;
+            const outcome = await deleteAll(bucket, folder, work, pageSize, result, async () => (await appNow(db, accountId, appId)).state === "absent");
             if (!outcome.stopped) result.removedApps += 1;
           } else {
             for (const day of await folders(bucket, folder, work, pageSize)) {
@@ -200,11 +208,10 @@ export async function runConversationRetention(
               // a retention raised since the sweep began is honoured, and a failed read leaves the folder
               // for a later run.
               const dayName = match[1]!;
-              const outcome = await deleteAll(bucket, day, work, pageSize, async () => {
+              const outcome = await deleteAll(bucket, day, work, pageSize, result, async () => {
                 const fresh = await appNow(db, accountId, appId);
                 return fresh.state === "present" && dayName < dayBefore(now, fresh.days);
               });
-              result.deletedObjects += outcome.deleted;
               if (outcome.stopped) break;
             }
           }
@@ -226,7 +233,9 @@ export async function runConversationRetention(
     if (!(error instanceof QueryBudgetExhausted)) throw error;
     // The next run starts after the app it ran out in, so one busy app never holds up
     // those after it; a later pass comes back to it and goes on where this one stopped.
-    if (current !== null) resume = current;
+    // But only where it deleted something there: an app the run reached with nothing
+    // left to spend was never looked at, so the next run starts with it instead.
+    if (current !== null) resume = result.deletedObjects > deletedBeforeCurrent ? current : beforeCurrent;
   }
   if (resume !== last && budget.affords(1)) {
     budget.charge(1);
