@@ -16,28 +16,19 @@
  * The provider is the mock in `smoke/mock/`, whose `/fail-{status}/` paths
  * always fail. Skipped when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
-import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { admin, check, checkId, cleanUp, expectCode, expectStatus, poll, readJson, same, send, TEST_TIMEOUT_MS, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
-async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
-    method,
-    headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  return { status: response.status, body: await response.json() };
-}
-
 const run = Date.now().toString(36);
 const providerIds: string[] = [];
 let appId = "";
 let appKey = "";
-const slugs = { working: `smoke-ok-${run}`, busy: `smoke-503-${run}`, refusing: `smoke-400-${run}` };
+const slugs = { working: uniqueSlug("smoke-ok"), busy: uniqueSlug("smoke-503"), refusing: uniqueSlug("smoke-400") };
 
 before(async () => {
   if (skip !== false) return;
@@ -51,8 +42,8 @@ before(async () => {
       secret: "sk-mock-smoke-key",
       baseUrl: urls[name],
     });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    providerIds.push(created.body.provider.id);
+    expectStatus(created, 201, "created");
+    providerIds.push(checkId(created.body.provider?.id, "the provider"));
   }
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke presets",
@@ -68,64 +59,80 @@ before(async () => {
       },
     },
   });
-  assert.equal(app.status, 201, JSON.stringify(app.body));
-  appId = app.body.app.id;
+  expectStatus(app, 201, "app");
+  appId = checkId(app.body.app?.id, "the app");
   appKey = app.body.api_key.key;
 });
 
 after(async () => {
-  if (appId !== "") await admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`);
-  for (const id of providerIds) await admin("DELETE", `/v2/admin/providers/${id}`);
+  await cleanUp([
+    ...(appId !== "" ? [() => admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)] : []),
+    ...providerIds.map((id) => () => admin("DELETE", `/v2/admin/providers/${id}`)),
+  ]);
 });
 
 async function post(path: string, body: Record<string, unknown>, user: string): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await send(path, base, {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": user },
     body: JSON.stringify(body),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 /** The user's usage once `charges` charges are written (they are written after the answer). */
 async function usageOf(user: string, charges: number): Promise<{ charges: number; failed: number; cost_nano: number }> {
-  for (let tries = 0; tries < 20; tries += 1) {
+  return poll(async () => {
     const found = await admin("GET", `/v2/admin/apps/${appId}/users/${encodeURIComponent(user)}`);
-    if (found.status === 200 && found.body.user.usage.charges >= charges) return found.body.user.usage;
-    // real-timer: polls a live deployment until the charges land, with a deadline.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  assert.fail(`no ${charges} charges for ${user}`);
+    return found.status === 200 && found.body.user.usage.charges >= charges ? found.body.user.usage : undefined;
+  }, "the expected charges were not written within a minute");
 }
 
-test("a rewritten model is sent and billed as its target", { skip }, async () => {
+test("a rewritten model is sent and billed as its target", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `rewrite-${run}`;
   const answer = await post(`/v2/apps/${appId}/proxy/${slugs.working}/v1/chat/completions`, { model: "house-model", messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  expectStatus(answer, 200, "answer");
   // The mock answers with the model it was sent.
-  assert.equal(answer.body.model, "gpt-4o-mini");
+  check(answer.body.model === "gpt-4o-mini", "the answer is not from the rewritten model");
   const usage = await usageOf(user, 1);
-  assert.equal(usage.charges, 1);
-  assert.ok(usage.cost_nano > 0, "billed at the rewritten model's price");
+  same(usage.charges, 1, "usage.charges is not 1");
+  check(usage.cost_nano > 0, "billed at the rewritten model's price");
 });
 
-test("a preset falls back after a 503: two charges, the failed one with no cost", { skip }, async () => {
+test("a preset falls back after a 503: two charges, the failed one with no cost", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `fallback-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/chain`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  expectStatus(answer, 200, "answer");
   const usage = await usageOf(user, 2);
-  assert.equal(usage.charges, 2);
-  assert.equal(usage.failed, 1);
-  assert.ok(usage.cost_nano > 0);
+  same(usage.charges, 2, "usage.charges is not 2");
+  same(usage.failed, 1, "usage.failed is not 1");
+  check(usage.cost_nano > 0, "usage.cost_nano > 0");
 });
 
-test("a preset is not retried after a 400: the error is passed through, one charge", { skip }, async () => {
+test("a preset is not retried after a 400: the error is passed through, one charge", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const user = `strict-${run}`;
   const answer = await post(`/v2/apps/${appId}/presets/strict`, { messages: [{ role: "user", content: "hi" }] }, user);
-  assert.equal(answer.status, 400);
-  assert.equal(answer.body.error.code, "mock_failure");
+  expectStatus(answer, 400, "the preset call");
+  expectCode(answer.body, "mock_failure", "the provider's error");
   const usage = await usageOf(user, 1);
-  assert.equal(usage.charges, 1);
-  assert.equal(usage.failed, 1);
-  assert.equal(usage.cost_nano, 0);
+  same(usage.charges, 1, "usage.charges is not 1");
+  same(usage.failed, 1, "usage.failed is not 1");
+  same(usage.cost_nano, 0, "usage.cost_nano is not 0");
+});
+
+// A request the app's own settings refuse is answered as before and shows up
+// as a refusal sample, so a developer can see what their app asked for (v1's
+// endpoints.smoke.ts). Samples are one a minute per caller and reason.
+test("a preset the app does not have is refused and recorded as a refusal sample", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  const user = `missing-${run}`;
+  const answer = await post(`/v2/apps/${appId}/presets/smoke-missing-${run}`, { messages: [{ role: "user", content: "hi" }] }, user);
+  expectStatus(answer, 404, "the preset call");
+  expectCode(answer.body, "preset_not_found", "a missing preset");
+  const sample = await poll(async () => {
+    const found = await admin("GET", `/v2/admin/apps/${appId}/rejection-events?reason=preset_not_found&user=${encodeURIComponent(user)}`);
+    expectStatus(found, 200, "found");
+    return found.body.events[0] as { reason: string; user_id: string | null } | undefined;
+  }, "no refusal sample was recorded within a minute");
+  same(sample.reason, "preset_not_found", "sample.reason is not \"preset_not_found\"");
+  same(sample.user_id, user, "sample.user_id is not user");
 });

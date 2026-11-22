@@ -44,6 +44,9 @@
  * - `mock_delay_ms`: wait this long before answering (at most 120 s), for a
  *   slow provider. A raw body (Deepgram's audio) names it in the query.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
+ * - `service_tier`: exactly `flex` sets `x-mock-service-tier: flex`, so a check
+ *   sees the mode arrived, and Chat Completions then reports half the prompt
+ *   as cached tokens. Nothing else from it is echoed.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
  *   its closing event) or the transcript, before the usage, so a check can
@@ -57,6 +60,24 @@
  * Every answer carries `x-mock-received-bytes`, the bytes it read. A body
  * that is not JSON is still counted and answered. Any key is accepted, in any
  * of the providers' key headers.
+ *
+ * Every answer also carries two marks, so a check can judge what the gateway
+ * sent without the mock ever echoing a key:
+ *
+ * - `x-mock-key`: each provider key header that came in, with a fixed label
+ *   for its exact value, or `missing`. Only the public fixture keys in
+ *   `FIXTURE_KEYS` get a label of their own, with the scheme for
+ *   `authorization` (`authorization:bearer fixture-openai`,
+ *   `x-api-key:fixture-anthropic`); any other value is `unexpected`. So the
+ *   wrong key, the right key in the wrong header or with the wrong scheme is
+ *   seen (v1's key check), and nothing about any other value is given away.
+ * - `x-mock-client-credentials`: where a client's credential (an `agw_` key or
+ *   a signed token) came in: request header names, `url` and `body`, or
+ *   `none`. The gateway must never hand one to a provider.
+ *
+ * `GET /jwks/<base64url JSON>` answers the public key the path carries as a
+ * JWKS, with no provider key: a smoke check makes a key pair of its own and
+ * names this URL as its test issuer's JWKS, so nothing secret is stored.
  *
  * `GET /v1/models` answers an empty model list, the call a key test sends.
  * The key `sk-mock-rejected` is refused there with 401, so a smoke check can
@@ -124,7 +145,17 @@ type Answer = (input: { body: Record<string, unknown>; bytes: number; model: str
 const SSE = { "content-type": "text/event-stream" };
 
 const chat: Answer = ({ body, bytes, model, stream }) => {
-  const usage = { prompt_tokens: promptTokens(bytes), completion_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS, cost: promptTokens(bytes) / 1_000_000 };
+  const prompt = promptTokens(bytes);
+  // A flex request reports half its prompt as cached, as OpenAI does inside
+  // `prompt_tokens`, so a check can see cached usage priced and recorded.
+  const cached = body.service_tier === "flex" ? Math.floor(prompt / 2) : 0;
+  const usage = {
+    prompt_tokens: prompt,
+    completion_tokens: OUTPUT_TOKENS,
+    total_tokens: prompt + OUTPUT_TOKENS,
+    cost: prompt / 1_000_000,
+    ...(cached > 0 ? { prompt_tokens_details: { cached_tokens: cached } } : {}),
+  };
   if (stream) {
     const options = body.stream_options as { include_usage?: unknown } | undefined;
     const chunks = [
@@ -374,100 +405,205 @@ function keyOf(request: Request): string | null {
  */
 const CLOUDFLARE_PATH = /^\/v1\/([^/]+)\/([^/]+)\/(openai|anthropic|grok|google-ai-studio|perplexity-ai)\/(.*)$/u;
 
+/** The public fields of a JWK, the only ones a JWKS may carry. */
+const PUBLIC_JWK_FIELDS = ["kty", "crv", "x", "y", "n", "e", "kid", "alg", "use"] as const;
+
+/** The JWKS a `/jwks/<base64url JSON>` path names: its key's public fields alone, or null when it names none. */
+export function jwksFromPath(path: string): { keys: Record<string, string>[] } | null {
+  const encoded = /^\/jwks\/([A-Za-z0-9_-]{1,4096})$/u.exec(path)?.[1];
+  if (encoded === undefined) return null;
+  try {
+    const parsed = JSON.parse(atob(encoded.replaceAll("-", "+").replaceAll("_", "/"))) as Record<string, unknown>;
+    const key: Record<string, string> = {};
+    for (const field of PUBLIC_JWK_FIELDS) if (typeof parsed[field] === "string") key[field] = parsed[field] as string;
+    return typeof key.kty === "string" ? { keys: [key] } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A client's credential: an `agw_` key, or a signed token (three base64url parts, the first `eyJ`). */
+const CLIENT_CREDENTIAL = /agw_|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/u;
+
+/** The names of the request headers that hold a client's credential, sorted. */
+export function clientCredentialHeaders(headers: Headers): string[] {
+  return [...headers.entries()].filter(([, value]) => CLIENT_CREDENTIAL.test(value)).map(([name]) => name).sort();
+}
+
+/** A URL's text as sent, and its path segments and query names and values decoded. */
+function urlTexts(raw: string): string[] {
+  const decode = (part: string): string => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  };
+  const url = new URL(raw);
+  const texts = [raw, ...url.pathname.split("/").map(decode)];
+  // URLSearchParams decodes both names and values (`+` as a space too).
+  for (const [name, value] of url.searchParams) texts.push(name, value);
+  return texts;
+}
+
+/** Where a request carried a client's credential: header names, then `url` and `body`. */
+export function clientCredentialPlaces(request: Request, body: ArrayBuffer | null): string[] {
+  const places = clientCredentialHeaders(request.headers);
+  if (urlTexts(request.url).some((text) => CLIENT_CREDENTIAL.test(text))) places.push("url");
+  if (body !== null && CLIENT_CREDENTIAL.test(new TextDecoder().decode(body))) places.push("body");
+  return places;
+}
+
+/** The headers a provider key comes in. */
+const KEY_HEADERS = ["authorization", "x-api-key", "x-goog-api-key", "xi-api-key"] as const;
+
+/**
+ * The public test keys the smoke checks give their connections, and the label
+ * each is reported as. Public on purpose: they are in this repository.
+ */
+export const FIXTURE_KEYS: ReadonlyMap<string, string> = new Map([
+  ["sk-mock-smoke-key", "fixture-smoke"],
+  ["sk-mock-smoke-openai", "fixture-openai"],
+  ["sk-mock-smoke-anthropic", "fixture-anthropic"],
+  ["sk-mock-smoke-gemini", "fixture-gemini"],
+  ["sk-mock-smoke-openrouter", "fixture-openrouter"],
+]);
+
+/** The label for one key header's exact value: the scheme and fixture label, or `unexpected`. */
+export function keyLabel(name: string, value: string): string {
+  if (name !== "authorization") return FIXTURE_KEYS.get(value) ?? "unexpected";
+  const parts = /^(Bearer|Token|Key) (.+)$/u.exec(value);
+  const label = parts === null ? undefined : FIXTURE_KEYS.get(parts[2]!);
+  return label === undefined ? "unexpected" : `${parts![1]!.toLowerCase()} ${label}`;
+}
+
+/** `x-mock-key`: each key header that came in, with its label, or `missing`. */
+export function keyMarks(headers: Headers): string {
+  const marks: string[] = [];
+  for (const name of KEY_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null) marks.push(`${name}:${keyLabel(name, value)}`);
+  }
+  return marks.length === 0 ? "missing" : marks.join(",");
+}
+
 const mock = {
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/health") return Response.json({ ok: true });
-    // Through the stand-in for Cloudflare AI Gateway: its token is needed, the
-    // provider's key is not (Cloudflare can use the keys it stores). The
-    // answer says what came through, for the smoke checks to see.
-    const cloudflare = CLOUDFLARE_PATH.exec(url.pathname);
-    if (cloudflare !== null) {
-      if (!(request.headers.get("cf-aig-authorization") ?? "").startsWith("Bearer ")) {
-        return Response.json({ error: { message: "Missing Cloudflare token", code: "unauthorized" } }, { status: 401 });
-      }
-      const [, , , provider, rest] = cloudflare;
-      const path = provider === "openai" ? `/v1/${rest}` : `/${rest}`;
-      const forwarded = new Request(new URL(`${path}${url.search}`, url), request);
-      if (keyOf(forwarded) === null) forwarded.headers.set("authorization", "Bearer cloudflare-stored-key");
-      const response = await mock.fetch(forwarded);
-      const answered = new Response(response.body, response);
-      answered.headers.set("x-mock-via-cloudflare", provider!);
-      answered.headers.set("x-mock-cf-metadata", request.headers.get("cf-aig-metadata") ?? "");
-      return answered;
-    }
-    const key = keyOf(request);
-    if (key === null || key === "") {
-      return Response.json({ error: { message: "Missing key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
-    }
-    if (request.method === "GET" && url.pathname === "/v1/models") {
-      if (key === "sk-mock-rejected") {
-        return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
-      }
-      return Response.json({ object: "list", data: [] });
-    }
-    // A path no provider declares, for passthrough (step 5): any method,
-    // answered with what came through, for the smoke checks to see. Never the key.
-    if (url.pathname === "/v1/echo" || url.pathname.startsWith("/v1/echo/")) {
-      const { bytes } = await readCounting(request);
-      return Response.json({
-        method: request.method,
-        path: url.pathname,
-        query: url.search,
-        contentType: request.headers.get("content-type"),
-        bytes,
-        forwarded: [...request.headers.keys()].filter((name) => name.startsWith("x-") || name === "openai-beta").sort(),
-      });
-    }
-    // OpenAI's live-session token path (step 5c): answers a made-up client
-    // secret and echoes the JSON body it received, so the smoke checks can see
-    // the window the gateway locked. Never the key.
-    if (request.method === "POST" && url.pathname === "/v1/realtime/client_secrets") {
-      const { text } = await readCounting(request);
-      let received: unknown = null;
-      try {
-        received = text === null || text === "" ? null : (JSON.parse(text) as unknown);
-      } catch {
-        received = "unreadable";
-      }
-      return Response.json({ value: "ek_mock_smoke", expires_at: Math.floor(Date.now() / 1000) + 60, received });
-    }
-    const failing = /^\/fail-([45]\d\d)(\/.*)$/u.exec(url.pathname);
-    if (failing !== null && request.method === "POST") {
-      const { bytes } = await readCounting(request);
-      return Response.json(
-        { error: { message: "Mock failure", type: "mock_error", code: "mock_failure" } },
-        { status: Number(failing[1]), headers: { "x-mock-received-bytes": String(bytes) } },
-      );
-    }
-    const followUp = falQueueFollowUp(request, url);
-    if (followUp !== null) return followUp;
-    const answer = request.method === "POST" ? answerFor(url.pathname) : null;
-    if (answer === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
-    const { bytes, text, form } = await readCounting(request);
-    let body: Record<string, unknown> = form ?? {};
-    try {
-      const parsed = text === null ? null : (JSON.parse(text) as unknown);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
-    } catch {
-      // Counted and answered all the same.
-    }
-    const headers = { "x-mock-received-bytes": String(bytes) };
-    // A raw body (audio) has no fields, so it asks for the delay in the query.
-    const asked = typeof body.mock_delay_ms === "number" ? body.mock_delay_ms : Number(url.searchParams.get("mock_delay_ms") ?? 0);
-    const delay = Number.isFinite(asked) ? Math.min(MAX_DELAY_MS, Math.max(0, asked)) : 0;
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-    if (typeof body.mock_status === "number" && body.mock_status >= 400 && body.mock_status < 600) {
-      return Response.json({ error: { message: "Mock error", type: "mock_error", code: "mock_error" } }, { status: body.mock_status, headers });
-    }
-    const model = typeof body.model === "string" ? body.model : "mock-model";
-    const response = answer({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
-    for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
-    // Vercel AI Gateway's spend attribution, for the smoke checks to see.
-    const tags = request.headers.get("ai-reporting-tags");
-    if (tags !== null) response.headers.set("x-mock-reporting-tags", tags);
-    return response;
+    // The body is read once here, to look for a client's credential in it, and handed on whole.
+    const body = request.body === null ? null : await request.arrayBuffer();
+    const forwarded = body === null ? request : new Request(request, { body });
+    const leaked = clientCredentialPlaces(request, body);
+    const keys = keyMarks(request.headers);
+    const response = await answer(forwarded);
+    // A WebSocket upgrade or an opaque answer keeps its own headers.
+    if (response.status === 101) return response;
+    const marked = new Response(response.body, response);
+    marked.headers.set("x-mock-client-credentials", leaked.length === 0 ? "none" : leaked.join(","));
+    marked.headers.set("x-mock-key", keys);
+    return marked;
   },
 } satisfies ExportedHandler;
+
+async function answer(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === "/health") return Response.json({ ok: true });
+  if (request.method === "GET") {
+    const jwks = jwksFromPath(url.pathname);
+    if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
+  }
+  // Through the stand-in for Cloudflare AI Gateway: its token is needed, the
+  // provider's key is not (Cloudflare can use the keys it stores). The
+  // answer says what came through, for the smoke checks to see.
+  const cloudflare = CLOUDFLARE_PATH.exec(url.pathname);
+  if (cloudflare !== null) {
+    if (!(request.headers.get("cf-aig-authorization") ?? "").startsWith("Bearer ")) {
+      return Response.json({ error: { message: "Missing Cloudflare token", code: "unauthorized" } }, { status: 401 });
+    }
+    const [, , , provider, rest] = cloudflare;
+    const path = provider === "openai" ? `/v1/${rest}` : `/${rest}`;
+    const forwarded = new Request(new URL(`${path}${url.search}`, url), request);
+    if (keyOf(forwarded) === null) forwarded.headers.set("authorization", "Bearer cloudflare-stored-key");
+    // Answered directly: the outer `mock.fetch` already read the body once and sets the marks
+    // from the request as the gateway sent it.
+    const response = await answer(forwarded);
+    const answered = new Response(response.body, response);
+    answered.headers.set("x-mock-via-cloudflare", provider!);
+    answered.headers.set("x-mock-cf-metadata", request.headers.get("cf-aig-metadata") ?? "");
+    return answered;
+  }
+  const key = keyOf(request);
+  if (key === null || key === "") {
+    return Response.json({ error: { message: "Missing key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
+  }
+  if (request.method === "GET" && url.pathname === "/v1/models") {
+    if (key === "sk-mock-rejected") {
+      return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
+    }
+    return Response.json({ object: "list", data: [] });
+  }
+  // A path no provider declares, for passthrough (step 5): any method,
+  // answered with what came through, for the smoke checks to see. Never the key.
+  if (url.pathname === "/v1/echo" || url.pathname.startsWith("/v1/echo/")) {
+    const { bytes } = await readCounting(request);
+    return Response.json({
+      method: request.method,
+      path: url.pathname,
+      query: url.search,
+      contentType: request.headers.get("content-type"),
+      bytes,
+      forwarded: [...request.headers.keys()].filter((name) => name.startsWith("x-") || name === "openai-beta").sort(),
+    });
+  }
+  // OpenAI's live-session token path (step 5c): answers a made-up client
+  // secret and echoes the JSON body it received, so the smoke checks can see
+  // the window the gateway locked. Never the key.
+  if (request.method === "POST" && url.pathname === "/v1/realtime/client_secrets") {
+    const { text } = await readCounting(request);
+    let received: unknown = null;
+    try {
+      received = text === null || text === "" ? null : (JSON.parse(text) as unknown);
+    } catch {
+      received = "unreadable";
+    }
+    return Response.json({ value: "ek_mock_smoke", expires_at: Math.floor(Date.now() / 1000) + 60, received });
+  }
+  const failing = /^\/fail-([45]\d\d)(\/.*)$/u.exec(url.pathname);
+  if (failing !== null && request.method === "POST") {
+    const { bytes } = await readCounting(request);
+    return Response.json(
+      { error: { message: "Mock failure", type: "mock_error", code: "mock_failure" } },
+      { status: Number(failing[1]), headers: { "x-mock-received-bytes": String(bytes) } },
+    );
+  }
+  const followUp = falQueueFollowUp(request, url);
+  if (followUp !== null) return followUp;
+  const reply = request.method === "POST" ? answerFor(url.pathname) : null;
+  if (reply === null) return Response.json({ error: { message: "Not found", type: "invalid_request_error" } }, { status: 404 });
+  const { bytes, text, form } = await readCounting(request);
+  let body: Record<string, unknown> = form ?? {};
+  try {
+    const parsed = text === null ? null : (JSON.parse(text) as unknown);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
+  } catch {
+    // Counted and answered all the same.
+  }
+  const headers = { "x-mock-received-bytes": String(bytes) };
+  // A raw body (audio) has no fields, so it asks for the delay in the query.
+  const asked = typeof body.mock_delay_ms === "number" ? body.mock_delay_ms : Number(url.searchParams.get("mock_delay_ms") ?? 0);
+  const delay = Number.isFinite(asked) ? Math.min(MAX_DELAY_MS, Math.max(0, asked)) : 0;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  if (typeof body.mock_status === "number" && body.mock_status >= 400 && body.mock_status < 600) {
+    return Response.json({ error: { message: "Mock error", type: "mock_error", code: "mock_error" } }, { status: body.mock_status, headers });
+  }
+  const model = typeof body.model === "string" ? body.model : "mock-model";
+  const response = reply({ body, bytes, model, stream: body.stream === true, path: url.pathname, query: url.searchParams });
+  for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+  // The service mode the request asked for, so a check can see it reached the provider.
+  if (body.service_tier === "flex") response.headers.set("x-mock-service-tier", "flex");
+  // Vercel AI Gateway's spend attribution, for the smoke checks to see.
+  const tags = request.headers.get("ai-reporting-tags");
+  if (tags !== null) response.headers.set("x-mock-reporting-tags", tags);
+  return response;
+}
 
 export default mock;
