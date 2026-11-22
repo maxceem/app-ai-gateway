@@ -127,8 +127,8 @@ async function settlePendingMark(db: D1Database, email: string, mark: boolean, v
     if (mark) {
       statements.push(
         db
-          .prepare(`INSERT OR IGNORE INTO email_pending_verification(email, marked_at) SELECT lower(?1), ?2 WHERE ${free}`)
-          .bind(email, Date.now()),
+          .prepare(`INSERT OR IGNORE INTO email_pending_verification(email) SELECT lower(?1) WHERE ${free}`)
+          .bind(email),
       );
     }
     await db.batch(statements);

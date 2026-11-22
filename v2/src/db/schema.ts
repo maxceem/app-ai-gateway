@@ -92,7 +92,6 @@ export const {
  */
 export const emailPendingVerification = sqliteTable("email_pending_verification", {
   email: text("email").primaryKey(),
-  markedAt: integer("marked_at").notNull(),
 });
 
 // ---------------------------------------------------------------------------

@@ -159,7 +159,10 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   }
   const origin = consoleOrigin(c.env);
   if (signUp && response.ok && origin !== null && emailVerificationRequired(c.env)) {
-    await sendFirstVerificationEmail(c.env, origin, response, consoleReturnPath(signUpCallback));
+    // Sent after the answer, so a slow mail server never holds the sign-up up. The copy is taken
+    // now, before the answer's own body goes out; a failure is logged there, as before.
+    const copy = response.clone();
+    c.executionCtx.waitUntil(sendFirstVerificationEmail(c.env, origin, copy, consoleReturnPath(signUpCallback)));
   }
   return response;
 });

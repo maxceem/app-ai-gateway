@@ -20,6 +20,10 @@ import { useConfirmEmailVerification } from "@/lib/queries";
  * of the address bar, so it is not left in the browser's history either.
  * Confirming it again answers the same, which is what lets a remount or a
  * reload land well.
+ *
+ * Nothing is confirmed until the person presses Verify: a mail scanner that
+ * opens links and runs their pages must not verify an address on its own
+ * (Fable 7b-7). v1 confirmed as soon as the page loaded.
  */
 
 /** The token from a link's fragment, `#token=…`. */
@@ -46,14 +50,14 @@ export function VerifyEmailPage() {
   const navigate = useNavigate();
   const [token] = useState(() => tokenFromHash(location.hash));
   const confirm = useConfirmEmailVerification();
-  const started = useRef(false);
+  const cleared = useRef(false);
 
+  // The token leaves the address bar at once; it is confirmed only on Verify.
   useEffect(() => {
-    if (started.current || !token) return;
-    started.current = true;
-    confirm.mutate(token);
+    if (cleared.current || !token) return;
+    cleared.current = true;
     void navigate(location.pathname, { replace: true });
-  }, [confirm, location.pathname, navigate, token]);
+  }, [location.pathname, navigate, token]);
 
   return (
     <AuthLayout>
@@ -86,9 +90,13 @@ export function VerifyEmailPage() {
           ) : confirm.isError ? (
             <Refused message={authErrorMessage(confirm.error, "This link could not be confirmed")} />
           ) : (
-            <div className="flex justify-center py-6" aria-label="Verifying">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-            </div>
+            <>
+              <p className="text-sm text-muted-foreground">Press Verify to confirm this address is yours.</p>
+              <Button className="w-full" disabled={confirm.isPending} onClick={() => confirm.mutate(token)}>
+                {confirm.isPending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                Verify email
+              </Button>
+            </>
           )}
         </CardContent>
       </Card>

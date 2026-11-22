@@ -88,7 +88,7 @@ async function unverifiedPerson() {
 /** A person whose address is not verified, owning an account waiting for it, as a password sign-up makes one. */
 async function unverifiedOwner() {
   const human = await unverifiedPerson();
-  await env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (lower(?), ?)").bind(human.email, Date.now()).run();
+  await env.DB.prepare("INSERT INTO email_pending_verification(email) VALUES (lower(?))").bind(human.email).run();
   return human;
 }
 
@@ -363,6 +363,27 @@ describe("the gate on the request path", () => {
     // Every statement that asks about the mark is the one that loads the app.
     for (const query of gate) expect(query).toMatch(/from "app"/u);
   });
+
+  it("never touches the mark's table where the deployment does not verify addresses (Fable 7b-7)", async () => {
+    const owner = await unverifiedPerson();
+    const app = await serverApp(owner.accountId);
+    const statements: string[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            statements.push(query);
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    expect((await me({ ...deployment().env, DB: db } as Env, app)).status).toBe(200);
+    expect(statements.some((query) => query.includes("from \"app\""))).toBe(true);
+    expect(statements.filter((query) => query.includes("email_pending_verification"))).toEqual([]);
+  });
 });
 
 describe("accounts made with a management key", () => {
@@ -454,10 +475,12 @@ describe("sending a link from the console", () => {
 });
 
 describe("sign-up", () => {
+  // Each sign-up comes from its own client address, so the per-address sign-up limit never trips.
+  let client = 0;
   const signUp = (environment: Env, email: string, extra: Record<string, unknown> = {}) =>
     call("/v2/auth/sign-up/email", {
       environment,
-      headers: { origin: CONSOLE, "cf-connecting-ip": `203.0.113.${Math.floor(Math.random() * 200) + 1}` },
+      headers: { origin: CONSOLE, "cf-connecting-ip": `203.0.113.${(client++ % 250) + 1}` },
       json: { name: "Person", email, password: "correct horse battery staple", ...extra },
     });
 
@@ -555,7 +578,7 @@ describe("sign-up", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     // A mark a failed sign-up left behind.
-    await env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (lower(?), ?)").bind(email, Date.now()).run();
+    await env.DB.prepare("INSERT INTO email_pending_verification(email) VALUES (lower(?))").bind(email).run();
     const failing = new Proxy(env.DB, {
       get(target, property, receiver) {
         if (property === "prepare") {

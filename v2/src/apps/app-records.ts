@@ -59,10 +59,16 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
   const startedAt = Date.now();
   const generation = invalidations;
   // Whether the account waits for its owner's address comes in the same query, so the gate costs no read of its own.
-  const row = await database(env.DB).query.app.findFirst({
-    where: eq(app.id, appId),
-    extras: { accountPending: sql<number>`${sql.raw(accountPendingSql('"app"."account_id"'))}`.as("account_pending") },
-  });
+  // Asked only where the deployment verifies addresses: elsewhere the app read never touches the gate's table,
+  // so nothing about the gate can fail a request where the gate is not used.
+  const gated = emailVerificationRequired(env);
+  const apps = database(env.DB).query.app;
+  const row = gated
+    ? await apps.findFirst({
+        where: eq(app.id, appId),
+        extras: { accountPending: sql<number>`${sql.raw(accountPendingSql('"app"."account_id"'))}`.as("account_pending") },
+      })
+    : await apps.findFirst({ where: eq(app.id, appId) });
   if (!row) {
     appCache.delete(appId);
     throw new GatewayError(404, "app_not_found", "App is not registered");
@@ -92,7 +98,7 @@ async function readApp(env: Env, appId: string): Promise<AppRecord> {
     limits: config.limits,
     presets: config.presets ?? {},
     conversations: config.conversations?.store === true ? config.conversations : null,
-    accountPending: Boolean(row.accountPending),
+    accountPending: "accountPending" in row && Boolean(row.accountPending),
   };
   if (generation === invalidations) {
     const pending = value.accountPending && emailVerificationRequired(env);

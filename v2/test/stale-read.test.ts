@@ -116,7 +116,7 @@ describe("loadApp for an account still waiting on its owner's address (Sol 7b-7 
       env.DB.prepare(
         "INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)",
       ).bind(`mem_${userId}`, accountId, userId, new Date(now).toISOString()),
-      env.DB.prepare("INSERT INTO email_pending_verification(email, marked_at) VALUES (?, ?)").bind(email, now),
+      env.DB.prepare("INSERT INTO email_pending_verification(email) VALUES (?)").bind(email),
     ]);
     return appId;
   }
