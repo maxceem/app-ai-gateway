@@ -1961,6 +1961,8 @@ describe("conversation retention", () => {
     expect(reads.remaining).toBe(0);
     expect(await store.head(orphan)).not.toBeNull();
     expect(logged).toEqual([expect.objectContaining({ message: "conversation_retention_incomplete", ranOutOf: "r2_calls" })]);
+    // The tests after this one share the bucket and its cursor.
+    await store.delete([orphan, RETENTION_CURSOR]);
   });
 
   it("stops when the run's allowance runs out", async () => {
