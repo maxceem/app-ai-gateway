@@ -608,8 +608,9 @@ describe("end users", () => {
     const appId = body.app.id as string;
     // At least a minute into the UTC month, so every charge below (dated up to 5 s back) is in it,
     // and the month is asked for by name: the run date and the server's clock never move it.
-    const monthStart = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1);
-    const now = Math.max(Date.now(), monthStart + 60_000);
+    const current = new Date();
+    const monthStart = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), 1);
+    const now = Math.max(current.getTime(), monthStart + 60_000);
     const thisMonth = new Date(now).toISOString().slice(0, 7);
     const lastMonth = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() - 1, 15);
     await env.DB.prepare("INSERT INTO app_end_user (app_id, id, status, created_at, last_seen_at) VALUES (?, 'signed-in', 'active', ?, ?)")
