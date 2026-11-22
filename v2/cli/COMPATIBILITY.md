@@ -58,7 +58,17 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
 - `--json` prints one document with `schemaVersion: 1`; its fields only
   grow.
 - Exit codes keep their meaning: 0 done, 2 the command line is wrong, 3 the
-  gateway or the network failed, 4 a state or a decision stops it.
+  gateway or the network failed, 4 a state or a decision stops it, 5 `agw`
+  stopped waiting while the step is still open (as in agw 1.x). A wait timeout
+  does not cancel a gateway operation: `agw operation wait` picks it up again.
+  A browser sign-in that timed out cannot be picked up: run the command that
+  started it again, or add `--device`.
+- agw 1.x's `version_mismatch` notice is not in agw 2 yet. It compared the
+  CLI's release with the release the gateway reports, and a v2 gateway does
+  not report one yet. Until it does, agw 2 notices a newer gateway from fields
+  it does not know (`newer_gateway`), and refuses a v1 gateway with the
+  agw 1.x message. The notice comes back once the gateway reports its
+  release.
 - Secrets never reach stdout: a provider key comes from a hidden prompt,
   stdin or the console; a new app key goes to a private file.
 

@@ -30,6 +30,7 @@ import { presetHandler } from "./proxy/presets.ts";
 import { proxyHandler } from "./proxy/serve.ts";
 import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
+import { vaultStatus } from "./vault/index.ts";
 import { conversationsBucket } from "./conversations/storage.ts";
 import { RETENTION_HOUR_UTC, runConversationRetention } from "./conversations/retention.ts";
 
@@ -96,7 +97,12 @@ function routePath(name: ClientOperationName): string {
 }
 
 app.get(routePath("getHealth"), (c) =>
-  c.json({ ok: true, service: "app-ai-gateway", api: "v2" } satisfies ClientOperationResponse<"getHealth">),
+  c.json({
+    ok: true,
+    service: "app-ai-gateway",
+    api: "v2",
+    vault: vaultStatus(c.env),
+  } satisfies ClientOperationResponse<"getHealth">),
 );
 
 app.post(routePath("appAuthChallenge"), clientCallDeadline(), appAuthFloodLimit("app_auth_challenge"), challengeHandler);

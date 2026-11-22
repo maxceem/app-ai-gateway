@@ -24,7 +24,8 @@ import {
   type OAuthTransport,
 } from "./oauth.ts";
 import type { Flags } from "./parser.ts";
-import type { ActiveConnection, CliState, OAuthLogin, StateStore } from "./state.ts";
+import { AGAIN, AGAIN_OR_CODE, signInFailure, START_OVER } from "./sign-in-retry.ts";
+import { logoutStateFailure, type ActiveConnection, type CliState, type OAuthLogin, type StateStore } from "./state.ts";
 import { styleFor } from "./style.ts";
 
 export type { CallOptions, CallResult, OperationName };
@@ -45,6 +46,8 @@ export interface ContextIo {
   env: Record<string, string | undefined>;
   /** The device flow's clock, and the clock tokens expire by. */
   clock: DeviceClock;
+  /** Rejects once a browser sign-in has waited too long; `cancel` stops it early. */
+  loginDeadline(ms: number): { expired: Promise<never>; cancel(): void };
 }
 
 const defaultIo = (): ContextIo => ({
@@ -54,6 +57,14 @@ const defaultIo = (): ContextIo => ({
   listen: listenLoopback,
   env: process.env,
   clock: { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
+  loginDeadline: (ms) => {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), ms);
+      timer.unref();
+    });
+    return { expired, cancel: () => clearTimeout(timer) };
+  },
 });
 
 /** The subset of a state store the context uses; the real one is `state.ts`. */
@@ -323,18 +334,36 @@ export class Context {
   async login(url: string = this.url): Promise<LoginResult> {
     this.assertNoEnvironmentKey();
     const target = origin(url);
-    const server = await discover(this.transport, target);
-    const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
-    const login = useBrowser ? await this.browserLogin(target, server) : await this.deviceSignIn(target, server);
-    const who = await this.whoAmI(target, login.accessToken);
-    const { state } = await this.store.update((disk) => {
-      disk.active = { url: target, login, account: who.account };
-    });
+    let login: OAuthLogin;
+    let who: Omit<LoginResult, "connected" | "url" | "credential">;
+    try {
+      const server = await discover(this.transport, target);
+      const useBrowser = !this.flags.device && !this.flags["no-open"] && this.io.browserAvailable();
+      login = useBrowser ? await this.browserLogin(target, server) : await this.deviceSignIn(target, server);
+      who = await this.whoAmI(target, login.accessToken);
+    } catch (error) {
+      // Every failure says to run the same command again, never a command
+      // that could reach another gateway.
+      throw signInFailure(error);
+    }
+    let state: CliState;
+    try {
+      ({ state } = await this.store.update((disk) => {
+        disk.active = { url: target, login, account: who.account };
+      }));
+    } catch (error) {
+      // An unreadable or unsafe state file: move it aside and sign in again.
+      // A self-hosted gateway is named, because the same command would no
+      // longer find it once the file is gone.
+      throw signInFailure(error, target === CLOUD ? null : target);
+    }
     this.state = state;
     return { connected: true, url: target, credential: "oauth", ...who };
   }
 
-  /** The authorization code with PKCE, back to a listener on this machine. */
+  /**
+   * The authorization code with PKCE, back to a listener on this machine.
+   */
   private async browserLogin(url: string, server: OAuthServer): Promise<OAuthLogin> {
     const { verifier, challenge } = pkce();
     const state = randomBytes(24).toString("base64url");
@@ -348,31 +377,26 @@ export class Context {
         return await this.deviceSignIn(url, server);
       }
       this.say(`Approve the sign-in in your browser. If it did not open, go to:\n${address}`);
-      let timer: NodeJS.Timeout | undefined;
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("timeout")),
-          LOGIN_TIMEOUT_MS,
-        );
-        timer.unref();
-      });
+      const deadline = this.io.loginDeadline(LOGIN_TIMEOUT_MS);
       let answer;
       try {
-        answer = await Promise.race([loopback.callback, timeout]);
+        answer = await Promise.race([loopback.callback, deadline.expired]);
       } catch {
-        fail("login_expired", "The sign-in was not approved in time.", "Run agw account login again, or add --device to sign in with a code.", 4);
+        // Exit 5: this CLI stopped waiting for the browser (v1's wait timeout).
+        // A browser sign-in cannot be picked up again: it starts over.
+        fail("login_expired", "The sign-in was not approved in time.", server.device ? AGAIN_OR_CODE : AGAIN, 5);
       } finally {
-        clearTimeout(timer);
+        deadline.cancel();
       }
       if ("error" in answer) {
         loopback.answer(false);
-        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", "Run agw account login again to start over.", 4);
-        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, "Run agw account login again.", 3);
+        if (answer.error === "access_denied") fail("login_denied", "The sign-in was declined in the browser.", START_OVER, 4);
+        fail("login_failed", `The gateway refused the sign-in (${answer.error.replace(/\p{C}/gu, " ").slice(0, 80)}).`, AGAIN, 3);
       }
       // RFC 9207: an answer naming another issuer is not this gateway's.
       if (answer.iss !== null && answer.iss !== server.issuer) {
         loopback.answer(false);
-        fail("login_failed", "The sign-in came back from another issuer than this gateway.", "Run agw account login again.", 3);
+        fail("login_failed", "The sign-in came back from another issuer than this gateway.", AGAIN, 3);
       }
       try {
         const login = await exchangeCode(this.transport, url, server, { code: answer.code, redirect: loopback.redirect, verifier }, () => this.io.clock.now());
@@ -454,6 +478,8 @@ export class Context {
         delete disk.active!.account;
       }
       return revoked;
+    }).catch((error: unknown) => {
+      throw logoutStateFailure(error, this.store);
     });
     this.state = state;
     if (result === "replaced") this.replaced();

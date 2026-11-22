@@ -94,6 +94,14 @@
             "enum": [
               "v2"
             ]
+          },
+          "vault": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "misconfigured"
+            ],
+            "description": "Whether the key vault is set up: `ok`, or `misconfigured` when its settings are missing or invalid. No provider key can be opened while it is `misconfigured`. Optional: older deployments leave it out."
           }
         },
         "required": [

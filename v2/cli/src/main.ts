@@ -23,6 +23,7 @@ import {
 } from "./gateway-commands.ts";
 import { humanResult, type OutputContext } from "./human.ts";
 import { refuseOlderGateway } from "./oauth.ts";
+import { signInFailure } from "./sign-in-retry.ts";
 import {
   builtInEntries,
   builtInHelp,
@@ -34,7 +35,7 @@ import {
   type ParseResult,
 } from "./parser.ts";
 import type { CommandResult, DeploymentStatusResult } from "./results.ts";
-import { StateStore } from "./state.ts";
+import { logoutStateFailure, StateStore } from "./state.ts";
 import { styleFor, type Style } from "./style.ts";
 import { clean, humanToolResult, mentions, toolHelp, usageLine } from "./tool-output.ts";
 import { Transport } from "./transport.ts";
@@ -246,7 +247,14 @@ export async function main(
       await write(stdout, await helpFor(parsed.scope, context && catalogFor(context, cache), styleFor(stdout)));
       return 0;
     }
-    ctx = await open();
+    ctx = await open().catch((error: unknown) => {
+      // A sign-in that cannot read the state file still gets a next step that
+      // never sends the person to another gateway.
+      const command = "command" in parsed ? parsed.command : undefined;
+      if (command === "deployment connect") throw signInFailure(error);
+      if (command === "account logout") throw logoutStateFailure(error, states);
+      throw error;
+    });
     if (parsed.words) {
       const catalog = catalogFor(ctx, cache);
       const { tool: resolved } = await resolveTool(catalog, parsed.words);

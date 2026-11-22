@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliError } from "../src/common.ts";
+import { CliError, LocalDirectoryError } from "../src/common.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
+import { signInFailure } from "../src/sign-in-retry.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
 import { fakeClock, fakeTransport, memoryStore, signedInState, sinks } from "./helpers.ts";
@@ -265,6 +266,130 @@ test("deployment status at a v1 gateway with AGW_MANAGEMENT_KEY gets the agw 1.x
   assert.equal(JSON.parse(out.out.text).error.code, "gateway_v1");
 });
 
+test("a state file that cannot be read never points at agw account login", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await store.update(() => {});
+    await writeFile(store.path, "not JSON");
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const BOTH =
+      "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
+    const cases: [string[], string][] = [
+      // The command names its gateway, so running it again finds that one.
+      [["deployment", "connect", "--url", URL_, "--json"], "Move the connection state file aside, then run the same command again."],
+      [["account", "login", "--json"], BOTH],
+      [["deployment", "status", "--json"], BOTH],
+    ];
+    for (const [argv, expected] of cases) {
+      const out = sinks();
+      const code = await main(argv, { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+      assert.equal(code, 4, argv.join(" "));
+      const error = JSON.parse(out.out.text).error;
+      assert.equal(error.code, "invalid_state", argv.join(" "));
+      assert.equal(error.nextAction, expected, argv.join(" "));
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout with an unsafe state file asks to repair it, never to move the sign-in out of reach", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await store.update((state) => void Object.assign(state, signedInState(URL_, "agw_oat_1")));
+    await chmod(store.path, 0o644);
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 4);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(
+      error.nextAction,
+      `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${store.path}\nIf that is not possible, revoke the sign-in in the console under Access.`,
+    );
+    // The sign-in is still where the repaired file can end it.
+    assert.equal(JSON.parse(await readFile(store.path, "utf8")).active.login.refreshToken, "agw_ort_test");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout with a corrupt state file says only to revoke the sign-in under Access, never to change the file's mode", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    const store = new StateStore(dir);
+    await writeFile(store.path, "{ not json", { mode: 0o600 });
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 4);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "invalid_state");
+    assert.equal(
+      error.nextAction,
+      `The connection state file cannot be read, so its sign-in cannot be revoked from here. Revoke the sign-in in the console under Access:\n${store.path}`,
+    );
+    assert.doesNotMatch(error.nextAction, /0600/);
+    // The file is left as it was.
+    assert.equal(await readFile(store.path, "utf8"), "{ not json");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked state directory gets its own hint, which names the directory", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    await mkdir(join(dir, "real"));
+    const link = join(dir, "link");
+    await symlink(join(dir, "real"), link);
+    const store = new StateStore(link);
+    const expected = `Replace this directory with a private directory you own, then run the same command again:\n${link}`;
+    const error = await store.update(() => {}).then(
+      () => assert.fail("a symlinked directory is refused"),
+      (e: unknown) => e,
+    );
+    assert.ok(error instanceof LocalDirectoryError);
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(error.exitCode, 2);
+    assert.equal(error.nextAction, expected);
+    // Sign-in hints keep it rather than pointing at the state file.
+    const shown = signInFailure(error, URL_);
+    assert.ok(shown instanceof CliError);
+    assert.equal(shown.nextAction, expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("logout in a symlinked state directory asks to keep the sign-in, never to start over empty", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-state-"));
+  try {
+    await mkdir(join(dir, "real"));
+    await new StateStore(join(dir, "real")).update((state) => void Object.assign(state, signedInState(URL_, "agw_oat_1")));
+    const link = join(dir, "link with space");
+    await symlink(join(dir, "real"), link);
+    const store = new StateStore(link);
+    const transport = fakeTransport(async () => assert.fail("nothing is called before the state is read"));
+    const out = sinks();
+    const code = await main(["account", "logout", "--json"], { store, transport, stdout: out.stdout, stderr: out.stderr, io: { env: {} }, catalogCache: new MemoryCatalogCache() });
+    assert.equal(code, 2);
+    const error = JSON.parse(out.out.text).error;
+    assert.equal(error.code, "unsafe_storage");
+    assert.equal(
+      error.nextAction,
+      `Keep connection.json. Replace this directory with a private directory you own at the same path, move connection.json into it, then run agw account logout again:\n${link}\nIf that is not possible, revoke the sign-in in the console under Access.`,
+    );
+    // The sign-in is still there to be ended.
+    assert.equal(JSON.parse(await readFile(join(dir, "real", "connection.json"), "utf8")).active.login.refreshToken, "agw_ort_test");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 /** One `main` run with the store, transport and environment given. */
 async function runWith(argv: string[], options: { store: ReturnType<typeof memoryStore>; handler: (path: string) => unknown; env?: Record<string, string>; openBrowser?: () => Promise<boolean> }) {
   const out = sinks();
@@ -513,3 +638,15 @@ test("app conversations refuses a file name that would land outside its folder, 
     await rm(output, { recursive: true, force: true });
   }
 });
+
+test("operation wait exits 5 when it stops waiting, and the step stays open", async () => {
+  const result = await run(["operation", "wait", "op_7", "--timeout", "4", "--json"], (path) => {
+    assert.equal(path, "/v2/admin/operations/op_7");
+    return { id: "op_7", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" };
+  });
+  assert.equal(result.code, 5);
+  const error = result.json().error;
+  assert.equal(error.code, "operation_pending");
+  assert.match(error.nextAction, /agw operation wait op_7/);
+});
+

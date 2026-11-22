@@ -1432,6 +1432,30 @@
     }
   },
   "perplexity": {
+    "google/gemini-3.6-flash": {
+      "kind": "text",
+      "input": 1.5,
+      "cached_input": 0.15,
+      "output": 7.5,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
+    "google/gemini-3.7-flash": {
+      "kind": "text",
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 3.75,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
+    "google/gemini-3.8-flash": {
+      "kind": "text",
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 3.75,
+      "author": "Google",
+      "release_date": "2026-11-20"
+    },
     "openai/gpt-6.2-astra": {
       "kind": "text",
       "input": 8.0,
@@ -2139,6 +2163,14 @@
     }
   },
   "together": {
+    "tencent/Hy4": {
+      "kind": "text",
+      "input": 0.834,
+      "cached_input": 0.042,
+      "output": 2.501,
+      "author": "Tencent",
+      "release_date": "2026-11-20"
+    },
     "Qwen/Qwen4-Max": {
       "kind": "text",
       "input": 1.425,
@@ -2161,13 +2193,13 @@
     },
     "nvidia/nemotron-3.5-asr-streaming-0.6b": {
       "kind": "transcription",
-      "per_minute": 0.0015,
+      "per_minute": 0.0045,
       "author": "NVIDIA",
       "release_date": "2026-06-04"
     },
     "nvidia/nemotron-3-asr-streaming-0.6b": {
       "kind": "transcription",
-      "per_minute": 0.0015,
+      "per_minute": 0.0045,
       "author": "NVIDIA",
       "release_date": "2026-11-15"
     },

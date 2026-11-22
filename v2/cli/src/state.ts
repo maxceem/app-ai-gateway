@@ -17,7 +17,7 @@ import { homedir, hostname, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { CliError, fail, randomToken } from "./common.ts";
+import { CliError, LocalDirectoryError, LocalStateError, fail, randomToken } from "./common.ts";
 
 /** Whether POSIX ownership and mode bits mean anything here (not on Windows). */
 const posixPermissions = (): boolean => process.platform !== "win32";
@@ -70,9 +70,13 @@ export function cacheDirectory(): string {
 export async function protectedDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const s = await lstat(path);
-  if (!s.isDirectory() || s.isSymbolicLink()) fail("unsafe_storage", "CLI storage must be a real directory.");
+  // Moving the state file aside would not help here, so the hint names the directory itself.
+  const replace = `Replace this directory with a private directory you own, then run the same command again:\n${path}`;
+  if (!s.isDirectory() || s.isSymbolicLink())
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage must be a real directory.", replace, 2);
   if (!posixPermissions()) return;
-  if (process.getuid && s.uid !== process.getuid()) fail("unsafe_storage", "CLI storage belongs to another user.");
+  if (process.getuid && s.uid !== process.getuid())
+    throw new LocalDirectoryError("unsafe_storage", "CLI storage belongs to another user.", replace, 2);
   await chmod(path, 0o700);
 }
 
@@ -111,7 +115,44 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
   return true;
 }
 
-const RECOVER_STATE = "Move the file aside and sign in again with agw account login.";
+// The file that held the selected gateway cannot be read, so its address is
+// unknown here: the hint covers both kinds of gateway rather than sending a
+// self-hosted user to the hosted one.
+const RECOVER_STATE =
+  "Move the connection state file aside. For a self-hosted gateway, then run agw deployment connect --url with its address; for the hosted one, run the same command again.";
+
+const REVOKE_IN_CONSOLE = "If that is not possible, revoke the sign-in in the console under Access.";
+
+/**
+ * For `account logout`: moving the state file aside, or starting over in an
+ * empty directory, would hide its sign-in, which would then never be revoked.
+ * So the hint keeps the file and repairs what holds it, or ends the sign-in
+ * from the console. Paths stand on their own line as plain text, so a path
+ * with spaces reads the same however it is copied.
+ */
+export function logoutStateFailure(error: unknown, store: object): unknown {
+  if (!(error instanceof LocalStateError)) return error;
+  const path = "path" in store && typeof store.path === "string" ? store.path : "the connection state file";
+  const directory = "directory" in store && typeof store.directory === "string" ? store.directory : "the CLI state directory";
+  const nextAction =
+    error instanceof LocalDirectoryError
+      ? `Keep connection.json. Replace this directory with a private directory you own at the same path, move connection.json into it, then run agw account logout again:\n${directory}\n${REVOKE_IN_CONSOLE}`
+      : error.code === "unsafe_storage"
+        ? `Restore this file's mode to 0600 (owner read and write only), then run agw account logout again:\n${path}\n${REVOKE_IN_CONSOLE}`
+        : `The connection state file cannot be read, so its sign-in cannot be revoked from here. Revoke the sign-in in the console under Access:\n${path}`;
+  return new (error instanceof LocalDirectoryError ? LocalDirectoryError : LocalStateError)(
+    error.code,
+    error.message,
+    nextAction,
+    error.exitCode,
+    error.details,
+  );
+}
+
+/** A failure of this machine's own storage, tagged so sign-in hints can tell it from a gateway's answer. */
+function stateFail(code: string, message: string, nextAction?: string, exitCode?: number): never {
+  throw new LocalStateError(code, message, nextAction, exitCode);
+}
 
 export class StateStore {
   readonly directory: string;
@@ -128,7 +169,7 @@ export class StateStore {
   async read(): Promise<CliState> {
     const held = await lstat(this.path).catch((error: unknown) => {
       if (errorCode(error) === "ENOENT") return null;
-      fail("invalid_state", "Cannot read the connection state.", RECOVER_STATE, 4);
+      stateFail("invalid_state", "Cannot read the connection state.", RECOVER_STATE, 4);
     });
     if (!held) return emptyState();
     if (
@@ -136,15 +177,15 @@ export class StateStore {
       held.isSymbolicLink() ||
       (posixPermissions() && ((process.getuid && held.uid !== process.getuid()) || (held.mode & 0o077) !== 0))
     )
-      fail("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", RECOVER_STATE, 4);
+      stateFail("unsafe_storage", "The connection state must be a file owned by you with mode 0600.", RECOVER_STATE, 4);
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(this.path, "utf8"));
     } catch {
-      fail("invalid_state", "The connection state is not readable JSON.", RECOVER_STATE, 4);
+      stateFail("invalid_state", "The connection state is not readable JSON.", RECOVER_STATE, 4);
     }
     const state = CliStateSchema.safeParse(parsed);
-    if (!state.success) fail("invalid_state", "The connection state has a shape this agw does not know.", RECOVER_STATE, 4);
+    if (!state.success) stateFail("invalid_state", "The connection state has a shape this agw does not know.", RECOVER_STATE, 4);
     return state.data;
   }
 

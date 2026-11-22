@@ -133,7 +133,8 @@ export async function waitFor(ctx: Context, id: string, seconds: number): Promis
       fail("operation_expired", "The browser step lapsed before it was completed.", "Run the command again to start over.", 4, { id });
     }
     if (ctx.io.clock.now() >= end)
-      fail("operation_pending", "The browser step is still waiting.", `Run agw operation wait ${id} to keep waiting.`, 4, {
+      // Exit 5: this CLI stopped waiting, but the operation is still open.
+      fail("operation_pending", "The browser step is still waiting.", `Run agw operation wait ${id} to keep waiting.`, 5, {
         id,
         state: data.state,
         expiresAt: data.expiresAt,

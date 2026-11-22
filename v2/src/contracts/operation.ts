@@ -60,5 +60,9 @@ export const HealthResponseSchema = z
     ok: z.literal(true),
     service: z.literal("app-ai-gateway"),
     api: z.literal("v2"),
+    vault: z.enum(["ok", "misconfigured"]).optional().meta({
+      description:
+        "Whether the key vault is set up: `ok`, or `misconfigured` when its settings are missing or invalid. No provider key can be opened while it is `misconfigured`. Optional: older deployments leave it out.",
+    }),
   })
   .meta({ id: "HealthResponse" });
