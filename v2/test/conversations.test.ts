@@ -1899,7 +1899,7 @@ describe("conversation retention", () => {
     expect(left.filter((key) => key.includes("/2026-11-21/"))).toHaveLength(folders.length);
     // One read of every app's retention, then one look before each app's page.
     expect(reads.remaining).toBe(RETENTION_D1_QUERIES - 1 - folders.length);
-    expect(logged.map((entry) => entry.message)).not.toContain("conversation_retention_backlog_left");
+    expect(logged.map((entry) => entry.message)).not.toContain("conversation_retention_incomplete");
   });
 
   it("goes on from the first app after the end of the listing, and stops at the app it began after (Sol 7b-2 round 5)", async () => {
@@ -1940,11 +1940,27 @@ describe("conversation retention", () => {
     // Its only D1 query reads the apps' retention: none is left to look at the gone app.
     await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(500), 1_000, new QueryBudget(1));
     expect(await store.head(orphan)).not.toBeNull();
-    expect(logged).toEqual([expect.objectContaining({ message: "conversation_retention_backlog_left", ranOutOf: "d1_queries" })]);
+    expect(logged).toEqual([expect.objectContaining({ message: "conversation_retention_incomplete", ranOutOf: "d1_queries" })]);
     logged.length = 0;
     await runConversationRetention(store, env.DB, Date.now());
     expect(await store.head(orphan)).toBeNull();
     expect(logged).toEqual([]);
+  });
+
+  it("names the allowance that refused, not whichever is empty (Sol 7b-2 round 6)", async () => {
+    const store = bucket();
+    for (const object of (await store.list({ prefix: "conversations/" })).objects) await store.delete(object.key);
+    const orphan = `${appPrefix(ACCOUNT_ID, "warn-gone-r2")}2020-01-01/000000-aaaaaaaa.jsonl.gz`;
+    await store.put(orphan, "orphan");
+    const logged = warnings();
+    // Two D1 queries: the apps' retention, then the look at the gone app, which spends the last.
+    // Four R2 calls: the cursor, one kept back to write it, the app listing and the page listing;
+    // none is left for the delete, so it is the R2 allowance that refuses.
+    const reads = new QueryBudget(2);
+    await runConversationRetention(store, env.DB, Date.now(), new QueryBudget(4), 1_000, reads);
+    expect(reads.remaining).toBe(0);
+    expect(await store.head(orphan)).not.toBeNull();
+    expect(logged).toEqual([expect.objectContaining({ message: "conversation_retention_incomplete", ranOutOf: "r2_calls" })]);
   });
 
   it("stops when the run's allowance runs out", async () => {

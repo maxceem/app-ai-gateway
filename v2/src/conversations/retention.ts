@@ -22,8 +22,10 @@
  * because a run that runs out in it, having deleted something there, leaves
  * the cursor after it, and a later run comes back to it. A run that runs out
  * in an app before deleting anything there leaves the cursor before it, so the
- * next run starts with that app. A run that runs out logs
- * `conversation_retention_backlog_left` as a warning.
+ * next run starts with that app. A run that runs out before every app had its
+ * turn logs `conversation_retention_incomplete` as a warning: expired
+ * conversations may be left until a later run (or the run may have just
+ * finished the last of them; it can't tell without the calls it ran out of).
  *
  * Runs once a day, from the hourly cron (`../maintenance/nightly.ts`).
  */
@@ -254,9 +256,10 @@ export async function runConversationRetention(
     // left to spend was never looked at, so the next run starts with it instead.
     if (current !== null) resume = result.deletedObjects > deletedBeforeCurrent ? current : beforeCurrent;
     // Not every app had its turn: expired conversations may be left until a later run.
-    log("warn", "conversation_retention_backlog_left", {
+    log("warn", "conversation_retention_incomplete", {
       deletedObjects: result.deletedObjects,
-      ranOutOf: reads.remaining === 0 ? "d1_queries" : "r2_calls",
+      // The allowance that refused, not whichever happens to be empty.
+      ranOutOf: error.budget === reads ? "d1_queries" : "r2_calls",
     });
   }
   if (resume !== last && budget.affords(1)) {

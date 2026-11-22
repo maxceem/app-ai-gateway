@@ -15,7 +15,11 @@ import { log } from "./log.ts";
  * what that means.
  */
 export class QueryBudgetExhausted extends Error {
-  constructor(readonly limit: number) {
+  /** `budget` is the allowance that refused, so a caller holding several can say which ran out. */
+  constructor(
+    readonly limit: number,
+    readonly budget?: QueryBudget,
+  ) {
     super(`Query budget of ${limit} statements is exhausted`);
     this.name = "QueryBudgetExhausted";
   }
@@ -72,7 +76,7 @@ export class QueryBudget {
 
   /** Charges `n`; throws {@link QueryBudgetExhausted} rather than exceeding the limit. */
   charge(n: number): void {
-    if (this.#spent + n > this.limit) throw new QueryBudgetExhausted(this.limit);
+    if (this.#spent + n > this.limit) throw new QueryBudgetExhausted(this.limit, this);
     this.#spent += n;
   }
 
