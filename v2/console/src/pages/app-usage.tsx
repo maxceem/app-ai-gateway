@@ -51,7 +51,7 @@ import {
 } from "@/lib/format";
 import { useAppCharges, useUsageBreakdown, useUsageTimeseries, type ChargeQuery } from "@/lib/queries";
 import type { App, Charge, UsageDimension } from "@/lib/types";
-import { axisTicks, formatAxisCost, OTHER, pivot, stackedMax, type Metric } from "@/lib/usage-pivot";
+import { axisTicks, formatAxisCost, OTHER, pivot, stackedBounds, type Metric } from "@/lib/usage-pivot";
 import { cn } from "@/lib/utils";
 import { CHARGE_STATUS_FILTERS, USAGE_CHARGE_DIMENSIONS, USAGE_CHARGE_RANGE_MAX_DAYS } from "@contracts/usage";
 
@@ -133,8 +133,12 @@ export function UsageTab({ app }: { app: App }) {
     ]),
   );
   const formatMetric = (value: number) => (metric === "cost_nano" ? formatCost(value / 1e9) : formatCompact(value));
-  // Our own ticks, at whole steps, each labelled with its step's precision (Sol 7b-6 round 3).
-  const axis = useMemo(() => axisTicks(stackedMax(chart.rows)), [chart.rows]);
+  // Our own ticks, at whole steps, each labelled with its step's precision (Sol 7b-6 round 3),
+  // running below zero when a day's corrections took back more than it charged (round 4).
+  const axis = useMemo(() => {
+    const bounds = stackedBounds(chart.rows);
+    return axisTicks(bounds.max, bounds.min);
+  }, [chart.rows]);
   const formatTick = (value: number) => (metric === "cost_nano" ? formatAxisCost(value, axis.step) : formatCompact(value));
 
   return (
@@ -170,14 +174,15 @@ export function UsageTab({ app }: { app: App }) {
             <EmptyState>No usage recorded in this range.</EmptyState>
           ) : (
             <ChartContainer config={config} className="h-[220px] w-full">
-              <BarChart data={chart.rows} margin={{ left: 4, right: 4 }}>
+              {/* Each sign stacks apart around zero: a correction never sits on another provider's spend (Sol 7b-6 round 4). */}
+              <BarChart data={chart.rows} margin={{ left: 4, right: 4 }} stackOffset="sign">
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={(value: string) => value.slice(5)} />
                 <YAxis
                   tickLine={false}
                   axisLine={false}
                   width={64}
-                  domain={[0, axis.ticks.at(-1)!]}
+                  domain={[axis.ticks[0]!, axis.ticks.at(-1)!]}
                   ticks={axis.ticks}
                   tickFormatter={(value: number) => formatTick(value)}
                 />

@@ -46,6 +46,22 @@ describe("a paged list", () => {
     expect(result.current.before).toBe("c1");
   });
 
+  it("starts at page one when the days move on their own at UTC midnight (Sol 7b-6 round 4)", () => {
+    vi.setSystemTime(Date.parse("2026-11-22T23:59:30Z"));
+    const { result, rerender } = setup();
+    act(() => result.current.older("page-2-of-the-old-days"));
+    expect(result.current.before).toBe("page-2-of-the-old-days");
+    vi.setSystemTime(Date.parse("2026-11-23T00:00:30Z"));
+    rerender();
+    expect(result.current.range.to).toBe("2026-11-23");
+    expect(result.current.before).toBeUndefined();
+    expect(result.current.canNewer).toBe(false);
+    // A page read for the new days starts fresh, without the old cursor.
+    act(() => result.current.older("page-2-of-the-new-days"));
+    act(() => result.current.newer());
+    expect(result.current.before).toBeUndefined();
+  });
+
   it("starts at page one when the days move, and at the newest days when a filter changes", () => {
     const { result } = setup();
     act(() => result.current.earlier());

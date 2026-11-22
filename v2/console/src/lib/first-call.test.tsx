@@ -11,7 +11,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 import { testQueryClient } from "@/test/render";
 import { FirstCall } from "@/pages/app-detail";
 import type { App } from "@/lib/types";
-import { FIRST_CALL_MAX_POLLS, FIRST_CALL_POLL_MS, firstCallInterval, useFirstCall } from "./queries";
+import { FIRST_CALL_MAX_POLLS, FIRST_CALL_POLL_MS, firstCallInterval, forgetFirstCallStops, useFirstCall } from "./queries";
 
 const USAGE_URL = "/v2/admin/apps/my-app/usage";
 const NO_USAGE = { charges: 0, failed: 0, unpriced: 0, cost_nano: 0, cost_usd: 0, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, session_ms: 0 };
@@ -42,7 +42,11 @@ function renderFirstCall(client: QueryClient = testQueryClient()) {
 const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 // Only the clocks React Query waits on: a response body is still read the ordinary way.
-beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] }));
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  // A stop lasts the page's life; each test is a fresh page.
+  forgetFirstCallStops();
+});
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -150,6 +154,39 @@ describe("the first-call check", () => {
     await advance(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     first.unmount();
+    renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The query cache forgets an entry five minutes after the card leaves: the stop must outlive it (Sol 7b-6 round 4).
+  const AWAY_MS = 6 * 60_000;
+
+  it("does not ask again after the cap, coming back once the cache has forgotten it (Sol 7b-6 round 4)", async () => {
+    const fetchMock = stubUsage([{ firstDay: null }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    for (let poll = 1; poll < FIRST_CALL_MAX_POLLS; poll += 1) await advance(FIRST_CALL_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    first.unmount();
+    await advance(AWAY_MS);
+    expect(client.getQueryState(["app-usage", "my-app"])).toBeUndefined();
+    const again = renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    expect(again.result.current.stopped).toBe(true);
+  });
+
+  it("does not ask again after a refusal, coming back once the cache has forgotten it (Sol 7b-6 round 4)", async () => {
+    const fetchMock = stubUsage([{ status: 403 }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(first.result.current.stopped).toBe(true));
+    first.unmount();
+    await advance(AWAY_MS);
     renderFirstCall(client);
     await advance(FIRST_CALL_POLL_MS * 3);
     expect(fetchMock).toHaveBeenCalledTimes(1);

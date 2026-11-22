@@ -383,6 +383,29 @@ export function firstCallInterval(state: PollState, found: boolean): number | fa
   return FIRST_CALL_POLL_MS;
 }
 
+/**
+ * The apps whose first-call check has stopped without finding a call (the cap,
+ * or a refusal), for the life of the page. The query cache forgets an entry
+ * five minutes after the card leaves, and a fresh entry would start asking
+ * again; this does not forget until a reload (Sol 7b-6 round 4).
+ */
+const firstCallStopped = new Set<string>();
+/** Forgets every stop, as a reload does. For tests. */
+export const forgetFirstCallStops = () => firstCallStopped.clear();
+
+/**
+ * The timer for one of the first-call reads. Where it stops without having
+ * found what it asks for, the stop is remembered for the page's life, here,
+ * as the query decides it, whether or not the card renders again first.
+ */
+const pollFor =
+  <T,>(appId: string, found: (data: T | undefined) => boolean) =>
+  (query: { state: PollState & { data: T | undefined } }): number | false => {
+    const next = firstCallInterval(query.state, found(query.state.data));
+    if (next === false && !found(query.state.data)) firstCallStopped.add(appId);
+    return next;
+  };
+
 const retryTransient = (count: number, error: unknown) => !permanent(error) && count < 2;
 
 /**
@@ -409,11 +432,14 @@ const chargeFound = (data: ChargePage | undefined) => (data?.charges.length ?? 0
  * answers without it, and then the newest charge stands in.
  */
 export function useFirstCall(appId: string) {
+  const halted = firstCallStopped.has(appId);
   const usage = useQuery({
     queryKey: keys.appUsage(appId),
     queryFn: () => call("getAppUsage", { params: { app: appId }, query: {} }),
+    // Stopped earlier on this page: never asked again, even after the cache forgot the stop.
+    enabled: !halted,
     // Absent (an older gateway) is an answer too: the charge read below takes over.
-    refetchInterval: (query) => firstCallInterval(query.state, usageAnswered(query.state.data)),
+    refetchInterval: pollFor(appId, usageAnswered),
     refetchOnReconnect: mayAskAgain(usageAnswered),
     refetchOnWindowFocus: mayAskAgain(usageAnswered),
     refetchOnMount: mayAskAgain(usageAnswered),
@@ -425,8 +451,8 @@ export function useFirstCall(appId: string) {
   const charges = useQuery({
     queryKey: keys.charges(appId, { limit: 1 }),
     queryFn: () => call("listAppCharges", { params: { app: appId }, query: { limit: 1 } }),
-    enabled: legacy,
-    refetchInterval: (query) => firstCallInterval(query.state, chargeFound(query.state.data)),
+    enabled: legacy && !halted,
+    refetchInterval: pollFor(appId, chargeFound),
     refetchOnReconnect: mayAskAgain(chargeFound),
     refetchOnWindowFocus: mayAskAgain(chargeFound),
     refetchOnMount: mayAskAgain(chargeFound),
@@ -442,15 +468,18 @@ export function useFirstCall(appId: string) {
   // unchanged answer alone would never show that it stopped (Sol 7b-6 round 2).
   const answeredAt = Math.max(source.dataUpdatedAt, source.errorUpdatedAt);
   const state = client.getQueryState(legacy ? keys.charges(appId, { limit: 1 }) : keys.appUsage(appId));
+  const stopped = halted || (firstDay === null && answeredAt > 0 && state !== undefined && firstCallInterval(state, false) === false);
+  // Remembered for the page's life, so coming back after the cache forgot it does not ask again.
+  if (stopped) firstCallStopped.add(appId);
   return {
-    isPending: source.isPending,
+    isPending: halted ? false : source.isPending,
     isError: source.isError && source.data === undefined,
     /** The day of the app's first call kept; from an older gateway, of its newest charge. */
     firstDay,
     /** Whether `firstDay` is the first call's, rather than the newest charge's. */
     isFirst: !legacy,
     /** Asking stopped without finding one: the cap, or a refusal. */
-    stopped: firstDay === null && answeredAt > 0 && state !== undefined && firstCallInterval(state, false) === false,
+    stopped,
   };
 }
 
