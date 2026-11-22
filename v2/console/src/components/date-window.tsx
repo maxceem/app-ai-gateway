@@ -6,7 +6,6 @@
  * which days it shows, and steps back through the 90 days kept, one slice of
  * at most 31 UTC days at a time, rather than quietly hiding older records.
  */
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { daysAgo } from "@/lib/format";
 
@@ -20,9 +19,6 @@ export interface DateWindow {
   to: string;
   canEarlier: boolean;
   canLater: boolean;
-  earlier: () => void;
-  later: () => void;
-  reset: () => void;
 }
 
 /**
@@ -32,51 +28,39 @@ export interface DateWindow {
  */
 export const oldestKeptDay = () => daysAgo(KEPT_DAYS);
 
-/** The newest slice first; each step back is the 31 days before it, cut at the oldest day kept. */
-export function useDateWindow(): DateWindow {
-  const [step, setStep] = useState(0);
+/**
+ * The days a list reads at window `step` (0 is the newest): the newest slice
+ * first, each step back the 31 days before it, cut at the oldest day kept.
+ */
+export function windowAt(step: number): DateWindow {
   const oldest = oldestKeptDay();
   const to = daysAgo(step * WINDOW_DAYS);
   const start = daysAgo(step * WINDOW_DAYS + WINDOW_DAYS - 1);
   const from = start < oldest ? oldest : start;
-  return {
-    from,
-    to,
-    canEarlier: from > oldest,
-    canLater: step > 0,
-    earlier: () => setStep((current) => current + 1),
-    later: () => setStep((current) => Math.max(0, current - 1)),
-    reset: () => setStep(0),
-  };
+  return { from, to, canEarlier: from > oldest, canLater: step > 0 };
 }
 
-/** The window's days, and buttons to move it. `onMove` runs on every move, for the list to start its pages again. */
-export function DateWindowNav({ range, disabled, onMove }: { range: DateWindow; disabled?: boolean; onMove: () => void }) {
+/** The window's days, and buttons to move it. */
+export function DateWindowNav({
+  range,
+  disabled,
+  onEarlier,
+  onLater,
+}: {
+  range: DateWindow;
+  disabled?: boolean;
+  onEarlier: () => void;
+  onLater: () => void;
+}) {
   return (
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
       <span>
         {range.from} to {range.to}
       </span>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={disabled || !range.canEarlier}
-        onClick={() => {
-          range.earlier();
-          onMove();
-        }}
-      >
+      <Button variant="outline" size="sm" disabled={disabled || !range.canEarlier} onClick={onEarlier}>
         Earlier days
       </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={disabled || !range.canLater}
-        onClick={() => {
-          range.later();
-          onMove();
-        }}
-      >
+      <Button variant="outline" size="sm" disabled={disabled || !range.canLater} onClick={onLater}>
         Later days
       </Button>
     </div>

@@ -386,9 +386,9 @@ export function firstCallInterval(state: PollState, found: boolean): number | fa
 const retryTransient = (count: number, error: unknown) => !permanent(error) && count < 2;
 
 /**
- * Whether a reconnect or a return to the tab may ask again: only while the
- * timer would (Sol 7b-6 round 2). Otherwise a 403 or the cap stops the timer,
- * and coming back online starts the asking all over.
+ * Whether a reconnect, a return to the tab, or the card mounting again may
+ * ask again: only while the timer would (Sol 7b-6 rounds 2 and 3). Otherwise
+ * a 403 or the cap stops the timer, and coming back starts the asking over.
  */
 const mayAskAgain =
   <T,>(found: (data: T | undefined) => boolean) =>
@@ -416,6 +416,9 @@ export function useFirstCall(appId: string) {
     refetchInterval: (query) => firstCallInterval(query.state, usageAnswered(query.state.data)),
     refetchOnReconnect: mayAskAgain(usageAnswered),
     refetchOnWindowFocus: mayAskAgain(usageAnswered),
+    refetchOnMount: mayAskAgain(usageAnswered),
+    // A cached refusal is not asked again just because the card mounts again.
+    retryOnMount: false,
     retry: retryTransient,
   });
   const legacy = usage.isSuccess && usage.data.first_usage_day === undefined;
@@ -426,6 +429,9 @@ export function useFirstCall(appId: string) {
     refetchInterval: (query) => firstCallInterval(query.state, chargeFound(query.state.data)),
     refetchOnReconnect: mayAskAgain(chargeFound),
     refetchOnWindowFocus: mayAskAgain(chargeFound),
+    refetchOnMount: mayAskAgain(chargeFound),
+    // A cached refusal is not asked again just because the card mounts again.
+    retryOnMount: false,
     retry: retryTransient,
   });
   const client = useQueryClient();

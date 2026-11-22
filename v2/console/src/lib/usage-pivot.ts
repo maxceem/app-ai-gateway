@@ -90,3 +90,42 @@ export function pivot(buckets: TimeseriesBucket[], from: string, to: string, met
     rows: [...byDate.entries()].map(([date, values]): ChartColumn => ({ date, ...values })),
   };
 }
+
+/**
+ * The chart's value axis: ticks at whole steps of 1, 2 or 5 times a power of
+ * ten, from 0 to just past `max`, about four intervals. Steps are whole units
+ * (nano-dollars, charges, tokens), so a tick never falls between two of them.
+ * The page labels each tick with its step's precision ({@link formatAxisCost}),
+ * so neighbouring ticks never share a label (Sol 7b-6 round 3).
+ */
+export function axisTicks(max: number): { ticks: number[]; step: number } {
+  const top = Math.max(1, Math.ceil(max));
+  const rough = top / 4;
+  const power = 10 ** Math.floor(Math.log10(Math.max(1, rough)));
+  const step = Math.max(1, [1, 2, 5, 10].map((factor) => factor * power).find((candidate) => candidate >= rough) ?? 10 * power);
+  const ticks: number[] = [0];
+  while (ticks.at(-1)! < top) ticks.push(ticks.at(-1)! + step);
+  return { ticks, step };
+}
+
+/** The tallest stacked column: the axis's `max`. */
+export function stackedMax(rows: ChartColumn[]): number {
+  let max = 0;
+  for (const row of rows) {
+    let sum = 0;
+    for (const [key, value] of Object.entries(row)) if (key !== "date" && typeof value === "number") sum += value;
+    max = Math.max(max, sum);
+  }
+  return max;
+}
+
+/**
+ * An axis tick in nano-dollars, as dollars with as many decimals as the step
+ * between ticks needs (at least cents), so ticks a step apart always read
+ * differently: with a step of $0.005, `$0.015` and `$0.020`.
+ */
+export function formatAxisCost(nano: number, stepNano: number): string {
+  if (nano === 0) return "$0";
+  const decimals = Math.min(9, Math.max(2, -Math.floor(Math.log10(stepNano / 1e9) + 1e-9)));
+  return `$${(nano / 1e9).toFixed(decimals)}`;
+}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ErrorsTab } from "./app-errors";
+import { ErrorsTab, USER_FILTER_DEBOUNCE_MS } from "./app-errors";
 import { findByHint, renderAuthenticated, stubApi } from "@/test/render";
 import type { AuthEvent, AuthEventSummary, RejectionEvent } from "@/lib/types";
 
@@ -222,6 +222,34 @@ describe("Errors tab", () => {
     const withUser = urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=user-9"));
     expect(withUser).toHaveLength(1);
     expect(withUser[0]).not.toContain("before=");
+  });
+
+  it("starts at page one when a typed user is cleared after paging, never back on the old page (Sol 7b-6 round 3)", async () => {
+    // Fake timers that still move on their own, so the debounce can be stepped past exactly.
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
+      await screen.findByText("model_not_allowed");
+      const older = screen.getAllByRole("button", { name: "Older" })[0]!;
+      const newer = screen.getAllByRole("button", { name: "Newer" })[0]!;
+      await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+      await user.click(older);
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
+      await waitFor(() => expect(newer.hasAttribute("disabled")).toBe(false));
+      const box = screen.getByRole("textbox", { name: "Refusal user ID" });
+      await user.type(box, "user-9");
+      await act(async () => vi.advanceTimersByTime(USER_FILTER_DEBOUNCE_MS + 50));
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
+      const beforeClear = urls(fetchMock, "/rejection-events").length;
+      await user.clear(box);
+      await act(async () => vi.advanceTimersByTime(USER_FILTER_DEBOUNCE_MS + 50));
+      // Page one of the unfiltered list (perhaps from the cache), never its old page two.
+      await waitFor(() => expect(newer.hasAttribute("disabled")).toBe(true));
+      expect(urls(fetchMock, "/rejection-events").slice(beforeClear).some((url) => url.includes("before="))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers a retry when the refusal samples cannot be read", async () => {

@@ -126,6 +126,35 @@ describe("the first-call check", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("does not ask a 91st time when the card mounts again after the cap (Sol 7b-6 round 3)", async () => {
+    const fetchMock = stubUsage([{ firstDay: null }]);
+    // As the console's own client: answers go stale, so mounting again would refetch them.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    for (let poll = 1; poll < FIRST_CALL_MAX_POLLS; poll += 1) await advance(FIRST_CALL_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    // Away to another tab, and back to the overview.
+    first.unmount();
+    await advance(FIRST_CALL_POLL_MS);
+    const again = renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(FIRST_CALL_MAX_POLLS);
+    await vi.waitFor(() => expect(again.result.current.stopped).toBe(true));
+  });
+
+  it("does not ask again when the card mounts again after a refusal (Sol 7b-6 round 3)", async () => {
+    const fetchMock = stubUsage([{ status: 403 }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    const first = renderFirstCall(client);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+    renderFirstCall(client);
+    await advance(FIRST_CALL_POLL_MS * 3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up after its cap, saying it stopped", () => {
     const state = { error: null, dataUpdateCount: FIRST_CALL_MAX_POLLS, errorUpdateCount: 0 };
     expect(firstCallInterval(state, false)).toBe(false);

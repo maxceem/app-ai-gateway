@@ -23,7 +23,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { Hint } from "@/components/hint";
-import { DateWindowNav, KEPT_DAYS, useDateWindow } from "@/components/date-window";
+import { DateWindowNav, KEPT_DAYS } from "@/components/date-window";
+import { usePagedList } from "@/lib/paged-list";
 import { RangePicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { AuthOutcomeBadge } from "@/components/status-badge";
@@ -72,33 +73,23 @@ export const REJECTION_REASON_LABELS: Record<string, string> = {
 /** How long the user filter waits after the last keystroke before it reads. */
 export const USER_FILTER_DEBOUNCE_MS = 250;
 
-/** `value`, once it has stopped changing for `ms`: a filter typed letter by letter reads once, not per letter. */
-function useDebounced<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms);
-    return () => clearTimeout(timer);
-  }, [value, ms]);
-  return settled;
-}
-
 export function ErrorsTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
-  const [outcome, setOutcome] = useState<string>("all");
-  const [cursors, setCursors] = useState<string[]>([]);
-  const [rejectionReason, setRejectionReason] = useState("all");
-  const [rejectionScope, setRejectionScope] = useState("all");
+  // Each list holds its filters, days and pages together: any filter change,
+  // a typed user included, starts at page one in the same update (Sol 7b-6 round 3).
+  const eventList = usePagedList({ outcome: "all" as string });
+  const rejectionList = usePagedList({ reason: "all" as string, scope: "all" as string, user: "" });
+  const outcome = eventList.filters.outcome;
+  const eventWindow = eventList.range;
+  const { reason: rejectionReason, scope: rejectionScope, user: rejectionUserFilter } = rejectionList.filters;
+  const rejectionWindow = rejectionList.range;
+  // The box shows each letter; the list takes the user once typing settles, not per letter.
   const [rejectionUser, setRejectionUser] = useState("");
-  const [rejectionPaging, setRejectionPaging] = useState<{ user: string; cursors: string[] }>({ user: "", cursors: [] });
-  const eventWindow = useDateWindow();
-  const rejectionWindow = useDateWindow();
-  const rejectionUserFilter = useDebounced(rejectionUser.trim(), USER_FILTER_DEBOUNCE_MS);
-  // Pages belong to the user filter they were read under, so a newly settled
-  // filter starts at page one in the same render: its first request never
-  // carries the old filter's cursor (Sol 7b-6 round 2).
-  const rejectionCursors = rejectionPaging.user === rejectionUserFilter ? rejectionPaging.cursors : [];
-  const setRejectionCursors = (next: string[] | ((current: string[]) => string[])) =>
-    setRejectionPaging({ user: rejectionUserFilter, cursors: typeof next === "function" ? next(rejectionCursors) : next });
+  const setRejectionFilters = rejectionList.setFilters;
+  useEffect(() => {
+    const timer = setTimeout(() => setRejectionFilters({ user: rejectionUser.trim() }), USER_FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [rejectionUser, setRejectionFilters]);
 
   const summary = useAuthEventSummary(appId, Number(days));
   // A filter with no index of its own reads a window of days, which the list shows and moves (Sol 7b-6).
@@ -107,7 +98,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
     limit: 25,
     ...(outcome === "all" ? {} : { outcome }),
     ...(eventsWindowed ? { from: eventWindow.from, to: eventWindow.to } : {}),
-    ...(cursors.length > 0 ? { before: cursors.at(-1) } : {}),
+    ...(eventList.before !== undefined ? { before: eventList.before } : {}),
   };
   const events = useAuthEvents(appId, eventQuery);
   // A user filter has an index; a reason or scope alone does not.
@@ -118,7 +109,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
     ...(rejectionScope === "all" ? {} : { scope: rejectionScope as RejectionScope }),
     ...(rejectionUserFilter ? { user: rejectionUserFilter } : {}),
     ...(rejectionsWindowed ? { from: rejectionWindow.from, to: rejectionWindow.to } : {}),
-    ...(rejectionCursors.length > 0 ? { before: rejectionCursors.at(-1) } : {}),
+    ...(rejectionList.before !== undefined ? { before: rejectionList.before } : {}),
   };
   const rejections = useRejectionEvents(appId, rejectionQuery);
 
@@ -237,11 +228,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
           <div className="flex flex-wrap gap-2 pt-3">
             <Select
               value={rejectionReason}
-              onValueChange={(value) => {
-                setRejectionReason(value);
-                setRejectionCursors([]);
-                rejectionWindow.reset();
-              }}
+              onValueChange={(value) => rejectionList.setFilters({ reason: value })}
             >
               <SelectTrigger className="w-[230px]" size="sm" aria-label="Refusal reason">
                 <SelectValue />
@@ -257,11 +244,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
             </Select>
             <Select
               value={rejectionScope}
-              onValueChange={(value) => {
-                setRejectionScope(value);
-                setRejectionCursors([]);
-                rejectionWindow.reset();
-              }}
+              onValueChange={(value) => rejectionList.setFilters({ scope: value })}
             >
               <SelectTrigger className="w-[150px]" size="sm" aria-label="Refusal scope">
                 <SelectValue />
@@ -350,14 +333,14 @@ export function ErrorsTab({ appId }: { appId: string }) {
           <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
             {rejectionsWindowed ? (
               <div className="mr-auto">
-                <DateWindowNav range={rejectionWindow} disabled={rejections.isFetching} onMove={() => setRejectionCursors([])} />
+                <DateWindowNav range={rejectionWindow} disabled={rejections.isFetching} onEarlier={rejectionList.earlier} onLater={rejectionList.later} />
               </div>
             ) : null}
             <Button
               variant="outline"
               size="sm"
-              disabled={rejections.isFetching || rejectionCursors.length === 0}
-              onClick={() => setRejectionCursors((current) => current.slice(0, -1))}
+              disabled={rejections.isFetching || !rejectionList.canNewer}
+              onClick={rejectionList.newer}
             >
               Newer
             </Button>
@@ -365,7 +348,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
               variant="outline"
               size="sm"
               disabled={rejections.isFetching || !rejections.data?.next_before}
-              onClick={() => setRejectionCursors((current) => [...current, rejections.data!.next_before as string])}
+              onClick={() => rejectionList.older(rejections.data!.next_before as string)}
             >
               Older
             </Button>
@@ -385,11 +368,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
             action={
               <Select
                 value={outcome}
-                onValueChange={(next) => {
-                  setOutcome(next);
-                  setCursors([]);
-                  eventWindow.reset();
-                }}
+                onValueChange={(next) => eventList.setFilters({ outcome: next })}
               >
                 <SelectTrigger className="w-[210px]" size="sm" aria-label="Outcome">
                   <SelectValue />
@@ -483,17 +462,17 @@ export function ErrorsTab({ appId }: { appId: string }) {
           <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
             {eventsWindowed ? (
               <div className="mr-auto">
-                <DateWindowNav range={eventWindow} disabled={events.isFetching} onMove={() => setCursors([])} />
+                <DateWindowNav range={eventWindow} disabled={events.isFetching} onEarlier={eventList.earlier} onLater={eventList.later} />
               </div>
             ) : null}
-            <Button variant="outline" size="sm" disabled={events.isFetching || cursors.length === 0} onClick={() => setCursors((current) => current.slice(0, -1))}>
+            <Button variant="outline" size="sm" disabled={events.isFetching || !eventList.canNewer} onClick={eventList.newer}>
               Newer
             </Button>
             <Button
               variant="outline"
               size="sm"
               disabled={events.isFetching || !events.data?.next_before}
-              onClick={() => setCursors((current) => [...current, events.data!.next_before as string])}
+              onClick={() => eventList.older(events.data!.next_before as string)}
             >
               Older
             </Button>

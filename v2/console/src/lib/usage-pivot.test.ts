@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SERIES, OTHER, pivot } from "./usage-pivot";
+import { axisTicks, formatAxisCost, MAX_SERIES, OTHER, pivot, stackedMax } from "./usage-pivot";
 import type { TimeseriesBucket } from "./types";
 
 const bucket = (provider: string, cost: number, day = "2026-08-01", charges = 1): TimeseriesBucket => ({
@@ -46,5 +46,40 @@ describe("pivot", () => {
     const chart = pivot([bucket("date", 2)], "2026-08-01", "2026-08-01", "cost_nano");
     expect(chart.series).toEqual([{ key: "s0", provider: "date" }]);
     expect(chart.rows).toEqual([{ date: "2026-08-01", s0: 2_000_000_000 }]);
+  });
+});
+
+describe("the cost axis (Sol 7b-6 round 3)", () => {
+  const labels = (maxNano: number) => {
+    const { ticks, step } = axisTicks(maxNano);
+    return { ticks, labels: ticks.map((tick) => formatAxisCost(tick, step)) };
+  };
+
+  it("labels a chart peaking at $0.02 with no two ticks alike", () => {
+    const { ticks, labels: shown } = labels(20_000_000);
+    expect(ticks.at(-1)).toBeGreaterThanOrEqual(20_000_000);
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(shown).toContain("$0.020");
+  });
+
+  it("labels a one-nano-dollar chart in whole nano-dollars, never `$0.`", () => {
+    const { ticks, labels: shown } = labels(1);
+    expect(ticks).toEqual([0, 1]);
+    expect(shown).toEqual(["$0", "$0.000000001"]);
+  });
+
+  it("never repeats a label or shows a bare `$0.`, from one nano-dollar to a thousand dollars", () => {
+    for (let max = 1; max <= 1e12; max = Math.ceil(max * 1.7) + 3) {
+      const { ticks, labels: shown } = labels(max);
+      expect(ticks.every(Number.isInteger)).toBe(true);
+      expect(ticks.at(-1)).toBeGreaterThanOrEqual(max);
+      expect(new Set(shown).size).toBe(shown.length);
+      expect(shown.some((label) => label.endsWith("."))).toBe(false);
+    }
+  });
+
+  it("measures the tallest stacked day", () => {
+    const chart = pivot([bucket("openai", 0.01), bucket("anthropic", 0.015), bucket("openai", 0.02, "2026-08-02")], "2026-08-01", "2026-08-02", "cost_nano");
+    expect(stackedMax(chart.rows)).toBe(25_000_000);
   });
 });

@@ -33,7 +33,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { Hint } from "@/components/hint";
-import { DateWindowNav, KEPT_DAYS, useDateWindow } from "@/components/date-window";
+import { DateWindowNav, KEPT_DAYS } from "@/components/date-window";
+import { usePagedList } from "@/lib/paged-list";
 import { RangePicker } from "@/components/pickers";
 import { AuthOutcomeBadge } from "@/components/status-badge";
 import {
@@ -50,7 +51,7 @@ import {
 } from "@/lib/format";
 import { useAppCharges, useUsageBreakdown, useUsageTimeseries, type ChargeQuery } from "@/lib/queries";
 import type { App, Charge, UsageDimension } from "@/lib/types";
-import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
+import { axisTicks, formatAxisCost, OTHER, pivot, stackedMax, type Metric } from "@/lib/usage-pivot";
 import { cn } from "@/lib/utils";
 import { CHARGE_STATUS_FILTERS, USAGE_CHARGE_DIMENSIONS, USAGE_CHARGE_RANGE_MAX_DAYS } from "@contracts/usage";
 
@@ -101,9 +102,10 @@ export function UsageTab({ app }: { app: App }) {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_nano");
   const [dimension, setDimension] = useState<UsageDimension>("model");
-  const [status, setStatus] = useState<string>("all");
-  const [cursors, setCursors] = useState<string[]>([]);
-  const dateWindow = useDateWindow();
+  // Filters, days and pages held together: a filter change always starts at page one (Sol 7b-6 round 3).
+  const list = usePagedList({ status: "all" as string });
+  const status = list.filters.status;
+  const dateWindow = list.range;
   // A status filter has no index of its own, so it reads a window of days the list shows and moves.
   const windowed = status !== "all";
 
@@ -117,7 +119,7 @@ export function UsageTab({ app }: { app: App }) {
     limit: 25,
     ...(status === "all" ? {} : { status: status as NonNullable<ChargeQuery["status"]> }),
     ...(windowed ? { from: dateWindow.from, to: dateWindow.to } : {}),
-    ...(cursors.length > 0 ? { before: cursors.at(-1) } : {}),
+    ...(list.before !== undefined ? { before: list.before } : {}),
   };
   const charges = useAppCharges(app.id, chargeQuery);
 
@@ -131,6 +133,9 @@ export function UsageTab({ app }: { app: App }) {
     ]),
   );
   const formatMetric = (value: number) => (metric === "cost_nano" ? formatCost(value / 1e9) : formatCompact(value));
+  // Our own ticks, at whole steps, each labelled with its step's precision (Sol 7b-6 round 3).
+  const axis = useMemo(() => axisTicks(stackedMax(chart.rows)), [chart.rows]);
+  const formatTick = (value: number) => (metric === "cost_nano" ? formatAxisCost(value, axis.step) : formatCompact(value));
 
   return (
     <div className="space-y-4">
@@ -168,7 +173,14 @@ export function UsageTab({ app }: { app: App }) {
               <BarChart data={chart.rows} margin={{ left: 4, right: 4 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={(value: string) => value.slice(5)} />
-                <YAxis tickLine={false} axisLine={false} width={56} allowDecimals={false} tickFormatter={(value: number) => formatMetric(value)} />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  width={64}
+                  domain={[0, axis.ticks.at(-1)!]}
+                  ticks={axis.ticks}
+                  tickFormatter={(value: number) => formatTick(value)}
+                />
                 <ChartTooltip content={<ChartTooltipContent valueFormatter={(value) => formatMetric(Number(value))} />} />
                 <ChartLegend content={<ChartLegendContent />} />
                 {chart.series.map(({ key, provider }, index) => (
@@ -284,11 +296,7 @@ export function UsageTab({ app }: { app: App }) {
             action={
               <Select
                 value={status}
-                onValueChange={(next) => {
-                  setStatus(next);
-                  setCursors([]);
-                  dateWindow.reset();
-                }}
+                onValueChange={(next) => list.setFilters({ status: next })}
               >
                 <SelectTrigger className="w-[170px]" size="sm" aria-label="Charge status">
                   <SelectValue />
@@ -348,17 +356,17 @@ export function UsageTab({ app }: { app: App }) {
           <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
             {windowed ? (
               <div className="mr-auto">
-                <DateWindowNav range={dateWindow} disabled={charges.isFetching} onMove={() => setCursors([])} />
+                <DateWindowNav range={dateWindow} disabled={charges.isFetching} onEarlier={list.earlier} onLater={list.later} />
               </div>
             ) : null}
-            <Button variant="outline" size="sm" disabled={charges.isFetching || cursors.length === 0} onClick={() => setCursors((current) => current.slice(0, -1))}>
+            <Button variant="outline" size="sm" disabled={charges.isFetching || !list.canNewer} onClick={list.newer}>
               Newer
             </Button>
             <Button
               variant="outline"
               size="sm"
               disabled={charges.isFetching || !charges.data?.next_before}
-              onClick={() => setCursors((current) => [...current, charges.data!.next_before as string])}
+              onClick={() => list.older(charges.data!.next_before as string)}
             >
               Older
             </Button>
