@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertHolds, cleanUp, cliOutcome, outcome, uniqueSlug } from "./support.ts";
+import { assertHolds, cleanUp, cliOutcome, outcome, readJson, uniqueSlug } from "./support.ts";
 
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -67,17 +67,29 @@ test("agw 2 connects with a management key and manages an app", { skip }, async 
     const added = await agw(home, "app", "add", "--type", "ios", "--name", "agw smoke", "--team-id", "ABCDE12345", "--bundle-id", "com.example.agwsmoke");
     assert.equal(added.code, 0, cliOutcome(added));
     created = added.json.result.app.id as string;
-    assert.equal(added.json.result.key, null);
+    // An iOS app has no app key: say so without ever printing one that came back.
+    assert.ok(added.json.result.key === null, "agw app add returned an app key for an iOS app");
 
     const paused = await agw(home, "app", "update", created, "--status", "disabled");
     assert.equal(paused.code, 0, cliOutcome(paused));
     assert.equal(paused.json.result.app.status, "disabled");
   } finally {
-    if (created) {
-      const removed = await agw(home, "app", "remove", created, "--yes");
-      assert.equal(removed.code, 0, cliOutcome(removed));
+    // The remote clean-up and the local one each run, whatever the other did.
+    try {
+      const id = created;
+      await cleanUp(
+        id === undefined
+          ? []
+          : [
+              async () => {
+                const removed = await agw(home, "app", "remove", id, "--yes");
+                return { status: removed.code === 0 ? 200 : 500 };
+              },
+            ],
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
-    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -91,7 +103,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 /** A public key for the issuer settings below. Saving never fetches it. */
@@ -195,6 +207,11 @@ test("agw 2 renames an app with every option set, and writes its settings back i
       assert.equal(before.status, 200, outcome(before));
       assertHolds(before.body.app.config, config, `app ${index} config`);
       const baseline = before.body.app.config;
+      // What agw reads before it writes: \`agw app show\` gives the baseline, whole.
+      const shown = await agw(home, "app", "show", id);
+      assert.equal(shown.code, 0, cliOutcome(shown));
+      assertHolds(shown.json.result?.app?.config, baseline, `app ${index} config agw show printed`);
+      assertHolds(baseline, shown.json.result?.app?.config, `app ${index} config agw show printed`);
       const renamed = await agw(home, "app", "update", id, "--name", `agw smoke every option ${index} renamed`);
       assert.equal(renamed.code, 0, cliOutcome(renamed));
       // What agw printed, and what the server holds after the rename: the baseline, whole.
@@ -209,16 +226,13 @@ test("agw 2 renames an app with every option set, and writes its settings back i
     }
   } finally {
     // The remote clean-up and the local one each run, whatever the other did.
-    let remote: unknown = null;
     try {
       await cleanUp([
         ...created.map((id) => () => admin("DELETE", `/v2/admin/apps/${id}?confirm=${id}`)),
         ...(providerId === "" ? [] : [() => admin("DELETE", `/v2/admin/providers/${providerId}`)]),
       ]);
-    } catch (error) {
-      remote = error;
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
-    await rm(home, { recursive: true, force: true });
-    if (remote !== null) throw remote;
   }
 });

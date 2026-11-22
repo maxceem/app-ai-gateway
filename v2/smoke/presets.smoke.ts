@@ -18,7 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { outcome, uniqueSlug } from "./support.ts";
+import { outcome, readJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -31,7 +31,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 const run = Date.now().toString(36);
@@ -85,7 +85,7 @@ async function post(path: string, body: Record<string, unknown>, user: string): 
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": user },
     body: JSON.stringify(body),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 /** The user's usage once `charges` charges are written (they are written after the answer). */

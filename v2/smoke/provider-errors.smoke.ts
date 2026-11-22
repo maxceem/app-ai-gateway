@@ -22,7 +22,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, keyMark, outcome, responseOutcome, uniqueSlug } from "./support.ts";
+import { cleanUp, keyMark, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -38,7 +38,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 let providerId = "";
@@ -110,7 +110,7 @@ for (const status of [429, 500]) {
     assert.equal(response.status, status);
     assertProviderSawOnlyItsKey(response);
     // The provider's own error, not one the gateway made up in its place.
-    assert.deepEqual(((await response.json()) as { error: unknown }).error, MOCK_ERROR);
+    assert.deepEqual(((await readJson(response)) as { error: unknown }).error, MOCK_ERROR);
     const charges = await chargesOf(app.id, trace);
     assert.equal(charges.length, 1);
     assert.equal(charges[0].status, "provider_error");
@@ -188,10 +188,12 @@ test("a request in a service mode with no price is served, reaches the provider 
   assert.equal(response.status, 200, await responseOutcome(response));
   assert.equal(response.headers.get("x-mock-service-tier"), "flex");
   // What the provider counted: OpenAI's prompt tokens include the cached ones.
-  const usage = ((await response.json()) as { usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
+  const usage = ((await readJson(response)) as { usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
   const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
   const uncached = usage.prompt_tokens - cached;
   assert.ok(uncached > 0 && usage.completion_tokens > 0, "the provider answered no usage");
+  // The mock reports cached tokens for flex, so a gateway that drops them is caught below.
+  assert.ok(cached > 0, "the provider reported no cached tokens for this check to price");
 
   const [charge] = await chargesOf(app.id, trace);
   assert.equal(charge.status, "ok");

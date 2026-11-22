@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { cleanUp, outcome, responseOutcome, uniqueSlug } from "./support.ts";
+import { cleanUp, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -29,7 +29,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 let providerId = "";
@@ -67,7 +67,7 @@ function post(path: string, body?: unknown): Promise<Response> {
 async function challenge(): Promise<{ challenge: string; expires_in: number; accepts_app_transaction?: boolean }> {
   const response = await post("auth/challenge");
   assert.equal(response.status, 200, await responseOutcome(response));
-  return (await response.json()) as { challenge: string; expires_in: number; accepts_app_transaction?: boolean };
+  return (await readJson(response)) as { challenge: string; expires_in: number; accepts_app_transaction?: boolean };
 }
 
 // The Swift package sends the App Store transaction, and signs over it, only
@@ -87,10 +87,10 @@ test("a failure on the device is recorded once per challenge, and can be read ba
   const report = { challenge: issued, step: "attest_key", error: { domain: "smoke", code } };
   const first = await post("auth/failure", report);
   assert.equal(first.status, 200, await responseOutcome(first));
-  assert.equal(((await first.json()) as { recorded: boolean }).recorded, true);
+  assert.equal(((await readJson(first)) as { recorded: boolean }).recorded, true);
   const again = await post("auth/failure", report);
   assert.equal(again.status, 200, await responseOutcome(again));
-  assert.equal(((await again.json()) as { recorded: boolean }).recorded, false);
+  assert.equal(((await readJson(again)) as { recorded: boolean }).recorded, false);
 
   // The flag says it was recorded; the diagnostics read says it really was, once.
   const path = `/v2/admin/apps/${appId}/auth-events?event=challenge&outcome=client_failed&limit=50`;
@@ -108,11 +108,11 @@ test("a forged registration is refused with attest_failed", { skip }, async () =
   const { challenge: issued } = await challenge();
   const response = await post("auth/register", { key_id: "c21va2Uta2V5LWlkLWZvci1hLXNtb2tlLWNoZWNr", attestation: "c21va2U=", challenge: issued });
   assert.equal(response.status, 403, await responseOutcome(response));
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "attest_failed");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "attest_failed");
 });
 
 test("the app's proxy refuses a call without a gateway token with auth_required", { skip }, async () => {
   const response = await post(`proxy/${slug}/v1/chat/completions`, { model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
   assert.equal(response.status, 401, await responseOutcome(response));
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "auth_required");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "auth_required");
 });

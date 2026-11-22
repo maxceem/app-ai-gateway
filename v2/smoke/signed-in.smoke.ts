@@ -17,7 +17,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { cleanUp, keyMark, outcome, responseOutcome, uniqueSlug } from "./support.ts";
+import { cleanUp, keyMark, outcome, readJson, responseOutcome, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -39,7 +39,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 let providerId = "";
@@ -126,12 +126,24 @@ after(async () => {
   ]);
 });
 
-test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip }, async () => {
-  const exchanged = await exchange(await userToken("smoke-user"));
-  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
-  const { access_token: token } = (await exchanged.json()) as { access_token: string };
-  assert.equal(typeof token, "string");
+/** The UTC day now: the day `/me` counts requests in. */
+function utcDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
+/**
+ * A fresh user exchanges a token, makes one call and reads `/me`. Returns
+ * what `/me` said, and whether the UTC day stayed the same from the call to
+ * the read, so the day's count is exact.
+ */
+async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: string; limits: Record<string, unknown> }; sameDay: boolean }> {
+  const user = uniqueSlug("smoke-user");
+  const exchanged = await exchange(await userToken(user));
+  assert.equal(exchanged.status, 200, await responseOutcome(exchanged));
+  const { access_token: token } = (await readJson(exchanged)) as { access_token: unknown };
+  assert.ok(typeof token === "string" && token !== "", "the exchange gave no access token");
+
+  const day = utcDay();
   const response = await chat(token);
   assert.equal(response.status, 200, await responseOutcome(response));
   // The gateway token is the gateway's own: it never reaches the provider,
@@ -142,38 +154,47 @@ test("a signed-in user exchanges a token, calls a provider, and reads /me", { sk
 
   const me = await fetch(new URL(`/v2/apps/${appId}/me`, base), { headers: { authorization: `Bearer ${token}` } });
   assert.equal(me.status, 200, await responseOutcome(me));
-  const standing = (await me.json()) as { user_id: string; limits: Record<string, unknown> };
+  const standing = (await readJson(me)) as { user_id: string; limits: Record<string, unknown> };
+  return { user, standing, sameDay: utcDay() === day };
+}
+
+test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip }, async () => {
+  // A call and its read that straddle UTC midnight count on two days: once more, with another fresh user.
+  let run = await oneCallThenMe();
+  if (!run.sameDay) run = await oneCallThenMe();
+  assert.ok(run.sameDay, "the call and /me straddled UTC midnight twice");
+  const { user, standing } = run;
   // The user is the issuer's subject, and the limits are the app's configured ones, as apps and the Swift package read them.
-  assert.equal(standing.user_id, "smoke-user");
+  assert.equal(standing.user_id, user);
   const { limits } = standing;
   assert.equal(limits.requests_per_minute, PER_MINUTE);
   assert.equal(limits.requests_per_day, PER_DAY);
   assert.equal(limits.monthly_budget_usd, BUDGET_NANO / 1e9);
   assert.equal(limits.budget_scope, "user");
   assert.equal(limits.blocked, false);
-  // The call above is counted, and what is left is the day's limit less what was used.
-  assert.ok(typeof limits.requests_today === "number" && limits.requests_today >= 1, "/me counts no request today");
-  assert.equal(limits.requests_remaining, PER_DAY - (limits.requests_today as number));
+  // A fresh user's one call, counted once: what is left is the day's limit less that one.
+  assert.equal(limits.requests_today, 1);
+  assert.equal(limits.requests_remaining, PER_DAY - 1);
   assert.ok(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
 });
 
 test("the app key alone is refused once users must sign in", { skip }, async () => {
   const response = await chat(appKey);
   assert.equal(response.status, 401, await responseOutcome(response));
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "auth_required");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "auth_required");
 });
 
 test("a user without the required claim is refused with issuer_claims_missing", { skip }, async () => {
   const response = await exchange(await userToken("smoke-free-user", { plan: "free" }));
   assert.equal(response.status, 403);
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "issuer_claims_missing");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "issuer_claims_missing");
 });
 
 test("a token signed by an unknown key is refused with issuer_token_rejected", { skip }, async () => {
   const forger = await generateKeyPair("ES256");
   const response = await exchange(await userToken("smoke-forged-user", { plan: "pro" }, forger.privateKey));
   assert.equal(response.status, 403);
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "issuer_token_rejected");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "issuer_token_rejected");
 });
 
 test("a token exchange records the client package it names", { skip, timeout: 90_000 }, async () => {

@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { keyMark, outcome, uniqueSlug } from "./support.ts";
+import { cleanUp, keyMark, outcome, readJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -28,7 +28,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 /** One connection per provider type, all pointed at the mock. */
@@ -67,8 +67,11 @@ before(async () => {
 });
 
 after(async () => {
-  if (appId !== "") await admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`);
-  for (const id of providerIds) await admin("DELETE", `/v2/admin/providers/${id}`);
+  // Every step runs, even after one fails.
+  await cleanUp([
+    ...(appId === "" ? [] : [() => admin("DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)]),
+    ...providerIds.map((id) => () => admin("DELETE", `/v2/admin/providers/${id}`)),
+  ]);
 });
 
 /** Each provider type's key header, as the provider itself reads it (v1's key-and-header check). */
@@ -156,5 +159,5 @@ test("a background Responses request is refused before it reaches the provider",
     body: JSON.stringify({ model: "gpt-5.6-luna", input: "Hi", background: true }),
   });
   assert.equal(response.status, 400);
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "invalid_request");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "invalid_request");
 });

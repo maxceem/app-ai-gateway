@@ -45,7 +45,8 @@
  *   slow provider. A raw body (Deepgram's audio) names it in the query.
  * - `mock_status`: answer with this HTTP status and an OpenAI-style error.
  * - `service_tier`: exactly `flex` sets `x-mock-service-tier: flex`, so a check
- *   sees the mode arrived. Nothing else from it is echoed.
+ *   sees the mode arrived, and Chat Completions then reports half the prompt
+ *   as cached tokens. Nothing else from it is echoed.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
  *   its closing event) or the transcript, before the usage, so a check can
@@ -144,7 +145,17 @@ type Answer = (input: { body: Record<string, unknown>; bytes: number; model: str
 const SSE = { "content-type": "text/event-stream" };
 
 const chat: Answer = ({ body, bytes, model, stream }) => {
-  const usage = { prompt_tokens: promptTokens(bytes), completion_tokens: OUTPUT_TOKENS, total_tokens: promptTokens(bytes) + OUTPUT_TOKENS, cost: promptTokens(bytes) / 1_000_000 };
+  const prompt = promptTokens(bytes);
+  // A flex request reports half its prompt as cached, as OpenAI does inside
+  // `prompt_tokens`, so a check can see cached usage priced and recorded.
+  const cached = body.service_tier === "flex" ? Math.floor(prompt / 2) : 0;
+  const usage = {
+    prompt_tokens: prompt,
+    completion_tokens: OUTPUT_TOKENS,
+    total_tokens: prompt + OUTPUT_TOKENS,
+    cost: prompt / 1_000_000,
+    ...(cached > 0 ? { prompt_tokens_details: { cached_tokens: cached } } : {}),
+  };
   if (stream) {
     const options = body.stream_options as { include_usage?: unknown } | undefined;
     const chunks = [

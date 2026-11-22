@@ -17,7 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome, uniqueSlug } from "./support.ts";
+import { holds, outcome, readJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -30,7 +30,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 const run = Date.now().toString(36);

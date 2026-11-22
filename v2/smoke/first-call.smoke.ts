@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { holds, outcome, uniqueSlug } from "./support.ts";
+import { holds, outcome, readJson, uniqueSlug } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -26,7 +26,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson(response) };
 }
 
 let providerId = "";
@@ -79,7 +79,7 @@ function chat(body: Record<string, unknown>): Promise<Response> {
 test("a chat call answers with the provider's JSON", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { usage?: { prompt_tokens?: number } };
+  const body = (await readJson(response)) as { usage?: { prompt_tokens?: number } };
   assert.ok((body.usage?.prompt_tokens ?? 0) > 0);
 });
 
@@ -94,11 +94,11 @@ test("a streamed chat call ends with its usage", { skip }, async () => {
 test("a model the app does not allow is refused", { skip }, async () => {
   const response = await chat({ model: "gpt-4o", messages: [] });
   assert.equal(response.status, 403);
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "model_not_allowed");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "model_not_allowed");
 });
 
 test("a provider error is passed through", { skip }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [], mock_status: 429 });
   assert.equal(response.status, 429);
-  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "mock_error");
+  assert.equal(((await readJson(response)) as { error: { code: string } }).error.code, "mock_error");
 });

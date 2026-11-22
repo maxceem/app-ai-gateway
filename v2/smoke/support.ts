@@ -31,9 +31,27 @@ export function cliOutcome(run: { code: number; json: unknown }): string {
 }
 
 /**
+ * Whether two parsed JSON values are the same: arrays in the same order,
+ * objects with the same fields whatever their order.
+ */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => sameJson(item, b[index]));
+  }
+  if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const names = Object.keys(left);
+    return names.length === Object.keys(right).length && names.every((name) => Object.hasOwn(right, name) && sameJson(left[name], right[name]));
+  }
+  return a === b;
+}
+
+/**
  * Fails unless `actual` holds every value `expected` sets, at the same place:
- * objects may hold more, arrays and other values must be equal. Says only
- * where it differs, never the values, since settings can name a key's header.
+ * objects may hold more fields, arrays must hold the same items in the same
+ * order (each item whole, its fields in any order). Says only where it
+ * differs, never the values, since settings can name a key's header.
  */
 export function assertHolds(actual: unknown, expected: unknown, where = "config"): void {
   if (expected !== null && typeof expected === "object" && !Array.isArray(expected)) {
@@ -41,7 +59,20 @@ export function assertHolds(actual: unknown, expected: unknown, where = "config"
     for (const [name, value] of Object.entries(expected)) assertHolds((actual as Record<string, unknown>)[name], value, `${where}.${name}`);
     return;
   }
-  assert.ok(JSON.stringify(actual) === JSON.stringify(expected), `${where} is not what was saved`);
+  assert.ok(sameJson(actual, expected), `${where} is not what was saved`);
+}
+
+/**
+ * A response's JSON body. A body that is not JSON fails with the status alone:
+ * a parse error quotes part of the text, which can hold a key or a token.
+ */
+export async function readJson(response: Response): Promise<any> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    assert.fail(`answered ${response.status} with a body that is not JSON`);
+  }
 }
 
 /** The same for a raw response, read from a copy so the caller can still read it. */

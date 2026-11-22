@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import mock, { clientCredentialHeaders, clientCredentialPlaces, jwksFromPath, keyMarks } from "../smoke/mock/index.ts";
-import { keyMark } from "../smoke/support.ts";
+import { assertHolds, keyMark, readJson } from "../smoke/support.ts";
 
 const PUBLIC_KEY = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0", kid: "smoke-1", alg: "ES256" };
 
@@ -110,5 +110,43 @@ describe("the smoke mock", () => {
     expect(await tier("priority")).toBeNull();
     expect(await tier("sk-live-0123456789")).toBeNull();
     expect(await tier("flex\nx-evil: 1")).toBeNull();
+  });
+
+  it("reports cached tokens inside the prompt for a flex request only", async () => {
+    const usage = async (tier?: string) =>
+      (
+        (await (
+          await mock.fetch(
+            new Request("https://mock.test/v1/chat/completions", {
+              method: "POST",
+              headers: { authorization: "Bearer sk-mock-smoke-key", "content-type": "application/json" },
+              body: JSON.stringify({ model: "gpt-4o-mini", ...(tier ? { service_tier: tier } : {}), messages: [{ role: "user", content: "Hi there" }] }),
+            }),
+          )
+        ).json()) as { usage: { prompt_tokens: number; prompt_tokens_details?: { cached_tokens: number } } }
+      ).usage;
+    const flex = await usage("flex");
+    expect(flex.prompt_tokens_details?.cached_tokens).toBeGreaterThan(0);
+    expect(flex.prompt_tokens_details!.cached_tokens).toBeLessThan(flex.prompt_tokens);
+    expect((await usage()).prompt_tokens_details).toBeUndefined();
+  });
+});
+
+describe("the smoke checks' config comparison", () => {
+  it("holds an array of objects whatever their fields' order, and still sees a change", () => {
+    const saved = { required_claims: [{ path: "plan", equals: "pro" }, { path: "roles", contains: ["pro"] }] };
+    const reordered = { required_claims: [{ equals: "pro", path: "plan" }, { contains: ["pro"], path: "roles" }] };
+    expect(() => assertHolds(reordered, saved)).not.toThrow();
+    expect(() => assertHolds(saved, reordered)).not.toThrow();
+    // The items' order still counts, and so does a value.
+    expect(() => assertHolds({ required_claims: [...saved.required_claims].reverse() }, saved)).toThrow();
+    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "free" }, saved.required_claims[1]] }, saved)).toThrow();
+    expect(() => assertHolds({ required_claims: [{ path: "plan", equals: "pro", extra: 1 }, saved.required_claims[1]] }, saved)).toThrow();
+  });
+
+  it("reads a body that is not JSON as its status alone, never its text", async () => {
+    const leaky = new Response("not json sk-live-0123456789abcdef", { status: 502 });
+    await expect(readJson(leaky)).rejects.toThrow("answered 502 with a body that is not JSON");
+    await expect(readJson(new Response("not json sk-live-0123456789abcdef", { status: 502 }))).rejects.not.toThrow(/sk-live/);
   });
 });
