@@ -527,7 +527,9 @@
         "app_end_user_claim_pending": {
           "name": "app_end_user_claim_pending",
           "columns": [
-            "app_id"
+            "app_id",
+            "status",
+            "claim_pending_since"
           ],
           "isUnique": false,
           "where": "\"app_end_user\".\"claim_pending_since\" IS NOT NULL"

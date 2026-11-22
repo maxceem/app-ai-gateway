@@ -27,4 +27,4 @@ ALTER TABLE `app_rejection_event` ADD `account_id` text;--> statement-breakpoint
 CREATE INDEX `app_rejection_event_app_account_created` ON `app_rejection_event` (`app_id`,`account_id`,`created_at`,`id`);--> statement-breakpoint
 CREATE INDEX `app_rejection_event_app_user_created` ON `app_rejection_event` (`app_id`,`user_id`,`account_id`,`created_at`,`id`);--> statement-breakpoint
 ALTER TABLE `app_end_user` ADD `claim_pending_since` integer;--> statement-breakpoint
-CREATE INDEX `app_end_user_claim_pending` ON `app_end_user` (`app_id`) WHERE claim_pending_since IS NOT NULL;
+CREATE INDEX `app_end_user_claim_pending` ON `app_end_user` (`app_id`,`status`,`claim_pending_since`) WHERE claim_pending_since IS NOT NULL;

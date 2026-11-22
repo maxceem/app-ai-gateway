@@ -249,26 +249,35 @@ describe("OpenAI chat through the proxy", () => {
     const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
     const rejections = async () =>
       (await env.DB.prepare("SELECT reason, user_id, operation FROM app_rejection_event WHERE app_id = ? ORDER BY id").bind(appId).all()).results;
+    // The sampling is per wall-clock minute: the clock is held inside one, a second
+    // apart per call so the rows keep their order (Gemini Neon 7b-4).
+    let clock = Date.parse("2026-11-20T12:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
     const send = async (path: string, model: string, extra: Record<string, string> = {}, bearer = key) => {
+      vi.setSystemTime((clock += 1_000));
       const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/${path}`, chatRequest(bearer, { model }, extra));
       await waitOnExecutionContext(ctx);
       return response.status;
     };
-    // A path the app does not allow: recorded, with no operation, since none matched.
-    expect(await send("v1/files", "gpt-4o-mini")).toBe(403);
-    // Two refused models in the same minute: one sample. Another reason for the same user is still recorded.
-    expect(await send("v1/chat/completions", "gpt-4o")).toBe(403);
-    expect(await send("v1/chat/completions", "gpt-4.1")).toBe(403);
-    // Another user is sampled on their own.
-    expect(await send("v1/chat/completions", "gpt-4o", { "x-end-user-id": "user-8" })).toBe(403);
-    // A caller that never proved who it is records nothing.
-    expect(await send("v1/chat/completions", "gpt-4o", {}, "agw_app_not-a-real-key")).toBe(401);
-    expect(await rejections()).toEqual([
-      { reason: "path_not_allowed", user_id: "user-7", operation: null },
-      { reason: "model_not_allowed", user_id: "user-7", operation: "openai.chat" },
-      { reason: "model_not_allowed", user_id: "user-8", operation: "openai.chat" },
-    ]);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    try {
+      // A path the app does not allow: recorded, with no operation, since none matched.
+      expect(await send("v1/files", "gpt-4o-mini")).toBe(403);
+      // Two refused models in the same minute: one sample. Another reason for the same user is still recorded.
+      expect(await send("v1/chat/completions", "gpt-4o")).toBe(403);
+      expect(await send("v1/chat/completions", "gpt-4.1")).toBe(403);
+      // Another user is sampled on their own.
+      expect(await send("v1/chat/completions", "gpt-4o", { "x-end-user-id": "user-8" })).toBe(403);
+      // A caller that never proved who it is records nothing.
+      expect(await send("v1/chat/completions", "gpt-4o", {}, "agw_app_not-a-real-key")).toBe(401);
+      expect(await rejections()).toEqual([
+        { reason: "path_not_allowed", user_id: "user-7", operation: null },
+        { reason: "model_not_allowed", user_id: "user-7", operation: "openai.chat" },
+        { reason: "model_not_allowed", user_id: "user-8", operation: "openai.chat" },
+      ]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses an operation the app does not allow, a refused path and an undeclared path", async () => {

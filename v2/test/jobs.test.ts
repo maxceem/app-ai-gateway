@@ -1308,6 +1308,29 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
     expect(forged.response.status).toBe(404);
     expect(forged.response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("records no other account's connection slug when a blocked user polls a job id it did not make (Gemini Neon 7b-4 round 1)", async () => {
+    const { appId, key } = await setup();
+    await env.DB.prepare("INSERT INTO app_end_user (app_id, id, status, created_at) VALUES (?, 'blocked-1', 'blocked', ?)").bind(appId, Date.now()).run();
+    clearCaches();
+    // Signed with the deployment's one secret, naming this app id but another account.
+    const foreign = await signJobId(env.JWT_SECRET, {
+      job: "job-x",
+      connectionId: "c-other",
+      slug: "other-accounts-slug",
+      operation: "fal.queue",
+      model: "fal-ai/flux/dev",
+      requestId: "req-x",
+      route: "r0",
+      accountId: "acc_someone_else",
+      appId,
+      userId: "blocked-1",
+    });
+    const { response } = await call("GET", `/v2/apps/${appId}/jobs/${foreign}/status`, key, { user: "blocked-1" });
+    expect(response.status).toBe(403);
+    const events = (await env.DB.prepare("SELECT reason, provider_slug FROM app_rejection_event WHERE app_id = ?").bind(appId).all()).results;
+    expect(events).toEqual([{ reason: "blocked_user", provider_slug: null }]);
+  });
 });
 
 describe("what a broken body still settles, and rewrites (review fixes, round 6)", () => {

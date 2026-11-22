@@ -165,8 +165,8 @@ export async function serveCaller(
     readonly startedAt: number;
     /** The header of the provider the request names, where a client may send its key. */
     readonly providerAuthHeader?: string;
-    /** The connection a rejection event names. */
-    readonly providerSlug: string;
+    /** The connection a rejection event names; null when the request names none of this app's. */
+    readonly providerSlug: string | null;
   },
   serve: (caller: Caller) => Promise<Response>,
 ): Promise<Response> {

@@ -18,6 +18,9 @@ import { appAuthChallenge, type AuthEventName } from "../db/schema.ts";
 
 export const AUTH_EVENT_RETENTION_DAYS = 90;
 
+/** A claim wait older than this began before the events' retention: stale, never measured. */
+const STALE_WAIT_MS = AUTH_EVENT_RETENTION_DAYS * 86_400_000;
+
 /** How long an issued challenge can be used. */
 export const CHALLENGE_TTL_SECONDS = 300;
 
@@ -69,6 +72,11 @@ function claimChange(input: AuthEventInput): "refused" | "succeeded" | null {
  *   been open (`claim_delay_ms`, the attempt's time `now` minus the start),
  *   then closes it. A success with no wait open writes no user row.
  *
+ * A wait that began before the events' retention (`AUTH_EVENT_RETENTION_DAYS`)
+ * is stale: its user left and came back. A refusal starts a new wait in its
+ * place, and a success measures nothing from it, only closes it (Gemini Neon
+ * 7b-4). Otherwise a returning user would report a wait of months.
+ *
  * This is a diagnostic, so rare gaps are accepted (owner, 2026-11-22): writes
  * from attempts moments apart that land in reverse order can miss a wait or
  * close a newer one, and a lost write leaves the wait as it was until the
@@ -87,7 +95,7 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
          SELECT ?1, ?2, ?14, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ${
                   change === "succeeded"
-                    ? "(SELECT MAX(0, ?13 - claim_pending_since) FROM app_end_user WHERE app_id = ?2 AND id = ?3 AND claim_pending_since <= ?13)"
+                    ? "(SELECT MAX(0, ?13 - claim_pending_since) FROM app_end_user WHERE app_id = ?2 AND id = ?3 AND claim_pending_since <= ?13 AND claim_pending_since >= ?13 - ?15)"
                     : "NULL"
                 }, ?13
           WHERE true
@@ -109,6 +117,8 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
         input.latencyMs,
         now,
         input.accountId,
+        // Only a success's measure reads it, and D1 refuses a value no `?` takes.
+        ...(change === "succeeded" ? [STALE_WAIT_MS] : []),
       ),
   ];
   if (change === "succeeded") {
@@ -133,10 +143,10 @@ function recordStatements(db: D1Database, input: AuthEventInput, id: string, now
            SELECT ?1, ?2, ?4, ?4
             WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
            ON CONFLICT (app_id, id) DO UPDATE SET claim_pending_since = excluded.claim_pending_since
-            WHERE status = 'active' AND claim_pending_since IS NULL
+            WHERE status = 'active' AND (claim_pending_since IS NULL OR claim_pending_since < excluded.claim_pending_since - ?5)
               AND (last_seen_at IS NULL OR last_seen_at < excluded.claim_pending_since)`,
         )
-        .bind(input.appId, userId, input.accountId, now),
+        .bind(input.appId, userId, input.accountId, now, STALE_WAIT_MS),
     );
   }
   return statements;

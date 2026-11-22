@@ -164,26 +164,6 @@ export async function listAppRejectionEvents(c: AdminContext): Promise<Response>
 
 type Summary = OperationResponse<"getAppAuthEventSummary">;
 
-/** One group of the auth pass: a day, event, outcome and reason, and for a failure its network. */
-interface AuthGroup {
-  date: string;
-  event: string;
-  outcome: string;
-  reason: string | null;
-  asn: number | null;
-  network_name: string | null;
-  count: number;
-  last_seen: number;
-}
-
-/** Ascending, with nulls first, as SQLite orders them. */
-function compareNullable(a: string | null, b: string | null): number {
-  if (a === b) return 0;
-  if (a === null) return -1;
-  if (b === null) return 1;
-  return a < b ? -1 : 1;
-}
-
 /**
  * The claim wait at `percent` of the window, by nearest rank as v1: one row
  * read through `app_auth_event_claim_delay`, never the whole list. The index
@@ -193,17 +173,42 @@ function compareNullable(a: string | null, b: string | null): number {
  * worked out in integers.
  */
 export function claimWaitAt(percent: 50 | 95): string {
-  const waits = "app_id = ?1 AND account_id = ?2 AND claim_delay_ms IS NOT NULL AND created_at >= ?3 AND created_at < ?4";
-  return `SELECT claim_delay_ms AS ms FROM app_auth_event WHERE ${waits}
+  return `SELECT claim_delay_ms AS ms FROM app_auth_event WHERE ${CLAIM_WAITS}
    ORDER BY claim_delay_ms
-   LIMIT 1 OFFSET (SELECT MAX(0, (COUNT(*) * ${percent} + 99) / 100 - 1) FROM app_auth_event WHERE ${waits})`;
+   LIMIT 1 OFFSET (SELECT MAX(0, (COUNT(*) * ${percent} + 99) / 100 - 1) FROM app_auth_event WHERE ${CLAIM_WAITS})`;
 }
 
 /**
- * An app's sign-in health over a trailing window, in one batch. The auth
- * events are read once: attempts per day, the networks failures came from
- * and the token-exchange success rate all come from that one pass, grouped
- * by day, event, outcome and reason, and by network for failures only. Then
+ * The claim waits in a window, as SQL. `+created_at` keeps SQLite off the
+ * date index (which does not hold `claim_delay_ms`): every read of the waits
+ * goes through the covering `app_auth_event_claim_delay` and never fetches a
+ * table row (Gemini Neon 7b-4).
+ */
+const CLAIM_WAITS = "app_id = ?1 AND account_id = ?2 AND claim_delay_ms IS NOT NULL AND +created_at >= ?3 AND +created_at < ?4";
+export const CLAIM_WAIT_TOTALS = `SELECT COUNT(*) AS count, AVG(claim_delay_ms) AS avg FROM app_auth_event WHERE ${CLAIM_WAITS}`;
+
+/**
+ * The networks failures came from, at most ten, in SQL: one row per network,
+ * so a window with failures from many networks never comes back whole
+ * (Gemini Neon 7b-4). A recovered failure is not a failing network (the app
+ * got past it on its own), and neither is an unknown one, which says nothing
+ * about where to look.
+ */
+export const FAILING_NETWORKS = `SELECT network_asn, MAX(network_name) AS network_name, COUNT(*) AS count, MAX(created_at) AS last_seen
+   FROM app_auth_event
+  WHERE app_id = ?1 AND account_id = ?2 AND created_at >= ?3 AND created_at < ?4
+    AND outcome NOT IN ('ok', 'client_recovered') AND network_asn IS NOT NULL
+  GROUP BY network_asn ORDER BY count DESC, network_asn ASC LIMIT 10`;
+
+/** Active users waiting on a claim since `?2`, through `app_end_user_claim_pending`. Exported for its query-plan test. */
+export const PENDING_USERS =
+  "SELECT COUNT(*) AS count FROM app_end_user WHERE app_id = ?1 AND status = 'active' AND claim_pending_since IS NOT NULL AND claim_pending_since >= ?2";
+
+/**
+ * An app's sign-in health over a trailing window, in one batch. Attempts per
+ * day and the token-exchange success rate come from one pass over the auth
+ * events, grouped by day, event, outcome and reason; the networks failures
+ * came from are their own statement, at most ten rows. Then
  * failed charges per day (`usage_day`), sampled refusals per day, the claim
  * waits that ended in the window (count, average and two percentiles, each
  * through `app_auth_event_claim_delay`), and the users waiting now
@@ -220,19 +225,15 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
   const from = new Date(start).toISOString().slice(0, 10);
   const db = c.env.DB;
   const window = "app_id = ?1 AND account_id = ?2 AND created_at >= ?3 AND created_at < ?4";
-  const waits = `app_id = ?1 AND account_id = ?2 AND claim_delay_ms IS NOT NULL AND created_at >= ?3 AND created_at < ?4`;
-  const [auth, failed, rejections, waitTotals, p50, p95, pending] = await db.batch([
-    // A recovered failure is not a failing network (the app got past it on its
-    // own), and neither is an unknown one, which says nothing about where to look.
+  const [auth, networks, failed, rejections, waitTotals, p50, p95, pending] = await db.batch([
     db
       .prepare(
-        `SELECT ${DAY_OF("created_at")} AS date, event, outcome, reason,
-                CASE WHEN outcome IN ('ok', 'client_recovered') THEN NULL ELSE network_asn END AS asn,
-                MAX(network_name) AS network_name, COUNT(*) AS count, MAX(created_at) AS last_seen
+        `SELECT ${DAY_OF("created_at")} AS date, event, outcome, reason, COUNT(*) AS count
            FROM app_auth_event WHERE ${window}
-          GROUP BY date, event, outcome, reason, asn`,
+          GROUP BY date, event, outcome, reason ORDER BY date, event, outcome, reason`,
       )
       .bind(appId, actor.accountId, start, end),
+    db.prepare(FAILING_NETWORKS).bind(appId, actor.accountId, start, end),
     db
       .prepare(
         `SELECT day AS date, SUM(charges) AS count FROM usage_day
@@ -247,52 +248,28 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
           GROUP BY date, reason, scope ORDER BY date, reason, scope`,
       )
       .bind(appId, actor.accountId, start, end),
-    db.prepare(`SELECT COUNT(*) AS count, AVG(claim_delay_ms) AS avg FROM app_auth_event WHERE ${waits}`).bind(appId, actor.accountId, start, end),
+    db.prepare(CLAIM_WAIT_TOTALS).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(50)).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(95)).bind(appId, actor.accountId, start, end),
     // Active users only: a blocked user's wait can never end. And only waits that
     // began inside the events' retention: an older one belongs to a user who has
     // not been back since, and its events are gone (Fable 7b-4).
-    db
-      .prepare(
-        "SELECT COUNT(*) AS count FROM app_end_user WHERE app_id = ? AND claim_pending_since IS NOT NULL AND claim_pending_since >= ? AND status = 'active'",
-      )
-      .bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS),
+    db.prepare(PENDING_USERS).bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS),
   ]);
   const all = <T>(result: D1Result | undefined) => (result?.results ?? []) as T[];
-  const groups = all<AuthGroup>(auth);
-
-  const daily = new Map<string, Summary["daily"][number]>();
-  const networks = new Map<number, { network_asn: number; network_name: string | null; count: number; last_seen: number }>();
+  const dailyRows = all<Summary["daily"][number]>(auth);
   let exchangeTotal = 0;
   let exchangeOk = 0;
-  for (const group of groups) {
-    const key = JSON.stringify([group.date, group.event, group.outcome, group.reason]);
-    const day = daily.get(key);
-    if (day === undefined) daily.set(key, { date: group.date, event: group.event, outcome: group.outcome, reason: group.reason, count: group.count } as Summary["daily"][number]);
-    else day.count += group.count;
-    if (group.asn !== null) {
-      const network = networks.get(group.asn);
-      if (network === undefined) networks.set(group.asn, { network_asn: group.asn, network_name: group.network_name, count: group.count, last_seen: group.last_seen });
-      else {
-        network.count += group.count;
-        network.last_seen = Math.max(network.last_seen, group.last_seen);
-        if (compareNullable(network.network_name, group.network_name) < 0) network.network_name = group.network_name;
-      }
-    }
+  for (const group of dailyRows) {
     if (group.event === "token_exchange") {
       exchangeTotal += group.count;
       if (group.outcome === "ok") exchangeOk += group.count;
     }
   }
-  const dailyRows = [...daily.values()].sort(
-    (a, b) =>
-      compareNullable(a.date, b.date) || compareNullable(a.event, b.event) || compareNullable(a.outcome, b.outcome) || compareNullable(a.reason ?? null, b.reason ?? null),
-  );
-  const failing = [...networks.values()]
-    .sort((a, b) => b.count - a.count || a.network_asn - b.network_asn)
-    .slice(0, 10)
-    .map((row) => ({ ...row, last_seen: new Date(row.last_seen).toISOString() }));
+  const failing = all<{ network_asn: number; network_name: string | null; count: number; last_seen: number }>(networks).map((row) => ({
+    ...row,
+    last_seen: new Date(row.last_seen).toISOString(),
+  }));
   const wait = all<{ count: number; avg: number | null }>(waitTotals)[0] ?? { count: 0, avg: null };
   const at = (result: D1Result | undefined) => all<{ ms: number }>(result)[0]?.ms ?? null;
   return c.json({

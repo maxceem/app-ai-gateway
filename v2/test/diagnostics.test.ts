@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
 import { appIds } from "../src/admin/apps.ts";
-import { claimWaitAt } from "../src/admin/diagnostics.ts";
+import { CLAIM_WAIT_TOTALS, claimWaitAt, PENDING_USERS } from "../src/admin/diagnostics.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -262,6 +262,26 @@ describe("summary", () => {
     expect(body.claim_delay).toEqual({ count: 3, avg_ms: 4_333, p50_ms: 3_000, p95_ms: 9_000 });
   });
 
+  it("names at most the ten networks most failures came from, counted in SQL (Gemini Neon 7b-4)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const yesterday = daysAgo(1);
+    // Twelve networks; network 100 + n failed n + 1 times, and one more success there that does not count.
+    for (let n = 0; n < 12; n += 1) {
+      for (let i = 0; i <= n; i += 1) await authEvent({ appId, at: yesterday, outcome: "attest_failed", asn: 100 + n, network: `Net ${n}` });
+      await authEvent({ appId, at: yesterday, outcome: "ok", asn: 100 + n, network: `Net ${n}` });
+    }
+    const { body } = await request(key, "GET", `/v2/admin/apps/${appId}/auth-events/summary?days=7`);
+    expect(body.failing_networks.map((row: any) => [row.network_asn, row.count])).toEqual(
+      Array.from({ length: 10 }, (_, i) => [111 - i, 12 - i]),
+    );
+    // The daily rows are one per day, event, outcome and reason, whatever the networks.
+    expect(body.daily).toEqual([
+      { date: dayOf(yesterday), event: "token_exchange", outcome: "attest_failed", reason: null, count: 78 },
+      { date: dayOf(yesterday), event: "token_exchange", outcome: "ok", reason: null, count: 12 },
+    ]);
+  });
+
   it("has no exchange rate for a window nobody signed in, and refuses a window longer than events are kept", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
@@ -329,6 +349,22 @@ describe("claim waits", () => {
     // A refusal after the sign-in is a new wait.
     await attempt(T0 + 40_000, "u2", "issuer_claims_missing");
     expect(await since("u2")).toBe(T0 + 40_000);
+  });
+
+  it("a wait older than the events' retention is never measured: a return 120 days on starts afresh (Gemini Neon 7b-4)", async () => {
+    const { attempt, since, delays } = await setup();
+    const later = T0 + 120 * DAY;
+    // Refused once, gone for 120 days, then signed in at once: the old wait is closed, not measured.
+    await attempt(T0, "u3", "issuer_claims_missing");
+    await attempt(later, "u3", "ok");
+    expect(await delays("u3")).toEqual([null]);
+    expect(await since("u3")).toBeNull();
+    // Refused once, gone for 120 days, then a real 2-second wait: that is what is measured.
+    await attempt(T0, "u4", "issuer_claims_missing");
+    await attempt(later, "u4", "issuer_claims_missing");
+    expect(await since("u4")).toBe(later);
+    await attempt(later + 2_000, "u4", "ok");
+    expect(await delays("u4")).toEqual([2_000]);
   });
 });
 
@@ -452,18 +488,23 @@ describe("query plans", () => {
     expect(await planOf("app_end_user", get("auth-events/summary"))).toContain("app_end_user_claim_pending");
   });
 
-  it("read the claim-wait percentiles from the covering index, with no sort (Sol 7b-4 round 2)", async () => {
+  it("read every claim-wait figure from the covering index, with no sort and no table row (Sol 7b-4 round 2, Gemini Neon 7b-4)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     await authEvent({ appId, at: at("2026-11-19"), claimDelayMs: 1_000 });
-    for (const percent of [50, 95] as const) {
-      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${claimWaitAt(percent)}`)
+    for (const [name, sql] of [["totals", CLAIM_WAIT_TOTALS], ["p50", claimWaitAt(50)], ["p95", claimWaitAt(95)]] as const) {
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
         .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
         .all<{ detail: string }>();
-      const plan = results.map((row) => row.detail).join("\n");
-      expect(plan, String(percent)).toContain("COVERING INDEX app_auth_event_claim_delay");
-      expect(plan, String(percent)).not.toContain("TEMP B-TREE");
+      const searches = results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
+      expect(searches.length, name).toBeGreaterThan(0);
+      // Every read of the table, the inner count's included, is the covering index.
+      for (const detail of searches) expect(detail, name).toContain("COVERING INDEX app_auth_event_claim_delay");
+      expect(results.map((row) => row.detail).join("\n"), name).not.toContain("TEMP B-TREE");
     }
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${PENDING_USERS}`).bind(appId, 0).all<{ detail: string }>();
+    const searches = results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
+    expect(searches).toEqual([expect.stringContaining("COVERING INDEX app_end_user_claim_pending")]);
   });
 });
 

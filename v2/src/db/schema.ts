@@ -240,8 +240,9 @@ export const appEndUser = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
     check("app_end_user_status", oneOf(table.status, ["active", "blocked"])),
-    // The users still waiting on a claim: few, and counted by the auth-event summary.
-    index("app_end_user_claim_pending").on(table.appId).where(sql`${table.claimPendingSince} IS NOT NULL`),
+    // The users still waiting on a claim, counted by the auth-event summary straight
+    // from the index: active ones whose wait began inside the retention window.
+    index("app_end_user_claim_pending").on(table.appId, table.status, table.claimPendingSince).where(sql`${table.claimPendingSince} IS NOT NULL`),
   ],
 );
 

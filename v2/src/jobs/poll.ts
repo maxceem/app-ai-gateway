@@ -78,7 +78,10 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
     // The signature is checked before the caller, at no D1 cost, so a made-up
     // id loads nothing. Its answer waits until the caller is known.
     const claims = await readJobId(c.env.JWT_SECRET, jobId);
-    const named = claims !== null && claims.appId === app.id ? await loadConnection(c.env, app.accountId, claims.slug) : null;
+    // Every app's job ids are signed with the same secret: only an id this app's
+    // account made may name a connection, here or in a refusal it records.
+    const ours = claims !== null && claims.appId === app.id && claims.accountId === app.accountId;
+    const named = ours ? await loadConnection(c.env, app.accountId, claims.slug) : null;
     const description = named === null ? null : connectionDescription(named);
 
     return serveCaller(
@@ -86,7 +89,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
       {
         app,
         startedAt,
-        providerSlug: claims?.slug ?? "",
+        providerSlug: ours ? claims.slug : null,
         ...(description === null ? {} : { providerAuthHeader: description.auth.header }),
       },
       async (caller) => {
