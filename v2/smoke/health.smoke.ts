@@ -12,7 +12,10 @@ if (base === undefined || base === "") throw new Error("Set V2_BASE_URL to the d
 test("the health check answers", async () => {
   const response = await fetch(new URL("/v2/healthz", base));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.deepEqual({ ok: body.ok, service: body.service, api: body.api, vault: body.vault }, { ok: true, service: "app-ai-gateway", api: "v2", vault: "ok" });
+  // Added in step 7b-7, optional: whether the deployment can send verification email.
+  if (body.email !== undefined) assert.ok(["off", "ok", "misconfigured"].includes(String(body.email)));
 });
 
 test("a path v2 does not declare is a JSON 404", async () => {

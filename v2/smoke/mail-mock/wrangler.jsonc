@@ -1,0 +1,13 @@
+// A stand-in email sender for the v2 test deployment only: it sends nothing.
+// Deploy: `pnpm exec wrangler deploy -c smoke/mail-mock/wrangler.jsonc`.
+// The test deployment binds its MailMock entrypoint as EMAIL (gitignored wrangler.test.jsonc).
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "agw-test-v2-mail",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "OUTBOX", "class_name": "Outbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Outbox"] }]
+}
