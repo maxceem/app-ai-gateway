@@ -312,6 +312,10 @@ describe("account status", () => {
     const { resetAt } = frozenPeriod();
     const session = await send({ key }, "GET", "/v2/admin/session", undefined, fake.env);
     expect(session.body.session.billing).toEqual({ state: "billed", planName: "Growth", allowance: { used: 0, limit: 100, resetAt } });
+    // `agw account status` reads it through the get_account tool, whose summary states it.
+    const tool = await send({ key }, "POST", "/v2/cli/tools/get_account", {}, fake.env);
+    expect(tool.status).toBe(200);
+    expect(tool.body.summary).toContain("Plan: Growth. 0 of 100 requests used this period");
     fake.state.access = "down";
     clearCaches();
     const down = await send({ key }, "GET", "/v2/admin/session", undefined, fake.env);
