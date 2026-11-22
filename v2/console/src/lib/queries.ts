@@ -101,6 +101,27 @@ export function useChangePassword() {
   });
 }
 
+/**
+ * Sends the signed-in person a new verification link. Their session is read
+ * again afterwards, in case the address was verified meanwhile.
+ */
+export function useSendVerificationEmail() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (returnTo?: string) => call("sendVerificationEmail", { body: returnTo === undefined ? {} : { returnTo } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.session }),
+  });
+}
+
+/** Confirms the link a verification email carried. Needs no sign-in: the link is the proof. */
+export function useConfirmEmailVerification() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) => call("confirmEmailVerification", { body: { token } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.session }),
+  });
+}
+
 export function useSelectAccount() {
   const client = useQueryClient();
   return useMutation({

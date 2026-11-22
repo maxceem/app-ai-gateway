@@ -16,6 +16,8 @@ import { LoginPage } from "@/pages/login";
 import { OAuthConsentPage } from "@/pages/oauth-consent";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
+import { VerifyEmailPage } from "@/pages/verify-email";
+import { VerifyEmailBanner } from "@/components/verify-email-banner";
 import { ConsoleSessionProvider } from "@/lib/console-session";
 import { DEFAULT_LANDING, loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
 import { useCapabilities, useSession } from "@/lib/queries";
@@ -64,6 +66,7 @@ function AuthenticatedConsole() {
   return (
     <ConsoleSessionProvider session={session.data} capabilities={capabilities.data}>
       <AppShell>
+        <VerifyEmailBanner />
         <Routes>
           <Route path="/" element={<Navigate to={DEFAULT_LANDING} replace />} />
           <Route path="/apps" element={<AppsPage />} />
@@ -134,6 +137,8 @@ export default function App() {
         */}
         <Route path="/approve/:id" element={<ApprovePage />} />
         <Route path="/reveal/:id" element={<RevealPage />} />
+        {/* Where the link in a verification email lands. The link is the proof, so no sign-in. */}
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />
