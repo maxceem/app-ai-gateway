@@ -33,6 +33,9 @@ describe("cost formatting", () => {
     [-0.0042, "-$0.0042"],
     [-0.75, "-$0.75"],
     [-100.49, "-$100.49"],
+    // Under half a nano-dollar rounds to no digit: said as a bound, never `$0.`.
+    [4e-10, "<$0.000000001"],
+    [-4e-10, ">-$0.000000001"],
   ])("shows %s as %s", (value, text) => {
     expect(formatCost(value)).toBe(text);
   });

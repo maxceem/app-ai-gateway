@@ -2,7 +2,7 @@
  * The days a filtered list reads, and the buttons that move them.
  *
  * A filter with no index of its own reads at most 31 days at a time; without
- * a range the gateway reads the last 30 (Sol 7b-6). So a filtered list says
+ * a range the gateway reads the last 30. So a filtered list says
  * which days it shows, and steps back through the 90 days kept, one slice of
  * at most 31 UTC days at a time, rather than quietly hiding older records.
  */
@@ -24,7 +24,7 @@ export interface DateWindow {
 /**
  * The oldest UTC day the gateway still keeps: the day {@link KEPT_DAYS} before
  * today, as its retention cuts it (`detailCutoffDay`, and events dropped only
- * once older than 90 days to the millisecond). A list must reach it (Sol 7b-6 round 2).
+ * once older than 90 days to the millisecond). A list must reach it.
  */
 export const oldestKeptDay = () => daysAgo(KEPT_DAYS);
 

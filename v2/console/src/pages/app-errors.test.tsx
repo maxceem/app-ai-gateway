@@ -81,6 +81,20 @@ function renderTab({
 const urls = (fetchMock: ReturnType<typeof stubApi>, path: string) =>
   fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.startsWith(`${BASE}${path}`));
 
+/**
+ * Runs a test on fake timers that still move on their own, so the user filter's
+ * debounce is stepped past exactly (`settle`) instead of waited out in real time.
+ */
+async function withFakeDebounce(run: (user: ReturnType<typeof userEvent.setup>, settle: () => Promise<void>) => Promise<void>) {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await run(user, () => act(async () => void vi.advanceTimersByTime(USER_FILTER_DEBOUNCE_MS + 50)));
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Errors tab", () => {
@@ -132,21 +146,23 @@ describe("Errors tab", () => {
   });
 
   it("filters refusals by reason, scope and user, and pages with the before cursor", async () => {
-    const user = userEvent.setup();
-    const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
-    await screen.findByText("model_not_allowed");
-    await user.click(screen.getByRole("combobox", { name: "Refusal reason" }));
-    await user.click(await screen.findByRole("option", { name: "App budget" }));
-    await user.click(screen.getByRole("combobox", { name: "Refusal scope" }));
-    await user.click(await screen.findByRole("option", { name: "Your account" }));
-    await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
-    await waitFor(() =>
-      expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("reason=blocked_app_budget") && url.includes("scope=account") && url.includes("user=user-9"))).toBe(true),
-    );
-    const older = screen.getAllByRole("button", { name: "Older" })[0]!;
-    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
-    await user.click(older);
-    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
+    await withFakeDebounce(async (user, settle) => {
+      const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
+      await screen.findByText("model_not_allowed");
+      await user.click(screen.getByRole("combobox", { name: "Refusal reason" }));
+      await user.click(await screen.findByRole("option", { name: "App budget" }));
+      await user.click(screen.getByRole("combobox", { name: "Refusal scope" }));
+      await user.click(await screen.findByRole("option", { name: "Your account" }));
+      await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
+      await settle();
+      await waitFor(() =>
+        expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("reason=blocked_app_budget") && url.includes("scope=account") && url.includes("user=user-9"))).toBe(true),
+      );
+      const older = screen.getAllByRole("button", { name: "Older" })[0]!;
+      await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+      await user.click(older);
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
+    });
   });
 
   it("says a requested model the gateway did not know was not kept", async () => {
@@ -201,34 +217,35 @@ describe("Errors tab", () => {
   });
 
   it("reads a typed user once it settles, not once per letter", async () => {
-    const user = userEvent.setup();
-    const { fetchMock } = renderTab();
-    await screen.findByText("No refusal samples.");
-    await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
-    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
-    expect(urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=")).length).toBe(1);
+    await withFakeDebounce(async (user, settle) => {
+      const { fetchMock } = renderTab();
+      await screen.findByText("No refusal samples.");
+      await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
+      await settle();
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
+      expect(urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=")).length).toBe(1);
+    });
   });
 
-  it("starts a newly typed user at page one, never with the previous page's cursor (Sol 7b-6 round 2)", async () => {
-    const user = userEvent.setup();
-    const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
-    await screen.findByText("model_not_allowed");
-    const older = screen.getAllByRole("button", { name: "Older" })[0]!;
-    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
-    await user.click(older);
-    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
-    await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
-    await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
-    const withUser = urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=user-9"));
-    expect(withUser).toHaveLength(1);
-    expect(withUser[0]).not.toContain("before=");
+  it("starts a newly typed user at page one, never with the previous page's cursor", async () => {
+    await withFakeDebounce(async (user, settle) => {
+      const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
+      await screen.findByText("model_not_allowed");
+      const older = screen.getAllByRole("button", { name: "Older" })[0]!;
+      await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+      await user.click(older);
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("before=r-cursor"))).toBe(true));
+      await user.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-9");
+      await settle();
+      await waitFor(() => expect(urls(fetchMock, "/rejection-events").some((url) => url.includes("user=user-9"))).toBe(true));
+      const withUser = urls(fetchMock, "/rejection-events").filter((url) => url.includes("user=user-9"));
+      expect(withUser).toHaveLength(1);
+      expect(withUser[0]).not.toContain("before=");
+    });
   });
 
-  it("starts at page one when a typed user is cleared after paging, never back on the old page (Sol 7b-6 round 3)", async () => {
-    // Fake timers that still move on their own, so the debounce can be stepped past exactly.
-    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  it("starts at page one when a typed user is cleared after paging, never back on the old page", async () => {
+    await withFakeDebounce(async (user) => {
       const { fetchMock } = renderTab({ refusals: [refusal()], nextRefusal: "r-cursor" });
       await screen.findByText("model_not_allowed");
       const older = screen.getAllByRole("button", { name: "Older" })[0]!;
@@ -247,9 +264,7 @@ describe("Errors tab", () => {
       // Page one of the unfiltered list (perhaps from the cache), never its old page two.
       await waitFor(() => expect(newer.hasAttribute("disabled")).toBe(true));
       expect(urls(fetchMock, "/rejection-events").slice(beforeClear).some((url) => url.includes("before="))).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 
   it("offers a retry when the refusal samples cannot be read", async () => {

@@ -44,7 +44,7 @@ describe("AppsPage", () => {
       month: "2026-11",
       totals: { ...line, charges: 12, failed: 2, unpriced: 1, cost_nano: 3_500_000_000, cost_usd: 3.5, input_tokens: 1_000, output_tokens: 500 },
       apps: [
-        { app_id: "my-app", name: "My app", deleted: false, ...line, charges: 7, failed: 2, cost_nano: 2_000_000_000, cost_usd: 2 },
+        { app_id: "my-app", name: "My app", deleted: false, ...line, charges: 7, failed: 2, unpriced: 3, cost_nano: 2_000_000_000, cost_usd: 2 },
         { app_id: "gone-app", name: null, deleted: true, ...line, charges: 5, cost_nano: 1_500_000_000, cost_usd: 1.5 },
       ],
       first_usage_day: "2026-10-03",
@@ -61,6 +61,8 @@ describe("AppsPage", () => {
     // The app's own line: its charges and spend this month.
     expect(screen.getByText("7")).toBeTruthy();
     expect(screen.getByText("$2.00")).toBeTruthy();
+    // So an app whose charges are unpriced does not just read as its dollars.
+    expect(screen.getByText("3 unpriced")).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => /^\/v2\/admin\/usage\?month=\d{4}-\d{2}$/u.test(String(input)))).toBe(true);
   });
 

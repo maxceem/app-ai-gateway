@@ -4,7 +4,7 @@
  * A page cursor belongs to the exact query it was read under. So every change
  * of a filter, or of the days, starts the pages again in the same update: a
  * cursor can never outlive its query, whatever changes and in what order
- * (Sol 7b-6 rounds 2 and 3). Each cursor also carries the exact days it was
+ *. Each cursor also carries the exact days it was
  * read for. When the days move on their own, at UTC midnight, a cursor read
  * for other days is never sent: the render shows page one (round 4), and an
  * "Older" click carrying a cursor read for yesterday's days goes to page one

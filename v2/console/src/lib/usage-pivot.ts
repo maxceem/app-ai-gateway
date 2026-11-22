@@ -14,14 +14,14 @@ import type { TimeseriesBucket } from "@/lib/types";
  * Which number of a bucket the chart is drawing. `charges` is v1's requests.
  * Cost is drawn in whole nano-dollars, so the axis can ask for whole ticks: a
  * tick between two nano-dollars would read as `$0.` or repeat its neighbour's
- * label (Sol 7b-6 round 2). The page shows it in dollars.
+ * label. The page shows it in dollars.
  */
 export type Metric = "cost_nano" | "charges" | "tokens";
 
 /**
  * A band of the chart. Its key is generated (`s0`, `s1`…), never the provider's
  * name: a name is data, and as a key it could collide with `date` or end up in
- * the chart's style sheet (Sol 7b-6). The name is shown as text only.
+ * the chart's style sheet. The name is shown as text only.
  */
 export interface Series {
   key: string;
@@ -96,19 +96,22 @@ export function pivot(buckets: TimeseriesBucket[], from: string, to: string, met
  * ten, from just below `min` to just past `max`, about four intervals. Steps
  * are whole units (nano-dollars, charges, tokens), so a tick never falls
  * between two of them. The page labels each tick with its step's precision
- * ({@link formatAxisCost}), so neighbouring ticks never share a label (Sol 7b-6
- * round 3). `min` is below zero only when a day's corrections took back more
- * than that day charged (a session's correction booked the day after its
- * estimate): the axis then runs below zero too (Sol 7b-6 round 4).
+ * ({@link formatAxisCost}), so neighbouring ticks never share a label. `min` is
+ * below zero only when a day's corrections took back more than that day
+ * charged (a session's correction booked the day after its estimate): the
+ * axis then runs below zero too, and stops at zero when nothing is above it.
+ * A chart of only zeros runs up to `emptyTop` (the page gives cost a cent), so
+ * its one label above zero stays short.
  */
-export function axisTicks(max: number, min = 0): { ticks: number[]; step: number } {
-  const top = Math.max(0, Math.ceil(max));
+export function axisTicks(max: number, min = 0, emptyTop = 1): { ticks: number[]; step: number } {
   const bottom = Math.min(0, Math.floor(min));
+  let top = Math.max(0, Math.ceil(max));
+  if (top === 0 && bottom === 0) top = Math.max(1, Math.ceil(emptyTop));
   const rough = Math.max(1, top - bottom) / 4;
   const power = 10 ** Math.floor(Math.log10(Math.max(1, rough)));
   const step = Math.max(1, [1, 2, 5, 10].map((factor) => factor * power).find((candidate) => candidate >= rough) ?? 10 * power);
   const ticks: number[] = [Math.floor(bottom / step) * step];
-  while (ticks.at(-1)! < Math.max(1, top)) ticks.push(ticks.at(-1)! + step);
+  while (ticks.at(-1)! < top) ticks.push(ticks.at(-1)! + step);
   return { ticks, step };
 }
 
@@ -116,7 +119,7 @@ export function axisTicks(max: number, min = 0): { ticks: number[]; step: number
  * How far the stacked columns reach: `max`, the tallest stack of positive
  * values, and `min`, the deepest stack of negative ones (0 when none). The
  * chart stacks each sign apart around zero, so a negative correction never
- * sits on top of another provider's spend (Sol 7b-6 round 4).
+ * sits on top of another provider's spend.
  */
 export function stackedBounds(rows: ChartColumn[]): { min: number; max: number } {
   let max = 0;

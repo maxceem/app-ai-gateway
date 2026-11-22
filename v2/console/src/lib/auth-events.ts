@@ -23,7 +23,7 @@ export interface OutcomeRow {
  *
  * `ok` is dropped: the success rate above already says how much of the window
  * succeeded. So is `client_recovered`: the app got past it on its own, which
- * is not a failure (Sol 7b-6). Days are merged, not appended: the API groups by event as well,
+ * is not a failure. Days are merged, not appended: the API groups by event as well,
  * so one day can arrive as two buckets for the same failure.
  *
  * v1 split failed proxied requests by their status; v2's summary counts them

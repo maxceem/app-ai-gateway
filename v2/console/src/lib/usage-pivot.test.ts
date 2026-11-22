@@ -68,6 +68,19 @@ describe("the cost axis (Sol 7b-6 round 3)", () => {
     expect(shown).toEqual(["$0", "$0.000000001"]);
   });
 
+  it("gives a chart of only zeros a short top: a cent for cost, one for counts", () => {
+    const cost = axisTicks(0, 0, 10_000_000);
+    expect(cost.ticks.at(-1)).toBe(10_000_000);
+    expect(cost.ticks.map((tick) => formatAxisCost(tick, cost.step)).at(-1)).toBe("$0.010");
+    expect(axisTicks(0, 0).ticks).toEqual([0, 1]);
+  });
+
+  it("stops at zero when every value is below it", () => {
+    const { ticks } = axisTicks(0, -30_000_000);
+    expect(ticks.at(-1)).toBe(0);
+    expect(ticks[0]).toBeLessThanOrEqual(-30_000_000);
+  });
+
   it("never repeats a label or shows a bare `$0.`, from one nano-dollar to a thousand dollars", () => {
     for (let max = 1; max <= 1e12; max = Math.ceil(max * 1.7) + 3) {
       const { ticks, labels: shown } = labels(max);

@@ -217,7 +217,8 @@ export function FirstCall({ app }: { app: App }) {
           <p className="flex items-center gap-2">
             <CheckCircle2 className="size-4 text-primary" />
             <span>
-              This app has made calls, {first.isFirst ? "the first" : "one"} on {first.firstDay}.{" "}
+              {/* A first day from month totals alone is a month, `YYYY-MM`: "in" it, not "on" it. */}
+              This app has made calls, {first.isFirst ? "the first" : "one"} {first.firstDay.length === 7 ? "in" : "on"} {first.firstDay}.{" "}
               <Link className="underline" to={`/apps/${encodeURIComponent(app.id)}/usage`}>See usage</Link>.
             </span>
           </p>

@@ -127,7 +127,13 @@ export function AppsPage() {
                       <span className="block text-[11px] text-amber-600 dark:text-amber-400">{formatNumber(usageOf.get(app.id)?.failed)} failed</span>
                     ) : null}
                   </TableCell>
-                  <TableCell className="tabular text-right">{usage.isSuccess ? formatCost(usageOf.get(app.id)?.cost_usd ?? 0) : "—"}</TableCell>
+                  <TableCell className="tabular text-right">
+                    {usage.isSuccess ? formatCost(usageOf.get(app.id)?.cost_usd ?? 0) : "—"}
+                    {/* So an app whose charges are all unpriced does not just read $0.00. */}
+                    {(usageOf.get(app.id)?.unpriced ?? 0) > 0 ? (
+                      <span className="block text-[11px] text-amber-600 dark:text-amber-400">{formatNumber(usageOf.get(app.id)?.unpriced)} unpriced</span>
+                    ) : null}
+                  </TableCell>
                   <TableCell>{app.status === "active" ? "On" : <span className="text-muted-foreground">Off</span>}</TableCell>
                   <TableCell className="text-muted-foreground">
                     <RelativeTime value={app.updated_at} />

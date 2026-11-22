@@ -102,6 +102,20 @@ describe("Usage tab", () => {
     await findByHint(/^Failed before the provider reported any usage/u);
   });
 
+  it("shows what a job or session slice measured where it has no tokens, and shortens long ids", async () => {
+    const longUser = "user-0123456789abcdef0123456789";
+    renderUsage({
+      charges: [
+        charge({ id: "job", kind: "estimate", owner_type: "job", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null, unit: "image", units: 3, end_user_id: longUser }),
+        charge({ id: "slice", kind: "slice", owner_type: "session", input_tokens: null, cached_input_tokens: null, cache_write_tokens: null, output_tokens: null, session_ms: 90_000, end_user_id: null }),
+      ],
+    });
+    expect(await screen.findByText("3 image")).toBeTruthy();
+    expect(screen.getByText("2 min")).toBeTruthy();
+    expect(screen.getByText("user-0…6789")).toBeTruthy();
+    expect(screen.queryByText(longUser)).toBeNull();
+  });
+
   it("shows a correction as its own row naming the charge it corrects", async () => {
     renderUsage({ charges: [charge({ id: "corr", kind: "correction", corrects_charge_id: "c1", correction_kind: "units", cost_usd: -0.001, cost_nano: -1_000_000 })] });
     expect(await screen.findByText("correction (units)")).toBeTruthy();

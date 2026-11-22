@@ -43,12 +43,14 @@ import {
   formatCompact,
   formatCost,
   formatDateTime,
+  formatDuration,
   formatEventTime,
   formatNumber,
   formatPercent,
   inputTokens,
   today,
 } from "@/lib/format";
+import { FullIds, shortId } from "@/components/short-id";
 import { useAppCharges, useUsageBreakdown, useUsageTimeseries, type ChargeQuery } from "@/lib/queries";
 import type { App, Charge, UsageDimension } from "@/lib/types";
 import { axisTicks, formatAxisCost, OTHER, pivot, stackedBounds, type Metric } from "@/lib/usage-pivot";
@@ -102,7 +104,7 @@ export function UsageTab({ app }: { app: App }) {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_nano");
   const [dimension, setDimension] = useState<UsageDimension>("model");
-  // Filters, days and pages held together: a filter change always starts at page one (Sol 7b-6 round 3).
+  // Filters, days and pages held together: a filter change always starts at page one.
   const list = usePagedList({ status: "all" as string });
   const status = list.filters.status;
   const dateWindow = list.range;
@@ -133,12 +135,12 @@ export function UsageTab({ app }: { app: App }) {
     ]),
   );
   const formatMetric = (value: number) => (metric === "cost_nano" ? formatCost(value / 1e9) : formatCompact(value));
-  // Our own ticks, at whole steps, each labelled with its step's precision (Sol 7b-6 round 3),
-  // running below zero when a day's corrections took back more than it charged (round 4).
+  // Our own ticks, at whole steps, each labelled with its step's precision,
+  // running below zero when a day's corrections took back more than it charged.
   const axis = useMemo(() => {
     const bounds = stackedBounds(chart.rows);
-    return axisTicks(bounds.max, bounds.min);
-  }, [chart.rows]);
+    return axisTicks(bounds.max, bounds.min, metric === "cost_nano" ? 10_000_000 : 1);
+  }, [chart.rows, metric]);
   const formatTick = (value: number) => (metric === "cost_nano" ? formatAxisCost(value, axis.step) : formatCompact(value));
 
   return (
@@ -174,7 +176,7 @@ export function UsageTab({ app }: { app: App }) {
             <EmptyState>No usage recorded in this range.</EmptyState>
           ) : (
             <ChartContainer config={config} className="h-[220px] w-full">
-              {/* Each sign stacks apart around zero: a correction never sits on another provider's spend (Sol 7b-6 round 4). */}
+              {/* Each sign stacks apart around zero: a correction never sits on another provider's spend. */}
               <BarChart data={chart.rows} margin={{ left: 4, right: 4 }} stackOffset="sign">
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={(value: string) => value.slice(5)} />
@@ -382,6 +384,19 @@ export function UsageTab({ app }: { app: App }) {
   );
 }
 
+/**
+ * What a charge measured: its tokens, or else what its unit counts (a job's
+ * images or seconds) and a session slice's connection time. A dash only when
+ * it carries none of them.
+ */
+function ChargeMeasure({ tokens, charge }: { tokens: number | null; charge: Pick<Charge, "unit" | "units" | "session_ms"> }) {
+  if (tokens !== null) return <>{formatCompact(tokens)}</>;
+  const parts: string[] = [];
+  if (charge.units !== null && charge.unit !== null) parts.push(`${formatCompact(charge.units)} ${charge.unit}`);
+  if (charge.session_ms !== null && charge.session_ms > 0) parts.push(formatDuration(charge.session_ms));
+  return parts.length === 0 ? <>—</> : <span className="whitespace-nowrap">{parts.join(" · ")}</span>;
+}
+
 /** A charge's tokens, all buckets; null where the charge carries none. */
 function chargeTokens(charge: Charge): number | null {
   const parts = [charge.input_tokens, charge.cached_input_tokens, charge.cache_write_tokens, charge.output_tokens];
@@ -400,10 +415,20 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
         </Hint>
       </TableCell>
       <TableCell className="font-mono text-xs">
-        {charge.end_user_id ? <span className="block">{charge.end_user_id}</span> : <span className="block font-sans text-muted-foreground">No end user</span>}
-        {installs && charge.install_id && charge.install_id !== charge.end_user_id ? (
-          <span className="block text-muted-foreground">{charge.install_id}</span>
-        ) : null}
+        {/* Long ids are shortened, with the full values on hover, as v1 shows them. */}
+        <FullIds
+          ids={[
+            ...(charge.end_user_id ? [{ label: "User", value: charge.end_user_id }] : []),
+            ...(installs && charge.install_id ? [{ label: "Install", value: charge.install_id }] : []),
+          ]}
+        >
+          <span className="block">
+            {charge.end_user_id ? <span className="block">{shortId(charge.end_user_id)}</span> : <span className="block font-sans text-muted-foreground">No end user</span>}
+            {installs && charge.install_id && charge.install_id !== charge.end_user_id ? (
+              <span className="block text-muted-foreground">{shortId(charge.install_id)}</span>
+            ) : null}
+          </span>
+        </FullIds>
       </TableCell>
       <TableCell className="font-mono text-xs">
         <span className="block">{charge.model ?? <span className="font-sans text-muted-foreground">none</span>}</span>
@@ -420,7 +445,9 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
           <span className="block font-sans">{charge.kind}</span>
         ) : null}
       </TableCell>
-      <TableCell className="tabular text-right text-xs">{tokens === null ? "—" : formatCompact(tokens)}</TableCell>
+      <TableCell className="tabular text-right text-xs">
+        <ChargeMeasure tokens={tokens} charge={charge} />
+      </TableCell>
       <TableCell className="tabular text-right text-xs whitespace-nowrap">
         {charge.latency_ms === null ? "—" : `${formatNumber(charge.latency_ms)} ms`}
       </TableCell>
@@ -446,7 +473,7 @@ function ChargeRow({ charge, installs }: { charge: Charge; installs: boolean }) 
 export function ChargeCost({ charge }: { charge: Pick<Charge, "cost_usd" | "price_source" | "price_is_estimate" | "measured" | "status"> }) {
   // A failed attempt that reported no usage was billed nothing: its cost is
   // empty and its measure complete, whatever price source it was written
-  // with (`call-charge.ts`). That is not a cost still unknown (Sol 7b-6).
+  // with (`call-charge.ts`). That is not a cost still unknown.
   if (charge.cost_usd === null && charge.status !== "ok" && charge.measured === "complete") {
     return (
       <Hint content="Failed before the provider reported any usage: nothing was billed.">

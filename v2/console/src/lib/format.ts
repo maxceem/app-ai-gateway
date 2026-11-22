@@ -18,7 +18,7 @@ export const formatPercent = (value: number | null | undefined): string =>
 const dollars = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /**
- * Dollars, the one way the console shows money (Sol 7b-6). A cent or more
+ * Dollars, the one way the console shows money. A cent or more
  * keeps its cents, however large: `$1,234.56`. Under a cent, two significant
  * digits, down to the gateway's nano-dollar: a request's whole cost often
  * lives there, and a nonzero amount never reads as zero. A correction's
@@ -33,7 +33,10 @@ export function formatCost(value: number | null | undefined): string {
   const significant = Number(size.toPrecision(2));
   // Enough decimals for two significant digits, at most nine (one nano-dollar).
   const decimals = Math.min(9, Math.max(3, 1 - Math.floor(Math.log10(significant))));
-  return `${sign}$${significant.toFixed(decimals).replace(/0+$/u, "")}`;
+  const text = significant.toFixed(decimals).replace(/0+$/u, "");
+  // Under half a nano-dollar rounds to no digit at all: say so, never `$0.`.
+  if (!/[1-9]/u.test(text)) return sign ? ">-$0.000000001" : "<$0.000000001";
+  return `${sign}$${text}`;
 }
 
 /** A duration a person reads at a glance: seconds under a minute, else minutes. */

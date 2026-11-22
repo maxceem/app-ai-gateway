@@ -14,6 +14,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle } from "lucide-react";
+import { FullIds, shortId } from "@/components/short-id";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -76,7 +77,7 @@ export const USER_FILTER_DEBOUNCE_MS = 250;
 export function ErrorsTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   // Each list holds its filters, days and pages together: any filter change,
-  // a typed user included, starts at page one in the same update (Sol 7b-6 round 3).
+  // a typed user included, starts at page one in the same update.
   const eventList = usePagedList({ outcome: "all" as string });
   const rejectionList = usePagedList({ reason: "all" as string, scope: "all" as string, user: "" });
   const outcome = eventList.filters.outcome;
@@ -92,7 +93,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
   }, [rejectionUser, setRejectionFilters]);
 
   const summary = useAuthEventSummary(appId, Number(days));
-  // A filter with no index of its own reads a window of days, which the list shows and moves (Sol 7b-6).
+  // A filter with no index of its own reads a window of days, which the list shows and moves.
   const eventsWindowed = outcome !== "all";
   const eventQuery: AuthEventQuery = {
     limit: 25,
@@ -125,7 +126,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
     summary.data?.apple_failures !== undefined
       ? summary.data.apple_failures
       : summary.data?.failing_networks.find((row) => isAppleNetwork(row.network_asn));
-  // Until the summary has loaded, the cards say so, not zero (Sol 7b-6).
+  // Until the summary has loaded, the cards say so, not zero.
   const figure = (text: string) => (summary.isPending ? <Skeleton className="h-6 w-16" /> : summary.isError ? "—" : text);
   const detail = (text: string) => (summary.isSuccess ? text : summary.isError ? "unavailable" : undefined);
 
@@ -307,7 +308,15 @@ export function ErrorsTab({ appId }: { appId: string }) {
                 rejections.data?.events.map((event) => (
                   <TableRow key={event.id}>
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">{formatDateTime(event.created_at)}</TableCell>
-                    <TableCell className="font-mono text-xs">{event.user_id ?? event.app_key_id ?? "—"}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {event.user_id ?? event.app_key_id ? (
+                        <FullIds ids={[{ label: event.user_id ? "User" : "App key", value: (event.user_id ?? event.app_key_id)! }]}>
+                          <span>{shortId((event.user_id ?? event.app_key_id)!)}</span>
+                        </FullIds>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{event.reason}</TableCell>
                     <TableCell className="text-xs">
                       {event.scope === null ? "—" : (REJECTION_SCOPE_LABELS[event.scope as RejectionScope] ?? event.scope)}
@@ -428,7 +437,13 @@ export function ErrorsTab({ appId }: { appId: string }) {
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">{formatDateTime(event.created_at)}</TableCell>
                     <TableCell className="font-mono text-xs">
                       {/* Absent whenever the attempt never got far enough to establish an identity. */}
-                      {event.user_id ?? <span className="text-muted-foreground">unknown</span>}
+                      {event.user_id ? (
+                        <FullIds ids={[{ label: "User", value: event.user_id }]}>
+                          <span>{shortId(event.user_id)}</span>
+                        </FullIds>
+                      ) : (
+                        <span className="text-muted-foreground">unknown</span>
+                      )}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.event}
