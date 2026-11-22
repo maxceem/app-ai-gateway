@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -45,8 +45,10 @@ import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { ErrorsTab } from "@/pages/app-errors";
-import { UsageTab } from "@/pages/app-usage";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
+
+/** The Usage tab carries the chart library, so it loads only when opened. */
+const UsageTab = lazy(async () => ({ default: (await import("@/pages/app-usage")).UsageTab }));
 
 interface Tab {
   slug: string;
@@ -160,7 +162,11 @@ export function AppDetailPage() {
       </nav>
 
       {active.slug === "overview" ? <OverviewTab app={data} /> : null}
-      {active.slug === "usage" ? <UsageTab app={data} /> : null}
+      {active.slug === "usage" ? (
+        <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+          <UsageTab app={data} />
+        </Suspense>
+      ) : null}
       {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
       {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
       {active.slug === "limits" ? <LimitsTab app={data} /> : null}
