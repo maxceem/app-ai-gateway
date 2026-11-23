@@ -12,7 +12,7 @@ import { appAdd, appKeyAdd, appUpdate, providerAdd, providerRotateKey, waitFor }
 import { conversationsCommand } from "./conversations.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
-import { Context, type ContextIo, type Notice } from "./context.ts";
+import { Context, noticeText, type ContextIo, type Notice } from "./context.ts";
 import { CliErrorDetailsSchema } from "./errors.ts";
 import {
   argumentsAfter,
@@ -39,6 +39,7 @@ import { logoutStateFailure, StateStore } from "./state.ts";
 import { styleFor, type Style } from "./style.ts";
 import { clean, humanToolResult, mentions, toolHelp, usageLine } from "./tool-output.ts";
 import { Transport } from "./transport.ts";
+import { versionNotice } from "./versions.ts";
 
 /** Anything stdout can be pointed at, including the test suite's own sinks. */
 export interface OutputSink {
@@ -81,10 +82,10 @@ const first = (args: readonly string[]): string => args[0] ?? "";
 async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   const credential = ctx.environmentKey ? "environment" : ctx.active?.login ? "oauth" : null;
   const base: DeploymentStatusResult = { url: ctx.url, connected: true, credential, signedIn: false };
-  if (!credential) {
-    await ctx.checkGateway();
-    return base;
-  }
+  if (!credential) return { ...base, ...release(await ctx.checkGateway()) };
+  // The gateway's release, when it says it; never a reason for the status to fail.
+  const capabilities = await ctx.checkGateway().catch(() => undefined);
+  Object.assign(base, release(capabilities));
   try {
     return { ...base, signedIn: true, ...(await ctx.session()) };
   } catch (error) {
@@ -93,6 +94,14 @@ async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
     if (credential === "oauth" && ended) return base;
     throw error;
   }
+}
+
+/** The gateway's release and price list, as far as it reports them. */
+function release(capabilities: { serverVersion?: string; prices?: { revision: string; updated: string | null } } | undefined): Pick<DeploymentStatusResult, "serverVersion" | "prices"> {
+  return {
+    ...(capabilities?.serverVersion === undefined ? {} : { serverVersion: capabilities.serverVersion }),
+    ...(capabilities?.prices === undefined ? {} : { prices: capabilities.prices }),
+  };
 }
 
 export async function execute(parsed: ParsedCommand, ctx: Context): Promise<CommandResult> {
@@ -229,8 +238,11 @@ export async function main(
   // What the run noticed, which either envelope carries; empty until a command runs.
   let notices: Notice[] = [];
   let ctx: Context | undefined;
+  // The command being run, for the release note a failure may get.
+  let command: string | undefined;
   try {
     const parsed = parse(argv);
+    command = "command" in parsed && parsed.command !== undefined ? parsed.command : parsed.words?.join(" ");
     if (parsed.version) {
       stdout.write(VERSION + "\n");
       return 0;
@@ -316,6 +328,10 @@ export async function main(
             "Check what the command changed before running it again.",
             4,
           );
+    // Said after the failure, not instead of it: the gateway's own explanation
+    // comes first, and a release difference is only a possible cause.
+    const mismatch = ctx && command !== undefined && error instanceof CliError ? await versionNotice(ctx, command, error) : undefined;
+    if (mismatch) notices.push(mismatch);
     // Parsed on the way out for the same reason every response is: only the
     // fields this envelope declares may reach stdout. Fail-closed — details
     // that do not parse are dropped rather than printed, and never turn a
@@ -353,6 +369,7 @@ export async function main(
     for (const [key, value] of Object.entries(reported.details ?? {}))
       lines.push(`  ${style.dim(`${key}:`)} ${String(value)}`);
     stderr.write(lines.join("\n") + "\n");
+    if (mismatch) stderr.write(noticeText(mismatch, style));
     return e.exitCode;
   }
 }

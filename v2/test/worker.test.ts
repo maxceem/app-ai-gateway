@@ -83,3 +83,27 @@ describe("the v2 Worker", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
   });
 });
+
+describe("the gateway's release and price list (v1's CLI capabilities)", () => {
+  async function capabilities(): Promise<Record<string, unknown>> {
+    const response = await exports.default.fetch(new Request("https://gateway.test/v2/console/capabilities"));
+    expect(response.status).toBe(200);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  it("reports its release, the one the CLI is released with", async () => {
+    const gateway = (await import("../package.json")).version;
+    const cli = (await import("../cli/package.json")).version;
+    expect(cli).toBe(gateway);
+    expect((await capabilities()).serverVersion).toBe(gateway);
+  });
+
+  it("names its price list by a revision that follows the prices, with no day until the deploy script records one", async () => {
+    const { prices } = (await capabilities()) as { prices: { revision: string; updated: string | null } };
+    expect(prices.revision).toMatch(/^[0-9a-f]{12}$/u);
+    expect(prices.updated).toBeNull();
+    const models = (await import("../src/pricing/models.json")).default;
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(models))));
+    expect(prices.revision).toBe([...digest.slice(0, 6)].map((byte) => byte.toString(16).padStart(2, "0")).join(""));
+  });
+});

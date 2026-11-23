@@ -6238,6 +6238,27 @@
           },
           "privacyPolicyUrl": {
             "type": "string"
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "prices": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "string"
+              },
+              "updated": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "revision",
+              "updated"
+            ]
           }
         },
         "required": [

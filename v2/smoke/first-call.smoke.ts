@@ -71,6 +71,9 @@ function chat(body: Record<string, unknown>): Promise<Response> {
 test("a chat call answers with the provider's JSON", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] });
   await expectResponse(response, 200, "the chat call");
+  // Each step of a served call, by name and in order, as v1 (`server-timing`).
+  const timing = (response.headers.get("server-timing") ?? "").split(", ").map((entry) => entry.split(";")[0]);
+  check(timing.join(",") === "auth,prepare,limiter,provider_ttfb", "the answer's server-timing does not name auth, prepare, limiter and provider_ttfb in order");
   const body = (await readJson(response)) as { usage?: { prompt_tokens?: number } };
   check((body.usage?.prompt_tokens ?? 0) > 0, "(body.usage?.prompt_tokens ?? 0) > 0");
 });
@@ -87,6 +90,9 @@ test("a streamed chat call ends with its usage", { skip, timeout: TEST_TIMEOUT_M
 test("a model the app does not allow is refused", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await chat({ model: "gpt-4o", messages: [] });
   await expectResponse(response, 403, "the chat call");
+  // A refusal names the steps it reached, the one that refused it last.
+  const timing = (response.headers.get("server-timing") ?? "").split(", ").map((entry) => entry.split(";")[0]);
+  check(timing.join(",") === "auth,prepare", "a refused call's server-timing does not name auth and prepare only");
   expectCode(await readJson(response), "model_not_allowed", "response");
 });
 

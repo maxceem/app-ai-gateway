@@ -63,12 +63,17 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
   does not cancel a gateway operation: `agw operation wait` picks it up again.
   A browser sign-in that timed out cannot be picked up: run the command that
   started it again, or add `--device`.
-- agw 1.x's `version_mismatch` notice is not in agw 2 yet. It compared the
-  CLI's release with the release the gateway reports, and a v2 gateway does
-  not report one yet. Until it does, agw 2 notices a newer gateway from fields
-  it does not know (`newer_gateway`), and refuses a v1 gateway with the
-  agw 1.x message. The notice comes back once the gateway reports its
-  release.
+- After a failure the gateway answered, `agw` compares its release with the
+  one the gateway reports (`serverVersion` in `GET /v2/console/capabilities`)
+  and, when they differ, adds a `version_mismatch` notice, as agw 1.x did: it
+  carries `cliVersion` and `apiVersion`, and says which side to update. It is
+  left out for a credential, permission, conflict or limit refusal (401, 403,
+  409, 429), for an older hosted gateway (it is kept current for you), and
+  for a gateway that does not report its release. A newer gateway is also
+  noticed from fields `agw` does not know (`newer_gateway`), and a v1 gateway
+  is refused with the agw 1.x message.
+- `agw deployment status` shows the gateway's release and the revision of the
+  price list it bills with, when the gateway reports them.
 - Secrets never reach stdout: a provider key comes from a hidden prompt,
   stdin or the console; a new app key goes to a private file.
 

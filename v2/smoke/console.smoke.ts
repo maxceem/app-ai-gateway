@@ -54,6 +54,14 @@ test("the sign-in page's settings are served beside it", { skip: noConsole }, as
   assert.equal(typeof capabilities.googleAuth, "boolean");
 });
 
+test("the gateway says its release and the price list it bills with, for the CLI", { skip: noConsole }, async () => {
+  const response = await fetch(new URL("/v2/console/capabilities", consoleUrl));
+  assert.equal(response.status, 200);
+  const capabilities = (await response.json()) as { serverVersion?: unknown; prices?: { revision?: unknown } };
+  assert.match(String(capabilities.serverVersion), /^\d+\.\d+\.\d+$/u);
+  assert.equal(typeof capabilities.prices?.revision, "string");
+});
+
 test("the price list is published beside the console, readable from anywhere", { skip: noConsole }, async () => {
   const response = await fetch(new URL("/v2/models.json", consoleUrl));
   assert.equal(response.status, 200);

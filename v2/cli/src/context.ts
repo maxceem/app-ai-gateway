@@ -76,10 +76,13 @@ export type ContextStore = Pick<StateStore, "update" | "keyOutput" | "handoffFil
  * `--json` envelope as `notices`.
  */
 export interface Notice {
-  code: "newer_gateway";
+  code: "newer_gateway" | "version_mismatch";
   message: string;
   /** Where in the documents involved the notice applies. */
   paths?: string[];
+  /** The two releases, for `version_mismatch`. */
+  cliVersion?: string;
+  apiVersion?: string;
 }
 
 const NOTICE_PATHS = 5;
@@ -298,9 +301,9 @@ export class Context {
    * Checks the selected gateway answers as a v2 one, with a public request:
    * a v1 gateway gets the agw 1.x message.
    */
-  async checkGateway(): Promise<void> {
+  async checkGateway(): Promise<OperationResponse<"getConsoleCapabilities">> {
     try {
-      await this.publicCall("getConsoleCapabilities");
+      return (await this.publicCall("getConsoleCapabilities")).data;
     } catch (error) {
       if (error instanceof CliError && error.details?.status === 404) await refuseOlderGateway(this.transport, this.url);
       throw error;

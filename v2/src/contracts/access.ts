@@ -119,6 +119,14 @@ export const ConsoleCapabilitiesSchema = z
     emailVerification: z.boolean().optional(),
     termsOfServiceUrl: z.string().optional(),
     privacyPolicyUrl: z.string().optional(),
+    /** The gateway's release, which the CLI compares with its own after a failure. Absent on older gateways. */
+    serverVersion: z.string().optional(),
+    /**
+     * The model price list this deployment bills with: a revision that changes
+     * whenever the prices do, and the day they changed when it is known.
+     * Absent on older gateways.
+     */
+    prices: z.object({ revision: z.string(), updated: z.string().nullable() }).optional(),
   })
   .meta({ id: "ConsoleCapabilities" });
 
