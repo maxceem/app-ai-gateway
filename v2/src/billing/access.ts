@@ -112,6 +112,15 @@ function withoutBilling(accountId: string, code?: string | null): GatewayBilling
   return { state: "unavailable", ...(code ? { billingErrorCode: code } : {}) };
 }
 
+/**
+ * What app traffic falls back on while billing cannot answer: the last known
+ * plan, marked stale, or unavailable. It only reads; nothing is stored or
+ * forgotten. Support uses it when its own fresh read fails (v1's rule).
+ */
+export function billingWhileUnreachable(accountId: string): GatewayBillingAccess {
+  return withoutBilling(accountId);
+}
+
 /** The account's billing access. Self-hosted (no binding) reads nothing. */
 export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBillingAccess> {
   const binding = billingBinding(env);

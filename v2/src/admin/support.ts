@@ -15,8 +15,8 @@
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { SupportMessageRequestSchema } from "../contracts/support.ts";
-import { planFeatureRefusal, planIncludes, readBillingForConsole } from "../billing/access.ts";
-import type { GatewayBillingAccess } from "../contracts/billing.ts";
+import { billingPlanLimits, billingWhileUnreachable, planFeatureRefusal, planIncludes, readBillingForConsole } from "../billing/access.ts";
+import { PLAN_LIMIT_KEYS, type GatewayBillingAccess } from "../contracts/billing.ts";
 import { consoleOrigin, hostedDeployment, setting } from "../auth/settings.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -57,6 +57,11 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
     throw new GatewayError(403, "grant_insufficient", "This credential has the read grant; use one with the manage grant");
   }
   const body = await parseBody(c, SupportMessageRequestSchema);
+  // The console names who started the message. If the browser has signed in as
+  // someone else since, the message is refused rather than sent in their name.
+  if (body.sender !== undefined && body.sender !== actor.userId) {
+    throw new GatewayError(409, "sender_changed", "You signed in as someone else after starting this message, so it was not sent. Reload the page, check the message, and send it again.");
+  }
   const helpdesk = helpdeskBinding(c.env);
   if (helpdesk === null || supportInbox(c.env) === null) {
     throw new GatewayError(404, "not_found", "This deployment does not offer human support");
@@ -67,20 +72,25 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
   if (state.user?.emailVerified !== true) {
     throw new GatewayError(403, "email_unverified", "Verify your email address before writing to support: support replies to it. Open the link in the verification email, or send a new one from the console.");
   }
-  // The plan, read fresh with the console's deadline, never from a cache. An
-  // outage is not a statement about the account, and it is when a paying
-  // customer most needs to write in: a read that fails or runs late sends the
-  // ticket with the plan unknown. A read that answers with no plan, or one
-  // that leaves support out, is refused.
-  let access: GatewayBillingAccess | null;
+  // The plan, read fresh with the console's deadline, not from the cache. A
+  // read that answers with no plan, or one that leaves support out, is
+  // refused. A read that fails or runs late falls back on v1's rule: the last
+  // known plan decides, and with none the message is sent, because an outage
+  // is when a paying customer most needs to write in. Either way the ticket
+  // then says the plan is unknown: a kept plan is never named as the current one.
+  let access: GatewayBillingAccess;
+  let fresh = true;
   try {
     access = await readBillingForConsole(c.env, actor.accountId);
   } catch (error) {
     if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
-    access = null;
+    access = billingWhileUnreachable(actor.accountId);
+    fresh = false;
   }
-  if (access !== null && !planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
-  const plan = access !== null && access.state === "billed" ? access.plan : null;
+  // As v1: the plan's limits are read whole, and a malformed one is a `502`, not a guess either way.
+  billingPlanLimits(access, PLAN_LIMIT_KEYS);
+  if (!planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
+  const plan = fresh && access.state === "billed" ? access.plan : null;
 
   await enforceEndpointRateLimit(c.env, "support_message", actor.userId);
 

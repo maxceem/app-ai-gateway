@@ -30,7 +30,7 @@ const API = "https://gateway.test";
 const CONSOLE = "https://console.gateway.test";
 
 interface Access {
-  plan: { planKey: string; planName: string; isDefault: boolean; limits?: Record<string, unknown> } | null;
+  plan: { planKey: string; planName: string; isDefault: boolean; limits?: Record<string, unknown> | null } | null;
   subscription: null;
 }
 
@@ -298,21 +298,61 @@ describe("support", () => {
     release();
   });
 
-  it("never names a plan kept through an outage as the account's current one", async () => {
-    const human = await seedHuman();
-    let down = false;
-    const kept = runtime({ access: plan("Pro", false) });
-    const billing = (kept.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
-    const answer = billing.getTenantAccess;
-    billing.getTenantAccess = async () => {
-      if (down) throw new Error("billing is down");
-      return answer();
-    };
+  it("lets the last known plan decide while billing cannot be read, and never names it as the account's current one", async () => {
+    /** A deployment whose billing answers `access` until it goes down. */
+    function goingDown(access: Access) {
+      const deployment = runtime({ access });
+      const billing = (deployment.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
+      const answer = billing.getTenantAccess;
+      const state = { down: false };
+      billing.getTenantAccess = async () => {
+        if (state.down) throw new Error("billing is down");
+        return answer();
+      };
+      return { ...deployment, state };
+    }
+
+    // The last known plan includes support: sent, the plan unknown.
+    const included = await seedHuman();
+    const kept = goingDown(plan("Pro", false));
     // App traffic reads the plan, which it keeps for an outage.
-    expect(await getAppTrafficBillingAccess(kept.env, human.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
-    down = true;
-    expect((await send(kept.env, human, MESSAGE)).status).toBe(200);
+    expect(await getAppTrafficBillingAccess(kept.env, included.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
+    kept.state.down = true;
+    expect((await send(kept.env, included, MESSAGE)).status).toBe(200);
     expect(kept.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
+
+    // The last known plan leaves support out: refused, as v1.
+    const excluded = await seedHuman();
+    const free = goingDown(plan("Free", true, ["conversationStorage"]));
+    expect(await getAppTrafficBillingAccess(free.env, excluded.accountId, () => undefined)).toMatchObject({ plan: { planName: "Free" } });
+    free.state.down = true;
+    const refused = await send(free.env, excluded, MESSAGE);
+    expect(refused.status).toBe(403);
+    expect(await errorCode(refused)).toBe("support_plan_required");
+    expect(free.tickets).toHaveLength(0);
+  });
+
+  it("refuses a plan whose limits are malformed, as v1, rather than guessing either way", async () => {
+    const human = await seedHuman();
+    for (const limits of [null, { maxApps: "many" }, { includes: "humanSupport" }]) {
+      const broken = runtime({ access: { plan: { planKey: "pro", planName: "Pro", isDefault: false, limits }, subscription: null } });
+      const response = await send(broken.env, human, MESSAGE);
+      expect(response.status).toBe(502);
+      expect(await errorCode(response)).toBe("billing_unavailable");
+      expect(broken.tickets).toHaveLength(0);
+    }
+  });
+
+  it("refuses a console message started by someone else than the one signed in now, and sends one started by them", async () => {
+    const human = await seedHuman();
+    const other = await seedHuman();
+    const { env: testEnv, tickets } = runtime();
+    const changed = await send(testEnv, human, { ...MESSAGE, sender: other.userId });
+    expect(changed.status).toBe(409);
+    expect(await errorCode(changed)).toBe("sender_changed");
+    expect(tickets).toHaveLength(0);
+    expect((await send(testEnv, human, { ...MESSAGE, sender: human.userId })).status).toBe(200);
+    expect(tickets).toHaveLength(1);
   });
 
   it("keeps settings writes strict: a plan kept through an outage never turns conversation storage on", async () => {
