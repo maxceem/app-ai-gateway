@@ -671,3 +671,48 @@ describe("second review fixes", () => {
     expect(lookups).toBe(0);
   });
 });
+
+describe("server-timing (as v1)", () => {
+  /** Every entry of the header, by name, in the order it was sent. */
+  function entries(response: Response): Array<[string, number]> {
+    const header = response.headers.get("server-timing");
+    expect(header).not.toBeNull();
+    return header!.split(", ").map((entry) => {
+      const match = /^([a-z_]+);dur=(\d+\.\d)$/u.exec(entry);
+      expect(match, entry).not.toBeNull();
+      return [match![1]!, Number(match![2])];
+    });
+  }
+
+  it("names every step of a served call, in order, over the provider's own header", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockResolvedValue(Response.json({ id: "chatcmpl-1", choices: [], usage: USAGE }, { headers: { "server-timing": "upstream;dur=9" } }));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini", messages: [] }));
+    expect(response.status).toBe(200);
+    expect(entries(response).map(([name]) => name)).toEqual(["auth", "prepare", "limiter", "provider_ttfb"]);
+    for (const [, duration] of entries(response)) expect(duration).toBeGreaterThanOrEqual(0);
+    await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("reports the step that refused a request, and leaves out the steps it never reached", async () => {
+    const { appId, slug, key } = await setup();
+    // An operation the app does not allow is refused while the call is prepared.
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/embeddings`, chatRequest(key, { model: "text-embedding-3-small", input: "x" }));
+    expect(response.status).toBe(403);
+    expect(entries(response).map(([name]) => name)).toEqual(["auth", "prepare"]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports only auth for a refused credential", async () => {
+    const { appId, slug } = await setup();
+    const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest("agw_wrong_key", { model: "gpt-4o-mini", messages: [] }));
+    expect(response.status).toBe(401);
+    expect(entries(response).map(([name]) => name)).toEqual(["auth"]);
+  });
+
+  it("sends nothing on answers that are not served calls", async () => {
+    const { response } = await call("/v2/healthz");
+    expect(response.headers.get("server-timing")).toBeNull();
+  });
+});

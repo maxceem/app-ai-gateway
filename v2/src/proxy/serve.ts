@@ -67,6 +67,7 @@ import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./c
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
+import { authDone, prepareDone, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -172,13 +173,23 @@ export async function serveCaller(
 ): Promise<Response> {
   const { app, startedAt } = input;
   const readBody = bodyOnce(c.req.raw);
-  const { identity, credential, assertionCounter } = await authenticateRequest({
-    env: c.env,
-    app,
-    request: c.req.raw,
-    body: readBody,
-    ...(input.providerAuthHeader === undefined ? {} : { providerAuthHeader: input.providerAuthHeader }),
-  });
+  // Each step is timed for `server-timing`, whether it serves or refuses (`./timing.ts`).
+  const timings = startTimings(c.req.raw);
+  const authStartedAt = performance.now();
+  let authenticated: Awaited<ReturnType<typeof authenticateRequest>>;
+  try {
+    authenticated = await authenticateRequest({
+      env: c.env,
+      app,
+      request: c.req.raw,
+      body: readBody,
+      ...(input.providerAuthHeader === undefined ? {} : { providerAuthHeader: input.providerAuthHeader }),
+    });
+  } catch (error) {
+    timings.authMs = performance.now() - authStartedAt;
+    throw error;
+  }
+  const { identity, credential, assertionCounter } = authenticated;
   const appVersion = c.req.header("x-app-version") ?? null;
   const facts: Caller["facts"] = { operation: null, model: null };
 
@@ -228,8 +239,12 @@ export async function serveCaller(
       throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
     }
     const storesConversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null;
+    authDone(timings, authStartedAt);
     return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, storesConversation });
   } catch (error) {
+    // The step the request was refused in reports how long the refusal took.
+    if (timings.authMs === undefined) timings.authMs = performance.now() - authStartedAt;
+    else prepareDone(timings);
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
       c.executionCtx.waitUntil(
@@ -399,13 +414,15 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
-      await admitRequest({
-        env: c.env,
-        app,
-        identity,
-        waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-        refuse: refusal,
-      });
+      await timedAdmission(timingsOf(c.req.raw), () =>
+        admitRequest({
+          env: c.env,
+          app,
+          identity,
+          waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+          refuse: refusal,
+        }),
+      );
 
       const attempt: CallAttempt = {
         requestId: timeOrderedId(startedAt),
@@ -490,15 +507,17 @@ async function servePassthrough(
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
   // The credentials are opened before admission: a request that cannot be sent must not spend anything.
   const credentials = await connectionCredentials(c.env, connection);
-  await admitRequest({
-    env: c.env,
-    app,
-    identity: caller.identity,
-    waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-    refuse: refusal,
-    // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
-    ...(bill.notPriced === true ? { unpriced: true } : {}),
-  });
+  await timedAdmission(timingsOf(c.req.raw), () =>
+    admitRequest({
+      env: c.env,
+      app,
+      identity: caller.identity,
+      waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+      refuse: refusal,
+      // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
+      ...(bill.notPriced === true ? { unpriced: true } : {}),
+    }),
+  );
   const attempt: CallAttempt = {
     requestId: timeOrderedId(startedAt),
     seq: 1,
@@ -1210,6 +1229,7 @@ function answer(
     return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
+  setServerTiming(responseHeaders, c.req.raw, latencyMs);
   // A job submit the provider refused (a 409 pointing at an existing provider job, say) has no
   // gateway job, so there is no gateway link to give: the provider's `Location` is dropped, and
   // its status and body go on as they are.
@@ -1397,6 +1417,7 @@ async function answerJobSubmit(
   c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
   const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
   const headers = clientResponseHeaders(upstream.headers, keyHeader);
+  setServerTiming(headers, c.req.raw, latencyMs);
   // The provider's own `Location` (fal can send one with a 202) never reaches the app: when it
   // points exactly at this job's status or result, the gateway's link takes its place.
   const targets = jobRedirectTargets({ connection, description: prepared.description, operation, spec }, { model: attempt.model, requestId });

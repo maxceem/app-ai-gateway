@@ -24,6 +24,7 @@ import { log } from "./core/log.ts";
 import { runSweep, SWEEP_CRON } from "./ledger/sweep.ts";
 import { asGatewayError } from "./core/platform-errors.ts";
 import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
+import { setServerTiming } from "./proxy/timing.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
 import { meHandler } from "./routes/me.ts";
 import { presetHandler } from "./proxy/presets.ts";
@@ -187,12 +188,16 @@ app.onError((error, c: Context<Env2>) => {
     }
     const headers = new Headers(gateway.headers);
     headers.set("content-type", "application/json; charset=UTF-8");
+    // A served request says how long each step it reached took, the one that refused it included.
+    setServerTiming(headers, c.req.raw);
     return new Response(JSON.stringify(errorBody(gateway)), { status: gateway.status, headers });
   }
   log("error", "unhandled_error", { path: c.req.routePath, error: errorFacts(error) });
-  return c.json(
-    { error: { code: "internal_error", message: "The gateway failed to handle this request." } } satisfies ErrorResponse,
-    500,
+  const headers = new Headers({ "content-type": "application/json; charset=UTF-8" });
+  setServerTiming(headers, c.req.raw);
+  return new Response(
+    JSON.stringify({ error: { code: "internal_error", message: "The gateway failed to handle this request." } } satisfies ErrorResponse),
+    { status: 500, headers },
   );
 });
 
