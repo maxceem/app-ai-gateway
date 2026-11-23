@@ -17,7 +17,7 @@ import type { OperationDescription, ProviderDescription } from "../src/providers
 import type { Preset } from "../src/contracts/app-config.ts";
 import type { Caller } from "../src/proxy/serve.ts";
 import type { UpstreamCredentials } from "../src/providers/connections.ts";
-import { sendAttempts, type ClientSide, type ProxyContext } from "../src/proxy/serve.ts";
+import { providerTtfbTimeoutMs, sendAttempts, type ClientSide, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import {
@@ -98,10 +98,10 @@ async function charges(appId: string): Promise<Record<string, any>[]> {
 let fetchSpy: MockInstance<typeof fetch>;
 
 /** A request context for calling the attempt loop directly; `done` waits for its background work. */
-function fakeContext(): { c: ProxyContext; done: () => Promise<unknown> } {
+function fakeContext(environment: Env = env): { c: ProxyContext; done: () => Promise<unknown> } {
   const waits: Promise<unknown>[] = [];
   const raw = new Request(`${ORIGIN}/v2/apps/app_unit/presets/unit`, { method: "POST" });
-  const c = { env, req: { raw, method: "POST" }, executionCtx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) } } as unknown as ProxyContext;
+  const c = { env: environment, req: { raw, method: "POST" }, executionCtx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) } } as unknown as ProxyContext;
   return { c, done: () => Promise.allSettled(waits) };
 }
 
@@ -527,6 +527,51 @@ describe("presets", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("waits as long as the deployment's PROVIDER_TTFB_TIMEOUT_SECONDS says, for an operation with no time of its own (as v1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      fetchSpy.mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((resolve, reject) => {
+            const answer = () => resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+            const timer = setTimeout(answer, 150_000); // real-timer: faked by vi.useFakeTimers above; the provider's 150 s, advanced by the test.
+            init?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+      const raised = fakeContext({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: "200" } as Env);
+      const waited = sendAttempts(raised.c, NO_CLIENT, [unitAttempt(1)]);
+      await vi.advanceTimersByTimeAsync(150_001);
+      const got = await waited;
+      expect(got.status).toBe(200);
+      await got.text();
+      await raised.done();
+      const lowered = fakeContext({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: "30" } as Env);
+      const cut = sendAttempts(lowered.c, NO_CLIENT, [unitAttempt(1)]).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(await cut).toMatchObject({ status: 504 });
+      await lowered.done();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads PROVIDER_TTFB_TIMEOUT_SECONDS as whole seconds, falling back to 120 and capped at half an hour", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const ms = (value: unknown) => providerTtfbTimeoutMs({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: value } as unknown as Env);
+    expect(ms(undefined)).toBe(120_000);
+    expect(ms("")).toBe(120_000);
+    expect(ms("300")).toBe(300_000);
+    expect(ms(45)).toBe(45_000);
+    expect(ms("0")).toBe(120_000);
+    expect(ms("1.5")).toBe(120_000);
+    expect(ms("ninety")).toBe(120_000);
+    expect(ms("99999")).toBe(1_800_000);
+    expect(warn.mock.calls.flat().join(" ")).toContain("provider_ttfb_timeout_invalid");
   });
 
   it("passes the held 503 on when a fallback's key uses up the budget, sending nothing after it", async () => {
