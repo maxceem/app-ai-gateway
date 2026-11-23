@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useHref, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { SUPPORT_MESSAGE_MAX, SUPPORT_TOPICS, type SupportMessageKind } from "@contracts/support";
 import { Field } from "@/components/field";
@@ -88,6 +88,8 @@ function mailtoHref(inbox: string, topic: string, message: string): string {
 export function SupportDialog({ kind, onOpenChange }: { kind: SupportMessageKind | null; onOpenChange: (open: boolean) => void }) {
   const { session, capabilities } = useConsoleSession();
   const location = useLocation();
+  // The page as the browser shows it, with the console's base (`/v2/...`), so the ticket's link opens it.
+  const page = useHref({ pathname: location.pathname });
   const send = useSendSupportMessage();
   const [message, setMessage] = useState("");
   // Kept while the dialog animates closed, so its text does not change under it.
@@ -98,7 +100,7 @@ export function SupportDialog({ kind, onOpenChange }: { kind: SupportMessageKind
 
   const submit = async () => {
     try {
-      const result = await send.mutateAsync({ kind: shown, message: message.trim(), page: location.pathname });
+      const result = await send.mutateAsync({ kind: shown, message: message.trim(), page });
       toast.success(`Message sent (${result.reference})`, { description: "We'll reply to your email." });
       setMessage("");
       onOpenChange(false);

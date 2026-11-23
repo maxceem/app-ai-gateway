@@ -318,6 +318,19 @@ test("an unreachable gateway leaves a kept list in use, however old, and a gatew
   assert.match(old.json().error.nextAction, /agw deployment status/);
 });
 
+test("contact_support needs agw's own confirmation step: an agw without it is told to update, and this one runs its built-in command", async () => {
+  // As an agw from before `support send` was built in meets the tool: under its own words, refused.
+  const support = cliTool("contact_support", { command: "support contact", requires: ["support-confirmation"] }, { properties: { kind: { type: "string" }, message: { type: "string" } } }, { readOnlyHint: false });
+  const fake = gateway({ tools: [LIST, support], answer: () => assert.fail("nothing is sent") });
+  const refused = await run(["support", "contact", "--kind", "bug", "--message", "x", "--json"], fake);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.json().error.message, /newer agw/iu);
+  // Under the built-in command's words, the built-in command runs: without a yes and no terminal, it sends nothing.
+  const shadowed = gateway({ tools: [LIST, cliTool("contact_support", { command: "support send", requires: ["support-confirmation"] })], answer: () => assert.fail("nothing is sent") });
+  const builtIn = await run(["support", "send", "--type", "bug", "--message", "x", "--json"], shadowed);
+  assert.equal(builtIn.json().error.code, "confirmation_required");
+});
+
 test("a command kept as needing a newer agw is looked up again before it is refused", async () => {
   const cache = new MemoryCatalogCache();
   const fake = gateway({ tools: [LIST, cliTool("list_models", { command: "model list", requires: ["teleport"] })] });

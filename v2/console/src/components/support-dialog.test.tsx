@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { SidebarContent } from "./app-sidebar";
 import { renderAuthenticated } from "@/test/render";
 import type { BillingAccess } from "@/lib/types";
+import { CONSOLE_BASE } from "@/lib/auth-redirect";
 
 const PAID: BillingAccess = { state: "billed", plan: { planKey: "pro", planName: "Pro", isDefault: false }, subscription: null };
 
@@ -47,7 +48,8 @@ afterEach(() => {
 describe("the Support menu", () => {
   it("offers support on a plan that includes it, saying so, and sends a message from the dialog with the page it was written on", async () => {
     const fetchMock = stub({ humanSupport: true });
-    renderAuthenticated(<SidebarContent />, { route: "/apps/demo", capabilities: SUPPORTED });
+    // The router as production runs it, below the console's `/v2` base: the ticket names the page as the browser shows it.
+    renderAuthenticated(<SidebarContent />, { route: "/v2/apps/demo", basename: CONSOLE_BASE, capabilities: SUPPORTED });
     await openUserMenu();
     await userEvent.click(await screen.findByRole("menuitem", { name: "Human Support" }));
     expect(await screen.findByText("Included with your Pro plan")).toBeTruthy();
@@ -67,7 +69,7 @@ describe("the Support menu", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send report" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Report a bug" })).toBeNull());
     const sent = fetchMock.mock.calls.find(([input]) => String(input).includes("/v2/admin/support"));
-    expect(JSON.parse(String(sent![1]!.body))).toEqual({ kind: "bug", message: "Streams stop halfway.", page: "/apps/demo" });
+    expect(JSON.parse(String(sent![1]!.body))).toEqual({ kind: "bug", message: "Streams stop halfway.", page: "/v2/apps/demo" });
   });
 
   it("still offers support while billing cannot be read, as the gateway still accepts a message", async () => {
