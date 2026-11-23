@@ -194,9 +194,21 @@ export interface UpstreamCredentials {
   readonly cloudflareToken: string | null;
 }
 
-/** One sealed credential, opened once and cached by the blob it came from, so a rotated one is never served from the cache. */
-async function opened(connection: ConnectionRecord, what: string, open: () => Promise<string>, blob: string): Promise<string> {
-  const key = `${connection.id}\u0000${what}\u0000${blob}`;
+/**
+ * One sealed credential, opened once and cached by the blob and the whole
+ * identity it is sealed to. A rotated key is never served from the cache, and
+ * neither is a warm key for a row whose account, type or destination changed
+ * without the key being sealed again: the cached copy follows only the exact
+ * binding that opened it.
+ */
+async function opened(
+  connection: ConnectionRecord,
+  what: string,
+  identity: readonly string[],
+  open: () => Promise<string>,
+  blob: string,
+): Promise<string> {
+  const key = [what, ...identity, blob].join("\u0000");
   const cached = secretCache.get(key);
   if (cached !== undefined) return cached;
   try {
@@ -215,6 +227,11 @@ async function opened(connection: ConnectionRecord, what: string, open: () => Pr
   }
 }
 
+function openedProviderKey(env: Env, connection: ConnectionRecord, blob: string): Promise<string> {
+  const identity = [connection.accountId, connection.id, connection.type, keyOrigin(connection)] as const;
+  return opened(connection, "providerKey", identity, () => openSecret(env, "providerKey", [...identity], blob), blob);
+}
+
 /**
  * Opens a connection's credentials. A failure is a 502: the request cannot be
  * sent without them. A connection with neither a key nor a Cloudflare token
@@ -228,19 +245,14 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
   const providerKey =
     connection.secretBlob === null
       ? null
-      : await opened(
-          connection,
-          "providerKey",
-          () =>
-            openSecret(env, "providerKey", [connection.accountId, connection.id, connection.type, keyOrigin(connection)], connection.secretBlob!),
-          connection.secretBlob,
-        );
+      : await openedProviderKey(env, connection, connection.secretBlob);
   const cloudflareToken =
     gateway === null
       ? null
       : await opened(
           connection,
           "cloudflareGatewayToken",
+          [connection.accountId, connection.id],
           () => openSecret(env, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob),
           gateway.tokenBlob,
         );
