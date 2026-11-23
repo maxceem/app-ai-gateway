@@ -78,6 +78,16 @@ export function secretVault(env: unknown): SecretVault {
   } catch (error) {
     log("error", "secret_vault_misconfigured", {
       error: errorFacts(error),
+      // Which setting is wrong, as constants: never the setting's value.
+      ...(error instanceof SecretVaultConfigurationError
+        ? {
+            vault: {
+              setting: error.setting,
+              problem: error.problem,
+              ...(error.kekVersion !== undefined ? { kekVersion: error.kekVersion } : {}),
+            },
+          }
+        : {}),
     });
     throw error;
   }

@@ -23,6 +23,9 @@ const KNOWN_CLASSES = new Set([
   "AggregateError",
   "DOMException",
   "ZodError",
+  // The key vault's own faults (`../vault/types.ts`).
+  "SecretVaultConfigurationError",
+  "SecretVaultBlobError",
   "DrizzleQueryError",
   "DrizzleError",
   "Error",
