@@ -72,6 +72,7 @@ const TIMESTAMP_AUDIO: StoredAudio = {
 
 export const elevenlabs = defineProvider({
   type: "elevenlabs",
+  modelAuthor: "ElevenLabs",
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
   // Its US host and its data residency hosts.

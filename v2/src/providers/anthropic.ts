@@ -4,6 +4,7 @@ import { defineProvider } from "./operation.ts";
 
 export const anthropic = defineProvider({
   type: "anthropic",
+  modelAuthor: "Anthropic",
   label: "Anthropic",
   hosts: { main: "api.anthropic.com" },
   auth: { header: "x-api-key", format: "{key}" },

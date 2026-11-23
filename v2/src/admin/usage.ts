@@ -17,7 +17,7 @@
  * may come back in another account after its app was deleted, and the ledger
  * keeps the first account's rows.
  */
-import { modelAuthor } from "../pricing/model-author.ts";
+import { modelAuthor } from "../providers/model-author.ts";
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import {

@@ -68,6 +68,7 @@ const SERVED_AS = { "nova-3": ["nova-3", "nova-3-general"], "large-whisper": ["w
 
 export const deepgram = defineProvider({
   type: "deepgram",
+  modelAuthor: "Deepgram",
   label: "Deepgram",
   hosts: { main: "api.deepgram.com" },
   // Its EU host.

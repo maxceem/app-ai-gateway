@@ -9,6 +9,7 @@ import { defineProvider } from "./operation.ts";
 
 export const openrouter = defineProvider({
   type: "openrouter",
+  authorNamespacedModels: true,
   label: "OpenRouter",
   hosts: { main: "openrouter.ai/api" },
   auth: { header: "authorization", format: "Bearer {key}" },

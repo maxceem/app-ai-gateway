@@ -10,6 +10,7 @@ import { defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./op
 
 export const xai = defineProvider({
   type: "xai",
+  modelAuthor: "xAI",
   label: "xAI",
   hosts: { main: "api.x.ai" },
   otherHosts: ["us.api.x.ai"],

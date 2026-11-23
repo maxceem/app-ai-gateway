@@ -5,13 +5,16 @@
  *
  * In order:
  * 1. the price list's `author` for the model;
- * 2. for an aggregator whose model ids start with their author's namespace
- *    (`meta-llama/…` on OpenRouter or Vercel), that namespace;
- * 3. the one author every model of a provider type has, where there is one.
+ * 2. for a provider whose model ids start with their author's namespace
+ *    (`authorNamespacedModels`, an aggregator's: `meta-llama/…`), that namespace;
+ * 3. the one author every model of the provider has (`modelAuthor`), where there is one.
+ *
+ * Each provider declares its own (`./operation.ts`), so nothing here names one.
  *
  * An unknown namespace, or a custom provider, is no answer: null, never a guess.
  */
-import { listPrice } from "./prices.ts";
+import { listPrice } from "../pricing/prices.ts";
+import { builtInProvider } from "./index.ts";
 
 /** Namespaces in an aggregator's model ids, and who they mean. */
 const AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
@@ -53,28 +56,12 @@ const AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
   sakana: "Sakana AI",
 };
 
-/** Provider types whose model ids carry their author's namespace. */
-const NAMESPACED_TYPES: ReadonlySet<string> = new Set(["openrouter", "vercel"]);
-
-/** The one author every model of a provider type has. */
-const TYPE_AUTHORS: Readonly<Record<string, string>> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  xai: "xAI",
-  gemini: "Google",
-  perplexity: "Perplexity",
-  deepseek: "DeepSeek",
-  mistral: "Mistral",
-  moonshot: "Moonshot AI",
-  elevenlabs: "ElevenLabs",
-  deepgram: "Deepgram",
-};
-
 export function modelAuthor(providerType: string, model: string | null): string | null {
   if (model === null || model === "") return null;
   const listed = listPrice(providerType, model)?.raw.author;
   if (typeof listed === "string" && listed !== "") return listed;
-  if (NAMESPACED_TYPES.has(providerType)) {
+  const provider = builtInProvider(providerType);
+  if (provider?.authorNamespacedModels === true) {
     const slash = model.indexOf("/");
     if (slash > 0) {
       const author = AUTHOR_NAMESPACES[model.slice(0, slash).replace(/^~/u, "").toLowerCase()];
@@ -82,5 +69,5 @@ export function modelAuthor(providerType: string, model: string | null): string 
     }
     return null;
   }
-  return TYPE_AUTHORS[providerType] ?? null;
+  return provider?.modelAuthor ?? null;
 }
