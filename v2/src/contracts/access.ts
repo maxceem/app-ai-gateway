@@ -119,6 +119,8 @@ export const ConsoleCapabilitiesSchema = z
     emailVerification: z.boolean().optional(),
     termsOfServiceUrl: z.string().optional(),
     privacyPolicyUrl: z.string().optional(),
+    /** The gateway's release, which the CLI compares with its own after a failure. Absent on older gateways. */
+    serverVersion: z.string().optional(),
   })
   .meta({ id: "ConsoleCapabilities" });
 

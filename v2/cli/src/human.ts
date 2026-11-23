@@ -35,6 +35,7 @@ function signedIn(result: LoginResult, style: Style): string[] {
 
 function status(result: DeploymentStatusResult, style: Style): string[] {
   const lines = [`${style.headline("Gateway:")} ${clean(result.url)}`];
+  if (result.serverVersion !== undefined) lines.push(`Version: ${clean(result.serverVersion)}`);
   if (!result.signedIn) {
     lines.push("Not signed in. Run agw account login, or set AGW_MANAGEMENT_KEY.");
     return lines;

@@ -83,3 +83,19 @@ describe("the v2 Worker", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
   });
 });
+
+describe("the gateway's release (v1's CLI capabilities)", () => {
+  async function capabilities(): Promise<Record<string, unknown>> {
+    const response = await exports.default.fetch(new Request("https://gateway.test/v2/console/capabilities"));
+    expect(response.status).toBe(200);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  it("reports its release, the one the CLI is released with", async () => {
+    const gateway = (await import("../package.json")).version;
+    const cli = (await import("../cli/package.json")).version;
+    expect(cli).toBe(gateway);
+    expect((await capabilities()).serverVersion).toBe(gateway);
+  });
+
+});

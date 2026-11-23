@@ -300,6 +300,45 @@ describe("charges", () => {
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/charges?before=nonsense`)).status).toBe(400);
   });
 
+  it("name each charge's model author, from the price list, an aggregator's namespace or the provider (as v1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const day = at("2025-06-01");
+    await seed({ appId, usedAt: day, id: "author_listed", provider: "together", model: "deepseek-ai/DeepSeek-V4.1-Flash" });
+    await seed({ appId, usedAt: day + 1, id: "author_namespace", provider: "openrouter", model: "meta-llama/llama-4-maverick" });
+    await seed({ appId, usedAt: day + 2, id: "author_type", provider: "openai", model: "gpt-unknown-preview" });
+    await seed({ appId, usedAt: day + 3, id: "author_unknown", provider: "openrouter", model: "someone/model" });
+    await seed({ appId, usedAt: day + 4, id: "author_custom", provider: "custom", model: "my-model" });
+    await seed({ appId, usedAt: day + 5, id: "author_proto", provider: "openrouter", model: "__proto__/model" });
+    await seed({ appId, usedAt: day + 6, id: "author_constructor", provider: "openrouter", model: "constructor/model" });
+    await seed({ appId, usedAt: day + 7, id: "author_vercel_xai", provider: "vercel", model: "spacexai/grok-4" });
+    const read = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-06-01&to=2025-06-01`);
+    expect(read.status).toBe(200);
+    const authors = Object.fromEntries(read.body.charges.map((row: any) => [row.id, row.model_author]));
+    expect(authors).toEqual({
+      author_listed: "DeepSeek",
+      author_namespace: "Meta",
+      author_type: "OpenAI",
+      author_unknown: null,
+      author_custom: null,
+      author_proto: null,
+      author_constructor: null,
+      author_vercel_xai: "xAI",
+    });
+  });
+
+  it("know the author of every namespace a gateway provider declares, so none comes back null", async () => {
+    const { BUILT_IN_PROVIDERS } = await import("../src/providers/index.ts");
+    const { modelAuthor } = await import("../src/providers/model-author.ts");
+    const missing: string[] = [];
+    for (const provider of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const namespace of Object.keys(provider.modelNamespaces ?? {})) {
+        if (modelAuthor(provider.type, `${namespace}/a-model-no-list-names`) === null) missing.push(`${provider.type}: ${namespace}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("hand out a cursor only when an older charge exists: none after exactly a full page (Sol 7b-6)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);

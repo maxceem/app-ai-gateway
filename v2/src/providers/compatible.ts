@@ -11,6 +11,7 @@ import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
 export const perplexity = defineProvider({
   type: "perplexity",
+  modelAuthor: "Perplexity",
   label: "Perplexity",
   hosts: { main: "api.perplexity.ai" },
   auth: { header: "authorization", format: "Bearer {key}" },
@@ -39,6 +40,7 @@ export const perplexity = defineProvider({
 
 export const deepseek = defineProvider({
   type: "deepseek",
+  modelAuthor: "DeepSeek",
   apiPrefixes: ["beta"],
   label: "DeepSeek",
   // DeepSeek's base URL has no `v1` segment; `v1/` is accepted as well.
@@ -82,6 +84,7 @@ export const groq = defineProvider({
 
 export const mistral = defineProvider({
   type: "mistral",
+  modelAuthor: "Mistral",
   label: "Mistral",
   hosts: { main: "api.mistral.ai" },
   otherHosts: ["api.eu.mistral.ai", "api.us.mistral.ai"],
@@ -162,6 +165,7 @@ const KIMI_CHAT = { usageHeaders: [{ header: "msh-usage-cache-write-tokens-1h", 
 
 export const moonshot = defineProvider({
   type: "moonshot",
+  modelAuthor: "Moonshot AI",
   label: "Moonshot AI",
   // The international host. `api.moonshot.cn` is a separate platform.
   hosts: { main: "api.moonshot.ai" },

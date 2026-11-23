@@ -20,6 +20,8 @@ export interface DeploymentStatusResult {
   account?: LoginResult["account"];
   role?: string;
   grant?: string;
+  /** The gateway's release, when it reports one. */
+  serverVersion?: string;
 }
 
 export type OperationStatus = OperationResponse<"getOperation">;

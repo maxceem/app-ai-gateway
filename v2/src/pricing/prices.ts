@@ -219,6 +219,15 @@ export function listPrice(providerType: string, model: string): ModelPrice | nul
   return PRICE_LIST.get(providerType)?.get(model) ?? null;
 }
 
+/**
+ * Who the price list says made a model (its `author`), or null. Read for the
+ * charges read's `model_author` only, never to decide billing.
+ */
+export function listedAuthor(providerType: string, model: string): string | null {
+  const author = PRICE_LIST.get(providerType)?.get(model)?.raw.author;
+  return typeof author === "string" && author !== "" ? author : null;
+}
+
 export type PriceSourceKind = "customer_rate" | "list_rate";
 
 /**

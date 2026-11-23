@@ -33,7 +33,20 @@ export async function runTool(
 ): Promise<{ result: unknown; summary: string }> {
   refuseArguments(tool, input);
   tool.check?.(input);
-  const body = await callOperation(tool.request(input), caller);
+  const before = tool.before?.(input) ?? null;
+  const retryAfter = before === null ? null : (tool.retryAfter?.(input) ?? null);
+  let body: unknown;
+  for (let attempt = 0; ; attempt++) {
+    // What is stored now, for a request that depends on it; read again if the write finds it changed meanwhile.
+    const read = before === null ? undefined : await callOperation(before, caller);
+    try {
+      body = await callOperation(tool.request(input, read), caller);
+      break;
+    } catch (error) {
+      if (attempt === 0 && retryAfter !== null && error instanceof GatewayError && error.code === retryAfter) continue;
+      throw error;
+    }
+  }
   const hidden: string[] = [];
   const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt ?? [], [], hidden);
   const summary = tool.summary(result, input);

@@ -67,6 +67,7 @@ import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./c
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
+import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -76,9 +77,30 @@ import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRed
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
 
-/** How long an operation's provider may take to send its response headers (`responseDeadlineMs`). */
-function responseDeadlineMs(operation: OperationDescription): number {
+/**
+ * How long a provider may take to send its response headers, for an operation
+ * that names no time of its own: v1's `PROVIDER_TTFB_TIMEOUT_SECONDS`, read
+ * as v1 reads it: any positive number of seconds, 120 otherwise. A
+ * self-hosted deployment whose own model server thinks longer before its
+ * first byte raises it. Once headers arrive the body streams as long as the
+ * model needs.
+ *
+ * Not a `vars` entry in `wrangler.jsonc`, as the maintenance budgets: most
+ * deployments never need it, and the install form would ask about it.
+ */
+export function providerTtfbTimeoutMs(env: Env): number {
+  const seconds = Number((env as { PROVIDER_TTFB_TIMEOUT_SECONDS?: unknown }).PROVIDER_TTFB_TIMEOUT_SECONDS);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1_000) : PROVIDER_TTFB_TIMEOUT_MS;
+}
+
+/** How long opening the first key may take, before anything is sent: the operation's own time or 120 s, never the first-byte setting. */
+function keyOpenBudgetMs(operation: OperationDescription): number {
   return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
+}
+
+/** How long the provider may take to its first byte: the operation's own time (Deepgram's 20 minutes), or the deployment's. */
+function responseDeadlineMs(env: Env, operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? providerTtfbTimeoutMs(env);
 }
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -228,6 +250,9 @@ export async function serveCaller(
       throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
     }
     const storesConversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null;
+    // `auth` ends here, for `server-timing` (`./timing.ts`).
+    const timings = timingsOf(c.req.raw);
+    if (timings !== undefined) authDone(timings);
     return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, storesConversation });
   } catch (error) {
     const reason = refusalReason(error);
@@ -399,13 +424,15 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
 
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
-      await admitRequest({
-        env: c.env,
-        app,
-        identity,
-        waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-        refuse: refusal,
-      });
+      await timedAdmission(timingsOf(c.req.raw), () =>
+        admitRequest({
+          env: c.env,
+          app,
+          identity,
+          waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+          refuse: refusal,
+        }),
+      );
 
       const attempt: CallAttempt = {
         requestId: timeOrderedId(startedAt),
@@ -490,15 +517,17 @@ async function servePassthrough(
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
   // The credentials are opened before admission: a request that cannot be sent must not spend anything.
   const credentials = await connectionCredentials(c.env, connection);
-  await admitRequest({
-    env: c.env,
-    app,
-    identity: caller.identity,
-    waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-    refuse: refusal,
-    // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
-    ...(bill.notPriced === true ? { unpriced: true } : {}),
-  });
+  await timedAdmission(timingsOf(c.req.raw), () =>
+    admitRequest({
+      env: c.env,
+      app,
+      identity: caller.identity,
+      waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+      refuse: refusal,
+      // A path with no price skips the spending limits, not the request limits or the plan allowance (plan section 4.5).
+      ...(bill.notPriced === true ? { unpriced: true } : {}),
+    }),
+  );
   const attempt: CallAttempt = {
     requestId: timeOrderedId(startedAt),
     seq: 1,
@@ -916,7 +945,8 @@ function clientGone(c: ProxyContext): boolean {
  * - Every attempt is one charge, with its own `seq`. A failed one costs
  *   nothing: its cost is empty, not $0.
  * - All attempts share one budget for the provider's first byte, the
- *   proxy's own 120 s, or the first operation's own (`responseDeadlineMs`):
+ *   deployment's (`PROVIDER_TTFB_TIMEOUT_SECONDS`, 120 s by default), or the
+ *   first operation's own (`responseDeadlineMs`):
  *   a fallback gets what is left of it.
  * - Every attempt sends the whole body again: it was read whole before the
  *   first one, and each attempt's own body is built only when it is sent.
@@ -1008,7 +1038,10 @@ async function sendAttemptsKeptFor(
     }
     let credentials: UpstreamCredentials;
     try {
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? responseDeadlineMs(prepared.operation) : deadline - Date.now());
+      // Before the first fetch, opening the key has its own budget, as before
+      // the first-byte setting; that time starts with the provider attempt.
+      // A fallback's key shares what is left of it.
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? keyOpenBudgetMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -1074,7 +1107,7 @@ async function sendAttemptsKeptFor(
         throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
       }
       providerStart = Date.now();
-      deadline ??= providerStart + responseDeadlineMs(prepared.operation);
+      deadline ??= providerStart + responseDeadlineMs(c.env, prepared.operation);
       const remainingMs = deadline - providerStart;
       if (remainingMs <= 0) throw budgetExhausted(index);
       controller = new AbortController();
@@ -1198,6 +1231,8 @@ function answer(
   sent?: SentAttempt,
 ): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
+  // Recorded before the answer is judged: an answer the gateway then refuses (a job with no id) still says how long the provider took.
+  providerAnswered(c.req.raw, latencyMs);
   // A job submit the provider redirected was not accepted: nothing is charged, and its
   // `Location` never reaches the app (a client following it would resend the job's body,
   // and any token header the app signs in with, to another host).

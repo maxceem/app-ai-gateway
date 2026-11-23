@@ -703,6 +703,17 @@ export interface ProviderDescription {
   /** What the console and the CLI call it. */
   readonly label: string;
   /**
+   * Who makes every model this provider serves, where one answer is right for
+   * all of them (v1's `modelAuthor`). Only the charges read uses it, after the
+   * price list's own `author` (`./model-author.ts`).
+   */
+  readonly modelAuthor?: string;
+  /**
+   * Its model ids start with their author's namespace, such as
+   * `meta-llama/…` (v1's `authorNamespacedModels`): an aggregator's.
+   */
+  readonly authorNamespacedModels?: true;
+  /**
    * Upstream hosts by key. `main` is used when an operation names none. A
    * host may end with a path prefix, such as `openrouter.ai/api`, which every
    * upstream path is sent under.

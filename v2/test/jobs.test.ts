@@ -268,6 +268,8 @@ describe("submitting a job", () => {
     falAnswers({ submit: () => Response.json({ status: "IN_QUEUE" }) });
     const { response } = await submit(appId, slug, key);
     expect(response.status).toBe(502);
+    // The provider answered, so its time is in server-timing even though the gateway refused its answer.
+    expect((response.headers.get("server-timing") ?? "").split(", ").map((entry) => entry.split(";")[0])).toEqual(["auth", "prepare", "limiter", "provider_ttfb"]);
     expect(await charges(appId)).toMatchObject([{ kind: "estimate", cost_nano: 50_000_000 }]);
     expect(await openWork(appId)).toEqual([]);
     expect(logged("job_submission_lost")).toBe(true);
@@ -295,12 +297,18 @@ describe("polling a job", () => {
     falAnswers({});
     const jobId = String((await submit(appId, slug, key)).json!.request_id);
     falAnswers({
+      // The provider's own server-timing is replaced by the gateway's.
       status: () =>
-        Response.json({ status: "IN_PROGRESS", request_id: "req-1", response_url: "https://queue.fal.run/fal-ai/flux/requests/req-1" }),
+        Response.json(
+          { status: "IN_PROGRESS", request_id: "req-1", response_url: "https://queue.fal.run/fal-ai/flux/requests/req-1" },
+          { headers: { "server-timing": "upstream;dur=9" } },
+        ),
     });
     for (let poll = 0; poll < 3; poll += 1) {
       const { response, json } = await call("GET", `/v2/apps/${appId}/jobs/${jobId}/status`, key);
       expect(response.status).toBe(200);
+      // A served poll says how long it took to check the caller, find the job, and hear from the provider (no limits).
+      expect((response.headers.get("server-timing") ?? "").split(", ").map((entry) => entry.split(";")[0])).toEqual(["auth", "prepare", "provider_ttfb"]);
       expect(json).toEqual({ status: "IN_PROGRESS", request_id: jobId, response_url: `${ORIGIN}/v2/apps/${appId}/jobs/${jobId}` });
     }
     // The upstream URL comes from the signed id: the model's first two segments and fal's request id.

@@ -12,6 +12,7 @@
  * cf-auth decides every security rule (the proof, the code, the client, the
  * session and membership re-read in the batch that completes an approval).
  */
+import { SERVER_VERSION } from "../core/version.ts";
 import type { AuthState, CfAuth, CfAuthOAuth } from "@maxceem/cf-auth";
 import { Hono, type Context } from "hono";
 import { gatewayErrorOf, humanSession, identityFor } from "../auth/identity.ts";
@@ -63,6 +64,7 @@ consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
     emailVerification: emailVerificationRequired(c.env),
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
+    serverVersion: SERVER_VERSION,
   } satisfies OperationResponse<"getConsoleCapabilities">),
 );
 

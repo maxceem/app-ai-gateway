@@ -29,6 +29,7 @@ function headerSafe(value: string): boolean {
 
 export const vercel = defineProvider({
   type: "vercel",
+  authorNamespacedModels: true,
   label: "Vercel AI Gateway",
   hosts: { main: "ai-gateway.vercel.sh" },
   auth: { header: "authorization", format: "Bearer {key}" },

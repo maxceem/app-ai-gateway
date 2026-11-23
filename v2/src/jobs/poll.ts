@@ -28,6 +28,7 @@
  * - A provider redirect is never passed on: one to this job's status or
  *   result becomes the gateway's own link, and any other is a provider error.
  */
+import { prepareDone, providerAnswered, timingsOf } from "../proxy/timing.ts";
 import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -106,7 +107,12 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
         const query = which === "status" ? jobStatusQuery(context.spec, new URL(c.req.url)) : "";
         const links = gatewayLinks(new URL(c.req.url).origin, app.id, jobId);
         // A cancel is only forwarded: the job settles on its status or result as any other.
+        // For `server-timing`, `prepare` ends as the provider is asked, and its first byte is timed.
+        const timings = timingsOf(c.req.raw);
+        if (timings !== undefined) prepareDone(timings);
+        const providerStart = Date.now();
         const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
+        providerAnswered(c.req.raw, Date.now() - providerStart);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
         headers.delete("content-length");
@@ -216,11 +222,14 @@ function redirectTo(
  * the same URL. A route middleware, so it also covers answers the error
  * handler writes.
  */
-export const pollNoStore = async (c: { res: Response }, next: () => Promise<void>): Promise<void> => {
+export const pollNoStore = async (c: { res: Response | undefined }, next: () => Promise<void>): Promise<void> => {
   await next();
-  const headers = new Headers(c.res.headers);
+  const previous = c.res!;
+  const headers = new Headers(previous.headers);
   noStore(headers);
-  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+  // Cleared first: Hono copies the old answer's headers onto a new one, which would bring a cache header back.
+  c.res = undefined;
+  c.res = new Response(previous.body, { status: previous.status, statusText: previous.statusText, headers });
 };
 
 export const jobStatusHandler = jobPollHandler("status");

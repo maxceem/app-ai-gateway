@@ -14,6 +14,7 @@ const EXPIRES_AFTER = { anchor: "created_at", seconds: LIVE_TOKEN_WINDOW_SECONDS
 
 export const openai = defineProvider({
   type: "openai",
+  modelAuthor: "OpenAI",
   label: "OpenAI",
   hosts: { main: "api.openai.com" },
   // Its data residency hosts (US, Europe, UK), and the others it serves under `api.openai.com` (v1).

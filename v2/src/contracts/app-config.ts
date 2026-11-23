@@ -167,24 +167,30 @@ const AppAttestEndUserSchema = z.discriminatedUnion("source", [IssuerEndUserSche
   error: "authentication.end_user.source must be one of issuer, app_install",
 });
 
+/** An iOS app's Apple team id. Shared with `patch_app`'s shortcut (`../mcp/shortcuts.ts`). */
+export const AppleTeamIdSchema = z.string().trim().regex(APPLE_TEAM_ID, { error: "team_id must contain ten uppercase letters or digits" });
+/** An iOS app's bundle id. Shared with `patch_app`'s shortcut. */
+export const AppleBundleIdSchema = z.string().trim().regex(APPLE_BUNDLE_ID, { error: "bundle_id must be a reverse DNS identifier" });
+/** The App Attest environments an iOS app accepts, at least one and none twice. Shared with `patch_app`'s shortcut. */
+export const AppAttestEnvironmentsSchema = z
+  .array(z.enum(APP_ATTEST_ENVIRONMENTS))
+  .min(1, { error: "environments must name at least one environment" })
+  .refine((values) => new Set(values).size === values.length, { error: "environments cannot repeat a value" });
+
 const AppleAppAttestAuthenticationSchema = z
   .object({
     type: z.literal("apple_app_attest"),
     end_user: AppAttestEndUserSchema,
     app_attest: z
       .object({
-        team_id: z.string().trim().regex(APPLE_TEAM_ID, { error: "team_id must contain ten uppercase letters or digits" }),
-        bundle_id: z.string().trim().regex(APPLE_BUNDLE_ID, { error: "bundle_id must be a reverse DNS identifier" }),
+        team_id: AppleTeamIdSchema,
+        bundle_id: AppleBundleIdSchema,
         /**
          * Production only by default: a development-signed build can be
          * debugged on any device with the team's profile, so accepting it is a
          * deliberate choice.
          */
-        environments: z
-          .array(z.enum(APP_ATTEST_ENVIRONMENTS))
-          .min(1, { error: "environments must name at least one environment" })
-          .refine((values) => new Set(values).size === values.length, { error: "environments cannot repeat a value" })
-          .prefault(["production"]),
+        environments: AppAttestEnvironmentsSchema.prefault(["production"]),
         /**
          * `every_request` (the default): every request carries a fresh
          * assertion over itself, so a copied token is worthless.

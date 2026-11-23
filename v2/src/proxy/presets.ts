@@ -30,6 +30,7 @@
  * The client's query is never sent upstream, except Gemini's `alt=sse`,
  * which picks its streaming method (v1).
  */
+import { timedAdmission, timingsOf } from "./timing.ts";
 import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -385,13 +386,15 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         throw paused ?? new GatewayError(502, "provider_not_configured", "No provider connection of this preset can serve it");
       }
 
-      await admitRequest({
-        env: c.env,
-        app,
-        identity: caller.identity,
-        waitUntil: (promise) => c.executionCtx.waitUntil(promise),
-        refuse: refusal,
-      });
+      await timedAdmission(timingsOf(c.req.raw), () =>
+        admitRequest({
+          env: c.env,
+          app,
+          identity: caller.identity,
+          waitUntil: (promise) => c.executionCtx.waitUntil(promise),
+          refuse: refusal,
+        }),
+      );
       return await sendAttempts(c, clientSide(app, caller), [head, ...rest], keyHeaders);
     },
   );

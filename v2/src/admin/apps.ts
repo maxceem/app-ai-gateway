@@ -72,6 +72,8 @@ export function appView(row: AppRow) {
     status: row.status,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
+    // v1's warnings: behaviour that will stop on a stated date. Nothing produces one yet, as in v1.
+    warnings: [],
   };
 }
 
