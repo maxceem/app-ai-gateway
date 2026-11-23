@@ -550,12 +550,11 @@ export function useBillingPlans(enabled: boolean) {
   });
 }
 
-/** Whatever changes the plan changes the status and the session's plan line. */
+/** Whatever changes the plan changes the billing status. */
 function useRefreshPlan() {
   const client = useQueryClient();
   return () => {
     void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
-    void client.invalidateQueries({ queryKey: keys.session });
   };
 }
 

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { entitledPlan, priceFor } from "@/lib/billing";
 import { DEFAULT_LANDING, planKeyFrom, FREE_PLAN_KEY } from "@/lib/auth-redirect";
 import { useConsoleSession } from "@/lib/console-session";
+import { goToPaymentPage } from "@/lib/tab-account";
 import { useBillingPlans, useBillingStatus, useStartCheckout } from "@/lib/queries";
 
 const BILLING_PATH = "/billing";
@@ -103,7 +104,7 @@ export function CheckoutPage() {
     // sold on is the plan's to state, not this page's to assume.
     const billingPeriod = priceFor(plan, "month") ? "month" : "year";
     startCheckout({ planKey: plan.planKey, billingPeriod })
-      .then(({ url }) => window.location.assign(url))
+      .then(({ url }) => goToPaymentPage(url))
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : "Could not start checkout");
       });

@@ -32,6 +32,7 @@ import {
 } from "@/lib/billing";
 import { cn } from "@/lib/utils";
 import { ApiError, call } from "@/lib/api";
+import { goToPaymentPage } from "@/lib/tab-account";
 import {
   keys,
   useBillingPlans,
@@ -100,7 +101,7 @@ export function BillingPage() {
   const subscribe = async (plan: BillingPlan) => {
     try {
       const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
-      window.location.assign(url);
+      goToPaymentPage(url);
     } catch (error) {
       // A checkout whose outcome is unknown may have started: the plan is read
       // again, so the page shows what is true before the person tries again.
@@ -120,7 +121,7 @@ export function BillingPage() {
       });
       setConfirmChange(null);
       if (result.requiredActionUrl) {
-        window.location.assign(result.requiredActionUrl);
+        goToPaymentPage(result.requiredActionUrl);
         return;
       }
       toast.success(`Moved to ${confirmChange.plan.name}`);
@@ -201,7 +202,7 @@ export function BillingPage() {
       });
       setConfirmResume(null);
       if (result.requiredActionUrl) {
-        window.location.assign(result.requiredActionUrl);
+        goToPaymentPage(result.requiredActionUrl);
         return;
       }
       toast.success("Subscription resumed");

@@ -156,6 +156,27 @@ describe("the return from a completed checkout", () => {
     expect(success).not.toHaveBeenCalled();
   });
 
+  it("stops, and takes its notice down, when the session has ended", async () => {
+    const info = vi.spyOn(toast, "info");
+    const dismiss = vi.spyOn(toast, "dismiss");
+    const fetchMock = stubBilling(PAID);
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/status")
+        ? new Response(JSON.stringify({ error: { code: "auth_required", message: "Sign in" } }), { status: 401 })
+        : answer(input, init));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: returnFor("acct-1") });
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
+    const reads = statusReads(fetchMock);
+    for (let check = 0; check < PLAN_CONFIRM_CHECKS; check += 1) {
+      await act(() => vi.advanceTimersByTimeAsync(PLAN_CONFIRM_INTERVAL_MS));
+    }
+    // No more confirming reads, and no "received" notice: the page has nothing left to confirm.
+    expect(statusReads(fetchMock)).toBeLessThanOrEqual(reads + 1);
+    expect(info).not.toHaveBeenCalled();
+  });
+
   it("keeps confirming through a development double mount (Sol 7b-8)", async () => {
     const success = vi.spyOn(toast, "success");
     const dismiss = vi.spyOn(toast, "dismiss");

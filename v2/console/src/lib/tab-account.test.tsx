@@ -9,7 +9,7 @@ import { act, renderHook } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { call } from "./api";
 import { readSession, SWITCH_DEADLINE_MS, useSelectAccount, useSignOut } from "./queries";
-import { reopenTabForTests, resetTabAccountForTests, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
+import { goToPaymentPage, reopenTabForTests, resetTabAccountForTests, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
 import { membership, testQueryClient, testSession } from "@/test/render";
 
 interface Gateway {
@@ -60,10 +60,12 @@ function stubGateway(gateway: Gateway, members: readonly string[] = ["acct-1", "
 
 let reload: ReturnType<typeof vi.fn>;
 let replace: ReturnType<typeof vi.fn>;
+let assign: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   reload = vi.fn();
   replace = vi.fn();
+  assign = vi.fn();
   // The page's own address, as `history.replaceState` moves it, with a reload that only records itself.
   const real = window.location;
   vi.stubGlobal("location", {
@@ -73,6 +75,7 @@ beforeEach(() => {
     get origin() { return real.origin; },
     reload,
     replace,
+    assign,
   });
 });
 
@@ -338,5 +341,15 @@ describe("a console tab's account", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("opens a payment page, but not once the page is leaving for an account switch", () => {
+    setTabAccount("acct-1");
+    goToPaymentPage("https://pay.example/one");
+    expect(assign).toHaveBeenCalledWith("https://pay.example/one");
+    // A checkout answered after the switch began belongs to the account being left.
+    switchTabAccount("acct-2");
+    goToPaymentPage("https://pay.example/two");
+    expect(assign).toHaveBeenCalledTimes(1);
   });
 });

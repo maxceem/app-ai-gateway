@@ -305,7 +305,6 @@ export async function startCheckout(c: AdminContext): Promise<Response> {
     );
   });
   const url = paymentPage(c.env, result.url);
-  invalidateBillingAccess(accountId);
   return c.json({ url } satisfies OperationResponse<"startCheckout">);
 }
 

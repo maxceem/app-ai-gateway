@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { call } from "./api";
+import { call, isUnauthorized } from "./api";
 import type { OperationResponse } from "@contracts/catalog";
 import { checkoutAccountFrom, checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { useConsoleSession } from "./console-session";
@@ -23,6 +23,8 @@ export const PLAN_CONFIRM_READ_MS = 2_500;
 
 type PlanRead =
   | { readonly kind: "plan"; readonly status: OperationResponse<"getBillingStatus"> }
+  /** The session has ended: there is nothing more to confirm on this page. */
+  | { readonly kind: "signed_out" }
   /** Failed or too slow: counts as not yet confirmed. */
   | { readonly kind: "none" };
 
@@ -41,7 +43,8 @@ async function readPlanOnce(stop: AbortSignal): Promise<PlanRead> {
   try {
     const status = await call("getBillingStatus", { signal: controller.signal });
     return { kind: "plan", status };
-  } catch {
+  } catch (error) {
+    if (isUnauthorized(error)) return { kind: "signed_out" };
     return { kind: "none" };
   } finally {
     clearTimeout(timer);
@@ -92,13 +95,12 @@ function confirmPayment(client: QueryClient, checkoutAccount: string, planKey: s
     if (!forThisAccount()) return stop();
     const read = await readPlanOnce(reads.signal);
     if (reads.signal.aborted) return;
-    if (!forThisAccount()) return stop();
+    if (read.kind === "signed_out" || !forThisAccount()) return stop();
     const access = read.kind === "plan" ? read.status.access : null;
     const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;
     if (bought !== null) {
       finish();
       toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${bought.planName} plan.` });
-      void client.invalidateQueries({ queryKey: keys.session });
       void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
       return;
     }

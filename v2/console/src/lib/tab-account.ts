@@ -86,6 +86,15 @@ export function switchTabAccount(accountId: string | null): void {
   else window.location.reload();
 }
 
+/**
+ * Sends the page to a payment page, unless it is already leaving for an
+ * account switch: that page belongs to the account the tab is leaving.
+ */
+export function goToPaymentPage(url: string): void {
+  if (leaving) return;
+  window.location.assign(url);
+}
+
 /** The address's query string, where a checkout return or the sign-in page carrying one names its account. */
 export function currentSearch(): string {
   return typeof window === "undefined" ? "" : window.location.search;
