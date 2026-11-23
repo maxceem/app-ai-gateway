@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { entitledPlan, priceFor } from "@/lib/billing";
 import { DEFAULT_LANDING, planKeyFrom, FREE_PLAN_KEY } from "@/lib/auth-redirect";
 import { useConsoleSession } from "@/lib/console-session";
-import { isAccountChanged, useBillingPlans, useBillingStatus, useStartCheckout } from "@/lib/queries";
+import { useBillingPlans, useBillingStatus, useStartCheckout } from "@/lib/queries";
 
 const BILLING_PATH = "/billing";
 
@@ -36,15 +36,11 @@ export function CheckoutPage() {
   const status = useBillingStatus(capabilities.billing, account.id);
   const billing = status.data?.access;
   const { mutateAsync: startCheckout } = useStartCheckout();
-  // The account a checkout was started for. Set before the request rather
-  // than after it: under StrictMode the effect runs twice against the same
-  // instance, and a flag the response sets would let the second pass open a
-  // second checkout for the same plan. It and the error belong to one
-  // account: a switch to another (in this tab or another) starts afresh
-  // (Sol 7b-8).
-  const started = useRef<string | null>(null);
-  const [failure, setFailure] = useState<{ accountId: string; message: string } | null>(null);
-  const error = failure?.accountId === account.id ? failure.message : null;
+  // Set before the request rather than after it: under StrictMode the effect
+  // runs twice against the same instance, and a flag the response sets would
+  // let the second pass open a second checkout for the same plan.
+  const started = useRef(false);
+  const [error, setError] = useState<string | null>(null);
 
   const planKey = planKeyFrom(location.search);
   const catalog = plans.data?.plans ?? [];
@@ -71,27 +67,23 @@ export function CheckoutPage() {
   // The catalog is the only thing that can say a key names a real, purchasable
   // plan, so an unknown one is not concluded until it has answered.
   const unknownPlan = landing === null && plans.isSuccess && !plan;
-  // The current plan is read first, and must have been read for this account:
-  // buying the plan already held is sent to the plans instead, and a read the
-  // gateway refused (another tab switched accounts) starts nothing until the
-  // switch is followed (Sol 7b-8).
+  // The current plan is read first: buying the plan already held is sent to the plans instead.
   const ready = landing === null && plan !== undefined && error === null && status.isSuccess;
-  // The current plan could not be read for a reason other than an account switch.
-  const statusFailed = landing === null && status.isError && !isAccountChanged(status.error);
+  // The current plan could not be read: say so rather than wait on it for good.
+  const statusFailed = landing === null && status.isError;
 
   useEffect(() => {
-    if (!ready || started.current === account.id || plan === undefined) return;
-    const accountId = account.id;
-    started.current = accountId;
+    if (!ready || started.current || plan === undefined) return;
+    started.current = true;
     // The catalog is monthly-only today, but the period a plan is actually
     // sold on is the plan's to state, not this page's to assume.
     const billingPeriod = priceFor(plan, "month") ? "month" : "year";
-    startCheckout({ planKey: plan.planKey, billingPeriod, accountId })
+    startCheckout({ planKey: plan.planKey, billingPeriod })
       .then(({ url }) => window.location.assign(url))
       .catch((cause: unknown) => {
-        setFailure({ accountId, message: cause instanceof Error ? cause.message : "Could not start checkout" });
+        setError(cause instanceof Error ? cause.message : "Could not start checkout");
       });
-  }, [ready, plan, startCheckout, account.id]);
+  }, [ready, plan, startCheckout]);
 
   if (landing !== null) return <Navigate to={landing} replace />;
   if (unknownPlan) return <Navigate to={BILLING_PATH} replace />;

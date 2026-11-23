@@ -170,11 +170,11 @@ describe("billing operations", () => {
     for (const [method, path, body] of [
       ["GET", "/v2/admin/billing/plans"],
       ["GET", "/v2/admin/billing/status"],
-      ["POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId: "a" }],
-      ["POST", "/v2/admin/billing/change", { planKey: "growth", billingPeriod: "month", accountId: "a", subscriptionId: null }],
-      ["POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", accountId: "a", subscriptionId: null }],
-      ["POST", "/v2/admin/billing/cancel", { accountId: "a", subscriptionId: null }],
-      ["POST", "/v2/admin/billing/trial", { planKey: "growth", accountId: "a" }],
+      ["POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }],
+      ["POST", "/v2/admin/billing/change", { planKey: "growth", billingPeriod: "month", subscriptionId: null }],
+      ["POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", subscriptionId: null }],
+      ["POST", "/v2/admin/billing/cancel", { subscriptionId: null }],
+      ["POST", "/v2/admin/billing/trial", { planKey: "growth" }],
     ] as const) {
       expect(await send(caller, method, path, body), path).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
     }
@@ -245,9 +245,9 @@ describe("billing operations", () => {
   });
 
   it("leave each checkout to the billing service: the gateway holds no reservation of its own (Sol 7b-8)", async () => {
-    const { caller, accountId } = await person();
+    const { caller } = await person();
     const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
-    const body = { planKey: "growth", billingPeriod: "month", accountId };
+    const body = { planKey: "growth", billingPeriod: "month" };
     expect(await send(caller, "POST", "/v2/admin/billing/checkout", body, fake.env)).toMatchObject({ status: 200 });
     // A refusal from the billing service leaves nothing behind: the next one is asked again.
     fake.state.fail = "billing_subscription_already_active";
@@ -258,34 +258,25 @@ describe("billing operations", () => {
   });
 
   it("pass on a payment page only on an HTTPS payment host (Sol 7b-8)", async () => {
-    const { caller, accountId } = await person();
+    const { caller } = await person();
     const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
     fake.state.checkoutUrl = "https://evil.example/pay";
-    expect(await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }, fake.env)).toMatchObject({
       status: 502,
       body: { error: { code: "billing_unavailable" } },
     });
     const paid = billingFake(growth());
     paid.state.actionUrl = "http://pay.example.test/confirm";
-    expect(await send(caller, "POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", accountId, ...SHOWN }, paid.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", ...SHOWN }, paid.env)).toMatchObject({
       status: 502,
       body: { error: { code: "billing_unavailable" } },
     });
   });
 
-  it("refuse a write for an account other than the one selected, or a subscription whose id, status or period changed since the dialog opened (Sol 7b-8)", async () => {
-    const { caller, accountId } = await person();
+  it("refuse a write on a subscription whose id, status or period changed since the dialog opened (Sol 7b-8)", async () => {
+    const { caller } = await person();
     const fake = billingFake(growth());
     const selection = { planKey: "growth", billingPeriod: "month" };
-    for (const [path, body] of [
-      ["/v2/admin/billing/checkout", { ...selection, accountId: "another-account" }],
-      ["/v2/admin/billing/change", { ...selection, accountId: "another-account", ...SHOWN, price: SHOWN_PRICE }],
-      ["/v2/admin/billing/resume", { ...selection, accountId: "another-account", ...SHOWN }],
-      ["/v2/admin/billing/cancel", { accountId: "another-account", ...SHOWN }],
-      ["/v2/admin/billing/trial", { planKey: "growth", accountId: "another-account" }],
-    ] as const) {
-      expect(await send(caller, "POST", path, body, fake.env), path).toMatchObject({ status: 409, body: { error: { code: "account_changed" } } });
-    }
     // Shown a different subscription, or the same one in another status or period: each is refused.
     for (const shown of [
       { ...SHOWN, subscriptionId: "sub_old" },
@@ -294,9 +285,9 @@ describe("billing operations", () => {
       { subscriptionId: null, subscriptionStatus: null, subscriptionPeriod: null },
     ] as const) {
       for (const [path, body] of [
-        ["/v2/admin/billing/change", { ...selection, accountId, ...shown, price: SHOWN_PRICE }],
-        ["/v2/admin/billing/resume", { ...selection, accountId, ...shown }],
-        ["/v2/admin/billing/cancel", { accountId, ...shown }],
+        ["/v2/admin/billing/change", { ...selection, ...shown, price: SHOWN_PRICE }],
+        ["/v2/admin/billing/resume", { ...selection, ...shown }],
+        ["/v2/admin/billing/cancel", { ...shown }],
       ] as const) {
         expect(await send(caller, "POST", path, body, fake.env), `${path} ${JSON.stringify(shown)}`).toMatchObject({
           status: 409,
@@ -307,7 +298,7 @@ describe("billing operations", () => {
     expect(fake.calls.filter((call) => call.method !== "getTenantAccess")).toEqual([]);
     // A subscription that cannot be read to check it answers 503, and nothing is asked of billing.
     fake.state.access = "down";
-    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN }, fake.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { ...SHOWN }, fake.env)).toMatchObject({
       status: 503,
       body: { error: { code: "billing_unavailable" } },
     });
@@ -315,22 +306,22 @@ describe("billing operations", () => {
   });
 
   it("refuse a write on a subscription changed in place since the dialog opened, as its updatedAt shows (Sol 7b-8)", async () => {
-    const { caller, accountId } = await person();
+    const { caller } = await person();
     // The subscription moved to another plan: the same id, status and period, a later updatedAt.
     const fake = billingFake({ ...growth(), subscription: { ...SUBSCRIPTION, planKey: "pro", planName: "Pro", updatedAt: "2026-11-20T00:00:00.000Z" } });
     const selection = { planKey: "growth", billingPeriod: "month" };
     const shown = { ...SHOWN, subscriptionUpdatedAt: SUBSCRIPTION.updatedAt };
     for (const [path, body] of [
-      ["/v2/admin/billing/change", { ...selection, accountId, ...shown, price: SHOWN_PRICE }],
-      ["/v2/admin/billing/resume", { ...selection, accountId, ...shown }],
-      ["/v2/admin/billing/cancel", { accountId, ...shown }],
+      ["/v2/admin/billing/change", { ...selection, ...shown, price: SHOWN_PRICE }],
+      ["/v2/admin/billing/resume", { ...selection, ...shown }],
+      ["/v2/admin/billing/cancel", { ...shown }],
     ] as const) {
       expect(await send(caller, "POST", path, body, fake.env), path).toMatchObject({ status: 409, body: { error: { code: "subscription_changed" } } });
     }
     expect(fake.calls.filter((call) => call.method !== "getTenantAccess")).toEqual([]);
     // Shown as it is now, the write goes ahead; a client that sends no updatedAt is checked on the rest.
-    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN, subscriptionUpdatedAt: "2026-11-20T00:00:00.000Z" }, fake.env)).toMatchObject({ status: 200 });
-    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN }, fake.env)).toMatchObject({ status: 200 });
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { ...SHOWN, subscriptionUpdatedAt: "2026-11-20T00:00:00.000Z" }, fake.env)).toMatchObject({ status: 200 });
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { ...SHOWN }, fake.env)).toMatchObject({ status: 200 });
   });
 
   it("answer billing_unavailable when the plans on offer cannot be read in time (Sol 7b-8)", async () => {
@@ -341,14 +332,14 @@ describe("billing operations", () => {
   it("change, resume, cancel and start a trial for the account", async () => {
     const { caller, accountId } = await person();
     const fake = billingFake(growth());
-    const selection = { planKey: "growth", billingPeriod: "month", accountId, ...SHOWN };
+    const selection = { planKey: "growth", billingPeriod: "month", ...SHOWN };
     expect(await send(caller, "POST", "/v2/admin/billing/change", { ...selection, price: SHOWN_PRICE }, fake.env)).toMatchObject({ status: 200, body: { ok: true } });
     expect(await send(caller, "POST", "/v2/admin/billing/resume", selection, fake.env)).toMatchObject({
       status: 200,
       body: { ok: true, requiredActionUrl: "https://pay.example.test/confirm" },
     });
-    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN }, fake.env)).toMatchObject({ status: 200, body: { ok: true } });
-    expect(await send(caller, "POST", "/v2/admin/billing/trial", { planKey: "growth", accountId }, fake.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { ...SHOWN }, fake.env)).toMatchObject({ status: 200, body: { ok: true } });
+    expect(await send(caller, "POST", "/v2/admin/billing/trial", { planKey: "growth" }, fake.env)).toMatchObject({
       status: 200,
       body: { plan: { planKey: "growth" }, subscription: { status: "on_trial" } },
     });
@@ -358,9 +349,9 @@ describe("billing operations", () => {
   });
 
   it("refuse a change whose price moved since it was shown, before asking billing to change anything (Sol 7b-8)", async () => {
-    const { caller, accountId } = await person();
+    const { caller } = await person();
     const fake = billingFake(growth());
-    const selection = { planKey: "growth", billingPeriod: "month", accountId, ...SHOWN };
+    const selection = { planKey: "growth", billingPeriod: "month", ...SHOWN };
     for (const price of [{ priceAmountCents: 1500, priceCurrency: "USD" }, { priceAmountCents: 1900, priceCurrency: "EUR" }]) {
       expect(await send(caller, "POST", "/v2/admin/billing/change", { ...selection, price }, fake.env), JSON.stringify(price)).toMatchObject({
         status: 409,
@@ -381,10 +372,10 @@ describe("billing operations", () => {
     const fake = billingFake(growth());
     expect((await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).status).toBe(200);
     for (const [path, body] of [
-      ["/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }],
-      ["/v2/admin/billing/change", { planKey: "growth", billingPeriod: "month", accountId, ...SHOWN, price: SHOWN_PRICE }],
-      ["/v2/admin/billing/cancel", { accountId, ...SHOWN }],
-      ["/v2/admin/billing/trial", { planKey: "growth", accountId }],
+      ["/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }],
+      ["/v2/admin/billing/change", { planKey: "growth", billingPeriod: "month", ...SHOWN, price: SHOWN_PRICE }],
+      ["/v2/admin/billing/cancel", { ...SHOWN }],
+      ["/v2/admin/billing/trial", { planKey: "growth" }],
     ] as const) {
       expect(await send(caller, "POST", path, body, fake.env), path).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
     }
@@ -392,9 +383,9 @@ describe("billing operations", () => {
   });
 
   it("turn the billing service's refusals into the gateway's codes", async () => {
-    const { caller, accountId } = await person();
+    const { caller } = await person();
     const fake = billingFake(growth());
-    const selection = { planKey: "growth", billingPeriod: "month", accountId, ...SHOWN, price: SHOWN_PRICE };
+    const selection = { planKey: "growth", billingPeriod: "month", ...SHOWN, price: SHOWN_PRICE };
     for (const [code, status, ours] of [
       ["billing_plan_not_found", 404, "billing_not_found"],
       ["billing_manually_managed", 403, "billing_action_forbidden"],
@@ -459,7 +450,7 @@ describe("the console's own billing read, apart from app traffic's (Sol 7b-8)", 
     expect(await getAppTrafficBillingAccess(fake.env, accountId, waitUntil)).toMatchObject({ state: "billed", plan: { planKey: "growth" } });
     // Billing goes down; the console starts a checkout, and the billing page says billing is unavailable.
     fake.state.access = "down";
-    await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env);
+    await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }, fake.env);
     expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({
       status: 503,
       body: { error: { code: "billing_unavailable" } },
@@ -513,20 +504,6 @@ describe("the console's own billing read, apart from app traffic's (Sol 7b-8)", 
     expect(await send(caller, "GET", "/v2/admin/billing/status", undefined, fake.env)).toMatchObject({ status: 200, body: { access: { plan: { planKey: "growth" } } } });
     expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ plan: { planKey: "growth" } });
   });
-
-  it("names the account it expects: another one selected since is refused with account_changed", async () => {
-    const { caller, accountId } = await person();
-    const fake = billingFake(growth());
-    expect(await send(caller, "GET", `/v2/admin/billing/status?account=${encodeURIComponent(accountId)}`, undefined, fake.env)).toMatchObject({
-      status: 200,
-      body: { access: { plan: { planKey: "growth" } } },
-    });
-    expect(await send(caller, "GET", "/v2/admin/billing/status?account=acct-other", undefined, fake.env)).toMatchObject({
-      status: 409,
-      body: { error: { code: "account_changed" } },
-    });
-    expect(asked(fake)).toBe(1);
-  });
 });
 
 describe("app traffic's plan cache across a change the account makes (Sol 7b-8)", () => {
@@ -546,7 +523,7 @@ describe("app traffic's plan cache across a change the account makes (Sol 7b-8)"
     const before = getAppTrafficBillingAccess(fake.env, accountId, () => undefined, 60_000);
     // Meanwhile the account buys growth.
     service.getTenantAccess = original;
-    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env)).status).toBe(200);
+    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }, fake.env)).status).toBe(200);
     fake.state.access = growth();
     release();
     expect(await before).toMatchObject({ plan: { planKey: "free" } });
@@ -573,7 +550,7 @@ describe("app traffic's plan cache across a change the account makes (Sol 7b-8)"
     };
     const before = getAppTrafficBillingAccess(fake.env, accountId, () => undefined, 60_000);
     service.getTenantAccess = original;
-    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month", accountId }, fake.env)).status).toBe(200);
+    expect((await send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }, fake.env)).status).toBe(200);
     release();
     await before;
     fake.state.access = "down";

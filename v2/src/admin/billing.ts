@@ -30,7 +30,6 @@ import {
   BillingChangeRequestSchema,
   BillingCheckoutRequestSchema,
   BillingResumeRequestSchema,
-  BillingStatusQuerySchema,
   BillingTrialRequestSchema,
   PLAN_LIMIT_KEYS,
   type BillingPeriod,
@@ -45,7 +44,6 @@ import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { requireAdminRole, requireConsoleSession, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
-import { parseQuery } from "./usage.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
@@ -181,18 +179,6 @@ export function paymentPage(env: Env, url: string): string {
   return parsed.toString();
 }
 
-/**
- * The account a write acts on is the one the console showed: one selected in
- * another tab since is refused, never acted on in its place (Sol 7b-8).
- */
-function requireShownAccount(c: AdminContext, accountId: string): string {
-  const selected = c.get("actor").accountId;
-  if (accountId !== selected) {
-    throw new GatewayError(409, "account_changed", "The console's account is no longer the one selected; reload the page");
-  }
-  return selected;
-}
-
 /** The subscription the console showed when the dialog opened. */
 interface ShownSubscription {
   readonly subscriptionId: string | null;
@@ -266,8 +252,7 @@ export async function listBillingPlans(c: AdminContext): Promise<Response> {
 
 export async function getBillingStatus(c: AdminContext): Promise<Response> {
   billingCaller(c);
-  const query = parseQuery(c, BillingStatusQuerySchema);
-  const accountId = query.account === undefined ? c.get("actor").accountId : requireShownAccount(c, query.account);
+  const accountId = c.get("actor").accountId;
   // The billing page asks the billing service directly: after a checkout or a
   // change, a cached plan would show the old one. That read is the console's
   // own and never touches app traffic's (Sol 7b-8).
@@ -284,7 +269,7 @@ export async function getBillingStatus(c: AdminContext): Promise<Response> {
 export async function startCheckout(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingCheckoutRequestSchema);
-  const accountId = requireShownAccount(c, input.accountId);
+  const accountId = c.get("actor").accountId;
   // Each checkout is the billing service's own: keeping one per account, and
   // reconciling a second one paid, is its job, not this gateway's.
   const result = await rpc(() =>
@@ -304,7 +289,7 @@ export async function startCheckout(c: AdminContext): Promise<Response> {
 export async function changePlan(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingChangeRequestSchema);
-  const accountId = requireShownAccount(c, input.accountId);
+  const accountId = c.get("actor").accountId;
   await requireShownSubscription(c, accountId, input);
   await requireShownPrice(runtime, input.planKey, input.billingPeriod, input.price);
   const result = await rpc(() =>
@@ -320,7 +305,7 @@ export async function changePlan(c: AdminContext): Promise<Response> {
 export async function resumeSubscription(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingResumeRequestSchema);
-  const accountId = requireShownAccount(c, input.accountId);
+  const accountId = c.get("actor").accountId;
   await requireShownSubscription(c, accountId, input);
   const result = await rpc(() =>
     runtime.resumeSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey, billingPeriod: input.billingPeriod }),
@@ -335,7 +320,7 @@ export async function resumeSubscription(c: AdminContext): Promise<Response> {
 export async function cancelSubscription(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingCancelRequestSchema);
-  const accountId = requireShownAccount(c, input.accountId);
+  const accountId = c.get("actor").accountId;
   await requireShownSubscription(c, accountId, input);
   await rpc(() => runtime.cancelSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }));
   invalidateBillingAccess(accountId);
@@ -345,7 +330,7 @@ export async function cancelSubscription(c: AdminContext): Promise<Response> {
 export async function startTrial(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingTrialRequestSchema);
-  const accountId = requireShownAccount(c, input.accountId);
+  const accountId = c.get("actor").accountId;
   const access = await rpc(() => runtime.startTrial({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey }));
   invalidateBillingAccess(accountId);
   return c.json({ plan: access.plan, subscription: access.subscription } satisfies OperationResponse<"startTrial">);

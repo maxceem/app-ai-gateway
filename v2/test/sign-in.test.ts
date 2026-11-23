@@ -258,22 +258,83 @@ describe("management keys and sign-ins", () => {
     expect((await call("/v2/admin/apps", { base: API, headers: { authorization: `Bearer ${key}` } })).status).toBe(401);
   });
 
-  it("are not created in another account than the one the page showed", async () => {
-    const human = await seedHuman();
-    // A tab still showing another account, after another tab switched the shared cookie.
-    const stale = await asConsole(human.cookie, "/v2/admin/management-keys", { json: { name: "CI", accountId: "acc_other" } });
-    expect(stale.status).toBe(409);
-    expect(((await stale.json()) as { error: { code: string } }).error.code).toBe("account_changed");
-    const listed = (await (await asConsole(human.cookie, "/v2/admin/credentials")).json()) as { credentials: unknown[] };
-    expect(listed.credentials).toEqual([]);
-
-    const current = await asConsole(human.cookie, "/v2/admin/management-keys", { json: { name: "CI", accountId: human.accountId } });
-    expect(current.status).toBe(201);
-  });
-
   it("still lets an existing management key manage the account", async () => {
     const key = await seedManagementKey();
     const response = await call("/v2/admin/session", { base: API, headers: { authorization: `bearer ${key}` } });
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { session: { credentialType: string } }).session.credentialType).toBe("apiKey");
+  });
+});
+
+describe("each console tab keeps its own account", () => {
+  /** The person seeded, plus a second account they own. */
+  async function twoAccounts() {
+    const human = await seedHuman();
+    const other = `acc_tab_${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Other', ?, ?, ?)").bind(other, human.userId, now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)",
+      ).bind(`mem_${other}`, other, human.userId, now),
+    ]);
+    return { ...human, other };
+  }
+  const tab = (cookie: string, accountId: string) => (path: string, options: Call = {}) =>
+    asConsole(cookie, path, { ...options, headers: { "x-account-id": accountId, ...options.headers } });
+  const apiKeyConfig = { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: {} } };
+
+  it("acts in the account each tab names, side by side on one sign-in", async () => {
+    const human = await twoAccounts();
+    const first = tab(human.cookie, human.accountId);
+    const second = tab(human.cookie, human.other);
+    const sessionOf = async (open: ReturnType<typeof tab>) => ((await (await open("/v2/admin/session")).json()) as { session: { account: { id: string } } }).session.account.id;
+    expect(await sessionOf(first)).toBe(human.accountId);
+    expect(await sessionOf(second)).toBe(human.other);
+    // An app made in each tab lands in that tab's account.
+    const made = async (open: ReturnType<typeof tab>, name: string) =>
+      ((await (await open("/v2/admin/apps", { json: { name, config: apiKeyConfig } })).json()) as { app: { id: string } }).app.id;
+    const inFirst = await made(first, "First");
+    const inSecond = await made(second, "Second");
+    const listed = async (open: ReturnType<typeof tab>) =>
+      ((await (await open("/v2/admin/apps")).json()) as { apps: { id: string }[] }).apps.map((app) => app.id);
+    expect(await listed(first)).toEqual([inFirst]);
+    expect(await listed(second)).toEqual([inSecond]);
+    // A delete from the second tab acts on the second account only: the first tab's app is not there to delete.
+    expect((await second(`/v2/admin/apps/${inFirst}?confirm=${inFirst}`, { method: "DELETE" })).status).toBe(404);
+    expect((await second(`/v2/admin/apps/${inSecond}?confirm=${inSecond}`, { method: "DELETE" })).status).toBe(200);
+    expect(await listed(first)).toEqual([inFirst]);
+    expect(await listed(second)).toEqual([]);
+  });
+
+  it("refuses a tab naming an account the person is not a member of", async () => {
+    const human = await seedHuman();
+    const refused = await tab(human.cookie, "acc_someone_else")("/v2/admin/session");
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("account_forbidden");
+  });
+
+  it("opens a new tab on the account last switched to, and never moves a tab that names its own", async () => {
+    const human = await twoAccounts();
+    const switched = await tab(human.cookie, human.accountId)("/v2/admin/accounts/select", { json: { accountId: human.other } });
+    expect(switched.status).toBe(200);
+    // The browser keeps the cookies the answer set, in place of those of the same name.
+    const jar = new Map(human.cookie.split(/;\s*/u).map((pair) => [pair.split("=")[0]!, pair] as const));
+    for (const set of switched.headers.getSetCookie()) {
+      const pair = set.split(";")[0]!;
+      jar.set(pair.split("=")[0]!, pair);
+    }
+    const cookie = [...jar.values()].join("; ");
+    const accountOf = async (response: Response) => ((await response.json()) as { session: { account: { id: string } } }).session.account.id;
+    // A new tab names no account yet: it opens on the one last switched to.
+    expect(await accountOf(await asConsole(cookie, "/v2/admin/session"))).toBe(human.other);
+    // A tab still on the first account stays on it.
+    expect(await accountOf(await tab(cookie, human.accountId)("/v2/admin/session"))).toBe(human.accountId);
+  });
+
+  it("is ignored for a management key, which acts in its own account", async () => {
+    const key = await seedManagementKey();
+    const response = await call("/v2/admin/session", { base: API, headers: { authorization: `Bearer ${key}`, "x-account-id": "acc_someone_else" } });
     expect(response.status).toBe(200);
     expect(((await response.json()) as { session: { credentialType: string } }).session.credentialType).toBe("apiKey");
   });

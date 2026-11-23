@@ -81,7 +81,6 @@ import {
   BillingCheckoutRequestSchema,
   BillingCheckoutResponseSchema,
   BillingPlansResponseSchema,
-  BillingStatusQuerySchema,
   BillingStatusResponseSchema,
   BillingTrialRequestSchema,
   BillingTrialResponseSchema,
@@ -143,7 +142,7 @@ const PLAN_CAP_ERRORS = {
 const ADMIN_ERRORS = {
   400: "The request is invalid.",
   401: "A valid management key, OAuth token or console sign-in is required.",
-  403: "The credential has only the read grant, or its owner is not an account owner or admin.",
+  403: "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
   404: "The app, key or provider connection does not exist in this account.",
 } as const;
 
@@ -151,7 +150,7 @@ const ADMIN_ERRORS = {
 const SESSION_ONLY_ERRORS = {
   400: "The request is invalid.",
   401: "A valid console sign-in is required.",
-  403: "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+  403: "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
   404: "Not found.",
 } as const;
 
@@ -159,7 +158,7 @@ const BILLING_ACTION_ERRORS = {
   ...SESSION_ONLY_ERRORS,
   403: "Only a person signed in to the console can do this (`session_required`), only an owner or admin can (`forbidden`), or the billing service does not allow it for this account (`billing_action_forbidden`).",
   404: "This deployment has no billing (`not_found`), or the plan or price does not exist (`billing_not_found`).",
-  409: "The account already has a live subscription (`billing_conflict`), the console's account is no longer the one selected (`account_changed`), the subscription changed since the dialog opened (`subscription_changed`), or the plan's price changed since it was shown (`price_changed`).",
+  409: "The account already has a live subscription (`billing_conflict`), the subscription changed since the dialog opened (`subscription_changed`), or the plan's price changed since it was shown (`price_changed`).",
   502: "The billing service could not be reached, or answered a payment page outside the configured payment hosts (`billing_unavailable`).",
   503: "The subscription could not be read to check it (`billing_unavailable`). Retry shortly.",
 } as const;
@@ -845,7 +844,7 @@ export const CATALOG = {
     status: 201,
     response: CreatedManagementKeyResponseSchema,
     responseDescription: "The key, shown once.",
-    errors: { ...SESSION_ONLY_ERRORS, 409: "`account_changed`: the console now acts in another account than `accountId`; nothing was created." },
+    errors: SESSION_ONLY_ERRORS,
   },
 
   revokeCredential: {
@@ -1072,7 +1071,6 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Get the account's plan and this period's allowance",
     security: "session",
-    query: BillingStatusQuerySchema,
     response: BillingStatusResponseSchema,
     responseDescription: "The plan, its limits and features, this period's requests against the allowance, and what a person may do about the subscription.",
     errors: { ...SESSION_ONLY_ERRORS, 404: "This deployment has no billing (`not_found`)." },

@@ -48,11 +48,10 @@ type Period = "month" | "year";
 /**
  * The account and subscription a write acts on, as the page showed them when
  * the person opened the dialog (or pressed the button): the gateway refuses a
- * write whose account or subscription has changed since, rather than act on
+ * write whose subscription has changed since, rather than act on
  * what the person never saw.
  */
 interface Shown {
-  accountId: string;
   subscriptionId: string | null;
   subscriptionStatus: NonNullable<ReturnType<typeof subscriptionOf>>["status"] | null;
   subscriptionPeriod: Period | null;
@@ -60,10 +59,9 @@ interface Shown {
   subscriptionUpdatedAt: string | null;
 }
 
-function shownOf(accountId: string, access: BillingAccess | undefined): Shown {
+function shownOf(access: BillingAccess | undefined): Shown {
   const subscription = subscriptionOf(access);
   return {
-    accountId,
     subscriptionId: subscription?.subscriptionId ?? null,
     subscriptionStatus: subscription?.status ?? null,
     subscriptionPeriod: subscription?.billingPeriod ?? null,
@@ -101,7 +99,7 @@ export function BillingPage() {
 
   const subscribe = async (plan: BillingPlan) => {
     try {
-      const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period, accountId: account.id });
+      const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
       window.location.assign(url);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
@@ -132,7 +130,7 @@ export function BillingPage() {
   // opens, never a copy the tab has held: that price is the one sent, and the
   // gateway refuses the change if it moved since (Sol 7b-8).
   const openChange = async (plan: BillingPlan) => {
-    const shown = shownOf(account.id, access);
+    const shown = shownOf(access);
     setPreparingChange(true);
     try {
       const fresh = await client.fetchQuery({ queryKey: keys.billingPlans, queryFn: () => call("listBillingPlans"), staleTime: 0 });
@@ -154,7 +152,7 @@ export function BillingPage() {
   const act = (plan: BillingPlan, action: PlanAction) => {
     if (action.intent === "checkout") return void subscribe(plan);
     if (action.intent === "change") return void openChange(plan);
-    if (action.intent === "cancel") return setConfirmCancel(shownOf(account.id, access));
+    if (action.intent === "cancel") return setConfirmCancel(shownOf(access));
   };
 
   const doCancel = async () => {
@@ -177,7 +175,7 @@ export function BillingPage() {
       const result = await resume.mutateAsync({
         planKey: subscription.planKey,
         billingPeriod: subscription.billingPeriod ?? period,
-        ...shownOf(account.id, access),
+        ...shownOf(access),
       });
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
@@ -222,7 +220,7 @@ export function BillingPage() {
         pending={status.isPending}
         cancelPending={cancel.isPending}
         resumePending={resume.isPending}
-        onCancel={() => setConfirmCancel(shownOf(account.id, access))}
+        onCancel={() => setConfirmCancel(shownOf(access))}
         onResume={() => void doResume()}
       />
 

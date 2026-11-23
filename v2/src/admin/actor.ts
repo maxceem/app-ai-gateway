@@ -7,7 +7,9 @@
  * - an OAuth connection's access token (`Bearer agw_oat_…`), from the CLI or
  *   an MCP client;
  * - the console's sign-in cookie, with `x-console-request: 1`, so a page on
- *   another site cannot make a signed-in browser call it.
+ *   another site cannot make a signed-in browser call it. Each console tab
+ *   names the account it acts in (`x-account-id`); without it, the account
+ *   the shared cookie selected is used, which is how a new tab opens.
  *
  * Reading needs any member. Writing needs the `manage` grant and an owner or
  * admin role, with v1's codes (`grant_insufficient`, `forbidden`). Every 401
@@ -16,6 +18,7 @@
  * Loaded only with the rest of the management code (`../management/app.ts`).
  */
 import type { AuthState, CfAuth } from "@maxceem/cf-auth";
+import { CONSOLE_ACCOUNT_HEADER } from "../contracts/access.ts";
 import type { MiddlewareHandler } from "hono";
 import { GatewayError } from "../core/errors.ts";
 import {
@@ -163,13 +166,33 @@ export const adminAuth: MiddlewareHandler<AdminEnv> = async (c, next) => {
           "WWW-Authenticate": challenge(),
         });
       }
-      c.set("actor", await managementActor(state));
+      const tabState = state.credentialType === "session" ? forTabAccount(state, c.req.header(CONSOLE_ACCOUNT_HEADER)) : state;
+      c.set("authState", tabState);
+      c.set("actor", await managementActor(tabState));
       await next();
     });
   } catch (error) {
     throw withChallenge(gatewayErrorOf(error), c.get("actor")?.credentialType === "oauth");
   }
 };
+
+/**
+ * A console session acting in the account its tab names. Every tab keeps its
+ * own account, so a switch made in one never moves another: the shared cookie
+ * only picks the account a tab opens on. The person must be an active member
+ * of the named account, read from the session's own memberships (no extra
+ * query); otherwise the request is refused, never acted on elsewhere.
+ */
+export function forTabAccount(state: AuthState, accountId: string | undefined): AuthState {
+  const named = accountId?.trim();
+  if (!named) return state;
+  if (state.organization?.id === named) return state;
+  const membership = state.memberships.find((entry) => entry.organization.id === named && entry.status === "active");
+  if (membership === undefined) {
+    throw new GatewayError(403, "account_forbidden", "You are not a member of this account");
+  }
+  return { ...state, organization: membership.organization, role: membership.role };
+}
 
 /** Adds the `Bearer` challenge a refusal owes: every 401, and an OAuth token short of its grant. */
 function withChallenge(error: unknown, oauth: boolean): unknown {

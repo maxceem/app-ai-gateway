@@ -6194,11 +6194,6 @@
               "manage"
             ],
             "default": "manage"
-          },
-          "accountId": {
-            "type": "string",
-            "minLength": 1,
-            "description": "The account you mean. If the console now acts in another one, the key is not created (`409 account_changed`)."
           }
         },
         "required": [
@@ -7613,7 +7608,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7701,7 +7696,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7802,7 +7797,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7892,7 +7887,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7992,7 +7987,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8090,7 +8085,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8182,7 +8177,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8262,7 +8257,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8344,7 +8339,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8425,7 +8420,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8535,7 +8530,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8646,7 +8641,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8786,7 +8781,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8888,7 +8883,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8980,7 +8975,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9071,7 +9066,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9191,7 +9186,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9274,7 +9269,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9367,7 +9362,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9471,7 +9466,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9611,7 +9606,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9884,7 +9879,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9979,7 +9974,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10140,7 +10135,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10303,7 +10298,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10418,7 +10413,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10511,7 +10506,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10581,7 +10576,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10650,7 +10645,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10738,7 +10733,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10838,7 +10833,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10919,7 +10914,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11009,7 +11004,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11099,7 +11094,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11189,7 +11184,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11311,7 +11306,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11421,7 +11416,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11553,7 +11548,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11665,7 +11660,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11744,7 +11739,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11878,7 +11873,7 @@
             }
           },
           "403": {
-            "description": "The credential has only the read grant, or its owner is not an account owner or admin.",
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11995,7 +11990,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12071,7 +12066,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12138,7 +12133,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12215,7 +12210,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12226,16 +12221,6 @@
           },
           "404": {
             "description": "Not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "`account_changed`: the console now acts in another account than `accountId`; nothing was created.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12304,7 +12289,7 @@
             }
           },
           "403": {
-            "description": "Only a person signed in to the console can do this (`session_required`), or the account role is too low.",
+            "description": "Only a person signed in to the console can do this (`session_required`), the account role is too low, or the tab names an account the person is not a member of (`account_forbidden`).",
             "content": {
               "application/json": {
                 "schema": {

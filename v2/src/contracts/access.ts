@@ -8,6 +8,15 @@ import { z } from "zod";
 import { SessionBillingSchema } from "./billing.ts";
 
 export const ACCOUNT_ROLES = ["owner", "admin", "member"] as const;
+
+/**
+ * The account a console tab acts in, sent with each of its management calls.
+ * Each tab keeps its own account: the shared cookie only picks the account a
+ * new tab opens on. A person who is not an active member of the named account
+ * is refused (`403 account_forbidden`). Credentials bound to one account
+ * (management keys, OAuth tokens) ignore it.
+ */
+export const CONSOLE_ACCOUNT_HEADER = "x-account-id";
 export const GRANTS = ["read", "manage"] as const;
 
 const AccountSchema = z
@@ -80,14 +89,6 @@ export const ManagementKeyCreateRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
     grant: z.enum(GRANTS).default("manage"),
-    /**
-     * The account the caller means. The console's account is one cookie
-     * shared by every tab, so a tab still showing another account sends it
-     * and is refused, instead of creating the key where the person did not look.
-     */
-    accountId: z.string().min(1).optional().meta({
-      description: "The account you mean. If the console now acts in another one, the key is not created (`409 account_changed`).",
-    }),
   })
   .strict()
   .meta({ id: "ManagementKeyCreateRequest" });

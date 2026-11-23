@@ -197,13 +197,6 @@ export const BillingPlanSelectionSchema = z.object({
 }).meta({ id: "BillingPlanSelection" });
 
 /**
- * The account the console showed when the person acted. A write whose account
- * is no longer the one selected (another tab switched it) is refused with
- * `account_changed` rather than applied to the other account.
- */
-const ShownAccount = { accountId: z.string().min(1).max(200) };
-
-/**
  * The subscription the console showed when the dialog opened: its id, status
  * and period, each `null` where it showed none, and when the billing service
  * last changed it. A write on a subscription replaced, or changed in any way
@@ -233,29 +226,21 @@ export const ShownPriceSchema = z.object({
  * A checkout. The gateway chooses where the provider sends the person back
  * (the console's own pages); there is nothing to choose here.
  */
-/**
- * A status read may name the account it expects: the checkout return's
- * confirmation does, so a read answered for another account selected since is
- * refused (`account_changed`), never taken as this one's plan (Sol 7b-8).
- */
-export const BillingStatusQuerySchema = z.object({ account: z.string().min(1).max(200).optional() }).meta({ id: "BillingStatusQuery" });
+export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend({}).meta({ id: "BillingCheckoutRequest" });
 
-export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend(ShownAccount).meta({ id: "BillingCheckoutRequest" });
-
-/** A change, on the account and subscription the console showed, at the price it showed. */
+/** A change, on the subscription the console showed, at the price it showed. */
 export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({
-  ...ShownAccount,
   ...ShownSubscription,
   price: ShownPriceSchema,
 }).meta({ id: "BillingChangeRequest" });
 
 /** A resume, on the account and subscription the console showed. */
-export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownAccount, ...ShownSubscription }).meta({
+export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend(ShownSubscription).meta({
   id: "BillingResumeRequest",
 });
 
 /** A cancel, on the account and subscription the console showed. */
-export const BillingCancelRequestSchema = z.object({ ...ShownAccount, ...ShownSubscription }).meta({ id: "BillingCancelRequest" });
+export const BillingCancelRequestSchema = z.object(ShownSubscription).meta({ id: "BillingCancelRequest" });
 
 export const BillingCheckoutResponseSchema = z.object({ url: z.string() }).meta({ id: "BillingCheckoutResponse" });
 
@@ -267,7 +252,7 @@ export const BillingChangeResponseSchema = z.object({
 
 export const BillingCancelResponseSchema = z.object({ ok: z.literal(true) }).meta({ id: "BillingCancelResponse" });
 
-export const BillingTrialRequestSchema = z.object({ planKey: z.string().min(1).max(100), ...ShownAccount }).meta({ id: "BillingTrialRequest" });
+export const BillingTrialRequestSchema = z.object({ planKey: z.string().min(1).max(100) }).meta({ id: "BillingTrialRequest" });
 
 export const BillingTrialResponseSchema = BillingAccessSchema.meta({ id: "BillingTrialResponse" });
 

@@ -7,6 +7,7 @@ import {
   type OperationRequest,
   type OperationResponse,
 } from "@contracts/catalog";
+import { withTabAccount } from "./tab-account";
 
 export class ApiError extends Error {
   constructor(
@@ -54,14 +55,16 @@ function toApiError(status: number, payload: unknown): ApiError {
 
 /**
  * Every call rides the HttpOnly session cookie plus the header the Worker
- * requires, so a cross-site request can never reach the admin API.
+ * requires, so a cross-site request can never reach the admin API. It also
+ * names the account this tab acts in (`x-account-id`), so each tab keeps its
+ * own account.
  *
  * Exported for `./auth`, which talks to Better Auth's own surface: those five
  * endpoints are the library's, not this gateway's, so they have no catalog
  * entry to be sent through.
  */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
+  const headers = withTabAccount(new Headers(init.headers));
   headers.set("x-console-request", "1");
   if (init.body !== undefined) headers.set("content-type", "application/json");
 

@@ -6,16 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BillingPage } from "./billing";
-import { CAPABILITIES, renderAuthenticated, testSession } from "@/test/render";
-import type { ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ConsoleSessionProvider } from "@/lib/console-session";
-import { keys } from "@/lib/queries";
+import { renderAuthenticated } from "@/test/render";
 import type {
   BillingAccess,
   EntitledPlan,
   PlanAllowance,
-  Session,
   SubscriptionState,
 } from "@/lib/types";
 
@@ -291,7 +286,6 @@ describe("BillingPage", () => {
       expect(JSON.parse(String(call![1]!.body))).toEqual({
         planKey: "pro",
         billingPeriod: "month",
-        accountId: "acct-1",
       });
     });
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/session"));
@@ -328,7 +322,6 @@ describe("BillingPage", () => {
         planKey: "team",
         billingPeriod: "year",
         price: { priceAmountCents: 50000, priceCurrency: "USD" },
-        accountId: "acct-1",
         subscriptionId: "sub-console-page",
         subscriptionStatus: "active",
         subscriptionPeriod: "year",
@@ -379,7 +372,7 @@ describe("BillingPage", () => {
     expect(within(team).getByRole("button", { name: /upgrade to Team/i })).toHaveProperty("disabled", true);
   });
 
-  it("cancels the subscription the page showed, on the account it showed", async () => {
+  it("cancels the subscription the page showed", async () => {
     const fetchMock = stubBilling(billed(PAID_PLAN, subscription()));
     renderBilling();
 
@@ -389,48 +382,12 @@ describe("BillingPage", () => {
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/cancel"));
       expect(JSON.parse(String(call![1]!.body))).toEqual({
-        accountId: "acct-1",
         subscriptionId: "sub-console-page",
         subscriptionStatus: "active",
         subscriptionPeriod: "month",
         subscriptionUpdatedAt: "2025-01-01T00:00:00.000Z",
       });
     });
-  });
-
-  it("reads the status of the account it shows, and follows another account selected since (Sol 7b-8)", async () => {
-    // Another tab selected acct-2; this tab still shows acct-1.
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/billing/plans")) return new Response(JSON.stringify({ plans: PLANS }), { status: 200 });
-      if (url.includes("/billing/status?account=acct-1")) {
-        return new Response(JSON.stringify({ error: { code: "account_changed", message: "Another account is selected" } }), { status: 409 });
-      }
-      if (url.includes("/billing/status?account=acct-2")) {
-        const access = billed(PAID_PLAN, subscription());
-        return new Response(JSON.stringify({ access, allowance: null, limits: {}, features: { conversationStorage: true }, actions: actionsFor(access) }), { status: 200 });
-      }
-      if (url.includes("/get-session")) return new Response(JSON.stringify({ session: {} }), { status: 200 });
-      if (url.includes("/v2/admin/session")) {
-        return new Response(JSON.stringify({ session: testSession({ account: { id: "acct-2", name: "Other" } }) }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    // The console's session, as the app feeds it: from the cached session query.
-    function FromSession({ children }: { children: ReactNode }) {
-      const { data } = useQuery({ queryKey: keys.session, queryFn: () => null, enabled: false });
-      const session = (data as Session | null | undefined) ?? testSession();
-      return <ConsoleSessionProvider session={session} capabilities={{ ...CAPABILITIES, billing: true }}>{children}</ConsoleSessionProvider>;
-    }
-    renderAuthenticated(<FromSession><BillingPage /></FromSession>, { capabilities: { billing: true } });
-
-    // The tab follows the switch, and shows acct-2's plan from a read that names acct-2.
-    const title = await screen.findByText(/current plan:/i);
-    await waitFor(() => expect(title.textContent).toMatch(/Current plan:\s*Pro/));
-    const reads = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/billing/status"));
-    expect(reads.filter((url) => url.includes("account=acct-1"))).toHaveLength(1);
-    expect(reads.every((url) => /account=acct-[12]/.test(url))).toBe(true);
   });
 
   it("offers cancel for a live subscription and resume for a cancelled one", async () => {

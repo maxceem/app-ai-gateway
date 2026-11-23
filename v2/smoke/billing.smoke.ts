@@ -27,11 +27,11 @@ const skipConsole =
 const OPERATIONS = [
   ["GET", "/v2/admin/billing/plans"],
   ["GET", "/v2/admin/billing/status"],
-  ["POST", "/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "month", accountId: "any" }],
-  ["POST", "/v2/admin/billing/change", { planKey: "smoke-pro", billingPeriod: "month", accountId: "any", subscriptionId: null }],
-  ["POST", "/v2/admin/billing/resume", { planKey: "smoke-pro", billingPeriod: "month", accountId: "any", subscriptionId: null }],
-  ["POST", "/v2/admin/billing/cancel", { accountId: "any", subscriptionId: null }],
-  ["POST", "/v2/admin/billing/trial", { planKey: "smoke-pro", accountId: "any" }],
+  ["POST", "/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "month" }],
+  ["POST", "/v2/admin/billing/change", { planKey: "smoke-pro", billingPeriod: "month", subscriptionId: null }],
+  ["POST", "/v2/admin/billing/resume", { planKey: "smoke-pro", billingPeriod: "month", subscriptionId: null }],
+  ["POST", "/v2/admin/billing/cancel", { subscriptionId: null }],
+  ["POST", "/v2/admin/billing/trial", { planKey: "smoke-pro" }],
 ] as const;
 
 test("account status shows the plan and this period's allowance; billing operations are a person's alone", { skip: skipKey, timeout: TEST_TIMEOUT_MS }, async () => {
@@ -65,10 +65,10 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   await expectResponse(signedUp, 200, "the sign-up");
   const cookie = signedUp.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
   check(cookie.includes("session_token="), "the sign-up set no session cookie");
-  const asConsole = (path: string, json?: unknown) =>
+  const asConsole = (path: string, json?: unknown, headers: Record<string, string> = {}) =>
     send(path, consoleUrl, {
       method: json === undefined ? "GET" : "POST",
-      headers: { cookie, "x-console-request": "1", origin, "content-type": "application/json" },
+      headers: { cookie, "x-console-request": "1", origin, "content-type": "application/json", ...headers },
       ...(json === undefined ? {} : { body: JSON.stringify(json) }),
     });
 
@@ -87,31 +87,31 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   same(read.features.conversationStorage, true, "a plan with no feature list does not include conversations");
   same(read.actions, { cancel: false, resume: false, manual: false }, "an account with no subscription is offered actions");
 
-  // Every write names the account the console showed.
+  // Each console tab names the account it acts in (x-account-id): its own
+  // account is served, one the person is not a member of is refused.
   const session = await asConsole("/v2/admin/session");
   await expectResponse(session, 200, "the session");
   const accountId = (await readJson(session)).session.account.id as string;
   check(typeof accountId === "string" && accountId !== "", "the session names no account");
+  const named = await asConsole("/v2/admin/session", undefined, { "x-account-id": accountId });
+  await expectResponse(named, 200, "a session naming its own account");
+  same((await readJson(named)).session.account.id, accountId, "a session naming its own account");
+  const notMember = await asConsole("/v2/admin/session", undefined, { "x-account-id": "acc_not_a_member" });
+  await expectResponse(notMember, 403, "a session naming an account the person is not a member of");
+  expectCode(await readJson(notMember), "account_forbidden", "a session naming an account the person is not a member of");
 
   // A return page the caller sends is ignored: the gateway picks the console's own.
   const checkout = await asConsole("/v2/admin/billing/checkout", {
     planKey: "smoke-pro",
     billingPeriod: "month",
-    accountId,
     successUrl: "https://elsewhere.invalid/thanks",
   });
   await expectResponse(checkout, 200, "the checkout");
   same((await readJson(checkout)).url, "https://checkout.invalid/smoke/smoke-pro", "the checkout is not the mock's");
 
-  // A write for an account other than the one selected is refused.
-  const elsewhere = await asConsole("/v2/admin/billing/checkout", { planKey: "smoke-pro", billingPeriod: "month", accountId: "another-account" });
-  await expectResponse(elsewhere, 409, "a checkout for another account");
-  expectCode(await readJson(elsewhere), "account_changed", "a checkout for another account");
-
   // A write on a subscription changed since the dialog opened is refused: this
   // account holds none, so one shown with a last-changed time is not it.
   const changed = await asConsole("/v2/admin/billing/cancel", {
-    accountId,
     subscriptionId: null,
     subscriptionStatus: null,
     subscriptionPeriod: null,
@@ -124,7 +124,6 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   const unknown = await asConsole("/v2/admin/billing/change", {
     planKey: "no-such-plan",
     billingPeriod: "month",
-    accountId,
     subscriptionId: null,
     subscriptionStatus: null,
     subscriptionPeriod: null,

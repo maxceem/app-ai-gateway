@@ -38,13 +38,9 @@ const PLANS = [
 ];
 
 /** The billing service as the console reads it, through the gateway. */
-function stubBilling(access: BillingAccess, reading: PlanAllowance | null = null, selected: () => string = () => "acct-1") {
+function stubBilling(access: BillingAccess, reading: PlanAllowance | null = null) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
-    // The session as the browser has it now: the account another tab may have selected.
-    if (url.includes("/v2/admin/session")) {
-      return new Response(JSON.stringify({ session: testSession({ account: { id: selected(), name: selected() } }) }), { status: 200 });
-    }
     if (url.includes("/billing/plans")) return new Response(JSON.stringify({ plans: PLANS }), { status: 200 });
     if (url.includes("/billing/checkout")) return new Response(JSON.stringify({ url: "https://checkout.example/pay" }), { status: 200 });
     if (url.includes("/billing/status")) {
@@ -157,46 +153,8 @@ describe("a plan chosen before sign-in", () => {
     renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
     const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/checkout"));
-    // The account it acts on; where the provider sends the person back is the gateway's to choose.
-    expect(JSON.parse(String(call![1]!.body))).toEqual({ planKey: "pro", billingPeriod: "month", accountId: "acct-1" });
-  });
-
-  it("starts no checkout while the current plan read is refused for an account switch, and starts afresh for the account switched to (Sol 7b-8)", async () => {
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
-    const fetchMock = stubBilling(FREE, null, () => "acct-2");
-    const answer = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input, init) => {
-      const url = String(input);
-      // Another tab selected acct-2: the gateway refuses reads and checkouts for acct-1.
-      if (url.includes("/billing/status?account=acct-1")) {
-        return new Response(JSON.stringify({ error: { code: "account_changed", message: "changed" } }), { status: 409 });
-      }
-      if (url.includes("/billing/checkout") && JSON.parse(String(init?.body)).accountId === "acct-1") {
-        return new Response(JSON.stringify({ error: { code: "account_changed", message: "changed" } }), { status: 409 });
-      }
-      return answer(input, init);
-    });
-    let switchTo!: (accountId: string) => void;
-    function Switchable({ children }: { children: ReactNode }) {
-      const [accountId, setAccountId] = useState("acct-1");
-      switchTo = setAccountId;
-      const session = testSession({
-        account: { id: accountId, name: accountId },
-        accounts: [membership("acct-1", "Acme"), membership("acct-2", "Other")],
-      });
-      return <ConsoleSessionProvider session={session} capabilities={{ ...CAPABILITIES, billing: true }}>{children}</ConsoleSessionProvider>;
-    }
-    const { client } = renderAuthenticated(<Switchable><CheckoutPage /></Switchable>, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account=acct-1"))).toBe(true));
-    await settled(client);
-    const checkouts = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/checkout"));
-    expect(checkouts()).toHaveLength(0);
-    expect(screen.queryByText("Could not start checkout")).toBeNull();
-    // The console follows the switch: the checkout starts for acct-2.
-    act(() => switchTo("acct-2"));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
-    expect(checkouts().map(([, init]) => JSON.parse(String(init!.body)).accountId)).toEqual(["acct-2"]);
+    // The plan and period only: the tab names the account, and where the provider sends the person back is the gateway's to choose.
+    expect(JSON.parse(String(call![1]!.body))).toEqual({ planKey: "pro", billingPeriod: "month" });
   });
 
   it("sends a member, or a plan already held, to the plans page, and a deployment without billing to the apps", async () => {
@@ -250,21 +208,21 @@ describe("the return from a completed checkout", () => {
     expect(statusReads(fetchMock)).toBeLessThanOrEqual(PLAN_CONFIRM_CHECKS + 1);
   });
 
-  it("asks for the plan of the account the checkout was for, in its own reads with no retries (Sol 7b-8)", async () => {
+  it("reads the plan in its own reads, each one stoppable and never retried (Sol 7b-8)", async () => {
     const success = vi.spyOn(toast, "success");
     const fetchMock = stubBilling(PAID);
     renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
     await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
-    const confirming = fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account=acct-1"));
-    expect(confirming.length).toBeGreaterThanOrEqual(1);
-    for (const [, init] of confirming) expect(init?.signal).toBeInstanceOf(AbortSignal);
+    const reads = fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status"));
+    expect(reads.length).toBeGreaterThanOrEqual(1);
+    for (const [, init] of reads) expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("shows nothing for a return that names another account, and reads nothing for it (Sol 7b-8)", async () => {
+  it("shows nothing for a return that names another account than the tab's (Sol 7b-8)", async () => {
     const loading = vi.spyOn(toast, "loading");
     const success = vi.spyOn(toast, "success");
     const info = vi.spyOn(toast, "info");
-    const fetchMock = stubBilling(PAID);
+    stubBilling(PAID);
     const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
       capabilities: { billing: true },
       route: checkoutReturnPathFor("pro", "acct-other"),
@@ -273,26 +231,6 @@ describe("the return from a completed checkout", () => {
     expect(loading).not.toHaveBeenCalled();
     expect(success).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account=acct-other"))).toBe(false);
-  });
-
-  it("stops, saying nothing, once the gateway says another account is selected (Sol 7b-8)", async () => {
-    const success = vi.spyOn(toast, "success");
-    const info = vi.spyOn(toast, "info");
-    const dismiss = vi.spyOn(toast, "dismiss");
-    const fetchMock = stubBilling(PAID);
-    const answer = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input, init) =>
-      String(input).includes("/billing/status?account=")
-        ? new Response(JSON.stringify({ error: { code: "account_changed", message: "changed" } }), { status: 409 })
-        : answer(input, init),
-    );
-    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
-    expect(success).not.toHaveBeenCalled();
-    expect(info).not.toHaveBeenCalled();
-    // The page's own read and the one confirming read, neither retried.
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account="))).toHaveLength(2);
   });
 
   it("stops, saying nothing, when the person switches accounts while the payment is being confirmed (Sol 7b-8)", async () => {
@@ -326,20 +264,7 @@ describe("the return from a completed checkout", () => {
     expect(dismiss).toHaveBeenCalledWith("checkout-return");
     // The read for the first account lands afterwards, showing the plan bought: nothing is announced.
     release();
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account=acct-2"))).toBe(true));
-    await settled(client);
-    expect(success).not.toHaveBeenCalled();
-    expect(info).not.toHaveBeenCalled();
-  });
-
-  it("announces nothing when another tab switched accounts while the plan was being read (Sol 7b-8)", async () => {
-    const success = vi.spyOn(toast, "success");
-    const info = vi.spyOn(toast, "info");
-    const dismiss = vi.spyOn(toast, "dismiss");
-    // The plan read for acct-1 shows the plan bought, but by then the browser's selected account is acct-2.
-    stubBilling(PAID, null, () => "acct-2");
-    const { client } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
+    await waitFor(() => expect(statusReads(fetchMock)).toBeGreaterThanOrEqual(2));
     await settled(client);
     expect(success).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();

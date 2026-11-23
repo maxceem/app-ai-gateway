@@ -2,11 +2,11 @@ import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ApiError, call } from "./api";
+import { call } from "./api";
 import type { OperationResponse } from "@contracts/catalog";
 import { checkoutAccountFrom, checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { useConsoleSession } from "./console-session";
-import { keys, selectedAccountNow } from "./queries";
+import { keys } from "./queries";
 
 /**
  * How often, and how many times, the plan is read after the return. The
@@ -22,28 +22,25 @@ export const PLAN_CONFIRM_READ_MS = 2_500;
 
 type PlanRead =
   | { readonly kind: "plan"; readonly status: OperationResponse<"getBillingStatus"> }
-  /** The console's account is no longer the one the checkout was for. */
-  | { readonly kind: "account_changed" }
   /** Failed or too slow: counts as not yet confirmed. */
   | { readonly kind: "none" };
 
 /**
  * One read of the plan for the confirmation (Sol 7b-8). Each is its own
  * request, outside the billing page's cached status, so no other read's answer
- * is ever taken for it. It names the account the checkout was for, and the
- * gateway refuses with `account_changed` if another account is selected. It
- * is never retried, and is stopped at its deadline or when the page goes.
+ * is ever taken for it. It reads this tab's account, which is the one the
+ * checkout was for. It is never retried, and is stopped at its deadline or
+ * when the page goes.
  */
-async function readPlanOnce(accountId: string, stop: AbortSignal): Promise<PlanRead> {
+async function readPlanOnce(stop: AbortSignal): Promise<PlanRead> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   stop.addEventListener("abort", abort);
   const timer = setTimeout(abort, PLAN_CONFIRM_READ_MS);
   try {
-    const status = await call("getBillingStatus", { query: { account: accountId }, signal: controller.signal });
+    const status = await call("getBillingStatus", { signal: controller.signal });
     return { kind: "plan", status };
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 409 && error.code === "account_changed") return { kind: "account_changed" };
+  } catch {
     return { kind: "none" };
   } finally {
     clearTimeout(timer);
@@ -126,13 +123,6 @@ export function useCheckoutSuccessToast(): void {
       received();
       return;
     }
-    /*
-     * Right before the final notice, the selected account is read afresh: the
-     * gateway checked it when the plan read started, and another tab may have
-     * switched since (Sol 7b-8). If it cannot be read, or names another
-     * account, the confirmation ends silently.
-     */
-    const stillThisAccount = async (): Promise<boolean> => (await selectedAccountNow(client)) === checkoutAccount;
     toast.loading("Confirming your payment…", { id: TOAST_ID });
     confirming.current = checkoutAccount;
     const done = () => {
@@ -145,7 +135,7 @@ export function useCheckoutSuccessToast(): void {
       // under the second mount, and one stopped by a real unmount ends here.
       const stop = reads.current;
       if (stop === undefined || stop.signal.aborted) return;
-      const read = await readPlanOnce(checkoutAccount, stop.signal);
+      const read = await readPlanOnce(stop.signal);
       if (stop.signal.aborted) {
         void check(left);
         return;
@@ -153,25 +143,10 @@ export function useCheckoutSuccessToast(): void {
       // Checked again as the answer lands: an account switched to meanwhile
       // has already ended this confirmation.
       if (confirming.current !== checkoutAccount) return;
-      if (read.kind === "account_changed") {
-        done();
-        toast.dismiss(TOAST_ID);
-        return;
-      }
       const access = read.kind === "plan" ? read.status.access : null;
       const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;
       if (bought !== null || left <= 1) {
-        const announce = await stillThisAccount();
-        if (stop.signal.aborted) {
-          void check(left);
-          return;
-        }
-        if (confirming.current !== checkoutAccount) return;
         done();
-        if (!announce) {
-          toast.dismiss(TOAST_ID);
-          return;
-        }
         if (bought !== null) {
           toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${bought.planName} plan.` });
           void client.invalidateQueries({ queryKey: keys.session });

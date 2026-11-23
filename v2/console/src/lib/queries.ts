@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
+import { setTabAccount, tabAccount } from "./tab-account";
 import {
   changePassword,
   plainlySignedOut,
@@ -61,7 +62,26 @@ export function useCapabilities() {
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
-const readSession = async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session;
+export const readSession = async () => {
+  if (await plainlySignedOut()) {
+    setTabAccount(null);
+    return null;
+  }
+  let session;
+  try {
+    session = (await call("getAdminSession")).session;
+  } catch (error) {
+    // The tab names an account the person is not (or no longer) a member of:
+    // it opens on the account the session selects instead.
+    if (!(error instanceof ApiError && error.code === "account_forbidden") || tabAccount() === null) throw error;
+    setTabAccount(null);
+    session = (await call("getAdminSession")).session;
+  }
+  // A tab opening takes the account the session answers with, and keeps it:
+  // later reads name it, so a switch in another tab never moves this one.
+  if (tabAccount() === null) setTabAccount(session.account.id);
+  return session;
+};
 
 export function useSession() {
   return useQuery({
@@ -95,6 +115,7 @@ export function useSignOut() {
     // Clearing rather than invalidating drops every account-scoped cache, so
     // the next operator never sees the previous one's data.
     onSettled: () => {
+      setTabAccount(null);
       client.clear();
     },
   });
@@ -133,6 +154,8 @@ export function useSelectAccount() {
   return useMutation({
     mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
     onSuccess: async (result) => {
+      // This tab moves to it; the gateway also makes it the account new tabs open on.
+      setTabAccount(result.session.account.id);
       client.setQueryData(keys.session, result.session);
       await dropAccountData(client);
     },
@@ -147,42 +170,9 @@ export function useSelectAccount() {
  * screen. The session was just replaced, and the capabilities describe the
  * deployment, so both are kept.
  */
-async function dropAccountData(client: QueryClient, alsoKept: (key: readonly unknown[]) => boolean = () => false): Promise<void> {
+async function dropAccountData(client: QueryClient): Promise<void> {
   const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
-  await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) && !alsoKept(query.queryKey) });
-}
-
-/** The gateway refused a read for an account that is no longer the one selected. */
-export const isAccountChanged = (error: unknown) =>
-  error instanceof ApiError && error.status === 409 && error.code === "account_changed";
-
-/**
- * Another tab selected another account: this tab takes it on, as if the
- * switch were made here, so it never goes on showing one account's data under
- * another's name (Sol 7b-8).
- */
-export async function followSelectedAccount(client: QueryClient, refusedAccountId: string): Promise<void> {
-  const session = await client.fetchQuery({ queryKey: keys.session, queryFn: readSession, staleTime: 0 });
-  // Only a session that has moved on is followed: reading again for the
-  // account just refused would only be refused again.
-  // The refused read itself is left alone: it belongs to the account just
-  // left, and refetching it would only be refused again.
-  if (session && session.account.id !== refusedAccountId) {
-    await dropAccountData(client, (key) => key[0] === keys.billingStatusPrefix[0] && key[1] === refusedAccountId);
-  }
-}
-
-/**
- * The account the browser has selected right now, read afresh from the
- * session (another tab may have switched it), or null when it cannot be read.
- */
-export async function selectedAccountNow(client: QueryClient): Promise<string | null> {
-  try {
-    const session = await client.fetchQuery({ queryKey: keys.session, queryFn: readSession, staleTime: 0, retry: false });
-    return session?.account.id ?? null;
-  } catch {
-    return null;
-  }
+  await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) });
 }
 
 /** Management keys, CLI logins and MCP connections, in one list. */
@@ -515,23 +505,13 @@ export function useRejectionEvents(appId: string, query: RejectionQuery) {
 
 /**
  * The account's plan and allowance. Polled gently, since the allowance moves
- * with every request. Each read names the account the console shows, and is
- * kept under it: if another tab has selected another account since, the
- * gateway refuses rather than answer for that one (`account_changed`), and
- * this tab follows the switch (Sol 7b-8).
+ * with every request. Kept under the account it was read for, so a switch
+ * never shows one account's plan under another's name.
  */
 export function useBillingStatus(enabled: boolean, accountId: string) {
-  const client = useQueryClient();
   return useQuery({
     queryKey: keys.billingStatus(accountId),
-    queryFn: async ({ signal }) => {
-      try {
-        return await call("getBillingStatus", { query: { account: accountId }, signal });
-      } catch (error) {
-        if (isAccountChanged(error)) void followSelectedAccount(client, accountId).catch(() => undefined);
-        throw error;
-      }
-    },
+    queryFn: ({ signal }) => call("getBillingStatus", { signal }),
     enabled,
     staleTime: 30_000,
     refetchInterval: enabled ? 5 * 60_000 : false,
