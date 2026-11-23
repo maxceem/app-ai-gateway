@@ -16,8 +16,12 @@
  * origin check, refusals included, so a browser client can read why.
  */
 import type { CfAuth } from "@maxceem/cf-auth";
-import { Hono, type ExecutionContext as HonoExecutionContext } from "hono";
+import { Hono, type Context, type ExecutionContext as HonoExecutionContext } from "hono";
+import { clientOf, endingOf, refusalOf, recordManagementCall, type CallEnding } from "../analytics/management.ts";
+import { credentialRefusalReason } from "../admin/credential-refusal.ts";
 import { gatewayErrorOf } from "../auth/identity.ts";
+import { requestIdOf } from "../core/request-id.ts";
+import { presentedCredential } from "../management/analytics.ts";
 import { allowedBrowserOrigins, consoleOrigin, secureOrigin, setting } from "../auth/settings.ts";
 import { GatewayError } from "../core/errors.ts";
 import { authenticateMcp } from "./auth.ts";
@@ -68,8 +72,24 @@ app.all(MCP_PATH, async (c) => {
   }
   const answer = await (async () => {
     if (c.req.method === "OPTIONS") return new Response(null, { status: 204 });
-    const auth = await authenticateMcp(c);
-    if (auth instanceof Response) return auth;
+    const started = Date.now();
+    let auth: Awaited<ReturnType<typeof authenticateMcp>>;
+    try {
+      auth = await authenticateMcp(c);
+    } catch (error) {
+      // A gate that failed rather than refused is answered by the entry module, and counted here as what it answers.
+      recordGateRefusal(c, refusalOf(gatewayErrorOf(error)), started);
+      throw error;
+    }
+    if (auth instanceof Response) {
+      recordGateRefusal(c, {
+        ...endingOf(auth.status),
+        code: "auth_required",
+        // A cookie is never a credential here, so a browser's is no credential at all.
+        reason: credentialRefusalReason((name) => c.req.header(name), { cookies: false }),
+      }, started);
+      return auth;
+    }
     let executionCtx: HonoExecutionContext | undefined;
     try {
       executionCtx = c.executionCtx;
@@ -84,6 +104,28 @@ app.all(MCP_PATH, async (c) => {
   for (const [name, value] of Object.entries(cors)) response.headers.set(name, value);
   return response;
 });
+
+/**
+ * A call the bearer gate refused or failed on, for management analytics: no
+ * tool ran and no account is known, only the credential it presented. A tool
+ * call that got through is recorded by the server, per tool.
+ */
+function recordGateRefusal(c: Context<McpEnv>, ending: CallEnding, started: number): void {
+  recordManagementCall(c.env, {
+    accountId: null,
+    channel: "mcp",
+    credential: presentedCredential(c),
+    identity: null,
+    operation: null,
+    tool: null,
+    kind: null,
+    ...ending,
+    client: clientOf(c.req.header("user-agent")),
+    clientVersion: null,
+    requestId: requestIdOf(c.req.header("cf-ray")),
+    durationMs: Date.now() - started,
+  });
+}
 
 app.notFound((c) => c.json(NOT_FOUND, 404));
 

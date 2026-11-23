@@ -88,6 +88,12 @@ export interface GatewayErrorDetails {
   /** The end user a refusal knew, such as an issuer token missing an entitlement claim. */
   userId?: string;
   data?: GatewayErrorData;
+  /**
+   * The top-level request field a validation refusal names, and the schema's
+   * issue code for it, such as `invalid_type`. Never its value. Read only by
+   * management analytics (`src/analytics/management.ts`).
+   */
+  field?: { name: string; issue: string };
   cause?: unknown;
 }
 
@@ -95,6 +101,7 @@ export class GatewayError extends Error {
   readonly reason?: GatewayErrorReason;
   readonly userId?: string;
   readonly data?: GatewayErrorData;
+  readonly field?: { name: string; issue: string };
 
   constructor(
     readonly status: number,
@@ -108,5 +115,6 @@ export class GatewayError extends Error {
     this.reason = details.reason;
     this.userId = details.userId;
     this.data = details.data;
+    this.field = details.field;
   }
 }

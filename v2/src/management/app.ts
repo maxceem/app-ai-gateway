@@ -68,6 +68,7 @@ import { getAppAuthEventSummary, listAppAuthEvents, listAppRejectionEvents } fro
 import { getAppConversationFile, listAppConversations } from "../admin/conversations.ts";
 import { CATALOG, type OperationName } from "../contracts/catalog.ts";
 import { honoPath } from "../contracts/client-catalog.ts";
+import { managementAnalytics } from "./analytics.ts";
 import { consoleRoutes } from "./console-routes.ts";
 import { identityRoutes } from "./identity-routes.ts";
 import { oauthRoutes } from "./oauth-routes.ts";
@@ -75,6 +76,9 @@ import { oauthRoutes } from "./oauth-routes.ts";
 type ManagementEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 
 const app = new Hono<ManagementEnv>();
+
+// First, so every management call is seen, its refusals included (only where the deployment binds the dataset).
+app.use("*", managementAnalytics);
 
 const path = (name: OperationName): string => honoPath(CATALOG[name].path);
 
