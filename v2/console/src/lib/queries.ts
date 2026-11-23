@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
-import { call } from "./api";
+import { ApiError, call } from "./api";
+import { currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
+import { stopPaymentConfirmation } from "./checkout-return";
+import { checkoutReturnAccount } from "./auth-redirect";
+import type { Session } from "./types";
 import {
   changePassword,
   plainlySignedOut,
@@ -34,6 +38,10 @@ export const keys = {
   rejections: (appId: string, query: unknown) => ["rejection-events", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
+  /** Every account's billing status, for an invalidation that is about all of them. */
+  billingStatusPrefix: ["billing-status"] as const,
+  billingStatus: (accountId: string) => ["billing-status", accountId] as const,
+  billingPlans: ["billing-plans"] as const,
 };
 
 /**
@@ -50,17 +58,50 @@ export function useCapabilities() {
 }
 
 /**
- * The operator's identity, current account and role.
+ * The operator's identity, current account and role, for the account this
+ * tab names (a new tab: the one the shared cookie selects).
  *
  * Better Auth is asked first, and a browser it says is signed out is answered
  * `null` without a management call, which could only have been refused. A
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
+/** A page that is about to reload: nothing renders from it meanwhile. */
+const reloading = new Promise<never>(() => undefined);
+
+export const readSession = async (signal?: AbortSignal): Promise<Session | null> => {
+  // A session that has expired keeps the tab's saved account: after signing
+  // in again, the tab comes back to it. Only signing out forgets it.
+  if (await plainlySignedOut()) return null;
+  const named = tabAccount();
+  let session: Session;
+  try {
+    session = (await call("getAdminSession", signal === undefined ? {} : { signal })).session;
+  } catch (error) {
+    // The tab's saved account is not (or no longer) the person's: the
+    // request code has already made the tab fall back to the account the
+    // session selects, reloading once.
+    if (error instanceof ApiError && error.code === "account_forbidden" && named !== null) return reloading;
+    throw error;
+  }
+  if (named !== null) return session;
+  // A tab with no saved account. A checkout return (or the sign-in page
+  // carrying one) names the account it was for: a candidate only, taken when
+  // the person is an active member of it, as an account switch.
+  const returned = checkoutReturnAccount(currentSearch());
+  if (returned !== null && returned !== session.account.id && session.accounts.some((entry) => entry.id === returned)) {
+    await call("selectAccount", { body: { accountId: returned }, ...(signal === undefined ? {} : { signal }) });
+    switchTabAccount(returned);
+    return reloading;
+  }
+  setTabAccount(session.account.id);
+  return session;
+};
+
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session,
+    queryFn: ({ signal }) => readSession(signal),
     retry: false,
     staleTime: 60_000,
   });
@@ -86,9 +127,13 @@ export function useSignOut() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => signOut(),
-    // Clearing rather than invalidating drops every account-scoped cache, so
-    // the next operator never sees the previous one's data.
-    onSettled: () => {
+    // Only once signing out succeeded: the tab forgets its account, and
+    // clearing rather than invalidating drops every account-scoped cache, so
+    // the next operator never sees the previous one's data. A failed sign-out
+    // leaves the person signed in, on the same account.
+    onSuccess: () => {
+      setTabAccount(null);
+      stopPaymentConfirmation();
       client.clear();
     },
   });
@@ -122,20 +167,33 @@ export function useConfirmEmailVerification() {
   });
 }
 
+/** How long a switch request may take before the page carries on without it. */
+export const SWITCH_DEADLINE_MS = 10_000;
+
+/**
+ * Switches the account this tab acts in. The gateway makes it the account new
+ * tabs open on, and the page then reloads on it: nothing is swapped in place.
+ * The switch stays pending until the page goes, so nothing can be done meanwhile.
+ */
 export function useSelectAccount() {
-  const client = useQueryClient();
   return useMutation({
-    mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
-    onSuccess: async (result) => {
-      client.setQueryData(keys.session, result.session);
-      // Every cached list belongs to the previous account, so its data is
-      // dropped. Reset rather than `clear()`: clearing removes the queries the
-      // mounted pages observe, which then keep showing the previous account's
-      // data and never fetch again. A reset empties them in place and
-      // refetches the ones on screen. The session was just replaced, and the
-      // capabilities describe the deployment, so both are kept.
-      const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
-      await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) });
+    mutationFn: async (accountId: string) => {
+      // The switch request has a deadline, so one the gateway never answers
+      // ends with an error instead of leaving the menu disabled.
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), SWITCH_DEADLINE_MS);
+      try {
+        return await call("selectAccount", { body: { accountId }, signal: deadline.signal });
+      } catch (error) {
+        if (deadline.signal.aborted) throw new Error("Switching account took too long. Try again.");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    onSuccess: (result) => {
+      switchTabAccount(result.session.account.id);
+      return reloading;
     },
   });
 }
@@ -461,5 +519,94 @@ export function useRejectionEvents(appId: string, query: RejectionQuery) {
   return useQuery({
     queryKey: keys.rejections(appId, query),
     queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Billing: a hosted deployment only (the `billing` capability). Nothing here
+// moves money: a checkout is finished on the billing provider's own page.
+
+/**
+ * The account's plan and allowance. Polled gently, since the allowance moves
+ * with every request. Kept under the account it was read for, so a switch
+ * never shows one account's plan under another's name.
+ */
+export function useBillingStatus(enabled: boolean, accountId: string) {
+  return useQuery({
+    queryKey: keys.billingStatus(accountId),
+    queryFn: ({ signal }) => call("getBillingStatus", { signal }),
+    enabled,
+    staleTime: 30_000,
+    refetchInterval: enabled ? 5 * 60_000 : false,
+  });
+}
+
+export function useBillingPlans(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.billingPlans,
+    queryFn: () => call("listBillingPlans"),
+    enabled,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+}
+
+/** Whatever changes the plan changes the billing status. */
+function useRefreshPlan() {
+  const client = useQueryClient();
+  return () => {
+    void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
+  };
+}
+
+/**
+ * Starts a checkout. The gateway picks where the provider sends the person
+ * back (the apps page, which announces it, or the plans), and answers the same
+ * page again while a checkout for the same plan is open.
+ */
+/**
+ * Marks a billing action that can send the page to a payment page (checkout,
+ * change, resume): while one is pending, the account cannot be switched.
+ */
+export const PAYMENT_ACTION_KEY = ["payment-action"] as const;
+
+export function useStartCheckout() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "checkout"],
+    mutationFn: (input: OperationRequest<"startCheckout">) => call("startCheckout", { body: input }),
+    // A checkout whose outcome is unknown may have started: the billing status
+    // is read again wherever it shows next (the billing page, or the one the
+    // checkout landing points to), so it shows what is true before a retry.
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "billing_outcome_unknown") {
+        void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
+      }
+    },
+  });
+}
+
+export function useChangePlan() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "change"],
+    mutationFn: (input: OperationRequest<"changePlan">) => call("changePlan", { body: input }),
+    onSuccess: refresh,
+  });
+}
+
+export function useResumeSubscription() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "resume"],
+    mutationFn: (input: OperationRequest<"resumeSubscription">) => call("resumeSubscription", { body: input }),
+    onSuccess: refresh,
+  });
+}
+
+export function useCancelSubscription() {
+  const refresh = useRefreshPlan();
+  return useMutation({
+    mutationFn: (input: OperationRequest<"cancelSubscription">) => call("cancelSubscription", { body: input }),
+    onSuccess: refresh,
   });
 }

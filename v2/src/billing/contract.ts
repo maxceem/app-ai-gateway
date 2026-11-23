@@ -3,13 +3,39 @@
  * `BILLING` service binding (v1's contract, ported).
  *
  * Only the hosted deployment binds it, in its gitignored deployment config.
- * A deployment without it is self-hosted: no plan, no allowance.
+ * A deployment without it is self-hosted: no plan, no allowance, and every
+ * billing operation answers 404.
+ *
+ * Keep this file free of implementation: it is the wire contract with
+ * whatever Worker is bound on the other side, and a changed field breaks it.
  */
-import type { BillingAccess } from "../contracts/billing.ts";
+import type {
+  BillingAccess,
+  BillingCancelResponse,
+  BillingChangeResponse,
+  BillingCheckoutResponse,
+  BillingPeriod,
+  BillingPlanOffer,
+} from "../contracts/billing.ts";
 
-/** The read the request path makes. The management side adds the rest of v1's contract with step 2. */
+/**
+ * The RPC surface the binding exposes. Every call names this product
+ * (`serviceId`) and, where it acts on one, the account (`tenantId`).
+ */
 export interface BillingRuntime {
   getTenantAccess(input: { serviceId: string; tenantId: string }): Promise<BillingAccess>;
+  listPlans(input: { serviceId: string }): Promise<{ plans: BillingPlanOffer[] }>;
+  createCheckout(input: {
+    serviceId: string;
+    tenantId: string;
+    planKey: string;
+    billingPeriod: BillingPeriod;
+    successUrl?: string | undefined;
+    cancelUrl?: string | undefined;
+  }): Promise<BillingCheckoutResponse>;
+  changePlan(input: { serviceId: string; tenantId: string; planKey: string; billingPeriod: BillingPeriod }): Promise<BillingChangeResponse>;
+  resumeSubscription(input: { serviceId: string; tenantId: string; planKey: string; billingPeriod: BillingPeriod }): Promise<BillingChangeResponse>;
+  cancelSubscription(input: { serviceId: string; tenantId: string }): Promise<BillingCancelResponse>;
 }
 
 /** The binding, if this deployment has one. It is not in the tracked `wrangler.jsonc`, so not in `Env`. */

@@ -14,6 +14,13 @@ import { CLI_CLIENT_ID } from "../auth/identity.ts";
 import { AccountSelectRequestSchema, CredentialSchema, ManagementKeyCreateRequestSchema } from "../contracts/access.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { emailVerificationRequired, readAccountPending } from "../core/account-standing.ts";
+import { APP_TRAFFIC_BILLING_DEADLINE_MS, getAppTrafficBillingAccess } from "../billing/access.ts";
+import { billingBinding } from "../billing/contract.ts";
+import type { SessionBilling } from "../contracts/billing.ts";
+import { withDeadline } from "../core/background.ts";
+import { errorFacts } from "../core/error-facts.ts";
+import { log } from "../core/log.ts";
+import { planAllowance } from "./billing.ts";
 import { GatewayError } from "../core/errors.ts";
 import { requireConsoleSession, type AdminActor, type AdminVariables } from "./actor.ts";
 import { parseBody } from "./apps.ts";
@@ -37,7 +44,36 @@ async function verificationPending(env: Env, accountId: string): Promise<boolean
   return emailVerificationRequired(env) && (await readAccountPending(env, accountId));
 }
 
-function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): OperationResponse<"getAdminSession">["session"] {
+/**
+ * The account's plan and this period's allowance, for `account status`. Only
+ * where the deployment has billing. It never fails or holds up the session:
+ * the plan and the count share one budget, the app-traffic deadline (Sol 7b-8),
+ * and a read that cannot finish in it shows as no figure.
+ */
+async function sessionBilling(c: AdminContext, accountId: string): Promise<SessionBilling | undefined> {
+  if (billingBinding(c.env) === null) return undefined;
+  const started = Date.now();
+  const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
+  const access = await getAppTrafficBillingAccess(c.env, accountId, waitUntil);
+  if (access.state !== "billed") return { state: "unavailable", planName: null, allowance: null };
+  let allowance: SessionBilling["allowance"] = null;
+  const left = APP_TRAFFIC_BILLING_DEADLINE_MS - (Date.now() - started);
+  try {
+    if (left <= 0) throw new Error("no time left for the allowance");
+    const reading = await withDeadline(planAllowance(c.env, accountId, access), left, "reading the allowance");
+    if (reading !== null) allowance = { used: reading.used, limit: reading.limit, resetAt: reading.resetAt };
+  } catch (error) {
+    log("warn", "billing_allowance_unreadable", { account: accountId, error: errorFacts(error) });
+  }
+  return { state: "billed", planName: access.plan?.planName ?? null, allowance };
+}
+
+function sessionPayload(
+  state: AuthState,
+  actor: AdminActor,
+  pending: boolean,
+  billing?: SessionBilling,
+): OperationResponse<"getAdminSession">["session"] {
   const user = state.user!;
   const accounts = actor.credentialType === "session"
     ? activeAccounts(state.memberships)
@@ -50,13 +86,19 @@ function sessionPayload(state: AuthState, actor: AdminActor, pending: boolean): 
     grant: actor.grant,
     credentialType: actor.credentialType,
     accounts,
+    ...(billing === undefined ? {} : { billing }),
   };
 }
 
 export async function getAdminSession(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
-  const pending = await verificationPending(c.env, actor.accountId);
-  return c.json({ session: sessionPayload(c.get("authState"), actor, pending) } satisfies OperationResponse<"getAdminSession">);
+  // The plan line is for `account status` in the CLI and MCP; the console
+  // reads its own billing status, so a console session skips the billing read.
+  const [pending, billing] = await Promise.all([
+    verificationPending(c.env, actor.accountId),
+    actor.credentialType === "session" ? Promise.resolve(undefined) : sessionBilling(c, actor.accountId),
+  ]);
+  return c.json({ session: sessionPayload(c.get("authState"), actor, pending, billing) } satisfies OperationResponse<"getAdminSession">);
 }
 
 export async function listAccounts(c: AdminContext): Promise<Response> {
@@ -110,9 +152,6 @@ export async function listCredentials(c: AdminContext): Promise<Response> {
 export async function createManagementKey(c: AdminContext): Promise<Response> {
   const state = requireConsoleSession(c.get("authState"));
   const body = await parseBody(c, ManagementKeyCreateRequestSchema);
-  if (body.accountId !== undefined && body.accountId !== c.get("actor").accountId) {
-    throw new GatewayError(409, "account_changed", "The console now acts in another account. Reload the page, then try again");
-  }
   const created = await (await c.get("identity")).service.createApiKey({
     actor: state,
     organizationId: c.get("actor").accountId,

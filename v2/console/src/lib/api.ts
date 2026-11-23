@@ -7,6 +7,8 @@ import {
   type OperationRequest,
   type OperationResponse,
 } from "@contracts/catalog";
+import { isLeavingForAccountSwitch, switchTabAccount, tabAccount, withTabAccount } from "./tab-account";
+import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
 
 export class ApiError extends Error {
   constructor(
@@ -54,14 +56,21 @@ function toApiError(status: number, payload: unknown): ApiError {
 
 /**
  * Every call rides the HttpOnly session cookie plus the header the Worker
- * requires, so a cross-site request can never reach the admin API.
+ * requires, so a cross-site request can never reach the admin API. It also
+ * names the account this tab acts in (`x-account-id`), so each tab keeps its
+ * own account.
  *
  * Exported for `./auth`, which talks to Better Auth's own surface: those five
  * endpoints are the library's, not this gateway's, so they have no catalog
  * entry to be sent through.
  */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
+  // A page leaving for an account switch sends nothing more: the tab already
+  // names the next account, which this page does not show.
+  if (isLeavingForAccountSwitch()) {
+    throw new ApiError(0, "account_switching", "The console is switching account; the page is reloading");
+  }
+  const headers = withTabAccount(new Headers(init.headers));
   headers.set("x-console-request", "1");
   if (init.body !== undefined) headers.set("content-type", "application/json");
 
@@ -75,7 +84,15 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     payload = null;
   }
 
-  if (!response.ok) throw toApiError(response.status, payload);
+  if (!response.ok) {
+    const error = toApiError(response.status, payload);
+    // The account this tab uses is no longer the person's (removed from it
+    // mid-session, say): the tab forgets it and reloads once, on the account
+    // the session selects.
+    const named = headers.get(CONSOLE_ACCOUNT_HEADER);
+    if (error.code === "account_forbidden" && named !== null && named === tabAccount()) switchTabAccount(null);
+    throw error;
+  }
   return payload as T;
 }
 
@@ -85,6 +102,8 @@ export interface CallOptions<K extends OperationName> {
   query?: OperationQuery<K>;
   body?: OperationRequest<K>;
   headers?: HeadersInit;
+  /** Cancels the request: a read nobody waits for any more is stopped, not left running. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -98,7 +117,7 @@ export interface CallOptions<K extends OperationName> {
  */
 export function call<K extends OperationName>(
   name: K,
-  { params, query, body, headers }: CallOptions<K> = {},
+  { params, query, body, headers, signal }: CallOptions<K> = {},
 ): Promise<OperationResponse<K>> {
   // One cast, because `operationPath` takes the parameters this operation's own
   // template declares and a generic name stands for every template at once.
@@ -111,5 +130,6 @@ export function call<K extends OperationName>(
     method: CATALOG[name].method,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     ...(headers === undefined ? {} : { headers }),
+    ...(signal === undefined ? {} : { signal }),
   });
 }

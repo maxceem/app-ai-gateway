@@ -6,7 +6,18 @@
  *
  * Ported from v1's `src/billing/gateway.ts`, request path only.
  */
-import { PlanLimitInputSchema, type GatewayBillingAccess, type PlanLimitKey, type PlanLimits } from "../contracts/billing.ts";
+import {
+  PLAN_FEATURES,
+  PlanLimitInputSchema,
+  type BillingAccess,
+  type GatewayBillingAccess,
+  type PlanFeature,
+  type PlanFeatureAccess,
+  type PlanLimitKey,
+  type PlanLimits,
+  type SubscriptionActions,
+} from "../contracts/billing.ts";
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -40,6 +51,19 @@ const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed
   maxEntries: 5_000,
 });
 
+/**
+ * After a change the account made itself (a plan change, a resume, a
+ * cancel): forgets this isolate's cached reading, so the next read asks the
+ * billing service. A read begun before the change is no longer the cached
+ * one, so it stores nothing when it finishes (Sol 7b-8). Other isolates catch
+ * up within the cache's own 30 s. The last known reading stays: it is what
+ * app traffic falls back on while billing cannot answer, and a console action
+ * never takes that away.
+ */
+export function invalidateBillingAccess(accountId: string): void {
+  billingAccessCache.delete(accountId);
+}
+
 function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   if (access.state !== "billed" || access.plan?.isDefault !== false || !access.subscription) return null;
   const transition =
@@ -49,18 +73,24 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
+/**
+ * The billing service's answer as the gateway's billing access. A paid plan
+ * whose subscription or trial has already ended is not served as paid: it
+ * answers unavailable and is logged.
+ */
+function accessFrom(accountId: string, answer: BillingAccess): GatewayBillingAccess {
+  const value = { state: "billed", plan: answer.plan, subscription: answer.subscription } satisfies GatewayBillingAccess;
+  const endsAt = entitlementEndsAt(value);
+  if (endsAt !== null && endsAt <= Date.now()) {
+    log("error", "billing_expired_entitlement", { account: accountId });
+    return { state: "unavailable" };
+  }
+  return value;
+}
+
 async function loadBillingAccess(binding: BillingRuntime, accountId: string): Promise<GatewayBillingAccess> {
   try {
-    const access = await binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId });
-    const value = { state: "billed", plan: access.plan, subscription: access.subscription } satisfies GatewayBillingAccess;
-    const now = Date.now();
-    const endsAt = entitlementEndsAt(value);
-    if (endsAt !== null && endsAt <= now) {
-      log("error", "billing_expired_entitlement", { account: accountId });
-      return { state: "unavailable" };
-    }
-    lastKnownAccess.set(accountId, value, { storedAt: now });
-    return value;
+    return accessFrom(accountId, await binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }));
   } catch (error) {
     const code = billingErrorCodeOf(error);
     log("error", "billing_access_failed", { account: accountId, billingErrorCode: code, error: errorFacts(error) });
@@ -92,11 +122,15 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
   billingAccessCache.delete(accountId);
   const pending = loadBillingAccess(binding, accountId);
   billingAccessCache.set(accountId, pending, { storedAt: now });
-  // A fresh answer keeps the full TTL, or less if the entitlement ends sooner.
-  // Anything else is held only for the retry interval.
+  // A fresh answer keeps the full TTL, or less if the entitlement ends sooner,
+  // and becomes the last known plan. Anything else is held only for the retry
+  // interval. A read that is no longer the account's cached one stores
+  // nothing at all, neither here nor as the last known plan: a change made
+  // since dropped it, or a newer read replaced it (Sol 7b-8).
   void pending.then((access) => {
     if (billingAccessCache.peek(accountId)?.value !== pending) return;
     if (access.state === "billed" && !access.stale) {
+      lastKnownAccess.set(accountId, access, { storedAt: now });
       const endsAt = entitlementEndsAt(access);
       if (endsAt === null) return;
       billingAccessCache.set(accountId, pending, { storedAt: now, ttlMs: Math.min(BILLING_ACCESS_CACHE_TTL_MS, endsAt - now) });
@@ -105,6 +139,47 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
     billingAccessCache.set(accountId, pending, { storedAt: now, ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 });
   });
   return pending;
+}
+
+/** How long the console waits for the billing service. */
+export const CONSOLE_BILLING_DEADLINE_MS = 1_000;
+
+function consoleBillingUnavailable(): GatewayError {
+  return new GatewayError(503, "billing_unavailable", "The billing service could not be read; try again shortly", {
+    "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS),
+  });
+}
+
+/**
+ * The account's plan for the console (the billing page, a write's check):
+ * asked of the billing service directly, every time, so a checkout or a change
+ * shows at once. It is kept apart from app traffic's plan reading (Sol 7b-8):
+ * it never reads, joins or fills app traffic's cache, nor its last known plan,
+ * so nothing the console does can put an old plan back for app traffic or
+ * take its fallback away.
+ *
+ * It waits at most `deadlineMs`. A failed or late call answers 503. A late
+ * answer is dropped: it reaches no cache, so it can never affect a later read.
+ */
+export async function readBillingForConsole(
+  env: Env,
+  accountId: string,
+  deadlineMs: number = CONSOLE_BILLING_DEADLINE_MS,
+): Promise<GatewayBillingAccess> {
+  const binding = billingBinding(env);
+  if (binding === null) return { state: "self_hosted" };
+  try {
+    const answer = await withDeadline(
+      binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }),
+      deadlineMs,
+      "reading the account's plan",
+    );
+    return accessFrom(accountId, answer);
+  } catch (error) {
+    const code = billingErrorCodeOf(error);
+    log("warn", "billing_console_read_failed", { account: accountId, billingErrorCode: code, error: errorFacts(error) });
+    throw consoleBillingUnavailable();
+  }
 }
 
 /**
@@ -204,13 +279,7 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
   return access;
 }
 
-/**
- * The features a plan can include or leave out (v1's `PLAN_FEATURES`, the one
- * this gateway serves). Which plan includes one is plan data alone: a list
- * under `limits.includes`. With no list, a plan includes every feature.
- */
-export const PLAN_FEATURES = ["conversationStorage"] as const;
-export type PlanFeature = (typeof PLAN_FEATURES)[number];
+export { PLAN_FEATURES, type PlanFeature };
 
 /**
  * Whether the account's plan includes `feature` (v1's `planIncludes`).
@@ -232,6 +301,55 @@ export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature)
     throw new GatewayError(502, "billing_unavailable", "Billing plan limit includes is invalid");
   }
   return includes.includes(feature);
+}
+
+/** Whether the plan includes each feature, as the billing page shows it. A misconfigured list reads as none. */
+export function planFeatures(access: GatewayBillingAccess): PlanFeatureAccess {
+  return Object.fromEntries(
+    PLAN_FEATURES.map((feature) => {
+      try {
+        return [feature, planIncludes(access, feature)];
+      } catch {
+        return [feature, false];
+      }
+    }),
+  ) as PlanFeatureAccess;
+}
+
+/** Subscription statuses the billing provider can still cancel at the end of the period. */
+const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["on_trial", "active", "paused", "past_due"]);
+
+/**
+ * What a person may do about the subscription from the console (v1's rule).
+ * Keyed off the subscription, not the plan: an account on the free default
+ * plan can still hold a cancelled subscription to resume. A grant made by
+ * hand is the billing operator's to change, so it offers nothing.
+ */
+export function subscriptionActions(access: GatewayBillingAccess): SubscriptionActions {
+  const subscription = access.state === "billed" ? access.subscription : null;
+  if (!subscription) return { cancel: false, resume: false, manual: false };
+  const selfService = Boolean(subscription.subscriptionId) && subscription.source === "lemon_squeezy";
+  return {
+    cancel: selfService && CANCELLABLE_STATUSES.has(subscription.status),
+    resume: selfService && subscription.status === "cancelled",
+    manual: subscription.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
+  };
+}
+
+/** A billing service refusal as this gateway's own error (v1's mapping). Anything unknown is a 502. */
+export function billingRpcError(error: unknown): GatewayError {
+  const code = billingErrorCodeOf(error);
+  if (code === "service_not_found" || code === "billing_plan_not_found" || code === "billing_plan_price_not_found") {
+    return new GatewayError(404, "billing_not_found", "The requested plan was not found");
+  }
+  if (code === "service_inactive" || code === "billing_manually_managed") {
+    return new GatewayError(403, "billing_action_forbidden", "This billing action is not available");
+  }
+  if (code === "billing_subscription_already_active") {
+    return new GatewayError(409, "billing_conflict", "A live subscription already exists");
+  }
+  log("error", "billing_action_failed", { billingErrorCode: code, error: errorFacts(error) });
+  return new GatewayError(502, "billing_unavailable", "The billing service is unavailable; try again shortly");
 }
 
 /**

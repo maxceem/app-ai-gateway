@@ -6,6 +6,8 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { SidebarContent } from "@/components/app-sidebar";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { BillingBanner } from "@/components/plan-summary";
+import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 
 /**
  * Below `lg` the sidebar becomes a drawer, so the same header carries the
@@ -45,6 +47,8 @@ function MobileHeader() {
  * divider running the height of the window.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  // A completed checkout returns to a console page with a marker to announce.
+  useCheckoutSuccessToast();
   return (
     <div className="min-h-dvh bg-sidebar">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 lg:block">
@@ -55,6 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <MobileHeader />
         <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <BillingBanner />
             {children}
           </div>
         </main>

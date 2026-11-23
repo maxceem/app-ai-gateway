@@ -42,7 +42,22 @@ export function isSafeReturnPath(path: string | null | undefined): path is strin
   if (!path) return false;
   // "//host" and "/\host" are protocol-relative; browsers navigate off-origin.
   if (!path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\")) return false;
-  return !AUTH_PATHS.has(new URL(path, "https://console.invalid").pathname);
+  const parsed = parsedReturnPath(path);
+  // A path the browser would read as another origin (tabs and newlines are
+  // dropped from URLs, so "/\t/host" is "//host") is not ours to return to.
+  return parsed !== null && !AUTH_PATHS.has(parsed.pathname);
+}
+
+const RETURN_BASE = "https://console.invalid";
+
+/** The path read as the browser would, or null when it does not parse or leaves the console's origin. */
+function parsedReturnPath(path: string): URL | null {
+  try {
+    const parsed = new URL(path, RETURN_BASE);
+    return parsed.origin === RETURN_BASE ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -63,9 +78,105 @@ export function routerPath(pathname: string): string {
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
-/** Where an operator belongs the moment they are authenticated. */
+/** Where a plan chosen before sign-in is bought (a hosted deployment's pricing page links here). */
+export const CHECKOUT_PATH = "/checkout";
+
+/** Carries a plan picked on the pricing page, before the visitor had an account. */
+export const PLAN_PARAM = "plan";
+
+/**
+ * The billing service's free tier: what every account already has, so never
+ * something to send anyone to checkout for.
+ */
+export const FREE_PLAN_KEY = "free";
+
+/**
+ * Plan keys are short lowercase slugs. The value arrives from a link anyone
+ * can write and is put back into a URL, so it is held to a shape that cannot
+ * carry anything else. Whether it names a real plan is settled against the
+ * catalog later.
+ */
+const PLAN_KEY_PATTERN = /^[a-z0-9_-]{1,32}$/u;
+
+/** The plan named in a query string, or `null` when there is no usable one. */
+export function planKeyFrom(search: string): string | null {
+  const raw = new URLSearchParams(search).get(PLAN_PARAM);
+  return raw !== null && PLAN_KEY_PATTERN.test(raw) ? raw : null;
+}
+
+/** The console path that starts checkout for one plan. */
+export function checkoutPathFor(planKey: string): string {
+  return `${CHECKOUT_PATH}?${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
+}
+
+/**
+ * Where an operator belongs the moment they are authenticated. A paid plan
+ * named on the link is an intent formed before the account existed (a price
+ * pressed on the pricing page), so it goes to that plan's checkout (v1's rule).
+ */
 export function postAuthPath(search: string): string {
+  const planKey = planKeyFrom(search);
+  if (planKey !== null && planKey !== FREE_PLAN_KEY) return checkoutPathFor(planKey);
   return returnPathFrom(search);
+}
+
+/**
+ * Marks the page a completed checkout returns to. The provider sends the
+ * browser back with nothing but a URL, so the purchase can only travel as a
+ * query marker: read once, announced, and stripped.
+ */
+export const CHECKOUT_PARAM = "checkout";
+export const CHECKOUT_SUCCESS = "success";
+
+/**
+ * The account a checkout was started for, which the gateway writes into the
+ * return address: a return read in another account's console announces
+ * nothing about this one.
+ */
+export const ACCOUNT_PARAM = "account";
+
+/**
+ * The shape of an account id. The value arrives from a link or from storage
+ * and is sent back as a request header, so it is held to a shape that cannot
+ * carry anything else (a newline would make every request throw).
+ */
+const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/u;
+
+export function isAccountId(value: unknown): value is string {
+  return typeof value === "string" && ACCOUNT_ID_PATTERN.test(value);
+}
+
+/** The account a checkout return names, or `null`. */
+export function checkoutAccountFrom(search: string): string | null {
+  const raw = new URLSearchParams(search).get(ACCOUNT_PARAM);
+  return isAccountId(raw) ? raw : null;
+}
+
+/**
+ * The account a checkout return names, whether this is the return itself or
+ * the sign-in page it was sent to (the return travels in `from`), or `null`.
+ */
+export function checkoutReturnAccount(search: string): string | null {
+  if (checkoutSucceeded(search)) return checkoutAccountFrom(search);
+  const back = new URLSearchParams(search).get(RETURN_PARAM);
+  if (!isSafeReturnPath(back)) return null;
+  const query = parsedReturnPath(back)?.search ?? "";
+  return checkoutSucceeded(query) ? checkoutAccountFrom(query) : null;
+}
+
+/** True when this load is the return leg of a completed checkout. */
+export function checkoutSucceeded(search: string): boolean {
+  return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
+}
+
+/** The same location with the checkout marker and its plan spent, keeping any other query. */
+export function pathWithoutCheckout(pathname: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(CHECKOUT_PARAM);
+  params.delete(PLAN_PARAM);
+  params.delete(ACCOUNT_PARAM);
+  const rest = params.toString();
+  return rest ? `${pathname}?${rest}` : pathname;
 }
 
 /** The sign-in URL that remembers where the operator was headed. */

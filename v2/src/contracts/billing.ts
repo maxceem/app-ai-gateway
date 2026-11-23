@@ -2,8 +2,8 @@
  * The hosted billing service's wire shapes, and the plan limits this gateway
  * reads out of a plan.
  *
- * Ported from v1's `src/contracts/billing.ts`, keeping only what the request
- * path reads. The billing service is an optional service binding (`BILLING`):
+ * Ported from v1's `src/contracts/billing.ts`: what the request path reads,
+ * and the billing operations the console's billing page uses. The billing service is an optional service binding (`BILLING`):
  * a self-hosted deployment has none and has no plan allowance.
  *
  * Plain `zod`, as every contract module, so clients can import it.
@@ -128,6 +128,143 @@ export const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1
   .pipe(z.number().int().nonnegative())
   .optional();
 
+/**
+ * The features a plan can include or leave out, as a list of names under
+ * `limits.includes` (v1's rule: no list means every feature). Renaming one is
+ * a breaking change for every plan that lists it.
+ */
+export const PLAN_FEATURES = ["conversationStorage"] as const;
+export const PlanFeatureSchema = z.enum(PLAN_FEATURES);
+
+/** Whether the account's plan includes each feature, as the gateway decides it. */
+export const PlanFeatureAccessSchema = z.object(
+  Object.fromEntries(PLAN_FEATURES.map((feature) => [feature, z.boolean()])) as Record<(typeof PLAN_FEATURES)[number], z.ZodBoolean>,
+);
+
+/**
+ * The current plan period against the plan's request allowance. Only the
+ * request path writes this count, so this is where a person sees it before
+ * the allowance runs out.
+ */
+export const PlanAllowanceSchema = z.object({
+  periodId: z.string().meta({ description: "The period: the plan's schedule and the period's start." }),
+  periodStart: z.string().meta({ description: "When this period began (UTC, inclusive)." }),
+  periodEnd: z.string().meta({ description: "When this period ends (UTC, exclusive)." }),
+  used: z.number().int().meta({ description: "Requests sent to providers in this period, across all apps." }),
+  limit: z.number().int().meta({ description: "The plan's maxRequestsPerMonth." }),
+  resetAt: z.string().meta({ description: "When the allowance resets; the same as periodEnd." }),
+});
+
+/** What a person may do about the subscription, decided here so no client restates the billing provider's rules. */
+export const SubscriptionActionsSchema = z.object({
+  cancel: z.boolean().meta({ description: "A self-service subscription can be cancelled at the end of its period." }),
+  resume: z.boolean().meta({ description: "A cancelled self-service subscription can be resumed." }),
+  manual: z.boolean().meta({ description: "A grant made by hand, which no self-service action may change." }),
+});
+
+export const BillingStatusResponseSchema = z.object({
+  access: GatewayBillingAccessSchema,
+  limits: PlanLimitsSchema,
+  features: PlanFeatureAccessSchema,
+  allowance: PlanAllowanceSchema.nullable().meta({
+    description: "Null when billing cannot be read, no plan resolves, or the plan sets no monthly request limit, which counts nothing.",
+  }),
+  actions: SubscriptionActionsSchema,
+}).meta({ id: "BillingStatusResponse" });
+
+export const BillingPlanOfferPriceSchema = z.object({
+  billingPeriod: BillingPeriodSchema,
+  priceAmountCents: z.number(),
+  priceCurrency: z.string(),
+});
+
+export const BillingPlanOfferSchema = z.object({
+  planKey: z.string(),
+  name: z.string(),
+  description: z.string(),
+  features: z.array(z.string()),
+  limits: z.unknown().optional(),
+  trialDays: z.number(),
+  prices: z.array(BillingPlanOfferPriceSchema),
+});
+
+export const BillingPlansResponseSchema = z.object({ plans: z.array(BillingPlanOfferSchema) }).meta({ id: "BillingPlansResponse" });
+
+/** The plan and period a purchase, change or resume names. */
+export const BillingPlanSelectionSchema = z.object({
+  planKey: z.string().min(1).max(100),
+  billingPeriod: BillingPeriodSchema,
+}).meta({ id: "BillingPlanSelection" });
+
+/**
+ * The subscription the console showed when the dialog opened: its id and
+ * when the billing service last changed it, each `null` where it showed none.
+ * `updatedAt` moves with every change to the subscription (status, period,
+ * plan), so a write on a subscription replaced or changed in any way since is
+ * refused (`subscription_changed`) rather than applied to what the person
+ * never saw.
+ */
+const ShownSubscription = {
+  subscriptionId: z.string().min(1).max(200).nullable(),
+  subscriptionUpdatedAt: z.string().min(1).max(100).nullable(),
+};
+
+/**
+ * The price the console showed for the plan and period asked for. A change
+ * bills without another screen, so a price changed since is refused
+ * (`price_changed`) rather than charged.
+ */
+export const ShownPriceSchema = z.object({
+  priceAmountCents: z.number().int(),
+  priceCurrency: z.string().min(1).max(10),
+}).meta({ id: "BillingShownPrice" });
+
+/**
+ * A checkout. The gateway chooses where the provider sends the person back
+ * (the console's own pages); there is nothing to choose here.
+ */
+export const BillingCheckoutRequestSchema = BillingPlanSelectionSchema.extend({}).meta({ id: "BillingCheckoutRequest" });
+
+/** A change, on the subscription the console showed, at the price it showed. */
+export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({
+  ...ShownSubscription,
+  price: ShownPriceSchema,
+}).meta({ id: "BillingChangeRequest" });
+
+/**
+ * A resume, on the subscription the console showed, at the price its
+ * confirmation showed: the plan's current price for the plan and period
+ * resumed, which the billing service charges.
+ */
+export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownSubscription, price: ShownPriceSchema }).meta({
+  id: "BillingResumeRequest",
+});
+
+/** A cancel, on the account and subscription the console showed. */
+export const BillingCancelRequestSchema = z.object(ShownSubscription).meta({ id: "BillingCancelRequest" });
+
+export const BillingCheckoutResponseSchema = z.object({ url: z.string() }).meta({ id: "BillingCheckoutResponse" });
+
+/** A change or a resume. `requiredActionUrl` is the provider page a payment method has to be confirmed on first. */
+export const BillingChangeResponseSchema = z.object({
+  ok: z.literal(true),
+  requiredActionUrl: z.string().optional(),
+}).meta({ id: "BillingChangeResponse" });
+
+export const BillingCancelResponseSchema = z.object({ ok: z.literal(true) }).meta({ id: "BillingCancelResponse" });
+
+
+/**
+ * The account's plan, as `account status` shows it beside who is calling.
+ * Left out on a deployment without billing.
+ */
+export const SessionBillingSchema = z.object({
+  state: z.enum(["billed", "unavailable"]),
+  planName: z.string().nullable().meta({ description: "The plan's name; null when no plan resolves or billing cannot be read." }),
+  allowance: PlanAllowanceSchema.pick({ used: true, limit: true, resetAt: true }).nullable().meta({
+    description: "This period's requests against the plan's allowance; null when the plan sets no monthly limit or it cannot be read.",
+  }),
+});
 
 export type BillingSubscriptionStatus = z.infer<typeof BillingSubscriptionStatusSchema>;
 export type EntitledPlan = z.infer<typeof EntitledPlanSchema>;
@@ -135,3 +272,15 @@ export type SubscriptionState = z.infer<typeof SubscriptionStateSchema>;
 export type BillingAccess = z.infer<typeof BillingAccessSchema>;
 export type GatewayBillingAccess = z.infer<typeof GatewayBillingAccessSchema>;
 export type PlanLimits = z.infer<typeof PlanLimitsSchema>;
+export type PlanFeature = (typeof PLAN_FEATURES)[number];
+export type PlanFeatureAccess = z.infer<typeof PlanFeatureAccessSchema>;
+export type PlanAllowance = z.infer<typeof PlanAllowanceSchema>;
+export type SubscriptionActions = z.infer<typeof SubscriptionActionsSchema>;
+export type BillingStatusResponse = z.infer<typeof BillingStatusResponseSchema>;
+export type BillingPeriod = z.infer<typeof BillingPeriodSchema>;
+export type BillingPlanOffer = z.infer<typeof BillingPlanOfferSchema>;
+export type BillingCheckoutResponse = z.infer<typeof BillingCheckoutResponseSchema>;
+export type BillingChangeResponse = z.infer<typeof BillingChangeResponseSchema>;
+export type BillingCancelResponse = z.infer<typeof BillingCancelResponseSchema>;
+export type SessionBilling = z.infer<typeof SessionBillingSchema>;
+export type BillingChangeRequest = z.infer<typeof BillingChangeRequestSchema>;

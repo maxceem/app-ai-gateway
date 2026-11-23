@@ -359,18 +359,39 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_account",
     title: "Get the account",
     description:
-      "Returns who these credentials are and the account they act in: the person, the account's id and name, their role in it, and the credential's grant (read, or manage for changes). Call it first. Changes nothing.",
+      "Returns who these credentials are and the account they act in: the person, the account's id and name, their role in it, and the credential's grant (read, or manage for changes). On a hosted deployment it also gives the account's plan and how much of this period's request allowance is used. Call it first. Changes nothing.",
     operation: "getAdminSession",
     cli: {
       command: "account status",
       summary: "Show the account these credentials act in",
       view: {
         record: "session",
-        columns: ["account.name=Account", "account.id=Account ID", "user.email=Signed in as", "role", "grant", "credentialType=Credential"],
+        columns: [
+          "account.name=Account",
+          "account.id=Account ID",
+          "user.email=Signed in as",
+          "role",
+          "grant",
+          "credentialType=Credential",
+          // Only on a hosted deployment with billing; a CLI that predates them skips them.
+          "billing.planName=Plan",
+          "billing.allowance.used=Requests this period",
+          "billing.allowance.limit=Allowance",
+          "billing.allowance.resetAt=Resets",
+        ],
       },
     },
-    summary: ({ session }) =>
-      `Account "${session.account.name}" (${session.account.id}): ${session.user.email ?? session.user.id} is ${session.role} with the ${session.grant} grant.`,
+    summary: ({ session }) => {
+      const who = `Account "${session.account.name}" (${session.account.id}): ${session.user.email ?? session.user.id} is ${session.role} with the ${session.grant} grant.`;
+      const billing = session.billing;
+      if (billing === undefined) return who;
+      if (billing.state === "unavailable") return `${who} Its plan could not be read just now.`;
+      const plan = billing.planName === null ? " It has no plan." : ` Plan: ${billing.planName}.`;
+      const allowance = billing.allowance === null
+        ? ""
+        : ` ${billing.allowance.used} of ${billing.allowance.limit} requests used this period; the allowance resets ${billing.allowance.resetAt}.`;
+      return `${who}${plan}${allowance}`;
+    },
   }),
   tool({
     name: "list_models",

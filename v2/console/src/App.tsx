@@ -7,6 +7,8 @@ import { AppShell } from "@/components/app-shell";
 import { AccessPage } from "@/pages/access";
 import { AppDetailPage, DEFAULT_APP_TAB } from "@/pages/app-detail";
 import { AppsPage } from "@/pages/apps";
+import { BillingPage } from "@/pages/billing";
+import { CheckoutPage } from "@/pages/checkout";
 import { PricesPage } from "@/pages/prices";
 import { ProvidersPage } from "@/pages/providers";
 import { ApprovePage } from "@/pages/approve";
@@ -75,6 +77,9 @@ function AuthenticatedConsole() {
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/prices" element={<PricesPage />} />
           <Route path="/access" element={<AccessPage />} />
+          {capabilities.data.billing ? <Route path="/billing" element={<BillingPage />} /> : null}
+          {/* Whatever the deployment sells: without billing it sends the person on to the apps. */}
+          <Route path="/checkout" element={<CheckoutPage />} />
           <Route
             path="/settings"
             element={<Navigate to={`/settings/${DEFAULT_SETTINGS_SECTION}`} replace />}

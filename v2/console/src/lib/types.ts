@@ -61,3 +61,14 @@ export type AuthEventList = OperationResponse<"listAppAuthEvents">;
 export type AuthEvent = AuthEventList["events"][number];
 export type RejectionEventList = OperationResponse<"listAppRejectionEvents">;
 export type RejectionEvent = RejectionEventList["events"][number];
+
+/** Billing, on a hosted deployment only: the account's plan and allowance, and the plans on offer. */
+export type BillingStatus = OperationResponse<"getBillingStatus">;
+export type BillingAccess = BillingStatus["access"];
+export type PlanLimits = BillingStatus["limits"];
+export type PlanAllowance = NonNullable<BillingStatus["allowance"]>;
+export type SubscriptionActions = BillingStatus["actions"];
+export type EntitledPlan = NonNullable<Extract<BillingAccess, { state: "billed" }>["plan"]>;
+export type SubscriptionState = NonNullable<Extract<BillingAccess, { state: "billed" }>["subscription"]>;
+export type BillingPlan = OperationResponse<"listBillingPlans">["plans"][number];
+export type BillingPrice = BillingPlan["prices"][number];

@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ChevronsUpDown, Eye, KeyRound, LayoutGrid, LogOut, Plug, Settings, Tag } from "lucide-react";
+import { ChevronsUpDown, CreditCard, Eye, KeyRound, LayoutGrid, LogOut, Plug, Settings, Tag } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -11,6 +12,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AccountMenuItems } from "@/components/account-switcher";
 import { Brand } from "@/components/brand";
+import { PlanSummary } from "@/components/plan-summary";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
@@ -65,11 +67,16 @@ function initialsFor(name: string | null | undefined, email: string): string {
  */
 function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
-  const { session } = useConsoleSession();
+  const { session, capabilities } = useConsoleSession();
   const signOut = useSignOut();
 
   const logout = async () => {
-    await signOut.mutateAsync().catch(() => undefined);
+    try {
+      await signOut.mutateAsync();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not sign out");
+      return;
+    }
     await navigate("/login", { replace: true });
   };
 
@@ -114,6 +121,15 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
               Access
             </Link>
           </DropdownMenuItem>
+          {/* Only where the deployment sells plans: a self-hosted console shows no billing at all. */}
+          {capabilities.billing ? (
+            <DropdownMenuItem asChild>
+              <Link to="/billing" onClick={onNavigate}>
+                <CreditCard className="size-4" />
+                Billing
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
           <AccountMenuItems />
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={signOut.isPending} onSelect={() => void logout()}>
@@ -230,6 +246,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border p-3">
+        <PlanSummary onNavigate={onNavigate} />
         {readOnly ? (
           <div className="px-1 pb-1.5">
             <ReadOnlyBadge />

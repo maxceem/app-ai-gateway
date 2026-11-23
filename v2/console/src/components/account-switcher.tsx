@@ -7,7 +7,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useConsoleSession } from "@/lib/console-session";
 import { ROLE_LABELS, shouldShowAccountSwitcher } from "@/lib/permissions";
-import { useSelectAccount } from "@/lib/queries";
+import { useIsMutating } from "@tanstack/react-query";
+import { PAYMENT_ACTION_KEY, useSelectAccount } from "@/lib/queries";
 
 /**
  * Switches the account the console acts in, as a section of the account menu.
@@ -20,6 +21,9 @@ import { useSelectAccount } from "@/lib/queries";
 export function AccountMenuItems() {
   const { account, accounts } = useConsoleSession();
   const select = useSelectAccount();
+  // A checkout, change or resume that may still send the page to a payment
+  // page belongs to this account: no switch until it has finished.
+  const paying = useIsMutating({ mutationKey: PAYMENT_ACTION_KEY }) > 0;
 
   if (!shouldShowAccountSwitcher(accounts.length)) return null;
 
@@ -43,7 +47,7 @@ export function AccountMenuItems() {
         return (
           <DropdownMenuItem
             key={membership.id}
-            disabled={select.isPending}
+            disabled={select.isPending || paying}
             onSelect={() => void switchTo(membership.id)}
           >
             <Check className={active ? "size-4" : "size-4 opacity-0"} />
