@@ -45,6 +45,9 @@ export const SupportMessageRequestSchema = z
       .meta({
         description: "Facts that help support act without asking back, such as app_id, request_id, error_code or agw_version. Never a credential.",
       }),
+    sender: z.string().min(1).max(200).optional().meta({
+      description: "The id of the user who started the message, as the console knew it then. If the credential now belongs to someone else, the message is refused with `sender_changed`. Clients acting as their own credential's user leave it out.",
+    }),
     client: z.string().trim().min(1).max(100).optional().meta({
       description: "What sent the message, such as `agw 2.0.0`, as the client reports it. A label only.",
     }),

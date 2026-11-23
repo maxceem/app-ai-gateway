@@ -95,14 +95,21 @@ export function SupportDialog({ kind, onOpenChange }: { kind: SupportMessageKind
   // Kept while the dialog animates closed, so its text does not change under it.
   const [shown, setShown] = useState<SupportMessageKind>(kind ?? "support");
   if (kind !== null && kind !== shown) setShown(kind);
+  // Who started the draft, kept with it: if the browser signs in as someone
+  // else before it is sent, the gateway refuses it (`sender_changed`) rather
+  // than sending it in the new person's name. A closed, empty draft forgets it.
+  const [sender, setSender] = useState<string | null>(null);
+  if (kind !== null && sender === null) setSender(session.user.id);
+  if (kind === null && sender !== null && !message.trim()) setSender(null);
   const copy = SUPPORT_KINDS[shown];
   const email = session.user.email;
 
   const submit = async () => {
     try {
-      const result = await send.mutateAsync({ kind: shown, message: message.trim(), page });
+      const result = await send.mutateAsync({ kind: shown, message: message.trim(), page, ...(sender === null ? {} : { sender }) });
       toast.success(`Message sent (${result.reference})`, { description: "We'll reply to your email." });
       setMessage("");
+      setSender(null);
       onOpenChange(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not send your message");

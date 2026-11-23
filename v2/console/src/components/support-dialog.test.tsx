@@ -69,7 +69,8 @@ describe("the Support menu", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send report" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Report a bug" })).toBeNull());
     const sent = fetchMock.mock.calls.find(([input]) => String(input).includes("/v2/admin/support"));
-    expect(JSON.parse(String(sent![1]!.body))).toEqual({ kind: "bug", message: "Streams stop halfway.", page: "/v2/apps/demo" });
+    // With who started the draft, so the gateway refuses it if the browser has signed in as someone else since.
+    expect(JSON.parse(String(sent![1]!.body))).toEqual({ kind: "bug", message: "Streams stop halfway.", page: "/v2/apps/demo", sender: "user-1" });
   });
 
   it("still offers support while billing cannot be read, as the gateway still accepts a message", async () => {
