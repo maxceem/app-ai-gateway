@@ -202,11 +202,9 @@ export function parse(argv: string[]): ParseResult {
     ["no-open", "device"],
     ["file", "name"],
     ["file", "type"],
-    ["file", "team-id"],
-    ["file", "bundle-id"],
+    // Only the flags this release added: --file has always won over --team-id, --bundle-id and --user-header.
     ["file", "attest-environments"],
     ["file", "verify-on"],
-    ["file", "user-header"],
     ["file", "providers"],
     ["file", "status"],
   ]) {

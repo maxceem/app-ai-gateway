@@ -395,17 +395,6 @@ describe("AppDetailPage", () => {
     expect(writeText).toHaveBeenCalledWith(curl);
   });
 
-  it("shows an issuer app's token exchange as a whole command block, never inside a note", async () => {
-    const exchange = "( set +x; printf 'data = {}\\n' | curl --disable --config - 'https://gateway.test/v2/apps/my-app/auth/token' \\\n  -H 'Content-Type: application/json' )";
-    stub({
-      ...CHECK,
-      [`GET ${APP_URL}/snippet`]: { body: { app_id: "my-app", base_url: "https://gateway.test", examples: [], notes: ["Exchange first."], exchange } },
-    });
-    renderTab("overview");
-    const block = await screen.findByRole("region", { name: "Exchange for a gateway token" });
-    expect(block.querySelector("pre")!.textContent).toBe(exchange);
-  });
-
   it("offers the Usage and Errors tabs beside the others", async () => {
     stub(CHECK);
     renderTab("overview");

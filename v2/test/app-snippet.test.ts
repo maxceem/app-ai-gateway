@@ -99,7 +99,7 @@ async function sentForm(): Promise<FormData> {
 }
 
 describe("first requests for an app", () => {
-  it("gives one curl per API style a route serves, each with a model serving admits for that kind of request", async () => {
+  it("gives one curl per well-known request a route serves, each with a model serving admits for that exact operation", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const { appId, base_url, examples, notes } = await snippetFor(key, {
@@ -114,14 +114,13 @@ describe("first requests for an app", () => {
       },
     });
     expect(base_url).toBe(ORIGIN);
-    // openai.chat.bare speaks the style openai.chat already shows; openai.realtime is not served yet.
+    // openai.chat.bare speaks the style openai.chat already shows; speech and live sessions are not covered.
     expect(examples.map((example) => [example.operation, example.model])).toEqual([
       ["openai.chat", "gpt-4o-mini"],
       ["openai.embeddings", "text-embedding-3-small"],
       ["openai.transcription", "whisper-1"],
-      ["openai.speech", "gpt-4o-mini-tts"],
     ]);
-    const [chat, , transcription, speech] = examples;
+    const [chat, , transcription] = examples;
     expect(chat).toMatchObject({
       provider: slug,
       style: "openai-chat",
@@ -141,14 +140,13 @@ describe("first requests for an app", () => {
     expect(chat!.text).toBe(chat!.curl);
     // A form, by the proxy's rule: the model as a text field, the file apart.
     expect(transcription).toMatchObject({ form: { model: "whisper-1" }, file: { field: "file", name: "audio.mp3" } });
-    expect(transcription!.curl).toContain(`--form-string 'model=whisper-1' \\\n  -F 'file=@audio.mp3'`);
-    expect(speech!.curl).toMatch(/--output 'speech\.mp3' \)$/u);
+    expect(transcription!.curl).toContain(`--form-string 'model=whisper-1' \\\n  -F 'file=@audio.mp3' )`);
     expect(notes).toContainEqual(expect.stringContaining("Set APP_AI_GATEWAY_KEY to one of this app's keys"));
-    expect(notes).toContainEqual(expect.stringContaining(`${slug}: openai.realtime has no example here`));
+    expect(notes).toContainEqual(`${slug}: openai.speech and openai.realtime have no example here. Send them as the provider's own API reference describes, to ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/.`);
     expect(JSON.stringify(examples)).not.toContain(PROVIDER_KEY);
   });
 
-  it("leaves out a request no model the route allows can be billed for, and says why", async () => {
+  it("asks for a model where none the route allows is admitted for the operation", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const { examples, notes } = await snippetFor(key, {
@@ -156,80 +154,7 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat", "openai.transcription"], models: ["gpt-4o-mini"] } } },
     });
     expect(examples.map((example) => example.operation)).toEqual(["openai.chat"]);
-    expect(notes).toContainEqual(`${slug}: openai.transcription has no example: no model this route allows can be billed there.`);
-  });
-
-  it("never asks for more output than the route or the preset allows", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key, { type: "anthropic", name: "Anthropic", slug: `anthropic-${crypto.randomUUID().slice(0, 6)}` });
-    const { examples } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["anthropic.messages"], max_output_tokens: 128 } } },
-      presets: { short: { provider: slug, operation: "anthropic.messages", model: "claude-sonnet-4-5", max_output_tokens: 100 } },
-    });
-    const [route, preset] = examples;
-    expect(route).toMatchObject({ operation: "anthropic.messages", headers: { "anthropic-version": "2023-06-01" } });
-    expect(route!.body.max_tokens).toBe(128);
-    expect(preset).toMatchObject({ preset: "short" });
-    expect(preset!.body.max_tokens).toBe(100);
-  });
-
-  it("leaves out an image edit, which needs an image an example cannot include, whatever the route's order, and still shows image generation", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key);
-    for (const operations of [["openai.images.edits", "openai.images"], ["openai.images", "openai.images.edits"]]) {
-      const { examples, notes } = await snippetFor(key, {
-        authentication: { type: "api_key", end_user: { source: "none" } },
-        routing: { providers: { [slug]: { operations, models: ["gpt-image-1.5"] } } },
-      });
-      expect(examples.map((example) => example.operation), operations.join()).toEqual(["openai.images"]);
-      expect(notes).toContainEqual(`${slug}: openai.images.edits: it needs an image to edit, which an example cannot include, so it has no example.`);
-    }
-  });
-
-  it("gives a disabled app no request to run, only a note that it is disabled", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key);
-    const app = await request(key, "POST", "/v2/admin/apps", {
-      name: "Off",
-      status: "disabled",
-      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } } },
-    });
-    expect(app.status, JSON.stringify(app.body)).toBe(201);
-    const answer = await request(key, "GET", `/v2/admin/apps/${app.body.app.id}/snippet`);
-    expect(answer.body.examples).toEqual([]);
-    expect(answer.body.notes).toEqual([expect.stringMatching(/^This app is disabled: every request to it is refused\./u)]);
-  });
-
-  it("names no model from the whole price list: Vercel and DeepSeek's fill-in-the-middle have no sample, so the note asks for one", async () => {
-    const key = await seedManagementKey();
-    const vercel = await provider(key, { type: "vercel", name: "Vercel", slug: `vercel-${crypto.randomUUID().slice(0, 6)}` });
-    const deepseek = await provider(key, { type: "deepseek", name: "DeepSeek", slug: `deepseek-${crypto.randomUUID().slice(0, 6)}` });
-    const { examples, notes } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [vercel]: { operations: ["vercel.chat"] }, [deepseek]: { operations: ["deepseek.chat", "deepseek.completions"] } } },
-    });
-    expect(examples.map((example) => [example.operation, example.model])).toEqual([["deepseek.chat", SAMPLE_MODELS.deepseek!["openai-chat"]]]);
-    expect(notes).toContainEqual(`${vercel}: vercel.chat has no example: no sample model is known for it on vercel. Pick one: list it in the route, and the example names it.`);
-    expect(notes).toContainEqual(`${deepseek}: deepseek.completions has no example: no sample model is known for it on deepseek. Pick one: list it in the route, and the example names it.`);
-  });
-
-  it("names a sample model for a provider that reports its own costs, and says so plainly where none is known", async () => {
-    const key = await seedManagementKey();
-    const router = await provider(key, { type: "openrouter", name: "OpenRouter", slug: `openrouter-${crypto.randomUUID().slice(0, 6)}` });
-    const { examples } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [router]: { operations: ["openrouter.chat"] } } },
-    });
-    expect(examples).toEqual([expect.objectContaining({ operation: "openrouter.chat", model: SAMPLE_MODELS.openrouter!["openai-chat"] })]);
-
-    const hugging = await provider(key, { type: "huggingface", name: "Hugging Face", slug: `huggingface-${crypto.randomUUID().slice(0, 6)}` });
-    const unknown = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [hugging]: { operations: ["huggingface.chat"] } } },
-    });
-    expect(unknown.examples).toEqual([]);
-    expect(unknown.notes).toContainEqual(`${hugging}: huggingface.chat has no example: no sample model is known for it on huggingface. Pick one: list it in the route, and the example names it.`);
+    expect(notes).toContainEqual(`${slug}: openai.transcription has no example: pick a model for it and list it in the route.`);
   });
 
   it("sends its generated requests through the proxy, JSON and upload alike, and they are served", async () => {
@@ -252,53 +177,150 @@ describe("first requests for an app", () => {
     expect((await sentForm()).get("model")).toBe("whisper-1");
   });
 
-  it("names an ElevenLabs transcription's model in model_id, where the proxy reads it, and the upload is served", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key, { type: "elevenlabs", name: "ElevenLabs", slug: `elevenlabs-${crypto.randomUUID().slice(0, 6)}` });
-    const { examples, appKey } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["elevenlabs.stt"], models: ["scribe_v2"] } } },
-    });
-    const [stt] = examples;
-    expect(stt).toMatchObject({ operation: "elevenlabs.stt", form: { model_id: stt!.model }, file: { field: "file" } });
-    expect(stt!.style).toBeUndefined();
-    expect(stt!.curl).toContain(`--form-string 'model_id=${stt!.model}'`);
-    fetchSpy.mockResolvedValueOnce(
-      Response.json({ text: "Hello.", audio_duration_secs: 4.7 }, { headers: { "character-cost": "5", "fiat-cost-before-overages": "0.0005", "fiat-currency": "usd" } }),
-    );
-    const uploaded = await send(stt!, appKey!);
-    expect(uploaded.status, uploaded.text).toBe(200);
-    expect((await sentForm()).get("model_id")).toBe(stt!.model);
-  });
-
-  it("puts a model in the path where the operation reads it there: the sample for the provider when the route allows any", async () => {
+  it("puts a model in the path where the operation reads it there: the operation's sample when the route allows any", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key, { type: "gemini", name: "Gemini", slug: `gemini-${crypto.randomUUID().slice(0, 6)}` });
-    const { examples } = await snippetFor(key, {
+    const { appId, examples } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { [slug]: { operations: ["gemini.generate.v1beta"] } } },
     });
     const [generate] = examples;
-    expect(generate!.model).toBe(SAMPLE_MODELS.gemini!["gemini-generate"]);
-    expect(generate!.url).toBe(`${ORIGIN}/v2/apps/${generate!.url.split("/")[5]}/proxy/${slug}/v1beta/models/${generate!.model}:generateContent`);
+    expect(generate!.model).toBe(SAMPLE_MODELS["gemini.generate.v1beta"]);
+    expect(generate!.url).toBe(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1beta/models/${generate!.model}:generateContent`);
     expect(generate!.body).toEqual({ contents: [{ role: "user", parts: [{ text: "Hello!" }] }] });
   });
 
-  it("gives a preset's request without a model, at the preset's own address", async () => {
+  it("never asks for more output than the route or the preset allows", async () => {
     const key = await seedManagementKey();
-    const slug = await provider(key);
-    const { appId, examples } = await snippetFor(key, {
+    const slug = await provider(key, { type: "anthropic", name: "Anthropic", slug: `anthropic-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["anthropic.messages"], max_output_tokens: 128 } } },
+      presets: { short: { provider: slug, operation: "anthropic.messages", model: "claude-sonnet-4-5", max_output_tokens: 100 } },
+    });
+    const [route, preset] = examples;
+    expect(route).toMatchObject({ operation: "anthropic.messages", model: SAMPLE_MODELS["anthropic.messages"], headers: { "anthropic-version": "2023-06-01" } });
+    expect(route!.body.max_tokens).toBe(128);
+    expect(preset).toMatchObject({ preset: "short", operation: "anthropic.messages", model: null });
+    expect(preset!.body.max_tokens).toBe(100);
+  });
+
+  it("gives an image edit, fill-in-the-middle, ElevenLabs and a custom provider's path a note, never a command", async () => {
+    const key = await seedManagementKey();
+    const openai = await provider(key);
+    const mistral = await provider(key, { type: "mistral", name: "Mistral", slug: `mistral-${crypto.randomUUID().slice(0, 6)}` });
+    const eleven = await provider(key, { type: "elevenlabs", name: "ElevenLabs", slug: `elevenlabs-${crypto.randomUUID().slice(0, 6)}` });
+    const custom = await provider(key, {
+      type: "custom",
+      name: "My LLM",
+      slug: `my-llm-${crypto.randomUUID().slice(0, 6)}`,
+      baseUrl: "https://llm.example.com/v1/",
+      auth: { header: "x-api-key", format: "Key {key}" },
+      passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
+      pricing: { "local-llm": { input: 1, output: 2 } },
+    });
+    for (const operations of [["openai.images.edits", "openai.images"], ["openai.images", "openai.images.edits"]]) {
+      const { appId, examples, notes } = await snippetFor(key, {
+        authentication: { type: "api_key", end_user: { source: "none" } },
+        routing: {
+          providers: {
+            [openai]: { operations, models: ["gpt-image-1.5"] },
+            [mistral]: { operations: ["mistral.fim"], models: ["codestral-latest"] },
+            [eleven]: { operations: ["elevenlabs.stt"], models: ["scribe_v2"] },
+            [custom]: { operations: ["custom.openai-chat"] },
+          },
+        },
+      });
+      expect(examples.map((example) => example.operation), operations.join()).toEqual(["openai.images"]);
+      const proxy = `${ORIGIN}/v2/apps/${appId}/proxy`;
+      expect(notes).toEqual(
+        expect.arrayContaining([
+          `${openai}: openai.images.edits has no example here. Send it as the provider's own API reference describes, to ${proxy}/${openai}/.`,
+          `${mistral}: mistral.fim has no example here. Send it as the provider's own API reference describes, to ${proxy}/${mistral}/.`,
+          `${eleven}: elevenlabs.stt has no example here. Send it as the provider's own API reference describes, to ${proxy}/${eleven}/.`,
+          `${custom}: custom.openai-chat has no example here. Send it as the provider's own API reference describes, to ${proxy}/${custom}/.`,
+        ]),
+      );
+    }
+  });
+
+  it("gives a custom provider's image-edit preset a note, never a command", async () => {
+    const key = await seedManagementKey();
+    const custom = await provider(key, {
+      type: "custom",
+      name: "Images",
+      slug: `images-${crypto.randomUUID().slice(0, 6)}`,
+      baseUrl: "https://img.example.com/v1/",
+      auth: { header: "x-api-key", format: "Key {key}" },
+      passthrough: [{ method: "POST", path: "images/edits", style: "openai-images" }],
+      pricing: { "img-model": { per_image: 0.04 } },
+    });
+    const { appId, examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [custom]: { operations: ["custom.openai-images"] } } },
+      presets: { edit: { provider: custom, operation: "custom.openai-images", model: "img-model" } },
+    });
+    expect(examples).toEqual([]);
+    expect(notes).toContainEqual(
+      `The preset edit has no example here. Send its request as its provider's own API reference describes, without a model, to ${ORIGIN}/v2/apps/${appId}/presets/edit.`,
+    );
+  });
+
+  it("gives no example on a disabled connection, for its routes and its presets, only a note", async () => {
+    const key = await seedManagementKey();
+    const created = await request(key, "POST", "/v2/admin/providers", { type: "openai", name: "OpenAI", slug: `off-${crypto.randomUUID().slice(0, 6)}`, secret: PROVIDER_KEY });
+    const slug = created.body.provider.slug as string;
+    const { appId } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
       presets: { support: { provider: slug, operation: "openai.chat", model: "gpt-4o-mini" } },
     });
-    expect(examples.at(-1)).toMatchObject({
-      preset: "support",
-      operation: "openai.chat",
-      url: `${ORIGIN}/v2/apps/${appId}/presets/support`,
-      model: null,
-      body: { messages: [{ role: "user", content: "Hello!" }] },
+    expect((await request(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, status: "disabled" })).status).toBe(200);
+    const answer = await request(key, "GET", `/v2/admin/apps/${appId}/snippet`);
+    expect(answer.body.examples).toEqual([]);
+    expect(answer.body.notes).toEqual(
+      expect.arrayContaining([
+        `The route ${slug} uses the provider connection ${slug}, which is disabled: turn it on to get an example.`,
+        `The preset support uses the provider connection ${slug}, which is disabled: turn it on to get an example.`,
+      ]),
+    );
+  });
+
+  it("gives a disabled app no request to run, only a note that it is disabled", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const app = await request(key, "POST", "/v2/admin/apps", {
+      name: "Off",
+      status: "disabled",
+      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } } },
     });
+    expect(app.status, JSON.stringify(app.body)).toBe(201);
+    const answer = await request(key, "GET", `/v2/admin/apps/${app.body.app.id}/snippet`);
+    expect(answer.body.examples).toEqual([]);
+    expect(answer.body.notes).toEqual([expect.stringMatching(/^This app is disabled: every request to it is refused\./u)]);
+  });
+
+  it("names a sample model only for an operation the curated list has; elsewhere a note asks for one", async () => {
+    const key = await seedManagementKey();
+    const router = await provider(key, { type: "openrouter", name: "OpenRouter", slug: `openrouter-${crypto.randomUUID().slice(0, 6)}` });
+    const vercel = await provider(key, { type: "vercel", name: "Vercel", slug: `vercel-${crypto.randomUUID().slice(0, 6)}` });
+    const deepseek = await provider(key, { type: "deepseek", name: "DeepSeek", slug: `deepseek-${crypto.randomUUID().slice(0, 6)}` });
+    const { appId, examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: {
+        providers: {
+          [router]: { operations: ["openrouter.chat"] },
+          [vercel]: { operations: ["vercel.chat"] },
+          [deepseek]: { operations: ["deepseek.chat", "deepseek.completions"] },
+        },
+      },
+    });
+    expect(examples.map((example) => [example.operation, example.model])).toEqual([
+      ["openrouter.chat", SAMPLE_MODELS["openrouter.chat"]],
+      ["deepseek.chat", SAMPLE_MODELS["deepseek.chat"]],
+    ]);
+    expect(notes).toContainEqual(`${vercel}: vercel.chat has no example: pick a model for it and list it in the route.`);
+    expect(notes).toContainEqual(`${deepseek}: deepseek.completions has no example here. Send it as the provider's own API reference describes, to ${ORIGIN}/v2/apps/${appId}/proxy/${deepseek}/.`);
   });
 
   it("describes an iOS app's whole request without curl, pointing to the Swift SDK", async () => {
@@ -324,40 +346,23 @@ describe("first requests for an app", () => {
     expect(notes[0]).toMatch(/App Attest, which curl cannot do.*Swift SDK/u);
   });
 
-  it("sends a gateway token where users sign in with an issuer, and exchanges for one without a credential in any argument", async () => {
+  it("exchanges for a gateway token inside each example where users sign in with an issuer, never printing it", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const issuer = { jwks_url: "https://issuer.example.com/jwks", issuer: ["https://issuer.example.com"], audience: ["snippet"], user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 3600 };
-    const { appId, examples, notes, exchange } = await snippetFor(key, {
+    const { appId, examples, notes } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     });
-    expect(examples[0]!.curl).toMatch(/^\( set \+x; printf 'header = "Authorization: Bearer %s"\\n' "\$APP_AI_GATEWAY_TOKEN" \| curl --disable --config - /u);
-    // The exchange is a command of its own, never cut inside a note.
-    expect(exchange).toBe(
-      `( set +x; printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/auth/token' \\\n  -H 'Content-Type: application/json' )`,
-    );
-    expect(notes[0]).not.toContain("curl");
-  });
-
-  it("follows a custom provider's listed path, with a model it prices", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key, {
-      type: "custom",
-      name: "My LLM",
-      slug: `my-llm-${crypto.randomUUID().slice(0, 6)}`,
-      baseUrl: "https://llm.example.com/v1/",
-      auth: { header: "x-api-key", format: "Key {key}" },
-      passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
-      pricing: { "local-llm": { input: 1, output: 2 } },
-    });
-    const { appId, examples } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["custom.openai-chat"] } } },
-    });
-    expect(examples).toEqual([
-      expect.objectContaining({ operation: "custom.openai-chat", url: `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/chat/completions`, model: "local-llm" }),
+    const curl = examples[0]!.curl as string;
+    expect(curl.split("\n").slice(0, 4)).toEqual([
+      "( set +x",
+      `  APP_AI_GATEWAY_TOKEN="$(printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --silent --show-error --fail --config - '${ORIGIN}/v2/apps/${appId}/auth/token' -H 'Content-Type: application/json' | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')"`,
+      `  [ -n "$APP_AI_GATEWAY_TOKEN" ] || { echo "The token exchange failed." >&2; exit 1; }`,
+      `  echo "Exchanged the user's token for a gateway token." >&2`,
     ]);
+    expect(curl).toContain(`printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_TOKEN" | curl --disable --config - `);
+    expect(notes[0]).not.toContain("curl");
   });
 
   it("answers app_not_found for another account's real app, and for one that does not exist", async () => {

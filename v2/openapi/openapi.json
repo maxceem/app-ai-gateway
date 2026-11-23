@@ -3168,9 +3168,6 @@
               "$ref": "#/components/schemas/AppSnippetExample"
             }
           },
-          "exchange": {
-            "type": "string"
-          },
           "notes": {
             "type": "array",
             "items": {

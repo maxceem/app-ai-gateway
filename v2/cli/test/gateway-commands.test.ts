@@ -564,7 +564,7 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
 test("app snippet shows an iOS app's whole requests by default, and provider types their operations", async () => {
   const snippet = cliTool(
     "get_app_snippet",
-    { command: "app snippet", args: ["app"], view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["exchange", "examples.*.text"] } },
+    { command: "app snippet", args: ["app"], view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"] } },
     { properties: { app: { type: "string" } }, required: ["app"] },
   );
   const types = cliTool("list_provider_types", {
@@ -597,15 +597,6 @@ test("app snippet shows an iOS app's whole requests by default, and provider typ
   assert.ok(shown.out.includes(`\n\n${request.replace('{\n  "model"', '{\n  "model"')}\n`), shown.out);
   assert.match(shown.out, /- This iOS app signs every request with App Attest\./u);
 
-  // An issuer app's exchange command is printed whole, as a block of its own, before the examples.
-  const exchange = `( set +x; printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --config - '${"https://gw.example/v2/apps/app_1/auth/token"}' \\\n  -H 'Content-Type: application/json' )`;
-  const issuer = gateway({
-    tools: [snippet],
-    answer: () => ({ app_id: "app_1", base_url: "https://gw.example", examples: [], notes: ["Exchange first."], exchange }),
-  });
-  const exchanged = await run(["app", "snippet", "app_1"], issuer);
-  assert.equal(exchanged.code, 0, exchanged.err);
-  assert.ok(exchanged.out.includes(`\n\n${exchange}\n`), exchanged.out);
   const listed = await run(["provider", "types"], fake);
   assert.equal(listed.code, 0, listed.err);
   // A wide column is shown whole; any other is still cut at 48 characters.

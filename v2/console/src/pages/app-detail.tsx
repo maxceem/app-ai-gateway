@@ -280,7 +280,6 @@ export function FirstRequests({ app, base }: { app: App; base: string }) {
           <p className="text-destructive">Could not load the example requests.</p>
         ) : (
           <>
-            {snippet.data.exchange === undefined ? null : <CommandBlock label="Exchange for a gateway token" text={snippet.data.exchange} />}
             {snippet.data.examples.map((example) => (
               <SnippetExample key={`${example.provider ?? ""}/${example.preset ?? ""}/${example.style ?? example.operation}`} example={example} />
             ))}

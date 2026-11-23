@@ -13,13 +13,14 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { curlCommand, exchangeCommand, type SnippetRequest } from "../../src/admin/snippet-request.ts";
+import { curlCommand, type SnippetRequest } from "../../src/admin/snippet-request.ts";
 
 const realCurl = spawnSync("sh", ["-c", "command -v curl"]).stdout.toString().trim();
 const skip = realCurl === "" ? "curl is not installed" : false;
 
 const APP_KEY = "agw_app_dummy-key-for-the-shell-test-0123";
 const ISSUER_TOKEN = "dummy.issuer.token-for-the-shell-test";
+const GATEWAY_TOKEN = "dummy-gateway-token-from-the-exchange-0123";
 const CREDENTIAL = { header: "Authorization", scheme: "Bearer", variable: "APP_AI_GATEWAY_KEY" } as const;
 
 interface Seen {
@@ -32,25 +33,33 @@ interface Seen {
 /**
  * Runs `command` with `sh -x` (tracing every command) in a folder holding
  * audio.mp3 and a `.curlrc` that turns on curl's own trace, behind a `curl`
- * that writes its arguments to a file and then runs the real one. Answers
+ * that adds its arguments to a file, every call, and then runs the real one. Answers
  * what the server saw, the arguments curl got, and everything written:
  * output, the shell's trace and any curl trace.
  */
-async function run(build: (base: string) => string): Promise<{ seen: Seen; args: string; written: string }> {
+async function run(build: (base: string) => string): Promise<{ seen: Seen; exchanged: Seen | undefined; args: string; written: string }> {
   const dir = await mkdtemp(join(tmpdir(), "agw-snippet-"));
   let seen: Seen | undefined;
+  let exchanged: Seen | undefined;
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk: Buffer) => (body += chunk.toString("latin1")));
     request.on("end", () => {
-      seen = { method: request.method!, url: request.url!, headers: request.headers, body };
+      const got = { method: request.method!, url: request.url!, headers: request.headers, body };
+      // The issuer exchange answers a gateway token, as the gateway does.
+      if (request.url!.endsWith("/auth/token")) {
+        exchanged = got;
+        response.end(JSON.stringify({ access_token: GATEWAY_TOKEN, expires_in: 3600 }));
+        return;
+      }
+      seen = got;
       response.end("{}");
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const argsFile = join(dir, "args.txt");
-    await writeFile(join(dir, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$AGW_TEST_ARGS"\nexec ${realCurl} "$@"\n`);
+    await writeFile(join(dir, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "$AGW_TEST_ARGS"\nexec ${realCurl} "$@"\n`);
     await chmod(join(dir, "curl"), 0o755);
     await writeFile(join(dir, "audio.mp3"), "ID3 not really audio");
     // What a .curlrc could do: trace every header to a file, and print it all.
@@ -79,7 +88,7 @@ async function run(build: (base: string) => string): Promise<{ seen: Seen; args:
     assert.equal(code, 0, written);
     assert.ok(seen, "the server saw no request");
     const trace = await readFile(join(dir, "trace.txt"), "utf8").catch(() => "");
-    return { seen, args: await readFile(argsFile, "utf8"), written: written + trace };
+    return { seen, exchanged, args: await readFile(argsFile, "utf8"), written: written + trace };
   } finally {
     server.close();
     await rm(dir, { recursive: true, force: true });
@@ -124,11 +133,22 @@ test("an upload sends the model as a text field beside the file", { skip }, asyn
   assert.ok(!written.includes(APP_KEY));
 });
 
-test("the issuer exchange sends the key and the user's token in its body, neither as an argument", { skip }, async () => {
-  const { seen, args, written } = await run((base) => exchangeCommand(`${base}/v2/apps/app_1/auth/token`, "APP_AI_GATEWAY_KEY", "ISSUER_TOKEN"));
-  assert.equal(seen.method, "POST");
-  assert.equal(seen.headers["content-type"], "application/json");
-  assert.deepEqual(JSON.parse(seen.body), { api_key: APP_KEY, issuer_token: ISSUER_TOKEN });
-  assert.ok(!args.includes(APP_KEY) && !args.includes(ISSUER_TOKEN), "curl got a credential as an argument");
-  assert.ok(!written.includes(APP_KEY) && !written.includes(ISSUER_TOKEN), "a credential was written out");
+test("an issuer app's example exchanges for a gateway token, sends it, and never prints or passes any credential", { skip }, async () => {
+  const { seen, exchanged, args, written } = await run((base) =>
+    curlCommand(
+      { method: "POST", url: `${base}/v2/apps/app_1/proxy/openai/v1/chat/completions`, headers: { "Content-Type": "application/json" }, body: { model: "m" } },
+      { header: "Authorization", scheme: "Bearer", variable: "APP_AI_GATEWAY_TOKEN" },
+      { url: `${base}/v2/apps/app_1/auth/token`, keyVariable: "APP_AI_GATEWAY_KEY", tokenVariable: "ISSUER_TOKEN", into: "APP_AI_GATEWAY_TOKEN" },
+    ),
+  );
+  assert.ok(exchanged, "no exchange was made");
+  assert.equal(exchanged.headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(exchanged.body), { api_key: APP_KEY, issuer_token: ISSUER_TOKEN });
+  // The token from the exchange is what the request sends.
+  assert.equal(seen.headers.authorization, `Bearer ${GATEWAY_TOKEN}`);
+  for (const credential of [APP_KEY, ISSUER_TOKEN, GATEWAY_TOKEN]) {
+    assert.ok(!args.includes(credential), "curl got a credential as an argument");
+    assert.ok(!written.includes(credential), "a credential was printed or traced");
+  }
+  assert.match(written, /Exchanged the user's token for a gateway token\./u);
 });

@@ -164,6 +164,21 @@ test("app add writes only the settings its flags name: environments, verificatio
   assert.equal(unknown.json().error.code, "provider_not_found");
   const filed = await run(["app", "add", "--file", "app.json", "--providers", "openai", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(filed.json().error.code, "conflicting_flags");
+  // As before this release: --file wins over --user-header, --team-id and --bundle-id, which are left out.
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const document = { name: "From file", config: { authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.file" } } } };
+    await writeFile(join(dir, "app.json"), JSON.stringify(document));
+    const sent: unknown[] = [];
+    const old = await run(["app", "add", "--file", join(dir, "app.json"), "--user-header", "x-user", "--team-id", "ZZZZZ99999", "--json"], (_path, options) => {
+      sent.push(options.body);
+      return { app: { ...APP, name: "From file" }, api_key: null };
+    });
+    assert.equal(old.code, 0, old.err);
+    assert.deepEqual(sent, [document]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
   const status = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--status", "paused", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(status.json().error.code, "invalid_input");
 });
