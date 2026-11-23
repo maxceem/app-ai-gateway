@@ -3,7 +3,6 @@
  * or failing, the last known record is served (and `known_record_served` is
  * logged), as in v1.
  */
-import { noteLoadedApp } from "../core/loaded-app.ts";
 import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
 import { accountPendingSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
@@ -35,13 +34,22 @@ let invalidations = 0;
 export const PENDING_REFRESH_DEADLINE_MS = 5_000;
 
 /**
- * {@link loadApp} for a request's handler: the record, noted against the
- * request so a refusal's log line can name the app it was about
- * (`../core/loaded-app.ts`).
+ * The app each request's handler loaded, so a refusal's log line can name it
+ * (`../index.ts`). Only an app record the gateway read is named: a path
+ * segment that names no registered app is the caller's own text, and is never
+ * copied into a log.
  */
+const loadedApps = new WeakMap<Request, string>();
+
+/** The app a request's handler loaded, if any. */
+export function loadedAppId(request: Request): string | undefined {
+  return loadedApps.get(request);
+}
+
+/** {@link loadApp} for a request's handler: the record, remembered against the request for its log line. */
 export async function loadRequestApp(c: { env: Env; req: { raw: Request } }, appId: string): Promise<AppRecord> {
   const record = await loadApp(c.env, appId);
-  noteLoadedApp(c.req.raw, record.id);
+  loadedApps.set(c.req.raw, record.id);
   return record;
 }
 

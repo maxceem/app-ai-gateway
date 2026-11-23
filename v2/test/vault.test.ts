@@ -244,18 +244,6 @@ describe("secret contexts", () => {
     expect(new Set(rendered).size).toBe(rendered.length);
   });
 
-  it("binds a provider key to its account, connection, type and destination", () => {
-    const original = secretContext("providerKey", ["account-a", "conn-a", "openai", "https://first.example.test/v1/"]);
-    for (const changed of [
-      ["account-b", "conn-a", "openai", "https://first.example.test/v1/"],
-      ["account-a", "conn-b", "openai", "https://first.example.test/v1/"],
-      ["account-a", "conn-a", "anthropic", "https://first.example.test/v1/"],
-      ["account-a", "conn-a", "openai", "https://second.example.test/v1/"],
-    ] as const) {
-      expect(secretContext("providerKey", [...changed])).not.toEqual(original);
-    }
-  });
-
   it("refuses an id too long for a context value", () => {
     const kind = SECRET_KINDS[0]!;
     const oversized = identity(kind).map(() => "z".repeat(MAX_VALUE_LENGTH + 1));

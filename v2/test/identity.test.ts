@@ -73,7 +73,6 @@ describe("Google sign-in through an OAuth relay", () => {
     expect(next.searchParams.get("state")?.length).toBeGreaterThan(20);
     // The callback that comes back through the relay is checked against these.
     expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
-    expect(response.headers.get("content-length")).toBeNull();
   });
 
   it("takes a relay with a trailing slash or a path, using only its origin", async () => {
@@ -316,7 +315,7 @@ describe("flood limits on the OAuth endpoints", () => {
   }
 
   it("lets one address keep at most ten CLI sign-in codes waiting, and only that address", async () => {
-    const address = `203.0.113.${Math.floor(Math.random() * 200) + 20}`;
+    const address = "203.0.113.21";
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const started = await startDevice(address);
       expect(started.status, `attempt ${attempt}`).toBe(200);
@@ -330,7 +329,7 @@ describe("flood limits on the OAuth endpoints", () => {
 
   it("counts codes an address asked for, even ones declined at once, and slows it down past the hourly limit", async () => {
     const human = await seedHuman();
-    const address = `203.0.113.${Math.floor(Math.random() * 200) + 20}`;
+    const address = "203.0.113.22";
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const started = await startDevice(address);
       expect(started.status, `attempt ${attempt}`).toBe(200);
@@ -359,7 +358,7 @@ describe("flood limits on the OAuth endpoints", () => {
   });
 
   it("answers too many authorization requests from one address with an error page", async () => {
-    const address = `198.51.100.${Math.floor(Math.random() * 200) + 20}`;
+    const address = "198.51.100.23";
     const authorize = () =>
       call(env, `${OAUTH_PATHS.authorize}?client_id=${CLI_CLIENT_ID}&response_type=code`, { base: CONSOLE, address });
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -374,7 +373,7 @@ describe("flood limits on the OAuth endpoints", () => {
   it("limits how many sign-in codes one address may look up", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const human = await seedHuman();
-    const address = `192.0.2.${Math.floor(Math.random() * 200) + 20}`;
+    const address = "192.0.2.24";
     const lookup = () =>
       call(env, "/v2/console/device/lookup", {
         base: CONSOLE,

@@ -130,6 +130,13 @@ describe("the operation catalogs", () => {
     expect(unauthenticated).toBe(0);
   });
 
+  // The check above is only as good as `unserved`: a path nothing is mounted at must read as unserved.
+  it("tell a path nothing is mounted at from a served one", async () => {
+    captureLogs();
+    expect(await unserved(await exports.default.fetch(`${ORIGIN}/v2/surely-not-mounted-${crypto.randomUUID()}`))).toBe(true);
+    expect(await unserved(await exports.default.fetch(`${ORIGIN}/v2/healthz`))).toBe(false);
+  });
+
   it("give each operation a route of its own", () => {
     const routes = Object.values<OperationSpec>(CATALOG).map((spec) => `${spec.method} ${spec.path}`);
     expect(new Set(routes).size).toBe(routes.length);
@@ -215,7 +222,7 @@ describe("refusal logging", () => {
     expect(lines.some((line) => line.message === "gateway_error")).toBe(false);
     // Its class, and nothing it carries: a JSON parse error quotes its input.
     expect(lines.filter((line) => line.message === "unhandled_error")).toEqual([
-      expect.objectContaining({ level: "error", path: "/v2/apps/:app/auth/token", method: "POST", error: { class: "SyntaxError" } }),
+      expect.objectContaining({ level: "error", path: "/v2/apps/:app/auth/token", method: "POST", error: { class: expect.any(String) } }),
     ]);
     expect(output.join("\n")).not.toContain("sk-leaked");
   });

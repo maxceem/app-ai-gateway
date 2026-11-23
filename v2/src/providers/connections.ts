@@ -16,7 +16,7 @@ import { ttlCache } from "../core/ttl-cache.ts";
 import { database } from "../db/index.ts";
 import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { openSecret } from "../vault/secrets.ts";
+import { openSecret, type SecretIdentity, type SecretKind } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
 import { CUSTOM_PROVIDER_TYPE, customDescription } from "./custom.ts";
@@ -201,18 +201,18 @@ export interface UpstreamCredentials {
  * without the key being sealed again: the cached copy follows only the exact
  * binding that opened it.
  */
-async function opened(
+async function opened<K extends SecretKind>(
+  env: Env,
   connection: ConnectionRecord,
-  what: string,
-  identity: readonly string[],
-  open: () => Promise<string>,
+  kind: K,
+  identity: SecretIdentity<K>,
   blob: string,
 ): Promise<string> {
-  const key = [what, ...identity, blob].join("\u0000");
+  const key = [kind, ...identity, blob].join("\u0000");
   const cached = secretCache.get(key);
   if (cached !== undefined) return cached;
   try {
-    const secret = await open();
+    const secret = await openSecret(env, kind, identity, blob);
     secretCache.set(key, secret);
     return secret;
   } catch (error) {
@@ -220,16 +220,11 @@ async function opened(
       account: connection.accountId,
       connection: connection.id,
       providerType: connection.type,
-      credential: what,
+      credential: kind,
       error: errorFacts(error),
     });
     throw new GatewayError(502, "provider_unavailable", "The provider credential could not be opened");
   }
-}
-
-function openedProviderKey(env: Env, connection: ConnectionRecord, blob: string): Promise<string> {
-  const identity = [connection.accountId, connection.id, connection.type, keyOrigin(connection)] as const;
-  return opened(connection, "providerKey", identity, () => openSecret(env, "providerKey", [...identity], blob), blob);
 }
 
 /**
@@ -259,17 +254,11 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
   const providerKey =
     connection.secretBlob === null
       ? null
-      : await openedProviderKey(env, connection, connection.secretBlob);
+      : await opened(env, connection, "providerKey", [connection.accountId, connection.id, connection.type, keyOrigin(connection)], connection.secretBlob);
   const cloudflareToken =
     gateway === null
       ? null
-      : await opened(
-          connection,
-          "cloudflareGatewayToken",
-          [connection.accountId, connection.id],
-          () => openSecret(env, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob),
-          gateway.tokenBlob,
-        );
+      : await opened(env, connection, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob);
   return { providerKey, cloudflareToken };
 }
 

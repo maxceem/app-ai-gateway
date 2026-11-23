@@ -127,11 +127,12 @@ describe("opening a connection's key", () => {
     await addCloudflareGateway(id);
     invalidateConnection(ACCOUNT_ID, slug);
     const connection = await load(slug);
-    const decrypt = vi.spyOn(crypto.subtle, "decrypt");
+    // With a cold cache, opening the key would decrypt. The tests' local vault
+    // decrypts with `crypto.subtle`, so no call proves the refusal comes first.
+    const decrypt = cache === "cold" ? vi.spyOn(crypto.subtle, "decrypt") : null;
 
     await expect(connectionCredentials(env, connection)).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
-    // Refused before anything was opened, whatever the cache held.
-    expect(decrypt).not.toHaveBeenCalled();
+    if (decrypt !== null) expect(decrypt).not.toHaveBeenCalled();
     const lines = errors.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(lines).toContainEqual(expect.objectContaining({ message: "provider_connection_unusable", connection: id, reason: "base_url_and_cloudflare_gateway" }));
     expect(errors.mock.calls.flat().join(" ")).not.toContain(SECRET);

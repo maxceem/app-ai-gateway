@@ -19,7 +19,7 @@ import { Hono, type Context } from "hono";
 import { CLIENT_CATALOG, honoPath, type ClientOperationName, type ClientOperationResponse } from "./contracts/client-catalog.ts";
 import type { ErrorResponse } from "./contracts/operation.ts";
 import { storedAppVersion } from "./core/app-version.ts";
-import { loadedAppId } from "./core/loaded-app.ts";
+import { loadedAppId } from "./apps/app-records.ts";
 import { errorFacts } from "./core/error-facts.ts";
 import { GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
@@ -165,7 +165,7 @@ function errorBody(error: GatewayError): ErrorResponse {
 
 /**
  * What a refusal's log line says about the request beyond its route: the app
- * the handler actually loaded (`./core/loaded-app.ts`), never the path's own
+ * the handler actually loaded (`loadRequestApp`), never the path's own
  * segment, which may name nothing registered, and the caller's app version
  * when it is shaped like one (`storedAppVersion`), as v1 logged them. Never a
  * body, a header value other than the version, or a credential.

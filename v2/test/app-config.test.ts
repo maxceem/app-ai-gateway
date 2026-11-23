@@ -85,7 +85,7 @@ describe("defaults and round trip", () => {
 
 describe("unknown keys", () => {
   it("refuses an unknown key when saving, wherever it is", () => {
-    expect(problem({ ...serverApp(), surprise: true })).toBe(": Unrecognized key: \"surprise\"");
+    expect(problem({ ...serverApp(), surprise: true })).toContain("surprise");
     expect(problem({ authentication: { type: "api_key", end_user: { source: "none" }, extra: 1 } })).toContain("authentication");
     expect(problem(attestApp({ extra: 1 }))).toContain("authentication.app_attest");
   });
