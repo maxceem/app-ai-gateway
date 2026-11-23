@@ -166,16 +166,24 @@ interface PresetDraft {
   maxOutputTokens: string;
   params: string;
   fallback: FallbackDraft[];
-  /** What the editable fields said when the card opened, to tell a changed preset from an untouched one. */
-  opened: string;
+  /** The name it was stored under, or null for a new one. */
+  originalSlug: string | null;
 }
 
-/** A card's editable fields, as text, for telling whether it changed. */
-const fieldsOf = (draft: Omit<PresetDraft, "opened">) =>
-  JSON.stringify([draft.slug, draft.provider, draft.operation, draft.model, draft.maxOutputTokens, draft.params, draft.fallback.map((one) => [one.provider, one.operation, one.model])]);
-
-/** Whether a card is new or edited: only those are judged by their operation's rules, as the gateway judges only new or changed presets. */
-const isChanged = (draft: PresetDraft) => draft.original === null || fieldsOf(draft) !== draft.opened;
+/**
+ * Whether a card is new or saves as something other than what is stored:
+ * only those meet their operation's rules, as the gateway judges only new or
+ * changed presets. Compared as saved, so reformatted parameters alone are no change.
+ */
+function isChanged(draft: PresetDraft): boolean {
+  if (draft.original === null || draft.slug !== draft.originalSlug) return true;
+  try {
+    return JSON.stringify(presetsOf([draft])?.[draft.slug]) !== JSON.stringify(draft.original);
+  } catch {
+    // Parameters that do not parse are a change; their own problem says so.
+    return true;
+  }
+}
 
 type Presets = Record<string, Preset> | undefined;
 
@@ -185,10 +193,10 @@ let nextKey = 1_000_000;
 const textOf = (value: unknown) => (value === undefined ? "" : JSON.stringify(value, null, 2));
 
 function draftsOf(stored: Presets): PresetDraft[] {
-  return Object.entries(stored ?? {}).map(([slug, preset], index) => {
-    const draft = {
+  return Object.entries(stored ?? {}).map(([slug, preset], index) => ({
     key: index,
     original: preset as unknown as Record<string, unknown>,
+    originalSlug: slug,
     slug,
     provider: preset.provider,
     operation: preset.operation,
@@ -201,9 +209,7 @@ function draftsOf(stored: Presets): PresetDraft[] {
       operation: one.operation ?? "",
       model: one.model,
     })),
-    };
-    return { ...draft, opened: fieldsOf(draft) };
-  });
+  }));
 }
 
 /** A row's field, written onto a copy of what was stored only when it moved. */
@@ -262,6 +268,14 @@ export function presetOperations(connection: Pick<ProviderConnection, "type" | "
   return operationsOf(connection).filter((operation) => operation.name !== "passthrough" && declaredOperation(operation.name)?.style !== undefined).map((operation) => operation.name);
 }
 
+/** Whether a parsed value holds a number JSON cannot carry: one too large, which reads as Infinity and would be sent as null. */
+function hasNonFinite(value: unknown): boolean {
+  if (typeof value === "number") return !Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(hasNonFinite);
+  if (typeof value === "object" && value !== null) return Object.values(value).some(hasNonFinite);
+  return false;
+}
+
 /** What is wrong with one preset draft, by field, in words: the form's own rules, and the chosen operation's. */
 function presetProblems(draft: PresetDraft, slugs: string[], connections: ProviderConnection[]): Record<string, string> {
   const judged = isChanged(draft);
@@ -283,6 +297,7 @@ function presetProblems(draft: PresetDraft, slugs: string[], connections: Provid
       try {
         const parsed: unknown = JSON.parse(draft.params);
         if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) problems.params = "Write a JSON object, such as {\"temperature\": 0.2}.";
+        else if (hasNonFinite(parsed)) problems.params = "A number is too large to send, such as 1e400. Use a smaller one.";
       } catch {
         problems.params = "Not valid JSON.";
       }
@@ -596,7 +611,7 @@ export function PresetsTab({ app }: { app: App }) {
           variant="outline"
           disabled={disabled || connections.length === 0}
           onClick={() =>
-            change([...drafts, { key: nextKey++, original: null, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [], opened: "" }])
+            change([...drafts, { key: nextKey++, original: null, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [], originalSlug: null }])
           }
         >
           <Plus className="size-4" />

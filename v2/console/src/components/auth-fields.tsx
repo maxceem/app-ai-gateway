@@ -6,7 +6,7 @@
  * `authentication` block in place, so a field the person does not change
  * keeps its stored value, and the rules are the contract's own schema.
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { ChoiceList, type Choice } from "@/components/choice-list";
 import { Field } from "@/components/field";
 import {
@@ -38,6 +37,13 @@ import {
   type AppAttestEnvironment,
   type ClaimRequirement,
 } from "@contracts/app-config";
+
+/**
+ * A claim as the form holds it: the stored requirement, plus the match type
+ * the person chose (`_match`), kept in the draft beside the typed text so a
+ * type change alone is an edit. `authForSave` drops it.
+ */
+type ClaimDraft = ClaimRequirement & { _match?: ClaimMode };
 
 type AppAttestSettings = {
   team_id: string;
@@ -84,14 +90,15 @@ export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}):
   const endUser = draft.end_user;
   if (endUser.source === "issuer") {
     const { preset, values } = matchIssuerPreset(endUser.issuer);
-    const missing = missingInputs(preset, values)[0];
+    // A named provider asks for its own inputs; a custom issuer is judged by the gateway's schema alone.
+    const missing = preset.id === "custom" ? undefined : missingInputs(preset, values)[0];
     if (missing && !issues.has("end_user.issuer.preset")) issues.set("end_user.issuer.preset", `Enter the ${missing.label.toLowerCase()}.`);
     const claims = endUser.issuer.required_claims;
     if ((paid ?? requiresPayment(endUser.issuer)) && claims.length === 0) {
       issues.set("end_user.issuer.required_claims", "Add at least one claim, or choose Any signed-in user.");
     }
-    claims.forEach((claim, index) => {
-      if (claimTypes.get(claim) === "number" && typeof claim.equals === "string" && !NUMBER.test(claim.equals.trim())) {
+    (claims as ClaimDraft[]).forEach((claim, index) => {
+      if (claim._match === "number" && typeof claim.equals === "string" && !NUMBER.test(claim.equals.trim())) {
         issues.set(`end_user.issuer.required_claims.${index}.equals`, "Enter a number, such as 3 or 1.05.");
       }
     });
@@ -107,12 +114,10 @@ export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}):
 export function authForSave(draft: AuthDraft): AuthDraft {
   const endUser = draft.end_user;
   if (endUser.source !== "issuer") return draft;
-  const claims = endUser.issuer.required_claims;
-  if (!claims.some((claim) => claimTypes.get(claim) === "number")) return draft;
-  const required_claims = claims.map((claim) =>
-    claimTypes.get(claim) === "number" && typeof claim.equals === "string" && NUMBER.test(claim.equals.trim())
-      ? { ...claim, equals: Number(claim.equals.trim()) }
-      : claim,
+  const claims = endUser.issuer.required_claims as ClaimDraft[];
+  if (!claims.some((claim) => claim._match !== undefined)) return draft;
+  const required_claims = claims.map(({ _match, ...claim }) =>
+    _match === "number" && typeof claim.equals === "string" && NUMBER.test(claim.equals.trim()) ? { ...claim, equals: Number(claim.equals.trim()) } : claim,
   );
   return { ...draft, end_user: { ...endUser, issuer: { ...endUser.issuer, required_claims } } } as AuthDraft;
 }
@@ -310,50 +315,65 @@ function keepShape(stored: string | string[], next: string): string | string[] {
 }
 
 /**
- * Lines typed one value each, exactly as typed: only empty lines are dropped.
- * Written as a single value when the stored one was and there is one line.
+ * A value that is one string or a list of them, one input per value, each
+ * kept exactly as typed or stored. A single stored string stays a string
+ * until a second value is added.
  */
-function listFrom(stored: string | string[], text: string): string | string[] {
-  const values = text.split("\n").filter((line) => line.trim() !== "");
-  if (!Array.isArray(stored) && values.length <= 1) return values[0] ?? "";
-  return values;
-}
-
-const linesOf = (value: string | string[]) => (Array.isArray(value) ? value.join("\n") : value);
-
-/**
- * A list of values, one per line. The text is held here while it is typed,
- * so a new empty line can be started; it follows the stored value whenever
- * that changes to something the text does not already say.
- */
-function ListArea({
+function ValuesEditor({
   id,
+  label,
   value,
+  issuePath,
+  issues,
   disabled,
   onChange,
 }: {
   id: string;
+  label: string;
   value: string | string[];
+  issuePath: string;
+  issues: AuthIssues;
   disabled?: boolean;
   onChange: (next: string | string[]) => void;
 }) {
-  const [text, setText] = useState(() => linesOf(value));
-  useEffect(() => {
-    if (JSON.stringify(listFrom(value, text)) !== JSON.stringify(value)) setText(linesOf(value));
-    // Only a change from outside resets the text.
-  }, [value]);
+  const values = Array.isArray(value) ? value : [value];
+  const write = (next: string[]) => onChange(Array.isArray(value) || next.length !== 1 ? next : next[0]!);
   return (
-    <Textarea
-      id={id}
-      value={text}
-      className="min-h-16 font-mono text-xs"
-      spellCheck={false}
-      disabled={disabled}
-      onChange={(event) => {
-        setText(event.target.value);
-        onChange(listFrom(value, event.target.value));
-      }}
-    />
+    <div className="space-y-2">
+      {values.map((item, index) => (
+        <div key={index} className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Input
+              id={index === 0 ? id : `${id}-${index}`}
+              aria-label={index === 0 ? undefined : `${label} ${index + 1}`}
+              value={item}
+              className="font-mono text-xs"
+              autoComplete="off"
+              disabled={disabled}
+              onChange={(event) => write(values.map((entry, position) => (position === index ? event.target.value : entry)))}
+            />
+            {values.length > 1 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
+                disabled={disabled}
+                onClick={() => write(values.filter((_, position) => position !== index))}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            ) : null}
+          </div>
+          <Problem>{Array.isArray(value) ? issueAt(issues, `${issuePath}.${index}`) : issueAt(issues, issuePath)}</Problem>
+        </div>
+      ))}
+      {Array.isArray(value) ? <Problem>{issues.get(issuePath)}</Problem> : null}
+      <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => write([...values, ""])}>
+        <Plus className="size-3.5" />
+        Add {label.toLowerCase()}
+      </Button>
+    </div>
   );
 }
 
@@ -426,13 +446,27 @@ export function IdentityProviderFields({
             />
             <Problem>{issueAt(issues, "end_user.issuer.jwks_url")}</Problem>
           </Field>
-          <Field label="Issuers (iss)" htmlFor="issuer-issuer" hint="One per line: a token is accepted from any of them. Exactly as your tokens carry it, trailing slash included.">
-            <ListArea id="issuer-issuer" value={issuer.issuer} disabled={disabled} onChange={(next) => onChange({ ...issuer, issuer: next })} />
-            <Problem>{issueAt(issues, "end_user.issuer.issuer")}</Problem>
+          <Field label="Issuer (iss)" htmlFor="issuer-issuer" hint="Exactly as your tokens carry it, trailing slash included. With several, a token from any of them is accepted.">
+            <ValuesEditor
+              id="issuer-issuer"
+              label="Issuer"
+              value={issuer.issuer}
+              issuePath="end_user.issuer.issuer"
+              issues={issues}
+              disabled={disabled}
+              onChange={(next) => onChange({ ...issuer, issuer: next })}
+            />
           </Field>
-          <Field label="Audiences (aud)" htmlFor="issuer-audience" hint="One per line: a token for any of them is accepted.">
-            <ListArea id="issuer-audience" value={issuer.audience} disabled={disabled} onChange={(next) => onChange({ ...issuer, audience: next })} />
-            <Problem>{issueAt(issues, "end_user.issuer.audience")}</Problem>
+          <Field label="Audience (aud)" htmlFor="issuer-audience" hint="With several, a token for any of them is accepted.">
+            <ValuesEditor
+              id="issuer-audience"
+              label="Audience"
+              value={issuer.audience}
+              issuePath="end_user.issuer.audience"
+              issues={issues}
+              disabled={disabled}
+              onChange={(next) => onChange({ ...issuer, audience: next })}
+            />
           </Field>
         </>
       ) : (
@@ -537,7 +571,11 @@ export function SubscriptionFields({
                 className="max-w-80 font-mono text-xs"
                 autoComplete="off"
                 disabled={disabled}
-                onChange={(event) => onChange({ ...issuer, required_claims: [{ ...issuer.required_claims[0], ...revenueCatClaim(event.target.value) }] })}
+                // The stored claim's path stays; only a new check gets the default one.
+                onChange={(event) => {
+                  const current = issuer.required_claims[0];
+                  onChange({ ...issuer, required_claims: [{ ...current, ...revenueCatClaim(event.target.value, current?.path) }] });
+                }}
               />
               <Problem>{issueAt(issues, "end_user.issuer.required_claims")}</Problem>
             </Field>
@@ -564,23 +602,17 @@ const CLAIM_MODE_LABELS: Record<ClaimMode, string> = {
   boolean: "equals true or false",
 };
 
-/**
- * The type an `equals` claim is being typed as, kept while a number is still
- * half typed (stored as text until it reads as a number).
- */
-const claimTypes = new WeakMap<ClaimRequirement, ClaimMode>();
-
-function modeOf(claim: ClaimRequirement): ClaimMode {
+function modeOf(claim: ClaimDraft): ClaimMode {
   if (claim.equals === undefined) return "contains";
-  return claimTypes.get(claim) ?? (typeof claim.equals === "number" ? "number" : typeof claim.equals === "boolean" ? "boolean" : "string");
+  return claim._match ?? (typeof claim.equals === "number" ? "number" : typeof claim.equals === "boolean" ? "boolean" : "string");
 }
 
 const NUMBER = /^-?\d+(?:\.\d+)?$/u;
 
-/** A claim in a mode, keeping its path and what can be kept of its value. */
-function claimIn(claim: ClaimRequirement, mode: ClaimMode, text: string): ClaimRequirement {
-  const { contains: _contains, equals: _equals, ...rest } = claim;
-  let next: ClaimRequirement;
+/** A claim in a mode, keeping its path and what can be kept of its value, with the mode chosen. */
+function claimIn(claim: ClaimDraft, mode: ClaimMode, text: string): ClaimDraft {
+  const { contains: _contains, equals: _equals, _match: _previous, ...rest } = claim;
+  let next: ClaimDraft;
   if (mode === "contains") {
     const values = text.split(",").map((value) => value.trim());
     next = { ...rest, contains: values.length > 1 ? values : text };
@@ -592,8 +624,7 @@ function claimIn(claim: ClaimRequirement, mode: ClaimMode, text: string): ClaimR
   } else {
     next = { ...rest, equals: text };
   }
-  claimTypes.set(next, mode);
-  return next;
+  return { ...next, _match: mode };
 }
 
 /** Every claim the token must carry, one row each. */
@@ -603,12 +634,12 @@ function ClaimsEditor({
   disabled,
   onChange,
 }: {
-  claims: ClaimRequirement[];
+  claims: ClaimDraft[];
   issues: AuthIssues;
   disabled?: boolean;
-  onChange: (next: ClaimRequirement[]) => void;
+  onChange: (next: ClaimDraft[]) => void;
 }) {
-  const replace = (index: number, claim: ClaimRequirement) => onChange(claims.map((item, position) => (position === index ? claim : item)));
+  const replace = (index: number, claim: ClaimDraft) => onChange(claims.map((item, position) => (position === index ? claim : item)));
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-4">
@@ -637,11 +668,7 @@ function ClaimsEditor({
                   className="font-mono text-xs"
                   autoComplete="off"
                   disabled={disabled}
-                  onChange={(event) => {
-                    const next = { ...claim, path: event.target.value };
-                    claimTypes.set(next, mode);
-                    replace(index, next);
-                  }}
+                  onChange={(event) => replace(index, { ...claim, path: event.target.value })}
                 />
               </div>
               <div className="w-44 space-y-1.5">

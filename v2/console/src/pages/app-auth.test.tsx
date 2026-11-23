@@ -141,16 +141,17 @@ describe("Sign-in tab", () => {
     ]);
   });
 
-  it("opens an issuer no preset reproduces in the custom editor, with every audience", async () => {
+  it("opens an issuer no preset reproduces in the custom editor, one input per audience", async () => {
     const server = appServer(
       appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["my-project", "my-other-project"] } } }),
     );
     renderSignIn();
 
     expect((await screen.findByRole("combobox", { name: "Identity provider" })).textContent).toContain("Custom issuer");
-    const audiences = screen.getByLabelText("Audiences (aud)") as HTMLTextAreaElement;
-    expect(audiences.value).toBe("my-project\nmy-other-project");
-    await userEvent.type(audiences, "\nthird");
+    expect((screen.getByLabelText("Audience (aud)") as HTMLInputElement).value).toBe("my-project");
+    expect((screen.getByLabelText("Audience 2") as HTMLInputElement).value).toBe("my-other-project");
+    await userEvent.click(screen.getByRole("button", { name: "Add audience" }));
+    await userEvent.type(screen.getByLabelText("Audience 3"), "third");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
@@ -235,19 +236,59 @@ describe("Sign-in tab", () => {
     expect(server.patches).toHaveLength(1);
   });
 
-  it("keeps each stored audience exactly as stored when another is edited", async () => {
+  it("keeps each stored audience exactly as stored, line breaks and spaces included, when another is edited", async () => {
     const server = appServer(
-      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["customer ", "my-project"] } } }),
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["staff\ninternal", "main"] } } }),
     );
     renderSignIn();
 
-    const audiences = (await screen.findByLabelText("Audiences (aud)")) as HTMLTextAreaElement;
-    await userEvent.type(audiences, "-2");
+    await userEvent.type(await screen.findByLabelText("Audience 2"), "-2");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
-      { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["customer ", "my-project-2"] },
+      { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["staff\ninternal", "main-2"] },
     ]);
+  });
+
+  it("saves a paid claim for an issuer whose stored values a preset would not accept", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, issuer: [" ", "main"] } } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations.map((operation) => operation.path)).toEqual([
+      "/config/authentication/end_user/issuer/required_claims",
+      "/config/authentication/end_user/issuer/entitlement",
+    ]);
+  });
+
+  it("keeps a RevenueCat check's stored claim path when its entitlement is edited", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "entitlements", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.type(await screen.findByLabelText("Entitlement identifier"), ", max");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "entitlements", contains: ["pro", "max"] }] },
+    ]);
+  });
+
+  it("saves a change of a claim's match type alone, text 3 becoming the number 3", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "custom", required_claims: [{ path: "tier", equals: "3" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    await chooseOption("Match", "equals number");
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "tier", equals: 3 }] }]);
   });
 
   it("lets a field a newer gateway wrote through, sending only what changed", async () => {

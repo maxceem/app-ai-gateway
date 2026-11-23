@@ -215,6 +215,31 @@ describe("Presets tab", () => {
     expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/model", value: "gpt-5.5" }]);
   });
 
+  it("does not count reformatted parameters as a change", async () => {
+    const legacy = { provider: "openai", operation: "openai.embeddings", model: "text-embed", max_output_tokens: 100, params: { dimensions: 256 } };
+    appServer(appWith({ presets: { legacy } }), PROVIDERS);
+    renderTab("presets");
+
+    const params = await screen.findByLabelText("Fixed parameters (JSON)");
+    await userEvent.clear(params);
+    await userEvent.type(params, '{{ "dimensions":256 }');
+
+    // Saved as stored, so the preset is unchanged and its stored cap is not judged anew.
+    expect(screen.queryByText(/has no output to cap/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("refuses a number in the parameters too large to send", async () => {
+    appServer(testApp(), PROVIDERS);
+    renderTab("presets");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add preset" }));
+    await userEvent.click(screen.getByLabelText("Fixed parameters (JSON)"));
+    await userEvent.paste('{"temperature": {"max": 1e400}}');
+
+    expect(within(fieldOf("Fixed parameters (JSON)")).getByRole("alert").textContent).toMatch(/too large to send/);
+  });
+
   it("checks a fallback's own operation when it names one", async () => {
     const withFallback = { provider: "openai", operation: "openai.chat", model: "gpt-a", fallback: [{ provider: "anthropic", operation: "anthropic.messages", model: "claude-haiku-5-5" }] };
     appServer(appWith({ presets: { quick: withFallback } }), PROVIDERS);

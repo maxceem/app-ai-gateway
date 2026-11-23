@@ -179,9 +179,9 @@ export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";
  * separated, are alternatives. A single id is kept as typed, so a comma being
  * typed is not swallowed.
  */
-export function revenueCatClaim(entitlements: string): ClaimRequirement {
+export function revenueCatClaim(entitlements: string, path = REVENUECAT_CLAIM_PATH): ClaimRequirement {
   const ids = entitlements.split(",").map((id) => id.trim());
-  return { path: REVENUECAT_CLAIM_PATH, contains: ids.length > 1 ? ids : entitlements };
+  return { path, contains: ids.length > 1 ? ids : entitlements };
 }
 
 /** The entitlement ids a RevenueCat check was written for, or null when the claims are something else. */
