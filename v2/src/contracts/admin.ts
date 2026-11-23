@@ -684,6 +684,42 @@ export const ConversationFileQuerySchema = z.object({
   name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
 });
 
+/**
+ * One first request an app can send: to a provider route, one per API style
+ * the route serves, or to a preset. Built by the gateway from the operation
+ * descriptions, so the console and the CLI show the same request.
+ */
+export const AppSnippetExampleSchema = z
+  .object({
+    /** The provider connection's slug, for a request to a provider route. */
+    provider: z.string().optional(),
+    /** The preset's slug, for a request to a preset. */
+    preset: z.string().optional(),
+    /** The operation it is served as, such as `openai.chat`. */
+    operation: z.string(),
+    style: z.string(),
+    method: z.string(),
+    url: z.string(),
+    /** The model it names; null where it shows a placeholder, and for a preset, which names its own. */
+    model: z.string().nullable(),
+    /** The JSON body, where the request sends one. */
+    body: z.unknown().optional(),
+    /** The request as a curl command, for an app called with an app key. It reads the key from `$APP_AI_GATEWAY_KEY`, never holding one. */
+    curl: z.string().optional(),
+  })
+  .meta({ id: "AppSnippetExample" });
+
+export const AppSnippetResponseSchema = z
+  .object({
+    app_id: z.string(),
+    /** The address the examples call: the one this request reached. */
+    base_url: z.string(),
+    examples: z.array(AppSnippetExampleSchema),
+    /** What to know before sending them, such as how this app's users sign in, or why a route has no example. */
+    notes: z.array(z.string()),
+  })
+  .meta({ id: "AppSnippetResponse" });
+
 /** The price file as it is: dollars per million units, keyed by provider type and model. */
 export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })

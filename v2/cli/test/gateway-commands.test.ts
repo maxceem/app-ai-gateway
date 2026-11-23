@@ -613,6 +613,21 @@ test("views lay out records, notes, documents and rows a wildcard reaches", () =
     humanToolResult(show, "App X.", { app: { name: "X", id: "app-1", config: { mode: "all" }, warnings: [{ message: "Stops soon." }] } }, [show], plain),
     'App X.\n\nName: X\nID:   app-1\nMode: all\n\n- Stops soon.\n\n{\n  "mode": "all"\n}\n',
   );
+  // Blocks keep their lines, to be copied as they are; control characters still go.
+  const snippet = cliTool("get_app_snippet", {
+    command: "app snippet",
+    view: { rows: "examples", columns: ["style"], blocks: ["examples.*.curl"] },
+  });
+  assert.equal(
+    humanToolResult(
+      snippet,
+      "2 examples.",
+      { examples: [{ style: "openai-chat", curl: "curl 'https://x' \\\n  -d '{}'" }, { style: "openai-speech", curl: "curl\u001b[2J 'https://y'" }] },
+      [snippet],
+      plain,
+    ),
+    "2 examples.\n\nStyle\nopenai-chat\nopenai-speech\n\ncurl 'https://x' \\\n  -d '{}'\n\ncurl [2J 'https://y'\n",
+  );
   // Without a view: the plain fields, then the first list of objects as a table.
   const bare = cliTool("get_thing", { command: "thing show" });
   assert.equal(

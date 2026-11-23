@@ -25,6 +25,11 @@ export const CliToolViewSchema = z.object({
   notes: z.array(z.string()).optional(),
   /** An object shown whole, as indented JSON, after everything else. */
   document: z.string().optional(),
+  /**
+   * Text shown as it is, line breaks kept, last: a command to copy, say. Each
+   * path names a string, or with `*` every string it reaches.
+   */
+  blocks: z.array(z.string()).optional(),
 });
 
 /** Where a tool sits among `agw`'s commands, decided by the gateway so a CLI never needs a release to learn one. */

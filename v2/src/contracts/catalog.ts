@@ -23,6 +23,7 @@ import {
   AppResponseSchema,
   AppUpdateRequestSchema,
   AppCheckResponseSchema,
+  AppSnippetResponseSchema,
   AppDraftValidateResponseSchema,
   AppPatchRequestSchema,
   AppValidateRequestSchema,
@@ -562,6 +563,20 @@ export const CATALOG = {
     response: z.unknown(),
     responseDescription: "The file's bytes.",
     file: true,
+    errors: ADMIN_ERRORS,
+  },
+
+  getAppSnippet: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/snippet",
+    params: APP_PARAM,
+    tags: ["Admin apps"],
+    summary: "Get first requests for an app",
+    description:
+      "Example requests the app can send today, built from its routes and presets and the operation descriptions: one per API style each provider route serves, and one per preset. An app called with an app key gets each as a curl command that reads the key from `$APP_AI_GATEWAY_KEY`; it never holds a key. An iOS app signs every request with App Attest, which curl cannot do: it gets the requests without curl, and the Swift SDK comes with Swift examples.",
+    security: "management",
+    response: AppSnippetResponseSchema,
+    responseDescription: "The example requests, and notes on sending them.",
     errors: ADMIN_ERRORS,
   },
 

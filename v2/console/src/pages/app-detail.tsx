@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, Copy, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ import {
   useApp,
   useFirstCall,
   useAppCheck,
+  useAppSnippet,
   useAppJobs,
   JOBS_REFRESH_MS,
   useAppKeys,
@@ -40,7 +41,7 @@ import {
   useUserAction,
   useValidateApp,
 } from "@/lib/queries";
-import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
+import type { App, AppConfig, AppSnippetExample, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { SignInTab } from "@/pages/app-auth";
@@ -252,16 +253,76 @@ function OverviewTab({ app }: { app: App }) {
           )}
         </CardContent>
       </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Calling a provider</CardTitle>
-          <CardDescription>Your app sends a provider's own request to this address, followed by the provider's path.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="font-mono text-xs break-all">{base}&lt;provider slug&gt;/…</p>
-        </CardContent>
-      </Card>
+      <FirstRequests app={app} base={base} />
     </div>
+  );
+}
+
+/**
+ * The app's first requests, as the gateway builds them (`getAppSnippet`), so
+ * the console and `agw app snippet` always show the same ones.
+ */
+export function FirstRequests({ app, base }: { app: App; base: string }) {
+  const snippet = useAppSnippet(app.id);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">First requests</CardTitle>
+        <CardDescription>
+          Your app sends a provider's own request to <span className="font-mono break-all">{base}&lt;provider slug&gt;/…</span>. These are
+          requests it can send today.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {snippet.isPending ? (
+          <Skeleton className="h-16 w-full" />
+        ) : snippet.isError || !snippet.data ? (
+          <p className="text-destructive">Could not load the example requests.</p>
+        ) : (
+          <>
+            {snippet.data.examples.map((example) => (
+              <SnippetExample key={`${example.provider ?? ""}/${example.preset ?? ""}/${example.style}`} example={example} />
+            ))}
+            {snippet.data.notes.map((note) => (
+              <p key={note} className="text-xs break-words text-muted-foreground">{note}</p>
+            ))}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SnippetExample({ example }: { example: AppSnippetExample }) {
+  // An app called with a key gets curl; an iOS app gets the request itself.
+  const text =
+    example.curl ?? [`${example.method} ${example.url}`, ...(example.body === undefined ? [] : [JSON.stringify(example.body, null, 2)])].join("\n");
+  const title = example.preset !== undefined ? `Preset ${example.preset}` : example.provider ?? "";
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied");
+    } catch {
+      toast.error("Could not copy. Select the text and copy it manually.");
+    }
+  };
+  return (
+    <section aria-label={`${title} ${example.style}`} className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs">
+          <span className="font-mono">{title}</span> · {example.style}
+          {example.model === null ? null : (
+            <>
+              {" "}· <span className="font-mono">{example.model}</span>
+            </>
+          )}
+        </p>
+        <Button type="button" variant="ghost" size="icon-xs" aria-label={`Copy the ${example.style} request`} title="Copy" onClick={() => void copy()}>
+          <Copy />
+        </Button>
+      </div>
+      <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs whitespace-pre">{text}</pre>
+    </section>
   );
 }
 

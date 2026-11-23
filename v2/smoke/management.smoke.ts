@@ -110,6 +110,24 @@ test("a draft is validated, created, patched and checked", { skip }, async () =>
   assert.deepEqual(checked.body.providers, [{ id: providerId, slug, status: "active" }]);
 });
 
+test("the app's first request, as the gateway writes it, is served", { skip }, async () => {
+  assert.notEqual(appId, "", "the app is created by the test before");
+  const snippet = await admin("GET", `/v2/admin/apps/${appId}/snippet`);
+  assert.equal(snippet.status, 200);
+  // Never the app's key: only the variable it is read from.
+  assert.ok(!JSON.stringify(snippet.body).includes(appKey), "the snippet holds the app key");
+  const [chat] = snippet.body.examples;
+  assert.equal(chat?.operation, "openai.chat");
+  assert.ok(String(chat.curl).includes("$APP_AI_GATEWAY_KEY"), "the curl does not read the key from APP_AI_GATEWAY_KEY");
+  const response = await fetch(chat.url, {
+    method: chat.method,
+    headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": "user-123" },
+    body: JSON.stringify(chat.body),
+  });
+  assert.equal(response.status, 200);
+  await response.text();
+});
+
 test("a header user shows in the user list after a call, with its usage", { skip }, async () => {
   assert.notEqual(appId, "", "the app is created by the test before");
   const user = `smoke-user-${Date.now().toString(36)}`;

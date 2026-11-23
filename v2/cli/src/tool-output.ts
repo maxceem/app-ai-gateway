@@ -192,7 +192,30 @@ export function humanToolResult(
     const document = valueAt(root, view.document);
     if (document !== undefined) lines.push("", style.json(printable(document)));
   }
+  for (const path of view?.blocks ?? []) {
+    for (const text of textsAt(result, path)) lines.push("", ...block(text));
+  }
   return lines.join("\n") + "\n";
+}
+
+/** Every string at a dotted path; `*` goes through each item of an array or entry of an object. */
+function textsAt(result: unknown, path: string): string[] {
+  let values: unknown[] = [result];
+  for (const segment of path ? path.split(".") : []) {
+    values = values.flatMap((value) => {
+      if (segment === "*") return Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
+      return isRecord(value) && value[segment] !== undefined ? [value[segment]] : [];
+    });
+  }
+  return values.filter((value): value is string => typeof value === "string");
+}
+
+/**
+ * Remote text as lines to copy: each line kept as written, but for control
+ * characters, escape sequences included, which become spaces.
+ */
+function block(text: string): string[] {
+  return text.split("\n").map((line) => line.replace(/\p{C}/gu, " ").trimEnd()).slice(0, 200);
 }
 
 /** A note as one line: a string as it is, an object by its message. */

@@ -57,6 +57,7 @@ import {
   revealOperation,
 } from "../admin/handoffs.ts";
 import { listModelPrices } from "../admin/prices.ts";
+import { getAppSnippet } from "../admin/app-snippet.ts";
 import { listProviderTypes } from "../admin/provider-types.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
@@ -93,6 +94,7 @@ admin.delete(path("deleteApp"), deleteApp);
 admin.post(path("validateApp"), validateApp);
 admin.post(path("validateAppDraft"), validateAppDraft);
 admin.get(path("checkApp"), checkApp);
+admin.get(path("getAppSnippet"), getAppSnippet);
 admin.get(path("listAppKeys"), listAppKeys);
 admin.post(path("createAppKey"), createAppKey);
 admin.post(path("revokeAppKey"), revokeAppKey);

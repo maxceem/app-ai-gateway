@@ -3153,6 +3153,75 @@
           "next_cursor"
         ]
       },
+      "AppSnippetResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppSnippetExample"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "app_id",
+          "base_url",
+          "examples",
+          "notes"
+        ]
+      },
+      "AppSnippetExample": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {},
+          "curl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "style",
+          "method",
+          "url",
+          "model"
+        ]
+      },
       "PriceListResponse": {
         "type": "object",
         "properties": {
@@ -5917,6 +5986,12 @@
                   },
                   "document": {
                     "type": "string"
+                  },
+                  "blocks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -10567,6 +10642,88 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/snippet": {
+      "get": {
+        "tags": [
+          "Admin apps"
+        ],
+        "operationId": "getAppSnippet",
+        "summary": "Get first requests for an app",
+        "description": "Example requests the app can send today, built from its routes and presets and the operation descriptions: one per API style each provider route serves, and one per preset. An app called with an app key gets each as a curl command that reads the key from `$APP_AI_GATEWAY_KEY`; it never holds a key. An iOS app signs every request with App Attest, which curl cannot do: it gets the requests without curl, and the Swift SDK comes with Swift examples.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The example requests, and notes on sending them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSnippetResponse"
                 }
               }
             }
