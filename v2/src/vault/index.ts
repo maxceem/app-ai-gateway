@@ -86,9 +86,7 @@ export function secretVault(env: unknown): SecretVault {
 /**
  * cf-kms codes for a decrypt that will keep failing until something is fixed:
  * the envelope does not open under its context, the caller token is refused,
- * the blob is malformed. Everything else the client can throw — a network
- * error, `request_failed`, `invalid_response`, a 5xx — says the deployment is
- * unreachable, which the next attempt may well survive.
+ * the blob is malformed.
  */
 const KMS_CONFIGURATION_CODES = new Set(["decrypt_failed", "unauthorized", "invalid_envelope"]);
 
@@ -106,7 +104,14 @@ const KMS_CONFIGURATION_CODES = new Set(["decrypt_failed", "unauthorized", "inva
 export function isVaultTransportFailure(error: unknown): boolean {
   if (error instanceof SecretVaultBlobError) return false;
   if (error instanceof SecretVaultConfigurationError) return false;
-  if (error instanceof KmsClientError) return !KMS_CONFIGURATION_CODES.has(error.code);
+  if (error instanceof KmsClientError) {
+    if (KMS_CONFIGURATION_CODES.has(error.code)) return false;
+    // Only no answer at all counts: a 5xx, or a 429 asking to come back later.
+    // Any other status is cf-kms answering, and its refusal is meant (a 403 or
+    // 404 whatever its body says); a 2xx it could not read is no outage either.
+    return error.status === 429 || error.status >= 500;
+  }
+  // A network error or a timeout: the request never got an answer.
   return true;
 }
 
