@@ -13,7 +13,7 @@
  *
  * An unknown namespace, or a custom provider, is no answer: null, never a guess.
  */
-import { listPrice } from "../pricing/prices.ts";
+import { listedAuthor } from "../pricing/prices.ts";
 import { builtInProvider } from "./index.ts";
 
 /** Namespaces in an aggregator's model ids, and who they mean. */
@@ -58,8 +58,8 @@ const AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
 
 export function modelAuthor(providerType: string, model: string | null): string | null {
   if (model === null || model === "") return null;
-  const listed = listPrice(providerType, model)?.raw.author;
-  if (typeof listed === "string" && listed !== "") return listed;
+  const listed = listedAuthor(providerType, model);
+  if (listed !== null) return listed;
   const provider = builtInProvider(providerType);
   if (provider?.authorNamespacedModels === true) {
     const slash = model.indexOf("/");
