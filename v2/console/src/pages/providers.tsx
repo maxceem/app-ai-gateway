@@ -18,7 +18,6 @@ import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
-import { pricesTooDeep } from "@contracts/admin";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
@@ -418,7 +417,9 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     cloudflareGateway: viaCloudflare ? { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim() } : null,
   });
   const [secret, setSecret] = useBoundSecret(JSON.stringify([type, destinations, isCustom ? [custom.header.trim().toLowerCase(), custom.format] : null]));
-  const sentTo = destinations === "" ? "" : ` Sent only to ${destinations}.`;
+  // Through Cloudflare, the destination is named only once both ids say which gateway it is.
+  const gatewayNamed = !viaCloudflare || (cloudflare.accountId.trim() !== "" && cloudflare.gatewayId.trim() !== "");
+  const sentTo = destinations === "" || !gatewayNamed ? "" : ` Sent only to ${destinations}.`;
 
   const reset = () => {
     setHost("");
@@ -860,32 +861,31 @@ function fieldsOf(listed: readonly ListedPath[]): Record<string, FieldSetting[]>
 function PathsDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const custom = provider?.type === "custom";
-  // The version the draft was made from: it is saved at that revision, never at a newer one the list
-  // loaded since, so another admin's change is never quietly overwritten.
-  const [base, setBase] = useState({ revision: provider?.revision ?? 0, listed: provider?.passthrough ?? [] });
-  const [text, setText] = useState(base.listed.map(pathLine).join("\n"));
+  // The paths the draft was made from, saved at the revision it was opened at (`useOpenedRevision`).
+  const [listed, setListed] = useState(provider?.passthrough ?? []);
+  const [text, setText] = useState(listed.map(pathLine).join("\n"));
   const [trusted, setTrusted] = useState(false);
-  const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(base.listed));
-  const [conflict, setConflict] = useState(false);
+  const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(listed));
   // Field values as typed so far, by path and field (`textKey`): saving checks the ones still shown.
   const [texts, setTexts] = useState<Record<string, string>>({});
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      const now = latest.passthrough ?? [];
+      setListed(now);
+      setText(now.map(pathLine).join("\n"));
+      setFields(fieldsOf(now));
+      setTexts({});
+    },
+    onClose,
+  );
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
-  const choosing = !custom && base.listed.length === 0;
+  const choosing = !custom && listed.length === 0;
   const paths = "paths" in parsed ? parsed.paths : null;
   const type = provider?.type ?? "";
-  const saved = new Set(base.listed.map(pathKey));
+  const saved = new Set(listed.map(pathKey));
   const anyTokens = paths !== null && paths.some((path) => suggestedPath(type, path.method, path.path)?.liveToken === true);
-
-  /** Starts again from the provider as it is now, dropping the draft. */
-  const reload = () => {
-    const listed = provider?.passthrough ?? [];
-    setBase({ revision: provider?.revision ?? 0, listed });
-    setText(listed.map(pathLine).join("\n"));
-    setFields(fieldsOf(listed));
-    setTexts({});
-    setConflict(false);
-  };
 
   const save = async () => {
     if (!provider || paths === null) return;
@@ -906,12 +906,12 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       return;
     }
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
+      if (!opened.mounted.current) return;
       toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
       onClose();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) setConflict(true);
-      else toast.error(error instanceof Error ? error.message : "Could not save the paths");
+      opened.failed(error, "Could not save the paths");
     } finally {
       update.reset();
     }
@@ -931,20 +931,17 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       }
       submitLabel="Save paths"
       pending={update.isPending}
-      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted)}
+      disabled={opened.conflict || opened.reloading || paths === null || (choosing && paths.length > 0 && !trusted)}
       onSubmit={() => void save()}
     >
-      {conflict ? (
-        <Alert variant="destructive">
-          <AlertCircle />
-          <AlertTitle>These paths changed since you opened them</AlertTitle>
-          <AlertDescription>
-            <p>Someone else saved this provider. Reload to see their paths, then make your change again.</p>
-            <Button type="button" variant="outline" size="sm" onClick={reload}>
-              Reload paths
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {opened.conflict ? (
+        <ConflictNotice
+          reloading={opened.reloading}
+          onReload={() => void opened.reload()}
+          title="These paths changed since you opened them"
+          body="Someone else saved this provider. Reload to see their paths, then make your change again."
+          label="Reload paths"
+        />
       ) : null}
       <Field
         label="One path per line"
@@ -1161,15 +1158,27 @@ function useOpenedRevision(provider: ProviderConnection | null, onLoaded: (lates
   return { revision, conflict, reloading, reload, failed, mounted };
 }
 
-function ConflictNotice({ reloading, onReload }: { reloading: boolean; onReload: () => void }) {
+function ConflictNotice({
+  reloading,
+  onReload,
+  title = "This connection changed since you opened it",
+  body = "Someone else saved it. Reload to see their change, then make yours again.",
+  label = "Reload",
+}: {
+  reloading: boolean;
+  onReload: () => void;
+  title?: string;
+  body?: string;
+  label?: string;
+}) {
   return (
     <Alert variant="destructive">
       <AlertCircle />
-      <AlertTitle>This connection changed since you opened it</AlertTitle>
+      <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
-        <p>Someone else saved it. Reload to see their change, then make yours again.</p>
+        <p>{body}</p>
         <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={onReload}>
-          Reload
+          {label}
         </Button>
       </AlertDescription>
     </Alert>
@@ -1392,6 +1401,8 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
     cloudflareGateway: { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim() },
   });
   const direct = keyDestinationText(type, { baseUrl: base, cloudflareGateway: null });
+  // The gateway's address is named only once both ids are filled.
+  const gatewayNamed = draft.accountId.trim() !== "" && draft.gatewayId.trim() !== "" && throughGateway !== "";
   // Turning Cloudflare on for a connection with a base URL removes the base URL in the same save.
   const removesBase = stored === null && base !== null;
   const [secret, setSecret] = useBoundSecret(JSON.stringify([stopping ? direct : throughGateway, opened.revision, opened.conflict]));
@@ -1473,7 +1484,7 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       <Field
         label="API key"
         htmlFor="cloudflare-provider-secret"
-        hint={`A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare. Sent only to ${throughGateway}. Changing the account or gateway clears it.`}
+        hint={`A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare.${gatewayNamed ? ` Sent only to ${throughGateway}.` : ""} Changing the account or gateway clears it.`}
       >
         <Input
           id="cloudflare-provider-secret"
@@ -1512,7 +1523,10 @@ export function pricesText(pricing: ProviderConnection["pricing"]): string {
 }
 
 /** What the prices text saves: null for none, the prices, or a problem to show. */
-export function parsePricesText(text: string): { pricing: NonNullable<ProviderConnection["pricing"]> | null } | { problem: string } {
+export function parsePricesText(
+  text: string,
+  stored = "",
+): { pricing: NonNullable<ProviderConnection["pricing"]> | null } | { problem: string } {
   if (text.trim() === "") return { pricing: null };
   let value: unknown;
   try {
@@ -1522,7 +1536,8 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { problem: "Write the prices as an object with one entry per model." };
   // Each amount as written, by the gateway's money rule: a float may read some as another figure.
-  const amounts = jsonPriceProblem(text);
+  // Amounts already saved (`stored`) are not judged again: an old price never locks the editor.
+  const amounts = jsonPriceProblem(text, stored);
   if (amounts !== null) return { problem: amounts };
   // The server checks every price; the console only checks the shape.
   return { pricing: Object.keys(value).length === 0 ? null : (value as NonNullable<ProviderConnection["pricing"]>) };
@@ -1538,84 +1553,52 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
  */
 function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
-  const fresh = useFreshProvider();
-  // The version the draft was made from: it is saved at that revision, never at a newer one the list
-  // loaded since, so another admin's change is never quietly overwritten.
-  const [revision, setRevision] = useState(provider?.revision ?? 0);
   // Prices the form cannot show without losing something open as JSON.
   const [mode, setMode] = useState<"form" | "json">(() => (formCanShow(provider?.pricing ?? null) ? "form" : "json"));
   const [rows, setRows] = useState<PriceRow[]>(() => (formCanShow(provider?.pricing ?? null) ? rowsOf(provider?.pricing ?? null) : []));
   const [saved, setSaved] = useState<ProviderConnection["pricing"]>(provider?.pricing ?? null);
   const [modeProblem, setModeProblem] = useState<string | null>(null);
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
-  const [conflict, setConflict] = useState(false);
-  const [reloading, setReloading] = useState(false);
+  // The JSON text "Edit as JSON" showed: while it is unchanged, going back to the form keeps the rows as they were.
+  const [jsonFrom, setJsonFrom] = useState<string | null>(null);
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      setSaved(latest.pricing);
+      setText(pricesText(latest.pricing));
+      setJsonFrom(null);
+      setModeProblem(null);
+      if (formCanShow(latest.pricing)) setRows(rowsOf(latest.pricing));
+      else {
+        setRows([]);
+        setMode("json");
+      }
+    },
+    onClose,
+  );
+  const reloading = opened.reloading;
   const problems = rows.map((row) => rowProblems(row, rows));
   const formValid = problems.every((found) => Object.keys(found).length === 0);
-  const parsed = mode === "json" ? parsePricesText(text) : formValid ? { pricing: pricingOf(rows) } : { problem: "Fix the prices marked below." };
-  // A save or reload that ends after this dialog closed must not touch the page: closing it
-  // remounts the dialog, so a late answer would otherwise close the next provider's dialog
-  // and throw away its draft.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const startFrom = (pricing: ProviderConnection["pricing"]) => {
-    setSaved(pricing);
-    setText(pricesText(pricing));
-    setModeProblem(null);
-    if (formCanShow(pricing)) setRows(rowsOf(pricing));
-    else {
-      setRows([]);
-      setMode("json");
-    }
-  };
-
-  /**
-   * Starts again from the provider as the server has it now, read fresh, not
-   * from a list that may still be the old one. The draft is dropped only once
-   * that read succeeds; if it fails, the draft and the conflict notice stay.
-   */
-  const reload = async () => {
-    if (!provider) return;
-    setReloading(true);
-    try {
-      const latest = await fresh(provider.id);
-      if (!mounted.current) return;
-      if (latest === null) {
-        toast.error("This provider was deleted");
-        onClose();
-        return;
-      }
-      setRevision(latest.revision);
-      startFrom(latest.pricing);
-      setConflict(false);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not reload the prices");
-    } finally {
-      setReloading(false);
-    }
-  };
+  const parsed =
+    mode === "json" ? parsePricesText(text, pricesText(saved)) : formValid ? { pricing: pricingOf(rows) } : { problem: "Fix the prices marked below." };
+  const untouchedJson = mode === "json" && text === jsonFrom;
 
   const switchMode = () => {
     setModeProblem(null);
     if (mode === "form") {
       // The form's prices when they are complete; otherwise the saved prices, as they are.
-      setText(pricesText("problem" in parsed ? saved : parsed.pricing));
+      const shown = pricesText("problem" in parsed ? saved : parsed.pricing);
+      setText(shown);
+      setJsonFrom(shown);
       if ("problem" in parsed) setModeProblem("The form had changes that are not complete, so this shows the saved prices.");
       setMode("json");
       return;
     }
-    if ("problem" in parsed) return;
-    // Nested deeper than any price can be: say so here, keeping the JSON, rather than read it into a form.
-    if (pricesTooDeep(parsed.pricing)) {
-      setModeProblem("These prices are nested too deeply to be prices. Keep editing them as JSON.");
+    if (untouchedJson) {
+      setMode("form");
       return;
     }
+    if ("problem" in parsed) return;
     if (!formCanShow(parsed.pricing)) {
       setModeProblem("Some entries are not prices the form can show, such as a model whose value is not an object. Keep editing them as JSON.");
       return;
@@ -1627,13 +1610,11 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   const submit = async () => {
     if (!provider || "problem" in parsed) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision, pricing: parsed.pricing } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, pricing: parsed.pricing } });
       toast.success(parsed.pricing === null ? "Your prices removed" : "Your prices saved");
-      if (mounted.current) onClose();
+      if (opened.mounted.current) onClose();
     } catch (error) {
-      if (!mounted.current) return;
-      if (error instanceof ApiError && error.status === 409) setConflict(true);
-      else toast.error(error instanceof Error ? error.message : "Could not save the prices");
+      opened.failed(error, "Could not save the prices");
     } finally {
       update.reset();
     }
@@ -1651,20 +1632,17 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       description="Your own prices for this connection's models, in dollars. Use them for a model our price list does not have, or to replace a listed price."
       submitLabel="Save prices"
       pending={update.isPending}
-      disabled={conflict || "problem" in parsed}
+      disabled={opened.conflict || reloading || "problem" in parsed}
       onSubmit={() => void submit()}
     >
-      {conflict ? (
-        <Alert variant="destructive">
-          <AlertCircle />
-          <AlertTitle>These prices changed since you opened them</AlertTitle>
-          <AlertDescription>
-            <p>Someone else saved this provider. Reload to see their prices, then make your change again.</p>
-            <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={() => void reload()}>
-              Reload prices
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {opened.conflict ? (
+        <ConflictNotice
+          reloading={reloading}
+          onReload={() => void opened.reload()}
+          title="These prices changed since you opened them"
+          body="Someone else saved this provider. Reload to see their prices, then make your change again."
+          label="Reload prices"
+        />
       ) : null}
       {mode === "form" ? (
         <fieldset className="space-y-3" disabled={reloading} aria-busy={reloading}>
@@ -1708,7 +1686,7 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
         </>
       )}
       {modeProblem ? <p className="text-sm text-muted-foreground">{modeProblem}</p> : null}
-      <Button type="button" variant="link" size="sm" className="px-0" disabled={mode === "json" && "problem" in parsed} onClick={switchMode}>
+      <Button type="button" variant="link" size="sm" className="px-0" disabled={mode === "json" && !untouchedJson && "problem" in parsed} onClick={switchMode}>
         {mode === "form" ? "Edit as JSON" : "Edit as a form"}
       </Button>
     </FormDialog>

@@ -1171,20 +1171,6 @@ describe("a typed key stays with where it was typed for", () => {
     );
   });
 
-  it("refuses a JSON price a float would read as another figure, before switching to the form or saving", async () => {
-    stub();
-    renderAuthenticated(<ProvidersPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
-    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
-    const box = screen.getByLabelText(/prices by model/i);
-    await userEvent.click(box);
-    await userEvent.paste('{"m": {"per_request": 1e-400}}');
-    expect(screen.getByText(/per_request 1e-400: .*stored as 0/i)).toBeTruthy();
-    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Edit as a form" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
   it("turns Cloudflare on for a connection with a base URL only once removing it is confirmed, in the same save", async () => {
     const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1/" };
     const fetchMock = stub([hosted]);
@@ -1213,31 +1199,19 @@ describe("a typed key stays with where it was typed for", () => {
     );
   });
 
-  it("refuses a model written twice in the JSON prices before parsing drops one", async () => {
-    stub();
+  it("names where a key goes through Cloudflare only once both ids are filled", async () => {
+    stub([]);
     renderAuthenticated(<ProvidersPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
-    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
-    await userEvent.click(screen.getByLabelText(/prices by model/i));
-    await userEvent.paste('{"m": {"per_request": 1}, "m": {"per_request": 2}}');
-    expect(screen.getByText(/"m" is written twice in one object/i)).toBeTruthy();
-    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("keeps a too deeply nested JSON draft and says so, rather than reading it into the form", async () => {
-    stub();
-    renderAuthenticated(<ProvidersPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
-    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
-    const deep = `{"m": {"input": 1, "output": 2, "by": ${'{"x":'.repeat(40)}1${"}".repeat(40)}}}`;
-    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
-    await userEvent.click(box);
-    await userEvent.paste(deep);
-    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
-    expect(screen.getByText(/nested too deeply to be prices/i)).toBeTruthy();
-    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toBe(deep);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    expect(screen.queryByText(/sent only to/i)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    expect(screen.queryByText(/sent only to/i)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    expect(screen.getByText(/sent only to gateway\.ai\.cloudflare\.com/i)).toBeTruthy();
   });
 
   it("says beside the field when a Cloudflare id has a character that cannot be sent, and does not break", async () => {
@@ -1256,5 +1230,76 @@ describe("a typed key stays with where it was typed for", () => {
     await userEvent.paste("cf-token-0123456789");
     expect(screen.getByText(/use plain text: this has a character that cannot be sent/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("the prices editor", () => {
+  /** Opens the prices dialog on a connection with these stored prices. */
+  async function openPrices(pricing: unknown) {
+    const fetchMock = stub([{ ...PROVIDER, pricing }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    return fetchMock;
+  }
+
+  it("refuses a JSON price a float would read as another figure, before switching to the form or saving", async () => {
+    await openPrices(null);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": {"per_request": 1e-400}}');
+    expect(screen.getByText(/per_request 1e-400: .*stored as 0/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Edit as a form" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+
+  it("keeps a too deeply nested JSON draft and says so, rather than reading it into the form", async () => {
+    await openPrices(null);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const deep = `{"m": {"input": 1, "output": 2, "by": ${'{"x":'.repeat(40)}1${"}".repeat(40)}}}`;
+    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
+    await userEvent.click(box);
+    await userEvent.paste(deep);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect(screen.getByText(/not prices the form can show/i)).toBeTruthy();
+    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toBe(deep);
+  });
+
+
+  it("never locks a stored price the text rules would refuse, in the form or as JSON", async () => {
+    const fetchMock = await openPrices({ m: { per_request: 1e-10 } });
+    const row = await screen.findByRole("group", { name: "m" });
+    expect((within(row).getByLabelText(/unit rate/i) as HTMLInputElement).value).toBe("1e-10");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
+    expect(box.value).toContain("1e-10");
+    // Another model added beside it: only the new amount is judged.
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": {"per_request": 1e-10}, "n": {"per_request": 0.02}}');
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, pricing: { m: { per_request: 1e-10 }, n: { per_request: 0.02 } } }),
+    );
+  });
+
+  it("keeps the form's rows as they were after a look at the JSON that changed nothing", async () => {
+    await openPrices({ m: { input: 1, output: 2 } });
+    const row = await screen.findByRole("group", { name: "m" });
+    const output = within(row).getByLabelText(/^output/i);
+    await userEvent.clear(output);
+    await userEvent.click(output);
+    await userEvent.paste("3.10");
+    // An unfinished row: the JSON shows the saved prices instead.
+    await userEvent.click(screen.getByRole("button", { name: /add a model/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toContain('"output": 2');
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect((within(screen.getByRole("group", { name: "m" })).getByLabelText(/^output/i) as HTMLInputElement).value).toBe("3.10");
+    expect(screen.getByRole("group", { name: "New model" })).toBeTruthy();
   });
 });

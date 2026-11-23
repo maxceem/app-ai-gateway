@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
-import { wellFormedText } from "../providers/destinations.ts";
+import { wellFormedText } from "../core/well-formed.ts";
 import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
@@ -168,18 +168,6 @@ export const RESERVED_PRICE_KEY = "__proto__";
 
 /** How deep the walk below looks: well past any price's shape, which the schema then refuses as it would anyway. */
 const PRICE_WALK_DEPTH = 32;
-
-/** Whether prices nest deeper than `PRICE_WALK_DEPTH`, found with an explicit stack: deeper than any price can be. */
-export function pricesTooDeep(value: unknown): boolean {
-  const stack: { value: unknown; depth: number }[] = [{ value, depth: 0 }];
-  while (stack.length > 0) {
-    const { value: current, depth } = stack.pop()!;
-    if (typeof current !== "object" || current === null) continue;
-    if (depth >= PRICE_WALK_DEPTH) return true;
-    for (const inner of Object.values(current)) stack.push({ value: inner, depth: depth + 1 });
-  }
-  return false;
-}
 
 /**
  * Where a `__proto__` key stands in prices, as a dotted path, or null: model

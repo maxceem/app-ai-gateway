@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf } from "./pricing-form";
-import { priceTextProblem } from "@contracts/price-amount";
+import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, UNIT_FIELDS } from "./pricing-form";
+import { readPrice } from "@contracts/price-amount";
+import { UNIT_RATE_FIELDS } from "../../../src/pricing/units.ts";
 
 describe("the prices form", () => {
   it("changes only the fields a row shows, and keeps everything else a price carries", () => {
@@ -58,20 +59,25 @@ describe("the prices form", () => {
     expect(formCanShow([])).toBe(false);
   });
 
-  it("refuses an amount the gateway would store as another figure, or as 0", () => {
+  it("offers every unit the gateway prices, and no other", () => {
+    expect(UNIT_FIELDS.map((entry) => entry.field).sort()).toEqual([...UNIT_RATE_FIELDS].sort());
+  });
+
+  it("judges a typed amount by the gateway's money rule", () => {
     const priced = (text: string) => ({ ...emptyRow(), model: "m", unitField: "per_request", unitAmount: text });
-    const tiny = priced("1e-400");
-    expect(rowProblems(tiny, [tiny]).unit).toBe("This amount is too small: it would be stored as 0.");
     const fine = priced("1e-10");
-    expect(rowProblems(fine, [fine]).unit).toMatch(/kept to \$0\.000000001; this would be stored as 0\.000000001/u);
-    const float = priced("1.0000000000000001");
-    expect(rowProblems(float, [float]).unit).toMatch(/would be stored as 1\.$/u);
-    for (const fine of ["0.000000001", "1e-9", "2.50", "1234.5678", "3e5"]) {
-      const row = priced(fine);
-      expect(rowProblems(row, [row]).unit).toBeUndefined();
-    }
-    const zero = priced("0");
-    expect(rowProblems(zero, [zero]).unit).toBeUndefined();
+    expect(rowProblems(fine, [fine]).unit).toMatch(/would be stored as 0\.000000001/u);
+    const ok = priced("2.50");
+    expect(rowProblems(ok, [ok]).unit).toBeUndefined();
+  });
+
+  it("never judges a stored amount again, so an old price does not lock the form", () => {
+    const [row] = rowsOf({ m: { per_request: 1e-10, input: 0.30000000000000004, output: 1 } });
+    expect(rowProblems(row!, [row!])).toEqual({});
+    expect(pricingOf([row!])).toEqual({ m: { per_request: 1e-10, input: 0.30000000000000004, output: 1 } });
+    // Typed again as other text, the same rule as any new amount applies.
+    const typed = { ...row!, unitAmount: "1e-11" };
+    expect(rowProblems(typed, [typed]).unit).toMatch(/would be stored as/u);
   });
 
   it("refuses __proto__ as a model name, keeps constructor and prototype, and builds the prices without a prototype path", () => {
@@ -89,7 +95,7 @@ describe("the prices form", () => {
     expect(built).toEqual({ m: { per_request: 1 } });
   });
 
-  it("judges JSON amounts as written, not as a float reads them, and leaves factors and thresholds alone", () => {
+  it("judges JSON amounts as written, not as a float reads them", () => {
     expect(jsonPriceProblem('{"m": {"per_request": 1e-400}}')).toMatch(/^per_request 1e-400: .*stored as 0\./u);
     expect(jsonPriceProblem('{"m": {"input": 1.0000000000000001, "output": 2}}')).toMatch(/^input 1\.0000000000000001: /u);
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2.5, "long_context_threshold": 200000, "modes": {"flex": {"factor": 0.33333333333}}}}')).toBeNull();
@@ -97,14 +103,29 @@ describe("the prices form", () => {
     expect(jsonPriceProblem('{"1e-400 model": {"per_request": 0.02}}')).toBeNull();
   });
 
-  it("never throws on an absurd amount: zero is zero, and a huge exponent is refused", () => {
-    expect(priceTextProblem("0e9007199254740992")).toBeNull();
-    expect(priceTextProblem("0.000e-99999")).toBeNull();
-    expect(priceTextProblem("1e9007199254740992")).toMatch(/too large an exponent/u);
-    expect(priceTextProblem("1e-9007199254740992")).toMatch(/too large an exponent/u);
-    expect(priceTextProblem(`1${"0".repeat(60)}`)).toMatch(/too many digits/u);
-    expect(priceTextProblem("1e300")).toBe("This price is too large to store.");
-    expect(priceTextProblem("-1")).toBe("A price cannot be negative.");
+  it("never judges a stored JSON amount again, only new or changed ones", () => {
+    const stored = '{"m": {"per_request": 1e-10}}';
+    expect(jsonPriceProblem(stored, stored)).toBeNull();
+    expect(jsonPriceProblem('{"m": {"per_request": 1e-10}, "n": {"per_request": 1}}', stored)).toBeNull();
+    expect(jsonPriceProblem('{"m": {"per_request": 1e-11}}', stored)).toMatch(/^per_request 1e-11: /u);
+    // The same text under another model is new.
+    expect(jsonPriceProblem('{"n": {"per_request": 1e-10}}', stored)).toMatch(/^per_request 1e-10: /u);
+  });
+
+  it("reads a price exactly, and never throws on an absurd one", () => {
+    expect(readPrice("2.50")).toEqual({ value: 2.5 });
+    expect(readPrice("1e-9")).toEqual({ value: 1e-9 });
+    expect(readPrice("0e9007199254740992")).toEqual({ value: 0 });
+    expect(readPrice("0.000e-99999")).toEqual({ value: 0 });
+    expect(readPrice("x", "0.04")).toEqual({ problem: "Enter an amount, such as 0.04." });
+    expect(readPrice("-1")).toEqual({ problem: "A price cannot be negative." });
+    expect(readPrice("1e-10")).toEqual({ problem: "Prices are kept to $0.000000001; this would be stored as 0.000000001." });
+    expect(readPrice("1e-400")).toEqual({ problem: "Prices are kept to $0.000000001; this would be stored as 0." });
+    expect(readPrice("1.0000000000000001")).toEqual({ problem: "Prices are kept to $0.000000001; this would be stored as 1." });
+    expect(readPrice("1e9007199254740992")).toMatchObject({ problem: expect.stringMatching(/too large an exponent/u) });
+    expect(readPrice("1e-9007199254740992")).toMatchObject({ problem: expect.stringMatching(/too large an exponent/u) });
+    expect(readPrice(`0.${"1".repeat(60)}`)).toMatchObject({ problem: expect.stringMatching(/too many digits/u) });
+    expect(readPrice("1e300")).toEqual({ problem: "This price is too large to store." });
   });
 
   it("refuses a key written twice in one object, which parsing would quietly reduce to the last", () => {
@@ -116,21 +137,8 @@ describe("the prices form", () => {
     expect(jsonPriceProblem('{"a": {"per_request": 1}, "b": {"per_request": 2}}')).toBeNull();
   });
 
-  it("refuses a positive mode factor that would read as 0, and leaves factors free of the dollar precision rule", () => {
-    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 1e-400}}}}')).toBe("factor 1e-400: this factor would be read as 0. Write it with fewer digits.");
-    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.33333333333333}}}}')).toBeNull();
-    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0}}}}')).toBeNull();
-  });
-
-  it("refuses a __proto__ key anywhere in JSON prices, as the gateway does, and keeps constructor and prototype", () => {
-    expect(jsonPriceProblem('{" __proto__ ": {"per_request": 1}}')).toBe('" __proto__ " cannot be a name in prices.');
-    expect(jsonPriceProblem('{"img": {"per_image": 0.04, "by": {"quality": {"__proto__": {"per_image": 0.08}}}}}')).toBe('"__proto__" cannot be a name in prices.');
-    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"__proto__": {"factor": 0.5}}}}')).toBe('"__proto__" cannot be a name in prices.');
-    expect(jsonPriceProblem('{"constructor": {"per_request": 1}, "prototype": {"per_request": 2}}')).toBeNull();
-    expect(jsonPriceProblem('{"m": {"per_request": 1, "by": {"constructor": {"x": {"per_request": 1}}}}}')).toBeNull();
-  });
-
   it("refuses a factor or threshold whose value would change once read, compared as written", () => {
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 1e-400}}}}')).toBe("factor 1e-400: this factor would be read as 0. Write it with fewer digits.");
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.99999999999999999}}}}')).toBe(
       "factor 0.99999999999999999: this factor would be read as 1. Write it with fewer digits.",
     );
@@ -141,7 +149,7 @@ describe("the prices form", () => {
       "long_context_threshold 200000.5: write a whole number of tokens.",
     );
     // Written another way, the same value is fine.
-    for (const factor of ["0.5", "5e-1", "0.50", "1", "1.0", "2E3", "0.333333333333333"]) {
+    for (const factor of ["0", "0.5", "5e-1", "0.50", "1", "1.0", "2E3", "0.333333333333333", "0.33333333333333"]) {
       expect(jsonPriceProblem(`{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": ${factor}}}}}`)).toBeNull();
     }
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "long_input": 2, "long_output": 4, "long_context_threshold": 2e5}}')).toBeNull();

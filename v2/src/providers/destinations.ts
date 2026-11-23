@@ -8,6 +8,9 @@
  * with no Worker code, so the console can import them.
  */
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
+import { wellFormedText } from "../core/well-formed.ts";
+
+export { wellFormedText };
 import type { ProviderDescription } from "./operation.ts";
 import { normalizePath, type PathRefusal } from "./path.ts";
 
@@ -27,15 +30,6 @@ export function cloudflareOrigin(): string {
   const moved = typeof __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ === "string" ? __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ : "";
   if (moved === "") return CLOUDFLARE_AI_GATEWAY_ORIGIN;
   return moved.endsWith("/") ? moved : `${moved}/`;
-}
-
-/**
- * Whether text is well-formed: no half of a surrogate pair stands alone. Text
- * that is not cannot be put in a URL (`encodeURIComponent` throws on it), so
- * such a Cloudflare account or gateway id could never have reached Cloudflare.
- */
-export function wellFormedText(text: string): boolean {
-  return !/\p{Cs}/u.test(text);
 }
 
 /** The origin and path every request through one Cloudflare AI Gateway goes under. */
