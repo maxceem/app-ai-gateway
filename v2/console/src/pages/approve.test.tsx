@@ -60,6 +60,39 @@ describe("ApprovePage", () => {
     expect(screen.queryByDisplayValue(KEY)).toBeNull();
   });
 
+  it("asks for a Cloudflare token when the connection goes through Cloudflare, and sends no empty provider key", async () => {
+    const TOKEN = "cf-token-entered-on-the-page-42";
+    const fetchMock = stubApi({
+      [SUBMIT_URL]: { body: { state: "completed" } },
+      [DETAILS_URL]: details({
+        review: {
+          type: "openai",
+          name: "Through Cloudflare",
+          slug: "openai-cf",
+          baseUrl: null,
+          destinations: ["https://gateway.ai.cloudflare.com/v1/acct/gw/"],
+          cloudflareGateway: { accountId: "acct", gatewayId: "gw" },
+        },
+      }),
+    });
+    renderApprove();
+    expect(await screen.findByText("acct")).toBeTruthy();
+    expect(screen.getByText("gw")).toBeTruthy();
+    expect(screen.getByText(/sends it only to your Cloudflare AI Gateway/i)).toBeTruthy();
+    const approve = screen.getByRole("button", { name: /approve/i }) as HTMLButtonElement;
+    // The provider key is optional; the token is not.
+    expect(screen.getByLabelText(/provider key \(optional\)/i)).toBeTruthy();
+    expect(approve.disabled).toBe(true);
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste(TOKEN);
+    expect(approve.disabled).toBe(false);
+    await userEvent.click(approve);
+    expect(await screen.findByText(/provider connection added/i)).toBeTruthy();
+    const [, sent] = calls(fetchMock, SUBMIT_URL)[0]!;
+    expect(JSON.parse(String(sent!.body))).toEqual({ proof: PROOF, cloudflareToken: TOKEN });
+    expect(screen.queryByDisplayValue(TOKEN)).toBeNull();
+  });
+
   it("names the account the key goes into and where it is sent", async () => {
     stubApi({ [DETAILS_URL]: details() });
     renderApprove();

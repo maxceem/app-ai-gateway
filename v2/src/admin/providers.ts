@@ -635,7 +635,7 @@ function cloudflareView(setting: CloudflareGatewaySetting | null) {
 }
 
 /** A Cloudflare AI Gateway setting as stored: ids, and its token sealed to this connection. */
-async function storedCloudflare(
+export async function storedCloudflare(
   env: Env,
   accountId: string,
   connectionId: string,

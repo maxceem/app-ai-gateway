@@ -396,6 +396,9 @@ const CloudflareGatewayInputSchema = z
   .object({ accountId: CloudflareIdSchema, gatewayId: CloudflareIdSchema, token: ProviderSecretSchema })
   .strict();
 
+/** A Cloudflare AI Gateway setting without its token: for a request a person completes, entering the token themselves. */
+export const CloudflareGatewayIdsSchema = CloudflareGatewayInputSchema.omit({ token: true }).strict();
+
 export const ProviderCreateRequestSchema = z
   .object({
     type: z.string().trim().min(1),

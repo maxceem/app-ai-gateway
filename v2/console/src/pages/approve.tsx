@@ -86,18 +86,27 @@ export function ApprovePage() {
   }, [data, storageKey, proof]);
 
   const [secret, setSecret] = useState("");
+  const [cloudflareToken, setCloudflareToken] = useState("");
   const [answer, setAnswer] = useState<"completed" | "denied" | null>(null);
 
   const submit = useMutation({
-    // Read from the field when sent, so the key is never kept as the
-    // mutation's variables; the field is cleared once the answer comes.
-    mutationFn: () => call("submitHandoff", { params: { id }, body: { proof, secret } }),
+    // Read from the fields when sent, so no key is ever kept as the
+    // mutation's variables; the fields are cleared once the answer comes.
+    // An empty provider key is left out: through Cloudflare it is optional.
+    mutationFn: () =>
+      call("submitHandoff", {
+        params: { id },
+        body: { proof, ...(secret.trim() === "" ? {} : { secret }), ...(cloudflareToken.trim() === "" ? {} : { cloudflareToken }) },
+      }),
     gcTime: 0,
     onSuccess: () => {
       clearStoredProof(storageKey);
       setAnswer("completed");
     },
-    onSettled: () => setSecret(""),
+    onSettled: () => {
+      setSecret("");
+      setCloudflareToken("");
+    },
   });
   const deny = useMutation({
     mutationFn: () => call("denyHandoff", { params: { id }, body: { proof } }),
@@ -175,22 +184,31 @@ export function ApprovePage() {
     );
   }
 
-  const busy = submit.isPending || deny.isPending;
-  const onSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    if (secret.trim() === "" || busy) return;
-    submit.mutate();
-  };
   const { review } = data;
   const custom = review.baseUrl !== null;
+  // Adding through Cloudflare AI Gateway: its token is needed, and the provider key is optional.
+  const cloudflare = data.kind === "provider.add" ? review.cloudflareGateway : undefined;
+  const busy = submit.isPending || deny.isPending;
+  const ready = cloudflare ? cloudflareToken.trim() !== "" : secret.trim() !== "";
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!ready || busy) return;
+    submit.mutate();
+  };
 
   return (
     <ApproveShell id={id} title={title}>
       <p className="text-sm text-muted-foreground">
-        {data.kind === "provider.add"
-          ? "An agent or the CLI asked to add this provider connection. Enter its key to approve."
-          : "An agent or the CLI asked to replace this connection's key. Enter the new key to approve."}
-        {custom ? null : " The gateway keeps the key and sends it only to the provider, never to whoever asked."}
+        {cloudflare
+          ? "An agent or the CLI asked to add this provider connection through your Cloudflare AI Gateway. Enter a Cloudflare token for it to approve."
+          : data.kind === "provider.add"
+            ? "An agent or the CLI asked to add this provider connection. Enter its key to approve."
+            : "An agent or the CLI asked to replace this connection's key. Enter the new key to approve."}
+        {custom
+          ? null
+          : cloudflare
+            ? " The gateway keeps what you enter and sends it only to your Cloudflare AI Gateway, never to whoever asked."
+            : " The gateway keeps the key and sends it only to the provider, never to whoever asked."}
       </p>
       {custom ? (
         <Alert role="note">
@@ -212,6 +230,14 @@ export function ApprovePage() {
         <dd className="break-all">{review.type}</dd>
         <dt className="text-muted-foreground">Slug</dt>
         <dd className="font-mono break-all">{review.slug}</dd>
+        {cloudflare ? (
+          <>
+            <dt className="text-muted-foreground">Cloudflare account</dt>
+            <dd className="font-mono break-all">{cloudflare.accountId}</dd>
+            <dt className="text-muted-foreground">Cloudflare gateway</dt>
+            <dd className="font-mono break-all">{cloudflare.gatewayId}</dd>
+          </>
+        ) : null}
         <dt className="text-muted-foreground">Key sent to</dt>
         <dd className="font-mono break-all">
           {review.destinations.map((destination) => (
@@ -227,7 +253,22 @@ export function ApprovePage() {
       </dl>
       <form className="space-y-3" onSubmit={onSubmit}>
         <fieldset disabled={busy} className="space-y-2">
-          <Label htmlFor="handoff-secret">{data.kind === "provider.add" ? "Provider key" : "New provider key"}</Label>
+          {cloudflare ? (
+            <>
+              <Label htmlFor="handoff-cloudflare-token">Cloudflare token</Label>
+              <Input
+                id="handoff-cloudflare-token"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={cloudflareToken}
+                onChange={(event) => setCloudflareToken(event.target.value)}
+              />
+            </>
+          ) : null}
+          <Label htmlFor="handoff-secret">
+            {cloudflare ? "Provider key (optional)" : data.kind === "provider.add" ? "Provider key" : "New provider key"}
+          </Label>
           <Input
             id="handoff-secret"
             type="password"
@@ -236,6 +277,9 @@ export function ApprovePage() {
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
           />
+          {cloudflare ? (
+            <p className="text-xs text-muted-foreground">Leave it empty to use the keys stored in your Cloudflare AI Gateway.</p>
+          ) : null}
         </fieldset>
         {submit.isError || deny.isError ? (
           <Alert variant="destructive" role="alert">
@@ -244,7 +288,7 @@ export function ApprovePage() {
           </Alert>
         ) : null}
         <div className="flex gap-2">
-          <Button type="submit" className="flex-1" disabled={busy || secret.trim() === ""}>
+          <Button type="submit" className="flex-1" disabled={busy || !ready}>
             {submit.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
             Approve
           </Button>

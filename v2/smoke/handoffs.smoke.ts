@@ -79,6 +79,34 @@ test("a provider step opens with a console link, shows what it asks, and can be 
   assert.ok(!providers.body.providers.some((provider: { slug: string }) => provider.slug === slug));
 });
 
+test("a provider step through Cloudflare AI Gateway takes the token on the page, the provider key optional", { skip }, async () => {
+  const slug = `smoke-handoff-cf-${Date.now().toString(36)}`;
+  const opened = await admin("POST", "/v2/admin/provider-handoffs", {
+    type: "openai",
+    name: "Smoke handoff via Cloudflare",
+    slug,
+    cloudflareGateway: { accountId: "smoke-account", gatewayId: "smoke-gateway" },
+  });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const proof = new URL(opened.body.url).hash.slice(1);
+  let providerId = "";
+  try {
+    const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof });
+    assert.deepEqual(shown.body.review.cloudflareGateway, { accountId: "smoke-account", gatewayId: "smoke-gateway" });
+    const keyOnly = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret: "sk-smoke-never-stored-000000" });
+    assert.equal(keyOnly.status, 400);
+    const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, cloudflareToken: "cf-smoke-token-0123456789" });
+    assert.deepEqual(approved, { status: 200, body: { state: "completed" } });
+    const providers = await admin("GET", "/v2/admin/providers");
+    const added = providers.body.providers.find((provider: { slug: string }) => provider.slug === slug);
+    providerId = added?.id ?? "";
+    assert.equal(added?.secretHint, null);
+    assert.deepEqual(added?.cloudflareGateway, { accountId: "smoke-account", gatewayId: "smoke-gateway", tokenHint: "6789" });
+  } finally {
+    if (providerId !== "") await admin("DELETE", `/v2/admin/providers/${providerId}`);
+  }
+});
+
 test("an app is created once from a reservation, and its key is never in an answer", { skip }, async () => {
   const document = {
     name: "Smoke reserved app",

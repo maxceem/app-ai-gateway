@@ -772,7 +772,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_provider",
     title: "Add a provider connection",
     description:
-      "Opens adding a provider connection, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes everything list_providers shows but the key: type, name, and optionally slug, baseUrl and pricing. They are checked now, and nothing is created until the person approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
+      "Opens adding a provider connection, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes everything list_providers shows but the key: type, name, and optionally slug, baseUrl, pricing and cloudflareGateway. cloudflareGateway names a Cloudflare AI Gateway (accountId and gatewayId) to send the connection through: the person enters its token on the page, and the provider key is then optional. They are checked now, and nothing is created until the person approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
     operations: ["openProviderHandoff"],
     input: CATALOG.openProviderHandoff.request,
     annotations: writes({ destructive: false, idempotent: false }),

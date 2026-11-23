@@ -149,6 +149,7 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
   const name = flags.name?.trim() || type;
   if (!type) fail("invalid_input", "--type is required, such as --type openai.", "Run agw provider list or agw model list to see the types.");
   const pricing = flags.pricing === undefined ? undefined : await jsonFlag("pricing", flags.pricing);
+  const cloudflare = cloudflareIds(flags);
   const common = {
     type,
     name: name!,
@@ -157,13 +158,32 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
     ...(pricing === undefined ? {} : { pricing: pricing as never }),
   };
   if (flags.browser) {
-    const { data } = await ctx.call("openProviderHandoff", { body: common });
+    const { data } = await ctx.call("openProviderHandoff", { body: { ...common, ...(cloudflare === null ? {} : { cloudflareGateway: cloudflare }) } });
     return browserStep(ctx, data);
   }
   const key = await secret(flags, "Provider API key");
   if (!key) fail("input_required", "A provider key is required.", "Pipe it with --key-stdin, type it with --key-prompt, or use --browser.");
   const { data } = await ctx.call("createProvider", { body: { ...common, secret: key } });
   return { provider: data.provider };
+}
+
+/**
+ * The Cloudflare AI Gateway a new connection goes through, or null. Its
+ * token is a secret no flag carries: a person enters it in the browser step,
+ * so the ids come only with `--browser`.
+ */
+function cloudflareIds(flags: Flags): { accountId: string; gatewayId: string } | null {
+  const accountId = flags["cloudflare-account-id"]?.trim();
+  const gatewayId = flags["cloudflare-gateway-id"]?.trim();
+  if (accountId === undefined && gatewayId === undefined) return null;
+  if (!accountId || !gatewayId) fail("invalid_input", "--cloudflare-account-id and --cloudflare-gateway-id go together.");
+  if (!flags.browser)
+    fail(
+      "invalid_input",
+      "Through Cloudflare AI Gateway, a person enters the Cloudflare token, and the provider key if any, in the browser.",
+      "Add --browser.",
+    );
+  return { accountId, gatewayId };
 }
 
 /** `agw provider rotate-key <id or slug>`. */

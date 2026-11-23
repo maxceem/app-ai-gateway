@@ -159,6 +159,31 @@ test("provider add --browser opens the gateway's own page without printing its l
   assert.match(result.err, /browser window/);
 });
 
+test("provider add through Cloudflare AI Gateway sends the ids to the browser step, and never takes the token on the command line", async () => {
+  const pending = { id: "op_2", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" };
+  const result = await run(
+    ["provider", "add", "--type", "openai", "--cloudflare-account-id", " acct ", "--cloudflare-gateway-id", "gw", "--browser", "--json"],
+    (path, options) => {
+      if (path === "/v2/admin/provider-handoffs") {
+        assert.deepEqual(options.body, { type: "openai", name: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "gw" } });
+        return { id: "op_2", kind: "provider.add", url: `${URL_}/v2/approve/op_2#proof`, expiresAt: "2026-11-20T10:15:00.000Z" };
+      }
+      return pending;
+    },
+  );
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.json().result.state, "pending");
+
+  // The ids need --browser, and each other; a token has no flag at all.
+  const keyed = await run(["provider", "add", "--type", "openai", "--cloudflare-account-id", "acct", "--cloudflare-gateway-id", "gw", "--key-stdin", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(keyed.json().error.code, "invalid_input");
+  assert.match(keyed.json().error.nextAction, /--browser/);
+  const half = await run(["provider", "add", "--type", "openai", "--cloudflare-account-id", "acct", "--browser", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(half.json().error.code, "invalid_input");
+  const token = await run(["provider", "add", "--type", "openai", "--cloudflare-token", "x", "--browser", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(token.json().error.code, "unknown_flag");
+});
+
 test("when no browser opens, the hand-off link goes to a private file and only its path is printed", async () => {
   const store = memoryStore(signedInState(URL_, "agw_oat_1"));
   const out = sinks();

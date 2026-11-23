@@ -5580,6 +5580,26 @@
               },
               "additionalProperties": false
             }
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -6806,6 +6826,21 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "cloudflareGateway": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  },
+                  "gatewayId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "gatewayId"
                 ]
               }
             },
@@ -13527,11 +13562,15 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "cloudflareToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   }
                 },
                 "required": [
-                  "proof",
-                  "secret"
+                  "proof"
                 ],
                 "additionalProperties": false
               }

@@ -88,12 +88,23 @@ export function parseEnvelope(value: unknown): OperationEnvelope {
 /** The longest key a person may enter on the page, as `createProvider` takes it. */
 export const MAX_SECRET_LENGTH = 4096;
 
-/** What the approval page submits: the key it collected. Never stored. */
-function parseSecretInput(value: unknown): { secret: string } {
-  if (!isRecord(value) || typeof value.secret !== "string" || !/\S/u.test(value.secret) || value.secret.length > MAX_SECRET_LENGTH) {
-    throw new Error("A browser step's input must be a non-blank key");
+/**
+ * What the approval page submits: the provider key it collected, a
+ * Cloudflare token, or both. At least one, each non-blank. Never stored.
+ */
+function parseSecretInput(value: unknown): { secret?: string; cloudflareToken?: string } {
+  if (!isRecord(value)) throw new Error("A browser step's input must be a non-blank key");
+  const input: { secret?: string; cloudflareToken?: string } = {};
+  for (const name of ["secret", "cloudflareToken"] as const) {
+    const entered = value[name];
+    if (entered === undefined) continue;
+    if (typeof entered !== "string" || !/\S/u.test(entered) || entered.length > MAX_SECRET_LENGTH) {
+      throw new Error("A browser step's input must be a non-blank key");
+    }
+    input[name] = entered;
   }
-  return { secret: value.secret };
+  if (input.secret === undefined && input.cloudflareToken === undefined) throw new Error("A browser step's input must be a non-blank key");
+  return input;
 }
 
 /**
