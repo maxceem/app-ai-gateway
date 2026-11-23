@@ -298,92 +298,28 @@ describe("support", () => {
     release();
   });
 
-  it("lets the last known plan decide while billing cannot be read, and never names it as the account's current one", async () => {
-    /** A deployment whose billing answers `access` until it goes down. */
-    function goingDown(access: Access) {
-      const deployment = runtime({ access });
-      const billing = (deployment.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
-      const answer = billing.getTenantAccess;
-      const state = { down: false };
-      billing.getTenantAccess = async () => {
-        if (state.down) throw new Error("billing is down");
-        return answer();
-      };
-      return { ...deployment, state };
-    }
-
-    // The last known plan includes support: sent, the plan unknown.
-    const included = await seedHuman();
-    const kept = goingDown(plan("Pro", false));
-    // App traffic reads the plan, which it keeps for an outage.
-    expect(await getAppTrafficBillingAccess(kept.env, included.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
-    kept.state.down = true;
-    expect((await send(kept.env, included, MESSAGE)).status).toBe(200);
-    expect(kept.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
-
-    // The last known plan leaves support out: refused, as v1.
-    const excluded = await seedHuman();
-    const free = goingDown(plan("Free", true, ["conversationStorage"]));
-    expect(await getAppTrafficBillingAccess(free.env, excluded.accountId, () => undefined)).toMatchObject({ plan: { planName: "Free" } });
-    free.state.down = true;
-    const refused = await send(free.env, excluded, MESSAGE);
-    expect(refused.status).toBe(403);
-    expect(await errorCode(refused)).toBe("support_plan_required");
-    expect(free.tickets).toHaveLength(0);
-  });
-
-  it("goes by the newer of its own last read and app traffic's kept plan while billing cannot be read", async () => {
-    /** Billing whose answer the test changes, or takes down. */
-    function switchable(first: Access) {
-      const state: { answer: Access | "down" } = { answer: first };
-      const deployment = runtime({ access: first });
-      (deployment.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING.getTenantAccess = async () => {
-        if (state.answer === "down") throw new Error("billing is down");
-        return state.answer;
-      };
-      return { ...deployment, state };
-    }
-    const FREE = plan("Free", true, ["conversationStorage"]);
-    const expectRefused = async (response: Response) => {
-      expect(response.status).toBe(403);
-      expect(await errorCode(response)).toBe("support_plan_required");
+  it("sends while billing cannot be read, whatever plan app traffic kept, with the plan unknown (the owner's decision)", async () => {
+    const human = await seedHuman();
+    let down = false;
+    const kept = runtime({ access: plan("Free", true, ["conversationStorage"]) });
+    const billing = (kept.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
+    const answer = billing.getTenantAccess;
+    billing.getTenantAccess = async () => {
+      if (down) throw new Error("billing is down");
+      return answer();
     };
-
-    // App traffic keeps an older Pro plan; support's fresh read then finds Free, and refuses.
-    const downgraded = await seedHuman();
-    const older = switchable(plan("Pro", false));
-    expect(await getAppTrafficBillingAccess(older.env, downgraded.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 1_000 });
-    older.state.answer = FREE;
-    await expectRefused(await send(older.env, downgraded, MESSAGE));
-    // Billing goes down: support's own read is the newer, and still refuses.
-    older.state.answer = "down";
-    await expectRefused(await send(older.env, downgraded, MESSAGE));
-    expect(older.tickets).toHaveLength(0);
-    vi.useRealTimers();
-
-    // App traffic keeps nothing: the same.
-    const nothingKept = await seedHuman();
-    const bare = switchable(FREE);
-    await expectRefused(await send(bare.env, nothingKept, MESSAGE));
-    bare.state.answer = "down";
-    await expectRefused(await send(bare.env, nothingKept, MESSAGE));
-    expect(bare.tickets).toHaveLength(0);
-
-    // App traffic reads an upgrade after support's refusal: that newer plan decides, and the ticket says the plan is unknown.
-    const upgraded = await seedHuman();
-    const later = switchable(FREE);
-    await expectRefused(await send(later.env, upgraded, MESSAGE));
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 1_000 });
-    later.state.answer = plan("Pro", false);
-    expect(await getAppTrafficBillingAccess(later.env, upgraded.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
-    later.state.answer = "down";
-    expect((await send(later.env, upgraded, MESSAGE)).status).toBe(200);
-    expect(later.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
+    // App traffic keeps a plan without support for the outage; support never reads it.
+    expect(await getAppTrafficBillingAccess(kept.env, human.accountId, () => undefined)).toMatchObject({ plan: { planName: "Free" } });
+    down = true;
+    expect((await send(kept.env, human, MESSAGE)).status).toBe(200);
+    expect(kept.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
   });
 
   it("refuses a plan whose limits are malformed, as v1, rather than guessing either way", async () => {
     const human = await seedHuman();
+    // Only the limits v1 recognized: a v2-only limit is not support's to judge.
+    const v2Only = runtime({ access: { plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxSessionMinutesPerMonth: "lots" } }, subscription: null } });
+    expect((await send(v2Only.env, human, MESSAGE)).status).toBe(200);
     // The legacy maxProviderGateways too, which v2 otherwise never reads.
     for (const limits of [null, { maxApps: "many" }, { includes: "humanSupport" }, { maxProviderGateways: -1 }, { maxProviderGateways: null }]) {
       const broken = runtime({ access: { plan: { planKey: "pro", planName: "Pro", isDefault: false, limits }, subscription: null } });
