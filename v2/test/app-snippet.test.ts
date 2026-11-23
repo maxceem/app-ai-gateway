@@ -235,6 +235,26 @@ describe("first requests for an app", () => {
     expect(named.examples).toEqual([expect.objectContaining({ model: SAMPLE_MODELS["openai.chat"], caveat: expect.stringContaining("configured model") })]);
   });
 
+  it("gives a note, not a command, where the end user's header is one the example itself sends, whatever its case", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key, { type: "anthropic", name: "Anthropic", slug: `anthropic-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "header", header: "Anthropic-Version" } },
+      routing: { providers: { [slug]: { operations: ["anthropic.messages"] } } },
+    });
+    expect(examples).toEqual([]);
+    expect(notes).toContainEqual(`${slug}: anthropic.messages has no example: this app names its end user in anthropic-version, a header the request itself must send.`);
+
+    // The same for a preset that sends it.
+    const preset = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "header", header: "anthropic-version" } },
+      routing: { providers: {} },
+      presets: { ask: { provider: slug, operation: "anthropic.messages", model: SAMPLE_MODELS["anthropic.messages"]! } },
+    });
+    expect(preset.examples).toEqual([]);
+    expect(preset.notes).toContainEqual("The preset ask has no example: this app names its end user in anthropic-version, a header the request itself must send.");
+  });
+
   it("gives a Responses route or preset with an output cap below OpenAI's 16 tokens a note", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);

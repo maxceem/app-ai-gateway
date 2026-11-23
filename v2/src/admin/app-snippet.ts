@@ -240,7 +240,7 @@ function filledPath(operation: OperationDescription, model: string): string {
  * preset, which sends none. A sample's output cap never asks for more than
  * the route or the preset allows.
  */
-function requestFor(url: string, operation: OperationDescription, model: string | null, endUser: Readonly<Record<string, string>>, outputCap: number | undefined): SnippetRequest {
+function requestFor(url: string, operation: OperationDescription, model: string | null, outputCap: number | undefined): SnippetRequest {
   const style = operation.style!;
   const field = model === null ? null : modelBodyField(operation);
   const styleHeaders = STYLE_HEADERS[style] ?? {};
@@ -248,7 +248,7 @@ function requestFor(url: string, operation: OperationDescription, model: string 
   if (requestBodyKind(operation) === "form") {
     return {
       ...base,
-      headers: { ...endUser, ...styleHeaders },
+      headers: { ...styleHeaders },
       ...(field === null ? {} : { form: { [field]: model! } }),
       file: { field: operation.audioFormFields?.[0] ?? "file", name: "audio.mp3" },
     };
@@ -256,7 +256,7 @@ function requestFor(url: string, operation: OperationDescription, model: string 
   const shape = COVERED_STYLES[style] as Readonly<Record<string, unknown>>;
   return {
     ...base,
-    headers: { ...endUser, ...styleHeaders, "Content-Type": "application/json" },
+    headers: { ...styleHeaders, "Content-Type": "application/json" },
     body: { ...(field === null ? {} : { [field]: model }), ...shape, ...outputLimit(operation, outputCap) },
   };
 }
@@ -345,8 +345,20 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
    * control character, such as a line break, gets no command at all, only a
    * note. A caveat is plain text beside the command, never part of it.
    */
-  const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, request: SnippetRequest) => {
+  const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, built: SnippetRequest) => {
     const who = example.preset === undefined ? `${example.provider}: ${example.operation}` : `The preset ${example.preset}`;
+    // The end user's header must not be one the example itself sends: its own headers, the credential's, and the form's content type.
+    const own = new Set(
+      [...Object.keys(built.headers), ...(caller.credential === null ? [] : [caller.credential.header]), ...(built.form !== undefined || built.file !== undefined ? ["content-type"] : [])].map(
+        (name) => name.toLowerCase(),
+      ),
+    );
+    const clash = Object.keys(caller.endUser).find((name) => own.has(name.toLowerCase()));
+    if (clash !== undefined) {
+      notes.push(`${who} has no example: this app names its end user in ${clash}, a header the request itself must send.`);
+      return;
+    }
+    const request: SnippetRequest = { ...built, headers: { ...caller.endUser, ...built.headers } };
     if (holdsControl([example.model, request.url, request.headers, request.body, request.form])) {
       notes.push(`${who} has no example: a value it would send holds a control or invisible character, such as a line break or a zero-width joiner.`);
       return;
@@ -408,7 +420,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
           model,
           ...(configured ? { caveat: `Uses this app's configured model ${model}: it works if ${model} supports this endpoint.` } : {}),
         },
-        requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${filledPath(operation, model)}`, operation, model, caller.endUser, route.max_output_tokens),
+        requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${filledPath(operation, model)}`, operation, model, route.max_output_tokens),
       );
     }
     if (unpicked.length > 0) {
@@ -446,7 +458,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     }
     add(
       { preset: slug, operation: operation.name, style: operation.style!, model: null },
-      requestFor(`${origin}/v2/apps/${row.id}/presets/${slug}`, { ...operation, match: { ...operation.match, method: "POST" } }, null, caller.endUser, preset.max_output_tokens),
+      requestFor(`${origin}/v2/apps/${row.id}/presets/${slug}`, { ...operation, match: { ...operation.match, method: "POST" } }, null, preset.max_output_tokens),
     );
   }
 
