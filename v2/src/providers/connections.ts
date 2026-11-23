@@ -253,19 +253,27 @@ export async function opened(
     // copy is dropped, so a later outage cannot bring it back.
     const unreachable = isVaultTransportFailure(error);
     if (!unreachable) secretCache.delete(key);
+    const usable = (entry: ReturnType<typeof secretCache.peek>) => entry !== undefined && Date.now() - entry.expiresAt < SECRET_STALE_MAX_MS;
     const stale = unreachable ? secretCache.peek(key) : undefined;
-    const now = Date.now();
-    if (stale !== undefined && now - stale.expiresAt < SECRET_STALE_MAX_MS && (await stillCurrent())) {
-      log("warn", "provider_secret_stale", {
-        account: connection.accountId,
-        connection: connection.id,
-        providerType: connection.type,
-        credential: what,
-        ageMs: now - stale.storedAt,
-        error: errorFacts(error),
-      });
-      // Not refreshed: the next request goes back to the vault.
-      return stale.value;
+    if (stale !== undefined && usable(stale) && (await stillCurrent())) {
+      // The D1 check waited: another request may have opened the key afresh
+      // meanwhile, or met a refusal that dropped this copy. A fresh copy is
+      // used; a dropped or replaced one, or one past the window now, is not.
+      const fresh = secretCache.get(key);
+      if (fresh !== undefined) return fresh;
+      const again = secretCache.peek(key);
+      if (again === stale && usable(again)) {
+        log("warn", "provider_secret_stale", {
+          account: connection.accountId,
+          connection: connection.id,
+          providerType: connection.type,
+          credential: what,
+          ageMs: Date.now() - stale.storedAt,
+          error: errorFacts(error),
+        });
+        // Not refreshed: the next request goes back to the vault.
+        return stale.value;
+      }
     }
     log("error", "provider_secret_unavailable", {
       account: connection.accountId,

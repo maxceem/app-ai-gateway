@@ -177,3 +177,55 @@ describe("whether a credential is still the connection's own (read from D1, past
     expect(await credentialStillCurrent(env, gone, "providerKey", deleted.blob)).toBe(false);
   });
 });
+
+describe("two requests at once, while the vault fails", () => {
+  it("serves no stale copy that a refusal dropped while this request waited on D1", async () => {
+    const record = connection();
+    const blob = record.secretBlob!;
+    await opened(record, "providerKey", () => Promise.resolve(SECRET), blob, current);
+    vi.setSystemTime(Date.now() + TEN_MINUTES + 1);
+    // A meets a network error and waits on its D1 check; B meanwhile meets a 403, which drops the copy.
+    let release!: (value: boolean) => void;
+    const waiting = new Promise<boolean>((resolve) => (release = resolve));
+    const a = opened(record, "providerKey", unreachable, blob, () => waiting);
+    await expect(opened(record, "providerKey", () => Promise.reject(new KmsClientError("forbidden", 403)), blob, current)).rejects.toMatchObject({ status: 502 });
+    release(true);
+    await expect(a).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+    expect(warn.mock.calls.flat().map(String).join(" ")).not.toContain("provider_secret_stale");
+  });
+
+  it("serves no stale copy that went past the window while this request waited on D1", async () => {
+    const record = connection();
+    const blob = record.secretBlob!;
+    await opened(record, "providerKey", () => Promise.resolve(SECRET), blob, current);
+    vi.setSystemTime(Date.now() + TEN_MINUTES + HOUR - 5);
+    let release!: (value: boolean) => void;
+    const a = opened(record, "providerKey", unreachable, blob, () => new Promise<boolean>((resolve) => (release = resolve)));
+    await Promise.resolve();
+    vi.setSystemTime(Date.now() + 10);
+    release(true);
+    await expect(a).rejects.toMatchObject({ status: 502 });
+  });
+});
+
+describe("a cf-kms that never answers", () => {
+  it("gives up after its deadline with a timeout, which counts as the vault being unreachable", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { createKmsSecretVault, KMS_CALL_DEADLINE_MS } = await import("../src/vault/kms.ts");
+    const hung = vi.spyOn(globalThis, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    const vault = createKmsSecretVault({}, "https://kms.example.test", "test-token");
+    // A well-formed envelope, so the client asks cf-kms rather than refusing it itself.
+    const blob = "cfkms-env1.AAAA.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA";
+    const opening = vault.decryptSecret(blob, { purpose: "test" }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(KMS_CALL_DEADLINE_MS + 1);
+    const error = await opening;
+    expect(hung).toHaveBeenCalledTimes(1);
+    expect(error).toMatchObject({ name: "TimeoutError" });
+    expect(isVaultTransportFailure(error)).toBe(true);
+  });
+});
