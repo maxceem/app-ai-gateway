@@ -222,11 +222,14 @@ function redirectTo(
  * the same URL. A route middleware, so it also covers answers the error
  * handler writes.
  */
-export const pollNoStore = async (c: { res: Response }, next: () => Promise<void>): Promise<void> => {
+export const pollNoStore = async (c: { res: Response | undefined }, next: () => Promise<void>): Promise<void> => {
   await next();
-  const headers = new Headers(c.res.headers);
+  const previous = c.res!;
+  const headers = new Headers(previous.headers);
   noStore(headers);
-  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+  // Cleared first: Hono copies the old answer's headers onto a new one, which would bring a cache header back.
+  c.res = undefined;
+  c.res = new Response(previous.body, { status: previous.status, statusText: previous.statusText, headers });
 };
 
 export const jobStatusHandler = jobPollHandler("status");

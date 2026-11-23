@@ -77,9 +77,6 @@ import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRed
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
 
-/** The deployment's first-byte time, worked out once per environment. */
-const ttfbTimeouts = new WeakMap<object, number>();
-
 /**
  * How long a provider may take to send its response headers, for an operation
  * that names no time of its own: v1's `PROVIDER_TTFB_TIMEOUT_SECONDS`, read
@@ -92,23 +89,18 @@ const ttfbTimeouts = new WeakMap<object, number>();
  * deployments never need it, and the install form would ask about it.
  */
 export function providerTtfbTimeoutMs(env: Env): number {
-  let ms = ttfbTimeouts.get(env);
-  if (ms === undefined) {
-    const seconds = Number((env as { PROVIDER_TTFB_TIMEOUT_SECONDS?: unknown }).PROVIDER_TTFB_TIMEOUT_SECONDS);
-    ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1_000) : PROVIDER_TTFB_TIMEOUT_MS;
-    ttfbTimeouts.set(env, ms);
-  }
-  return ms;
+  const seconds = Number((env as { PROVIDER_TTFB_TIMEOUT_SECONDS?: unknown }).PROVIDER_TTFB_TIMEOUT_SECONDS);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1_000) : PROVIDER_TTFB_TIMEOUT_MS;
 }
 
-/**
- * How long a step may take: the operation's own time (`responseDeadlineMs`,
- * such as Deepgram's 20 minutes), or else, for the provider's first byte, the
- * deployment's setting, and for opening the first key before anything is sent,
- * the gateway's 120 s (that setting bounds the provider, not the vault).
- */
-function budgetMs(operation: OperationDescription, env?: Env): number {
-  return operation.responseDeadlineMs ?? (env === undefined ? PROVIDER_TTFB_TIMEOUT_MS : providerTtfbTimeoutMs(env));
+/** How long opening the first key may take, before anything is sent: the operation's own time or 120 s, never the first-byte setting. */
+function keyOpenBudgetMs(operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
+}
+
+/** How long the provider may take to its first byte: the operation's own time (Deepgram's 20 minutes), or the deployment's. */
+function responseDeadlineMs(env: Env, operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? providerTtfbTimeoutMs(env);
 }
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -1049,7 +1041,7 @@ async function sendAttemptsKeptFor(
       // Before the first fetch, opening the key has its own budget, as before
       // the first-byte setting; that time starts with the provider attempt.
       // A fallback's key shares what is left of it.
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? budgetMs(prepared.operation) : deadline - Date.now());
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? keyOpenBudgetMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -1115,7 +1107,7 @@ async function sendAttemptsKeptFor(
         throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
       }
       providerStart = Date.now();
-      deadline ??= providerStart + budgetMs(prepared.operation, c.env);
+      deadline ??= providerStart + responseDeadlineMs(c.env, prepared.operation);
       const remainingMs = deadline - providerStart;
       if (remainingMs <= 0) throw budgetExhausted(index);
       controller = new AbortController();

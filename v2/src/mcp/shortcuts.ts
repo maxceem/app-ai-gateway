@@ -81,23 +81,19 @@ export function usedShortcuts(input: Record<string, unknown>): string[] {
   return Object.keys(APP_SHORTCUTS).filter((name) => input[name] !== undefined);
 }
 
-/** Each call's shortcut values, parsed once by `checkShortcuts` and used by `shortcutOperations`. */
-const PARSED = new WeakMap<Record<string, unknown>, ReadonlyMap<string, unknown>>();
+/** One shortcut's value, as its schema reads it; a value it does not take (`null` included) is refused. */
+function parseShortcut(name: string, value: unknown): unknown {
+  const result = APP_SHORTCUTS[name]!.schema.safeParse(value);
+  if (!result.success) throw new GatewayError(400, "invalid_request", `${name}: ${result.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
+  return result.data;
+}
 
-/** Refuses, before anything is read or written, a shortcut whose value is not what it takes (`null` included), and keeps the parsed values. */
+/** Refuses, before anything is read or written, a shortcut whose value is not what it takes. */
 export function checkShortcuts(input: Record<string, unknown>): void {
-  const parsed = new Map<string, unknown>();
-  for (const name of usedShortcuts(input)) {
-    const result = APP_SHORTCUTS[name]!.schema.safeParse(input[name]);
-    if (!result.success) throw new GatewayError(400, "invalid_request", `${name}: ${result.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
-    parsed.set(name, result.data);
-  }
-  PARSED.set(input, parsed);
+  for (const name of usedShortcuts(input)) parseShortcut(name, input[name]);
 }
 
 /** The operations the shortcuts a call uses stand for, in the table's order, judged against the app as read. */
 export function shortcutOperations(input: Record<string, unknown>, app: ShortcutApp): AppPatchOperation[] {
-  if (!PARSED.has(input)) checkShortcuts(input);
-  const parsed = PARSED.get(input)!;
-  return [...parsed].flatMap(([name, value]) => APP_SHORTCUTS[name]!.operations(value as never, app));
+  return usedShortcuts(input).flatMap((name) => APP_SHORTCUTS[name]!.operations(parseShortcut(name, input[name]) as never, app));
 }

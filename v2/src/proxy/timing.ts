@@ -111,9 +111,13 @@ export const serverTiming: MiddlewareHandler = async (c, next) => {
   try {
     c.res.headers.set("server-timing", value);
   } catch {
-    // An answer whose headers cannot change (one passed on as it came) is copied once.
-    const headers = new Headers(c.res.headers);
+    // An answer whose headers cannot change (one passed on as it came) is copied once. The old
+    // answer is cleared first: Hono copies its headers onto a new one, which would bring the
+    // provider's own `server-timing` back over the gateway's.
+    const previous = c.res;
+    const headers = new Headers(previous.headers);
     headers.set("server-timing", value);
-    c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+    c.res = undefined;
+    c.res = new Response(previous.body, { status: previous.status, statusText: previous.statusText, headers });
   }
 };
