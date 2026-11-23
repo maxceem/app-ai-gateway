@@ -311,7 +311,7 @@ async function routingOf(ctx: Context, entries: string[]): Promise<{ routing?: {
   if (entries.length === 0) return {};
   const providers: Record<string, { operations: string[] }> = {};
   let connections: Provider[] | undefined;
-  let types: OperationResponse<"listProviderTypes">["types"] | undefined;
+  let types: OperationResponse<"listProviderTypes">["types"] | null | undefined;
   for (const entry of entries) {
     const at = entry.indexOf("=");
     const slug = (at < 0 ? entry : entry.slice(0, at)).trim();
@@ -332,14 +332,28 @@ async function routingOf(ctx: Context, entries: string[]): Promise<{ routing?: {
       const styled = (connection.passthrough ?? []).find((path) => path.style !== undefined);
       first = styled ? `custom.${styled.style}` : (connection.passthrough ?? []).length > 0 ? "passthrough" : undefined;
     } else {
-      types ??= (await ctx.call("listProviderTypes")).data.types;
-      first = types.find((candidate) => candidate.type === connection.type)?.operations?.[0];
+      if (types === undefined) types = await providerTypes(ctx);
+      first = types?.find((candidate) => candidate.type === connection.type)?.operations?.[0];
     }
     if (first === undefined)
-      fail("invalid_input", `--providers: agw cannot tell which operation of ${slug} to allow.`, `Name it: --providers ${slug}=<operation>. Run agw provider types to see them.`);
+      fail(
+        "invalid_input",
+        `--providers: agw cannot tell which operation of ${slug} to allow${types === null ? ": this gateway does not list its provider types' operations" : ""}.`,
+        `Name the operations yourself: --providers ${slug}=<operation>+<operation>, such as ${slug}=${connection.type}.chat.`,
+      );
     providers[slug] = { operations: [first] };
   }
   return { routing: { providers } };
+}
+
+/** The gateway's provider types, or null from a gateway older than the list, which answers 404. */
+async function providerTypes(ctx: Context): Promise<OperationResponse<"listProviderTypes">["types"] | null> {
+  try {
+    return (await ctx.call("listProviderTypes")).data.types;
+  } catch (error) {
+    if (error instanceof CliError && error.details?.status === 404) return null;
+    throw error;
+  }
 }
 
 /** Writes a new key to its reserved file; a failure says which key was made, so it can be revoked. */

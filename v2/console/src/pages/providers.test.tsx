@@ -1228,7 +1228,7 @@ describe("a typed key stays with where it was typed for", () => {
     await userEvent.paste("gw");
     await userEvent.click(screen.getByLabelText(/cloudflare token/i));
     await userEvent.paste("cf-token-0123456789");
-    expect(screen.getByText(/use plain text: this has a character that cannot be sent/i)).toBeTruthy();
+    expect(screen.getByText("This ID may hold only letters, digits, -, _, . and ~.")).toBeTruthy();
     expect((screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

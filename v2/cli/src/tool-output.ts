@@ -165,7 +165,12 @@ export function humanToolResult(
       const columns = (view.columns ?? Object.keys((rows[0]?.value as object | undefined) ?? {})).map(column);
       body = rows.length === 0
         ? []
-        : table(columns.map((entry) => entry.label), rows.map((row) => columns.map((entry) => cell(valueAt(row, entry.key), 48))), style);
+        : table(
+            columns.map((entry) => entry.label),
+            // The last column runs to the end of the line, so a list there is shown whole, as a provider type's operations.
+            rows.map((row) => columns.map((entry, index) => cell(valueAt(row, entry.key), index === columns.length - 1 ? 1000 : 48))),
+            style,
+          );
     }
   } else if (view?.record !== undefined) {
     const record = view.record ? valueAt({ value: result, keys: [] }, view.record) : result;

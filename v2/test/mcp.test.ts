@@ -154,6 +154,8 @@ describe("the MCP endpoint", () => {
     expect(types.isError ?? false).toBe(false);
     expect(types.structuredContent.types.at(-1).type).toBe("custom");
     expect(types.content[0]!.text).toMatch(/^\d+ provider types: /u);
+    // agw prints each example whole: the curl, or the request an iOS app sends.
+    expect(MCP_TOOLS.find((tool) => tool.name === "get_app_snippet")!.cli.view).toMatchObject({ blocks: ["examples.*.text"] });
 
     const apps = await callTool(key, "list_apps");
     expect(apps.isError ?? false).toBe(false);

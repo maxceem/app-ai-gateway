@@ -281,7 +281,7 @@ export function FirstRequests({ app, base }: { app: App; base: string }) {
         ) : (
           <>
             {snippet.data.examples.map((example) => (
-              <SnippetExample key={`${example.provider ?? ""}/${example.preset ?? ""}/${example.style}`} example={example} />
+              <SnippetExample key={`${example.provider ?? ""}/${example.preset ?? ""}/${example.style ?? example.operation}`} example={example} />
             ))}
             {snippet.data.notes.map((note) => (
               <p key={note} className="text-xs break-words text-muted-foreground">{note}</p>
@@ -294,9 +294,9 @@ export function FirstRequests({ app, base }: { app: App; base: string }) {
 }
 
 function SnippetExample({ example }: { example: AppSnippetExample }) {
-  // An app called with a key gets curl; an iOS app gets the request itself.
-  const text =
-    example.curl ?? [`${example.method} ${example.url}`, ...(example.body === undefined ? [] : [JSON.stringify(example.body, null, 2)])].join("\n");
+  // The gateway's own text: curl for an app called with a key, the whole request for an iOS app.
+  const text = example.text;
+  const kind = example.style ?? example.operation;
   const title = example.preset !== undefined ? `Preset ${example.preset}` : example.provider ?? "";
   const copy = async () => {
     try {
@@ -307,17 +307,17 @@ function SnippetExample({ example }: { example: AppSnippetExample }) {
     }
   };
   return (
-    <section aria-label={`${title} ${example.style}`} className="space-y-1">
+    <section aria-label={`${title} ${kind}`} className="space-y-1">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs">
-          <span className="font-mono">{title}</span> · {example.style}
+          <span className="font-mono">{title}</span> · {kind}
           {example.model === null ? null : (
             <>
               {" "}· <span className="font-mono">{example.model}</span>
             </>
           )}
         </p>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label={`Copy the ${example.style} request`} title="Copy" onClick={() => void copy()}>
+        <Button type="button" variant="ghost" size="icon-xs" aria-label={`Copy the ${kind} request`} title="Copy" onClick={() => void copy()}>
           <Copy />
         </Button>
       </div>

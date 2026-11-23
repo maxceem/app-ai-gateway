@@ -433,7 +433,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     operation: "listProviderTypes",
     cli: {
       command: "provider types",
-      view: { rows: "types", columns: ["type", "label", "styles", "cloudflareGateway=Cloudflare", "custom"] },
+      view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"] },
     },
     summary: ({ types }) => `${plural(types.length, "provider type")}: ${listed(types.map((entry) => entry.type), 30)}.`,
   }),
@@ -515,18 +515,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_app_snippet",
     title: "Get first requests for an app",
     description:
-      "Returns example requests the app can send today, built by the gateway from its routes and presets: one per API style each provider route serves, and one per preset, each with its URL, model and body. An app called with an app key gets each as a curl command that reads the key from $APP_AI_GATEWAY_KEY; no key is ever in the answer. An iOS app gets the requests without curl: it signs them with App Attest, and the Swift SDK has Swift examples. Use it to show someone how to make an app's first call.",
+      "Returns example requests the app can send today, built by the gateway from its routes and presets: one per API style each provider route serves, and one per preset, each with its URL, headers, model and body or upload, and a model serving admits. An app called with an app key gets each as a curl command that reads the key from $APP_AI_GATEWAY_KEY and gives it to curl on stdin; no key is ever in the answer or in a command's arguments. An iOS app gets each request described in full: it signs them with App Attest through the Swift SDK. Use it to show someone how to make an app's first call.",
     operation: "getAppSnippet",
     cli: {
       command: "app snippet",
       summary: "Show first requests for an app, as curl where it can send them",
       args: ["app"],
-      view: { rows: "examples", columns: ["provider", "preset", "style", "model"], notes: ["notes"], blocks: ["examples.*.curl"] },
+      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"] },
     },
     summary: ({ app_id, examples }) =>
       examples.length === 0
         ? `No example requests for app ${app_id} yet; the notes say why.`
-        : `${plural(examples.length, "example request")} for app ${app_id}: ${listed(examples.map((example) => `${example.provider ?? `preset ${example.preset}`} ${example.style}`))}.`,
+        : `${plural(examples.length, "example request")} for app ${app_id}: ${listed(examples.map((example) => `${example.provider ?? `preset ${example.preset}`} ${example.style ?? example.operation}`))}.`,
   }),
   {
     name: "validate_app",

@@ -212,6 +212,27 @@ describe("adding a provider connection through a person", () => {
     expect(row!.cloudflare_gateway_json).not.toContain(TOKEN);
   });
 
+  it("refuses Cloudflare ids that would move the address once parsed, when opened and again when approved", async () => {
+    const { caller } = await person();
+    for (const gatewayId of [".", ".."]) {
+      const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "dots", cloudflareGateway: { accountId: "acct", gatewayId } });
+      expect(opened.status, opened.text).toBe(400);
+      expect(opened.text).toContain("cloudflareGateway.gatewayId");
+    }
+    // A step stored before the rule: its reviewed gateway is "..".
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "dots-stored", cloudflareGateway: { accountId: "acct", gatewayId: "gw" } });
+    const row = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id = ?").bind(opened.body.id).first<{ payload: string }>();
+    const payload = JSON.parse(row!.payload) as { review: { cloudflareGateway: { gatewayId: string } } };
+    payload.review.cloudflareGateway.gatewayId = "..";
+    await env.DB.prepare("UPDATE mgmt_operation SET payload = ? WHERE id = ?").bind(JSON.stringify(payload), opened.body.id).run();
+    const proof = proofOf(opened.body.url);
+    expect((await page(`/v2/console/handoffs/${opened.body.id}`, { proof })).body.review.destinations).toEqual([]);
+    const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, cloudflareToken: "cf-token-0123456789" });
+    expect(approved.status, approved.text).toBe(400);
+    expect(approved.text).toContain("cannot be . or ..");
+    expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
+  });
+
   it("refuses a Cloudflare setting a direct save refuses, and a Cloudflare token where nothing goes through Cloudflare", async () => {
     const { caller } = await person();
     const cloudflareGateway = { accountId: "acct", gatewayId: "gw" };

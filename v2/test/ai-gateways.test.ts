@@ -131,6 +131,16 @@ describe("where a request goes (route.ts)", () => {
     expect(byok.headers.authorization).toBeUndefined();
   });
 
+  it("sends nothing for a stored id a URL parser would read as a folder", () => {
+    expect(() =>
+      upstreamRequest(record({ cloudflareGateway: { ...cloudflare, gatewayId: ".." } }), BUILT_IN_PROVIDERS.openai!, {
+        ...base,
+        path: "v1/chat/completions",
+        credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      }),
+    ).toThrow(/not plain path segments/u);
+  });
+
   it("refuses a provider Cloudflare does not serve, and a connection with no key going direct", () => {
     expect(() =>
       upstreamRequest(record({ type: "groq", cloudflareGateway: cloudflare }), BUILT_IN_PROVIDERS.groq!, {
@@ -370,16 +380,23 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(response.status).toBe(400);
   });
 
-  it("refuses a Cloudflare id that is not well-formed text, which could never reach Cloudflare", async () => {
+  it("refuses a Cloudflare id that is not one plain path segment, on create, update and the key test", async () => {
     const key = await seedManagementKey();
-    const created = await admin(key, "POST", "/v2/admin/providers", {
-      type: "openai",
-      name: "x",
-      slug: slugFor("openai"),
-      cloudflareGateway: { accountId: "acct\uD800", gatewayId: "gw", token: CF_TOKEN },
-    });
-    expect(created.status).toBe(400);
-    expect(JSON.stringify(created.body)).toContain("well-formed");
+    for (const accountId of ["acct\uD800", ".", "..", "a/b", "%2e%2e", "acct 1"]) {
+      const created = await admin(key, "POST", "/v2/admin/providers", {
+        type: "openai",
+        name: "x",
+        slug: slugFor("openai"),
+        cloudflareGateway: { accountId, gatewayId: "gw", token: CF_TOKEN },
+      });
+      expect(created.status, accountId).toBe(400);
+      expect(JSON.stringify(created.body), accountId).toContain("cloudflareGateway.accountId");
+    }
+    const tested = await admin(key, "POST", "/v2/admin/providers/test", { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "..", token: CF_TOKEN } });
+    expect(tested.status).toBe(400);
+    const made = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } });
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${made.body.provider.id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "." } });
+    expect(moved.status).toBe(400);
   });
 
   it("says what key goes with every change of Cloudflare route (S6)", async () => {

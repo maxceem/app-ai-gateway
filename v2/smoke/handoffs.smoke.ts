@@ -81,6 +81,11 @@ test("a provider step opens with a console link, shows what it asks, and can be 
 
 test("a provider step through Cloudflare AI Gateway takes the token on the page, the provider key optional", { skip }, async () => {
   const slug = `smoke-handoff-cf-${Date.now().toString(36)}`;
+  // An id a URL parser would read as a folder is refused before anything is opened.
+  for (const gatewayId of [".", ".."]) {
+    const dots = await admin("POST", "/v2/admin/provider-handoffs", { type: "openai", name: "Smoke dots", slug: `${slug}-dots`, cloudflareGateway: { accountId: "smoke-account", gatewayId } });
+    assert.equal(dots.status, 400);
+  }
   const opened = await admin("POST", "/v2/admin/provider-handoffs", {
     type: "openai",
     name: "Smoke handoff via Cloudflare",

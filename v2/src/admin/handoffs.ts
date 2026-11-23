@@ -47,6 +47,7 @@ import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
 import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
+import { cloudflareGatewayOrigin, cloudflareIdProblem } from "../providers/destinations.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
@@ -309,9 +310,12 @@ export async function getHandoff(c: PageContext): Promise<Response> {
   // through Cloudflare AI Gateway, the gateway is the only one.
   // A custom provider's key goes only to its base URL.
   const hosts = builtInProvider(String(review.type))?.hosts ?? {};
+  const through = cloudflare === null ? null : cloudflareGatewayOrigin(cloudflare);
   const destinations =
     cloudflare !== null
-      ? [keyOrigin({ baseUrl: null, cloudflareGateway: cloudflare })]
+      ? through === null
+        ? []
+        : [through]
       : review.type === CUSTOM_PROVIDER_TYPE
         ? baseUrl === null
           ? []
@@ -426,6 +430,13 @@ async function providerAddWrite(
   const now = Date.now();
   const { secret, cloudflareToken } = entered;
   const cloudflare = review.cloudflareGateway ?? null;
+  // Judged again at approval, so a step opened before the rule cannot send a token where its ids lead once parsed.
+  if (cloudflare !== null) {
+    for (const [field, id] of [["accountId", cloudflare.accountId], ["gatewayId", cloudflare.gatewayId]] as const) {
+      const problem = cloudflareIdProblem(id);
+      if (problem !== null) throw new GatewayError(400, "invalid_request", `cloudflareGateway.${field}: ${problem}`);
+    }
+  }
   // Sealed for where the key goes: the base URL, the Cloudflare gateway, or the provider's own host.
   const origin = keyOrigin({ baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
   const blob = secret === undefined ? null : await sealSecret(env, "providerKey", [accountId, id, review.type, origin], secret);

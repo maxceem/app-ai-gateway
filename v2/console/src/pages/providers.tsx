@@ -17,7 +17,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
-import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
+import { cloudflareIdProblem, normalizedBaseUrl } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
@@ -322,14 +322,19 @@ function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean): boolea
     !draft.on ||
     (draft.accountId.trim() !== "" &&
       draft.gatewayId.trim() !== "" &&
-      wellFormedText(draft.accountId) &&
-      wellFormedText(draft.gatewayId) &&
+      idProblem(draft.accountId) === null &&
+      idProblem(draft.gatewayId) === null &&
       (tokenOptional || draft.token !== ""))
   );
 }
 
-/** An id with half a surrogate pair cannot go in a URL: said beside the field. */
-const ID_PROBLEM = "Use plain text: this has a character that cannot be sent.";
+/** Why a typed Cloudflare id cannot be saved, by the gateway's own rule, said beside the field; null while it is empty or fine. */
+function idProblem(text: string): string | null {
+  const id = text.trim();
+  if (id === "") return null;
+  const problem = cloudflareIdProblem(id);
+  return problem === null ? null : `This ID ${problem}.`;
+}
 
 function cloudflareBody(draft: CloudflareDraft): CloudflareBody {
   return { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim(), ...(draft.token ? { token: draft.token } : {}) };
@@ -360,7 +365,7 @@ function CloudflareFields({
               // The token belongs to the account and gateway it was typed for.
               onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
-            {wellFormedText(draft.accountId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
+            {idProblem(draft.accountId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.accountId)}</p>}
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
             <Input
@@ -369,7 +374,7 @@ function CloudflareFields({
               autoComplete="off"
               onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
-            {wellFormedText(draft.gatewayId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
+            {idProblem(draft.gatewayId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.gatewayId)}</p>}
           </Field>
           <Field
             label="Cloudflare token"

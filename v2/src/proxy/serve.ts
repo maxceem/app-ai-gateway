@@ -61,7 +61,7 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarg
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
@@ -642,7 +642,7 @@ export async function requestBody(
       return { kind: "form", fields: new Map() };
     }
     const boundary = multipartBoundary(contentType);
-    const modelField = location.in === "body" || location.in === "form" ? location.field : null;
+    const modelField = modelBodyField(operation);
     const wanted = new Set(["response_format", ...readingRules(description, operation).serviceModes.flatMap((field) => field.names), ...requestFormFields(operation)]);
     if (modelField !== null) wanted.add(modelField);
     let parsed: { fields: ReadonlyMap<string, readonly FieldValue[]>; form?: FormData };

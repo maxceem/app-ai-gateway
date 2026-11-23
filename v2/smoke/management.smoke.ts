@@ -12,6 +12,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { after, before, test } from "node:test";
 
 const base = process.env.V2_BASE_URL ?? "";
@@ -121,11 +122,22 @@ test("the app's first request, as the gateway writes it, is served", { skip }, a
   assert.ok(String(chat.curl).includes("$APP_AI_GATEWAY_KEY"), "the curl does not read the key from APP_AI_GATEWAY_KEY");
   const response = await fetch(chat.url, {
     method: chat.method,
-    headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": "user-123" },
+    headers: { ...chat.headers, authorization: `Bearer ${appKey}` },
     body: JSON.stringify(chat.body),
   });
   assert.equal(response.status, 200);
   await response.text();
+
+  // The curl itself, run in a shell where curl is installed: it reads the key from the environment.
+  const curl = spawnSync("sh", ["-c", "command -v curl"]).stdout.toString().trim();
+  if (curl === "") return;
+  const ran = spawnSync("sh", ["-c", chat.curl], {
+    env: { PATH: process.env.PATH ?? "", APP_AI_GATEWAY_KEY: appKey } as Record<string, string> as NodeJS.ProcessEnv,
+    timeout: 30_000,
+  });
+  assert.equal(ran.status, 0, "the generated curl did not run");
+  const answered = JSON.parse(ran.stdout.toString()) as { choices?: unknown; error?: unknown };
+  assert.ok(answered.choices !== undefined && answered.error === undefined, "the generated curl was not served");
 });
 
 test("a header user shows in the user list after a call, with its usage", { skip }, async () => {

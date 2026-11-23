@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
-import { wellFormedText } from "../core/well-formed.ts";
+import { cloudflareIdProblem } from "../core/cloudflare-id.ts";
 import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
@@ -374,8 +374,16 @@ export function providerSecretAccepted(value: string): boolean {
 
 export const ProviderSecretSchema = SecretSchema.refine(providerSecretAccepted, { error: PROVIDER_SECRET_RULE });
 
-// Text with half a surrogate pair cannot go in a URL, so such an id could never have reached Cloudflare.
-const CloudflareIdSchema = z.string().trim().min(1).max(100).refine(wellFormedText, { error: "must be well-formed text" });
+// One plain path segment (`cloudflareIdProblem`): an id that would change the address once parsed is refused.
+const CloudflareIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .superRefine((value, context) => {
+    const problem = cloudflareIdProblem(value);
+    if (problem !== null) context.addIssue({ code: "custom", message: problem });
+  });
 
 /**
  * For Vercel AI Gateway: the serving providers a connection may use, pinned
@@ -689,8 +697,9 @@ export const ConversationFileQuerySchema = z.object({
 
 /**
  * One first request an app can send: to a provider route, one per API style
- * the route serves, or to a preset. Built by the gateway from the operation
- * descriptions, so the console and the CLI show the same request.
+ * the route serves (or per operation, for one with none), or to a preset.
+ * Built by the gateway from the operation descriptions, so the console and
+ * the CLI show the same request. No credential is ever part of it.
  */
 export const AppSnippetExampleSchema = z
   .object({
@@ -700,15 +709,28 @@ export const AppSnippetExampleSchema = z
     preset: z.string().optional(),
     /** The operation it is served as, such as `openai.chat`. */
     operation: z.string(),
-    style: z.string(),
+    /** The operation's API style; left out for an operation with none. */
+    style: z.string().optional(),
     method: z.string(),
     url: z.string(),
-    /** The model it names; null where it shows a placeholder, and for a preset, which names its own. */
+    /** The model it names; null for a preset, which names its own. */
     model: z.string().nullable(),
+    /** Headers that hold no secret. How the caller proves who it is comes apart: see `text`. */
+    headers: z.record(z.string(), z.string()),
     /** The JSON body, where the request sends one. */
     body: z.unknown().optional(),
-    /** The request as a curl command, for an app called with an app key. It reads the key from `$APP_AI_GATEWAY_KEY`, never holding one. */
+    /** A form's text fields, where the request is an upload. */
+    form: z.record(z.string(), z.string()).optional(),
+    /** The file it sends: as the form field `field`, or as the whole body when there is no field. */
+    file: z.object({ field: z.string().optional(), name: z.string(), type: z.string().optional() }).optional(),
+    /**
+     * The request as a curl command, for an app called with a key. It reads
+     * the credential from an environment variable and gives it to curl on
+     * stdin, never as an argument.
+     */
     curl: z.string().optional(),
+    /** The example as a person reads it: the curl command, or else the whole request described (method, URL, headers, body or upload). */
+    text: z.string(),
   })
   .meta({ id: "AppSnippetExample" });
 

@@ -144,6 +144,16 @@ test("app add writes only the settings its flags name: environments, verificatio
     },
   ]);
 
+  // A gateway from before the provider types: a bare slug says to name the operations.
+  const older = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path) => {
+    if (path === "/v2/admin/providers") return { providers: [PROVIDER] };
+    if (path === "/v2/admin/provider-types") throw new CliError("not_found", "Nothing is served at this path.", "", 3, { status: 404 });
+    return assert.fail("nothing is created");
+  });
+  assert.equal(older.json().error.code, "invalid_input");
+  assert.match(older.json().error.message, /does not list its provider types' operations/u);
+  assert.match(older.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
+
   const server = await run(["app", "add", "--type", "server", "--name", "Backend", "--verify-on", "every_request", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(server.json().error.code, "invalid_input");
   assert.match(server.json().error.message, /--verify-on/);

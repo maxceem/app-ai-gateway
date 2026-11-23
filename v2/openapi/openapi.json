@@ -3209,17 +3209,50 @@
               "null"
             ]
           },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "body": {},
+          "form": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "file": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
           "curl": {
+            "type": "string"
+          },
+          "text": {
             "type": "string"
           }
         },
         "required": [
           "operation",
-          "style",
           "method",
           "url",
-          "model"
+          "model",
+          "headers",
+          "text"
         ]
       },
       "PriceListResponse": {

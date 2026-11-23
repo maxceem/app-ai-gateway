@@ -414,6 +414,28 @@ export type ModelLocation<Part extends string = string> =
   /** The operation has one model, or none the request names. */
   | { readonly in: "fixed"; readonly model: string };
 
+/**
+ * How a request to an operation sends its body: its raw bytes for one that
+ * takes them (`rawBody`), a multipart form for an upload or a transcription,
+ * else JSON. What the proxy expects and what the app snippet writes.
+ */
+export function requestBodyKind(operation: Pick<OperationDescription, "rawBody" | "transport" | "style">): "json" | "form" | "raw" {
+  if (operation.rawBody === true) return "raw";
+  if (operation.transport === "upload" || operation.style === "openai-transcription") return "form";
+  return "json";
+}
+
+/**
+ * The body field or form field a request names its model in, or null when the
+ * model is in the path, the query, or fixed. A model the description places
+ * in the `body` is read from a form's field of that name too: the proxy
+ * (`requestBody` in `../proxy/serve.ts`) and the app snippet read it here.
+ */
+export function modelBodyField(operation: Pick<OperationDescription, "model">): string | null {
+  const location = operation.model;
+  return location.in === "body" || location.in === "form" ? location.field : null;
+}
+
 /** The upstream request, when it differs from the gateway path or the provider's main host. */
 export interface Upstream<Path extends string = string> {
   /** A key of the provider's `hosts`. */

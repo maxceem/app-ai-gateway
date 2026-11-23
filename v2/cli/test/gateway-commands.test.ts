@@ -561,6 +561,47 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
   assert.equal(fake.asked.some((entry) => entry.method === "POST"), false);
 });
 
+test("app snippet shows an iOS app's whole requests by default, and provider types their operations", async () => {
+  const snippet = cliTool(
+    "get_app_snippet",
+    { command: "app snippet", args: ["app"], view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"] } },
+    { properties: { app: { type: "string" } }, required: ["app"] },
+  );
+  const types = cliTool("list_provider_types", {
+    command: "provider types",
+    view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"] },
+  });
+  const request = [
+    "POST https://gw.example/v2/apps/app_1/proxy/openai/v1/chat/completions",
+    "Content-Type: application/json",
+    "(The Swift SDK adds the gateway token and the App Attest proof.)",
+    "",
+    '{\n  "model": "gpt-4o-mini"\n}',
+  ].join("\n");
+  const operations = ["openai.chat", "openai.responses", "openai.transcription", "openai.images", "openai.images.edits", "openai.embeddings", "openai.speech"];
+  const fake = gateway({
+    tools: [snippet, types],
+    answer: (tool) =>
+      tool === "get_app_snippet"
+        ? {
+            app_id: "app_1",
+            base_url: "https://gw.example",
+            examples: [{ provider: "openai", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gw.example/v2/apps/app_1/proxy/openai/v1/chat/completions", model: "gpt-4o-mini", headers: {}, text: request }],
+            notes: ["This iOS app signs every request with App Attest."],
+          }
+        : { types: [{ type: "openai", label: "OpenAI", styles: [], operations, cloudflareGateway: true, custom: false }] },
+  });
+  const shown = await run(["app", "snippet", "app_1"], fake);
+  assert.equal(shown.code, 0, shown.err);
+  // The whole request, line by line, as the gateway wrote it.
+  assert.ok(shown.out.includes(`\n\n${request.replace('{\n  "model"', '{\n  "model"')}\n`), shown.out);
+  assert.match(shown.out, /- This iOS app signs every request with App Attest\./u);
+  const listed = await run(["provider", "types"], fake);
+  assert.equal(listed.code, 0, listed.err);
+  // The last column is shown whole.
+  assert.ok(listed.out.includes(operations.join(", ")), listed.out);
+});
+
 test("everything the gateway says is cleaned of control characters before a terminal sees it", () => {
   const hostile = "Name\u001b[2J\u001b]8;;https://evil\u0007 ‮evil\u009b31m";
   assert.equal(clean(hostile).includes("\u001b"), false);

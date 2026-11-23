@@ -355,7 +355,8 @@ describe("AppDetailPage", () => {
   });
 
   it("shows the first requests the gateway builds for the app, each ready to copy, with its notes", async () => {
-    const curl = "curl 'https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions' \\\n  -H \"Authorization: Bearer $APP_AI_GATEWAY_KEY\"";
+    const curl = "printf 'header = \"Authorization: Bearer %s\"\\n' \"$APP_AI_GATEWAY_KEY\" | curl --config - 'https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions'";
+    const described = 'POST https://gateway.test/v2/apps/my-app/presets/support\nContent-Type: application/json\n(The Swift SDK adds the gateway token and the App Attest proof.)\n\n{\n  "messages": []\n}';
     stub({
       ...CHECK,
       [`GET ${APP_URL}/snippet`]: {
@@ -363,8 +364,18 @@ describe("AppDetailPage", () => {
           app_id: "my-app",
           base_url: "https://gateway.test",
           examples: [
-            { provider: "openai", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions", model: "gpt-4o-mini", curl },
-            { preset: "support", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gateway.test/v2/apps/my-app/presets/support", model: null, body: { messages: [] } },
+            { provider: "openai", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions", model: "gpt-4o-mini", headers: {}, curl, text: curl },
+            {
+              preset: "support",
+              operation: "openai.chat",
+              style: "openai-chat",
+              method: "POST",
+              url: "https://gateway.test/v2/apps/my-app/presets/support",
+              model: null,
+              headers: { "Content-Type": "application/json" },
+              body: { messages: [] },
+              text: described,
+            },
           ],
           notes: ["Set APP_AI_GATEWAY_KEY to one of this app's keys."],
         },
@@ -376,9 +387,9 @@ describe("AppDetailPage", () => {
     const chat = await screen.findByRole("region", { name: "openai openai-chat" });
     expect(within(chat).getByText(/gpt-4o-mini/u)).toBeTruthy();
     expect(chat.querySelector("pre")!.textContent).toBe(curl);
-    // Without curl, the request itself: its method, address and body.
+    // Without curl, the whole request as the gateway described it.
     const preset = screen.getByRole("region", { name: "Preset support openai-chat" });
-    expect(preset.querySelector("pre")!.textContent).toBe('POST https://gateway.test/v2/apps/my-app/presets/support\n{\n  "messages": []\n}');
+    expect(preset.querySelector("pre")!.textContent).toBe(described);
     expect(screen.getByText("Set APP_AI_GATEWAY_KEY to one of this app's keys.")).toBeTruthy();
     await userEvent.click(within(chat).getByRole("button", { name: "Copy the openai-chat request" }));
     expect(writeText).toHaveBeenCalledWith(curl);
