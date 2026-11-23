@@ -61,6 +61,9 @@ const GATEWAY_TOKEN_VARIABLE = "APP_AI_GATEWAY_TOKEN";
 
 const SWIFT_SDK = "https://github.com/maxceem/app-ai-gateway-swift";
 
+/** The app version an example names, where the gateway requires one: a request sent with a gateway token. */
+const APP_VERSION = "1.0";
+
 /**
  * The well-known requests an example is written for, by API style: the body
  * without its model (`form` for an upload with the recording), the kind of
@@ -221,13 +224,23 @@ function callerOf(
   config: AppConfig,
   base: string,
   appId: string,
-): { credential: SnippetCredential | null; exchange?: TokenExchange; line: string; endUser: Record<string, string>; notes: string[] } {
+): {
+  credential: SnippetCredential | null;
+  exchange?: TokenExchange;
+  line: string;
+  endUser: Record<string, string>;
+  /** Headers the gateway requires of this kind of caller, besides its credential. */
+  required: Record<string, string>;
+  notes: string[];
+} {
   const authentication = config.authentication;
   if (authentication.type === "apple_app_attest") {
     return {
       credential: null,
       line: "(The Swift SDK adds the gateway token and the App Attest proof.)",
       endUser: {},
+      // A request with a gateway token names the app's version (`X-App-Version`).
+      required: { "X-App-Version": APP_VERSION },
       notes: [
         `This iOS app signs every request with App Attest, which curl cannot do. Send these requests from the app with the Swift SDK, which comes with Swift examples: ${SWIFT_SDK}`,
       ],
@@ -240,6 +253,8 @@ function callerOf(
       exchange: { url: `${base}/v2/apps/${appId}/auth/token`, keyVariable: APP_KEY_VARIABLE, tokenVariable: ISSUER_TOKEN_VARIABLE, into: GATEWAY_TOKEN_VARIABLE },
       line: "Authorization: Bearer <a gateway token, exchanged for an app key and the user's token>",
       endUser: {},
+      // A request with a gateway token names the app's version (`X-App-Version`).
+      required: { "X-App-Version": APP_VERSION },
       notes: [
         `This app's users sign in with their own issuer. Set ${APP_KEY_VARIABLE} to an app key and ${ISSUER_TOKEN_VARIABLE} to the user's token: each example first exchanges them for a gateway token, which it never prints.`,
       ],
@@ -255,6 +270,7 @@ function callerOf(
     credential: { header: "Authorization", scheme: "Bearer", variable: APP_KEY_VARIABLE },
     line: `Authorization: Bearer <an app key, from ${APP_KEY_VARIABLE}>`,
     endUser: headers,
+    required: {},
     notes,
   };
 }
@@ -309,7 +325,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
       notes.push(`${who} has no example: this app names its end user in ${clash}, a header the request itself must send.`);
       return;
     }
-    const request: SnippetRequest = { ...built, headers: { ...caller.endUser, ...built.headers } };
+    const request: SnippetRequest = { ...built, headers: { ...caller.endUser, ...caller.required, ...built.headers } };
     if (holdsControl([example.model, request.url, request.headers, request.body, request.form])) {
       notes.push(`${who} has no example: a value it would send holds a control or invisible character, such as a line break or a zero-width joiner.`);
       return;

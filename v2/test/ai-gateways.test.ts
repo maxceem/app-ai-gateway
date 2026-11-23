@@ -409,8 +409,12 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
       expect(created.status, accountId).toBe(400);
       expect(JSON.stringify(created.body), accountId).toContain("cloudflareGateway.accountId");
     }
-    const tested = await admin(key, "POST", "/v2/admin/providers/test", { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "..", token: CF_TOKEN } });
-    expect(tested.status).toBe(400);
+    // The key test names no stored connection: ids that cannot be saved cannot be tested either.
+    for (const gatewayId of ["..", "a/b", "%2e%2e"]) {
+      const tested = await admin(key, "POST", "/v2/admin/providers/test", { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId, token: CF_TOKEN } });
+      expect(tested.status, gatewayId).toBe(400);
+      expect(JSON.stringify(tested.body), gatewayId).toContain("cloudflareGateway.gatewayId");
+    }
     const made = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } });
     const moved = await admin(key, "PUT", `/v2/admin/providers/${made.body.provider.id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "." } });
     expect(moved.status).toBe(400);

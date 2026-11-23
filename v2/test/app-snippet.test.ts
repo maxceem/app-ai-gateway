@@ -5,6 +5,7 @@
  * generated requests are sent through the proxy, as an app would send them.
  */
 import { env } from "cloudflare:workers";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
@@ -479,6 +480,7 @@ describe("first requests for an app", () => {
     expect(chat!.text).toBe(
       [
         `POST ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
+        "X-App-Version: 1.0",
         "Content-Type: application/json",
         "(The Swift SDK adds the gateway token and the App Attest proof.)",
         "",
@@ -507,6 +509,55 @@ describe("first requests for an app", () => {
     ]);
     expect(curl).toContain(`printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_TOKEN" | curl --disable --config - `);
     expect(notes[0]).not.toContain("curl");
+  });
+
+  it("runs an issuer app's example through the Worker: the exchange gives a token, and the request with X-App-Version is served", async () => {
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    const jwk = { ...(await exportJWK(pair.publicKey)), kid: "snippet", alg: "RS256" };
+    const now = Math.floor(Date.now() / 1000);
+    const userToken = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "snippet" })
+      .setIssuer("https://issuer.example.com")
+      .setAudience("snippet")
+      .setSubject("user-1")
+      .setIssuedAt(now)
+      .setExpirationTime(now + 300)
+      .sign(pair.privateKey);
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const issuer = { jwks_url: "https://issuer.example.com/jwks", issuer: ["https://issuer.example.com"], audience: ["snippet"], user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 3600 };
+    const { appId, appKey, examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"] } } },
+    });
+    const [chat] = examples;
+    expect(chat!.headers).toMatchObject({ "X-App-Version": "1.0" });
+    const exchangeUrl = `${ORIGIN}/v2/apps/${appId}/auth/token`;
+    expect(chat!.text).toContain(`'${exchangeUrl}'`);
+
+    // The issuer's keys, then the provider's answer.
+    fetchSpy.mockImplementation(async (input) =>
+      String(input) === issuer.jwks_url ? Response.json({ keys: [jwk] }) : Response.json({ id: "c1", choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }),
+    );
+    const exchanged = await call(
+      new Request(exchangeUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: appKey, issuer_token: userToken }) }),
+    );
+    expect(exchanged.status, exchanged.text).toBe(200);
+    const { access_token: token } = JSON.parse(exchanged.text) as { access_token: string };
+    const served = await call(
+      new Request(chat!.url, { method: chat!.method, headers: { ...chat!.headers, authorization: `Bearer ${token}` }, body: JSON.stringify(chat!.body) }),
+    );
+    expect(served.status, served.text).toBe(200);
+  });
+
+  it("names the app's version in an iOS app's request, as the gateway requires of a gateway token", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.version" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"] } } },
+    });
+    expect(examples[0]!.text).toContain("\nX-App-Version: 1.0\n");
   });
 
   it("answers app_not_found for another account's real app, and for one that does not exist", async () => {

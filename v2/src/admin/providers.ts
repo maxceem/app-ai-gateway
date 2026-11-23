@@ -1127,6 +1127,8 @@ export async function testProvider(c: AdminContext): Promise<Response> {
   assertFieldsFit(body.type, body);
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
+  // A test names no stored connection, so its ids are judged as new ones: what cannot be saved is not tested.
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   checkDestination(description, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   // The probe is built as a live request would be: same host, same credentials.
