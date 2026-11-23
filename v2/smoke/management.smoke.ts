@@ -12,6 +12,7 @@
  * when V2_MANAGEMENT_KEY or V2_MOCK_URL is not set.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { after, before, test } from "node:test";
 
 const base = process.env.V2_BASE_URL ?? "";
@@ -63,6 +64,14 @@ test("the price list names priced models", { skip }, async () => {
   assert.equal(typeof prices.body.prices.openai["gpt-4o-mini"].input, "number");
 });
 
+test("the provider types name their API styles, and the custom type", { skip }, async () => {
+  const listed = await admin("GET", "/v2/admin/provider-types");
+  assert.equal(listed.status, 200);
+  const openai = listed.body.types.find((entry: { type: string }) => entry.type === "openai");
+  assert.ok(openai?.styles.includes("openai-chat"), "openai does not list the openai-chat style");
+  assert.equal(listed.body.types.at(-1)?.type, "custom");
+});
+
 test("a key test reports a good key, a rejected one, and stores nothing", { skip }, async () => {
   const good = await admin("POST", "/v2/admin/providers/test", { type: "openai", secret: "sk-mock-smoke-key", baseUrl: mockUrl });
   assert.deepEqual(good, { status: 200, body: { validated: true } });
@@ -100,6 +109,35 @@ test("a draft is validated, created, patched and checked", { skip }, async () =>
   assert.equal(checked.status, 200);
   assert.equal(checked.body.ready, true);
   assert.deepEqual(checked.body.providers, [{ id: providerId, slug, status: "active" }]);
+});
+
+test("the app's first request, as the gateway writes it, is served", { skip }, async () => {
+  assert.notEqual(appId, "", "the app is created by the test before");
+  const snippet = await admin("GET", `/v2/admin/apps/${appId}/snippet`);
+  assert.equal(snippet.status, 200);
+  // Never the app's key: only the variable it is read from.
+  assert.ok(!JSON.stringify(snippet.body).includes(appKey), "the snippet holds the app key");
+  const [chat] = snippet.body.examples;
+  assert.equal(chat?.operation, "openai.chat");
+  assert.ok(String(chat.text).includes("$APP_AI_GATEWAY_KEY"), "the curl does not read the key from APP_AI_GATEWAY_KEY");
+  const response = await fetch(chat.url, {
+    method: chat.method,
+    headers: { ...chat.headers, authorization: `Bearer ${appKey}` },
+    body: JSON.stringify(chat.body),
+  });
+  assert.equal(response.status, 200);
+  await response.text();
+
+  // The curl itself, run in a shell where curl is installed: it reads the key from the environment.
+  const curl = spawnSync("sh", ["-c", "command -v curl"]).stdout.toString().trim();
+  if (curl === "") return;
+  const ran = spawnSync("sh", ["-c", chat.text], {
+    env: { PATH: process.env.PATH ?? "", APP_AI_GATEWAY_KEY: appKey } as Record<string, string> as NodeJS.ProcessEnv,
+    timeout: 30_000,
+  });
+  assert.equal(ran.status, 0, "the generated curl did not run");
+  const answered = JSON.parse(ran.stdout.toString()) as { choices?: unknown; error?: unknown };
+  assert.ok(answered.choices !== undefined && answered.error === undefined, "the generated curl was not served");
 });
 
 test("a header user shows in the user list after a call, with its usage", { skip }, async () => {

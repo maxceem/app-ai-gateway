@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { upstreamOrigin, type ConnectionRecord } from "../src/providers/connections.ts";
-import { cloudflareGatewayOrigin, destinationText, keyDestinations, wellFormedText } from "../src/providers/destinations.ts";
+import { cloudflareGatewayOrigin, cloudflareGatewayPath, cloudflareIdProblem, destinationText, keyDestinations } from "../src/providers/destinations.ts";
 
 const record = (type: string, baseUrl: string | null) => ({ type, baseUrl, cloudflareGateway: null }) as unknown as ConnectionRecord;
 
@@ -35,10 +35,22 @@ describe("key destinations", () => {
     expect(keyDestinations(null, { baseUrl: "https://llm.example.com/v1/", cloudflareGateway: null })).toEqual(["https://llm.example.com/v1/"]);
   });
 
-  it("lead nowhere, without throwing, for Cloudflare ids that are not well-formed text", () => {
-    expect(wellFormedText("acct")).toBe(true);
-    expect(wellFormedText("acct\uD800")).toBe(false);
-    expect(wellFormedText("\uD83D\uDE00")).toBe(true);
+  it("take as a Cloudflare id only one plain path segment, so the address cannot move once parsed", () => {
+    for (const id of ["0123456789abcdef0123456789abcdef", "my-gateway", "gw_1.prod~2"]) expect(cloudflareIdProblem(id), id).toBeNull();
+    expect(cloudflareIdProblem(".")).toBe("cannot be . or ..");
+    expect(cloudflareIdProblem("..")).toBe("cannot be . or ..");
+    for (const id of ["a/b", "%2e%2e", "%2F", "acct 1", "gw?x", "gw#x", "acct\uD800", "ü"]) expect(cloudflareIdProblem(id), id).not.toBeNull();
+  });
+
+  it("lead nowhere for ids a URL parser would read as a folder, and keep every other stored id inside its segment", () => {
+    for (const gatewayId of [".", ".."]) {
+      expect(cloudflareGatewayPath({ accountId: "acct", gatewayId })).toBeNull();
+      expect(keyDestinations(BUILT_IN_PROVIDERS.openai!, { baseUrl: null, cloudflareGateway: { accountId: "acct", gatewayId } })).toEqual([]);
+    }
     expect(keyDestinations(BUILT_IN_PROVIDERS.openai!, { baseUrl: null, cloudflareGateway: { accountId: "acct\uDC00", gatewayId: "gw" } })).toEqual([]);
+    // Stored before the rule: encoded, so it stays one segment, and the address parses back to itself.
+    const path = cloudflareGatewayPath({ accountId: "acct 1", gatewayId: "a/../b" })!;
+    expect(path).toBe("v1/acct%201/a%2F..%2Fb/");
+    expect(new URL(path, "https://gateway.ai.cloudflare.com/").pathname).toBe(`/${path}`);
   });
 });

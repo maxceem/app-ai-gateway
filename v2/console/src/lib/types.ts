@@ -35,6 +35,7 @@ export type DeviceDetails = OperationResponse<"getDeviceRequest">;
 export type App = OperationResponse<"getApp">["app"];
 export type AppConfig = App["config"];
 export type AppCheck = OperationResponse<"checkApp">;
+export type AppSnippetExample = OperationResponse<"getAppSnippet">["examples"][number];
 export type AppKey = OperationResponse<"listAppKeys">["keys"][number];
 export type CreatedApp = OperationResponse<"createApp">;
 export type CreatedAppKey = OperationResponse<"createAppKey">;

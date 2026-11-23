@@ -32,9 +32,11 @@ import { isSecretFieldName, type ResultPath } from "./secret-fields.ts";
 export const MCP_READ_OPERATIONS = [
   "getAdminSession",
   "listModelPrices",
+  "listProviderTypes",
   "listProviders",
   "listApps",
   "getApp",
+  "getAppSnippet",
   "validateApp",
   "validateAppDraft",
   "checkApp",
@@ -424,6 +426,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
     },
   }),
   tool({
+    name: "list_provider_types",
+    title: "List provider types",
+    description:
+      "Returns every provider type a connection can be added for: its label, the API styles its operations speak, the names of its operations (which an app's routing allows), whether it may go through Cloudflare AI Gateway, and whether it is the custom type. Use it to choose a type before adding a provider connection, or an operation before allowing one in an app. A custom provider needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+    operation: "listProviderTypes",
+    cli: {
+      command: "provider types",
+      view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"], wide: ["operations"] },
+    },
+    summary: ({ types }) => `${plural(types.length, "provider type")}: ${listed(types.map((entry) => entry.type), 30)}.`,
+  }),
+  tool({
     name: "list_providers",
     title: "List provider connections",
     description:
@@ -496,6 +510,23 @@ export const MCP_TOOLS: readonly McpTool[] = [
       },
     },
     summary: ({ app }) => `App "${app.name}" (${app.id}) is ${app.status}, at revision ${app.revision}.`,
+  }),
+  tool({
+    name: "get_app_snippet",
+    title: "Get first requests for an app",
+    description:
+      "Returns example requests the app can send today, built by the gateway from its routes and presets: one per API style each provider route serves, and one per preset, each with its URL, headers, model and body or upload, and a model serving admits. An app called with an app key gets each as a curl command that reads the key from $APP_AI_GATEWAY_KEY and gives it to curl on stdin; no key is ever in the answer or in a command's arguments. An iOS app gets each request described in full: it signs them with App Attest through the Swift SDK. Use it to show someone how to make an app's first call.",
+    operation: "getAppSnippet",
+    cli: {
+      command: "app snippet",
+      summary: "Show first requests for an app, as curl where it can send them",
+      args: ["app"],
+      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"], blockTitle: ["provider", "preset", "operation", "model"] },
+    },
+    summary: ({ app_id, examples }) =>
+      examples.length === 0
+        ? `No example requests for app ${app_id} yet; the notes say why.`
+        : `${plural(examples.length, "example request")} for app ${app_id}: ${listed(examples.map((example) => `${example.provider ?? `preset ${example.preset}`} ${example.style ?? example.operation}`))}.`,
   }),
   {
     name: "validate_app",
@@ -741,7 +772,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_provider",
     title: "Add a provider connection",
     description:
-      "Opens adding a provider connection, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes everything list_providers shows but the key: type, name, and optionally slug, baseUrl and pricing. They are checked now, and nothing is created until the person approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
+      "Opens adding a provider connection, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes everything list_providers shows but the key: type, name, and optionally slug, baseUrl, pricing and cloudflareGateway. cloudflareGateway names a Cloudflare AI Gateway (accountId and gatewayId) to send the connection through: the person enters its token on the page, and the provider key is then optional. They are checked now, and nothing is created until the person approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
     operations: ["openProviderHandoff"],
     input: CATALOG.openProviderHandoff.request,
     annotations: writes({ destructive: false, idempotent: false }),

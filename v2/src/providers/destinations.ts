@@ -8,11 +8,11 @@
  * with no Worker code, so the console can import them.
  */
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
-import { wellFormedText } from "../core/well-formed.ts";
+import { cloudflareIdProblem, cloudflareIdUsable } from "../core/cloudflare-id.ts";
 import type { ProviderDescription } from "./operation.ts";
 import { normalizePath, type PathRefusal } from "./path.ts";
 
-export { wellFormedText };
+export { cloudflareIdProblem };
 
 /** Cloudflare AI Gateway's own origin. */
 export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
@@ -32,9 +32,28 @@ export function cloudflareOrigin(): string {
   return moved.endsWith("/") ? moved : `${moved}/`;
 }
 
-/** The origin and path every request through one Cloudflare AI Gateway goes under. */
-export function cloudflareGatewayOrigin(gateway: { readonly accountId: string; readonly gatewayId: string }): string {
-  return `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
+/**
+ * The path every request through one Cloudflare AI Gateway goes under,
+ * `v1/<account>/<gateway>/`, each id encoded as one path segment. The one
+ * place the ids become part of an address, for what is shown and what is
+ * sent alike.
+ *
+ * Saving takes only plain segments (`cloudflareIdProblem`), which encoding
+ * leaves as they are. An id stored before that rule is still encoded, so
+ * `/` or `%` stay inside its segment and it keeps working; but `.` and `..`
+ * survive encoding and a URL parser reads them as "this folder" and "the
+ * folder above", so such ids lead nowhere: null.
+ */
+export function cloudflareGatewayPath(gateway: { readonly accountId: string; readonly gatewayId: string }): string | null {
+  const segments = [gateway.accountId, gateway.gatewayId];
+  if (!segments.every(cloudflareIdUsable)) return null;
+  return `v1/${segments.map(encodeURIComponent).join("/")}/`;
+}
+
+/** The origin and path every request through one Cloudflare AI Gateway goes under, or null for ids that lead nowhere. */
+export function cloudflareGatewayOrigin(gateway: { readonly accountId: string; readonly gatewayId: string }): string | null {
+  const path = cloudflareGatewayPath(gateway);
+  return path === null ? null : `${cloudflareOrigin()}${path}`;
 }
 
 /** A connection's settings that decide where its requests go. */
@@ -77,10 +96,9 @@ export function directOrigin(setting: Pick<RouteSetting, "baseUrl">, description
  */
 export function keyDestinations(description: ProviderDescription | null, setting: RouteSetting): string[] {
   if (setting.cloudflareGateway !== null) {
-    const { accountId, gatewayId } = setting.cloudflareGateway;
-    // Ids that cannot be put in a URL lead nowhere.
-    if (!wellFormedText(accountId) || !wellFormedText(gatewayId)) return [];
-    return [cloudflareGatewayOrigin(setting.cloudflareGateway)];
+    // Ids that would change the address once parsed lead nowhere.
+    const origin = cloudflareGatewayOrigin(setting.cloudflareGateway);
+    return origin === null ? [] : [origin];
   }
   if (description === null) return setting.baseUrl === null ? [] : [setting.baseUrl];
   const origins = new Set<string>();

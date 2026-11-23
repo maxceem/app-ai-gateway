@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
-import { wellFormedText } from "../core/well-formed.ts";
+import { cloudflareIdUsable } from "../core/cloudflare-id.ts";
 import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
@@ -374,8 +374,18 @@ export function providerSecretAccepted(value: string): boolean {
 
 export const ProviderSecretSchema = SecretSchema.refine(providerSecretAccepted, { error: PROVIDER_SECRET_RULE });
 
-// Text with half a surrogate pair cannot go in a URL, so such an id could never have reached Cloudflare.
-const CloudflareIdSchema = z.string().trim().min(1).max(100).refine(wellFormedText, { error: "must be well-formed text" });
+/**
+ * An id that can stand in an address at all (`cloudflareIdUsable`): never `.`
+ * or `..`. A new or changed id must also be one plain path segment, which the
+ * gateway judges against the stored one (`checkCloudflareIds` in
+ * `src/admin/providers.ts`), so an older connection's id keeps saving.
+ */
+const CloudflareIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine(cloudflareIdUsable, { error: "cannot be . or .., or text that is not well-formed" });
 
 /**
  * For Vercel AI Gateway: the serving providers a connection may use, pinned
@@ -395,6 +405,9 @@ const ServingProvidersSchema = z
 const CloudflareGatewayInputSchema = z
   .object({ accountId: CloudflareIdSchema, gatewayId: CloudflareIdSchema, token: ProviderSecretSchema })
   .strict();
+
+/** A Cloudflare AI Gateway setting without its token: for a request a person completes, entering the token themselves. */
+export const CloudflareGatewayIdsSchema = CloudflareGatewayInputSchema.omit({ token: true }).strict();
 
 export const ProviderCreateRequestSchema = z
   .object({
@@ -684,10 +697,93 @@ export const ConversationFileQuerySchema = z.object({
   name: z.string().meta({ description: "A file name from the listing, or a media name a record gives, `<YYYY-MM-DD>/media/<sha256>.<ext>`." }),
 });
 
+/**
+ * One first request an app can send: to a provider route, one per API style
+ * of a small set of well-known requests the route serves, or to a preset.
+ * Anything else gets a note in the answer instead. Built by the gateway from
+ * the operation descriptions, so the console and the CLI show the same
+ * request. No credential is ever part of it.
+ */
+export const AppSnippetExampleSchema = z
+  .object({
+    /** The provider connection's slug, for a request to a provider route. */
+    provider: z.string().optional(),
+    /** The preset's slug, for a request to a preset. */
+    preset: z.string().optional(),
+    /** The operation it is served as, such as `openai.chat`. */
+    operation: z.string(),
+    /** The operation's API style, such as `openai-chat`. */
+    style: z.string(),
+    method: z.string(),
+    url: z.string(),
+    /** The model it names; null for a preset, which names its own. */
+    model: z.string().nullable(),
+    /**
+     * Set when the model is the app's own rather than a sample known to work
+     * here, such as "works if <model> supports this endpoint". Plain text to
+     * show beside the example, never part of `text`; the notes repeat it.
+     */
+    caveat: z.string().optional(),
+    /** Headers that hold no secret. How the caller proves who it is comes apart: see `text`. */
+    headers: z.record(z.string(), z.string()),
+    /** The JSON body, where the request sends one. */
+    body: z.unknown().optional(),
+    /** A form's text fields, where the request is an upload. */
+    form: z.record(z.string(), z.string()).optional(),
+    /** The file an upload sends, as the form field `field`. */
+    file: z.object({ field: z.string(), name: z.string() }).optional(),
+    /**
+     * The example as a person copies it. For an app called with a key, a
+     * curl command that reads the credential from an environment variable
+     * and gives it to curl on stdin, never as an argument, and never prints
+     * it. For an iOS app, the whole request described: method, URL, headers,
+     * body or upload.
+     */
+    text: z.string(),
+  })
+  .meta({ id: "AppSnippetExample" });
+
+export const AppSnippetResponseSchema = z
+  .object({
+    app_id: z.string(),
+    /** The address the examples call: the one this request reached. */
+    base_url: z.string(),
+    examples: z.array(AppSnippetExampleSchema),
+    /** What to know before sending them, such as how this app's users sign in, or why a route has no example. */
+    notes: z.array(z.string()),
+  })
+  .meta({ id: "AppSnippetResponse" });
+
 /** The price file as it is: dollars per million units, keyed by provider type and model. */
 export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })
   .meta({ id: "PriceListResponse" });
+
+/**
+ * A provider type a connection can be added for: what the console and the CLI
+ * call it, and the API styles its operations speak, read from its provider
+ * description. A custom provider speaks the styles its listed paths name.
+ */
+export const ProviderTypeSchema = z
+  .object({
+    type: z.string(),
+    label: z.string(),
+    /** The API styles of its operations, in the order it declares them. */
+    styles: z.array(z.string()),
+    /**
+     * The names of its operations, which an app's routing allows, in the order
+     * it declares them. A custom provider's are one per API style its paths
+     * may name. Optional: a gateway from before it leaves it out.
+     */
+    operations: z.array(z.string()).optional(),
+    /** Whether a connection of this type may go through Cloudflare AI Gateway. */
+    cloudflareGateway: z.boolean(),
+    /** A custom provider: it needs `baseUrl` and `auth`, and speaks the styles its paths name. */
+    custom: z.boolean(),
+  })
+  .meta({ id: "ProviderType" });
+
+export const ProviderTypeListResponseSchema = z.object({ types: z.array(ProviderTypeSchema) }).meta({ id: "ProviderTypeListResponse" });
 
 export const ProviderTestRequestSchema = z
   .object({

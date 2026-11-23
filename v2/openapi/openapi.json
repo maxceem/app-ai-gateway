@@ -3153,6 +3153,107 @@
           "next_cursor"
         ]
       },
+      "AppSnippetResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppSnippetExample"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "app_id",
+          "base_url",
+          "examples",
+          "notes"
+        ]
+      },
+      "AppSnippetExample": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caveat": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "body": {},
+          "form": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "file": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "name"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "style",
+          "method",
+          "url",
+          "model",
+          "headers",
+          "text"
+        ]
+      },
       "PriceListResponse": {
         "type": "object",
         "properties": {
@@ -3169,6 +3270,56 @@
         },
         "required": [
           "prices"
+        ]
+      },
+      "ProviderTypeListResponse": {
+        "type": "object",
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderType"
+            }
+          }
+        },
+        "required": [
+          "types"
+        ]
+      },
+      "ProviderType": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "styles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cloudflareGateway": {
+            "type": "boolean"
+          },
+          "custom": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "label",
+          "styles",
+          "cloudflareGateway",
+          "custom"
         ]
       },
       "ProviderListResponse": {
@@ -5467,6 +5618,26 @@
               },
               "additionalProperties": false
             }
+          },
+          "cloudflareGateway": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -5873,6 +6044,24 @@
                   },
                   "document": {
                     "type": "string"
+                  },
+                  "blocks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "blockTitle": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "wide": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -6687,6 +6876,21 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "cloudflareGateway": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  },
+                  "gatewayId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "gatewayId"
                 ]
               }
             },
@@ -10570,6 +10774,88 @@
         }
       }
     },
+    "/v2/admin/apps/{app}/snippet": {
+      "get": {
+        "tags": [
+          "Admin apps"
+        ],
+        "operationId": "getAppSnippet",
+        "summary": "Get first requests for an app",
+        "description": "Example requests the app can send today, built from its routes and presets and the operation descriptions: one per API style each provider route serves, and one per preset. An app called with an app key gets each as a curl command that reads the key from `$APP_AI_GATEWAY_KEY`; it never holds a key. An iOS app signs every request with App Attest, which curl cannot do: it gets the requests without curl, and the Swift SDK comes with Swift examples.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The example requests, and notes on sending them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSnippetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/admin/prices": {
       "get": {
         "tags": [
@@ -10593,6 +10879,76 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PriceListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/provider-types": {
+      "get": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "listProviderTypes",
+        "summary": "List provider types",
+        "description": "Every provider type a connection can be added for, with the API styles its operations speak, read from the provider descriptions this deployment runs. `custom` is a provider the gateway does not know: it needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider types, built-in ones by label, then custom.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTypeListResponse"
                 }
               }
             }
@@ -13256,11 +13612,15 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "cloudflareToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   }
                 },
                 "required": [
-                  "proof",
-                  "secret"
+                  "proof"
                 ],
                 "additionalProperties": false
               }

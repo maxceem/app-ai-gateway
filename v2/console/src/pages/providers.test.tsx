@@ -1118,6 +1118,24 @@ describe("a typed key stays with where it was typed for", () => {
     expect(token().value).toBe("");
   });
 
+  it("rotates the Cloudflare token of an older connection whose account id holds a space, keeping its ids as stored", async () => {
+    const older = { ...PROVIDER, secretHint: null, cloudflareGateway: { accountId: "acct 1", gatewayId: "gw", tokenHint: "abcd" } };
+    const fetchMock = stub([older]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    // The stored id is not judged again: no problem beside it.
+    expect(screen.queryByText(/This ID may hold only/u)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-rotated-0123456789");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toMatchObject({
+        cloudflareGateway: { accountId: "acct 1", gatewayId: "gw", token: "cf-token-rotated-0123456789" },
+      }),
+    );
+  });
+
   it("asks for the provider's key, naming where it goes, before going direct again", async () => {
     const fetchMock = stub([{ ...PROVIDER, secretHint: null, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } }]);
     renderAuthenticated(<ProvidersPage />);
@@ -1228,7 +1246,7 @@ describe("a typed key stays with where it was typed for", () => {
     await userEvent.paste("gw");
     await userEvent.click(screen.getByLabelText(/cloudflare token/i));
     await userEvent.paste("cf-token-0123456789");
-    expect(screen.getByText(/use plain text: this has a character that cannot be sent/i)).toBeTruthy();
+    expect(screen.getByText("This ID may hold only letters, digits, -, _, . and ~.")).toBeTruthy();
     expect((screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

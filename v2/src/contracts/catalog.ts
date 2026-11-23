@@ -23,6 +23,7 @@ import {
   AppResponseSchema,
   AppUpdateRequestSchema,
   AppCheckResponseSchema,
+  AppSnippetResponseSchema,
   AppDraftValidateResponseSchema,
   AppPatchRequestSchema,
   AppValidateRequestSchema,
@@ -40,6 +41,7 @@ import {
   EndUserQuerySchema,
   EndUserResponseSchema,
   PriceListResponseSchema,
+  ProviderTypeListResponseSchema,
   ProviderCreateRequestSchema,
   ProviderDeleteResponseSchema,
   ProviderListResponseSchema,
@@ -564,6 +566,20 @@ export const CATALOG = {
     errors: ADMIN_ERRORS,
   },
 
+  getAppSnippet: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/snippet",
+    params: APP_PARAM,
+    tags: ["Admin apps"],
+    summary: "Get first requests for an app",
+    description:
+      "Example requests the app can send today, built from its routes and presets and the operation descriptions: one per API style each provider route serves, and one per preset. An app called with an app key gets each as a curl command that reads the key from `$APP_AI_GATEWAY_KEY`; it never holds a key. An iOS app signs every request with App Attest, which curl cannot do: it gets the requests without curl, and the Swift SDK comes with Swift examples.",
+    security: "management",
+    response: AppSnippetResponseSchema,
+    responseDescription: "The example requests, and notes on sending them.",
+    errors: ADMIN_ERRORS,
+  },
+
   listModelPrices: {
     method: "GET",
     path: "/v2/admin/prices",
@@ -574,6 +590,19 @@ export const CATALOG = {
     security: "management",
     response: PriceListResponseSchema,
     responseDescription: "The price list this deployment bills with.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listProviderTypes: {
+    method: "GET",
+    path: "/v2/admin/provider-types",
+    tags: ["Admin providers"],
+    summary: "List provider types",
+    description:
+      "Every provider type a connection can be added for, with the API styles its operations speak, read from the provider descriptions this deployment runs. `custom` is a provider the gateway does not know: it needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+    security: "management",
+    response: ProviderTypeListResponseSchema,
+    responseDescription: "The provider types, built-in ones by label, then custom.",
     errors: ADMIN_ERRORS,
   },
 

@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CliError, LocalDirectoryError } from "../src/common.ts";
+import { customFields } from "../src/commands.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { signInFailure } from "../src/sign-in-retry.ts";
 import { StateStore } from "../src/state.ts";
@@ -111,6 +112,116 @@ test("an iOS app needs its team and bundle ids, and is created with no key file"
   assert.equal(created.json().result.key, null);
 });
 
+test("app add writes only the settings its flags name: environments, verification, status, and providers", async () => {
+  const sent: unknown[] = [];
+  const created = await run(
+    [
+      "app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app",
+      "--attest-environments", "production,development", "--verify-on", "token_exchange", "--status", "disabled",
+      "--providers", "openai", "--providers", "mine=custom.openai-chat+passthrough", "--json",
+    ],
+    (path, options) => {
+      if (path === "/v2/admin/providers") return { providers: [PROVIDER] };
+      if (path === "/v2/admin/provider-types") return { types: [{ type: "openai", label: "OpenAI", styles: [], operations: ["openai.chat", "openai.responses"], cloudflareGateway: true, custom: false }] };
+      sent.push(options.body);
+      return { app: { ...APP, name: "My App" }, api_key: null };
+    },
+  );
+  assert.equal(created.code, 0, created.err);
+  assert.deepEqual(sent, [
+    {
+      name: "My App",
+      status: "disabled",
+      config: {
+        authentication: {
+          type: "apple_app_attest",
+          end_user: { source: "app_install" },
+          app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production", "development"], verify_on: "token_exchange" },
+        },
+        // A bare slug allows the connection's first operation, as the console does; named ones go as written.
+        routing: { providers: { openai: { operations: ["openai.chat"] }, mine: { operations: ["custom.openai-chat", "passthrough"] } } },
+      },
+    },
+  ]);
+
+  // A gateway from before the provider types: a bare slug says to name the operations.
+  const older = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path) => {
+    if (path === "/v2/admin/providers") return { providers: [PROVIDER] };
+    if (path === "/v2/admin/provider-types") throw new CliError("not_found", "Nothing is served at this path.", "", 3, { status: 404 });
+    return assert.fail("nothing is created");
+  });
+  assert.equal(older.json().error.code, "invalid_input");
+  assert.match(older.json().error.message, /does not list its provider types' operations/u);
+  assert.match(older.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
+
+  // A built-in connection with listed paths still takes its type's first declared operation, never passthrough;
+  // on a gateway that lists no operations, it is refused the same way.
+  const listed = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
+  const noOperations = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path) => {
+    if (path === "/v2/admin/providers") return { providers: [listed] };
+    if (path === "/v2/admin/provider-types") return { types: [{ type: "openai", label: "OpenAI", styles: [], cloudflareGateway: true, custom: false }] };
+    return assert.fail("nothing is created");
+  });
+  assert.equal(noOperations.json().error.code, "invalid_input");
+  assert.match(noOperations.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
+  const withOperations: unknown[] = [];
+  const declared = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path, options) => {
+    if (path === "/v2/admin/providers") return { providers: [listed] };
+    if (path === "/v2/admin/provider-types") return { types: [{ type: "openai", label: "OpenAI", styles: [], operations: ["openai.chat"], cloudflareGateway: true, custom: false }] };
+    withOperations.push(options.body);
+    return { app: APP, api_key: null };
+  });
+  assert.equal(declared.code, 0, declared.err);
+  assert.deepEqual((withOperations[0] as { config: { routing: unknown } }).config.routing, { providers: { openai: { operations: ["openai.chat"] } } });
+
+  // As before this release: a server app ignores --team-id and --bundle-id.
+  const keys = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+    store.keyOutput = new StateStore(keys).keyOutput.bind(new StateStore(keys));
+    const ignored: unknown[] = [];
+    const kept = await run(
+      ["app", "add", "--type", "server", "--name", "Backend", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--key-output", join(keys, "backend.key"), "--json"],
+      (_path, options) => {
+        ignored.push(options.body);
+        return { app: APP, api_key: KEY };
+      },
+      store,
+    );
+    assert.equal(kept.code, 0, kept.out);
+    assert.deepEqual(ignored, [{ name: "Backend", config: APP.config }]);
+  } finally {
+    await rm(keys, { recursive: true, force: true });
+  }
+  const server = await run(["app", "add", "--type", "server", "--name", "Backend", "--verify-on", "every_request", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(server.json().error.code, "invalid_input");
+  assert.match(server.json().error.message, /--verify-on/);
+  const unknown = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "gone", "--json"], (path) => {
+    assert.equal(path, "/v2/admin/providers");
+    return { providers: [PROVIDER] };
+  });
+  assert.equal(unknown.json().error.code, "provider_not_found");
+  const filed = await run(["app", "add", "--file", "app.json", "--providers", "openai", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(filed.json().error.code, "conflicting_flags");
+  // As before this release: --file wins over --user-header, --team-id and --bundle-id, which are left out.
+  const dir = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const document = { name: "From file", config: { authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.file" } } } };
+    await writeFile(join(dir, "app.json"), JSON.stringify(document));
+    const sent: unknown[] = [];
+    const old = await run(["app", "add", "--file", join(dir, "app.json"), "--user-header", "x-user", "--team-id", "ZZZZZ99999", "--json"], (_path, options) => {
+      sent.push(options.body);
+      return { app: { ...APP, name: "From file" }, api_key: null };
+    });
+    assert.equal(old.code, 0, old.err);
+    assert.deepEqual(sent, [document]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const status = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--status", "paused", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(status.json().error.code, "invalid_input");
+});
+
 test("app update --status reads the revision and sends it once more after someone else's change", async () => {
   let reads = 0;
   let patches = 0;
@@ -157,6 +268,57 @@ test("provider add --browser opens the gateway's own page without printing its l
   // The link's fragment is the page's proof: it never reaches the terminal.
   assert.doesNotMatch(result.err + result.out, /proof|v2\/approve/);
   assert.match(result.err, /browser window/);
+});
+
+test("provider add through Cloudflare AI Gateway sends the ids to the browser step, and never takes the token on the command line", async () => {
+  const pending = { id: "op_2", kind: "provider.add.browser", state: "pending", createdAt: "2026-11-20T10:00:00.000Z", expiresAt: "2026-11-20T10:15:00.000Z" };
+  const result = await run(
+    ["provider", "add", "--type", "openai", "--cloudflare-account-id", " acct ", "--cloudflare-gateway-id", "gw", "--browser", "--json"],
+    (path, options) => {
+      if (path === "/v2/admin/provider-handoffs") {
+        assert.deepEqual(options.body, { type: "openai", name: "openai", cloudflareGateway: { accountId: "acct", gatewayId: "gw" } });
+        return { id: "op_2", kind: "provider.add", url: `${URL_}/v2/approve/op_2#proof`, expiresAt: "2026-11-20T10:15:00.000Z" };
+      }
+      return pending;
+    },
+  );
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.json().result.state, "pending");
+
+  // The ids need --browser, and each other; a token has no flag at all.
+  const keyed = await run(["provider", "add", "--type", "openai", "--cloudflare-account-id", "acct", "--cloudflare-gateway-id", "gw", "--key-stdin", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(keyed.json().error.code, "invalid_input");
+  assert.match(keyed.json().error.nextAction, /--browser/);
+  const half = await run(["provider", "add", "--type", "openai", "--cloudflare-account-id", "acct", "--browser", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(half.json().error.code, "invalid_input");
+  const token = await run(["provider", "add", "--type", "openai", "--cloudflare-token", "x", "--browser", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(token.json().error.code, "unknown_flag");
+});
+
+test("provider add --type custom sends its key header, format and paths, read as the console reads path lines", async () => {
+  assert.deepEqual(
+    customFields("custom", {
+      "key-header": "x-api-key",
+      "key-format": "Key {key}",
+      path: ["post chat/completions openai-chat", "GET models $0.001"],
+    }),
+    {
+      auth: { header: "x-api-key", format: "Key {key}" },
+      passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "GET", path: "models", per_request: 0.001 }],
+    },
+  );
+  // The console's defaults, and no paths until some are listed.
+  assert.deepEqual(customFields("custom", {}), { auth: { header: "authorization", format: "Bearer {key}" } });
+  assert.equal(customFields("openai", {}), null);
+
+  const bad = await run(["provider", "add", "--type", "custom", "--base-url", "https://llm.example.com/v1/", "--path", "POST chat/completions chat", "--key-stdin", "--json"], () => assert.fail("nothing is sent"));
+  assert.match(bad.json().error.message, /^--path: path 1: chat is not a price or an API style/u);
+  // A custom provider's paths are chosen where it is added: never through a browser step.
+  const browser = await run(["provider", "add", "--type", "custom", "--base-url", "https://llm.example.com/v1/", "--browser", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(browser.json().error.code, "invalid_input");
+  // A built-in provider's paths are a trust choice made in the console, or with agw provider update.
+  const builtIn = await run(["provider", "add", "--type", "openai", "--path", "GET v1/files", "--key-stdin", "--json"], () => assert.fail("nothing is sent"));
+  assert.match(builtIn.json().error.message, /only for --type custom/u);
 });
 
 test("when no browser opens, the hand-off link goes to a private file and only its path is printed", async () => {

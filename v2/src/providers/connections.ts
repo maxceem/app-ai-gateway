@@ -166,7 +166,7 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
  * moves it (`./route.ts`).
  */
 export { CLOUDFLARE_AI_GATEWAY_ORIGIN } from "./destinations.ts";
-import { CLOUDFLARE_AI_GATEWAY_ORIGIN, directOrigin } from "./destinations.ts";
+import { CLOUDFLARE_AI_GATEWAY_ORIGIN, cloudflareGatewayPath, directOrigin } from "./destinations.ts";
 
 /**
  * The origin a connection's provider key is given for, which seals it: the
@@ -181,7 +181,10 @@ export function keyOrigin(connection: {
   if (connection.baseUrl !== null) return connection.baseUrl;
   const gateway = connection.cloudflareGateway;
   if (gateway === null) return "";
-  return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
+  // The address ids make (`cloudflareGatewayPath`). Ids that lead nowhere (`.`, `..`) keep the label they
+  // were always sealed under, so no stored key's label ever changes; nothing is ever sent for them (`./route.ts`).
+  const path = cloudflareGatewayPath(gateway) ?? `v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
+  return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}${path}`;
 }
 
 /**

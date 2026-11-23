@@ -19,18 +19,25 @@ import {
   AppNameSchema,
   AppSchema,
   CreatedAppKeySchema,
+  CloudflareGatewayIdsSchema,
   ProviderCreateRequestSchema,
   ProviderSchema,
   ProviderSecretSchema,
 } from "./admin.ts";
 
 /**
- * Adding a provider connection: everything `createProvider` takes but the key,
- * and but a Cloudflare AI Gateway setting, whose token is a secret this flow
- * does not carry. A person sets that in the console. Passthrough paths are
- * left out too: listing them is a trust choice a person makes in the console.
+ * Adding a provider connection: everything `createProvider` takes but the key.
+ * A Cloudflare AI Gateway setting comes without its token, a secret this
+ * request never carries: the person enters it on the approval page, beside
+ * the provider key, which is then optional (Cloudflare can use the keys it
+ * stores). Passthrough paths are left out: listing them is a trust choice a
+ * person makes in the console.
  */
 export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true, passthrough: true })
+  .extend({
+    /** Send the connection through this Cloudflare AI Gateway. The person approving enters its token. */
+    cloudflareGateway: CloudflareGatewayIdsSchema.optional(),
+  })
   .strict()
   .meta({ id: "ProviderHandoffRequest" });
 
@@ -169,11 +176,19 @@ export const RevealedOperationResponseSchema = z
 /** The proof from the approval link's fragment. */
 export const HandoffProofSchema = z.object({ proof: z.string().min(16).max(512) }).strict();
 
+const EnteredSecretSchema = ProviderSecretSchema.refine((value) => /\S/u.test(value), { error: "must not be blank" });
+
 export const HandoffSubmitRequestSchema = z
   .object({
     proof: z.string().min(16).max(512),
-    /** The key the person entered. Never stored as given and never answered. */
-    secret: ProviderSecretSchema.refine((value) => /\S/u.test(value), { error: "secret must not be blank" }),
+    /**
+     * The key the person entered. Never stored as given and never answered.
+     * Optional only when adding a connection through Cloudflare AI Gateway,
+     * which can use the keys it stores.
+     */
+    secret: EnteredSecretSchema.optional(),
+    /** The Cloudflare token the person entered, when the connection goes through Cloudflare AI Gateway: required there, refused elsewhere. */
+    cloudflareToken: EnteredSecretSchema.optional(),
   })
   .strict();
 
@@ -195,6 +210,12 @@ export const HandoffDetailsResponseSchema = z
       destinations: z.array(z.string()),
       /** For a key replacement: the last characters of the key it replaces. */
       secretHint: z.string().nullable().optional(),
+      /**
+       * For adding a connection through Cloudflare AI Gateway: its account and
+       * gateway. The person enters a Cloudflare token for it, and the
+       * provider key is optional.
+       */
+      cloudflareGateway: z.object({ accountId: z.string(), gatewayId: z.string() }).optional(),
     }),
   })
   .meta({ id: "HandoffDetailsResponse" });

@@ -32,13 +32,13 @@ export const commands = {
   "account logout": { args: 0, flags: "", summary: "End this CLI's sign-in and forget it" },
   "provider add": {
     args: 0,
-    flags: `type name slug base-url pricing ${secret}`,
+    flags: `type name slug base-url pricing cloudflare-account-id cloudflare-gateway-id key-header key-format path* ${secret}`,
     summary: "Add a provider; its key goes in a hidden prompt, stdin or a browser",
   },
   "provider rotate-key": { args: 1, flags: secret, summary: "Replace a provider's key, by id or slug" },
   "app add": {
     args: 0,
-    flags: "type name team-id bundle-id user-header file key-output dry-run!",
+    flags: "type name team-id bundle-id attest-environments* verify-on user-header providers* status file key-output dry-run!",
     summary: "Add an iOS or server app; a server app's key goes to a private file",
   },
   "app key add": { args: 1, flags: "name key-output", summary: "Create a server app key, written to a private file" },
@@ -79,8 +79,16 @@ export interface Flags {
   status?: string;
   url?: string;
   "base-url"?: string;
+  "cloudflare-account-id"?: string;
+  "cloudflare-gateway-id"?: string;
   pricing?: string;
   "team-id"?: string;
+  "attest-environments"?: string | string[];
+  "verify-on"?: string;
+  providers?: string | string[];
+  "key-header"?: string;
+  "key-format"?: string;
+  path?: string | string[];
   "bundle-id"?: string;
   "user-header"?: string;
   file?: string;
@@ -194,6 +202,11 @@ export function parse(argv: string[]): ParseResult {
     ["no-open", "device"],
     ["file", "name"],
     ["file", "type"],
+    // Only the flags this release added: --file has always won over --team-id, --bundle-id and --user-header.
+    ["file", "attest-environments"],
+    ["file", "verify-on"],
+    ["file", "providers"],
+    ["file", "status"],
   ]) {
     if (group.filter((k) => collected[k] !== undefined).length > 1)
       fail(
@@ -252,7 +265,7 @@ export function builtInHelp(command: CommandName): string {
 export const HELP_NOTES = `--json: one JSON document on stdout; --no-input: never prompt; --help, -h: help for any command.
 Sign-in: account login and deployment connect open a browser on this machine; --device, or a machine with no browser, shows a link and a short code to approve in any browser. The sign-in renews itself; account logout ends it.
 Credentials: ${MANAGEMENT_KEY_ENV}, when set, is the management key for every command and overrides the saved sign-in. Use it in CI and scripts.
-Secrets: hidden prompt by default; --key-stdin reads one line; provider --browser has a person type the key in the console instead.
+Secrets: hidden prompt by default; --key-stdin reads one line; provider --browser has a person type the key in the console instead. Through Cloudflare AI Gateway (provider add --cloudflare-account-id and --cloudflare-gateway-id, with --browser), the person types the Cloudflare token there too.
 New app keys: written to a private file (--key-output, or one agw picks), never printed.
 Gateway commands: every command not built into agw comes from the connected gateway, so a new gateway release brings its commands without an agw update. Their flags follow the gateway's arguments; JSON values are inline or @file.
 `;

@@ -561,6 +561,55 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
   assert.equal(fake.asked.some((entry) => entry.method === "POST"), false);
 });
 
+test("app snippet shows an iOS app's whole requests by default, and provider types their operations", async () => {
+  const snippet = cliTool(
+    "get_app_snippet",
+    {
+      command: "app snippet",
+      args: ["app"],
+      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"], blockTitle: ["provider", "preset", "operation", "model"] },
+    },
+    { properties: { app: { type: "string" } }, required: ["app"] },
+  );
+  const types = cliTool("list_provider_types", {
+    command: "provider types",
+    view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"], wide: ["operations"] },
+  });
+  const request = [
+    "POST https://gw.example/v2/apps/app_1/proxy/openai/v1/chat/completions",
+    "Content-Type: application/json",
+    "(The Swift SDK adds the gateway token and the App Attest proof.)",
+    "",
+    '{\n  "model": "gpt-4o-mini"\n}',
+  ].join("\n");
+  const operations = ["openai.chat", "openai.responses", "openai.transcription", "openai.images", "openai.images.edits", "openai.embeddings", "openai.speech"];
+  const fake = gateway({
+    tools: [snippet, types],
+    answer: (tool) =>
+      tool === "get_app_snippet"
+        ? {
+            app_id: "app_1",
+            base_url: "https://gw.example",
+            examples: [{ provider: "openai", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gw.example/v2/apps/app_1/proxy/openai/v1/chat/completions", model: "gpt-4o-mini", headers: {}, text: request }],
+            notes: ["This iOS app signs every request with App Attest."],
+          }
+        : { types: [{ type: "openai", label: "OpenAI", styles: [], operations, cloudflareGateway: true, custom: false }] },
+  });
+  const shown = await run(["app", "snippet", "app_1"], fake);
+  assert.equal(shown.code, 0, shown.err);
+  // The whole request, line by line, as the gateway wrote it, under a short heading naming the example.
+  assert.ok(shown.out.includes(`\n\nopenai · openai.chat · gpt-4o-mini\n${request}\n`), shown.out);
+  assert.match(shown.out, /- This iOS app signs every request with App Attest\./u);
+
+  const listed = await run(["provider", "types"], fake);
+  assert.equal(listed.code, 0, listed.err);
+  // A wide column is shown whole; any other is still cut at 48 characters.
+  assert.ok(listed.out.includes(operations.join(", ")), listed.out);
+  const narrow = cliTool("list_provider_types", { command: "provider types", view: { rows: "types", columns: ["type", "operations"] } });
+  const cut = humanToolResult(narrow, "1 type.", { types: [{ type: "openai", operations }] }, [narrow], plain);
+  assert.ok(!cut.includes(operations.join(", ")) && cut.includes("…"), cut);
+});
+
 test("everything the gateway says is cleaned of control characters before a terminal sees it", () => {
   const hostile = "Name\u001b[2J\u001b]8;;https://evil\u0007 ‮evil\u009b31m";
   assert.equal(clean(hostile).includes("\u001b"), false);
@@ -612,6 +661,30 @@ test("views lay out records, notes, documents and rows a wildcard reaches", () =
   assert.equal(
     humanToolResult(show, "App X.", { app: { name: "X", id: "app-1", config: { mode: "all" }, warnings: [{ message: "Stops soon." }] } }, [show], plain),
     'App X.\n\nName: X\nID:   app-1\nMode: all\n\n- Stops soon.\n\n{\n  "mode": "all"\n}\n',
+  );
+  // Blocks keep their lines, to be copied exactly as they are. One holding a character a terminal could
+  // misread (an escape, a zero-width joiner) is never rewritten: it is not shown at all.
+  const snippet = cliTool("get_app_snippet", {
+    command: "app snippet",
+    view: { rows: "examples", columns: ["style"], blocks: ["examples.*.text"] },
+  });
+  const hidden = "(This example holds a character a terminal could misread, so it is not shown. Run the command with --json to see it.)";
+  assert.equal(
+    humanToolResult(
+      snippet,
+      "4 examples.",
+      {
+        examples: [
+          { style: "openai-chat", text: "curl 'https://x' \\\n  -d '{}'" },
+          { style: "openai-speech", text: "curl\u001b[2J 'https://y'" },
+          { style: "openai-images", text: "curl 'https://z' -d '{\"model\":\"gpt‍mini\"}'" },
+          { style: "openai-chat", text: Array.from({ length: 201 }, () => "x").join("\n") },
+        ],
+      },
+      [snippet],
+      plain,
+    ),
+    `4 examples.\n\nStyle\nopenai-chat\nopenai-speech\nopenai-images\nopenai-chat\n\ncurl 'https://x' \\\n  -d '{}'\n\n${hidden}\n\n${hidden}\n\n(This example is too long to show here. Run the command with --json to see it.)\n`,
   );
   // Without a view: the plain fields, then the first list of objects as a table.
   const bare = cliTool("get_thing", { command: "thing show" });

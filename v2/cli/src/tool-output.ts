@@ -14,6 +14,7 @@
  */
 
 import type { CliTool } from "./catalog.ts";
+import { UNSAFE_COMMAND_TEXT } from "../../src/contracts/cli.ts";
 import type { Style } from "./style.ts";
 import { fieldsOf, type Field } from "./tool-args.ts";
 
@@ -165,7 +166,12 @@ export function humanToolResult(
       const columns = (view.columns ?? Object.keys((rows[0]?.value as object | undefined) ?? {})).map(column);
       body = rows.length === 0
         ? []
-        : table(columns.map((entry) => entry.label), rows.map((row) => columns.map((entry) => cell(valueAt(row, entry.key), 48))), style);
+        : table(
+            columns.map((entry) => entry.label),
+            // A column the view names wide is shown whole, as a provider type's operations; every other is cut to fit.
+            rows.map((row) => columns.map((entry) => cell(valueAt(row, entry.key), view.wide?.includes(entry.key) ? 1000 : 48))),
+            style,
+          );
     }
   } else if (view?.record !== undefined) {
     const record = view.record ? valueAt({ value: result, keys: [] }, view.record) : result;
@@ -192,7 +198,43 @@ export function humanToolResult(
     const document = valueAt(root, view.document);
     if (document !== undefined) lines.push("", style.json(printable(document)));
   }
+  for (const path of view?.blocks ?? []) {
+    for (const { text, parent } of textsAt(result, path)) {
+      // A short heading naming the example, from the keys the view gives, cleaned like every remote value.
+      const title = (view?.blockTitle ?? []).map((key) => (isRecord(parent) ? parent[key] : undefined)).filter((value) => typeof value === "string" && value !== "");
+      lines.push("", ...(title.length > 0 ? [style.headline(cut(clean(title.join(" · ")), 120))] : []), ...block(text));
+    }
+  }
   return lines.join("\n") + "\n";
+}
+
+/** Every string at a dotted path, with the object it was read from; `*` goes through each item of an array or entry of an object. */
+function textsAt(result: unknown, path: string): { text: string; parent: unknown }[] {
+  let values: { value: unknown; parent: unknown }[] = [{ value: result, parent: undefined }];
+  for (const segment of path ? path.split(".") : []) {
+    values = values.flatMap(({ value }) => {
+      if (segment === "*") {
+        const items = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
+        return items.map((item) => ({ value: item, parent: value }));
+      }
+      return isRecord(value) && value[segment] !== undefined ? [{ value: value[segment], parent: value }] : [];
+    });
+  }
+  return values.flatMap(({ value, parent }) => (typeof value === "string" ? [{ text: value, parent }] : []));
+}
+
+/**
+ * Remote text as lines to copy, each exactly as written. A command is never
+ * rewritten: one holding a character a terminal could misread
+ * (`UNSAFE_COMMAND_TEXT`, line breaks apart) is not shown at all.
+ */
+function block(text: string): string[] {
+  const lines = text.split("\n");
+  if (lines.some((line) => UNSAFE_COMMAND_TEXT.test(line))) {
+    return ["(This example holds a character a terminal could misread, so it is not shown. Run the command with --json to see it.)"];
+  }
+  if (lines.length > 200) return ["(This example is too long to show here. Run the command with --json to see it.)"];
+  return lines;
 }
 
 /** A note as one line: a string as it is, an object by its message. */

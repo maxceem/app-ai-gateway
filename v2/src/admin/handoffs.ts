@@ -47,14 +47,17 @@ import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
 import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
+import { cloudflareGatewayOrigin } from "../providers/destinations.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
 import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
+  checkCloudflareIds,
   checkDestination,
   checkedBaseUrl,
+  storedCloudflare,
   connectionRow,
   newConnectionId,
   providerView,
@@ -165,6 +168,8 @@ interface ProviderReview {
   name: string;
   slug: string;
   baseUrl: string | null;
+  /** Through Cloudflare AI Gateway: the account and gateway. The person approving enters its token. */
+  cloudflareGateway?: { accountId: string; gatewayId: string };
   pricing?: unknown;
 }
 
@@ -216,7 +221,10 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
   }
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
-  checkDestination(builtInProvider(body.type)!, baseUrl, null);
+  const cloudflare = body.cloudflareGateway ?? null;
+  // A new connection: its ids must be plain path segments.
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
+  checkDestination(builtInProvider(body.type)!, baseUrl, cloudflare);
   if (body.pricing !== undefined) assertModesSelectable(builtInProvider(body.type)!, baseUrl, ratesFromPricing(body.pricing, body.type), null);
   await refuseTakenSlug(c.env.DB, actor.accountId, slug);
   await (await planCap(c.env, c.env.DB, actor.accountId, "provider")).assertNotReached();
@@ -226,6 +234,8 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
     name: body.name,
     slug,
     baseUrl,
+    // Only when set, so a request without it is the same request it always was.
+    ...(cloudflare === null ? {} : { cloudflareGateway: { accountId: cloudflare.accountId, gatewayId: cloudflare.gatewayId } }),
     ...(body.pricing === undefined ? {} : { pricing: body.pricing }),
   };
   return openBrowserStep(c, "provider.add", review as unknown as Record<string, unknown>);
@@ -303,9 +313,12 @@ export async function getHandoff(c: PageContext): Promise<Response> {
   // through Cloudflare AI Gateway, the gateway is the only one.
   // A custom provider's key goes only to its base URL.
   const hosts = builtInProvider(String(review.type))?.hosts ?? {};
+  const through = cloudflare === null ? null : cloudflareGatewayOrigin(cloudflare);
   const destinations =
     cloudflare !== null
-      ? [keyOrigin({ baseUrl: null, cloudflareGateway: cloudflare })]
+      ? through === null
+        ? []
+        : [through]
       : review.type === CUSTOM_PROVIDER_TYPE
         ? baseUrl === null
           ? []
@@ -325,6 +338,8 @@ export async function getHandoff(c: PageContext): Promise<Response> {
       baseUrl,
       destinations,
       ...(kind === "provider.rotate-key" ? { secretHint: typeof review.secretHint === "string" ? review.secretHint : null } : {}),
+      // Adding through Cloudflare: the page asks for its token, and the provider key becomes optional.
+      ...(kind === "provider.add" && cloudflare !== null ? { cloudflareGateway: cloudflare } : {}),
     },
   } satisfies OperationResponse<"getHandoff">);
 }
@@ -342,8 +357,17 @@ export async function denyHandoff(c: PageContext): Promise<Response> {
  * commits), in the batch that completes the operation.
  */
 export async function submitHandoff(c: PageContext): Promise<Response> {
-  const { proof, secret } = await parseBody(c, HandoffSubmitRequestSchema);
+  const { proof, secret, cloudflareToken } = await parseBody(c, HandoffSubmitRequestSchema);
   const { engine, details, kind, accountId, openerUserId, review } = await verifiedStep(c, proof);
+  // Adding through Cloudflare takes its token, and the provider key only if given; anything else takes the key alone.
+  const throughCloudflare = kind === "provider.add" && isRecord(review.cloudflareGateway);
+  if (throughCloudflare && cloudflareToken === undefined) {
+    throw new GatewayError(400, "invalid_request", "cloudflareToken: enter the Cloudflare token for this gateway");
+  }
+  if (!throughCloudflare && cloudflareToken !== undefined) {
+    throw new GatewayError(400, "invalid_request", "cloudflareToken: this request does not go through Cloudflare AI Gateway");
+  }
+  if (!throughCloudflare && secret === undefined) throw new GatewayError(400, "invalid_request", "secret: enter the provider key");
   // One already approved is answered as approved. Only an approved one: a
   // person holding the link of a declined step must not be told it landed.
   switch (details.state) {
@@ -360,15 +384,19 @@ export async function submitHandoff(c: PageContext): Promise<Response> {
   }
   const guard = await engine.guard({ id: details.id });
   const write = kind === "provider.add"
-    ? await providerAddWrite(c.env, accountId, openerUserId, review as unknown as ProviderReview, secret, guard)
-    : await providerKeyWrite(c.env, accountId, review as unknown as RotateReview, secret, guard);
+    ? await providerAddWrite(c.env, accountId, openerUserId, review as unknown as ProviderReview, { secret, cloudflareToken }, guard)
+    : await providerKeyWrite(c.env, accountId, review as unknown as RotateReview, secret!, guard);
   const unstage = stageApproval(await identityFor(c), details.id, {
     outcome: write.outcome,
     statements: [write.statement],
     afterCommit: () => invalidateConnection(accountId, write.slug),
   });
   try {
-    await engine.approve({ id: details.id, proof, input: { secret } });
+    await engine.approve({
+      id: details.id,
+      proof,
+      input: { ...(secret === undefined ? {} : { secret }), ...(cloudflareToken === undefined ? {} : { cloudflareToken }) },
+    });
   } catch (error) {
     // Someone else's approval landed first: this key was not stored.
     if ((await engine.details({ id: details.id, proof })).state === "completed") {
@@ -398,18 +426,26 @@ async function providerAddWrite(
   accountId: string,
   openerUserId: string,
   review: ProviderReview,
-  secret: string,
+  entered: { readonly secret: string | undefined; readonly cloudflareToken: string | undefined },
   guard: SQL,
 ): Promise<StagedWrite> {
   const id = newConnectionId();
   const now = Date.now();
-  const blob = await sealSecret(env, "providerKey", [accountId, id, review.type, review.baseUrl ?? ""], secret);
+  const { secret, cloudflareToken } = entered;
+  const cloudflare = review.cloudflareGateway ?? null;
+  // Judged again at approval, so a step opened before the rule cannot send a token where its ids lead once parsed.
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
+  // Sealed for where the key goes: the base URL, the Cloudflare gateway, or the provider's own host.
+  const origin = keyOrigin({ baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
+  const blob = secret === undefined ? null : await sealSecret(env, "providerKey", [accountId, id, review.type, origin], secret);
+  const cloudflareJson =
+    cloudflare === null || cloudflareToken === undefined ? null : await storedCloudflare(env, accountId, id, { ...cloudflare, token: cloudflareToken });
   const cap = await planCap(env, env.DB, accountId, "provider");
   const { guardedInsert } = await cfAuth();
   const rates = review.pricing === undefined ? null : ratesFromPricing(review.pricing as Parameters<typeof ratesFromPricing>[0], review.type);
   const description = builtInProvider(review.type);
   // Judged again at approval, so a handoff opened before a check existed is covered too.
-  if (description !== null) checkDestination(description, review.baseUrl ?? null, null);
+  if (description !== null) checkDestination(description, review.baseUrl ?? null, cloudflare);
   if (description !== null) assertModesSelectable(description, review.baseUrl ?? null, rates, null);
   // Apps may already route to the slug: their calls are judged on the new rates, as a connection save does.
   await checkNewConnection(env.DB, accountId, { slug: review.slug, type: review.type, baseUrl: review.baseUrl ?? null }, rates);
@@ -424,8 +460,9 @@ async function providerAddWrite(
       name: review.name,
       status: "active",
       secretBlob: blob,
-      secretHint: secretHint(secret),
+      secretHint: secret === undefined ? null : secretHint(secret),
       baseUrl: review.baseUrl,
+      cloudflareGateway: cloudflareJson === null ? null : (JSON.parse(cloudflareJson) as Record<string, unknown>),
       rates: rates as Record<string, unknown> | null,
       revision: 1,
       createdBy: openerUserId,
@@ -442,9 +479,9 @@ async function providerAddWrite(
     name: review.name,
     status: "active",
     secret_blob: null,
-    secret_hint: secretHint(secret),
+    secret_hint: secret === undefined ? null : secretHint(secret),
     base_url: review.baseUrl,
-    cloudflare_gateway_json: null,
+    cloudflare_gateway_json: cloudflareJson,
     serving_providers_json: null,
     rates_json: rates === null ? null : JSON.stringify(rates),
     passthrough_json: null,

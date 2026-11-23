@@ -5,12 +5,14 @@
  * built from its tool list.
  */
 import { readFile, unlink } from "node:fs/promises";
-import { APP_STATUSES } from "../../src/contracts/admin.ts";
+import { APP_STATUSES, CUSTOM_PROVIDER_TYPE } from "../../src/contracts/admin.ts";
+import { connectionOperations } from "../../src/contracts/connection-operations.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
+import { parsePathLines, type ListedPath } from "../../src/contracts/path-lines.ts";
 import { CliError, fail } from "./common.ts";
 import type { Context } from "./context.ts";
 import { secret } from "./input.ts";
-import type { Flags } from "./parser.ts";
+import { flagList, type Flags } from "./parser.ts";
 import type { KeyOutput } from "./state.ts";
 
 type Provider = OperationResponse<"getProvider">["provider"];
@@ -149,6 +151,8 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
   const name = flags.name?.trim() || type;
   if (!type) fail("invalid_input", "--type is required, such as --type openai.", "Run agw provider list or agw model list to see the types.");
   const pricing = flags.pricing === undefined ? undefined : await jsonFlag("pricing", flags.pricing);
+  const cloudflare = cloudflareIds(flags);
+  const custom = customFields(type!, flags);
   const common = {
     type,
     name: name!,
@@ -157,13 +161,66 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
     ...(pricing === undefined ? {} : { pricing: pricing as never }),
   };
   if (flags.browser) {
-    const { data } = await ctx.call("openProviderHandoff", { body: common });
+    if (custom !== null)
+      fail(
+        "invalid_input",
+        "A custom provider cannot be added through a browser step: its paths are a choice made where it is added.",
+        "Add it with --key-stdin or --key-prompt, or in the console.",
+      );
+    const { data } = await ctx.call("openProviderHandoff", { body: { ...common, ...(cloudflare === null ? {} : { cloudflareGateway: cloudflare }) } });
     return browserStep(ctx, data);
   }
   const key = await secret(flags, "Provider API key");
   if (!key) fail("input_required", "A provider key is required.", "Pipe it with --key-stdin, type it with --key-prompt, or use --browser.");
-  const { data } = await ctx.call("createProvider", { body: { ...common, secret: key } });
+  const { data } = await ctx.call("createProvider", { body: { ...common, ...(custom ?? {}), secret: key } });
   return { provider: data.provider };
+}
+
+/**
+ * A custom provider's key header and format, and the paths it serves, each
+ * `--path` one line as the console's paths field reads it (`METHOD path`,
+ * then `$<dollars>` or an API style). Null for a built-in type, which takes
+ * none of them: its listed paths are a trust choice made in the console, or
+ * with agw provider update.
+ */
+export function customFields(type: string, flags: Flags): { auth: { header: string; format: string }; passthrough?: ListedPath[] } | null {
+  const lines = flagList(flags.path);
+  if (type !== CUSTOM_PROVIDER_TYPE) {
+    const given = (["key-header", "key-format"] as const).filter((name) => flags[name] !== undefined).map((name) => `--${name}`);
+    if (lines.length > 0) given.push("--path");
+    if (given.length > 0)
+      fail(
+        "invalid_input",
+        `${given.join(", ")} ${given.length === 1 ? "is" : "are"} only for --type custom.`,
+        "List a built-in provider's passthrough paths in the console, or with agw provider update.",
+      );
+    return null;
+  }
+  // The console's defaults: a bearer token in Authorization.
+  const auth = { header: flags["key-header"]?.trim() || "authorization", format: flags["key-format"] ?? "Bearer {key}" };
+  const parsed = parsePathLines(lines.join("\n"), true);
+  // Each --path is one line, so a problem names the flag by its place.
+  if ("problem" in parsed) fail("invalid_input", `--path: ${parsed.problem.replace(/^Line (\d+)/u, "path $1")}`, "Run agw provider types to see the API styles.");
+  return { auth, ...(parsed.paths.length === 0 ? {} : { passthrough: parsed.paths }) };
+}
+
+/**
+ * The Cloudflare AI Gateway a new connection goes through, or null. Its
+ * token is a secret no flag carries: a person enters it in the browser step,
+ * so the ids come only with `--browser`.
+ */
+function cloudflareIds(flags: Flags): { accountId: string; gatewayId: string } | null {
+  const accountId = flags["cloudflare-account-id"]?.trim();
+  const gatewayId = flags["cloudflare-gateway-id"]?.trim();
+  if (accountId === undefined && gatewayId === undefined) return null;
+  if (!accountId || !gatewayId) fail("invalid_input", "--cloudflare-account-id and --cloudflare-gateway-id go together.");
+  if (!flags.browser)
+    fail(
+      "invalid_input",
+      "Through Cloudflare AI Gateway, a person enters the Cloudflare token, and the provider key if any, in the browser.",
+      "Add --browser.",
+    );
+  return { accountId, gatewayId };
 }
 
 /** `agw provider rotate-key <id or slug>`. */
@@ -179,37 +236,121 @@ export async function providerRotateKey(ctx: Context, reference: string, flags: 
   return { provider: data.provider };
 }
 
-/** The app document `app add` sends: the one `--file` holds, or one built from flags. */
-async function appDocument(flags: Flags): Promise<{ name: string; config: unknown; status?: (typeof APP_STATUSES)[number] }> {
+/** A list flag's values, given once per value or separated by commas. */
+function listOf(value: string | string[] | undefined): string[] {
+  return flagList(value)
+    .flatMap((entry) => entry.split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+type AppDocument = { name: string; config: unknown; status?: (typeof APP_STATUSES)[number] };
+
+/**
+ * The app document `app add` sends: the one `--file` holds, or one built from
+ * flags. A setting is written only when a flag names it, so everything else
+ * keeps the gateway's default. The gateway judges every value.
+ */
+async function appDocument(ctx: Context, flags: Flags): Promise<AppDocument> {
   if (flags.file !== undefined) {
     const document = await jsonFlag("file", flags.file.startsWith("@") ? flags.file : `@${flags.file}`);
     if (typeof document !== "object" || document === null || Array.isArray(document))
       fail("invalid_input", "--file must hold an app document: {name, config, status?}.");
-    return document as { name: string; config: unknown };
+    return document as AppDocument;
   }
   const name = flags.name?.trim();
   if (!name) fail("invalid_input", "--name is required, or --file with a whole app document.");
+  if (flags.status !== undefined && !STATUSES.has(flags.status)) fail("invalid_input", `--status must be one of ${APP_STATUSES.join(", ")}.`);
+  const status = flags.status === undefined ? {} : { status: flags.status as AppDocument["status"] & string };
+  const routing = await routingOf(ctx, listOf(flags.providers));
   const type = flags.type ?? "ios";
   if (type === "ios") {
     if (!flags["team-id"] || !flags["bundle-id"])
       fail("invalid_input", "An iOS app needs --team-id and --bundle-id.", "Find them in your Apple developer account and in Xcode.");
+    const environments = listOf(flags["attest-environments"]);
+    const verifyOn = flags["verify-on"]?.trim();
     return {
       name,
       config: {
         authentication: {
           type: "apple_app_attest",
           end_user: { source: "app_install" },
-          app_attest: { team_id: flags["team-id"].trim(), bundle_id: flags["bundle-id"].trim() },
+          app_attest: {
+            team_id: flags["team-id"].trim(),
+            bundle_id: flags["bundle-id"].trim(),
+            ...(environments.length === 0 ? {} : { environments }),
+            ...(verifyOn ? { verify_on: verifyOn } : {}),
+          },
         },
+        ...routing,
       },
+      ...status,
     };
   }
   if (type !== "server") fail("invalid_input", "--type must be ios or server.");
+  // As before: a server app ignores --team-id and --bundle-id; only this release's iOS flags are refused.
+  const foreign = (["attest-environments", "verify-on"] as const).filter((flag) => flags[flag] !== undefined);
+  if (foreign.length > 0) fail("invalid_input", `A server app takes no ${foreign.map((flag) => `--${flag}`).join(", ")}: ${foreign.length === 1 ? "it is" : "they are"} for iOS apps.`);
   const header = flags["user-header"]?.trim();
   return {
     name,
-    config: { authentication: { type: "api_key", end_user: header ? { source: "header", header } : { source: "none" } } },
+    config: { authentication: { type: "api_key", end_user: header ? { source: "header", header } : { source: "none" } }, ...routing },
+    ...status,
   };
+}
+
+/**
+ * `--providers`, as the app's routing: each `slug`, or `slug=operation+operation`.
+ * A bare slug allows the connection's first operation, as the console does
+ * when a connection is allowed, read from the gateway's own provider types.
+ * Nothing when the flag is not given.
+ */
+async function routingOf(ctx: Context, entries: string[]): Promise<{ routing?: { providers: Record<string, { operations: string[] }> } }> {
+  if (entries.length === 0) return {};
+  const providers: Record<string, { operations: string[] }> = {};
+  let connections: Provider[] | undefined;
+  let types: OperationResponse<"listProviderTypes">["types"] | null | undefined;
+  for (const entry of entries) {
+    const at = entry.indexOf("=");
+    const slug = (at < 0 ? entry : entry.slice(0, at)).trim();
+    if (slug === "") fail("invalid_input", `--providers: ${entry} names no provider connection.`, "Write a slug, or slug=operation+operation.");
+    if (Object.hasOwn(providers, slug)) fail("invalid_input", `--providers names ${slug} twice.`);
+    const named = at < 0 ? [] : entry.slice(at + 1).split("+").map((operation) => operation.trim()).filter((operation) => operation !== "");
+    if (at >= 0 && named.length === 0) fail("invalid_input", `--providers: ${slug}= names no operation.`, "Write slug=operation+operation, or the slug alone.");
+    if (named.length > 0) {
+      providers[slug] = { operations: named };
+      continue;
+    }
+    connections ??= (await ctx.call("listProviders")).data.providers;
+    const connection = connections.find((candidate) => candidate.slug === slug);
+    if (!connection) fail("provider_not_found", `None of your provider connections has the slug ${slug}.`, "Run agw provider list to see them.", 4);
+    // A built-in connection's first operation is its type's first declared one, from the gateway, never
+    // `passthrough`; a custom provider's comes from its paths.
+    let first: string | undefined;
+    if (connection.type === CUSTOM_PROVIDER_TYPE) first = connectionOperations(connection, [])[0];
+    else {
+      if (types === undefined) types = await providerTypes(ctx);
+      first = types?.find((candidate) => candidate.type === connection.type)?.operations?.[0];
+    }
+    if (first === undefined)
+      fail(
+        "invalid_input",
+        `--providers: agw cannot tell which operation of ${slug} to allow${types === null ? ": this gateway does not list its provider types' operations" : ""}.`,
+        `Name the operations yourself: --providers ${slug}=<operation>+<operation>, such as ${slug}=${connection.type}.chat.`,
+      );
+    providers[slug] = { operations: [first] };
+  }
+  return { routing: { providers } };
+}
+
+/** The gateway's provider types, or null from a gateway older than the list, which answers 404. */
+async function providerTypes(ctx: Context): Promise<OperationResponse<"listProviderTypes">["types"] | null> {
+  try {
+    return (await ctx.call("listProviderTypes")).data.types;
+  } catch (error) {
+    if (error instanceof CliError && error.details?.status === 404) return null;
+    throw error;
+  }
 }
 
 /** Writes a new key to its reserved file; a failure says which key was made, so it can be revoked. */
@@ -230,7 +371,7 @@ async function storeKey(output: KeyOutput, minted: CreatedKey, appId: string): P
 
 /** `agw app add`: an iOS or server app; a server app's first key goes to a private file. */
 export async function appAdd(ctx: Context, flags: Flags): Promise<AppAddResult | AppValidateResult> {
-  const document = await appDocument(flags);
+  const document = await appDocument(ctx, flags);
   if (flags["dry-run"]) {
     await ctx.call("validateAppDraft", { body: document as never });
     return { valid: true, dryRun: true };

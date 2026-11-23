@@ -182,6 +182,74 @@ describe("adding a provider connection through a person", () => {
     expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toHaveLength(1);
   });
 
+  it("adds a connection through Cloudflare AI Gateway with the token the person enters, the provider key optional", async () => {
+    const { caller } = await person();
+    const TOKEN = "cf-token-entered-by-a-person-42";
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", {
+      type: "openai",
+      name: "OpenAI via Cloudflare",
+      slug: "openai-cloudflare",
+      cloudflareGateway: { accountId: "acct", gatewayId: "gw" },
+    });
+    expect(opened.status, opened.text).toBe(201);
+    const proof = proofOf(opened.body.url);
+    const shown = await page(`/v2/console/handoffs/${opened.body.id}`, { proof });
+    expect(shown.body.review).toMatchObject({ cloudflareGateway: { accountId: "acct", gatewayId: "gw" } });
+    expect(shown.body.review.destinations).toEqual([expect.stringMatching(/\/v1\/acct\/gw\/$/u)]);
+
+    // The token is needed; a provider key alone is not enough.
+    const keyOnly = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, secret: KEY });
+    expect(keyOnly.status, keyOnly.text).toBe(400);
+    expect(keyOnly.text).toContain("cloudflareToken");
+    expect(keyOnly.text).not.toContain(KEY);
+
+    const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, cloudflareToken: TOKEN });
+    expect(approved.body).toEqual({ state: "completed" });
+    expect(approved.text).not.toContain(TOKEN);
+    const [added] = (await send(caller, "GET", "/v2/admin/providers")).body.providers;
+    expect(added).toMatchObject({ slug: "openai-cloudflare", secretHint: null, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "n-42" } });
+    const row = await env.DB.prepare("SELECT cloudflare_gateway_json FROM provider_connection WHERE slug = 'openai-cloudflare'").first<{ cloudflare_gateway_json: string }>();
+    expect(row!.cloudflare_gateway_json).not.toContain(TOKEN);
+  });
+
+  it("refuses Cloudflare ids that would move the address once parsed, when opened and again when approved", async () => {
+    const { caller } = await person();
+    for (const gatewayId of [".", ".."]) {
+      const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "dots", cloudflareGateway: { accountId: "acct", gatewayId } });
+      expect(opened.status, opened.text).toBe(400);
+      expect(opened.text).toContain("cloudflareGateway.gatewayId");
+    }
+    // A step stored before the rule: its reviewed gateway is "..".
+    const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "dots-stored", cloudflareGateway: { accountId: "acct", gatewayId: "gw" } });
+    const row = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id = ?").bind(opened.body.id).first<{ payload: string }>();
+    const payload = JSON.parse(row!.payload) as { review: { cloudflareGateway: { gatewayId: string } } };
+    payload.review.cloudflareGateway.gatewayId = "..";
+    await env.DB.prepare("UPDATE mgmt_operation SET payload = ? WHERE id = ?").bind(JSON.stringify(payload), opened.body.id).run();
+    const proof = proofOf(opened.body.url);
+    expect((await page(`/v2/console/handoffs/${opened.body.id}`, { proof })).body.review.destinations).toEqual([]);
+    const approved = await page(`/v2/console/handoffs/${opened.body.id}/submit`, { proof, cloudflareToken: "cf-token-0123456789" });
+    expect(approved.status, approved.text).toBe(400);
+    expect(approved.text).toContain("cannot be . or ..");
+    expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
+  });
+
+  it("refuses a Cloudflare setting a direct save refuses, and a Cloudflare token where nothing goes through Cloudflare", async () => {
+    const { caller } = await person();
+    const cloudflareGateway = { accountId: "acct", gatewayId: "gw" };
+    const beside = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "beside", baseUrl: "https://llm.example.net/", cloudflareGateway });
+    expect(beside.status, beside.text).toBe(400);
+    expect(beside.text).toContain("not both");
+    const token = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "with-token", cloudflareGateway: { ...cloudflareGateway, token: "cf-token-0123456789" } });
+    expect(token.status, token.text).toBe(400);
+
+    const plain = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI", slug: "plain" });
+    const proof = proofOf(plain.body.url);
+    const stray = await page(`/v2/console/handoffs/${plain.body.id}/submit`, { proof, secret: KEY, cloudflareToken: "cf-token-0123456789" });
+    expect(stray.status, stray.text).toBe(400);
+    expect((await page(`/v2/console/handoffs/${plain.body.id}/submit`, { proof })).status).toBe(400);
+    expect((await send(caller, "GET", "/v2/admin/providers")).body.providers).toEqual([]);
+  });
+
   it("refuses a wrong proof and a call from anywhere but the console's page", async () => {
     const { caller } = await person();
     const opened = await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "OpenAI" });

@@ -123,7 +123,12 @@ export function upstreamUrl(
   }
   const prefix = route.stripPathPrefix;
   const path = prefix !== undefined && input.path.startsWith(prefix) ? input.path.slice(prefix.length) : input.path;
-  return `${cloudflareGatewayOrigin(gateway)}${route.slug}/${path}${input.query}`;
+  const origin = cloudflareGatewayOrigin(gateway);
+  // Ids saved before the rule could change the address once parsed: nothing is sent there.
+  if (origin === null) {
+    throw new GatewayError(502, "provider_unavailable", "This connection's Cloudflare AI Gateway ids are not plain path segments; save them again");
+  }
+  return `${origin}${route.slug}/${path}${input.query}`;
 }
 
 /** The URL and headers of one request to a connection's provider. */

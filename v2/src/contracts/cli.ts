@@ -25,7 +25,26 @@ export const CliToolViewSchema = z.object({
   notes: z.array(z.string()).optional(),
   /** An object shown whole, as indented JSON, after everything else. */
   document: z.string().optional(),
+  /**
+   * Text shown as it is, line breaks kept, last: a command to copy, say. Each
+   * path names a string, or with `*` every string it reaches.
+   */
+  blocks: z.array(z.string()).optional(),
+  /** Keys of the object each block is read from, shown joined above it as a short heading, such as its provider and operation. */
+  blockTitle: z.array(z.string()).optional(),
+  /** Columns shown whole rather than cut to fit the table, by key: a list a person needs in full. */
+  wide: z.array(z.string()).optional(),
 });
+
+/**
+ * Characters no command or request an example shows may hold: control
+ * characters, Unicode format characters (such as a zero-width joiner) and
+ * halves of a surrogate pair, any of which a terminal or a reader could take
+ * for something else. The gateway writes no command holding one (only a
+ * note), and `agw` shows none it is sent, rather than rewrite it. A line
+ * break between a command's lines is the one exception.
+ */
+export const UNSAFE_COMMAND_TEXT = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 
 /** Where a tool sits among `agw`'s commands, decided by the gateway so a CLI never needs a release to learn one. */
 export const CliToolHintSchema = z.object({

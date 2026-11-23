@@ -23,6 +23,7 @@ export const keys = {
   apps: ["apps"] as const,
   app: (appId: string) => ["app", appId] as const,
   appCheck: (appId: string) => ["app-check", appId] as const,
+  appSnippet: (appId: string) => ["app-snippet", appId] as const,
   appKeys: (appId: string) => ["app-keys", appId] as const,
   /** Every page of one app's users, for an invalidation that is about all of them. */
   usersPrefix: (appId: string) => ["users", appId] as const,
@@ -241,11 +242,17 @@ export function useAppCheck(appId: string) {
   return useQuery({ queryKey: keys.appCheck(appId), queryFn: () => call("checkApp", { params: { app: appId } }) });
 }
 
+/** The app's first requests, as the gateway builds them from its routes and presets. */
+export function useAppSnippet(appId: string) {
+  return useQuery({ queryKey: keys.appSnippet(appId), queryFn: () => call("getAppSnippet", { params: { app: appId } }) });
+}
+
 /** Refreshes everything one app's change can move. */
 function invalidateApp(client: ReturnType<typeof useQueryClient>, appId: string) {
   void client.invalidateQueries({ queryKey: keys.apps });
   void client.invalidateQueries({ queryKey: keys.app(appId) });
   void client.invalidateQueries({ queryKey: keys.appCheck(appId) });
+  void client.invalidateQueries({ queryKey: keys.appSnippet(appId) });
 }
 
 export function useCreateApp() {

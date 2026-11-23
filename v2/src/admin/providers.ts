@@ -85,7 +85,7 @@ import {
 import type { FieldSetting, OperationDescription, ProviderAuth, ProviderDescription, SuggestedPath } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
 import { TemplateError } from "../providers/path.ts";
-import { normalizedBaseUrl } from "../providers/destinations.ts";
+import { cloudflareIdProblem, normalizedBaseUrl } from "../providers/destinations.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
@@ -635,7 +635,7 @@ function cloudflareView(setting: CloudflareGatewaySetting | null) {
 }
 
 /** A Cloudflare AI Gateway setting as stored: ids, and its token sealed to this connection. */
-async function storedCloudflare(
+export async function storedCloudflare(
   env: Env,
   accountId: string,
   connectionId: string,
@@ -648,6 +648,23 @@ async function storedCloudflare(
     token_blob: blob,
     token_hint: secretHint(setting.token),
   });
+}
+
+/**
+ * A Cloudflare setting's ids as a save judges them: each one new or changed
+ * must be one plain path segment (`cloudflareIdProblem`); one exactly as
+ * `stored` keeps saving, so an older connection can still rotate its token.
+ * The schema has already refused `.` and `..` everywhere.
+ */
+export function checkCloudflareIds(
+  gateway: { readonly accountId: string; readonly gatewayId: string },
+  stored: { readonly accountId: string; readonly gatewayId: string } | null,
+): void {
+  for (const field of ["accountId", "gatewayId"] as const) {
+    if (stored !== null && stored[field] === gateway[field]) continue;
+    const problem = cloudflareIdProblem(gateway[field]);
+    if (problem !== null) throw new GatewayError(400, "invalid_request", `cloudflareGateway.${field}: ${problem}`);
+  }
 }
 
 /**
@@ -827,6 +844,7 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   const customSetting = custom ? checkedCustom(baseUrl, body.auth) : null;
   if (builtIn !== null) checkDestination(builtIn, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
@@ -913,6 +931,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   // Cloudflare AI Gateway: kept, removed, or set. A new account or gateway needs a token for it.
   const storedCloudflareSetting = readCloudflareGateway(current.cloudflare_gateway_json);
   const asked = body.cloudflareGateway;
+  if (asked !== undefined && asked !== null) checkCloudflareIds(asked, storedCloudflareSetting);
   if (asked !== undefined && asked !== null && asked.token === undefined) {
     const same = storedCloudflareSetting?.accountId === asked.accountId && storedCloudflareSetting?.gatewayId === asked.gatewayId;
     if (!same) {
@@ -1108,6 +1127,8 @@ export async function testProvider(c: AdminContext): Promise<Response> {
   assertFieldsFit(body.type, body);
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
+  // A test names no stored connection, so its ids are judged as new ones: what cannot be saved is not tested.
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   checkDestination(description, baseUrl, cloudflare);
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   // The probe is built as a live request would be: same host, same credentials.

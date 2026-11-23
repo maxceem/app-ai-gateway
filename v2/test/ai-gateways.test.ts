@@ -10,7 +10,8 @@ import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
-import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { connectionCredentials, keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { sealSecret } from "../src/vault/secrets.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
 import { upstreamRequest } from "../src/providers/route.ts";
@@ -129,6 +130,32 @@ describe("where a request goes (route.ts)", () => {
     expect(byok.url).toBe("https://gateway.ai.cloudflare.com/v1/acct%201/gw-1/grok/v1/chat/completions?x=1");
     // Cloudflare uses the key in its own store.
     expect(byok.headers.authorization).toBeUndefined();
+  });
+
+  it("still opens a key sealed under the old label for a stored id of . or .., while sending nothing", async () => {
+    for (const gatewayId of [".", ".."]) {
+      // The label such keys were always sealed under: v1/ and both ids, encoded.
+      const label = `https://gateway.ai.cloudflare.com/v1/acct/${encodeURIComponent(gatewayId)}/`;
+      const setting = { accountId: "acct", gatewayId };
+      expect(keyOrigin({ baseUrl: null, cloudflareGateway: setting })).toBe(label);
+      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label], PROVIDER_KEY);
+      const tokenBlob = await sealSecret(env, "cloudflareGatewayToken", ["acc", "conn"], CF_TOKEN);
+      const stored = record({ secretBlob, cloudflareGateway: { ...setting, tokenBlob, tokenHint: null } });
+      expect(await connectionCredentials(env, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
+      expect(() =>
+        upstreamRequest(stored, BUILT_IN_PROVIDERS.openai!, { ...base, path: "v1/chat/completions", credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN } }),
+      ).toThrow(/not plain path segments/u);
+    }
+  });
+
+  it("sends nothing for a stored id a URL parser would read as a folder", () => {
+    expect(() =>
+      upstreamRequest(record({ cloudflareGateway: { ...cloudflare, gatewayId: ".." } }), BUILT_IN_PROVIDERS.openai!, {
+        ...base,
+        path: "v1/chat/completions",
+        credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN },
+      }),
+    ).toThrow(/not plain path segments/u);
   });
 
   it("refuses a provider Cloudflare does not serve, and a connection with no key going direct", () => {
@@ -370,16 +397,47 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(response.status).toBe(400);
   });
 
-  it("refuses a Cloudflare id that is not well-formed text, which could never reach Cloudflare", async () => {
+  it("refuses a Cloudflare id that is not one plain path segment, on create, update and the key test", async () => {
     const key = await seedManagementKey();
-    const created = await admin(key, "POST", "/v2/admin/providers", {
-      type: "openai",
-      name: "x",
-      slug: slugFor("openai"),
-      cloudflareGateway: { accountId: "acct\uD800", gatewayId: "gw", token: CF_TOKEN },
-    });
-    expect(created.status).toBe(400);
-    expect(JSON.stringify(created.body)).toContain("well-formed");
+    for (const accountId of ["acct\uD800", ".", "..", "a/b", "%2e%2e", "acct 1"]) {
+      const created = await admin(key, "POST", "/v2/admin/providers", {
+        type: "openai",
+        name: "x",
+        slug: slugFor("openai"),
+        cloudflareGateway: { accountId, gatewayId: "gw", token: CF_TOKEN },
+      });
+      expect(created.status, accountId).toBe(400);
+      expect(JSON.stringify(created.body), accountId).toContain("cloudflareGateway.accountId");
+    }
+    // The key test names no stored connection: ids that cannot be saved cannot be tested either.
+    for (const gatewayId of ["..", "a/b", "%2e%2e"]) {
+      const tested = await admin(key, "POST", "/v2/admin/providers/test", { type: "openai", cloudflareGateway: { accountId: "acct", gatewayId, token: CF_TOKEN } });
+      expect(tested.status, gatewayId).toBe(400);
+      expect(JSON.stringify(tested.body), gatewayId).toContain("cloudflareGateway.gatewayId");
+    }
+    const made = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } });
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${made.body.provider.id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "." } });
+    expect(moved.status).toBe(400);
+  });
+
+  it("rotates the token of an older connection whose id holds a space, and judges only a new or changed id", async () => {
+    const key = await seedManagementKey();
+    const made = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } });
+    const id = made.body.provider.id as string;
+    // Saved before the plain-segment rule: an account id with a space.
+    const row = await env.DB.prepare("SELECT cloudflare_gateway_json FROM provider_connection WHERE id = ?").bind(id).first<{ cloudflare_gateway_json: string }>();
+    const setting = JSON.parse(row!.cloudflare_gateway_json) as Record<string, unknown>;
+    await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?").bind(JSON.stringify({ ...setting, account_id: "acct 1" }), id).run();
+
+    const rotated = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct 1", gatewayId: "gw", token: "cf-token-rotated-0123456789" } });
+    expect(rotated.status, JSON.stringify(rotated.body)).toBe(200);
+    expect(rotated.body.provider.cloudflareGateway).toEqual({ accountId: "acct 1", gatewayId: "gw", tokenHint: "6789" });
+    // A changed id is judged: a new gateway with a space is refused, and a dot segment always is.
+    const changed = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, cloudflareGateway: { accountId: "acct 1", gatewayId: "gw 2", token: CF_TOKEN } });
+    expect(changed.status).toBe(400);
+    expect(JSON.stringify(changed.body)).toContain("cloudflareGateway.gatewayId");
+    const dots = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, cloudflareGateway: { accountId: "..", gatewayId: "gw", token: CF_TOKEN } });
+    expect(dots.status).toBe(400);
   });
 
   it("says what key goes with every change of Cloudflare route (S6)", async () => {

@@ -16,12 +16,13 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
-import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
+import { cloudflareCapable, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { cloudflareIdProblem, normalizedBaseUrl } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
+import { parsePathLines, pathLine } from "@contracts/path-lines";
 
 /**
  * Provider connections: one provider's key, saved once and used by every app
@@ -316,19 +317,28 @@ type CloudflareBody = { accountId: string; gatewayId: string; token?: string };
 const NO_CLOUDFLARE: CloudflareDraft = { on: false, accountId: "", gatewayId: "", token: "" };
 
 /** Complete enough to send: the ids, and a token unless the stored one may be kept. */
-function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean): boolean {
+/** A connection's stored Cloudflare ids: kept as they are, they are not judged again. */
+type StoredIds = { readonly accountId: string; readonly gatewayId: string } | null;
+
+function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean, stored: StoredIds = null): boolean {
   return (
     !draft.on ||
     (draft.accountId.trim() !== "" &&
       draft.gatewayId.trim() !== "" &&
-      wellFormedText(draft.accountId) &&
-      wellFormedText(draft.gatewayId) &&
+      idProblem(draft.accountId, stored?.accountId) === null &&
+      idProblem(draft.gatewayId, stored?.gatewayId) === null &&
       (tokenOptional || draft.token !== ""))
   );
 }
 
-/** An id with half a surrogate pair cannot go in a URL: said beside the field. */
-const ID_PROBLEM = "Use plain text: this has a character that cannot be sent.";
+/** Why a typed Cloudflare id cannot be saved, by the gateway's own rule, said beside the field; null while it is empty or fine. */
+function idProblem(text: string, stored?: string): string | null {
+  const id = text.trim();
+  // An older connection's id, kept as stored, keeps saving: the gateway judges only a new or changed one.
+  if (id === "" || id === stored) return null;
+  const problem = cloudflareIdProblem(id);
+  return problem === null ? null : `This ID ${problem}.`;
+}
 
 function cloudflareBody(draft: CloudflareDraft): CloudflareBody {
   return { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim(), ...(draft.token ? { token: draft.token } : {}) };
@@ -338,10 +348,12 @@ function CloudflareFields({
   draft,
   onChange,
   tokenOptional = false,
+  stored = null,
 }: {
   draft: CloudflareDraft;
   onChange: (draft: CloudflareDraft) => void;
   tokenOptional?: boolean;
+  stored?: StoredIds;
 }) {
   return (
     <>
@@ -359,7 +371,7 @@ function CloudflareFields({
               // The token belongs to the account and gateway it was typed for.
               onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
-            {wellFormedText(draft.accountId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
+            {idProblem(draft.accountId, stored?.accountId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.accountId, stored?.accountId)}</p>}
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
             <Input
@@ -368,7 +380,7 @@ function CloudflareFields({
               autoComplete="off"
               onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
-            {wellFormedText(draft.gatewayId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
+            {idProblem(draft.gatewayId, stored?.gatewayId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.gatewayId, stored?.gatewayId)}</p>}
           </Field>
           <Field
             label="Cloudflare token"
@@ -656,49 +668,8 @@ type ListedPath = NonNullable<ProviderConnection["passthrough"]>[number];
 
 type FieldSetting = NonNullable<ListedPath["set_fields"]>[number];
 
-/** One listed path as a line: method, path, then a price in dollars or an API style. Its field settings are kept apart. */
-export function pathLine(path: ListedPath): string {
-  return [path.method, path.path, ...(path.per_request !== undefined ? [`$${path.per_request}`] : []), ...(path.style !== undefined ? [path.style] : [])].join(" ");
-}
-
-const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
-
-/**
- * Lines back to listed paths. Each line is a method and a path, then
- * optionally `$<dollars>` per request or, on a custom provider, an API style.
- * Returns the paths, or the first problem with its line number.
- */
-export function parsePathLines(text: string, custom: boolean): { paths: ListedPath[] } | { problem: string } {
-  const paths: ListedPath[] = [];
-  const lines = text.split("\n");
-  for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (line === "") continue;
-    const where = `Line ${index + 1}`;
-    const [method, path, ...rest] = line.split(/\s+/u);
-    const upper = method!.toUpperCase();
-    if (!(METHODS as readonly string[]).includes(upper)) return { problem: `${where}: start with GET, POST, PUT, PATCH or DELETE.` };
-    if (path === undefined) return { problem: `${where}: add the path after the method.` };
-    const entry: ListedPath = { method: upper as ListedPath["method"], path };
-    for (const token of rest) {
-      if (token.startsWith("$")) {
-        const price = Number(token.slice(1));
-        if (token.length === 1 || !Number.isFinite(price) || price < 0) return { problem: `${where}: a price is $ and a number, such as $0.002.` };
-        entry.per_request = price;
-      } else if (custom && CUSTOM_STYLES.includes(token)) {
-        entry.style = token as ListedPath["style"];
-      } else {
-        return {
-          problem: custom
-            ? `${where}: ${token} is not a price or an API style (${CUSTOM_STYLES.join(", ")}).`
-            : `${where}: ${token} is not a price. Write a price as $0.002.`,
-        };
-      }
-    }
-    paths.push(entry);
-  }
-  return { paths };
-}
+// Shared with `agw provider add --path`, so a path line reads the same wherever it is typed.
+export { parsePathLines, pathLine };
 
 /**
  * The key a listed path's field settings are kept under while its line is
@@ -1468,13 +1439,13 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
+      disabled={blocked || !cloudflareReady(draft, sameGateway, stored) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
       onSubmit={() =>
         void save({ cloudflareGateway: cloudflareBody(draft), ...(removesBase ? { baseUrl: null } : {}), ...key }, "Cloudflare AI Gateway saved")
       }
     >
       {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
-      <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
+      <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} stored={stored} />
       {removesBase ? (
         <label className="flex items-center gap-2 text-sm">
           <Checkbox checked={dropBase} disabled={blocked} onCheckedChange={(checked) => setDropBase(checked === true)} />
