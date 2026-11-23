@@ -126,11 +126,10 @@ test("deployment status asks for the release beside the session, with a short li
     // The session is asked before this answers: the two run side by side.
     await sessionAsked;
     assert.ok(options.timeoutMs !== undefined && options.timeoutMs <= 5_000, `timeoutMs ${options.timeoutMs}`);
-    return { billing: false, registrationOpen: true, googleAuth: false, oauth: true, serverVersion: "2.0.0", prices: { revision: "abcdef012345", updated: null } };
+    return { billing: false, registrationOpen: true, googleAuth: false, oauth: true, serverVersion: "2.0.0" };
   });
   assert.equal(result.code, 0, result.err);
   assert.equal(result.json.result.serverVersion, "2.0.0");
-  assert.deepEqual(result.json.result.prices, { revision: "abcdef012345", updated: null });
   assert.equal(result.json.result.signedIn, true);
 });
 

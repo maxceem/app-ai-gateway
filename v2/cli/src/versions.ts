@@ -12,8 +12,21 @@
 import { CliError, VERSION } from "./common.ts";
 import type { Context, Notice } from "./context.ts";
 
-/** How long the version lookup may take; a slow answer leaves the note out. */
-const LOOKUP_MS = 5_000;
+/** How long the release lookup may take; a slow answer leaves the release out. */
+const LOOKUP_MS = 3_000;
+
+/**
+ * What the gateway says about itself, for its release: asked with a short
+ * limit, and never a reason for a command to fail. Undefined when it could
+ * not be asked in time.
+ */
+export async function gatewayRelease(ctx: Pick<Context, "client" | "url">): Promise<{ readonly serverVersion?: string; readonly billing: boolean } | undefined> {
+  try {
+    return (await ctx.client.publicCall("getConsoleCapabilities", { url: ctx.url, timeoutMs: LOOKUP_MS })).data;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Refusals whose cause is known and has nothing to do with versions: a
@@ -57,12 +70,8 @@ function gatewayAnswered(command: string, error: CliError): boolean {
  */
 export async function versionNotice(ctx: Context, command: string, error: CliError): Promise<Notice | undefined> {
   if (!gatewayAnswered(command, error)) return undefined;
-  let capabilities;
-  try {
-    ({ data: capabilities } = await ctx.client.publicCall("getConsoleCapabilities", { url: ctx.url, timeoutMs: LOOKUP_MS }));
-  } catch {
-    return undefined;
-  }
+  const capabilities = await gatewayRelease(ctx);
+  if (capabilities === undefined) return undefined;
   const api = capabilities.serverVersion;
   if (api === undefined) return undefined;
   const order = compareVersions(VERSION, api);

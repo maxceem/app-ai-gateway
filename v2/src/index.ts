@@ -24,7 +24,7 @@ import { log } from "./core/log.ts";
 import { runSweep, SWEEP_CRON } from "./ledger/sweep.ts";
 import { asGatewayError } from "./core/platform-errors.ts";
 import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
-import { setServerTiming } from "./proxy/timing.ts";
+import { serverTiming } from "./proxy/timing.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
 import { meHandler } from "./routes/me.ts";
 import { presetHandler } from "./proxy/presets.ts";
@@ -128,12 +128,13 @@ for (const pattern of ["/v2/admin/*", "/v2/cli/*", "/v2/auth/*", "/v2/oauth/auth
 app.all("/v2/mcp", lazyRoutes(() => import("./mcp/app.ts").then((module) => module.default)));
 
 // Provider requests. No deadline of their own: a provider may stream for minutes.
-app.all("/v2/apps/:app/proxy/:provider/*", proxyHandler);
+// Each served route answers with `server-timing`, error answers included (`./proxy/timing.ts`).
+app.all("/v2/apps/:app/proxy/:provider/*", serverTiming, proxyHandler);
 // Job polls: free, and their upstream URL comes from the signed job id (plan D9).
-app.get(routePath("getJobStatus"), pollNoStore, jobStatusHandler);
-app.get(routePath("getJobResult"), pollNoStore, jobResultHandler);
-app.put(routePath("cancelJob"), pollNoStore, jobCancelHandler);
-app.post("/v2/apps/:app/presets/:slug", presetHandler);
+app.get(routePath("getJobStatus"), serverTiming, pollNoStore, jobStatusHandler);
+app.get(routePath("getJobResult"), serverTiming, pollNoStore, jobResultHandler);
+app.put(routePath("cancelJob"), serverTiming, pollNoStore, jobCancelHandler);
+app.post("/v2/apps/:app/presets/:slug", serverTiming, presetHandler);
 
 app.notFound(async (c) => {
   // A page of the console, such as `/v2/access` or `/v2/oauth/consent`: no
@@ -188,16 +189,12 @@ app.onError((error, c: Context<Env2>) => {
     }
     const headers = new Headers(gateway.headers);
     headers.set("content-type", "application/json; charset=UTF-8");
-    // A served request says how long each step it reached took, the one that refused it included.
-    setServerTiming(headers, c.req.raw);
     return new Response(JSON.stringify(errorBody(gateway)), { status: gateway.status, headers });
   }
   log("error", "unhandled_error", { path: c.req.routePath, error: errorFacts(error) });
-  const headers = new Headers({ "content-type": "application/json; charset=UTF-8" });
-  setServerTiming(headers, c.req.raw);
-  return new Response(
-    JSON.stringify({ error: { code: "internal_error", message: "The gateway failed to handle this request." } } satisfies ErrorResponse),
-    { status: 500, headers },
+  return c.json(
+    { error: { code: "internal_error", message: "The gateway failed to handle this request." } } satisfies ErrorResponse,
+    500,
   );
 });
 

@@ -39,7 +39,7 @@ import { logoutStateFailure, StateStore } from "./state.ts";
 import { styleFor, type Style } from "./style.ts";
 import { clean, humanToolResult, mentions, toolHelp, usageLine } from "./tool-output.ts";
 import { Transport } from "./transport.ts";
-import { versionNotice } from "./versions.ts";
+import { gatewayRelease, versionNotice } from "./versions.ts";
 
 /** Anything stdout can be pointed at, including the test suite's own sinks. */
 export interface OutputSink {
@@ -78,9 +78,6 @@ export class MemoryCatalogCache implements CatalogCache {
 /** The required positional argument a parsed command carries. */
 const first = (args: readonly string[]): string => args[0] ?? "";
 
-/** How long `deployment status` waits for the gateway's release beside the session. */
-const RELEASE_LOOKUP_MS = 3_000;
-
 /** `agw deployment status`: the selected gateway, and who commands run as. */
 async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   const credential = ctx.environmentKey ? "environment" : ctx.active?.login ? "oauth" : null;
@@ -88,10 +85,7 @@ async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   if (!credential) return { ...base, ...release(await ctx.checkGateway()) };
   // The gateway's release, asked beside the session and given a short time:
   // it is extra, never a reason for the status to fail or to wait.
-  const capabilities = ctx.client
-    .publicCall("getConsoleCapabilities", { url: ctx.url, timeoutMs: RELEASE_LOOKUP_MS })
-    .then(({ data }) => data)
-    .catch(() => undefined);
+  const capabilities = gatewayRelease(ctx);
   try {
     const session = await ctx.session();
     return { ...base, ...release(await capabilities), signedIn: true, ...session };
@@ -103,12 +97,9 @@ async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   }
 }
 
-/** The gateway's release and price list, as far as it reports them. */
-function release(capabilities: { serverVersion?: string; prices?: { revision: string; updated: string | null } } | undefined): Pick<DeploymentStatusResult, "serverVersion" | "prices"> {
-  return {
-    ...(capabilities?.serverVersion === undefined ? {} : { serverVersion: capabilities.serverVersion }),
-    ...(capabilities?.prices === undefined ? {} : { prices: capabilities.prices }),
-  };
+/** The gateway's release, when it reports one. */
+function release(capabilities: { readonly serverVersion?: string } | undefined): Pick<DeploymentStatusResult, "serverVersion"> {
+  return capabilities?.serverVersion === undefined ? {} : { serverVersion: capabilities.serverVersion };
 }
 
 export async function execute(parsed: ParsedCommand, ctx: Context): Promise<CommandResult> {

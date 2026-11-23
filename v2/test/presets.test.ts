@@ -591,18 +591,17 @@ describe("presets", () => {
     }
   });
 
-  it("reads PROVIDER_TTFB_TIMEOUT_SECONDS as whole seconds, falling back to 120 and capped at half an hour", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("reads PROVIDER_TTFB_TIMEOUT_SECONDS as v1 does: any positive number of seconds, 120 otherwise", () => {
     const ms = (value: unknown) => providerTtfbTimeoutMs({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: value } as unknown as Env);
     expect(ms(undefined)).toBe(120_000);
     expect(ms("")).toBe(120_000);
     expect(ms("300")).toBe(300_000);
     expect(ms(45)).toBe(45_000);
+    expect(ms("1.5")).toBe(1_500);
+    expect(ms("99999")).toBe(99_999_000);
     expect(ms("0")).toBe(120_000);
-    expect(ms("1.5")).toBe(120_000);
+    expect(ms("-5")).toBe(120_000);
     expect(ms("ninety")).toBe(120_000);
-    expect(ms("99999")).toBe(1_800_000);
-    expect(warn.mock.calls.flat().join(" ")).toContain("provider_ttfb_timeout_invalid");
   });
 
   it("passes the held 503 on when a fallback's key uses up the budget, sending nothing after it", async () => {

@@ -67,8 +67,7 @@ import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./c
 import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
-import { setting } from "../core/query-budget.ts";
-import { authDone, authRefused, prepareDone, providerAnswered, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
+import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -78,46 +77,38 @@ import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRed
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
 
-/** The longest `PROVIDER_TTFB_TIMEOUT_SECONDS` accepted: half an hour. */
-const MAX_TTFB_TIMEOUT_SECONDS = 1_800;
+/** The deployment's first-byte time, worked out once per environment. */
+const ttfbTimeouts = new WeakMap<object, number>();
 
 /**
  * How long a provider may take to send its response headers, for an operation
- * that names no time of its own: v1's `PROVIDER_TTFB_TIMEOUT_SECONDS`, whole
- * seconds, 120 by default, at most half an hour. A self-hosted deployment
- * whose own model server thinks longer before its first byte raises it.
- * Once headers arrive the body streams as long as the model needs.
+ * that names no time of its own: v1's `PROVIDER_TTFB_TIMEOUT_SECONDS`, read
+ * as v1 reads it: any positive number of seconds, 120 otherwise. A
+ * self-hosted deployment whose own model server thinks longer before its
+ * first byte raises it. Once headers arrive the body streams as long as the
+ * model needs.
  *
  * Not a `vars` entry in `wrangler.jsonc`, as the maintenance budgets: most
  * deployments never need it, and the install form would ask about it.
  */
 export function providerTtfbTimeoutMs(env: Env): number {
-  const configured = (env as { PROVIDER_TTFB_TIMEOUT_SECONDS?: unknown }).PROVIDER_TTFB_TIMEOUT_SECONDS;
-  return (
-    setting(configured, "provider_ttfb_timeout", {
-      fallback: PROVIDER_TTFB_TIMEOUT_MS / 1_000,
-      minimum: 1,
-      maximum: MAX_TTFB_TIMEOUT_SECONDS,
-    }) * 1_000
-  );
+  let ms = ttfbTimeouts.get(env);
+  if (ms === undefined) {
+    const seconds = Number((env as { PROVIDER_TTFB_TIMEOUT_SECONDS?: unknown }).PROVIDER_TTFB_TIMEOUT_SECONDS);
+    ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1_000) : PROVIDER_TTFB_TIMEOUT_MS;
+    ttfbTimeouts.set(env, ms);
+  }
+  return ms;
 }
 
 /**
- * How long opening the first attempt's key may take, before anything is sent:
- * the operation's own time or the gateway's 120 s. Never the deployment's
- * first-byte setting, which bounds the provider, not the vault.
+ * How long a step may take: the operation's own time (`responseDeadlineMs`,
+ * such as Deepgram's 20 minutes), or else, for the provider's first byte, the
+ * deployment's setting, and for opening the first key before anything is sent,
+ * the gateway's 120 s (that setting bounds the provider, not the vault).
  */
-function keyOpenBudgetMs(operation: OperationDescription): number {
-  return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
-}
-
-/**
- * How long an operation's provider may take to send its response headers: the
- * operation's own time (`responseDeadlineMs`, such as Deepgram's 20 minutes),
- * or the deployment's.
- */
-function responseDeadlineMs(env: Env, operation: OperationDescription): number {
-  return operation.responseDeadlineMs ?? providerTtfbTimeoutMs(env);
+function budgetMs(operation: OperationDescription, env?: Env): number {
+  return operation.responseDeadlineMs ?? (env === undefined ? PROVIDER_TTFB_TIMEOUT_MS : providerTtfbTimeoutMs(env));
 }
 
 const CLIENT_TRACE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -211,23 +202,13 @@ export async function serveCaller(
 ): Promise<Response> {
   const { app, startedAt } = input;
   const readBody = bodyOnce(c.req.raw);
-  // Each step is timed for `server-timing`, whether it serves or refuses (`./timing.ts`); `auth` began as the app was loaded.
-  const timings = startTimings(c.req.raw);
-  const authStartedAt = timings.authStartedAt ?? performance.now();
-  let authenticated: Awaited<ReturnType<typeof authenticateRequest>>;
-  try {
-    authenticated = await authenticateRequest({
-      env: c.env,
-      app,
-      request: c.req.raw,
-      body: readBody,
-      ...(input.providerAuthHeader === undefined ? {} : { providerAuthHeader: input.providerAuthHeader }),
-    });
-  } catch (error) {
-    timings.authMs = performance.now() - authStartedAt;
-    throw error;
-  }
-  const { identity, credential, assertionCounter } = authenticated;
+  const { identity, credential, assertionCounter } = await authenticateRequest({
+    env: c.env,
+    app,
+    request: c.req.raw,
+    body: readBody,
+    ...(input.providerAuthHeader === undefined ? {} : { providerAuthHeader: input.providerAuthHeader }),
+  });
   const appVersion = c.req.header("x-app-version") ?? null;
   const facts: Caller["facts"] = { operation: null, model: null };
 
@@ -277,12 +258,11 @@ export async function serveCaller(
       throw new GatewayError(400, "invalid_request", "X-Conversation-Storage accepts only off");
     }
     const storesConversation = app.conversations !== null && storage === undefined && conversationsBucket(c.env) !== null;
-    authDone(timings, authStartedAt);
+    // `auth` ends here, for `server-timing` (`./timing.ts`).
+    const timings = timingsOf(c.req.raw);
+    if (timings !== undefined) authDone(timings);
     return await serve({ identity, credentialHeader: credential.headerName, credentialToken: credential.token, appVersion, clientTraceId, readBody, facts, storesConversation });
   } catch (error) {
-    // The step the request was refused in reports how long the refusal took.
-    if (timings.authMs === undefined) timings.authMs = performance.now() - authStartedAt;
-    else prepareDone(timings);
     const reason = refusalReason(error);
     if (REJECTION_REASONS.has(reason.reason)) {
       c.executionCtx.waitUntil(
@@ -306,27 +286,17 @@ export async function serveCaller(
 
 export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const startedAt = Date.now();
-  // `auth` starts here, before the app is loaded, so a refusal for the app itself is timed too (v1).
-  const timings = startTimings(c.req.raw);
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const url = new URL(c.req.url);
   const target = proxyTarget(url);
-  let app: AppRecord;
-  let routing: AppRecord["routing"]["providers"][string] | undefined;
-  let connection: ConnectionRecord | null;
-  try {
-    app = await loadApp(c.env, appId);
-    assertAppServes(c.env, app);
-    // Only a slug the app lists is looked up: the caller is not verified yet, so
-    // an unlisted one costs no D1 read and leaves nothing in the cache. It is
-    // refused below, once the caller is known.
-    routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
-    connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
-  } catch (error) {
-    authRefused(timings);
-    throw error;
-  }
+  const app = await loadApp(c.env, appId);
+  assertAppServes(c.env, app);
+  // Only a slug the app lists is looked up: the caller is not verified yet, so
+  // an unlisted one costs no D1 read and leaves nothing in the cache. It is
+  // refused below, once the caller is known.
+  const routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
+  const connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
   const description = connection === null ? null : connectionDescription(connection);
 
   return serveCaller(
@@ -1079,7 +1049,7 @@ async function sendAttemptsKeptFor(
       // Before the first fetch, opening the key has its own budget, as before
       // the first-byte setting; that time starts with the provider attempt.
       // A fallback's key shares what is left of it.
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? keyOpenBudgetMs(prepared.operation) : deadline - Date.now());
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? budgetMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
@@ -1145,7 +1115,7 @@ async function sendAttemptsKeptFor(
         throw new GatewayError(502, "provider_error", "The app went away before the request was sent");
       }
       providerStart = Date.now();
-      deadline ??= providerStart + responseDeadlineMs(c.env, prepared.operation);
+      deadline ??= providerStart + budgetMs(prepared.operation, c.env);
       const remainingMs = deadline - providerStart;
       if (remainingMs <= 0) throw budgetExhausted(index);
       controller = new AbortController();
@@ -1283,7 +1253,6 @@ function answer(
     return answerJobSubmit(c, prepared, upstream, latencyMs, keyHeader, controller);
   }
   const responseHeaders = clientResponseHeaders(upstream.headers, keyHeader);
-  setServerTiming(responseHeaders, c.req.raw, latencyMs);
   // A job submit the provider refused (a 409 pointing at an existing provider job, say) has no
   // gateway job, so there is no gateway link to give: the provider's `Location` is dropped, and
   // its status and body go on as they are.
@@ -1471,7 +1440,6 @@ async function answerJobSubmit(
   c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
   const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
   const headers = clientResponseHeaders(upstream.headers, keyHeader);
-  setServerTiming(headers, c.req.raw, latencyMs);
   // The provider's own `Location` (fal can send one with a 202) never reaches the app: when it
   // points exactly at this job's status or result, the gateway's link takes its place.
   const targets = jobRedirectTargets({ connection, description: prepared.description, operation, spec }, { model: attempt.model, requestId });

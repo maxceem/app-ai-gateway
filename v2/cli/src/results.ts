@@ -22,8 +22,6 @@ export interface DeploymentStatusResult {
   grant?: string;
   /** The gateway's release, when it reports one. */
   serverVersion?: string;
-  /** The model price list the gateway bills with, when it reports one. */
-  prices?: { revision: string; updated: string | null };
 }
 
 export type OperationStatus = OperationResponse<"getOperation">;

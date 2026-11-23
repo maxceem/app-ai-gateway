@@ -72,8 +72,9 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
   for a gateway that does not report its release. A newer gateway is also
   noticed from fields `agw` does not know (`newer_gateway`), and a v1 gateway
   is refused with the agw 1.x message.
-- `agw deployment status` shows the gateway's release and the revision of the
-  price list it bills with, when the gateway reports them.
+- `agw deployment status` shows the gateway's release, when the gateway
+  reports it. agw 1.x also showed the price list's revision; a v2 gateway
+  leaves it out until its deploy script records one.
 - Secrets never reach stdout: a provider key comes from a hidden prompt,
   stdin or the console; a new app key goes to a private file.
 

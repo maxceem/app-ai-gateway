@@ -12,7 +12,7 @@
  * cf-auth decides every security rule (the proof, the code, the client, the
  * session and membership re-read in the batch that completes an approval).
  */
-import { pricesRevision, SERVER_VERSION } from "../core/version.ts";
+import { SERVER_VERSION } from "../core/version.ts";
 import type { AuthState, CfAuth, CfAuthOAuth } from "@maxceem/cf-auth";
 import { Hono, type Context } from "hono";
 import { gatewayErrorOf, humanSession, identityFor } from "../auth/identity.ts";
@@ -54,7 +54,7 @@ export const consoleRoutes = new Hono<ConsoleEnv>();
 
 const path = (name: OperationName): string => honoPath(CATALOG[name].path);
 
-consoleRoutes.get(path("getConsoleCapabilities"), async (c) =>
+consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
   c.json({
     billing: hostedDeployment(c.env),
     registrationOpen: registrationOpen(c.env),
@@ -65,7 +65,6 @@ consoleRoutes.get(path("getConsoleCapabilities"), async (c) =>
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
     serverVersion: SERVER_VERSION,
-    prices: await pricesRevision(),
   } satisfies OperationResponse<"getConsoleCapabilities">),
 );
 

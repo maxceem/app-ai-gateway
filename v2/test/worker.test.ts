@@ -84,7 +84,7 @@ describe("the v2 Worker", () => {
   });
 });
 
-describe("the gateway's release and price list (v1's CLI capabilities)", () => {
+describe("the gateway's release (v1's CLI capabilities)", () => {
   async function capabilities(): Promise<Record<string, unknown>> {
     const response = await exports.default.fetch(new Request("https://gateway.test/v2/console/capabilities"));
     expect(response.status).toBe(200);
@@ -98,14 +98,4 @@ describe("the gateway's release and price list (v1's CLI capabilities)", () => {
     expect((await capabilities()).serverVersion).toBe(gateway);
   });
 
-  it("names its price list by a revision that follows the prices, with no day until the deploy script records one", async () => {
-    const { prices } = (await capabilities()) as { prices: { revision: string; updated: string | null } };
-    expect(prices.revision).toMatch(/^[0-9a-f]{12}$/u);
-    expect(prices.updated).toBeNull();
-    // The merged list the Worker bills with: main's copy and v2's own entries.
-    const { PRICE_FILE } = await import("../src/pricing/price-file.ts");
-    expect(Object.keys((await import("../src/pricing/models.v2.json")).default).every((provider) => Object.hasOwn(PRICE_FILE, provider))).toBe(true);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(PRICE_FILE))));
-    expect(prices.revision).toBe([...digest.slice(0, 6)].map((byte) => byte.toString(16).padStart(2, "0")).join(""));
-  });
 });

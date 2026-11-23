@@ -1,18 +1,19 @@
 /**
  * Flat arguments of `patch_app` that stand for app patch operations, as v1's
- * MCP tools took them (`src/mcp/shortcuts.ts` at the repository root): what
- * `agw app update` takes as flags, declared once beside the gateway that knows
- * where each setting lives.
+ * MCP tools took them (`src/mcp/shortcuts.ts` at the repository root),
+ * declared once beside the gateway that knows where each setting lives.
+ * (`agw app update` has its own `--name` and `--status`.)
  *
- * Each one replaces a whole leaf, so shortcuts alone apply to the app as it is
- * now: `patch_app` reads the app first, rather than asking for a revision.
- * v1's `providers` and `all_providers` are not here: a v2 route names its
- * operations and models, so a list of provider slugs alone cannot say what
- * each one may do. Those go through operations.
+ * Shortcuts are sent alone, never beside operations: `patch_app` reads the
+ * app, turns the shortcuts into operations against it, and saves them at the
+ * caller's revision, or the one it read. v1's `providers` and
+ * `all_providers` are not here: a v2 route names its operations and models,
+ * so a list of provider slugs alone cannot say what each one may do. Those go
+ * through operations.
  */
 import { z } from "zod";
 import type { AppPatchOperation } from "../contracts/admin.ts";
-import { APP_STATUSES } from "../contracts/admin.ts";
+import { APP_STATUSES, AppNameSchema } from "../contracts/admin.ts";
 import { APP_ATTEST_VERIFY_ON, AppAttestEnvironmentsSchema, AppleBundleIdSchema, AppleTeamIdSchema } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 
@@ -26,11 +27,7 @@ interface Shortcut {
   readonly operations: (value: never, app: ShortcutApp) => AppPatchOperation[];
 }
 
-/**
- * Each shortcut sets one object field with JSON Patch `add`, which writes the
- * field whether or not it is there: an operation before it may have replaced
- * its parent without it (an `app_attest` without `verify_on`).
- */
+/** Each shortcut sets one object field with JSON Patch `add`, which writes the field whether or not it is there. */
 const set = (path: string, value: unknown): AppPatchOperation => ({ op: "add", path, value }) as AppPatchOperation;
 
 /** A setting only an iOS app has, refused by name for any other. */
@@ -45,7 +42,7 @@ function appAttest(argument: string, setting: string): Shortcut["operations"] {
 
 export const APP_SHORTCUTS: Readonly<Record<string, Shortcut>> = {
   name: {
-    schema: z.string().trim().min(1).max(100).meta({ description: "The app's new name." }),
+    schema: AppNameSchema.meta({ description: "The app's new name." }),
     operations: (value: string) => [set("/name", value)],
   },
   status: {
@@ -84,20 +81,23 @@ export function usedShortcuts(input: Record<string, unknown>): string[] {
   return Object.keys(APP_SHORTCUTS).filter((name) => input[name] !== undefined);
 }
 
-/** Refuses, before anything is read or written, a shortcut whose value is not what it takes (`null` included). */
+/** Each call's shortcut values, parsed once by `checkShortcuts` and used by `shortcutOperations`. */
+const PARSED = new WeakMap<Record<string, unknown>, ReadonlyMap<string, unknown>>();
+
+/** Refuses, before anything is read or written, a shortcut whose value is not what it takes (`null` included), and keeps the parsed values. */
 export function checkShortcuts(input: Record<string, unknown>): void {
+  const parsed = new Map<string, unknown>();
   for (const name of usedShortcuts(input)) {
-    const parsed = APP_SHORTCUTS[name]!.schema.safeParse(input[name]);
-    if (!parsed.success) throw new GatewayError(400, "invalid_request", `${name}: ${parsed.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
+    const result = APP_SHORTCUTS[name]!.schema.safeParse(input[name]);
+    if (!result.success) throw new GatewayError(400, "invalid_request", `${name}: ${result.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
+    parsed.set(name, result.data);
   }
+  PARSED.set(input, parsed);
 }
 
 /** The operations the shortcuts a call uses stand for, in the table's order, judged against the app as read. */
 export function shortcutOperations(input: Record<string, unknown>, app: ShortcutApp): AppPatchOperation[] {
-  return usedShortcuts(input).flatMap((name) => {
-    const shortcut = APP_SHORTCUTS[name]!;
-    const parsed = shortcut.schema.safeParse(input[name]);
-    if (!parsed.success) throw new GatewayError(400, "invalid_request", `${name}: ${parsed.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
-    return shortcut.operations(parsed.data as never, app);
-  });
+  if (!PARSED.has(input)) checkShortcuts(input);
+  const parsed = PARSED.get(input)!;
+  return [...parsed].flatMap(([name, value]) => APP_SHORTCUTS[name]!.operations(value as never, app));
 }
