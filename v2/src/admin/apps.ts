@@ -46,6 +46,7 @@ import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
+import { sameJson } from "../contracts/canonical-json.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
@@ -782,21 +783,6 @@ function judgedAgainst(current: AppRow, status: "active" | "disabled" | undefine
   return { stored, priced: current.status !== "active" && (status ?? current.status) === "active" ? NOTHING_STORED : stored };
 }
 
-/** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sameJson(a: unknown, b: unknown): boolean {
-  return canonicalJson(a) === canonicalJson(b);
-}
 
 /**
  * Saves a whole app over a stored one, as `PUT` and `PATCH` both do: the

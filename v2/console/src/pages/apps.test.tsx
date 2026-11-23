@@ -187,4 +187,33 @@ describe("AppsPage", () => {
     });
     await waitFor(() => expect(router.location.pathname).toBe("/apps/phone"));
   });
+
+  it("forgets a paid answer when the app's kind changes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ apps: [] }))));
+    renderAuthenticated(<AppsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Backend");
+    await userEvent.click(screen.getByRole("radio", { name: /server/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
+
+    for (let step = 0; step < 3; step += 1) await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await userEvent.click(screen.getByRole("radio", { name: /iOS app/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText(/team id/i), "ABCDE12345");
+    await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(screen.getByRole("radio", { name: /Any signed-in user/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(false);
+  });
 });

@@ -6,6 +6,7 @@
  * console does not know, are never sent back rebuilt.
  */
 import { APP_PATCH_MAX_OPERATIONS, type AppPatchOperation } from "@contracts/admin";
+import { sameJson } from "@contracts/canonical-json";
 
 export type PatchOperation = AppPatchOperation;
 
@@ -20,7 +21,8 @@ export function pointerSegment(key: string): string {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+/** Equal as the gateway compares them: key order aside, array order kept. */
+const same = sameJson;
 
 /**
  * The operations that turn `before` into `after` at `path`, descending at

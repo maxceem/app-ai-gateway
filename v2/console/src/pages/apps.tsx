@@ -322,6 +322,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                   setKind(next);
                   setAuth(startingAuth(next));
                   setAnswered(false);
+                  setPaid(false);
                 }}
               />
             </div>

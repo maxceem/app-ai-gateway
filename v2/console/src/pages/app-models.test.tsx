@@ -229,6 +229,37 @@ describe("Presets tab", () => {
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(false);
   });
 
+  it("does not count parameters whose keys only moved as a change, so an older preset's cap does not block another's save", async () => {
+    const legacy = { provider: "openai", operation: "openai.embeddings", model: "text-embed", max_output_tokens: 100, params: { b: 1, a: 2 } };
+    const server = appServer(appWith({ presets: { legacy, quick: QUICK } }), PROVIDERS);
+    renderTab("presets");
+
+    const params = (await screen.findAllByLabelText("Fixed parameters (JSON)"))[0]!;
+    await userEvent.clear(params);
+    await userEvent.click(params);
+    await userEvent.paste('{"a": 2, "b": 1}');
+    const model = screen.getAllByLabelText("Model")[1]!;
+    await userEvent.clear(model);
+    await userEvent.type(model, "gpt-5.5");
+    expect(screen.queryByText(/has no output to cap/)).toBeNull();
+    await saveAndSettle("Save presets", "Presets saved");
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/model", value: "gpt-5.5" }]);
+  });
+
+  it("says a rule of the contract under the field it is about, such as a model name too long", async () => {
+    appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
+    renderTab("presets");
+
+    const model = await screen.findByLabelText("Model");
+    await userEvent.clear(model);
+    await userEvent.click(model);
+    await userEvent.paste("m".repeat(201));
+
+    expect(within(fieldOf("Model")).getByRole("alert").textContent).toMatch(/200/);
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("refuses a number in the parameters too large to send", async () => {
     appServer(testApp(), PROVIDERS);
     renderTab("presets");

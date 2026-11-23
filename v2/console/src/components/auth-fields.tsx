@@ -340,34 +340,51 @@ function ValuesEditor({
   const write = (next: string[]) => onChange(Array.isArray(value) || next.length !== 1 ? next : next[0]!);
   return (
     <div className="space-y-2">
-      {values.map((item, index) => (
-        <div key={index} className="space-y-1">
-          <div className="flex items-center gap-2">
-            <Input
-              id={index === 0 ? id : `${id}-${index}`}
-              aria-label={index === 0 ? undefined : `${label} ${index + 1}`}
-              value={item}
-              className="font-mono text-xs"
-              autoComplete="off"
-              disabled={disabled}
-              onChange={(event) => write(values.map((entry, position) => (position === index ? event.target.value : entry)))}
-            />
-            {values.length > 1 ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
-                disabled={disabled}
-                onClick={() => write(values.filter((_, position) => position !== index))}
-              >
-                <Trash2 className="size-4" />
-              </Button>
-            ) : null}
+      {values.map((item, index) => {
+        // A value with a line break cannot be shown in a one-line input without changing it, so it is shown as it is.
+        const multiline = /[\r\n]/u.test(item);
+        return (
+          <div key={index} className="space-y-1">
+            <div className="flex items-center gap-2">
+              {multiline ? (
+                <div className="flex-1 space-y-0.5">
+                  <pre
+                    id={index === 0 ? id : `${id}-${index}`}
+                    aria-label={`${label} ${index + 1}`}
+                    className="rounded-md border bg-muted/40 px-3 py-1.5 font-mono text-xs whitespace-pre-wrap"
+                  >
+                    {item}
+                  </pre>
+                  <p className="text-xs text-muted-foreground">Contains a line break, so it cannot be edited here. Edit it through the CLI or the API.</p>
+                </div>
+              ) : (
+                <Input
+                  id={index === 0 ? id : `${id}-${index}`}
+                  aria-label={index === 0 ? undefined : `${label} ${index + 1}`}
+                  value={item}
+                  className="font-mono text-xs"
+                  autoComplete="off"
+                  disabled={disabled}
+                  onChange={(event) => write(values.map((entry, position) => (position === index ? event.target.value : entry)))}
+                />
+              )}
+              {values.length > 1 || multiline ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
+                  disabled={disabled}
+                  onClick={() => write(values.filter((_, position) => position !== index))}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              ) : null}
+            </div>
+            <Problem>{Array.isArray(value) ? issueAt(issues, `${issuePath}.${index}`) : issueAt(issues, issuePath)}</Problem>
           </div>
-          <Problem>{Array.isArray(value) ? issueAt(issues, `${issuePath}.${index}`) : issueAt(issues, issuePath)}</Problem>
-        </div>
-      ))}
+        );
+      })}
       {Array.isArray(value) ? <Problem>{issues.get(issuePath)}</Problem> : null}
       <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => write([...values, ""])}>
         <Plus className="size-3.5" />

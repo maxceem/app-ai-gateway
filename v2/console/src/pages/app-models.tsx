@@ -23,6 +23,7 @@ import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { configIssue, usePatchForm } from "@/lib/save-app";
 import type { App, ProviderConnection } from "@/lib/types";
 import { PRESET_SLUG_PATTERN, PresetsConfigSchema, RoutingConfigSchema, type Preset } from "@contracts/app-config";
+import { sameJson } from "@contracts/canonical-json";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
 import { declaredOperation, presetOperationProblem } from "@providers/presets";
 
@@ -178,7 +179,7 @@ interface PresetDraft {
 function isChanged(draft: PresetDraft): boolean {
   if (draft.original === null || draft.slug !== draft.originalSlug) return true;
   try {
-    return JSON.stringify(presetsOf([draft])?.[draft.slug]) !== JSON.stringify(draft.original);
+    return !sameJson(presetsOf([draft])?.[draft.slug], draft.original);
   } catch {
     // Parameters that do not parse are a change; their own problem says so.
     return true;
@@ -343,13 +344,21 @@ export function PresetsTab({ app }: { app: App }) {
   const connections = providers.data?.providers ?? [];
   const slugs = drafts.map((draft) => draft.slug);
   const problems = new Map(drafts.map((draft) => [draft.key, presetProblems(draft, slugs, connections)]));
-  const valid = [...problems.values()].every((found) => Object.keys(found).length === 0);
-  const presets = valid ? presetsOf(drafts) : undefined;
-  // Fields this console does not know, which a newer gateway may have written, are sent back as stored and left to the gateway.
-  const schemaProblem =
-    !valid || presets === undefined
-      ? undefined
-      : PresetsConfigSchema.safeParse(presets).error?.issues.find((issue) => issue.code !== "unrecognized_keys")?.message;
+  // The contract's own rules, each said under the field it is about. Fields this console does not
+  // know, which a newer gateway may have written, are sent back as stored and left to the gateway.
+  let schemaProblem: string | undefined;
+  if ([...problems.values()].every((found) => Object.keys(found).length === 0)) {
+    for (const issue of PresetsConfigSchema.safeParse(presetsOf(drafts) ?? {}).error?.issues ?? []) {
+      if (issue.code === "unrecognized_keys") continue;
+      const [slug, field, position] = issue.path.map(String);
+      const owner = drafts.find((draft) => draft.slug === slug);
+      const where = field === "fallback" && position !== undefined ? `fallback.${position}` : field;
+      const found = owner === undefined || where === undefined ? undefined : problems.get(owner.key);
+      if (found !== undefined && where !== undefined) found[where] ??= issue.message;
+      else schemaProblem ??= issue.message;
+    }
+  }
+  const valid = [...problems.values()].every((found) => Object.keys(found).length === 0) && schemaProblem === undefined;
   const disabled = readOnly || form.pending;
 
   const submit = async () => {
@@ -617,7 +626,7 @@ export function PresetsTab({ app }: { app: App }) {
           <Plus className="size-4" />
           Add preset
         </Button>
-        <GuardedButton disabled={!form.dirty || form.stale || !valid || schemaProblem !== undefined || form.pending} onClick={() => void submit()}>
+        <GuardedButton disabled={!form.dirty || form.stale || !valid || form.pending} onClick={() => void submit()}>
           {form.pending ? <Loader2 className="size-4 animate-spin" /> : null}
           Save presets
         </GuardedButton>

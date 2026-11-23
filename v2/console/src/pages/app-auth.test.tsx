@@ -242,12 +242,29 @@ describe("Sign-in tab", () => {
     );
     renderSignIn();
 
-    await userEvent.type(await screen.findByLabelText("Audience 2"), "-2");
+    // The value with a line break is shown as it is, not in an input that would change it.
+    const first = await screen.findByLabelText("Audience 1");
+    expect(first.tagName).toBe("PRE");
+    expect(first.textContent).toBe("staff\ninternal");
+    expect(screen.getByText(/Contains a line break, so it cannot be edited here/)).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("Audience 2"), "-2");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
       { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["staff\ninternal", "main-2"] },
     ]);
+  });
+
+  it("can remove a value with a line break", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["staff\ninternal", "main"] } } }),
+    );
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove audience 1" }));
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["main"] }]);
   });
 
   it("saves a paid claim for an issuer whose stored values a preset would not accept", async () => {
