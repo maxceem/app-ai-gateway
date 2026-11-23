@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   AppAttestFields,
   IdentityProviderFields,
+  authForSave,
   SubscriptionFields,
   UserSourceFields,
   authIssues,
@@ -188,7 +189,8 @@ function startingAuth(kind: Kind): AuthDraft {
 }
 
 /** The first settings of a new app: its sign-in as answered, trimmed, and nothing else yet. */
-export function newAppConfig(authentication: AuthDraft): { authentication: AuthDraft } {
+export function newAppConfig(answered: AuthDraft): { authentication: AuthDraft } {
+  const authentication = authForSave(answered);
   const endUser = authentication.end_user.source === "header"
     ? { source: "header" as const, header: authentication.end_user.header.trim() }
     : authentication.end_user;
@@ -245,6 +247,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const [auth, setAuth] = useState<AuthDraft>(() => startingAuth("ios"));
   // Who may call has no default answer: the person chooses, as v1 asked it.
   const [answered, setAnswered] = useState(false);
+  const [paid, setPaid] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [created, setCreated] = useState<CreatedApp | null>(null);
 
@@ -252,7 +255,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const steps: StepId[] = ["basics", ...(kind === "ios" ? (["identity"] as const) : []), "users", ...(issuer ? (["provider", "paid"] as const) : [])];
   const step = steps[Math.min(stepIndex, steps.length - 1)]!;
   const last = stepIndex >= steps.length - 1;
-  const issues = authIssues(auth);
+  const issues = authIssues(auth, { paid });
   const done = stepDone(step, name, answered, issues);
 
   const reset = () => {
@@ -260,6 +263,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setKind("ios");
     setAuth(startingAuth("ios"));
     setAnswered(false);
+    setPaid(false);
     setStepIndex(0);
   };
 
@@ -347,6 +351,8 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
         {step === "paid" && auth.end_user.source === "issuer" ? (
           <SubscriptionFields
             issuer={auth.end_user.issuer}
+            paid={paid}
+            onPaidChange={setPaid}
             issues={issues}
             onChange={(next) => setAuth({ ...auth, end_user: { source: "issuer", issuer: next } } as AuthDraft)}
           />

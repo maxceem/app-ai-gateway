@@ -88,12 +88,15 @@ export function usePatchForm<T, D = T>(
   };
   const [base, setBase] = useState(() => start(app));
   const [draft, setDraft] = useState<D>(() => convert.toDraft(base.stored));
+  // Counts the drafts this form has started, so a form can drop what it remembered about the last one.
+  const [generation, setGeneration] = useState(0);
   const dirty = JSON.stringify(draft) !== base.initial;
 
   const restart = (from: App) => {
     const next = start(from);
     setBase(next);
     setDraft(convert.toDraft(next.stored));
+    setGeneration((count) => count + 1);
   };
 
   // An unedited draft follows a newer version of the app; an edited one keeps its own.
@@ -131,6 +134,14 @@ export function usePatchForm<T, D = T>(
   return {
     draft,
     setDraft,
+    /**
+     * Changes each time the form starts a new draft: after a save, a discard,
+     * or a clean form following a newer app. Key what the form remembers
+     * beside the draft by it.
+     */
+    generation,
+    /** The part as stored when this draft started. */
+    stored: base.stored,
     dirty,
     /** The app changed since this edited draft was read: saving it would be refused. */
     stale: dirty && app.revision !== base.revision,

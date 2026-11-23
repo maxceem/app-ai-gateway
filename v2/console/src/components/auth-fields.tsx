@@ -62,12 +62,21 @@ export type UserSource = EndUserDraft["source"];
 /** Problems by path inside `authentication`, such as `app_attest.team_id`. */
 export type AuthIssues = Map<string, string>;
 
-/** What is wrong with a draft, by the contract's schema and the form's own rules, keyed by where. */
-export function authIssues(draft: AuthDraft): AuthIssues {
+/**
+ * What is wrong with a draft, by the contract's schema and the form's own
+ * rules, keyed by where. Fields this console does not know, which a newer
+ * gateway may have written, are left to the gateway: they are sent back as
+ * stored, and only the fields the form knows are judged here.
+ *
+ * `paid` is whether the person chose paid users only, which a draft whose
+ * last claim was just removed no longer says by itself.
+ */
+export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}): AuthIssues {
   const issues: AuthIssues = new Map();
-  const parsed = AuthenticationConfigSchema.safeParse(draft);
+  const parsed = AuthenticationConfigSchema.safeParse(authForSave(draft));
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
+      if (issue.code === "unrecognized_keys") continue;
       const where = issue.path.map(String).join(".");
       if (!issues.has(where)) issues.set(where, issue.message);
     }
@@ -78,16 +87,34 @@ export function authIssues(draft: AuthDraft): AuthIssues {
     const missing = missingInputs(preset, values)[0];
     if (missing && !issues.has("end_user.issuer.preset")) issues.set("end_user.issuer.preset", `Enter the ${missing.label.toLowerCase()}.`);
     const claims = endUser.issuer.required_claims;
-    if (requiresPayment(endUser.issuer) && claims.length === 0) {
+    if ((paid ?? requiresPayment(endUser.issuer)) && claims.length === 0) {
       issues.set("end_user.issuer.required_claims", "Add at least one claim, or choose Any signed-in user.");
     }
     claims.forEach((claim, index) => {
-      if (claim.equals !== undefined && typeof claim.equals === "string" && claimTypes.get(claim) === "number") {
-        issues.set(`end_user.issuer.required_claims.${index}.equals`, "Enter a number.");
+      if (claimTypes.get(claim) === "number" && typeof claim.equals === "string" && !NUMBER.test(claim.equals.trim())) {
+        issues.set(`end_user.issuer.required_claims.${index}.equals`, "Enter a number, such as 3 or 1.05.");
       }
     });
   }
   return issues;
+}
+
+/**
+ * The block as it is saved: a number claim is typed as text, so a half-typed
+ * number such as `1.` stays as typed in the form, and becomes a number only
+ * here.
+ */
+export function authForSave(draft: AuthDraft): AuthDraft {
+  const endUser = draft.end_user;
+  if (endUser.source !== "issuer") return draft;
+  const claims = endUser.issuer.required_claims;
+  if (!claims.some((claim) => claimTypes.get(claim) === "number")) return draft;
+  const required_claims = claims.map((claim) =>
+    claimTypes.get(claim) === "number" && typeof claim.equals === "string" && NUMBER.test(claim.equals.trim())
+      ? { ...claim, equals: Number(claim.equals.trim()) }
+      : claim,
+  );
+  return { ...draft, end_user: { ...endUser, issuer: { ...endUser.issuer, required_claims } } } as AuthDraft;
 }
 
 /** The first problem at or under a path. */
@@ -282,10 +309,13 @@ function keepShape(stored: string | string[], next: string): string | string[] {
   return next;
 }
 
-/** Lines typed one value each, written as a single value when the stored one was and there is one line. */
+/**
+ * Lines typed one value each, exactly as typed: only empty lines are dropped.
+ * Written as a single value when the stored one was and there is one line.
+ */
 function listFrom(stored: string | string[], text: string): string | string[] {
-  const values = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (!Array.isArray(stored) && values.length <= 1) return text.trim();
+  const values = text.split("\n").filter((line) => line.trim() !== "");
+  if (!Array.isArray(stored) && values.length <= 1) return values[0] ?? "";
   return values;
 }
 
@@ -443,23 +473,31 @@ const PAID_CHECK_LABELS: Record<PaidCheck, string> = {
   custom: "Custom claims",
 };
 
-/** Whether signed-in users must also have paid, and which claim says so. */
+/**
+ * Whether signed-in users must also have paid, and which claim says so.
+ * `paid` is the person's choice, held by the form: removing the last claim
+ * does not quietly turn the check off, only choosing Any signed-in user does.
+ */
 export function SubscriptionFields({
   issuer,
+  paid,
   issues,
   disabled,
   onChange,
+  onPaidChange,
 }: {
   issuer: IssuerDraft;
+  paid: boolean;
   issues: AuthIssues;
   disabled?: boolean;
   onChange: (next: IssuerDraft) => void;
+  onPaidChange: (paid: boolean) => void;
 }) {
-  const paid = requiresPayment(issuer);
   const check = paidCheckOf(issuer);
   const entitlement = revenueCatEntitlement(issuer.required_claims);
   const choose = (next: Subscription) => {
     if (next === (paid ? "paid" : "any")) return;
+    onPaidChange(next === "paid");
     const { entitlement: _label, ...rest } = issuer;
     onChange(next === "any" ? { ...rest, required_claims: [] } : { ...rest, entitlement: "revenuecat", required_claims: [revenueCatClaim("")] });
   };
@@ -549,7 +587,8 @@ function claimIn(claim: ClaimRequirement, mode: ClaimMode, text: string): ClaimR
   } else if (mode === "boolean") {
     next = { ...rest, equals: text === "true" };
   } else if (mode === "number") {
-    next = { ...rest, equals: NUMBER.test(text.trim()) ? Number(text.trim()) : text };
+    // Kept as typed; `authForSave` makes it a number.
+    next = { ...rest, equals: text };
   } else {
     next = { ...rest, equals: text };
   }

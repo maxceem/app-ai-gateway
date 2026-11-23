@@ -201,6 +201,32 @@ describe("Presets tab", () => {
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("judges only new or changed presets by their operation's rules", async () => {
+    const legacy = { provider: "openai", operation: "openai.embeddings", model: "text-embed", max_output_tokens: 100 };
+    const server = appServer(appWith({ presets: { legacy, quick: QUICK } }), PROVIDERS);
+    renderTab("presets");
+
+    const model = (await screen.findAllByLabelText("Model"))[1]!;
+    await userEvent.clear(model);
+    await userEvent.type(model, "gpt-5.5");
+    expect(screen.queryByText(/has no output to cap/)).toBeNull();
+    await saveAndSettle("Save presets", "Presets saved");
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/model", value: "gpt-5.5" }]);
+  });
+
+  it("checks a fallback's own operation when it names one", async () => {
+    const withFallback = { provider: "openai", operation: "openai.chat", model: "gpt-a", fallback: [{ provider: "anthropic", operation: "anthropic.messages", model: "claude-haiku-5-5" }] };
+    appServer(appWith({ presets: { quick: withFallback } }), PROVIDERS);
+    renderTab("presets");
+
+    const model = (await screen.findAllByLabelText("Model"))[0]!;
+    await userEvent.type(model, "-2");
+
+    expect(screen.getByText("anthropic.messages does not speak openai-chat, the preset's API. A fallback must speak it.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("checks the name and the parameters before saving", async () => {
     appServer(testApp(), PROVIDERS);
     renderTab("presets");

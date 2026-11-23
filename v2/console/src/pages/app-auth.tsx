@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -9,12 +9,14 @@ import {
   IdentityProviderFields,
   SubscriptionFields,
   UserSourceFields,
+  authForSave,
   authIssues,
   type AuthDraft,
 } from "@/components/auth-fields";
 import { GuardedButton } from "@/components/guarded-button";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { useConsoleSession } from "@/lib/console-session";
+import { requiresPayment } from "@/lib/issuer-presets";
 import { configIssue, usePatchForm } from "@/lib/save-app";
 import type { App } from "@/lib/types";
 
@@ -27,15 +29,26 @@ const readAuthentication = (app: App) => app.config.authentication as AuthDraft;
  */
 export function SignInTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
-  const form = usePatchForm(app, "/config/authentication", readAuthentication);
+  const form = usePatchForm(app, "/config/authentication", readAuthentication, {
+    toDraft: (stored) => structuredClone(stored),
+    toStored: authForSave,
+  });
   const draft = form.draft;
   const [refused, setRefused] = useState<{ path: string; message: string } | null>(null);
+  // The paid choice the person made in this draft; a new draft reads it from the claims again.
+  const [paidChoice, setPaidChoice] = useState<{ generation: number; paid: boolean } | null>(null);
+  // Until the person chooses, it is what the stored block said when this draft started, so removing the last claim does not turn it off.
+  const storedEndUser = form.stored.end_user;
+  const paid =
+    paidChoice?.generation === form.generation
+      ? paidChoice.paid
+      : storedEndUser.source === "issuer" && requiresPayment(storedEndUser.issuer);
 
   const change = (next: AuthDraft) => {
     form.setDraft(next);
     setRefused(null);
   };
-  const issues = authIssues(draft);
+  const issues = authIssues(draft, { paid });
   // A refusal from the gateway is shown where it applies, until the form changes.
   const refusedHere = refused?.path.startsWith("authentication.") ? refused.path.slice("authentication.".length) : null;
   if (refused && refusedHere !== null && !issues.has(refusedHere)) issues.set(refusedHere, refused.message);
@@ -49,6 +62,8 @@ export function SignInTab({ app }: { app: App }) {
   return (
     <div className="space-y-4">
       {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
+      {/* Keyed by the draft, so what the fields remember (each caller's settings, list text) starts again with it. */}
+      <Fragment key={form.generation}>
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">How the app proves itself</CardTitle>
@@ -118,14 +133,18 @@ export function SignInTab({ app }: { app: App }) {
             <CardContent>
               <SubscriptionFields
                 issuer={endUser.issuer}
+                paid={paid}
                 issues={issues}
                 disabled={disabled}
                 onChange={(issuer) => change({ ...draft, end_user: { ...endUser, issuer } } as AuthDraft)}
+                onPaidChange={(next) => setPaidChoice({ generation: form.generation, paid: next })}
               />
             </CardContent>
           </Card>
         </>
       ) : null}
+
+      </Fragment>
 
       {refused && refusedHere === null ? (
         <Alert variant="destructive">

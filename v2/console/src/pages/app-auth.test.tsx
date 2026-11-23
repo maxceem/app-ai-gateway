@@ -195,13 +195,70 @@ describe("Sign-in tab", () => {
     await userEvent.type(screen.getByLabelText("Path"), "tier");
     await chooseOption("Match", "equals number");
     await userEvent.type(screen.getByLabelText("Value"), "x");
-    expect(screen.getByText("Enter a number.")).toBeTruthy();
+    expect(screen.getByText("Enter a number, such as 3 or 1.05.")).toBeTruthy();
     await userEvent.clear(screen.getByLabelText("Value"));
-    await userEvent.type(screen.getByLabelText("Value"), "3");
+    await userEvent.type(screen.getByLabelText("Value"), "1.05");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("1.05");
     await saveAndSettle();
 
     const issuer = (server.state.app.config as { authentication: { end_user: { issuer: { required_claims: unknown } } } }).authentication.end_user.issuer;
-    expect(issuer.required_claims).toEqual([{ path: "tier", equals: 3 }]);
+    expect(issuer.required_claims).toEqual([{ path: "tier", equals: 1.05 }]);
+  });
+
+  it("keeps a paid check made outside the console when its last claim is removed, until Any signed-in user is chosen", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "paid", equals: true }] } } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("radio", { name: /Paid users only/ })).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Value" }).textContent).toContain("true");
+    await userEvent.click(screen.getByRole("button", { name: "Remove claim 1" }));
+
+    expect(screen.getByRole("radio", { name: /Paid users only/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("Add at least one claim, or choose Any signed-in user.")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    await userEvent.click(screen.getByRole("radio", { name: /Any signed-in user/ }));
+    await saveAndSettle();
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [] }]);
+  });
+
+  it("forgets what another caller choice held once a new draft starts", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "header", header: "x-user" } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /No end users/ }));
+    await saveAndSettle();
+    await userEvent.click(screen.getByRole("radio", { name: /Your server sends the user id/ }));
+
+    // Not the header the last draft held: the saved app has none, so this starts afresh.
+    expect((screen.getByLabelText("Header name") as HTMLInputElement).value).toBe("x-end-user-id");
+    expect(server.patches).toHaveLength(1);
+  });
+
+  it("keeps each stored audience exactly as stored when another is edited", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["customer ", "my-project"] } } }),
+    );
+    renderSignIn();
+
+    const audiences = (await screen.findByLabelText("Audiences (aud)")) as HTMLTextAreaElement;
+    await userEvent.type(audiences, "-2");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["customer ", "my-project-2"] },
+    ]);
+  });
+
+  it("lets a field a newer gateway wrote through, sending only what changed", async () => {
+    const server = appServer(appWith({ ...IOS_AUTH, app_attest: { ...IOS_AUTH.app_attest, future_setting: "kept" } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Token exchange/ }));
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/app_attest/verify_on", value: "token_exchange" }]);
   });
 
   it("shows a refusal about the sign-in inside the field it names", async () => {

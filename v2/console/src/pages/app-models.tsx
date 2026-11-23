@@ -166,7 +166,16 @@ interface PresetDraft {
   maxOutputTokens: string;
   params: string;
   fallback: FallbackDraft[];
+  /** What the editable fields said when the card opened, to tell a changed preset from an untouched one. */
+  opened: string;
 }
+
+/** A card's editable fields, as text, for telling whether it changed. */
+const fieldsOf = (draft: Omit<PresetDraft, "opened">) =>
+  JSON.stringify([draft.slug, draft.provider, draft.operation, draft.model, draft.maxOutputTokens, draft.params, draft.fallback.map((one) => [one.provider, one.operation, one.model])]);
+
+/** Whether a card is new or edited: only those are judged by their operation's rules, as the gateway judges only new or changed presets. */
+const isChanged = (draft: PresetDraft) => draft.original === null || fieldsOf(draft) !== draft.opened;
 
 type Presets = Record<string, Preset> | undefined;
 
@@ -176,7 +185,8 @@ let nextKey = 1_000_000;
 const textOf = (value: unknown) => (value === undefined ? "" : JSON.stringify(value, null, 2));
 
 function draftsOf(stored: Presets): PresetDraft[] {
-  return Object.entries(stored ?? {}).map(([slug, preset], index) => ({
+  return Object.entries(stored ?? {}).map(([slug, preset], index) => {
+    const draft = {
     key: index,
     original: preset as unknown as Record<string, unknown>,
     slug,
@@ -191,7 +201,9 @@ function draftsOf(stored: Presets): PresetDraft[] {
       operation: one.operation ?? "",
       model: one.model,
     })),
-  }));
+    };
+    return { ...draft, opened: fieldsOf(draft) };
+  });
 }
 
 /** A row's field, written onto a copy of what was stored only when it moved. */
@@ -252,6 +264,7 @@ export function presetOperations(connection: Pick<ProviderConnection, "type" | "
 
 /** What is wrong with one preset draft, by field, in words: the form's own rules, and the chosen operation's. */
 function presetProblems(draft: PresetDraft, slugs: string[], connections: ProviderConnection[]): Record<string, string> {
+  const judged = isChanged(draft);
   const problems: Record<string, string> = {};
   if (!PRESET_SLUG_PATTERN.test(draft.slug)) problems.slug = "Use 1 to 64 characters from a-z, 0-9 and -.";
   else if (slugs.filter((slug) => slug === draft.slug).length > 1) problems.slug = "Another preset has this name.";
@@ -261,10 +274,10 @@ function presetProblems(draft: PresetDraft, slugs: string[], connections: Provid
   const operation = draft.operation === "" ? null : declaredOperation(draft.operation);
   if (draft.maxOutputTokens.trim() !== "") {
     if (!/^[1-9]\d*$/u.test(draft.maxOutputTokens.trim())) problems.max_output_tokens = "Use a whole number, or leave it empty.";
-    else if (operation !== null && operation.policy?.outputCap === undefined) problems.max_output_tokens = `${operation.name} has no output to cap. Leave it empty.`;
+    else if (judged && operation !== null && operation.policy?.outputCap === undefined) problems.max_output_tokens = `${operation.name} has no output to cap. Leave it empty.`;
   }
   if (draft.params.trim() !== "") {
-    if (operation !== null && operation.model.in === "form") {
+    if (judged && operation !== null && operation.model.in === "form") {
       problems.params = `${operation.name} takes an upload; fixed parameters apply only to JSON requests. Leave it empty.`;
     } else {
       try {
@@ -282,7 +295,13 @@ function presetProblems(draft: PresetDraft, slugs: string[], connections: Provid
     }
     const connection = connections.find((item) => item.slug === one.provider);
     const style = operation?.style;
-    if (connection !== undefined && style !== undefined && !presetOperations(connection).some((name) => declaredOperation(name)?.style === style)) {
+    if (!judged || connection === undefined || style === undefined) return;
+    const offered = presetOperations(connection);
+    if (one.operation !== "") {
+      // A named operation must itself speak the preset's API, on this provider.
+      if (!offered.includes(one.operation)) problems[`fallback.${index}`] = `${one.operation} is not an operation of ${one.provider} a preset can use.`;
+      else if (declaredOperation(one.operation)?.style !== style) problems[`fallback.${index}`] = `${one.operation} does not speak ${style}, the preset's API. A fallback must speak it.`;
+    } else if (!offered.some((name) => declaredOperation(name)?.style === style)) {
       problems[`fallback.${index}`] = `${one.provider} has no ${style} operation a preset can use. A fallback must speak the preset's API.`;
     }
   });
@@ -311,7 +330,11 @@ export function PresetsTab({ app }: { app: App }) {
   const problems = new Map(drafts.map((draft) => [draft.key, presetProblems(draft, slugs, connections)]));
   const valid = [...problems.values()].every((found) => Object.keys(found).length === 0);
   const presets = valid ? presetsOf(drafts) : undefined;
-  const schemaProblem = !valid || presets === undefined ? undefined : PresetsConfigSchema.safeParse(presets).error?.issues[0]?.message;
+  // Fields this console does not know, which a newer gateway may have written, are sent back as stored and left to the gateway.
+  const schemaProblem =
+    !valid || presets === undefined
+      ? undefined
+      : PresetsConfigSchema.safeParse(presets).error?.issues.find((issue) => issue.code !== "unrecognized_keys")?.message;
   const disabled = readOnly || form.pending;
 
   const submit = async () => {
@@ -573,7 +596,7 @@ export function PresetsTab({ app }: { app: App }) {
           variant="outline"
           disabled={disabled || connections.length === 0}
           onClick={() =>
-            change([...drafts, { key: nextKey++, original: null, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [] }])
+            change([...drafts, { key: nextKey++, original: null, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [], opened: "" }])
           }
         >
           <Plus className="size-4" />
