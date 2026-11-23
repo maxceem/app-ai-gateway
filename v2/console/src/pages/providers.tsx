@@ -17,7 +17,8 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
-import { normalizedBaseUrl } from "@providers/destinations";
+import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
+import { pricesTooDeep } from "@contracts/admin";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
@@ -317,8 +318,18 @@ const NO_CLOUDFLARE: CloudflareDraft = { on: false, accountId: "", gatewayId: ""
 
 /** Complete enough to send: the ids, and a token unless the stored one may be kept. */
 function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean): boolean {
-  return !draft.on || (draft.accountId.trim() !== "" && draft.gatewayId.trim() !== "" && (tokenOptional || draft.token !== ""));
+  return (
+    !draft.on ||
+    (draft.accountId.trim() !== "" &&
+      draft.gatewayId.trim() !== "" &&
+      wellFormedText(draft.accountId) &&
+      wellFormedText(draft.gatewayId) &&
+      (tokenOptional || draft.token !== ""))
+  );
 }
+
+/** An id with half a surrogate pair cannot go in a URL: said beside the field. */
+const ID_PROBLEM = "Use plain text: this has a character that cannot be sent.";
 
 function cloudflareBody(draft: CloudflareDraft): CloudflareBody {
   return { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim(), ...(draft.token ? { token: draft.token } : {}) };
@@ -349,6 +360,7 @@ function CloudflareFields({
               // The token belongs to the account and gateway it was typed for.
               onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
+            {wellFormedText(draft.accountId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
             <Input
@@ -357,6 +369,7 @@ function CloudflareFields({
               autoComplete="off"
               onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
+            {wellFormedText(draft.gatewayId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
           </Field>
           <Field
             label="Cloudflare token"
@@ -1598,6 +1611,11 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       return;
     }
     if ("problem" in parsed) return;
+    // Nested deeper than any price can be: say so here, keeping the JSON, rather than read it into a form.
+    if (pricesTooDeep(parsed.pricing)) {
+      setModeProblem("These prices are nested too deeply to be prices. Keep editing them as JSON.");
+      return;
+    }
     if (!formCanShow(parsed.pricing)) {
       setModeProblem("Some entries are not prices the form can show, such as a model whose value is not an object. Keep editing them as JSON.");
       return;

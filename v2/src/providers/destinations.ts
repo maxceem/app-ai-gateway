@@ -29,6 +29,15 @@ export function cloudflareOrigin(): string {
   return moved.endsWith("/") ? moved : `${moved}/`;
 }
 
+/**
+ * Whether text is well-formed: no half of a surrogate pair stands alone. Text
+ * that is not cannot be put in a URL (`encodeURIComponent` throws on it), so
+ * such a Cloudflare account or gateway id could never have reached Cloudflare.
+ */
+export function wellFormedText(text: string): boolean {
+  return !/\p{Cs}/u.test(text);
+}
+
 /** The origin and path every request through one Cloudflare AI Gateway goes under. */
 export function cloudflareGatewayOrigin(gateway: { readonly accountId: string; readonly gatewayId: string }): string {
   return `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
@@ -73,7 +82,12 @@ export function directOrigin(setting: Pick<RouteSetting, "baseUrl">, description
  * custom provider, whose base URL is its one destination.
  */
 export function keyDestinations(description: ProviderDescription | null, setting: RouteSetting): string[] {
-  if (setting.cloudflareGateway !== null) return [cloudflareGatewayOrigin(setting.cloudflareGateway)];
+  if (setting.cloudflareGateway !== null) {
+    const { accountId, gatewayId } = setting.cloudflareGateway;
+    // Ids that cannot be put in a URL lead nowhere.
+    if (!wellFormedText(accountId) || !wellFormedText(gatewayId)) return [];
+    return [cloudflareGatewayOrigin(setting.cloudflareGateway)];
+  }
   if (description === null) return setting.baseUrl === null ? [] : [setting.baseUrl];
   const origins = new Set<string>();
   for (const hostKey of Object.keys(description.hosts)) {

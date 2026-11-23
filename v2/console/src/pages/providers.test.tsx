@@ -1224,4 +1224,37 @@ describe("a typed key stays with where it was typed for", () => {
     expect(screen.getByText(/"m" is written twice in one object/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("keeps a too deeply nested JSON draft and says so, rather than reading it into the form", async () => {
+    stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const deep = `{"m": {"input": 1, "output": 2, "by": ${'{"x":'.repeat(40)}1${"}".repeat(40)}}}`;
+    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
+    await userEvent.click(box);
+    await userEvent.paste(deep);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect(screen.getByText(/nested too deeply to be prices/i)).toBeTruthy();
+    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toBe(deep);
+  });
+
+  it("says beside the field when a Cloudflare id has a character that cannot be sent, and does not break", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("x");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct\uD800");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    expect(screen.getByText(/use plain text: this has a character that cannot be sent/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

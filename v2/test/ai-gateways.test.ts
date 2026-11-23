@@ -370,6 +370,18 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(response.status).toBe(400);
   });
 
+  it("refuses a Cloudflare id that is not well-formed text, which could never reach Cloudflare", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", {
+      type: "openai",
+      name: "x",
+      slug: slugFor("openai"),
+      cloudflareGateway: { accountId: "acct\uD800", gatewayId: "gw", token: CF_TOKEN },
+    });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain("well-formed");
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

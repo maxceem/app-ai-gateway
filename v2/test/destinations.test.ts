@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { upstreamOrigin, type ConnectionRecord } from "../src/providers/connections.ts";
-import { cloudflareGatewayOrigin, destinationText, keyDestinations } from "../src/providers/destinations.ts";
+import { cloudflareGatewayOrigin, destinationText, keyDestinations, wellFormedText } from "../src/providers/destinations.ts";
+import { pricesTooDeep } from "../src/contracts/admin.ts";
 
 const record = (type: string, baseUrl: string | null) => ({ type, baseUrl, cloudflareGateway: null }) as unknown as ConnectionRecord;
 
@@ -33,5 +34,19 @@ describe("key destinations", () => {
     const gateway = { accountId: "acct", gatewayId: "gw" };
     expect(keyDestinations(BUILT_IN_PROVIDERS.openai!, { baseUrl: null, cloudflareGateway: gateway })).toEqual([cloudflareGatewayOrigin(gateway)]);
     expect(keyDestinations(null, { baseUrl: "https://llm.example.com/v1/", cloudflareGateway: null })).toEqual(["https://llm.example.com/v1/"]);
+  });
+
+  it("lead nowhere, without throwing, for Cloudflare ids that are not well-formed text", () => {
+    expect(wellFormedText("acct")).toBe(true);
+    expect(wellFormedText("acct\uD800")).toBe(false);
+    expect(wellFormedText("\uD83D\uDE00")).toBe(true);
+    expect(keyDestinations(BUILT_IN_PROVIDERS.openai!, { baseUrl: null, cloudflareGateway: { accountId: "acct\uDC00", gatewayId: "gw" } })).toEqual([]);
+  });
+
+  it("tell prices nested past any price's shape, without recursing", () => {
+    let deep: unknown = 1;
+    for (let level = 0; level < 100000; level += 1) deep = { x: deep };
+    expect(pricesTooDeep({ m: deep })).toBe(true);
+    expect(pricesTooDeep({ m: { input: 1, output: 2, modes: { flex: { factor: 0.5 } }, by: { size: { "1024x1024": { per_image: 0.04 } } } } })).toBe(false);
   });
 });
