@@ -30,6 +30,8 @@ export const CliToolViewSchema = z.object({
    * path names a string, or with `*` every string it reaches.
    */
   blocks: z.array(z.string()).optional(),
+  /** Columns shown whole rather than cut to fit the table, by key: a list a person needs in full. */
+  wide: z.array(z.string()).optional(),
 });
 
 /** Where a tool sits among `agw`'s commands, decided by the gateway so a CLI never needs a release to learn one. */

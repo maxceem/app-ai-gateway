@@ -317,21 +317,25 @@ type CloudflareBody = { accountId: string; gatewayId: string; token?: string };
 const NO_CLOUDFLARE: CloudflareDraft = { on: false, accountId: "", gatewayId: "", token: "" };
 
 /** Complete enough to send: the ids, and a token unless the stored one may be kept. */
-function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean): boolean {
+/** A connection's stored Cloudflare ids: kept as they are, they are not judged again. */
+type StoredIds = { readonly accountId: string; readonly gatewayId: string } | null;
+
+function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean, stored: StoredIds = null): boolean {
   return (
     !draft.on ||
     (draft.accountId.trim() !== "" &&
       draft.gatewayId.trim() !== "" &&
-      idProblem(draft.accountId) === null &&
-      idProblem(draft.gatewayId) === null &&
+      idProblem(draft.accountId, stored?.accountId) === null &&
+      idProblem(draft.gatewayId, stored?.gatewayId) === null &&
       (tokenOptional || draft.token !== ""))
   );
 }
 
 /** Why a typed Cloudflare id cannot be saved, by the gateway's own rule, said beside the field; null while it is empty or fine. */
-function idProblem(text: string): string | null {
+function idProblem(text: string, stored?: string): string | null {
   const id = text.trim();
-  if (id === "") return null;
+  // An older connection's id, kept as stored, keeps saving: the gateway judges only a new or changed one.
+  if (id === "" || id === stored) return null;
   const problem = cloudflareIdProblem(id);
   return problem === null ? null : `This ID ${problem}.`;
 }
@@ -344,10 +348,12 @@ function CloudflareFields({
   draft,
   onChange,
   tokenOptional = false,
+  stored = null,
 }: {
   draft: CloudflareDraft;
   onChange: (draft: CloudflareDraft) => void;
   tokenOptional?: boolean;
+  stored?: StoredIds;
 }) {
   return (
     <>
@@ -365,7 +371,7 @@ function CloudflareFields({
               // The token belongs to the account and gateway it was typed for.
               onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
-            {idProblem(draft.accountId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.accountId)}</p>}
+            {idProblem(draft.accountId, stored?.accountId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.accountId, stored?.accountId)}</p>}
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
             <Input
@@ -374,7 +380,7 @@ function CloudflareFields({
               autoComplete="off"
               onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
-            {idProblem(draft.gatewayId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.gatewayId)}</p>}
+            {idProblem(draft.gatewayId, stored?.gatewayId) === null ? null : <p className="text-sm text-destructive">{idProblem(draft.gatewayId, stored?.gatewayId)}</p>}
           </Field>
           <Field
             label="Cloudflare token"
@@ -1433,13 +1439,13 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
+      disabled={blocked || !cloudflareReady(draft, sameGateway, stored) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
       onSubmit={() =>
         void save({ cloudflareGateway: cloudflareBody(draft), ...(removesBase ? { baseUrl: null } : {}), ...key }, "Cloudflare AI Gateway saved")
       }
     >
       {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
-      <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
+      <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} stored={stored} />
       {removesBase ? (
         <label className="flex items-center gap-2 text-sm">
           <Checkbox checked={dropBase} disabled={blocked} onCheckedChange={(checked) => setDropBase(checked === true)} />

@@ -399,6 +399,26 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(moved.status).toBe(400);
   });
 
+  it("rotates the token of an older connection whose id holds a space, and judges only a new or changed id", async () => {
+    const key = await seedManagementKey();
+    const made = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN } });
+    const id = made.body.provider.id as string;
+    // Saved before the plain-segment rule: an account id with a space.
+    const row = await env.DB.prepare("SELECT cloudflare_gateway_json FROM provider_connection WHERE id = ?").bind(id).first<{ cloudflare_gateway_json: string }>();
+    const setting = JSON.parse(row!.cloudflare_gateway_json) as Record<string, unknown>;
+    await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?").bind(JSON.stringify({ ...setting, account_id: "acct 1" }), id).run();
+
+    const rotated = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct 1", gatewayId: "gw", token: "cf-token-rotated-0123456789" } });
+    expect(rotated.status, JSON.stringify(rotated.body)).toBe(200);
+    expect(rotated.body.provider.cloudflareGateway).toEqual({ accountId: "acct 1", gatewayId: "gw", tokenHint: "6789" });
+    // A changed id is judged: a new gateway with a space is refused, and a dot segment always is.
+    const changed = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, cloudflareGateway: { accountId: "acct 1", gatewayId: "gw 2", token: CF_TOKEN } });
+    expect(changed.status).toBe(400);
+    expect(JSON.stringify(changed.body)).toContain("cloudflareGateway.gatewayId");
+    const dots = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, cloudflareGateway: { accountId: "..", gatewayId: "gw", token: CF_TOKEN } });
+    expect(dots.status).toBe(400);
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

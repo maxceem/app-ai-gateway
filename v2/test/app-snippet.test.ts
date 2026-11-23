@@ -159,6 +159,50 @@ describe("first requests for an app", () => {
     expect(notes).toContainEqual(`${slug}: openai.transcription has no example: no model this route allows can be billed there.`);
   });
 
+  it("never asks for more output than the route or the preset allows", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key, { type: "anthropic", name: "Anthropic", slug: `anthropic-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["anthropic.messages"], max_output_tokens: 128 } } },
+      presets: { short: { provider: slug, operation: "anthropic.messages", model: "claude-sonnet-4-5", max_output_tokens: 100 } },
+    });
+    const [route, preset] = examples;
+    expect(route).toMatchObject({ operation: "anthropic.messages", headers: { "anthropic-version": "2023-06-01" } });
+    expect(route!.body.max_tokens).toBe(128);
+    expect(preset).toMatchObject({ preset: "short" });
+    expect(preset!.body.max_tokens).toBe(100);
+  });
+
+  it("leaves out an image edit, which needs an image an example cannot include, and still shows image generation", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const { examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.images.edits", "openai.images"], models: ["gpt-image-1.5"] } } },
+    });
+    expect(examples.map((example) => example.operation)).toEqual(["openai.images"]);
+    expect(notes).toContainEqual(`${slug}: openai.images.edits: it needs an image to edit, which an example cannot include, so it has no example.`);
+  });
+
+  it("names a sample model for a provider that reports its own costs, and says so plainly where none is known", async () => {
+    const key = await seedManagementKey();
+    const router = await provider(key, { type: "openrouter", name: "OpenRouter", slug: `openrouter-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [router]: { operations: ["openrouter.chat"] } } },
+    });
+    expect(examples).toEqual([expect.objectContaining({ operation: "openrouter.chat", model: "openai/gpt-4o-mini" })]);
+
+    const hugging = await provider(key, { type: "huggingface", name: "Hugging Face", slug: `huggingface-${crypto.randomUUID().slice(0, 6)}` });
+    const unknown = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [hugging]: { operations: ["huggingface.chat"] } } },
+    });
+    expect(unknown.examples).toEqual([]);
+    expect(unknown.notes).toContainEqual(`${hugging}: huggingface.chat has no example: the gateway knows no sample model for huggingface. List a model in the route, and the example names it.`);
+  });
+
   it("sends its generated requests through the proxy, JSON and upload alike, and they are served", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);

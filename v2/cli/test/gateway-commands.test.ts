@@ -569,7 +569,7 @@ test("app snippet shows an iOS app's whole requests by default, and provider typ
   );
   const types = cliTool("list_provider_types", {
     command: "provider types",
-    view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"] },
+    view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"], wide: ["operations"] },
   });
   const request = [
     "POST https://gw.example/v2/apps/app_1/proxy/openai/v1/chat/completions",
@@ -598,8 +598,11 @@ test("app snippet shows an iOS app's whole requests by default, and provider typ
   assert.match(shown.out, /- This iOS app signs every request with App Attest\./u);
   const listed = await run(["provider", "types"], fake);
   assert.equal(listed.code, 0, listed.err);
-  // The last column is shown whole.
+  // A wide column is shown whole; any other is still cut at 48 characters.
   assert.ok(listed.out.includes(operations.join(", ")), listed.out);
+  const narrow = cliTool("list_provider_types", { command: "provider types", view: { rows: "types", columns: ["type", "operations"] } });
+  const cut = humanToolResult(narrow, "1 type.", { types: [{ type: "openai", operations }] }, [narrow], plain);
+  assert.ok(!cut.includes(operations.join(", ")) && cut.includes("…"), cut);
 });
 
 test("everything the gateway says is cleaned of control characters before a terminal sees it", () => {

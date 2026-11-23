@@ -8,7 +8,7 @@
  * with no Worker code, so the console can import them.
  */
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
-import { cloudflareIdProblem } from "../core/cloudflare-id.ts";
+import { cloudflareIdProblem, cloudflareIdUsable } from "../core/cloudflare-id.ts";
 import type { ProviderDescription } from "./operation.ts";
 import { normalizePath, type PathRefusal } from "./path.ts";
 
@@ -46,13 +46,8 @@ export function cloudflareOrigin(): string {
  */
 export function cloudflareGatewayPath(gateway: { readonly accountId: string; readonly gatewayId: string }): string | null {
   const segments = [gateway.accountId, gateway.gatewayId];
-  if (segments.some((id) => id === "" || id === "." || id === ".." || !wellFormed(id))) return null;
+  if (!segments.every(cloudflareIdUsable)) return null;
   return `v1/${segments.map(encodeURIComponent).join("/")}/`;
-}
-
-/** Text with half a surrogate pair cannot be encoded into a URL. */
-function wellFormed(text: string): boolean {
-  return !/\p{Cs}/u.test(text);
 }
 
 /** The origin and path every request through one Cloudflare AI Gateway goes under, or null for ids that lead nowhere. */

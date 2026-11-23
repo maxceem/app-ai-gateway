@@ -6051,6 +6051,12 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "wide": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }

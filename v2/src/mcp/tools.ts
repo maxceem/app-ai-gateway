@@ -433,7 +433,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     operation: "listProviderTypes",
     cli: {
       command: "provider types",
-      view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"] },
+      view: { rows: "types", columns: ["type", "label", "cloudflareGateway=Cloudflare", "custom", "operations"], wide: ["operations"] },
     },
     summary: ({ types }) => `${plural(types.length, "provider type")}: ${listed(types.map((entry) => entry.type), 30)}.`,
   }),

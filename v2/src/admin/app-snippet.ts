@@ -23,7 +23,7 @@ import type { Context } from "hono";
 import { parseServedAppConfig, type AppConfig, type ProviderRouting } from "../contracts/app-config.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { describeConnection } from "../providers/connections.ts";
-import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription } from "../providers/operation.ts";
+import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import { declaredOperation } from "../providers/presets.ts";
 import { priceSources, resolveCall, servedNow } from "../pricing/billability.ts";
@@ -97,33 +97,74 @@ function listedKind(type: string, model: string): string | undefined {
 }
 
 /**
- * The model an example names: the first serving admits (`resolveCall`, as the
- * proxy calls it) whose billed model is of the operation's kind, trying the
- * route's model list, or else the connection's own prices, the app's rewrites
- * and our price list. Null when none is admitted.
+ * Sample models for providers whose models are neither in our price list nor
+ * read through another provider's (`modelNamespaces`): ones that report each
+ * request's cost themselves, such as OpenRouter. Each is still tried through
+ * `resolveCall`, as any candidate is.
  */
-function exampleModel(connection: ConnectionRow, route: ProviderRouting, rewrites: AppConfig["routing"]["model_rewrites"], operation: OperationDescription): string | null {
+const SAMPLE_MODELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  openrouter: { text: "openai/gpt-4o-mini" },
+};
+
+/** The price list's models of `type` of `kind`, still listed, in its order. */
+function listedModels(type: string, kind: string | undefined): string[] {
+  const prices = Object.hasOwn(PRICE_FILE, type) ? PRICE_FILE[type]! : {};
+  return Object.entries(prices)
+    .filter(([, entry]) => entry.unlisted_since === undefined && (kind === undefined || entry.kind === kind))
+    .map(([model]) => model);
+}
+
+/**
+ * The model an example names: the first serving admits (`resolveCall`, as the
+ * proxy calls it) whose billed model is of the operation's kind. It tries the
+ * route's model list; or else the connection's own prices, the app's
+ * rewrites, our price list (through another provider's namespaces where the
+ * provider reads its models that way), and a known sample. `unknown` when
+ * there was no candidate at all; `refused` when none was admitted.
+ */
+function exampleModel(
+  connection: ConnectionRow,
+  description: ProviderDescription,
+  route: ProviderRouting,
+  rewrites: AppConfig["routing"]["model_rewrites"],
+  operation: OperationDescription,
+): { readonly model: string } | { readonly none: "unknown" | "refused" } {
   const location = operation.model;
   const kind = kindOf(operation);
   const sources = priceSources(connection);
-  const prices = Object.hasOwn(PRICE_FILE, connection.type) ? PRICE_FILE[connection.type]! : {};
+  const namespaced = Object.entries(description.modelNamespaces ?? {}).flatMap(([namespace, type]) =>
+    listedModels(type, kind).map((model) => `${namespace}/${model}`),
+  );
+  const sample = kind === undefined ? undefined : SAMPLE_MODELS[connection.type]?.[kind];
   const candidates =
     location.in === "fixed"
       ? [location.model]
       : route.models ?? [
           ...(connection.rates_json === null ? [] : Object.keys(JSON.parse(connection.rates_json) as Record<string, unknown>)),
           ...Object.keys(rewrites ?? {}),
-          ...Object.entries(prices)
-            .filter(([, entry]) => entry.unlisted_since === undefined && (kind === undefined || entry.kind === kind))
-            .map(([model]) => model),
+          ...listedModels(connection.type, kind),
+          ...namespaced,
+          ...(sample === undefined ? [] : [sample]),
         ];
+  if (candidates.length === 0) return { none: "unknown" };
   for (const candidate of new Set(candidates)) {
     const call = resolveCall(route, rewrites, sources, operation, candidate);
     if (call.kind !== "admitted") continue;
     const billed = listedKind(connection.type, call.model);
-    if (kind === undefined || billed === undefined || billed === kind) return candidate;
+    if (kind === undefined || billed === undefined || billed === kind) return { model: candidate };
   }
-  return null;
+  return { none: "refused" };
+}
+
+/**
+ * Why an operation needs an input an example cannot include, or null: an
+ * image edit needs the image it edits. A custom provider's image path is
+ * judged by its name, since its description cannot tell an edit apart.
+ */
+function missingInput(operation: OperationDescription): string | null {
+  const editsImages =
+    (operation.imageFormFields ?? []).length > 0 || (operation.style === "openai-images" && /(?:^|\/)edits?(?:\/|$)/u.test(operation.match.path));
+  return editsImages ? "it needs an image to edit, which an example cannot include" : null;
 }
 
 /** The operation's path with its model filled in, or null where the path has another part an example cannot fill. */
@@ -143,7 +184,13 @@ function filledPath(operation: OperationDescription, model: string): string | nu
  * preset, which sends none. Null for an operation whose JSON body this
  * gateway has no example of (one with no style).
  */
-function requestFor(url: string, operation: OperationDescription, model: string | null, endUser: Readonly<Record<string, string>>): SnippetRequest | null {
+function requestFor(
+  url: string,
+  operation: OperationDescription,
+  model: string | null,
+  endUser: Readonly<Record<string, string>>,
+  outputCap: number | undefined,
+): SnippetRequest | null {
   const kind = requestBodyKind(operation);
   const field = model === null ? null : modelBodyField(operation);
   const location = operation.model;
@@ -156,14 +203,17 @@ function requestFor(url: string, operation: OperationDescription, model: string 
       ...base,
       headers: { ...endUser, ...styleHeaders },
       ...(field === null ? {} : { form: { [field]: model! } }),
-      file: { field: "file", name: "audio.mp3" },
+      // The form field the operation reads its recording from.
+      file: { field: operation.audioFormFields?.[0] ?? "file", name: "audio.mp3" },
     };
   }
   if (kind === "raw") {
     return { ...base, headers: { ...endUser, "Content-Type": "audio/wav" }, file: { name: "audio.wav", type: "audio/wav" } };
   }
-  const shape = style === undefined ? undefined : JSON_BODIES[style];
-  if (shape === undefined) return null;
+  const found = style === undefined ? undefined : JSON_BODIES[style];
+  if (found === undefined) return null;
+  // A sample's output cap never asks for more than the route or preset allows.
+  const shape = outputCap !== undefined && typeof found.max_tokens === "number" ? { ...found, max_tokens: Math.min(found.max_tokens, outputCap) } : found;
   return {
     ...base,
     headers: { ...endUser, ...styleHeaders, "Content-Type": "application/json" },
@@ -258,6 +308,8 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     const seen = new Set<string>();
     const without: string[] = [];
     const unpriced: string[] = [];
+    const unknown: string[] = [];
+    const needs: string[] = [];
     for (const name of route.operations) {
       const operation = description?.operations.find((candidate) => candidate.name === name);
       if (operation === undefined) {
@@ -271,19 +323,32 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         without.push(name);
         continue;
       }
-      const model = exampleModel(connection, route, config.routing.model_rewrites, operation);
-      if (model === null) {
-        unpriced.push(name);
+      const missing = missingInput(operation);
+      if (missing !== null) {
+        needs.push(`${name}: ${missing}`);
         continue;
       }
+      const picked = exampleModel(connection, description!, route, config.routing.model_rewrites, operation);
+      if ("none" in picked) {
+        (picked.none === "unknown" ? unknown : unpriced).push(name);
+        continue;
+      }
+      const { model } = picked;
       const path = filledPath(operation, model);
-      const request = path === null ? null : requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${path}`, operation, model, caller.endUser);
+      const request =
+        path === null ? null : requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${path}`, operation, model, caller.endUser, route.max_output_tokens);
       if (request === null) {
         without.push(name);
         continue;
       }
       seen.add(key);
       add({ provider: slug, operation: name, ...(operation.style === undefined ? {} : { style: operation.style }), model }, request);
+    }
+    for (const line of needs) notes.push(`${slug}: ${line}, so it has no example.`);
+    if (unknown.length > 0) {
+      notes.push(
+        `${slug}: ${unknown.join(", ")} ${unknown.length === 1 ? "has" : "have"} no example: the gateway knows no sample model for ${connection.type}. List a model in the route, and the example names it.`,
+      );
     }
     if (unpriced.length > 0) {
       notes.push(`${slug}: ${unpriced.join(", ")} ${unpriced.length === 1 ? "has" : "have"} no example: no model this route allows can be billed there.`);
@@ -295,7 +360,10 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
 
   for (const [slug, preset] of Object.entries(config.presets ?? {})) {
     const operation = declaredOperation(preset.operation);
-    const request = operation === null ? null : requestFor(`${origin}/v2/apps/${row.id}/presets/${slug}`, { ...operation, match: { ...operation.match, method: "POST" } }, null, caller.endUser);
+    const request =
+      operation === null || missingInput(operation) !== null
+        ? null
+        : requestFor(`${origin}/v2/apps/${row.id}/presets/${slug}`, { ...operation, match: { ...operation.match, method: "POST" } }, null, caller.endUser, preset.max_output_tokens);
     if (operation === null || request === null) {
       notes.push(`The preset ${slug} has no example: its operation ${preset.operation} has no request shape this gateway can write.`);
       continue;

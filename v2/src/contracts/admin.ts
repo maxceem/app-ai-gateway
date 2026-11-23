@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
-import { cloudflareIdProblem } from "../core/cloudflare-id.ts";
+import { cloudflareIdUsable } from "../core/cloudflare-id.ts";
 import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
@@ -374,16 +374,18 @@ export function providerSecretAccepted(value: string): boolean {
 
 export const ProviderSecretSchema = SecretSchema.refine(providerSecretAccepted, { error: PROVIDER_SECRET_RULE });
 
-// One plain path segment (`cloudflareIdProblem`): an id that would change the address once parsed is refused.
+/**
+ * An id that can stand in an address at all (`cloudflareIdUsable`): never `.`
+ * or `..`. A new or changed id must also be one plain path segment, which the
+ * gateway judges against the stored one (`checkCloudflareIds` in
+ * `src/admin/providers.ts`), so an older connection's id keeps saving.
+ */
 const CloudflareIdSchema = z
   .string()
   .trim()
   .min(1)
   .max(100)
-  .superRefine((value, context) => {
-    const problem = cloudflareIdProblem(value);
-    if (problem !== null) context.addIssue({ code: "custom", message: problem });
-  });
+  .refine(cloudflareIdUsable, { error: "cannot be . or .., or text that is not well-formed" });
 
 /**
  * For Vercel AI Gateway: the serving providers a connection may use, pinned

@@ -47,13 +47,14 @@ import { database } from "../db/index.ts";
 import { app as appTable, appKey as appKeyTable, providerConnection } from "../db/schema.ts";
 import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../providers/connections.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
-import { cloudflareGatewayOrigin, cloudflareIdProblem } from "../providers/destinations.ts";
+import { cloudflareGatewayOrigin } from "../providers/destinations.ts";
 import { builtInProvider } from "../providers/index.ts";
 import { sealSecret } from "../vault/secrets.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
 import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
+  checkCloudflareIds,
   checkDestination,
   checkedBaseUrl,
   storedCloudflare,
@@ -221,6 +222,8 @@ export async function openProviderHandoff(c: AdminContext): Promise<Response> {
   const slug = body.slug ?? body.type;
   const baseUrl = body.baseUrl === undefined ? null : checkedBaseUrl(body.baseUrl);
   const cloudflare = body.cloudflareGateway ?? null;
+  // A new connection: its ids must be plain path segments.
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   checkDestination(builtInProvider(body.type)!, baseUrl, cloudflare);
   if (body.pricing !== undefined) assertModesSelectable(builtInProvider(body.type)!, baseUrl, ratesFromPricing(body.pricing, body.type), null);
   await refuseTakenSlug(c.env.DB, actor.accountId, slug);
@@ -431,12 +434,7 @@ async function providerAddWrite(
   const { secret, cloudflareToken } = entered;
   const cloudflare = review.cloudflareGateway ?? null;
   // Judged again at approval, so a step opened before the rule cannot send a token where its ids lead once parsed.
-  if (cloudflare !== null) {
-    for (const [field, id] of [["accountId", cloudflare.accountId], ["gatewayId", cloudflare.gatewayId]] as const) {
-      const problem = cloudflareIdProblem(id);
-      if (problem !== null) throw new GatewayError(400, "invalid_request", `cloudflareGateway.${field}: ${problem}`);
-    }
-  }
+  if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   // Sealed for where the key goes: the base URL, the Cloudflare gateway, or the provider's own host.
   const origin = keyOrigin({ baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
   const blob = secret === undefined ? null : await sealSecret(env, "providerKey", [accountId, id, review.type, origin], secret);
