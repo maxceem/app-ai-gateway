@@ -78,20 +78,27 @@ export class MemoryCatalogCache implements CatalogCache {
 /** The required positional argument a parsed command carries. */
 const first = (args: readonly string[]): string => args[0] ?? "";
 
+/** How long `deployment status` waits for the gateway's release beside the session. */
+const RELEASE_LOOKUP_MS = 3_000;
+
 /** `agw deployment status`: the selected gateway, and who commands run as. */
 async function deploymentStatus(ctx: Context): Promise<DeploymentStatusResult> {
   const credential = ctx.environmentKey ? "environment" : ctx.active?.login ? "oauth" : null;
   const base: DeploymentStatusResult = { url: ctx.url, connected: true, credential, signedIn: false };
   if (!credential) return { ...base, ...release(await ctx.checkGateway()) };
-  // The gateway's release, when it says it; never a reason for the status to fail.
-  const capabilities = await ctx.checkGateway().catch(() => undefined);
-  Object.assign(base, release(capabilities));
+  // The gateway's release, asked beside the session and given a short time:
+  // it is extra, never a reason for the status to fail or to wait.
+  const capabilities = ctx.client
+    .publicCall("getConsoleCapabilities", { url: ctx.url, timeoutMs: RELEASE_LOOKUP_MS })
+    .then(({ data }) => data)
+    .catch(() => undefined);
   try {
-    return { ...base, signedIn: true, ...(await ctx.session()) };
+    const session = await ctx.session();
+    return { ...base, ...release(await capabilities), signedIn: true, ...session };
   } catch (error) {
     // A sign-in that ended is "not signed in"; a refused AGW_MANAGEMENT_KEY is an error to fix.
     const ended = error instanceof CliError && (error.code === "login_required" || error.details?.status === 401);
-    if (credential === "oauth" && ended) return base;
+    if (credential === "oauth" && ended) return { ...base, ...release(await capabilities) };
     throw error;
   }
 }

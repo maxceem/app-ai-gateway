@@ -86,3 +86,59 @@ test("no note for the same release, a gateway that does not say its release, or 
     assert.deepEqual(result.lookups, [], `no lookup after a ${status}`);
   }
 });
+
+const SESSION = {
+  session: {
+    user: { id: "u1", name: null, email: "ops@example.com", emailVerified: true },
+    account: { id: "org_1", name: "Acme" },
+    role: "owner",
+    grant: "manage",
+    credentialType: "apiKey",
+    accounts: [{ id: "org_1", name: "Acme", role: "owner" }],
+  },
+};
+
+async function status(capabilities: (options: RequestOptions, sessionAsked: Promise<void>) => Promise<unknown>) {
+  const out = sinks();
+  let asked!: () => void;
+  const sessionAsked = new Promise<void>((resolve) => (asked = resolve));
+  const transport = fakeTransport(async (path: string, options: RequestOptions) => {
+    if (path === "/v2/console/capabilities") return { data: await capabilities(options, sessionAsked) };
+    if (path === "/v2/admin/session") {
+      asked();
+      return { data: SESSION };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const code = await main(["deployment", "status", "--json"], {
+    store: memoryStore(signedInState(URL_, "agw_oat_1")),
+    transport,
+    stdout: out.stdout,
+    stderr: out.stderr,
+    io: { env: {}, clock: fakeClock() },
+    catalogCache: new MemoryCatalogCache(),
+  });
+  return { code, json: JSON.parse(out.out.text || "{}"), err: out.err.text };
+}
+
+test("deployment status asks for the release beside the session, with a short limit, and shows it", async () => {
+  const result = await status(async (options, sessionAsked) => {
+    // The session is asked before this answers: the two run side by side.
+    await sessionAsked;
+    assert.ok(options.timeoutMs !== undefined && options.timeoutMs <= 5_000, `timeoutMs ${options.timeoutMs}`);
+    return { billing: false, registrationOpen: true, googleAuth: false, oauth: true, serverVersion: "2.0.0", prices: { revision: "abcdef012345", updated: null } };
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.json.result.serverVersion, "2.0.0");
+  assert.deepEqual(result.json.result.prices, { revision: "abcdef012345", updated: null });
+  assert.equal(result.json.result.signedIn, true);
+});
+
+test("deployment status still answers when the release cannot be read", async () => {
+  const result = await status(async () => {
+    throw new CliError("network_error", "connection reset");
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.json.result.signedIn, true);
+  assert.equal(result.json.result.serverVersion, undefined);
+});
