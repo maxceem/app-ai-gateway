@@ -53,9 +53,7 @@ type Period = "month" | "year";
  */
 interface Shown {
   subscriptionId: string | null;
-  subscriptionStatus: NonNullable<ReturnType<typeof subscriptionOf>>["status"] | null;
-  subscriptionPeriod: Period | null;
-  /** When the billing service last changed it: a move between plans changes nothing else shown here. */
+  /** When the billing service last changed it: any change to the subscription moves it. */
   subscriptionUpdatedAt: string | null;
 }
 
@@ -63,8 +61,6 @@ function shownOf(access: BillingAccess | undefined): Shown {
   const subscription = subscriptionOf(access);
   return {
     subscriptionId: subscription?.subscriptionId ?? null,
-    subscriptionStatus: subscription?.status ?? null,
-    subscriptionPeriod: subscription?.billingPeriod ?? null,
     subscriptionUpdatedAt: subscription?.updatedAt ?? null,
   };
 }
@@ -79,11 +75,11 @@ export function BillingPage() {
   // for the card on the provider's own page, a change on a live subscription
   // bills without another screen in between.
   const [confirmChange, setConfirmChange] = useState<{ plan: BillingPlan; price: BillingPrice; shown: Shown } | null>(null);
-  const [preparingChange, setPreparingChange] = useState(false);
+  // A change or resume dialog reading the current price as it opens.
+  const [preparing, setPreparing] = useState(false);
   // A resume can charge at once too: its plan, price and period, and what it
   // acts on, held until it is confirmed.
   const [confirmResume, setConfirmResume] = useState<{ plan: BillingPlan; price: BillingPrice; shown: Shown } | null>(null);
-  const [preparingResume, setPreparingResume] = useState(false);
   const client = useQueryClient();
 
   const status = useBillingStatus(capabilities.billing, account.id);
@@ -133,26 +129,35 @@ export function BillingPage() {
     }
   };
 
-  // A change's dialog shows the price read afresh from the catalog as it
-  // opens, never a copy the tab has held: that price is the one sent, and the
-  // gateway refuses the change if it moved since (Sol 7b-8).
-  const openChange = async (plan: BillingPlan) => {
-    const shown = shownOf(access);
-    setPreparingChange(true);
+  /**
+   * A change's or a resume's dialog shows the price read afresh from the
+   * catalog as it opens, never a copy the tab has held: that price is the one
+   * sent, and the gateway refuses the write if it moved since (Sol 7b-8).
+   * Resolves to the plan and its price at `pricePeriod`, or null (said why).
+   */
+  const currentPrice = async (planKey: string, planName: string, pricePeriod: Period) => {
+    setPreparing(true);
     try {
       const fresh = await client.fetchQuery({ queryKey: keys.billingPlans, queryFn: () => call("listBillingPlans"), staleTime: 0 });
-      const current = fresh.plans.find((entry) => entry.planKey === plan.planKey);
-      const price = current ? priceFor(current, changePeriod) : undefined;
+      const current = fresh.plans.find((entry) => entry.planKey === planKey);
+      const price = current ? priceFor(current, pricePeriod) : undefined;
       if (!current || !price) {
-        toast.error(`${plan.name} has no ${changePeriod === "year" ? "yearly" : "monthly"} price right now`);
-        return;
+        toast.error(`${planName} has no ${pricePeriod === "year" ? "yearly" : "monthly"} price right now`);
+        return null;
       }
-      setConfirmChange({ plan: current, price, shown });
+      return { plan: current, price };
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not read the plans");
+      return null;
     } finally {
-      setPreparingChange(false);
+      setPreparing(false);
     }
+  };
+
+  const openChange = async (plan: BillingPlan) => {
+    const shown = shownOf(access);
+    const found = await currentPrice(plan.planKey, plan.name, changePeriod);
+    if (found) setConfirmChange({ ...found, shown });
   };
 
   // A plan card acts on whichever route the billing contract serves for it.
@@ -173,32 +178,16 @@ export function BillingPage() {
     }
   };
 
-  // A resume's dialog shows the price the billing service will resume at: the
-  // plan's current price for the subscription's plan and period, read afresh
-  // from the catalog as it opens. That price is the one sent, and the gateway
-  // refuses the resume if it moved since (Sol 7b-8).
+  // A resume charges the plan's current price for the subscription's own plan
+  // and period: what the billing service resumes at.
   const openResume = async () => {
     // Resuming acts on the subscription, which is not necessarily the plan the
     // account is currently entitled to.
     const subscription = subscriptionOf(access);
     if (!subscription) return;
     const shown = shownOf(access);
-    const resumePeriod: Period = subscription.billingPeriod ?? period;
-    setPreparingResume(true);
-    try {
-      const fresh = await client.fetchQuery({ queryKey: keys.billingPlans, queryFn: () => call("listBillingPlans"), staleTime: 0 });
-      const current = fresh.plans.find((entry) => entry.planKey === subscription.planKey);
-      const price = current ? priceFor(current, resumePeriod) : undefined;
-      if (!current || !price) {
-        toast.error(`This plan has no ${resumePeriod === "year" ? "yearly" : "monthly"} price right now`);
-        return;
-      }
-      setConfirmResume({ plan: current, price, shown });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not read the plans");
-    } finally {
-      setPreparingResume(false);
-    }
+    const found = await currentPrice(subscription.planKey, "This plan", subscription.billingPeriod ?? period);
+    if (found) setConfirmResume({ ...found, shown });
   };
 
   const doResume = async () => {
@@ -253,7 +242,7 @@ export function BillingPage() {
         actions={status.data?.actions}
         pending={status.isPending}
         cancelPending={cancel.isPending}
-        resumePending={resume.isPending || preparingResume}
+        resumePending={resume.isPending || preparing}
         onCancel={() => setConfirmCancel(shownOf(access))}
         onResume={() => void openResume()}
       />
@@ -288,7 +277,8 @@ export function BillingPage() {
                 plan={plan}
                 period={action.intent === "change" ? changePeriod : period}
                 action={action}
-                pending={checkout.isPending || change.isPending || preparingChange}
+                // Nothing is offered until the account's own plan has been read.
+                pending={checkout.isPending || change.isPending || preparing || !status.isSuccess}
                 onAct={() => act(plan, action)}
               />
             );

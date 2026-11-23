@@ -30,7 +30,6 @@ import {
   BillingChangeRequestSchema,
   BillingCheckoutRequestSchema,
   BillingResumeRequestSchema,
-  BillingTrialRequestSchema,
   PLAN_LIMIT_KEYS,
   type BillingPeriod,
   type GatewayBillingAccess,
@@ -162,6 +161,20 @@ function paymentHosts(env: Env): string[] {
  * payment host is passed on. Anything else is the billing service's fault,
  * logged and answered as unavailable, never sent to the browser.
  */
+/**
+ * The page a completed change or resume asks the person to confirm a payment
+ * method on. The write has already happened, so a page outside the allowed
+ * hosts is logged and left out, never turned into a failed answer.
+ */
+function confirmationPage(env: Env, url: string | undefined): { requiredActionUrl?: string } {
+  if (url === undefined) return {};
+  try {
+    return { requiredActionUrl: paymentPage(env, url) };
+  } catch {
+    return {};
+  }
+}
+
 export function paymentPage(env: Env, url: string): string {
   let parsed: URL;
   try {
@@ -182,19 +195,16 @@ export function paymentPage(env: Env, url: string): string {
 /** The subscription the console showed when the dialog opened. */
 interface ShownSubscription {
   readonly subscriptionId: string | null;
-  readonly subscriptionStatus: string | null;
-  readonly subscriptionPeriod: BillingPeriod | null;
-  /** Left out by a client that does not send it: then the other three decide. */
-  readonly subscriptionUpdatedAt?: string | null | undefined;
+  readonly subscriptionUpdatedAt: string | null;
 }
 
 /**
  * The subscription a write acts on is the one the console showed when the
- * dialog opened: the same id, status and period, and unchanged since
- * (`updatedAt`, when the client sends it). It is read afresh from the
- * billing service: one replaced, ended or moved to another period since is
- * refused before anything is asked of it (Sol 7b-8). Billing that cannot be
- * read answers 503, as any settings write does.
+ * dialog opened: the same id, unchanged since (`updatedAt` moves with every
+ * change the billing service makes to it: status, period, plan). It is read
+ * afresh from the billing service: one replaced or changed since is refused
+ * before anything is asked of it (Sol 7b-8). Billing that cannot be read
+ * answers 503, as any settings write does.
  */
 async function requireShownSubscription(c: AdminContext, accountId: string, shown: ShownSubscription): Promise<void> {
   const access = await readBillingForConsole(c.env, accountId);
@@ -204,9 +214,7 @@ async function requireShownSubscription(c: AdminContext, accountId: string, show
   const current = access.subscription;
   const same =
     (current?.subscriptionId ?? null) === shown.subscriptionId &&
-    (current?.status ?? null) === shown.subscriptionStatus &&
-    (current?.billingPeriod ?? null) === shown.subscriptionPeriod &&
-    (shown.subscriptionUpdatedAt === undefined || (current?.updatedAt ?? null) === shown.subscriptionUpdatedAt);
+    (current?.updatedAt ?? null) === shown.subscriptionUpdatedAt;
   if (!same) {
     throw new GatewayError(409, "subscription_changed", "The subscription changed since the page was read; reload it");
   }
@@ -313,7 +321,7 @@ export async function changePlan(c: AdminContext): Promise<Response> {
   invalidateBillingAccess(accountId);
   return c.json({
     ok: true,
-    ...(result.requiredActionUrl === undefined ? {} : { requiredActionUrl: paymentPage(c.env, result.requiredActionUrl) }),
+    ...confirmationPage(c.env, result.requiredActionUrl),
   } satisfies OperationResponse<"changePlan">);
 }
 
@@ -332,7 +340,7 @@ export async function resumeSubscription(c: AdminContext): Promise<Response> {
   invalidateBillingAccess(accountId);
   return c.json({
     ok: true,
-    ...(result.requiredActionUrl === undefined ? {} : { requiredActionUrl: paymentPage(c.env, result.requiredActionUrl) }),
+    ...confirmationPage(c.env, result.requiredActionUrl),
   } satisfies OperationResponse<"resumeSubscription">);
 }
 
@@ -344,13 +352,4 @@ export async function cancelSubscription(c: AdminContext): Promise<Response> {
   await rpc(() => runtime.cancelSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId }));
   invalidateBillingAccess(accountId);
   return c.json({ ok: true } satisfies OperationResponse<"cancelSubscription">);
-}
-
-export async function startTrial(c: AdminContext): Promise<Response> {
-  const runtime = billingManager(c);
-  const input = await parseBody(c, BillingTrialRequestSchema);
-  const accountId = c.get("actor").accountId;
-  const access = await rpc(() => runtime.startTrial({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey }));
-  invalidateBillingAccess(accountId);
-  return c.json({ plan: access.plan, subscription: access.subscription } satisfies OperationResponse<"startTrial">);
 }

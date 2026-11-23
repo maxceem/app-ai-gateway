@@ -197,19 +197,16 @@ export const BillingPlanSelectionSchema = z.object({
 }).meta({ id: "BillingPlanSelection" });
 
 /**
- * The subscription the console showed when the dialog opened: its id, status
- * and period, each `null` where it showed none, and when the billing service
- * last changed it. A write on a subscription replaced, or changed in any way
- * since (a move between plans keeps the id, status and period, but not
- * `updatedAt`), is refused (`subscription_changed`) rather than applied to
- * what the person never saw. `subscriptionUpdatedAt` is optional: a client
- * that sends none is checked on the other three alone.
+ * The subscription the console showed when the dialog opened: its id and
+ * when the billing service last changed it, each `null` where it showed none.
+ * `updatedAt` moves with every change to the subscription (status, period,
+ * plan), so a write on a subscription replaced or changed in any way since is
+ * refused (`subscription_changed`) rather than applied to what the person
+ * never saw.
  */
 const ShownSubscription = {
   subscriptionId: z.string().min(1).max(200).nullable(),
-  subscriptionStatus: BillingSubscriptionStatusSchema.nullable(),
-  subscriptionPeriod: BillingPeriodSchema.nullable(),
-  subscriptionUpdatedAt: z.string().min(1).max(100).nullable().optional(),
+  subscriptionUpdatedAt: z.string().min(1).max(100).nullable(),
 };
 
 /**
@@ -256,9 +253,6 @@ export const BillingChangeResponseSchema = z.object({
 
 export const BillingCancelResponseSchema = z.object({ ok: z.literal(true) }).meta({ id: "BillingCancelResponse" });
 
-export const BillingTrialRequestSchema = z.object({ planKey: z.string().min(1).max(100) }).meta({ id: "BillingTrialRequest" });
-
-export const BillingTrialResponseSchema = BillingAccessSchema.meta({ id: "BillingTrialResponse" });
 
 /**
  * The account's plan, as `account status` shows it beside who is calling.

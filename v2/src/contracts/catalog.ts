@@ -82,8 +82,6 @@ import {
   BillingCheckoutResponseSchema,
   BillingPlansResponseSchema,
   BillingStatusResponseSchema,
-  BillingTrialRequestSchema,
-  BillingTrialResponseSchema,
 } from "./billing.ts";
 import { CLIENT_CATALOG } from "./client-catalog.ts";
 import {
@@ -1074,7 +1072,11 @@ export const CATALOG = {
     security: "session",
     response: BillingStatusResponseSchema,
     responseDescription: "The plan, its limits and features, this period's requests against the allowance, and what a person may do about the subscription.",
-    errors: { ...SESSION_ONLY_ERRORS, 404: "This deployment has no billing (`not_found`)." },
+    errors: {
+      ...SESSION_ONLY_ERRORS,
+      404: "This deployment has no billing (`not_found`).",
+      503: "The billing service could not be read in time (`billing_unavailable`). Retry shortly.",
+    },
   },
 
   startCheckout: {
@@ -1127,19 +1129,6 @@ export const CATALOG = {
     request: BillingCancelRequestSchema,
     response: BillingCancelResponseSchema,
     responseDescription: "The cancellation was accepted.",
-    errors: BILLING_ACTION_ERRORS,
-  },
-
-  startTrial: {
-    method: "POST",
-    path: "/v2/admin/billing/trial",
-    hidden: true,
-    tags: ["Admin billing"],
-    summary: "Start a trial without a card",
-    security: "session",
-    request: BillingTrialRequestSchema,
-    response: BillingTrialResponseSchema,
-    responseDescription: "The account's billing access once the trial has started.",
     errors: BILLING_ACTION_ERRORS,
   },
 } as const satisfies Readonly<Record<string, OperationSpec>>;

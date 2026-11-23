@@ -92,7 +92,12 @@ function sessionPayload(
 
 export async function getAdminSession(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
-  const [pending, billing] = await Promise.all([verificationPending(c.env, actor.accountId), sessionBilling(c, actor.accountId)]);
+  // The plan line is for `account status` in the CLI and MCP; the console
+  // reads its own billing status, so a console session skips the billing read.
+  const [pending, billing] = await Promise.all([
+    verificationPending(c.env, actor.accountId),
+    actor.credentialType === "session" ? Promise.resolve(undefined) : sessionBilling(c, actor.accountId),
+  ]);
   return c.json({ session: sessionPayload(c.get("authState"), actor, pending, billing) } satisfies OperationResponse<"getAdminSession">);
 }
 

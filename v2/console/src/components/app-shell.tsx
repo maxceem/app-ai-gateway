@@ -1,6 +1,6 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { Loader2, PanelLeft } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { SidebarContent } from "@/components/app-sidebar";
@@ -8,27 +8,6 @@ import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { BillingBanner } from "@/components/plan-summary";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
-import { isSwitchingAccount, onSwitchingAccount } from "@/lib/tab-account";
-
-/** Whether the page is switching account, from the start of the switch until it reloads. */
-export function useSwitchingAccount(): boolean {
-  return useSyncExternalStore(onSwitchingAccount, isSwitchingAccount);
-}
-
-/** Says the page is switching account, over the shell that has gone inert. */
-function SwitchingAccount({ switching }: { switching: boolean }) {
-  if (!switching) return null;
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="fixed inset-0 z-50 flex cursor-wait items-center justify-center gap-2 bg-background/70 text-sm text-muted-foreground"
-    >
-      <Loader2 className="size-4 animate-spin" />
-      Switching account…
-    </div>
-  );
-}
 
 /**
  * Below `lg` the sidebar becomes a drawer, so the same header carries the
@@ -70,28 +49,21 @@ function MobileHeader() {
 export function AppShell({ children }: { children: ReactNode }) {
   // A completed checkout returns to a console page with a marker to announce.
   useCheckoutSuccessToast();
-  // While an account switch is in flight, and until the page reloads on the
-  // new account, the shell takes no input at all, keyboard or pointer: it is
-  // inert, not just covered. The request code refuses anything sent anyway.
-  const switching = useSwitchingAccount();
   return (
-    <>
-      <div className="min-h-dvh bg-sidebar" inert={switching}>
-        <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 lg:block">
-          <SidebarContent />
-        </aside>
+    <div className="min-h-dvh bg-sidebar">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 lg:block">
+        <SidebarContent />
+      </aside>
 
-        <div className="flex min-h-dvh flex-col lg:pl-64">
-          <MobileHeader />
-          <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
-            <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-              <BillingBanner />
-              {children}
-            </div>
-          </main>
-        </div>
+      <div className="flex min-h-dvh flex-col lg:pl-64">
+        <MobileHeader />
+        <main className="min-w-0 flex-1 bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:shadow-sm">
+          <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <BillingBanner />
+            {children}
+          </div>
+        </main>
       </div>
-      <SwitchingAccount switching={switching} />
-    </>
+    </div>
   );
 }

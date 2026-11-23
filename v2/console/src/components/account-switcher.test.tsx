@@ -3,13 +3,11 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AccountMenuItems } from "./account-switcher";
 import { DropdownMenu, DropdownMenuContent } from "@/components/ui/dropdown-menu";
-import { act, fireEvent } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { toast } from "sonner";
 import { membership, renderAuthenticated, testSession } from "@/test/render";
-import { beginAccountSwitch, tabAccount } from "@/lib/tab-account";
-import { call } from "@/lib/api";
+import { tabAccount } from "@/lib/tab-account";
 import { useStartCheckout } from "@/lib/queries";
-import { AppShell } from "./app-shell";
 import { SidebarContent } from "./app-sidebar";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -49,7 +47,7 @@ describe("AccountMenuItems", () => {
     expect(screen.getByRole("menuitem", { name: /acme/i })).toBeTruthy();
   });
 
-  it("saves the account for this tab and reloads the page on it, taking nothing else meanwhile", async () => {
+  it("saves the account for this tab and reloads the page on it, with the menu disabled meanwhile", async () => {
     let answer!: () => void;
     const answered = new Promise<void>((resolve) => (answer = resolve));
     const fetchMock = vi.fn(async () => {
@@ -116,36 +114,6 @@ describe("AccountMenuItems", () => {
 
     const item = await screen.findByRole("menuitem", { name: /globex/i });
     expect(item.getAttribute("data-disabled")).toBeNull();
-  });
-});
-
-describe("the console during an account switch", () => {
-  it("is inert, and a form submitted by keyboard sends nothing (Sol 7b-8)", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const refused = vi.fn();
-    function Form() {
-      return (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void call("listApps").catch(refused);
-          }}
-        >
-          <input aria-label="App name" />
-        </form>
-      );
-    }
-    const { container } = renderAuthenticated(<AppShell><Form /></AppShell>);
-    const input = screen.getByLabelText("App name");
-    input.focus();
-    act(() => beginAccountSwitch());
-    expect(container.querySelector("[inert]")).not.toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/switching account/i);
-    fetchMock.mockClear();
-    await userEvent.keyboard("{Enter}");
-    // Whether or not the inert shell let the key through, nothing leaves the page.
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/v2/admin/apps"))).toEqual([]);
   });
 });
 

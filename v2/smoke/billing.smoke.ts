@@ -31,7 +31,6 @@ const OPERATIONS = [
   ["POST", "/v2/admin/billing/change", { planKey: "smoke-pro", billingPeriod: "month", subscriptionId: null }],
   ["POST", "/v2/admin/billing/resume", { planKey: "smoke-pro", billingPeriod: "month", subscriptionId: null }],
   ["POST", "/v2/admin/billing/cancel", { subscriptionId: null }],
-  ["POST", "/v2/admin/billing/trial", { planKey: "smoke-pro" }],
 ] as const;
 
 test("account status shows the plan and this period's allowance; billing operations are a person's alone", { skip: skipKey, timeout: TEST_TIMEOUT_MS }, async () => {
@@ -113,8 +112,6 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   // account holds none, so one shown with a last-changed time is not it.
   const changed = await asConsole("/v2/admin/billing/cancel", {
     subscriptionId: null,
-    subscriptionStatus: null,
-    subscriptionPeriod: null,
     subscriptionUpdatedAt: "2026-01-01T00:00:00.000Z",
   });
   await expectResponse(changed, 409, "a cancel on a subscription changed since it was shown");
@@ -125,8 +122,7 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
     planKey: "no-such-plan",
     billingPeriod: "month",
     subscriptionId: null,
-    subscriptionStatus: null,
-    subscriptionPeriod: null,
+    subscriptionUpdatedAt: null,
     price: { priceAmountCents: 1000, priceCurrency: "USD" },
   });
   await expectResponse(unknown, 404, "a change to an unknown plan");

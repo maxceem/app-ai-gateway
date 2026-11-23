@@ -324,8 +324,6 @@ describe("BillingPage", () => {
         billingPeriod: "year",
         price: { priceAmountCents: 50000, priceCurrency: "USD" },
         subscriptionId: "sub-console-page",
-        subscriptionStatus: "active",
-        subscriptionPeriod: "year",
         subscriptionUpdatedAt: "2025-01-01T00:00:00.000Z",
       });
     });
@@ -384,8 +382,6 @@ describe("BillingPage", () => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/cancel"));
       expect(JSON.parse(String(call![1]!.body))).toEqual({
         subscriptionId: "sub-console-page",
-        subscriptionStatus: "active",
-        subscriptionPeriod: "month",
         subscriptionUpdatedAt: "2025-01-01T00:00:00.000Z",
       });
     });
@@ -433,7 +429,6 @@ describe("BillingPage", () => {
         billingPeriod: "month",
         price: { priceAmountCents: 2000, priceCurrency: "USD" },
         subscriptionId: "sub-console-page",
-        subscriptionStatus: "cancelled",
       });
     });
   });

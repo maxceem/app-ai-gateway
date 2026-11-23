@@ -60,59 +60,28 @@ export function setTabAccount(accountId: string | null): void {
 }
 
 /**
- * Whether this page is switching account. From the start of a switch until
- * the page reloads, it sends no new request (`./api` refuses them) and takes
- * no input (the shell is inert): the page still shows the account it is
- * leaving, while the tab's saved account may already be the next one.
+ * Set once this page is being reloaded or sent elsewhere for an account
+ * switch, and never cleared: the page is going. From then on it sends no new
+ * request (`./api` refuses them), because the tab already names the next
+ * account while the page still shows the one it is leaving. Until then, every
+ * request names the account the page shows.
  */
-let switching = false;
-const switchListeners = new Set<() => void>();
+let leaving = false;
 
-export function isSwitchingAccount(): boolean {
-  return switching;
+export function isLeavingForAccountSwitch(): boolean {
+  return leaving;
 }
-
-export function onSwitchingAccount(listener: () => void): () => void {
-  switchListeners.add(listener);
-  return () => switchListeners.delete(listener);
-}
-
-function setSwitching(value: boolean): void {
-  if (switching === value) return;
-  switching = value;
-  for (const listener of switchListeners) listener();
-}
-
-/** A switch has started: the page stops sending requests and taking input. */
-export function beginAccountSwitch(): void {
-  setSwitching(true);
-}
-
-/**
- * The switch request failed or ran out of time: the page carries on with the
- * account it has. Once the page is being reloaded or sent elsewhere, the
- * switch is final and nothing unlocks it.
- */
-export function cancelAccountSwitch(): void {
-  if (switchedAlready) return;
-  setSwitching(false);
-}
-
-/** Set once the page has been sent away: a second switch on the same page loads nothing more. */
-let switchedAlready = false;
 
 /**
  * Saves the tab's new account (null: the one the session selects) and loads
  * the page again on it, once. On the checkout landing, the page goes to
- * Billing instead, so a checkout meant for the account left never starts for
- * the new one.
+ * Billing instead, replacing the landing in history, so a checkout meant for
+ * the account left never starts for the new one, not even through Back.
  */
 export function switchTabAccount(accountId: string | null): void {
   setTabAccount(accountId);
-  if (switchedAlready) return;
-  switchedAlready = true;
-  setSwitching(true);
-  // Replaced, not added: Back must not return to the checkout landing and start it again.
+  if (leaving) return;
+  leaving = true;
   if (routerPath(window.location.pathname) === CHECKOUT_PATH) window.location.replace(consoleUrl("/billing"));
   else window.location.reload();
 }
@@ -133,13 +102,11 @@ export function withTabAccount(headers: Headers): Headers {
 export function resetTabAccountForTests(): void {
   current = undefined;
   store(null);
-  switching = false;
-  switchedAlready = false;
+  leaving = false;
 }
 
 /** Tests only: the tab as a reload finds it, its account worked out again from storage. */
 export function reopenTabForTests(): void {
   current = undefined;
-  switching = false;
-  switchedAlready = false;
+  leaving = false;
 }

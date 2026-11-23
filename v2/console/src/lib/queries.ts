@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
-import { beginAccountSwitch, cancelAccountSwitch, currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
+import { currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
+import { stopPaymentConfirmation } from "./checkout-return";
 import { checkoutReturnAccount } from "./auth-redirect";
 import type { Session } from "./types";
 import {
@@ -132,6 +133,7 @@ export function useSignOut() {
     // leaves the person signed in, on the same account.
     onSuccess: () => {
       setTabAccount(null);
+      stopPaymentConfirmation();
       client.clear();
     },
   });
@@ -176,15 +178,12 @@ export const SWITCH_DEADLINE_MS = 10_000;
 export function useSelectAccount() {
   return useMutation({
     mutationFn: async (accountId: string) => {
-      // The switch request is sent first; from the moment it is out, the page
-      // sends nothing else (`./api` refuses) and takes no input. It has a
-      // deadline, so a gateway that never answers cannot lock the page.
+      // The switch request has a deadline, so one the gateway never answers
+      // ends with an error instead of leaving the menu disabled.
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(), SWITCH_DEADLINE_MS);
-      const switched = call("selectAccount", { body: { accountId }, signal: deadline.signal });
-      beginAccountSwitch();
       try {
-        return await switched;
+        return await call("selectAccount", { body: { accountId }, signal: deadline.signal });
       } catch (error) {
         if (deadline.signal.aborted) throw new Error("Switching account took too long. Try again.");
         throw error;
@@ -192,7 +191,6 @@ export function useSelectAccount() {
         clearTimeout(timer);
       }
     },
-    onError: () => cancelAccountSwitch(),
     onSuccess: (result) => {
       switchTabAccount(result.session.account.id);
       return reloading;

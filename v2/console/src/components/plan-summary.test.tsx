@@ -1,22 +1,16 @@
 /**
- * Billing in the console's frame (v1's sidebar, banner and checkout landing
- * tests, ported): the plan and allowance at the foot of the sidebar, the
- * Billing menu entry, the banner above every page, the landing for a plan
- * chosen before sign-in, and the return from a completed checkout. The
- * billing service is stubbed: nothing is bought.
+ * Billing in the console's frame (v1's sidebar and banner tests, ported): the
+ * plan and allowance at the foot of the sidebar, the Billing menu entry, and
+ * the banner above every page. The billing service is stubbed: nothing is
+ * bought. The checkout landing and the return from a checkout have their own
+ * files.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, screen, waitFor } from "@testing-library/react";
-import { toast } from "sonner";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AppShell } from "./app-shell";
 import { SidebarContent } from "./app-sidebar";
 import { BillingBanner } from "./plan-summary";
-import { CheckoutPage } from "@/pages/checkout";
-import { checkoutReturnPathFor, postAuthPath } from "@/lib/auth-redirect";
-import { PLAN_CONFIRM_CHECKS, PLAN_CONFIRM_INTERVAL_MS } from "@/lib/checkout-return";
 import { renderAuthenticated, settled } from "@/test/render";
-import { StrictMode } from "react";
 import type { BillingAccess, PlanAllowance } from "@/lib/types";
 
 const FREE: BillingAccess = { state: "billed", plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null };
@@ -116,177 +110,5 @@ describe("the billing banner", () => {
     const healthy = renderAuthenticated(<BillingBanner />, { capabilities: { billing: true }, route: "/apps" });
     await settled(healthy.client);
     expect(screen.queryByRole("alert")).toBeNull();
-  });
-});
-
-describe("a plan chosen before sign-in", () => {
-  it("goes to that plan's checkout once signed in; the free plan goes nowhere special", () => {
-    expect(postAuthPath("?plan=pro")).toBe("/checkout?plan=pro");
-    expect(postAuthPath("?plan=free")).toBe("/apps");
-    expect(postAuthPath("?plan=<script>")).toBe("/apps");
-  });
-
-  it("says when the plans cannot be read, with a way to try again and a way back to Billing (Sol 7b-8)", async () => {
-    const fetchMock = stubBilling(FREE);
-    const answer = fetchMock.getMockImplementation()!;
-    let plansUp = false;
-    fetchMock.mockImplementation(async (input, init) =>
-      String(input).includes("/billing/plans") && !plansUp
-        ? new Response(JSON.stringify({ error: { code: "billing_unavailable", message: "The billing service is unavailable" } }), { status: 502 })
-        : answer(input, init),
-    );
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
-    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
-    expect(await screen.findByText("Could not load the plans")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Go to plans" }).getAttribute("href")).toBe("/billing");
-    plansUp = true;
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
-  });
-
-  it("starts the checkout for an owner and sends them to the provider's page", async () => {
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
-    const fetchMock = stubBilling(FREE);
-    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
-    const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/checkout"));
-    // The plan and period only: the tab names the account, and where the provider sends the person back is the gateway's to choose.
-    expect(JSON.parse(String(call![1]!.body))).toEqual({ planKey: "pro", billingPeriod: "month" });
-  });
-
-  it("asks before starting a checkout on a page reached through Back or Forward (Sol 7b-8)", async () => {
-    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "back_forward" } as unknown as PerformanceEntry]);
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
-    const fetchMock = stubBilling(FREE);
-    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
-    const proceed = await screen.findByRole("button", { name: "Continue to checkout" });
-    expect(screen.getByRole("link", { name: "Go to plans" }).getAttribute("href")).toBe("/billing");
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/checkout"))).toBe(false);
-    await userEvent.click(proceed);
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
-  });
-
-  it("sends a member, or a plan already held, to the plans page, and a deployment without billing to the apps", async () => {
-    stubBilling(FREE);
-    const member = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, session: { role: "member" }, route: "/checkout?plan=pro", path: "/checkout" });
-    await waitFor(() => expect(member.router.location.pathname).toBe("/billing"));
-    member.unmount();
-    const held = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=free", path: "/checkout" });
-    await waitFor(() => expect(held.router.location.pathname).toBe("/apps"));
-    held.unmount();
-    vi.unstubAllGlobals();
-    stubBilling(PAID);
-    const owned = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro", path: "/checkout" });
-    await waitFor(() => expect(owned.router.location.pathname).toBe("/billing"));
-    owned.unmount();
-    const selfHosted = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: false }, route: "/checkout?plan=pro", path: "/checkout" });
-    await waitFor(() => expect(selfHosted.router.location.pathname).toBe("/apps"));
-  });
-});
-
-describe("the return from a completed checkout", () => {
-  const statusReads = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status")).length;
-
-  it("says the payment is being confirmed, then complete once the billing service reports the plan bought, and takes the marker off", async () => {
-    const loading = vi.spyOn(toast, "loading");
-    const success = vi.spyOn(toast, "success");
-    stubBilling(PAID);
-    const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
-      capabilities: { billing: true },
-      route: checkoutReturnPathFor("pro", "acct-1"),
-    });
-    await waitFor(() => expect(router.location.search).toBe(""));
-    expect(router.location.pathname).toBe("/apps");
-    expect(loading).toHaveBeenCalledWith("Confirming your payment…", expect.anything());
-    await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
-  });
-
-  it("reads the plan a capped number of times, then says the payment was received rather than complete (Sol 7b-8)", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const success = vi.spyOn(toast, "success");
-    const info = vi.spyOn(toast, "info");
-    // Still the free plan: the webhook has not landed.
-    const fetchMock = stubBilling(FREE);
-    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    for (let check = 0; check < PLAN_CONFIRM_CHECKS + 2; check += 1) {
-      await act(() => vi.advanceTimersByTimeAsync(PLAN_CONFIRM_INTERVAL_MS));
-    }
-    await waitFor(() => expect(info).toHaveBeenCalledWith("Payment received", expect.anything()));
-    expect(success).not.toHaveBeenCalledWith("Payment complete", expect.anything());
-    // The page's own status read may add one; the confirming reads stop at the cap.
-    expect(statusReads(fetchMock)).toBeLessThanOrEqual(PLAN_CONFIRM_CHECKS + 1);
-  });
-
-  it("reads the plan in its own reads, each one stoppable and never retried (Sol 7b-8)", async () => {
-    const success = vi.spyOn(toast, "success");
-    const fetchMock = stubBilling(PAID);
-    renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
-    const reads = fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status"));
-    expect(reads.length).toBeGreaterThanOrEqual(1);
-    for (const [, init] of reads) expect(init?.signal).toBeInstanceOf(AbortSignal);
-  });
-
-  it("shows nothing for a return that names another account than the tab's (Sol 7b-8)", async () => {
-    const loading = vi.spyOn(toast, "loading");
-    const success = vi.spyOn(toast, "success");
-    const info = vi.spyOn(toast, "info");
-    stubBilling(PAID);
-    const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
-      capabilities: { billing: true },
-      route: checkoutReturnPathFor("pro", "acct-other"),
-    });
-    await waitFor(() => expect(router.location.search).toBe(""));
-    expect(loading).not.toHaveBeenCalled();
-    expect(success).not.toHaveBeenCalled();
-    expect(info).not.toHaveBeenCalled();
-  });
-
-  it("takes the confirming spinner down when the page goes, as on signing out (Sol 7b-8)", async () => {
-    const loading = vi.spyOn(toast, "loading");
-    const dismiss = vi.spyOn(toast, "dismiss");
-    const success = vi.spyOn(toast, "success");
-    const fetchMock = stubBilling(PAID);
-    const answer = fetchMock.getMockImplementation()!;
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    fetchMock.mockImplementation(async (input, init) => {
-      if (String(input).includes("/billing/status")) await held;
-      return answer(input, init);
-    });
-    const view = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    await waitFor(() => expect(loading).toHaveBeenCalledWith("Confirming your payment…", expect.anything()));
-    expect(dismiss).not.toHaveBeenCalledWith("checkout-return");
-    view.unmount();
-    await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
-    release();
-    await act(async () => undefined);
-    expect(success).not.toHaveBeenCalled();
-  });
-
-  it("keeps confirming through a development double mount (Sol 7b-8)", async () => {
-    const success = vi.spyOn(toast, "success");
-    const dismiss = vi.spyOn(toast, "dismiss");
-    stubBilling(PAID);
-    renderAuthenticated(<StrictMode><AppShell><p>Apps</p></AppShell></StrictMode>, { capabilities: { billing: true }, route: checkoutReturnPathFor("pro", "acct-1") });
-    await waitFor(() => expect(success).toHaveBeenCalledWith("Payment complete", expect.anything()));
-    expect(dismiss).not.toHaveBeenCalledWith("checkout-return");
-  });
-
-  it("announces nothing on a console without billing, and still takes the marker off", async () => {
-    const loading = vi.spyOn(toast, "loading");
-    const success = vi.spyOn(toast, "success");
-    const fetchMock = stubBilling(PAID);
-    const { router } = renderAuthenticated(<AppShell><p>Apps</p></AppShell>, {
-      capabilities: { billing: false },
-      route: checkoutReturnPathFor("pro", "acct-1"),
-    });
-    await waitFor(() => expect(router.location.search).toBe(""));
-    expect(loading).not.toHaveBeenCalled();
-    expect(success).not.toHaveBeenCalled();
-    expect(statusReads(fetchMock)).toBe(0);
   });
 });

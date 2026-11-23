@@ -179,12 +179,6 @@ export function pathWithoutCheckout(pathname: string, search: string): string {
   return rest ? `${pathname}?${rest}` : pathname;
 }
 
-/** Where a completed checkout for `planKey` sends the operator (a router path). */
-export function checkoutReturnPathFor(planKey: string, accountId?: string): string {
-  const account = accountId === undefined ? "" : `&${ACCOUNT_PARAM}=${encodeURIComponent(accountId)}`;
-  return `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}&${PLAN_PARAM}=${encodeURIComponent(planKey)}${account}`;
-}
-
 /** The sign-in URL that remembers where the operator was headed. */
 export function loginUrlFor(path: string | null | undefined): string {
   return authUrlFor(LOGIN_PATH, path);

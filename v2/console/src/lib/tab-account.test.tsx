@@ -234,7 +234,7 @@ describe("a console tab's account", () => {
     expect(tabAccount()).toBeNull();
   });
 
-  it("refuses every request from the start of a switch until the page reloads (Sol 7b-8)", async () => {
+  it("names the account the page shows while a switch request is out, and sends nothing once the page is leaving: the old page never writes to the new account (Sol 7b-8)", async () => {
     const { sent } = stubGateway({ selected: "acct-1", signedIn: true });
     setTabAccount("acct-1");
     let answer!: () => void;
@@ -249,12 +249,15 @@ describe("a console tab's account", () => {
     const { result } = renderHook(() => useSelectAccount(), { wrapper });
     act(() => void result.current.mutateAsync("acct-2").catch(() => undefined));
     await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/accounts/select"))).toBe(true));
-    // The switch request is out: nothing else leaves the page.
-    await expect(call("listApps")).rejects.toMatchObject({ code: "account_switching" });
-    expect(sent.filter((entry) => entry.url.includes("/apps"))).toEqual([]);
+    // The switch request is out: a request still names the account the page shows.
+    await call("listApps");
+    expect(sent.filter((entry) => entry.url.includes("/apps")).map((entry) => entry.account)).toEqual(["acct-1"]);
     answer();
     await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    // The tab now names acct-2, but this page shows acct-1: it sends nothing more.
+    expect(tabAccount()).toBe("acct-2");
     await expect(call("listApps")).rejects.toMatchObject({ code: "account_switching" });
+    expect(sent.filter((entry) => entry.url.includes("/apps"))).toHaveLength(1);
   });
 
   it("lets the page carry on when the switch request fails", async () => {
@@ -325,7 +328,7 @@ describe("a console tab's account", () => {
       let outcome: unknown;
       act(() => void result.current.mutateAsync("acct-2").catch((error: unknown) => (outcome = error)));
       await vi.advanceTimersByTimeAsync(SWITCH_DEADLINE_MS - 1);
-      await expect(call("listApps")).rejects.toMatchObject({ code: "account_switching" });
+      expect(outcome).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
       await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error));
       expect((outcome as Error).message).toBe("Switching account took too long. Try again.");

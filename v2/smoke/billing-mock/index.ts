@@ -85,11 +85,6 @@ export class BillingWorker extends WorkerEntrypoint<MockEnv> {
     return { ok: true };
   }
 
-  async startTrial(input: { tenantId: string; planKey: string }): Promise<TenantAccess> {
-    offered(input.planKey);
-    return { plan: { planKey: input.planKey, planName: "Smoke Pro", isDefault: false }, subscription: null };
-  }
-
   async getTenantAccess(input: { serviceId: string; tenantId: string }): Promise<TenantAccess> {
     const limits = plans(this.env)[input.tenantId];
     // A default plan for every account: a plan with limits is still the

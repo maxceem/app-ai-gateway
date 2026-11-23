@@ -46,7 +46,6 @@ import {
   listBillingPlans,
   resumeSubscription,
   startCheckout,
-  startTrial,
 } from "../admin/billing.ts";
 import { callCliTool, listCliTools } from "../admin/cli-tools.ts";
 import {
@@ -132,7 +131,6 @@ admin.post(path("startCheckout"), startCheckout);
 admin.post(path("changePlan"), changePlan);
 admin.post(path("resumeSubscription"), resumeSubscription);
 admin.post(path("cancelSubscription"), cancelSubscription);
-admin.post(path("startTrial"), startTrial);
 // The CLI's tool catalog: the list is public, a call is the caller's.
 admin.get(path("listCliTools"), listCliTools);
 admin.post(path("callCliTool"), adminAuth, callCliTool);

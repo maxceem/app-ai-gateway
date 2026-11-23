@@ -1,12 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { call } from "./api";
 import type { OperationResponse } from "@contracts/catalog";
 import { checkoutAccountFrom, checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { useConsoleSession } from "./console-session";
 import { keys } from "./queries";
+import { tabAccount } from "./tab-account";
 
 /**
  * How often, and how many times, the plan is read after the return. The
@@ -51,50 +52,84 @@ async function readPlanOnce(stop: AbortSignal): Promise<PlanRead> {
 /** One toast for the whole return, updated in place. */
 const TOAST_ID = "checkout-return";
 
+/** The confirmation running on this page, if any: one per page, however often React mounts the shell. */
+let running: { readonly stop: () => void } | null = null;
+
+/**
+ * Confirms a payment: says it is being confirmed, reads the plan up to
+ * `PLAN_CONFIRM_CHECKS` times, and says "Payment complete" once a read shows
+ * the plan bought, or "Payment received" past the last read. Before each read
+ * and each notice it checks the tab still acts in the account the checkout was
+ * for; if not, it stops and takes its notice down.
+ */
+function confirmPayment(client: QueryClient, checkoutAccount: string, planKey: string | null): void {
+  if (running !== null) return;
+  const reads = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finish = () => {
+    clearTimeout(timer);
+    reads.abort();
+    running = null;
+  };
+  const stop = () => {
+    finish();
+    toast.dismiss(TOAST_ID);
+  };
+  running = { stop };
+  const forThisAccount = () => tabAccount() === checkoutAccount;
+  const received = () => {
+    finish();
+    toast.info("Payment received", {
+      id: TOAST_ID,
+      description: "Your new plan is still being confirmed. Reload the billing page in a minute to see it.",
+    });
+  };
+  if (!forThisAccount()) return finish();
+  if (planKey === null) return received();
+  toast.loading("Confirming your payment…", { id: TOAST_ID });
+
+  const check = async (left: number): Promise<void> => {
+    if (!forThisAccount()) return stop();
+    const read = await readPlanOnce(reads.signal);
+    if (reads.signal.aborted) return;
+    if (!forThisAccount()) return stop();
+    const access = read.kind === "plan" ? read.status.access : null;
+    const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;
+    if (bought !== null) {
+      finish();
+      toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${bought.planName} plan.` });
+      void client.invalidateQueries({ queryKey: keys.session });
+      void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
+      return;
+    }
+    if (left <= 1) return received();
+    timer = setTimeout(() => void check(left - 1), PLAN_CONFIRM_INTERVAL_MS);
+  };
+  void check(PLAN_CONFIRM_CHECKS);
+}
+
+/** Ends a payment confirmation in progress and takes its notice down (signing out). */
+export function stopPaymentConfirmation(): void {
+  running?.stop();
+}
+
 /**
  * Handles the page the provider sends the person back to after a checkout.
  * The marker in the address says only that the provider sent them back, not
- * that anything was bought: so on a hosted console it says the payment is
- * being confirmed, reads the plan from the billing service a few times, and
- * says "Payment complete" only once a fresh read for the same account shows
- * the plan bought. A console without billing, or one showing another account
- * than the checkout was for, announces nothing. Either way the marker is
- * stripped at once, so a reload or a shared link never acts on it again.
+ * that anything was bought: so on a hosted console it confirms the payment
+ * (`confirmPayment`). A console without billing, or a tab acting in another
+ * account than the checkout was for, announces nothing. Either way the marker
+ * is stripped at once, so a reload or a shared link never acts on it again.
  */
 export function useCheckoutSuccessToast(): void {
   const location = useLocation();
   const navigate = useNavigate();
   const client = useQueryClient();
   const { capabilities, account } = useConsoleSession();
-  // Set before the work: under StrictMode the effect runs twice on one instance.
-  const handled = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const reads = useRef<AbortController>(undefined);
-  // The account whose payment is being confirmed, while it is.
-  const confirming = useRef<string | null>(null);
   const succeeded = checkoutSucceeded(location.search);
 
   useEffect(() => {
-    const controller = new AbortController();
-    reads.current = controller;
-    return () => {
-      controller.abort();
-      clearTimeout(timer.current);
-      // The page went (signing out, say) while a payment was being confirmed:
-      // its spinner goes with it (Sol 7b-8). Under StrictMode the page is
-      // mounted again at once and carries on, so the spinner is taken down
-      // only if no new mount has replaced this one by the next task.
-      setTimeout(() => {
-        if (reads.current !== controller || confirming.current === null) return;
-        confirming.current = null;
-        toast.dismiss(TOAST_ID);
-      }, 0);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!succeeded || handled.current) return;
-    handled.current = true;
+    if (!succeeded) return;
     const planKey = planKeyFrom(location.search);
     // A return is only this account's to confirm when it names this account.
     // One read in another account's console, or naming no account, says
@@ -102,50 +137,6 @@ export function useCheckoutSuccessToast(): void {
     const checkoutAccount = checkoutAccountFrom(location.search);
     void navigate(pathWithoutCheckout(location.pathname, location.search), { replace: true });
     if (!capabilities.billing || checkoutAccount === null || checkoutAccount !== account.id) return;
-
-    const received = () =>
-      toast.info("Payment received", {
-        id: TOAST_ID,
-        description: "Your new plan is still being confirmed. Reload the billing page in a minute to see it.",
-      });
-    if (planKey === null) {
-      received();
-      return;
-    }
-    toast.loading("Confirming your payment…", { id: TOAST_ID });
-    confirming.current = checkoutAccount;
-    const done = () => {
-      confirming.current = null;
-    };
-
-    const check = async (left: number): Promise<void> => {
-      // The page's reads stop when it goes. Under StrictMode the component is
-      // mounted twice: a read stopped by the first unmount is asked again
-      // under the second mount, and one stopped by a real unmount ends here.
-      const stop = reads.current;
-      if (stop === undefined || stop.signal.aborted) return;
-      const read = await readPlanOnce(stop.signal);
-      if (stop.signal.aborted) {
-        void check(left);
-        return;
-      }
-      // Checked again as the answer lands: the page may have gone meanwhile.
-      if (confirming.current !== checkoutAccount) return;
-      const access = read.kind === "plan" ? read.status.access : null;
-      const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;
-      if (bought !== null || left <= 1) {
-        done();
-        if (bought !== null) {
-          toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${bought.planName} plan.` });
-          void client.invalidateQueries({ queryKey: keys.session });
-          void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
-          return;
-        }
-        received();
-        return;
-      }
-      timer.current = setTimeout(() => void check(left - 1), PLAN_CONFIRM_INTERVAL_MS);
-    };
-    void check(PLAN_CONFIRM_CHECKS);
+    confirmPayment(client, checkoutAccount, planKey);
   }, [succeeded, capabilities.billing, account.id, client, navigate, location.pathname, location.search]);
 }

@@ -7,7 +7,7 @@ import {
   type OperationRequest,
   type OperationResponse,
 } from "@contracts/catalog";
-import { isSwitchingAccount, switchTabAccount, tabAccount, withTabAccount } from "./tab-account";
+import { isLeavingForAccountSwitch, switchTabAccount, tabAccount, withTabAccount } from "./tab-account";
 import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
 
 export class ApiError extends Error {
@@ -65,9 +65,9 @@ function toApiError(status: number, payload: unknown): ApiError {
  * entry to be sent through.
  */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  // A page switching account sends nothing more: it would go out under the
-  // account it is leaving, or under the next one before the page shows it.
-  if (isSwitchingAccount()) {
+  // A page leaving for an account switch sends nothing more: the tab already
+  // names the next account, which this page does not show.
+  if (isLeavingForAccountSwitch()) {
     throw new ApiError(0, "account_switching", "The console is switching account; the page is reloading");
   }
   const headers = withTabAccount(new Headers(init.headers));

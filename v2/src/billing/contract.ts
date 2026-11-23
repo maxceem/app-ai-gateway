@@ -36,7 +36,6 @@ export interface BillingRuntime {
   changePlan(input: { serviceId: string; tenantId: string; planKey: string; billingPeriod: BillingPeriod }): Promise<BillingChangeResponse>;
   resumeSubscription(input: { serviceId: string; tenantId: string; planKey: string; billingPeriod: BillingPeriod }): Promise<BillingChangeResponse>;
   cancelSubscription(input: { serviceId: string; tenantId: string }): Promise<BillingCancelResponse>;
-  startTrial(input: { serviceId: string; tenantId: string; planKey: string }): Promise<BillingAccess>;
 }
 
 /** The binding, if this deployment has one. It is not in the tracked `wrangler.jsonc`, so not in `Env`. */
