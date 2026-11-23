@@ -34,6 +34,16 @@ export const CliToolViewSchema = z.object({
   wide: z.array(z.string()).optional(),
 });
 
+/**
+ * Characters no command or request an example shows may hold: control
+ * characters, Unicode format characters (such as a zero-width joiner) and
+ * halves of a surrogate pair, any of which a terminal or a reader could take
+ * for something else. The gateway writes no command holding one (only a
+ * note), and `agw` shows none it is sent, rather than rewrite it. A line
+ * break between a command's lines is the one exception.
+ */
+export const UNSAFE_COMMAND_TEXT = /[\p{Cc}\p{Cf}\p{Cs}]/u;
+
 /** Where a tool sits among `agw`'s commands, decided by the gateway so a CLI never needs a release to learn one. */
 export const CliToolHintSchema = z.object({
   /** The command words, such as `app show`. */

@@ -26,6 +26,7 @@
 import type { Context } from "hono";
 import { parseServedAppConfig, type AppConfig, type ProviderRouting } from "../contracts/app-config.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
+import { UNSAFE_COMMAND_TEXT } from "../contracts/cli.ts";
 import { describeConnection } from "../providers/connections.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
@@ -60,7 +61,7 @@ const SWIFT_SDK = "https://github.com/maxceem/app-ai-gateway-swift";
 const COVERED_STYLES: Partial<Readonly<Record<ApiStyle, Readonly<Record<string, unknown>> | "form">>> = {
   "openai-chat": { messages: [{ role: "user", content: PROMPT }] },
   "openai-responses": { input: PROMPT },
-  "anthropic-messages": { max_tokens: 256, messages: [{ role: "user", content: PROMPT }] },
+  "anthropic-messages": { messages: [{ role: "user", content: PROMPT }] },
   "gemini-generate": { contents: [{ role: "user", parts: [{ text: PROMPT }] }] },
   "openai-embeddings": { input: PROMPT },
   "openai-images": { prompt: "A lighthouse at dawn" },
@@ -81,9 +82,34 @@ function capProblem(style: ApiStyle, cap: number | undefined): string | null {
   return cap === undefined || minimum === undefined || cap >= minimum ? null : `its output cap of ${cap} tokens is below the ${minimum} the provider requires`;
 }
 
+/** The output limit an example asks for: small, and never above the route's or the preset's cap. */
+const SAMPLE_OUTPUT_LIMIT = 256;
+
+/**
+ * An explicit output limit, in the field the operation's API reads it from
+ * (the proxy's `outputCap`), so the proxy never writes a large cap into the
+ * example for it: `min(256, cap)`. Nothing for an operation with no output cap.
+ */
+function outputLimit(operation: OperationDescription, cap: number | undefined): Record<string, unknown> {
+  const limit = Math.min(SAMPLE_OUTPUT_LIMIT, cap ?? SAMPLE_OUTPUT_LIMIT);
+  switch (operation.policy?.outputCap) {
+    case "chat":
+    case "anthropic":
+      return { max_tokens: limit };
+    case "chat-completion-tokens":
+      return { max_completion_tokens: limit };
+    case "responses":
+      return { max_output_tokens: limit };
+    case "gemini":
+      return { generationConfig: { maxOutputTokens: limit } };
+    default:
+      return {};
+  }
+}
+
 /** Whether any text in `value` holds a control character, such as a line break: such a value never goes into a command. */
 function holdsControl(value: unknown): boolean {
-  if (typeof value === "string") return /\p{Cc}/u.test(value);
+  if (typeof value === "string") return UNSAFE_COMMAND_TEXT.test(value);
   if (Array.isArray(value)) return value.some(holdsControl);
   if (typeof value === "object" && value !== null) return Object.entries(value).some(([key, inner]) => holdsControl(key) || holdsControl(inner));
   return false;
@@ -175,7 +201,8 @@ function exampleModel(
     const billed = listedKind(connection.type, call.model);
     return kind === undefined || billed === undefined || billed === kind ? call.model : null;
   };
-  const sample = SAMPLE_MODELS[operation.name];
+  // A sample is known to work on the provider's own hosts only (a Cloudflare AI Gateway in front of them counts): never at a base URL.
+  const sample = connection.base_url === null ? SAMPLE_MODELS[operation.name] : undefined;
   // Curated only while it is still the curated model: an app's rewrite may send it as another.
   const sent = sample === undefined ? null : admitted(sample);
   if (sample !== undefined && sent === sample) return { model: sample, configured: false };
@@ -226,12 +253,11 @@ function requestFor(url: string, operation: OperationDescription, model: string 
       file: { field: operation.audioFormFields?.[0] ?? "file", name: "audio.mp3" },
     };
   }
-  const found = COVERED_STYLES[style] as Readonly<Record<string, unknown>>;
-  const shape = outputCap !== undefined && typeof found.max_tokens === "number" ? { ...found, max_tokens: Math.min(found.max_tokens, outputCap) } : found;
+  const shape = COVERED_STYLES[style] as Readonly<Record<string, unknown>>;
   return {
     ...base,
     headers: { ...endUser, ...styleHeaders, "Content-Type": "application/json" },
-    body: field === null ? { ...shape } : { [field]: model, ...shape },
+    body: { ...(field === null ? {} : { [field]: model }), ...shape, ...outputLimit(operation, outputCap) },
   };
 }
 
@@ -322,7 +348,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, request: SnippetRequest) => {
     const who = example.preset === undefined ? `${example.provider}: ${example.operation}` : `The preset ${example.preset}`;
     if (holdsControl([example.model, request.url, request.headers, request.body, request.form])) {
-      notes.push(`${who} has no example: a value it would send holds a control character, such as a line break.`);
+      notes.push(`${who} has no example: a value it would send holds a control or invisible character, such as a line break or a zero-width joiner.`);
       return;
     }
     if (example.caveat !== undefined) notes.push(`${who}: ${example.caveat}`);

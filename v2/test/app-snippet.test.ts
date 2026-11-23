@@ -124,14 +124,15 @@ describe("first requests for an app", () => {
       method: "POST",
       url: `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
       headers: { "x-end-user-id": "user-123", "Content-Type": "application/json" },
-      body: { model: chatModel, messages: [{ role: "user", content: "Hello!" }] },
+      // A small output limit of its own, in the field OpenAI's Chat Completions reads.
+      body: { model: chatModel, messages: [{ role: "user", content: "Hello!" }], max_completion_tokens: 256 },
     });
     expect(chat!.curl).toBe(
       [
         `( set +x; printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
         `-H 'x-end-user-id: user-123'`,
         `-H 'Content-Type: application/json'`,
-        `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}]}' )`,
+        `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`,
       ].join(" \\\n  "),
     );
     expect(chat!.text).toBe(chat!.curl);
@@ -187,7 +188,15 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["bad\nalias"] } }, model_rewrites: { "bad\nalias": sample } },
     });
     expect(broken.examples).toEqual([]);
-    expect(broken.notes).toContainEqual(`${slug}: openai.chat has no example: a value it would send holds a control character, such as a line break.`);
+    expect(broken.notes).toContainEqual(`${slug}: openai.chat has no example: a value it would send holds a control or invisible character, such as a line break or a zero-width joiner.`);
+
+    // A Unicode format character, such as a zero-width joiner, the same.
+    const joined = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt‍mini"] } }, model_rewrites: { "gpt‍mini": sample } },
+    });
+    expect(joined.examples).toEqual([]);
+    expect(joined.notes).toContainEqual(`${slug}: openai.chat has no example: a value it would send holds a control or invisible character, such as a line break or a zero-width joiner.`);
 
     const hostile = "it's $(touch pwned)";
     const quoted = await snippetFor(key, {
@@ -197,7 +206,33 @@ describe("first requests for an app", () => {
     const [example] = quoted.examples;
     expect(example!.model).toBe(hostile);
     // The single quote is closed, escaped and reopened: the $(...) stays inside quotes.
-    expect(example!.curl).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}]}' )`);
+    expect(example!.curl).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`);
+  });
+
+  it("asks for a small output of its own, never the route's whole cap: a DeepSeek route capped at 500000 sends 256", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key, { type: "deepseek", name: "DeepSeek", slug: `deepseek-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["deepseek.chat"], max_output_tokens: 500000 } } },
+    });
+    expect(examples[0]!.body).toMatchObject({ model: SAMPLE_MODELS["deepseek.chat"], max_tokens: 256 });
+  });
+
+  it("names no curated sample at a custom base URL: the app's own model with its caveat, or a note", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key, { slug: `hosted-${crypto.randomUUID().slice(0, 6)}`, baseUrl: "https://llm.example.net/v1/" });
+    const any = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"] } } },
+    });
+    expect(any.examples).toEqual([]);
+    expect(any.notes).toContainEqual(`${slug}: openai.chat has no example: pick a model for it and list it in the route.`);
+    const named = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: [SAMPLE_MODELS["openai.chat"]!] } } },
+    });
+    expect(named.examples).toEqual([expect.objectContaining({ model: SAMPLE_MODELS["openai.chat"], caveat: expect.stringContaining("configured model") })]);
   });
 
   it("gives a Responses route or preset with an output cap below OpenAI's 16 tokens a note", async () => {
@@ -292,7 +327,7 @@ describe("first requests for an app", () => {
     const [generate] = examples;
     expect(generate!.model).toBe(SAMPLE_MODELS["gemini.generate.v1beta"]);
     expect(generate!.url).toBe(`${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1beta/models/${generate!.model}:generateContent`);
-    expect(generate!.body).toEqual({ contents: [{ role: "user", parts: [{ text: "Hello!" }] }] });
+    expect(generate!.body).toEqual({ contents: [{ role: "user", parts: [{ text: "Hello!" }] }], generationConfig: { maxOutputTokens: 256 } });
   });
 
   it("never asks for more output than the route or the preset allows", async () => {
@@ -443,7 +478,7 @@ describe("first requests for an app", () => {
         "Content-Type: application/json",
         "(The Swift SDK adds the gateway token and the App Attest proof.)",
         "",
-        JSON.stringify({ model: SAMPLE_MODELS["openai.chat"], messages: [{ role: "user", content: "Hello!" }] }, null, 2),
+        JSON.stringify({ model: SAMPLE_MODELS["openai.chat"], messages: [{ role: "user", content: "Hello!" }], max_completion_tokens: 256 }, null, 2),
       ].join("\n"),
     );
     expect(transcription!.text).toContain("Content-Type: multipart/form-data");

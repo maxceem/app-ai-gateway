@@ -14,6 +14,7 @@
  */
 
 import type { CliTool } from "./catalog.ts";
+import { UNSAFE_COMMAND_TEXT } from "../../src/contracts/cli.ts";
 import type { Style } from "./style.ts";
 import { fieldsOf, type Field } from "./tool-args.ts";
 
@@ -216,11 +217,16 @@ function textsAt(result: unknown, path: string): string[] {
 }
 
 /**
- * Remote text as lines to copy: each line kept as written, but for control
- * characters, escape sequences included, which become spaces.
+ * Remote text as lines to copy, each exactly as written. A command is never
+ * rewritten: one holding a character a terminal could misread
+ * (`UNSAFE_COMMAND_TEXT`, line breaks apart) is not shown at all.
  */
 function block(text: string): string[] {
-  return text.split("\n").map((line) => line.replace(/\p{C}/gu, " ").trimEnd()).slice(0, 200);
+  const lines = text.split("\n");
+  if (lines.some((line) => UNSAFE_COMMAND_TEXT.test(line)) || lines.length > 200) {
+    return ["(This example holds a character a terminal could misread, so it is not shown. Run the command with --json to see it.)"];
+  }
+  return lines;
 }
 
 /** A note as one line: a string as it is, an object by its message. */
