@@ -74,6 +74,7 @@ import {
   SendVerificationEmailRequestSchema,
   SendVerificationEmailResponseSchema,
 } from "./access.ts";
+import { SupportMessageRequestSchema, SupportMessageResponseSchema } from "./support.ts";
 import {
   BillingCancelRequestSchema,
   BillingCancelResponseSchema,
@@ -1090,6 +1091,30 @@ export const CATALOG = {
     response: BillingPlansResponseSchema,
     responseDescription: "The plans, as the billing service offers them.",
     errors: { ...SESSION_ONLY_ERRORS, 404: "This deployment has no billing (`not_found`).", 502: "The billing service could not be reached (`billing_unavailable`)." },
+  },
+
+  sendSupportMessage: {
+    method: "POST",
+    path: "/v2/admin/support",
+    hidden: true,
+    tags: ["Admin support"],
+    summary: "Send a message to support",
+    description:
+      "Opens a support ticket for the person the credential belongs to: they get an email with its reference and their message, copied to the deployment's support inbox, and support answers them by replying to it. Send only what the person asked to send, and never a credential: a message or context value that looks like a key, token or password is refused. The same message sent again within ten minutes is not sent twice; the answer says so and repeats the reference. Offered only where the deployment has plans and a help desk (`supportEmail` in the console capabilities).",
+    security: "management",
+    request: SupportMessageRequestSchema,
+    response: SupportMessageResponseSchema,
+    responseDescription: "The ticket was opened; support replies to the sender's email address.",
+    errors: {
+      400: "The body is malformed, or carries something that looks like a credential (`invalid_request`).",
+      401: "A valid management key, OAuth token or console sign-in is required.",
+      403: "The account's plan does not include human support (`support_plan_required`), the person has not verified their email address (`email_unverified`), or the credential has the read grant (`grant_insufficient`).",
+      404: "This deployment does not offer human support (`not_found`).",
+      409: "The credential's owner has no email address to reply to (`conflict`), or the console signed in as someone else after the message was started (`sender_changed`).",
+      429: "Too many messages were sent (`rate_limited`); `Retry-After` says when to try again.",
+      502: "The account's plan data is malformed (`billing_unavailable`).",
+      503: "The help desk could not be reached (`email_unavailable`). Try again in a few minutes.",
+    },
   },
 
   getBillingStatus: {

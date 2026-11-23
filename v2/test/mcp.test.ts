@@ -13,7 +13,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { CLI_CLIENT_ID } from "../src/auth/identity.ts";
 import { OAUTH_PATHS } from "../src/management/oauth-routes.ts";
-import { MCP_READ_OPERATIONS, MCP_TOOLS, MCP_WRITE_OPERATIONS } from "../src/mcp/tools.ts";
+import { MCP_READ_OPERATIONS, MCP_TOOLS, MCP_WRITE_OPERATIONS, toolsFor } from "../src/mcp/tools.ts";
 import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 const CONSOLE = "https://console.gateway.test";
@@ -148,7 +148,9 @@ describe("the MCP endpoint", () => {
     const listed = await rpc(key, "tools/list");
     expect(listed.status).toBe(200);
     const names = (listed.message.result.tools as { name: string }[]).map((tool) => tool.name);
-    expect(names).toEqual(MCP_TOOLS.map((tool) => tool.name));
+    // This deployment binds no help desk, so it does not offer contact_support.
+    expect(names).toEqual(toolsFor(env).map((tool) => tool.name));
+    expect(names).not.toContain("contact_support");
 
     const types = await callTool(key, "list_provider_types");
     expect(types.isError ?? false).toBe(false);
@@ -530,7 +532,7 @@ describe("the CLI's tool catalog", () => {
     expect(response.status).toBe(200);
     const catalog = (await response.json()) as { revision: string; tools: { name: string; guard: string; cli: { command: string }; inputSchema: Record<string, unknown> }[] };
     expect(catalog.revision).toMatch(/^[0-9a-f]{16}$/u);
-    expect(catalog.tools.map((tool) => tool.name)).toEqual(MCP_TOOLS.map((tool) => tool.name));
+    expect(catalog.tools.map((tool) => tool.name)).toEqual(toolsFor(env).map((tool) => tool.name));
     const show = catalog.tools.find((tool) => tool.name === "get_app")!;
     expect(show.cli.command).toBe("app show");
     expect(show.inputSchema).toMatchObject({ type: "object", required: ["app"] });

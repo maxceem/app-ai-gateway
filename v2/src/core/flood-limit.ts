@@ -112,6 +112,15 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "start a management operation",
     sharedBy: "your account",
   },
+  // Each message opens a ticket and emails the support inbox: ten an hour covers
+  // writing in about a problem and following up, and keeps one sign-in from
+  // flooding the inbox (v1's limit).
+  support_message: {
+    limit: 10,
+    windowMs: 3_600_000,
+    action: "send a message to support",
+    sharedBy: "your sign-in",
+  },
   // Answering one approval link: a stranger guessing at keys or proofs for it.
   submission: {
     limit: 10,

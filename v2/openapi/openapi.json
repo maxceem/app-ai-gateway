@@ -6461,6 +6461,9 @@
           "emailVerification": {
             "type": "boolean"
           },
+          "supportEmail": {
+            "type": "string"
+          },
           "termsOfServiceUrl": {
             "type": "string"
           },

@@ -255,6 +255,13 @@ function invalidateApp(client: ReturnType<typeof useQueryClient>, appId: string)
   void client.invalidateQueries({ queryKey: keys.appSnippet(appId) });
 }
 
+/** A message to human support: a ticket the help desk answers by email. */
+export function useSendSupportMessage() {
+  return useMutation({
+    mutationFn: (body: OperationRequest<"sendSupportMessage">) => call("sendSupportMessage", { body }),
+  });
+}
+
 export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({

@@ -27,6 +27,8 @@ import { CATALOG, type OperationName, type OperationResponse } from "../contract
 import type { CliToolHint } from "../contracts/cli.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
 import { isSecretFieldName, type ResultPath } from "./secret-fields.ts";
+import { SupportMessageRequestSchema } from "../contracts/support.ts";
+import { supportInbox } from "../admin/support.ts";
 
 /** The operations a tool may run that need only the read grant. */
 export const MCP_READ_OPERATIONS = [
@@ -73,6 +75,7 @@ export const MCP_WRITE_OPERATIONS = [
   "openProviderKeyHandoff",
   "createReservedApp",
   "createReservedAppKey",
+  "sendSupportMessage",
 ] as const satisfies readonly OperationName[];
 
 export type ReadOperation = (typeof MCP_READ_OPERATIONS)[number];
@@ -117,6 +120,8 @@ export interface McpTool {
   readonly next?: Partial<Record<ErrorCode, string>>;
   /** A check of the tool's own, run before the operation. */
   check?(input: Record<string, unknown>): void;
+  /** Whether this deployment offers the tool at all; without it, always. A tool it does not offer is not listed. */
+  available?(env: Env): boolean;
   /**
    * A read to run first, whose answer `request` is given: for a tool whose
    * request depends on what is stored now (`patch_app`'s shortcuts). Null
@@ -1014,7 +1019,50 @@ export const MCP_TOOLS: readonly McpTool[] = [
     cli: { command: "app user unblock", args: ["app", "user"] },
     summary: (result) => `User ${result.user_id} of ${result.app_id} is ${result.blocked ? "blocked" : "not blocked"}.`,
   }),
+  {
+    name: "contact_support",
+    title: "Contact human support",
+    description:
+      "Emails the gateway's human support team on the person's behalf: a bug report, a question, or feedback. Only when the person asked you to contact support. First show them the exact message you will send and wait for their yes; send it in their words, as plainly as they would. Support replies to the person's own email address, never to you. Put what helps support act in context (app id, request id, error code, what was tried), and never a key, token or password: a message carrying one is refused. Sending the same message again within ten minutes sends nothing new and answers the first reference. Not for questions you can answer with the other tools or the guide.",
+    operations: ["sendSupportMessage"],
+    input: z.object({
+      kind: SupportMessageRequestSchema.shape.kind.meta({
+        description: "bug for something that is broken, support for a question or a request for help, feedback for an idea or a missing feature.",
+      }),
+      message: SupportMessageRequestSchema.shape.message,
+      context: SupportMessageRequestSchema.shape.context,
+    }),
+    // It reaches a person outside the gateway, and each call that is not a repeat sends a new email; it removes nothing.
+    annotations: { ...writes({ destructive: false, idempotent: false }), openWorldHint: true },
+    // `agw support send` is built into agw, which shows the message and asks before sending; the built-in
+    // command wins over the tool. An agw from before it has no such step, so it is told to update instead.
+    cli: { command: "support send", requires: ["support-confirmation"] },
+    available: (env) => supportInbox(env) !== null,
+    next: {
+      support_plan_required: "Tell the person that their plan does not include human support, and that an account owner can choose one that does on the Billing page of the console. Do not retry.",
+      invalid_request: "Remove whatever looks like a credential, show the person the corrected message, and send it only once they agree.",
+      not_found: "This deployment does not offer human support. Tell the person.",
+      conflict: "The credential's owner has no email address for support to reply to. Ask the person to contact support from the console instead.",
+      email_unverified: "Support replies by email, so the person must verify their email address first. Ask them to open the link in the verification email, or send a new one from the console, then try again.",
+      rate_limited: "Too many messages were sent. Tell the person, and do not retry until the wait the message names has passed.",
+    },
+    request: (input) => ({
+      operation: "sendSupportMessage",
+      body: { kind: input.kind, message: input.message, ...(input.context === undefined || input.context === null ? {} : { context: input.context }) },
+    }),
+    summary: (raw) => {
+      const result = raw as OperationResponse<"sendSupportMessage">;
+      return result.duplicate
+        ? `This message was already sent as ${result.reference} in the last ten minutes; nothing new was sent. Support will reply to ${result.replyTo} by email.`
+        : `Sent to human support as ${result.reference}. Support will reply to ${result.replyTo} by email; tell the person the reference.`;
+    },
+  },
 ];
+
+/** The tools this deployment offers: every one but those it has nothing behind, such as support without a help desk. */
+export function toolsFor(env: Env): readonly McpTool[] {
+  return MCP_TOOLS.filter((tool) => tool.available === undefined || tool.available(env));
+}
 
 // ---------------------------------------------------------------------------
 // Refusals

@@ -82,8 +82,8 @@ function LocationProbe({ probe }: { probe: RouterProbe }) {
  * plain `<Routes>`. It is what `useBlocker` needs, and a screen that blocks a
  * navigation would throw under a plain `MemoryRouter`.
  */
-const memoryRouter = (route: string, element: ReactNode) =>
-  createMemoryRouter([{ path: "*", element }], { initialEntries: [route] });
+const memoryRouter = (route: string, element: ReactNode, basename?: string) =>
+  createMemoryRouter([{ path: "*", element }], { initialEntries: [route], ...(basename === undefined ? {} : { basename }) });
 
 export function renderPublic(
   ui: ReactNode,
@@ -145,6 +145,8 @@ export function renderAuthenticated(
     route?: string;
     /** Mounts the tree behind this route pattern only, for a screen that redirects away. */
     path?: string;
+    /** The router's base, as production runs it (`/v2`); `route` then starts with it. */
+    basename?: string;
   } = {},
 ) {
   const client = testQueryClient();
@@ -170,6 +172,7 @@ export function renderAuthenticated(
                 </ConsoleSessionProvider>
               </TooltipProvider>
             </>,
+            options.basename,
           )}
         />
       </QueryClientProvider>,

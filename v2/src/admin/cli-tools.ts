@@ -15,7 +15,7 @@ type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 /** The list is the same for every caller of one deployment, so it needs no credential. */
 export async function listCliTools(c: Context<{ Bindings: Env }>): Promise<Response> {
   const { cliToolCatalog } = await import("../mcp/cli-catalog.ts");
-  return c.json(await cliToolCatalog());
+  return c.json(await cliToolCatalog(c.env));
 }
 
 /**

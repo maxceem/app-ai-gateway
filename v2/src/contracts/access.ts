@@ -117,6 +117,13 @@ export const ConsoleCapabilitiesSchema = z
     conversationStorage: z.boolean().optional(),
     /** Whether people's email addresses are verified here (the deployment sends email). */
     emailVerification: z.boolean().optional(),
+    /**
+     * The support inbox, where the deployment offers human support: a help
+     * desk is bound, the inbox is set, and plans are sold. Shown only, for
+     * people who prefer their own mail app; the help desk decides where a
+     * ticket goes. Left out where there is no support.
+     */
+    supportEmail: z.string().optional(),
     termsOfServiceUrl: z.string().optional(),
     privacyPolicyUrl: z.string().optional(),
     /** The gateway's release, which the CLI compares with its own after a failure. Absent on older gateways. */
@@ -125,7 +132,7 @@ export const ConsoleCapabilitiesSchema = z
   .meta({ id: "ConsoleCapabilities" });
 
 /** A console path to continue at once a verification link is opened: one beginning with a single `/`. */
-const ConsoleReturnPathSchema = z
+export const ConsoleReturnPathSchema = z
   .string()
   .max(512)
   .regex(/^\/(?![/\\])[^\\\s]*$/u)

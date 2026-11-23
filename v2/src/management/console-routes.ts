@@ -46,6 +46,7 @@ import { confirmEmailVerification, sendVerificationEmail } from "../auth/email-v
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { emailSetup } from "../email/sender.ts";
 import { log } from "../core/log.ts";
+import { supportInbox } from "../admin/support.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 type ConsoleContext = Context<ConsoleEnv>;
@@ -54,19 +55,21 @@ export const consoleRoutes = new Hono<ConsoleEnv>();
 
 const path = (name: OperationName): string => honoPath(CATALOG[name].path);
 
-consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
-  c.json({
+consoleRoutes.get(path("getConsoleCapabilities"), (c) => {
+  const supportEmail = supportInbox(c.env);
+  return c.json({
     billing: hostedDeployment(c.env),
     registrationOpen: registrationOpen(c.env),
     googleAuth: googleAuthEnabled(c.env),
     oauth: oauthIssuer(c.env) !== null,
     conversationStorage: conversationsBucket(c.env) !== null,
     emailVerification: emailVerificationRequired(c.env),
+    ...(supportEmail === null ? {} : { supportEmail }),
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
     serverVersion: SERVER_VERSION,
-  } satisfies OperationResponse<"getConsoleCapabilities">),
-);
+  } satisfies OperationResponse<"getConsoleCapabilities">);
+});
 
 /** Refuses a call that is not from the console's own page, before anything is read. */
 function assertConsoleOrigin(c: ConsoleContext): void {

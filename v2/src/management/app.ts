@@ -59,6 +59,7 @@ import {
 import { listModelPrices } from "../admin/prices.ts";
 import { getAppSnippet } from "../admin/app-snippet.ts";
 import { listProviderTypes } from "../admin/provider-types.ts";
+import { sendSupportMessage } from "../admin/support.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
 import { listAppJobs } from "../admin/jobs.ts";
@@ -128,6 +129,8 @@ admin.post(path("createReservedApp"), createReservedApp);
 admin.post(path("createReservedAppKey"), createReservedAppKey);
 admin.get(path("getOperation"), getOperation);
 admin.post(path("revealOperation"), revealOperation);
+// Human support (deployments with plans and a help desk only; 404 elsewhere).
+admin.post(path("sendSupportMessage"), sendSupportMessage);
 // The billing page (hosted deployments only; 404 elsewhere).
 admin.get(path("listBillingPlans"), listBillingPlans);
 admin.get(path("getBillingStatus"), getBillingStatus);

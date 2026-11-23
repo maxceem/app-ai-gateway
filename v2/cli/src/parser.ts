@@ -53,6 +53,7 @@ export const commands = {
     summary: "Rename an app, turn it on or off, or apply a JSON patch",
   },
   "operation wait": { args: 1, flags: "timeout", summary: "Wait for a browser step this CLI opened" },
+  "support send": { args: 0, flags: "type message message-stdin! context* yes!", summary: "Email human support" },
 } as const satisfies Record<string, CommandSpec>;
 
 export type CommandName = keyof typeof commands;
@@ -89,6 +90,9 @@ export interface Flags {
   "key-header"?: string;
   "key-format"?: string;
   path?: string | string[];
+  message?: string;
+  "message-stdin"?: true;
+  context?: string | string[];
   "bundle-id"?: string;
   "user-header"?: string;
   file?: string;
@@ -267,6 +271,7 @@ Sign-in: account login and deployment connect open a browser on this machine; --
 Credentials: ${MANAGEMENT_KEY_ENV}, when set, is the management key for every command and overrides the saved sign-in. Use it in CI and scripts.
 Secrets: hidden prompt by default; --key-stdin reads one line; provider --browser has a person type the key in the console instead. Through Cloudflare AI Gateway (provider add --cloudflare-account-id and --cloudflare-gateway-id, with --browser), the person types the Cloudflare token there too.
 New app keys: written to a private file (--key-output, or one agw picks), never printed.
+Support: support send emails human support for the signed-in person, who gets the reply by email. Without a terminal it needs --yes: show the person the message first. Never put a key or token in it.
 Gateway commands: every command not built into agw comes from the connected gateway, so a new gateway release brings its commands without an agw update. Their flags follow the gateway's arguments; JSON values are inline or @file.
 `;
 

@@ -281,15 +281,30 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
 
 export { PLAN_FEATURES, type PlanFeature };
 
+/** How each plan feature is named and refused. */
+interface FeaturePolicy {
+  /** How the feature is named in a refusal, at the start of a sentence. */
+  readonly name: string;
+  /** The refusal's code. Its own code only where a client already reads one. */
+  readonly code: "billing_feature_not_included" | "support_plan_required";
+}
+
+const FEATURE_POLICY = {
+  conversationStorage: { name: "Conversation history", code: "billing_feature_not_included" },
+  humanSupport: { name: "Human support", code: "support_plan_required" },
+} as const satisfies Record<PlanFeature, FeaturePolicy>;
+
 /**
  * Whether the account's plan includes `feature` (v1's `planIncludes`).
- * Self-hosted: always. Billing that cannot be read: never, because storing
- * conversations is not something to guess a plan for. A `limits.includes`
+ * Self-hosted: always. Billing that cannot be read, or a paid period that has
+ * ended: no. (Support decides for itself what a failed read means: see
+ * `src/admin/support.ts`.) A `limits.includes`
  * that is not a list of strings throws `502`: the plan is misconfigured.
  */
 export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature): boolean {
   if (access.state === "self_hosted") return true;
-  if (access.state === "unavailable" || access.plan === null) return false;
+  if (access.state === "unavailable") return false;
+  if (access.plan === null) return false;
   const limits = access.plan.limits;
   if (limits === undefined || limits === null) return true;
   if (typeof limits !== "object" || Array.isArray(limits)) {
@@ -354,13 +369,18 @@ export function billingRpcError(error: unknown): GatewayError {
 
 /**
  * Turning a feature on needs a plan that includes it. Like any settings write,
- * billing that cannot be read answers 503 rather than guessing.
+ * billing that cannot be read, or only a plan kept through an outage, answers
+ * 503 rather than guessing (`requireActiveBilling`). Human support sends its
+ * tickets on its own path (`../admin/support.ts`), which does not wait for
+ * billing.
  */
-export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature, name: string): Promise<void> {
+export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature): Promise<void> {
   const access = requireActiveBilling(await getBillingAccess(env, accountId));
-  if (!planIncludes(access, feature)) {
-    throw new GatewayError(403, "billing_feature_not_included", `${name} is not included in this account's plan`, undefined, {
-      data: { feature },
-    });
-  }
+  if (!planIncludes(access, feature)) throw planFeatureRefusal(feature);
+}
+
+/** The refusal of a feature the account's plan leaves out, in the feature's own words and code. */
+export function planFeatureRefusal(feature: PlanFeature): GatewayError {
+  const policy = FEATURE_POLICY[feature];
+  return new GatewayError(403, policy.code, `${policy.name} is not included in this account's plan`, undefined, { data: { feature } });
 }

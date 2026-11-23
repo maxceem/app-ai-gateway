@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliError, LocalDirectoryError } from "../src/common.ts";
+import { CliError, LocalDirectoryError, VERSION } from "../src/common.ts";
 import { customFields } from "../src/commands.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { signInFailure } from "../src/sign-in-retry.ts";
+import { preview } from "../src/support.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
 import { fakeClock, fakeTransport, memoryStore, signedInState, sinks } from "./helpers.ts";
@@ -812,3 +813,69 @@ test("operation wait exits 5 when it stops waiting, and the step stays open", as
   assert.match(error.nextAction, /agw operation wait op_7/);
 });
 
+test("support send opens a ticket with what agw adds: its version and the context named, once the person said yes", async () => {
+  const sent: unknown[] = [];
+  const answer = { status: "sent", reference: "SUP-7F3K2Q", replyTo: "person@example.test", duplicate: false };
+  const result = await run(
+    ["support", "send", "--type", "Bug", "--message", " Streams stop halfway. ", "--context", "app_id=demo", "--context", "request_id=r1", "--yes", "--json"],
+    (path, options) => {
+      assert.equal(path, "/v2/admin/support");
+      sent.push(options.body);
+      return answer;
+    },
+  );
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(sent, [{ kind: "bug", message: "Streams stop halfway.", context: { app_id: "demo", request_id: "r1" }, client: `agw ${VERSION}` }]);
+  assert.deepEqual(result.json().result, answer);
+
+  // Shown plainly: the reference to quote and where the reply goes.
+  const human = await run(["support", "send", "--type", "support", "--message", "Hi", "--yes"], () => ({ ...answer, duplicate: true }));
+  assert.match(human.out, /Already sent as SUP-7F3K2Q in the last ten minutes; nothing new was sent\.\nReplies go to person@example\.test/u);
+});
+
+test("support send reads the message from stdin, and sends nothing without a yes, a valid type or well-formed context", async () => {
+  const out = sinks();
+  let body: { message?: string } | undefined;
+  const transport = fakeTransport(async (_path, options) => {
+    body = options.body as { message: string };
+    return { data: { status: "sent", reference: "SUP-1", replyTo: "a@example.test", duplicate: false } };
+  });
+  const code = await main(["support", "send", "--type", "feedback", "--message-stdin", "--yes", "--json"], {
+    store: memoryStore(signedInState(URL_, "agw_oat_1")),
+    transport,
+    stdout: out.stdout,
+    stderr: out.stderr,
+    io: { env: {}, clock: fakeClock(), openBrowser: async () => true },
+    catalogCache: new MemoryCatalogCache(),
+    stdin: async () => "From stdin.\n",
+  });
+  assert.equal(code, 0, out.err.text);
+  assert.equal(body?.message, "From stdin.");
+
+  // No terminal to ask on: the person must have agreed already, said with --yes.
+  const unconfirmed = await run(["support", "send", "--type", "bug", "--message", "x", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(unconfirmed.json().error.code, "confirmation_required");
+  const kind = await run(["support", "send", "--type", "complaint", "--message", "x", "--yes", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(kind.json().error.code, "invalid_input");
+  const context = await run(["support", "send", "--type", "bug", "--message", "x", "--context", "app_id", "--yes", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(context.json().error.code, "invalid_input");
+  const both = await run(["support", "send", "--type", "bug", "--message", "x", "--message-stdin", "--yes", "--json"], () => assert.fail("nothing is sent"));
+  assert.equal(both.json().error.code, "conflicting_flags");
+});
+
+test("the support preview shows control characters as codes and keeps line breaks", async () => {
+  const message = "First line\nSecond \u001b[31mred\u0007 \u202Eturned\r";
+  const shown = preview("bug", message, { "app\u001b": "demo\u0000" });
+  assert.equal(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/.test(shown), false);
+  assert.match(shown, /First line\nSecond \\u001b\[31mred\\u0007 \\u202eturned\\u000d/);
+  assert.match(shown, /app\\u001b: demo\\u0000/);
+
+  // Only the preview changes: the message is sent as written.
+  const sent: unknown[] = [];
+  const result = await run(["support", "send", "--type", "bug", "--message", "Line one\nLine \u001b[31mtwo", "--yes", "--json"], (_path, options) => {
+    sent.push((options.body as { message: string }).message);
+    return { status: "sent", reference: "SUP-7F3K2Q", replyTo: "person@example.test", duplicate: false };
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(sent, ["Line one\nLine \u001b[31mtwo"]);
+});

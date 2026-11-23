@@ -35,10 +35,11 @@ what is built so far.
 | `src/do/` | Durable Objects: the three limiters (the end user's, with the App Attest replay counter and the user's limits; the app's; the account's plan allowance), the sign-in flood limiter, and the per-app store for ledger writes that failed. |
 | `src/limits/` | Admission: the three limiters one after another, the replay check's own deadline and the one deadline the other checks share, and budget totals from the rollups. |
 | `src/billing/` | The hosted billing service (the optional `BILLING` binding): reading an account's plan, plan periods from 00:00 UTC on the renewal day, and spending the plan allowance without ever failing a request. |
+| `src/helpdesk/`, `src/admin/support.ts` | Human support: the help desk contract (the optional `HELPDESK` binding) and the support message. Offered only with billing, a help desk and `SUPPORT_EMAIL`, for a plan that includes `humanSupport`. |
 | `src/http/` | Reading request bodies with the 20 MiB limit, and the 10-second deadline on sign-in calls. |
 | `src/core/`, `src/apps/` | Errors, logs, isolate caches with stale fallback, the origin guard, and loading an app. |
 | `test/` | Tests that run in the Workers runtime, and compile-time checks (`operation-types.ts`). |
-| `smoke/` | Checks against a live deployment; `smoke/mock/`, a mock OpenAI-compatible provider to call them against; and `smoke/billing-mock/`, a mock of the hosted billing service for the test deployment. |
+| `smoke/` | Checks against a live deployment; `smoke/mock/`, a mock OpenAI-compatible provider to call them against; `smoke/billing-mock/`, a mock of the hosted billing service for the test deployment; `smoke/mail-mock/`, which stands in for the email sender and sends nothing; and `smoke/helpdesk-mock/`, which stands in for the help desk and emails only through the mail mock. |
 
 ## Commands
 
@@ -59,6 +60,12 @@ Inside `v2/`:
   `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only. The console
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
+  The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
+- `node --experimental-strip-types --test smoke/email.smoke.ts`: the email check, run on its own. It
+  needs `V2_BASE_URL`, `V2_CONSOLE_URL` and `V2_MAIL_URL` (the deployed `smoke/mail-mock/`). Its
+  support check also needs `V2_HELPDESK_MOCK=1`, set only for a deployment whose `HELPDESK` binding
+  is `smoke/helpdesk-mock/`, and runs only when the deployment's support inbox is an `example.test`
+  address. Otherwise it skips and sends nothing to any help desk.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
 

@@ -86,6 +86,20 @@ arguments is refused, and one in a result is shown as \`[redacted]\`, except the
 metadata of a key a create made. A key is entered or seen by the person, on a
 console page. Never ask the person to paste a key to you.
 
+## Human support
+
+Where the deployment offers human support, \`contact_support\` emails its
+support team on the person's behalf: \`kind\` is \`bug\`, \`support\` or
+\`feedback\`. It is there so the person can ask you to write in for them; it
+is not a way to ask for help yourself.
+
+- Only when the person asked you to contact support. Show them the exact
+  message first and send it only once they agree.
+- Write it as they would: what happened, what they expected, what was tried.
+  Put ids and error codes in \`context\` (\`app_id\`, \`request_id\`,
+  \`error_code\`), and never a key, token or password.
+- Support replies to the person's own email address. Tell them the reference.
+
 ## When a call is refused
 
 A refusal is a tool result marked as an error, with a stable \`error\` code, a

@@ -1,14 +1,23 @@
+import { useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ChevronsUpDown, CreditCard, Eye, KeyRound, LayoutGrid, LogOut, Plug, Settings, Tag } from "lucide-react";
+import { Bug, ChevronsUpDown, CreditCard, Eye, Headset, KeyRound, LayoutGrid, LifeBuoy, LogOut, MessageSquareHeart, Plug, Settings, Tag } from "lucide-react";
+import type { SupportMessageKind } from "@contracts/support";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuPortal,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { SUPPORT_COPY, SUPPORT_MESSAGE_ID, SupportDialog, useSupportAvailable } from "@/components/support-dialog";
+import { entitledPlan } from "@/lib/billing";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AccountMenuItems } from "@/components/account-switcher";
 import { Brand } from "@/components/brand";
@@ -16,7 +25,7 @@ import { PlanSummary } from "@/components/plan-summary";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
-import { useSignOut } from "@/lib/queries";
+import { useBillingStatus, useSignOut } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -60,15 +69,64 @@ function initialsFor(name: string | null | undefined, email: string): string {
   return letters.toUpperCase();
 }
 
+const SUPPORT_ICONS: Record<SupportMessageKind, typeof LayoutGrid> = {
+  bug: Bug,
+  support: Headset,
+  feedback: MessageSquareHeart,
+};
+
+/**
+ * The Support submenu, for an account whose plan includes human support. Its
+ * one label says why it is there (support comes with the plan) rather than a
+ * badge on the row, which would read as something to buy (v1's).
+ */
+function SupportMenu({ onChoose }: { onChoose: (kind: SupportMessageKind) => void }) {
+  const { capabilities, account } = useConsoleSession();
+  const plan = entitledPlan(useBillingStatus(capabilities.billing, account.id).data?.access);
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <LifeBuoy className="size-4" />
+        Human Support
+      </DropdownMenuSubTrigger>
+      {/* Portalled: the menu it opens from animates with a transform, which
+          would otherwise become the containing block it is positioned in. */}
+      <DropdownMenuPortal>
+        <DropdownMenuSubContent className="min-w-52">
+          {plan ? <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Included with your {plan.planName} plan</DropdownMenuLabel> : null}
+          {(Object.keys(SUPPORT_COPY) as SupportMessageKind[]).map((kind) => {
+            const Icon = SUPPORT_ICONS[kind];
+            return (
+              <DropdownMenuItem key={kind} onSelect={() => onChoose(kind)}>
+                <Icon className="size-4" />
+                {SUPPORT_COPY[kind].menuLabel}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuSubContent>
+      </DropdownMenuPortal>
+    </DropdownMenuSub>
+  );
+}
+
 /**
  * The account block. Names the operator and nothing else; opening it reveals
- * the settings and access screens, the accounts they can act in, and
- * sign-out.
+ * the settings and access screens, the accounts they can act in, support
+ * where their plan includes it, and sign-out.
  */
 function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { session, capabilities } = useConsoleSession();
   const signOut = useSignOut();
+  const supportAvailable = useSupportAvailable();
+  const [support, setSupport] = useState<SupportMessageKind | null>(null);
+  // Set when a support item is chosen, read once the menu has closed: a ref,
+  // so the menu's closing reads it as it stands then.
+  const openingSupport = useRef(false);
+  const chooseSupport = (kind: SupportMessageKind) => {
+    openingSupport.current = true;
+    setSupport(kind);
+  };
 
   const logout = async () => {
     try {
@@ -108,6 +166,15 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
           align="start"
           sideOffset={8}
           className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
+          // The menu hands focus back to its trigger once it has closed, after
+          // the support dialog it opened took focus. Send it to the message
+          // instead: the last move wins, whatever the animations' timing.
+          onCloseAutoFocus={(event) => {
+            if (!openingSupport.current) return;
+            openingSupport.current = false;
+            event.preventDefault();
+            document.getElementById(SUPPORT_MESSAGE_ID)?.focus();
+          }}
         >
           <DropdownMenuItem asChild>
             <Link to="/settings" onClick={onNavigate}>
@@ -131,6 +198,12 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
             </DropdownMenuItem>
           ) : null}
           <AccountMenuItems />
+          {supportAvailable ? (
+            <>
+              <DropdownMenuSeparator />
+              <SupportMenu onChoose={chooseSupport} />
+            </>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={signOut.isPending} onSelect={() => void logout()}>
             <LogOut className="size-4" />
@@ -138,6 +211,8 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {/* Outside the menu, which unmounts its content as it closes. */}
+      {supportAvailable ? <SupportDialog kind={support} onOpenChange={(open) => !open && setSupport(null)} /> : null}
     </>
   );
 }
