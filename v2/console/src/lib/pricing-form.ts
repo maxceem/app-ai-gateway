@@ -48,15 +48,41 @@ export interface PriceRow {
   originalModel: string | null;
 }
 
+// `String` of any finite number reads back as the same number through `amountOf`, exponents included.
 const textOf = (value: unknown): string => (typeof value === "number" ? String(value) : "");
 
 let rowCount = 0;
 const nextKey = () => `price-${++rowCount}`;
 
+const unitsOf = (price: StoredPrice): string[] => UNIT_NAMES.filter((field) => Object.hasOwn(price, field));
+
 /** The unit rate a stored price shows: its only one, or none when it has several (they stay as stored). */
 function shownUnit(price: StoredPrice): string {
-  const units = UNIT_NAMES.filter((field) => typeof price[field] === "number");
+  const units = unitsOf(price);
   return units.length === 1 ? units[0]! : "";
+}
+
+/** A stored price with several unit rates: its unit fields are kept as stored and edited as JSON only. */
+export function severalUnits(row: PriceRow): boolean {
+  return row.original !== null && unitsOf(row.original).length > 1;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Whether the form can show these prices without losing anything: each entry
+ * is a price object, and every rate the form shows is a number. Anything else
+ * is edited as JSON only.
+ */
+export function formCanShow(pricing: unknown): pricing is StoredPricing | null {
+  if (pricing === null) return true;
+  if (!isPlainObject(pricing)) return false;
+  return Object.values(pricing).every(
+    (price) =>
+      isPlainObject(price) &&
+      [...TOKEN_FIELDS.map((entry) => entry.field), ...UNIT_NAMES].every((field) => !Object.hasOwn(price, field) || (typeof price[field] === "number" && Number.isFinite(price[field]))),
+  );
 }
 
 export function rowsOf(pricing: StoredPricing | null): PriceRow[] {
@@ -86,7 +112,7 @@ export function hiddenFields(row: PriceRow): string[] {
   return Object.keys(row.original).filter((field) => !shown.has(field));
 }
 
-const AMOUNT = /^(?:\d+(?:\.\d*)?|\.\d+)$/u;
+const AMOUNT = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
 /** A typed amount as a number, null for empty, or undefined when it is not an amount. */
 function amountOf(text: string): number | null | undefined {
@@ -106,7 +132,7 @@ export function rowProblems(row: PriceRow, rows: readonly PriceRow[]): Record<st
   for (const { field } of TOKEN_FIELDS) {
     if (amountOf(row.tokens[field]) === undefined) problems[field] = "Enter an amount, such as 2.5.";
   }
-  if (row.unitField !== "" && amountOf(row.unitAmount) === undefined) problems.unit = "Enter an amount, such as 0.04.";
+  if (!severalUnits(row) && row.unitField !== "" && amountOf(row.unitAmount) === undefined) problems.unit = "Enter an amount, such as 0.04.";
   const input = amountOf(row.tokens.input);
   const output = amountOf(row.tokens.output);
   if (!problems.input && !problems.output && (input === null) !== (output === null)) {
@@ -127,9 +153,10 @@ export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
       if (value === null || value === undefined) delete price[field];
       else price[field] = value;
     }
+    // Several stored unit rates stay exactly as stored.
     const storedUnit = row.original === null ? "" : shownUnit(row.original);
     if (storedUnit !== "" && storedUnit !== row.unitField) delete price[storedUnit];
-    if (row.unitField !== "") {
+    if (row.unitField !== "" && !severalUnits(row)) {
       const value = amountOf(row.unitAmount);
       if (value === null || value === undefined) delete price[row.unitField];
       else price[row.unitField] = value;

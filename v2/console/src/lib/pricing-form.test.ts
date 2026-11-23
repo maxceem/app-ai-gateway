@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyRow, hiddenFields, pricingOf, rowProblems, rowsOf } from "./pricing-form";
+import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf } from "./pricing-form";
 
 describe("the prices form", () => {
   it("changes only the fields a row shows, and keeps everything else a price carries", () => {
@@ -38,5 +38,22 @@ describe("the prices form", () => {
     expect(rowProblems(blank, [blank]).row).toBe("Give this model at least one rate.");
     const twice = [{ ...emptyRow(), model: "same", unitField: "per_request", unitAmount: "1" }, { ...emptyRow(), model: "same ", unitField: "per_request", unitAmount: "1" }];
     expect(rowProblems(twice[0]!, twice).model).toBe("This model is listed twice.");
+  });
+
+  it("reads back every stored rate as itself, exponents included", () => {
+    for (const value of [1e-9, 2.5e-7, 0.000001, 1234.5678, 3e21]) {
+      const [row] = rowsOf({ m: { per_request: value } });
+      expect(rowProblems(row!, [row!])).toEqual({});
+      expect(pricingOf([row!])).toEqual({ m: { per_request: value } });
+    }
+  });
+
+  it("knows which stored prices the form cannot show", () => {
+    expect(formCanShow(null)).toBe(true);
+    expect(formCanShow({ m: { input: 1, output: 2, modes: { flex: { factor: 0.5 } } } })).toBe(true);
+    expect(formCanShow({ m: null })).toBe(false);
+    expect(formCanShow({ m: [1] })).toBe(false);
+    expect(formCanShow({ m: { input: "1" } })).toBe(false);
+    expect(formCanShow([])).toBe(false);
   });
 });

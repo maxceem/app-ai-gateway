@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { KeyRound, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { retiringModels } from "@/lib/app-notices";
+import { retiringModels, type RetiringModel } from "@/lib/app-notices";
 import { providerLabel } from "@/lib/providers";
 import { useAppKeys, usePrices, useProviders } from "@/lib/queries";
 import type { App } from "@/lib/types";
@@ -60,23 +60,40 @@ function RetiringModelsNotice({ app }: { app: App }) {
   const list = providers.data?.providers;
   const table = prices.data?.prices;
   if (!Array.isArray(list) || typeof table !== "object" || table === null) return null;
-  const retiring = retiringModels(app, list, table);
-  if (retiring.length === 0) return null;
+  const found = retiringModels(app, list, table);
+  if (found.length === 0) return null;
+  const retiring = found.filter((entry) => entry.retirementDate !== null);
+  const unlisted = found.filter((entry) => entry.retirementDate === null);
+  const where = (entry: RetiringModel) => <span className="text-muted-foreground"> Used in {entry.where.join(", ")}.</span>;
   return (
     <Alert role="status" className="border-amber-500/60">
       <TriangleAlert />
-      <AlertTitle>{retiring.length === 1 ? "A model this app uses is leaving" : "Models this app uses are leaving"}</AlertTitle>
+      <AlertTitle>{found.length === 1 ? "A model this app uses is leaving our price list" : "Models this app uses are leaving our price list"}</AlertTitle>
       <AlertDescription>
-        <ul className="space-y-1">
-          {retiring.map((entry) => (
-            <li key={`${entry.type}:${entry.model}`}>
-              <span className="font-mono">{entry.model}</span> on {providerLabel(entry.type)}{" "}
-              {entry.retirementDate ? `retires on ${entry.retirementDate}` : `is no longer on our price list since ${entry.unlistedSince}`}.{" "}
-              <span className="text-muted-foreground">Used in {entry.where.join(", ")}.</span>
-            </li>
-          ))}
-        </ul>
-        <p>Calls to it keep working until then. Move the app to another model before that date.</p>
+        {retiring.length > 0 ? (
+          <>
+            <p>Retiring: the provider stops serving it on the date shown. Move the app to another model before then.</p>
+            <ul className="space-y-1">
+              {retiring.map((entry) => (
+                <li key={`${entry.type}:${entry.model}`}>
+                  <span className="font-mono">{entry.model}</span> on {providerLabel(entry.type)} retires on {entry.retirementDate}.{where(entry)}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+        {unlisted.length > 0 ? (
+          <>
+            <p>Unlisted: still priced and served, but no longer offered for new apps.</p>
+            <ul className="space-y-1">
+              {unlisted.map((entry) => (
+                <li key={`${entry.type}:${entry.model}`}>
+                  <span className="font-mono">{entry.model}</span> on {providerLabel(entry.type)} is unlisted since {entry.unlistedSince}, and still priced.{where(entry)}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
       </AlertDescription>
     </Alert>
   );

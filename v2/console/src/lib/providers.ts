@@ -8,6 +8,17 @@ export function providerLabel(type: string): string {
   return Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]!.label : type;
 }
 
+/** The host a built-in provider's requests go to without a base URL, such as api.openai.com. */
+export function providerHost(type: string): string {
+  if (!Object.hasOwn(BUILT_IN_PROVIDERS, type)) return type;
+  const main = BUILT_IN_PROVIDERS[type]!.hosts.main;
+  try {
+    return new URL(main).host;
+  } catch {
+    return main;
+  }
+}
+
 /** Whether a provider type can be reached through Cloudflare AI Gateway (D13). */
 export function cloudflareCapable(type: string): boolean {
   return Object.hasOwn(BUILT_IN_PROVIDERS, type) && BUILT_IN_PROVIDERS[type]!.cloudflareGateway !== undefined;

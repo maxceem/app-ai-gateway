@@ -1,11 +1,15 @@
+import { BUILT_IN_PROVIDERS } from "@providers/index";
+import { listedAs } from "@providers/listing";
+import { rewrittenModel } from "@providers/operation";
 import type { App, PriceList, ProviderConnection } from "@/lib/types";
 
 /**
  * A model the app names that our price list marks as leaving: retiring on a
- * date, or no longer listed. Calls to it keep working until then; the app
- * should move to another model.
+ * date (the provider stops serving it), or unlisted (still priced and served,
+ * but no longer offered for new use).
  */
 export interface RetiringModel {
+  /** The provider type and model as our price list names them. */
   type: string;
   model: string;
   /** Where the app names it, in words. */
@@ -17,28 +21,44 @@ export interface RetiringModel {
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 /**
+ * Whether a rewrite from `from` applies to any call the app enables on a
+ * connection of this type: only a call that carries its model, through an
+ * operation the app enables there, is rewritten (`rewrittenModel`).
+ */
+function rewriteApplies(type: string, operations: readonly string[], from: string, to: string): boolean {
+  const description = Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]! : null;
+  if (description === null) return false;
+  return description.operations.some((operation) => operations.includes(operation.name) && rewrittenModel(operation, from, { [from]: to }) === to && from !== to);
+}
+
+/**
  * The models an app names with the connection types they are called through:
  * its allowed models, its presets and their fallbacks, and its rewrite
- * targets (sent through any connection the app enables).
+ * targets, counted on each connection where an enabled operation applies them.
+ * Each is looked up as our price list names it (`listedAs`), so a gateway's
+ * namespaced model, such as Vercel's `openai/gpt-4.1`, finds its entry.
  */
 function namedModels(app: App, providers: readonly ProviderConnection[]): { type: string; model: string; where: string }[] {
   const typeOf = new Map(providers.map((provider) => [provider.slug, provider.type]));
   const named: { type: string; model: string; where: string }[] = [];
+  const add = (type: string, model: string, where: string) => {
+    const listed = listedAs(type, model);
+    named.push({ type: listed.type, model: listed.model, where });
+  };
   const routing = app.config.routing.providers;
   for (const [slug, entry] of Object.entries(routing)) {
     const type = typeOf.get(slug);
     if (type === undefined) continue;
-    for (const model of entry.models ?? []) named.push({ type, model, where: `allowed on ${slug}` });
+    for (const model of entry.models ?? []) add(type, model, `allowed on ${slug}`);
+    for (const [from, to] of Object.entries(app.config.routing.model_rewrites ?? {})) {
+      if (rewriteApplies(type, entry.operations, from, to)) add(type, to, `rewrite from ${from}`);
+    }
   }
   for (const [slug, preset] of Object.entries(app.config.presets ?? {})) {
     for (const target of [preset, ...(preset.fallback ?? [])]) {
       const type = typeOf.get(target.provider);
-      if (type !== undefined) named.push({ type, model: target.model, where: `preset ${slug}` });
+      if (type !== undefined) add(type, target.model, `preset ${slug}`);
     }
-  }
-  const enabledTypes = [...new Set(Object.keys(routing).flatMap((slug) => (typeOf.has(slug) ? [typeOf.get(slug)!] : [])))];
-  for (const [from, to] of Object.entries(app.config.routing.model_rewrites ?? {})) {
-    for (const type of enabledTypes) named.push({ type, model: to, where: `rewrite from ${from}` });
   }
   return named;
 }

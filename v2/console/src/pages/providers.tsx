@@ -16,10 +16,10 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerHost, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
-import { emptyRow, hiddenFields, pricingOf, rowProblems, rowsOf, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
+import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -385,10 +385,20 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const [type, setType] = useState(PROVIDER_TYPES[0]?.type ?? "");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [secret, setSecret] = useState("");
   const [cloudflare, setCloudflare] = useState<CloudflareDraft>(NO_CLOUDFLARE);
   const [custom, setCustom] = useState<CustomDraft>(NO_CUSTOM);
   const [host, setHost] = useState("");
+  const slugInvalid = slug !== "" && !SLUG.test(slug);
+  const isCustom = type === "custom";
+  // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
+  const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
+  // Where the key would go. A key is kept only for the destination it was typed for.
+  const destination = JSON.stringify([
+    type,
+    viaCloudflare ? [cloudflare.accountId.trim(), cloudflare.gatewayId.trim()] : null,
+    isCustom ? [custom.baseUrl.trim(), custom.header.trim().toLowerCase(), custom.format] : host.trim(),
+  ]);
+  const [secret, setSecret] = useBoundSecret(destination);
 
   const reset = () => {
     setHost("");
@@ -399,10 +409,6 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     setCustom(NO_CUSTOM);
     test.clear();
   };
-  const slugInvalid = slug !== "" && !SLUG.test(slug);
-  const isCustom = type === "custom";
-  // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
-  const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
   const hostInvalid = host.trim() !== "" && !host.trim().startsWith("https://");
   const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom)) && !hostInvalid;
   // A new setting always carries its token.
@@ -516,8 +522,8 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           viaCloudflare
             ? "Optional through Cloudflare: leave it empty to use the keys stored in your Cloudflare AI Gateway. Stored encrypted if given."
             : isCustom
-              ? "Stored encrypted, and sent only to the base URL above, in the header you name. It is never shown again, only its last characters."
-              : "Stored encrypted. It is never shown again, only its last characters."
+              ? "Stored encrypted, and sent only to the base URL above, in the header you name. It is never shown again, only its last characters. Changing where requests go clears it."
+              : "Stored encrypted. It is never shown again, only its last characters. Changing where requests go clears it."
         }
       >
         <div className="flex gap-2">
@@ -1061,20 +1067,103 @@ function HostField({ id, value, onChange }: { id: string; value: string; onChang
   );
 }
 
+/**
+ * A typed key, kept only for the destination it was typed for: once where the
+ * requests go changes, the key reads as empty, so a test or a save can never
+ * send it somewhere the person did not type it for.
+ */
+function useBoundSecret(destination: string): [string, (value: string) => void] {
+  const [state, setState] = useState({ destination, value: "" });
+  return [state.destination === destination ? state.value : "", (value: string) => setState({ destination, value })];
+}
+
+/**
+ * The revision a connection dialog was opened at, kept until the person
+ * reloads: a save never takes a newer revision the list loaded since, so
+ * another admin's change is refused rather than overwritten. `mounted` says
+ * whether the dialog is still the one for this connection when an answer
+ * comes back.
+ */
+function useOpenedRevision(provider: ProviderConnection | null, onLoaded: (latest: ProviderConnection) => void, onGone: () => void) {
+  const fresh = useFreshProvider();
+  const [revision, setRevision] = useState(provider?.revision ?? 0);
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const reload = async () => {
+    if (!provider) return;
+    setReloading(true);
+    try {
+      const latest = await fresh(provider.id);
+      if (!mounted.current) return;
+      if (latest === null) {
+        toast.error("This provider was deleted");
+        onGone();
+        return;
+      }
+      setRevision(latest.revision);
+      onLoaded(latest);
+      setConflict(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reload the connection");
+    } finally {
+      if (mounted.current) setReloading(false);
+    }
+  };
+  /** Records a save's failure: a conflict shows the reload, anything else a toast. */
+  const failed = (error: unknown, fallback: string) => {
+    if (!mounted.current) return;
+    if (error instanceof ApiError && error.status === 409) setConflict(true);
+    else toast.error(error instanceof Error ? error.message : fallback);
+  };
+  return { revision, conflict, reloading, reload, failed, mounted };
+}
+
+function ConflictNotice({ reloading, onReload }: { reloading: boolean; onReload: () => void }) {
+  return (
+    <Alert variant="destructive">
+      <AlertCircle />
+      <AlertTitle>This connection changed since you opened it</AlertTitle>
+      <AlertDescription>
+        <p>Someone else saved it. Reload to see their change, then make yours again.</p>
+        <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={onReload}>
+          Reload
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 /** A new name for a connection. The slug apps use stays as it is. */
 function RenameDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const [name, setName] = useState(provider?.name ?? "");
+  const [stored, setStored] = useState(provider?.name ?? "");
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      setName(latest.name);
+      setStored(latest.name);
+    },
+    onClose,
+  );
   const trimmed = name.trim();
 
   const submit = async () => {
     if (!provider) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, name: trimmed } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, name: trimmed } });
+      if (!opened.mounted.current) return;
       toast.success("Connection renamed");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rename the connection");
+      opened.failed(error, "Could not rename the connection");
     } finally {
       update.reset();
     }
@@ -1090,11 +1179,12 @@ function RenameDialog({ provider, onClose }: { provider: ProviderConnection | nu
       description={provider ? `Apps keep naming it ${provider.slug}: the slug does not change.` : undefined}
       submitLabel="Rename"
       pending={update.isPending}
-      disabled={trimmed === "" || trimmed === provider?.name}
+      disabled={opened.conflict || opened.reloading || trimmed === "" || trimmed === stored}
       onSubmit={() => void submit()}
     >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
       <Field label="Name" htmlFor="provider-rename">
-        <Input id="provider-rename" value={name} maxLength={100} autoComplete="off" onChange={(event) => setName(event.target.value)} />
+        <Input id="provider-rename" value={name} maxLength={100} autoComplete="off" readOnly={opened.reloading} onChange={(event) => setName(event.target.value)} />
       </Field>
     </FormDialog>
   );
@@ -1102,32 +1192,49 @@ function RenameDialog({ provider, onClose }: { provider: ProviderConnection | nu
 
 /**
  * Where a built-in provider's requests go: its own host, or a base URL. A key
- * goes only where it was given, so a new base URL needs the key again; going
- * back to the provider's own host does not.
+ * goes only where it was given: a new base URL needs a key typed for it, and
+ * going back to the provider's own host sends the stored key there only when
+ * the person says so, or takes a replacement key.
  */
 function HostDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const test = useKeyTest();
+  const [stored, setStored] = useState(provider?.baseUrl ?? "");
   const [host, setHost] = useState(provider?.baseUrl ?? "");
-  const [secret, setSecret] = useState("");
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      setStored(latest.baseUrl ?? "");
+      setHost(latest.baseUrl ?? "");
+      setKeepKey(false);
+      test.clear();
+    },
+    onClose,
+  );
   const next = host.trim();
-  const stored = provider?.baseUrl ?? "";
+  const [secret, setSecret] = useBoundSecret(next);
+  const [keepKey, setKeepKey] = useState(false);
   const invalid = next !== "" && !next.startsWith("https://");
   const changed = next !== stored;
-  // A new base URL takes the key with it; the provider's own host keeps the stored one.
+  // A new base URL needs a key typed for it.
   const needsKey = changed && next !== "";
+  // Back to the provider's own host: the stored key goes there only when the person says so.
+  const toOwnHost = changed && next === "";
+  const ownHost = provider ? providerHost(provider.type) : "";
+  const ready = changed && !invalid && (needsKey ? secret !== "" : !toOwnHost || keepKey || secret !== "");
 
   const save = async () => {
     if (!provider) return;
     try {
       await update.mutateAsync({
         id: provider.id,
-        body: { revision: provider.revision, baseUrl: next === "" ? null : next, ...(needsKey ? { secret } : {}) },
+        body: { revision: opened.revision, baseUrl: next === "" ? null : next, ...(secret ? { secret } : {}) },
       });
+      if (!opened.mounted.current) return;
       toast.success(next === "" ? "Connection uses the provider's own host" : "Base URL saved");
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not change the host");
+      opened.failed(error, "Could not change the host");
     } finally {
       update.reset();
     }
@@ -1143,20 +1250,40 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
       description="Where this connection's requests go."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={!changed || invalid || (needsKey && !secret)}
+      disabled={opened.conflict || opened.reloading || !ready}
       onSubmit={() => void save()}
     >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
       <HostField
         id="provider-host-change"
         value={host}
         onChange={(value) => {
           setHost(value);
+          setKeepKey(false);
           test.clear();
         }}
       />
-      {needsKey ? (
+      {toOwnHost ? (
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={keepKey}
+            disabled={secret !== ""}
+            onCheckedChange={(checked) => setKeepKey(checked === true)}
+          />
+          Send the current key to {ownHost}
+        </label>
+      ) : null}
+      {needsKey || toOwnHost ? (
         <>
-          <Field label="API key" htmlFor="provider-host-secret" hint="A key goes only where it was given, so a new host needs it again.">
+          <Field
+            label={toOwnHost ? "Or a replacement key" : "API key"}
+            htmlFor="provider-host-secret"
+            hint={
+              toOwnHost
+                ? `A key typed here replaces the current one and goes to ${ownHost}.`
+                : "A key goes only where it was given, so a new host needs it again. Changing the address clears it."
+            }
+          >
             <div className="flex gap-2">
               <Input
                 id="provider-host-secret"
@@ -1165,6 +1292,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
                 autoComplete="off"
                 onChange={(event) => {
                   setSecret(event.target.value);
+                  if (event.target.value !== "") setKeepKey(false);
                   test.clear();
                 }}
               />
@@ -1172,7 +1300,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
                 type="button"
                 variant="outline"
                 disabled={!secret || invalid || !provider || test.pending}
-                onClick={() => provider && test.run({ type: provider.type, secret, baseUrl: next })}
+                onClick={() => provider && test.run({ type: provider.type, secret, ...(next === "" ? {} : { baseUrl: next }) })}
               >
                 Test key
               </Button>
@@ -1306,8 +1434,11 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   // The version the draft was made from: it is saved at that revision, never at a newer one the list
   // loaded since, so another admin's change is never quietly overwritten.
   const [revision, setRevision] = useState(provider?.revision ?? 0);
-  const [mode, setMode] = useState<"form" | "json">("form");
-  const [rows, setRows] = useState<PriceRow[]>(() => rowsOf(provider?.pricing ?? null));
+  // Prices the form cannot show without losing something open as JSON.
+  const [mode, setMode] = useState<"form" | "json">(() => (formCanShow(provider?.pricing ?? null) ? "form" : "json"));
+  const [rows, setRows] = useState<PriceRow[]>(() => (formCanShow(provider?.pricing ?? null) ? rowsOf(provider?.pricing ?? null) : []));
+  const [saved, setSaved] = useState<ProviderConnection["pricing"]>(provider?.pricing ?? null);
+  const [modeProblem, setModeProblem] = useState<string | null>(null);
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
   const [conflict, setConflict] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -1326,8 +1457,14 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   }, []);
 
   const startFrom = (pricing: ProviderConnection["pricing"]) => {
-    setRows(rowsOf(pricing));
+    setSaved(pricing);
     setText(pricesText(pricing));
+    setModeProblem(null);
+    if (formCanShow(pricing)) setRows(rowsOf(pricing));
+    else {
+      setRows([]);
+      setMode("json");
+    }
   };
 
   /**
@@ -1357,10 +1494,21 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   };
 
   const switchMode = () => {
+    setModeProblem(null);
+    if (mode === "form") {
+      // The form's prices when they are complete; otherwise the saved prices, as they are.
+      setText(pricesText("problem" in parsed ? saved : parsed.pricing));
+      if ("problem" in parsed) setModeProblem("The form had changes that are not complete, so this shows the saved prices.");
+      setMode("json");
+      return;
+    }
     if ("problem" in parsed) return;
-    if (mode === "form") setText(pricesText(parsed.pricing));
-    else setRows(rowsOf(parsed.pricing));
-    setMode(mode === "form" ? "json" : "form");
+    if (!formCanShow(parsed.pricing)) {
+      setModeProblem("Some entries are not prices the form can show, such as a model whose value is not an object. Keep editing them as JSON.");
+      return;
+    }
+    setRows(rowsOf(parsed.pricing));
+    setMode("form");
   };
 
   const submit = async () => {
@@ -1446,7 +1594,8 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
           {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
         </>
       )}
-      <Button type="button" variant="link" size="sm" className="px-0" disabled={"problem" in parsed} onClick={switchMode}>
+      {modeProblem ? <p className="text-sm text-muted-foreground">{modeProblem}</p> : null}
+      <Button type="button" variant="link" size="sm" className="px-0" disabled={mode === "json" && "problem" in parsed} onClick={switchMode}>
         {mode === "form" ? "Edit as JSON" : "Edit as a form"}
       </Button>
     </FormDialog>
@@ -1467,6 +1616,7 @@ function PriceRowFields({
 }) {
   const id = row.key;
   const kept = hiddenFields(row);
+  const locked = severalUnits(row);
   return (
     <div className="space-y-2 rounded-md border p-3" role="group" aria-label={row.model.trim() === "" ? "New model" : row.model}>
       <div className="flex items-end gap-2">
@@ -1506,13 +1656,13 @@ function PriceRowFields({
             inputMode="decimal"
             value={row.unitAmount}
             autoComplete="off"
-            disabled={row.unitField === ""}
+            disabled={locked || row.unitField === ""}
             aria-invalid={problems.unit ? true : undefined}
             onChange={(event) => onChange({ unitAmount: event.target.value })}
           />
         </Field>
         <Field label="Unit" htmlFor={`${id}-unit`} className="flex-1">
-          <Select value={row.unitField === "" ? "none" : row.unitField} onValueChange={(value) => onChange({ unitField: value === "none" ? "" : value })}>
+          <Select disabled={locked} value={row.unitField === "" ? "none" : row.unitField} onValueChange={(value) => onChange({ unitField: value === "none" ? "" : value })}>
             <SelectTrigger id={`${id}-unit`} className="w-full">
               <SelectValue />
             </SelectTrigger>
@@ -1528,6 +1678,7 @@ function PriceRowFields({
         </Field>
       </div>
       {problems.unit ? <p className="text-sm text-destructive">{problems.unit}</p> : null}
+      {locked ? <p className="text-xs text-muted-foreground">This model has several unit rates. Edit them as JSON.</p> : null}
       {problems.row ? <p className="text-sm text-destructive">{problems.row}</p> : null}
       {kept.length > 0 ? (
         <p className="text-xs text-muted-foreground">Also kept as saved: {kept.join(", ")}. Edit them as JSON.</p>

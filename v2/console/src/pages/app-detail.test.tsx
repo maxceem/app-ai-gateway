@@ -439,6 +439,41 @@ describe("AppDetailPage", () => {
     );
   });
 
+  it("asks before leaving Settings with an unsaved conversation-history change, once for the whole tab", async () => {
+    stub();
+    const { router } = renderTab("settings", { conversationStorage: true });
+    await userEvent.click(await screen.findByRole("switch", { name: "Store conversations" }));
+    await userEvent.click(screen.getByRole("link", { name: "Limits" }));
+    expect(await screen.findAllByText(/leave without saving/i)).toHaveLength(1);
+    expect(router.location.pathname).toBe("/apps/my-app/settings");
+    await userEvent.click(screen.getByRole("button", { name: /^leave$/i }));
+    await waitFor(() => expect(router.location.pathname).toBe("/apps/my-app/limits"));
+  });
+
+  it("asks before leaving Settings with an unsaved configuration", async () => {
+    stub();
+    const { router } = renderTab("settings");
+    const box = await screen.findByRole("textbox", { name: "Configuration" });
+    fireEvent.change(box, { target: { value: "{}" } });
+    await userEvent.click(screen.getByRole("link", { name: "Limits" }));
+    expect(await screen.findByText(/leave without saving/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByText(/leave without saving/i)).toBeNull());
+    expect(router.location.pathname).toBe("/apps/my-app/settings");
+  });
+
+  it("leaves without asking once the app it edits is deleted", async () => {
+    stub({ [`DELETE ${APP_URL}?confirm=my-app`]: { body: { deleted: true } } });
+    const { router } = renderTab("settings");
+    const box = await screen.findByRole("textbox", { name: "Configuration" });
+    fireEvent.change(box, { target: { value: "{}" } });
+    await userEvent.click(screen.getByRole("button", { name: /^delete app$/i }));
+    await userEvent.type(await screen.findByLabelText(/to continue/i), "my-app");
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^delete app$/i }));
+    await waitFor(() => expect(router.location.pathname).toBe("/apps"));
+    expect(screen.queryByText(/leave without saving/i)).toBeNull();
+  });
+
   it("keeps an unsaved configuration when the app changed meanwhile, and says so", async () => {
     // Someone else changed the configuration; the rename's answer and every
     // later read carry that change.

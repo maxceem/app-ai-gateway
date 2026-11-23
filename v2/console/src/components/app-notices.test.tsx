@@ -29,6 +29,26 @@ describe("the app page's notices", () => {
     ]);
   });
 
+  it("looks a gateway's namespaced model up as our list names it", () => {
+    const vercel = { ...OPENAI, id: "p2", type: "vercel", slug: "vercel" };
+    const app = testApp({
+      config: { ...testApp().config, routing: { providers: { vercel: { operations: ["vercel.chat"], models: ["openai/gpt-old"] } } } },
+    }) as unknown as App;
+    expect(retiringModels(app, [vercel] as never, PRICES as never)).toEqual([
+      { type: "openai", model: "gpt-old", where: ["allowed on vercel"], retirementDate: "2027-01-15", unlistedSince: null },
+    ]);
+  });
+
+  it("counts a rewrite only where an enabled operation applies it", () => {
+    const enabling = (operations: string[]) =>
+      testApp({
+        config: { ...testApp().config, routing: { providers: { openai: { operations } }, model_rewrites: { "gpt-4": "gpt-gone" } } },
+      }) as unknown as App;
+    expect(retiringModels(enabling(["openai.chat"]), [OPENAI] as never, PRICES as never).map((entry) => entry.where)).toEqual([["rewrite from gpt-4"]]);
+    // A live session is not rewritten, so a rewrite on an app enabling only that warns of nothing.
+    expect(retiringModels(enabling(["openai.realtime"]), [OPENAI] as never, PRICES as never)).toEqual([]);
+  });
+
   it("shows the leaving models and a key-protected app's missing key", async () => {
     stubApi({
       "/v2/admin/providers": { body: { providers: [OPENAI] } },
@@ -38,7 +58,8 @@ describe("the app page's notices", () => {
     renderAuthenticated(<AppNotices app={appNaming()} />);
     expect(await screen.findByText(/models this app uses are leaving/i)).toBeTruthy();
     expect(screen.getByText(/retires on 2027-01-15/i)).toBeTruthy();
-    expect(screen.getByText(/no longer on our price list since 2026-10-01/i)).toBeTruthy();
+    expect(screen.getByText(/unlisted since 2026-10-01, and still priced/i)).toBeTruthy();
+    expect(screen.getByText(/still priced and served, but no longer offered/i)).toBeTruthy();
     expect(await screen.findByText(/this app has no active api key/i)).toBeTruthy();
   });
 

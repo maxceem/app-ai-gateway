@@ -12,10 +12,21 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
  * `dirty` is read through a ref, so a page that saves and moves on in the
  * same breath is never stopped by the value of an earlier render.
  */
-export function LeaveGuard({ dirty }: { dirty: boolean }) {
+export function LeaveGuard({ dirty, releaseRef }: { dirty: boolean; releaseRef?: { current: (() => void) | null } }) {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => dirtyRef.current && currentLocation.pathname !== nextLocation.pathname);
+  // Set by a page about to leave on purpose, such as after deleting what it edits: the next move goes unasked.
+  const released = useRef(false);
+  if (releaseRef) releaseRef.current = () => {
+    released.current = true;
+  };
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (released.current) {
+      released.current = false;
+      return false;
+    }
+    return dirtyRef.current && currentLocation.pathname !== nextLocation.pathname;
+  });
 
   useEffect(() => {
     if (!dirty) return;

@@ -805,7 +805,7 @@ describe("provider gaps from v1", () => {
     );
   });
 
-  it("moves a connection to another host only with its key, and back to the provider's own without one", async () => {
+  it("moves a connection to another host only with a key typed for it, and back to the provider's own only when told to", async () => {
     const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
     const fetchMock = stub([hosted]);
     renderAuthenticated(<ProvidersPage />);
@@ -819,11 +819,168 @@ describe("provider gaps from v1", () => {
     expect(save.disabled).toBe(true);
     await userEvent.click(screen.getByLabelText(/api key/i));
     await userEvent.paste(SECRET);
+    expect(save.disabled).toBe(false);
+    // Another address: the key typed for the first one is gone.
+    await userEvent.type(box, "2");
+    expect((screen.getByLabelText(/api key/i) as HTMLInputElement).value).toBe("");
+    expect(save.disabled).toBe(true);
+    // Back to the provider's own host: nothing moves until the person says so.
     await userEvent.clear(box);
-    // Back to the provider's own host: no key asked for, the stored one is kept.
-    expect(screen.queryByLabelText(/api key/i)).toBeNull();
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /send the current key to api\.openai\.com/i }));
     await userEvent.click(save);
     await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, baseUrl: null }));
+  });
+
+  it("goes back to the provider's own host with a replacement key instead", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
+    const fetchMock = stub([hosted]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByLabelText(/replacement key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, baseUrl: null, secret: SECRET }));
+  });
+
+  it("clears a typed key in the add form when where it goes changes", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    const key = () => screen.getByLabelText(/api key/i) as HTMLInputElement;
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://one.example.com");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(screen.getByLabelText(/base url/i), "x");
+    expect(key().value).toBe("");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("checkbox", { name: /cloudflare/i }));
+    expect(key().value).toBe("");
+    await userEvent.click(screen.getByRole("checkbox", { name: /cloudflare/i }));
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "Anthropic");
+    expect(key().value).toBe("");
+  });
+
+  it("renames at the revision it opened at: a conflict asks for a reload, and only then saves", async () => {
+    const changed = { ...PROVIDER, revision: 4, name: "Renamed elsewhere" };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? PROVIDER : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const putBodies = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /rename/i }));
+    const box = await screen.findByLabelText(/^name$/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste("Mine");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    // The list is at revision 4 now; the dialog still holds 3, so it will not save.
+    expect((screen.getByRole("button", { name: /^rename$/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Renamed elsewhere"));
+    await userEvent.clear(screen.getByLabelText(/^name$/i));
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Mine");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect(putBodies()).toEqual([{ revision: 3, name: "Mine" }, { revision: 4, name: "Mine" }]));
+  });
+
+  it("lets a late rename close nothing once its dialog is gone", async () => {
+    const other = { ...PROVIDER, id: "prov-2", slug: "openai-2", name: "OpenAI two" };
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return new Response(JSON.stringify({ provider: PROVIDER }));
+        }
+        return new Response(JSON.stringify({ providers: [PROVIDER, other] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /rename/i }));
+    await userEvent.type(await screen.findByLabelText(/^name$/i), " x");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByLabelText(/^name$/i)).toBeNull());
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI two" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    const box = await screen.findByLabelText(/base url/i);
+    await userEvent.click(box);
+    await userEvent.paste("https://draft.example.com");
+    release!();
+    await waitFor(() => expect(screen.getByRole("dialog", { name: /^host$/i })).toBeTruthy());
+    expect((screen.getByLabelText(/base url/i) as HTMLInputElement).value).toBe("https://draft.example.com");
+  });
+
+  it("keeps several unit rates as stored: their controls are locked, and a token edit leaves them", async () => {
+    const stored = { "m": { input: 1, output: 2, per_image: 0.04, per_megapixel: 0.01 } };
+    const fetchMock = stub([{ ...PROVIDER, pricing: stored }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const row = await screen.findByRole("group", { name: "m" });
+    expect(within(row).getByText(/several unit rates/i)).toBeTruthy();
+    expect((within(row).getByRole("combobox", { name: /^unit$/i }) as HTMLButtonElement).disabled).toBe(true);
+    const output = within(row).getByLabelText(/^output/i);
+    await userEvent.clear(output);
+    await userEvent.click(output);
+    await userEvent.paste("3");
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, pricing: { m: { input: 1, output: 3, per_image: 0.04, per_megapixel: 0.01 } } }),
+    );
+  });
+
+  it("opens prices the form cannot show as JSON, and says so rather than switching a JSON it cannot show", async () => {
+    stub([{ ...PROVIDER, pricing: { tiny: { per_request: 1e-9 } } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    // A rate written with an exponent reads back as itself.
+    const row = await screen.findByRole("group", { name: "tiny" });
+    expect((within(row).getByLabelText(/unit rate/i) as HTMLInputElement).value).toBe("1e-9");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": null}');
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect(screen.getByText(/not prices the form can show/i)).toBeTruthy();
+    expect(screen.getByLabelText(/prices by model/i)).toBeTruthy();
+  });
+
+  it("opens stored prices the form cannot represent straight as JSON", async () => {
+    stub([{ ...PROVIDER, pricing: { odd: { input: "1", output: 2 } } as never }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    expect(((await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain('"input": "1"');
   });
 
   it("edits a model's rates in the prices form and keeps what the form does not show", async () => {
