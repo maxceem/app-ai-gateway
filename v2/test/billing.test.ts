@@ -10,7 +10,13 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { CONSOLE_BILLING_DEADLINE_MS, getAppTrafficBillingAccess, getBillingAccess } from "../src/billing/access.ts";
+import {
+  BILLING_ACCESS_CACHE_TTL_MS,
+  CONSOLE_BILLING_DEADLINE_MS,
+  getAppTrafficBillingAccess,
+  getBillingAccess,
+  requirePlanFeature,
+} from "../src/billing/access.ts";
 import { BILLING_CHECKOUT_DEADLINE_MS, readCatalog } from "../src/admin/billing.ts";
 import type { BillingRuntime } from "../src/billing/contract.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, useFakeClock } from "./helpers.ts";
@@ -604,6 +610,27 @@ describe("the last known plan (Sol 7b-8)", () => {
     fake.state.access = "down";
     vi.setSystemTime(now + 70_000);
     expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ stale: true, plan: { planKey: "growth" } });
+  });
+});
+
+describe("plan features", () => {
+  it("are not included while the paid period has ended: an expired entitlement reports no humanSupport", async () => {
+    const { caller } = await person();
+    const ended = new Date(Date.now() - 60_000).toISOString();
+    const { env: hosted } = billingFake({ ...growth({}), subscription: { ...SUBSCRIPTION, status: "cancelled", renewsAt: null, endsAt: ended } });
+    const status = await send(caller, "GET", "/v2/admin/billing/status", undefined, hosted);
+    expect(status.status).toBe(200);
+    expect(status.body.features).toMatchObject({ humanSupport: false, conversationStorage: false });
+  });
+
+  it("keep settings writes strict: a plan kept through an outage never turns conversation storage on", async () => {
+    const { accountId } = await person();
+    const fake = billingFake(growth({ includes: ["conversationStorage"] }));
+    await expect(requirePlanFeature(fake.env, accountId, "conversationStorage")).resolves.toBeUndefined();
+    // Past the cache, billing fails: only the plan kept through the outage is left, which a write never trusts.
+    fake.state.access = "down";
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + BILLING_ACCESS_CACHE_TTL_MS + 1_000 });
+    await expect(requirePlanFeature(fake.env, accountId, "conversationStorage")).rejects.toMatchObject({ status: 503, code: "billing_unavailable" });
   });
 });
 

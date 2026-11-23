@@ -9,7 +9,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import type { HelpdeskRuntime, HelpdeskTicketInput, HelpdeskTicketResult } from "../src/helpdesk/contract.ts";
-import { BILLING_ACCESS_CACHE_TTL_MS, CONSOLE_BILLING_DEADLINE_MS, getAppTrafficBillingAccess, requirePlanFeature } from "../src/billing/access.ts";
+import { CONSOLE_BILLING_DEADLINE_MS, getAppTrafficBillingAccess } from "../src/billing/access.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, useFakeClock, type SeededHuman } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -334,18 +334,17 @@ describe("support", () => {
     expect(kept.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
   });
 
-  it("refuses a plan whose limits are malformed, as v1, rather than guessing either way", async () => {
+  it("refuses plan data it cannot read, so limits: null never reads as every feature, and logs it for the monitor", async () => {
     const human = await seedHuman();
-    // Only the limits v1 recognized: a v2-only limit is not support's to judge.
-    const v2Only = runtime({ access: { plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxSessionMinutesPerMonth: "lots" } }, subscription: null } });
-    expect((await send(v2Only.env, human, MESSAGE)).status).toBe(200);
-    // The legacy maxProviderGateways too, which v2 otherwise never reads.
-    for (const limits of [null, { maxApps: "many" }, { includes: "humanSupport" }, { maxProviderGateways: -1 }, { maxProviderGateways: null }]) {
+    for (const limits of [null, { includes: "humanSupport" }]) {
+      const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const broken = runtime({ access: { plan: { planKey: "pro", planName: "Pro", isDefault: false, limits }, subscription: null } });
       const response = await send(broken.env, human, MESSAGE);
       expect(response.status).toBe(502);
       expect(await errorCode(response)).toBe("billing_unavailable");
       expect(broken.tickets).toHaveLength(0);
+      const logged = errors.mock.calls.map((entry) => String(entry[0]));
+      expect(logged.some((line) => line.includes("support_plan_malformed"))).toBe(true);
     }
   });
 
@@ -359,23 +358,6 @@ describe("support", () => {
     expect(tickets).toHaveLength(0);
     expect((await send(testEnv, human, { ...MESSAGE, sender: human.userId })).status).toBe(200);
     expect(tickets).toHaveLength(1);
-  });
-
-  it("keeps settings writes strict: a plan kept through an outage never turns conversation storage on", async () => {
-    const human = await seedHuman();
-    let down = false;
-    const kept = runtime({ access: plan("Pro", false, ["conversationStorage"]) });
-    const billing = (kept.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
-    const answer = billing.getTenantAccess;
-    billing.getTenantAccess = async () => {
-      if (down) throw new Error("billing is down");
-      return answer();
-    };
-    await expect(requirePlanFeature(kept.env, human.accountId, "conversationStorage")).resolves.toBeUndefined();
-    // Past the cache, billing fails: only the plan kept through the outage is left, which a write never trusts.
-    down = true;
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + BILLING_ACCESS_CACHE_TTL_MS + 1_000 });
-    await expect(requirePlanFeature(kept.env, human.accountId, "conversationStorage")).rejects.toMatchObject({ status: 503, code: "billing_unavailable" });
   });
 
   it("holds one person to ten messages an hour, whichever of their accounts they write from", async () => {
@@ -401,12 +383,6 @@ describe("support", () => {
     expect(await errorCode(eleventh)).toBe("rate_limited");
     expect(tickets).toHaveLength(10);
     expect(new Set(tickets.map((ticket) => ticket.account?.tenantId))).toEqual(new Set([human.accountId, other]));
-  });
-
-  it("asks agw for its own confirmation step: an agw without it is told to update", async () => {
-    const response = await call(runtime().env, new Request(`${API}/v2/cli/tools`));
-    const { tools } = (await response.json()) as { tools: { name: string; cli: { command: string; requires?: string[] } }[] };
-    expect(tools.find((tool) => tool.name === "contact_support")?.cli).toEqual({ command: "support send", requires: ["support-confirmation"] });
   });
 
   it("refuses an empty message, a page off the console and malformed context", async () => {

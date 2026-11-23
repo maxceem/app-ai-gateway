@@ -112,32 +112,6 @@ function withoutBilling(accountId: string, code?: string | null): GatewayBilling
   return { state: "unavailable", ...(code ? { billingErrorCode: code } : {}) };
 }
 
-/** The plan limits v1 recognized when it checked a plan for support. Limits only v2 reads are left out. */
-const V1_SUPPORT_LIMITS = ["maxRequestsPerMonth", "maxApps", "maxProviders", "maxProviderGateways", "maxActiveKeysPerApp"] as const;
-
-/**
- * Checks a plan's limits as v1 did for support: the limits v1 recognized,
- * the legacy `maxProviderGateways` too, each with the count parser. A
- * malformed one is `502 billing_unavailable`, never a guess either way.
- * (`planIncludes` checks `includes`.) The request path reads each limit on
- * its own instead.
- */
-export function requireWellFormedPlan(access: GatewayBillingAccess): void {
-  if (access.state !== "billed" || access.plan === null || access.plan.limits === undefined) return;
-  const raw = access.plan.limits;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
-  }
-  for (const key of V1_SUPPORT_LIMITS) {
-    const value = (raw as Record<string, unknown>)[key];
-    if (value === undefined) continue;
-    const parsed = PlanLimitInputSchema.safeParse(value);
-    if (!parsed.success || parsed.data === undefined) {
-      throw new GatewayError(502, "billing_unavailable", `Billing plan limit ${key} is invalid`);
-    }
-  }
-}
-
 /** The account's billing access. Self-hosted (no binding) reads nothing. */
 export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBillingAccess> {
   const binding = billingBinding(env);
@@ -307,34 +281,29 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
 
 export { PLAN_FEATURES, type PlanFeature };
 
-/** How each plan feature is named and refused, and whether it stays usable while billing cannot be read (v1's policy). */
+/** How each plan feature is named and refused. */
 interface FeaturePolicy {
   /** How the feature is named in a refusal, at the start of a sentence. */
   readonly name: string;
   /** The refusal's code. Its own code only where a client already reads one. */
   readonly code: "billing_feature_not_included" | "support_plan_required";
-  /**
-   * Whether the feature stays usable while billing cannot be read. Usually
-   * not: admitting it would mean guessing the plan. Human support is the
-   * exception, because an outage is when a paying customer most needs it.
-   */
-  readonly whileBillingUnavailable: boolean;
 }
 
 const FEATURE_POLICY = {
-  conversationStorage: { name: "Conversation history", code: "billing_feature_not_included", whileBillingUnavailable: false },
-  humanSupport: { name: "Human support", code: "support_plan_required", whileBillingUnavailable: true },
+  conversationStorage: { name: "Conversation history", code: "billing_feature_not_included" },
+  humanSupport: { name: "Human support", code: "support_plan_required" },
 } as const satisfies Record<PlanFeature, FeaturePolicy>;
 
 /**
  * Whether the account's plan includes `feature` (v1's `planIncludes`).
- * Self-hosted: always. Billing that cannot be read: as the feature's policy
- * says, since an outage says nothing about the plan. A `limits.includes`
+ * Self-hosted: always. Billing that cannot be read, or a paid period that has
+ * ended: no. (Support decides for itself what a failed read means: see
+ * `src/admin/support.ts`.) A `limits.includes`
  * that is not a list of strings throws `502`: the plan is misconfigured.
  */
 export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature): boolean {
   if (access.state === "self_hosted") return true;
-  if (access.state === "unavailable") return FEATURE_POLICY[feature].whileBillingUnavailable;
+  if (access.state === "unavailable") return false;
   if (access.plan === null) return false;
   const limits = access.plan.limits;
   if (limits === undefined || limits === null) return true;

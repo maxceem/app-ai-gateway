@@ -15,7 +15,7 @@
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { SupportMessageRequestSchema } from "../contracts/support.ts";
-import { planFeatureRefusal, planIncludes, readBillingForConsole, requireWellFormedPlan } from "../billing/access.ts";
+import { planFeatureRefusal, planIncludes, readBillingForConsole } from "../billing/access.ts";
 import type { GatewayBillingAccess } from "../contracts/billing.ts";
 import { consoleOrigin, hostedDeployment, setting } from "../auth/settings.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -47,6 +47,22 @@ export function supportInbox(env: Env): string | null {
   if (helpdeskBinding(env) === null || !hostedDeployment(env)) return null;
   const inbox = setting(env, "SUPPORT_EMAIL");
   return inbox !== undefined && INBOX_ADDRESS.test(inbox) ? inbox : null;
+}
+
+/**
+ * Refuses plan data support cannot read: `limits` that is not an object, or
+ * an `includes` that is not a list of names. Otherwise `limits: null` would
+ * read as "every feature". Logged at `error` so the monitor alerts on it.
+ */
+function requireReadablePlan(access: GatewayBillingAccess, accountId: string): void {
+  if (access.state !== "billed" || access.plan === null || access.plan.limits === undefined) return;
+  const limits: unknown = access.plan.limits;
+  const isObject = typeof limits === "object" && limits !== null && !Array.isArray(limits);
+  const includes = isObject ? (limits as Record<string, unknown>).includes : undefined;
+  const includesReadable = includes === undefined || (Array.isArray(includes) && includes.every((entry) => typeof entry === "string"));
+  if (isObject && includesReadable) return;
+  log("error", "support_plan_malformed", { account: accountId });
+  throw new GatewayError(502, "billing_unavailable", "The account's plan could not be read. Try again later.");
 }
 
 export async function sendSupportMessage(c: AdminContext): Promise<Response> {
@@ -86,8 +102,7 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
     access = null;
   }
   if (access !== null) {
-    // As v1: a malformed plan is a `502`, not a guess either way.
-    requireWellFormedPlan(access);
+    requireReadablePlan(access, actor.accountId);
     // Whatever billing answered must name an eligible plan. Only a read that
     // failed sends with the plan unknown: an answer whose paid period ended
     // before it arrived (`unavailable` here) names none, and is refused.
