@@ -154,6 +154,25 @@ test("app add writes only the settings its flags name: environments, verificatio
   assert.match(older.json().error.message, /does not list its provider types' operations/u);
   assert.match(older.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
 
+  // As before this release: a server app ignores --team-id and --bundle-id.
+  const keys = await mkdtemp(join(tmpdir(), "agw-v2-"));
+  try {
+    const store = memoryStore(signedInState(URL_, "agw_oat_1"));
+    store.keyOutput = new StateStore(keys).keyOutput.bind(new StateStore(keys));
+    const ignored: unknown[] = [];
+    const kept = await run(
+      ["app", "add", "--type", "server", "--name", "Backend", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--key-output", join(keys, "backend.key"), "--json"],
+      (_path, options) => {
+        ignored.push(options.body);
+        return { app: APP, api_key: KEY };
+      },
+      store,
+    );
+    assert.equal(kept.code, 0, kept.out);
+    assert.deepEqual(ignored, [{ name: "Backend", config: APP.config }]);
+  } finally {
+    await rm(keys, { recursive: true, force: true });
+  }
   const server = await run(["app", "add", "--type", "server", "--name", "Backend", "--verify-on", "every_request", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(server.json().error.code, "invalid_input");
   assert.match(server.json().error.message, /--verify-on/);

@@ -31,6 +31,7 @@ import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import { declaredOperation, presetOperation } from "../providers/presets.ts";
+import { matcherFor } from "../proxy/serve.ts";
 import { priceSources, resolveCall, servedNow } from "../pricing/billability.ts";
 import { PRICE_FILE } from "../pricing/price-file.ts";
 import type { AdminVariables } from "./actor.ts";
@@ -123,28 +124,54 @@ function listedKind(type: string, model: string): string | undefined {
 }
 
 /**
- * The model an example names: of the app's own (the route's model list, its
- * rewrites, the connection's prices), else the operation's sample, the first
- * that serving admits for this exact operation (`resolveCall`) and whose
- * billed model is of the operation's kind. Null when none is.
+ * The model an example names, of those whose path the gateway accepts
+ * (`pathAccepts`) and that serving admits for this exact operation
+ * (`resolveCall`):
+ *
+ * - the operation's curated sample, known to work on it;
+ * - only when the app's own settings exclude it, a model the app names (the
+ *   route's model list, its rewrites, the connection's prices) whose billed
+ *   model is of the operation's kind, marked `configured`: it works only if
+ *   that model serves this endpoint.
+ *
+ * Null when none is.
  */
-function exampleModel(connection: ConnectionRow, route: ProviderRouting, rewrites: AppConfig["routing"]["model_rewrites"], operation: OperationDescription): string | null {
+function exampleModel(
+  connection: ConnectionRow,
+  route: ProviderRouting,
+  rewrites: AppConfig["routing"]["model_rewrites"],
+  operation: OperationDescription,
+  pathAccepts: (model: string) => boolean,
+): { readonly model: string; readonly configured: boolean } | null {
   const kind = STYLE_KINDS[operation.style!];
   const sources = priceSources(connection);
+  const admitted = (candidate: string): boolean => {
+    if (!pathAccepts(candidate)) return false;
+    const call = resolveCall(route, rewrites, sources, operation, candidate);
+    if (call.kind !== "admitted") return false;
+    const billed = listedKind(connection.type, call.model);
+    return kind === undefined || billed === undefined || billed === kind;
+  };
   const sample = SAMPLE_MODELS[operation.name];
-  const candidates = [
+  if (sample !== undefined && admitted(sample)) return { model: sample, configured: false };
+  const own = [
     ...(route.models ?? []),
     ...Object.keys(rewrites ?? {}),
     ...(connection.rates_json === null ? [] : Object.keys(JSON.parse(connection.rates_json) as Record<string, unknown>)),
-    ...(sample === undefined ? [] : [sample]),
   ];
-  for (const candidate of new Set(candidates)) {
-    const call = resolveCall(route, rewrites, sources, operation, candidate);
-    if (call.kind !== "admitted") continue;
-    const billed = listedKind(connection.type, call.model);
-    if (kind === undefined || billed === undefined || billed === kind) return candidate;
-  }
-  return null;
+  const found = [...new Set(own)].find(admitted);
+  return found === undefined ? null : { model: found, configured: true };
+}
+
+/**
+ * Whether the gateway's own matcher reads `path` as `operation`, with `model`
+ * where the operation reads it: a model whose path the gateway would refuse
+ * (a `/` in a path part, say) never makes an example.
+ */
+function pathAccepts(description: ProviderDescription, operation: OperationDescription, path: string, model: string): boolean {
+  const match = matcherFor(description).match(operation.match.method, path);
+  if (match.kind !== "operation" || match.operation.name !== operation.name) return false;
+  return operation.model.in !== "path" || match.parts[operation.model.part] === model;
 }
 
 /** The operation's path with its model filled in. */
@@ -260,8 +287,10 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const caller = callerOf(config, origin, row.id);
   const notes = [...caller.notes];
   const examples: Example[] = [];
-  const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model">, request: SnippetRequest) => {
+  const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, request: SnippetRequest) => {
     const curl = caller.credential === null ? undefined : curlCommand(request, caller.credential, caller.exchange);
+    // A caveat leads the text as a comment, so it is read before the command is run.
+    const lead = example.caveat === undefined ? "" : `# ${example.caveat}\n`;
     examples.push({
       ...example,
       method: request.method,
@@ -271,7 +300,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
       ...(request.form === undefined ? {} : { form: { ...request.form } }),
       ...(request.file === undefined ? {} : { file: { ...request.file } }),
       ...(curl === undefined ? {} : { curl }),
-      text: curl ?? requestText(request, caller.line),
+      text: `${lead}${curl ?? requestText(request, caller.line)}`,
     });
   };
   /** The connection a route or preset names, when it can serve; otherwise a note says why. */
@@ -297,14 +326,21 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         continue;
       }
       if (seen.has(operation.style!)) continue;
-      const model = exampleModel(connection, route, config.routing.model_rewrites, operation);
-      if (model === null) {
+      const picked = exampleModel(connection, route, config.routing.model_rewrites, operation, (model) => pathAccepts(description, operation, filledPath(operation, model), model));
+      if (picked === null) {
         unpicked.push(name);
         continue;
       }
+      const { model, configured } = picked;
       seen.add(operation.style!);
       add(
-        { provider: slug, operation: name, style: operation.style!, model },
+        {
+          provider: slug,
+          operation: name,
+          style: operation.style!,
+          model,
+          ...(configured ? { caveat: `Uses this app's configured model ${model}: it works if ${model} supports this endpoint.` } : {}),
+        },
         requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${filledPath(operation, model)}`, operation, model, caller.endUser, route.max_output_tokens),
       );
     }
@@ -322,6 +358,13 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     const connection = usable(preset.provider, `The preset ${slug}`);
     const description = connection === null ? null : describe(connection);
     if (connection === null || description === null) continue;
+    // Fixed parameters are merged into the body: what it becomes cannot be known safe.
+    if (preset.params !== undefined && Object.keys(preset.params).length > 0) {
+      notes.push(
+        `The preset ${slug} sets fixed parameters, so it has no example here. Send its request as its provider's own API reference describes, without a model, to ${origin}/v2/apps/${row.id}/presets/${slug}.`,
+      );
+      continue;
+    }
     // The operation the preset's connection actually runs.
     const style = declaredOperation(preset.operation)?.style;
     const operation = style === undefined ? null : presetOperation(description, style, preset.operation);

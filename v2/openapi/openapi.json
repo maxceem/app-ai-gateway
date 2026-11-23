@@ -3209,6 +3209,9 @@
               "null"
             ]
           },
+          "caveat": {
+            "type": "string"
+          },
           "headers": {
             "type": "object",
             "additionalProperties": {

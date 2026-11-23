@@ -244,9 +244,6 @@ function listOf(value: string | string[] | undefined): string[] {
     .filter((entry) => entry !== "");
 }
 
-/** The flags only an iOS (App Attest) app takes. */
-const IOS_FLAGS = ["team-id", "bundle-id", "attest-environments", "verify-on"] as const;
-
 type AppDocument = { name: string; config: unknown; status?: (typeof APP_STATUSES)[number] };
 
 /**
@@ -291,7 +288,8 @@ async function appDocument(ctx: Context, flags: Flags): Promise<AppDocument> {
     };
   }
   if (type !== "server") fail("invalid_input", "--type must be ios or server.");
-  const foreign = IOS_FLAGS.filter((flag) => flags[flag] !== undefined);
+  // As before: a server app ignores --team-id and --bundle-id; only this release's iOS flags are refused.
+  const foreign = (["attest-environments", "verify-on"] as const).filter((flag) => flags[flag] !== undefined);
   if (foreign.length > 0) fail("invalid_input", `A server app takes no ${foreign.map((flag) => `--${flag}`).join(", ")}: ${foreign.length === 1 ? "it is" : "they are"} for iOS apps.`);
   const header = flags["user-header"]?.trim();
   return {

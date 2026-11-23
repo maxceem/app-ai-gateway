@@ -9,6 +9,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { SAMPLE_MODELS, shellWord } from "../src/admin/app-snippet.ts";
+import { PRICE_FILE } from "../src/pricing/price-file.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -99,26 +100,22 @@ async function sentForm(): Promise<FormData> {
 }
 
 describe("first requests for an app", () => {
-  it("gives one curl per well-known request a route serves, each with a model serving admits for that exact operation", async () => {
+  it("gives one curl per well-known request a route serves, each with the operation's curated sample model", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const { appId, base_url, examples, notes } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
       routing: {
-        providers: {
-          [slug]: {
-            operations: ["openai.chat", "openai.chat.bare", "openai.embeddings", "openai.transcription", "openai.speech", "openai.realtime"],
-            models: ["gpt-4o-mini", "text-embedding-3-small", "whisper-1", "gpt-4o-mini-tts"],
-          },
-        },
+        providers: { [slug]: { operations: ["openai.chat", "openai.chat.bare", "openai.embeddings", "openai.transcription", "openai.speech", "openai.realtime"] } },
       },
     });
     expect(base_url).toBe(ORIGIN);
+    const chatModel = SAMPLE_MODELS["openai.chat"]!;
     // openai.chat.bare speaks the style openai.chat already shows; speech and live sessions are not covered.
-    expect(examples.map((example) => [example.operation, example.model])).toEqual([
-      ["openai.chat", "gpt-4o-mini"],
-      ["openai.embeddings", "text-embedding-3-small"],
-      ["openai.transcription", "whisper-1"],
+    expect(examples.map((example) => [example.operation, example.model, example.caveat])).toEqual([
+      ["openai.chat", chatModel, undefined],
+      ["openai.embeddings", SAMPLE_MODELS["openai.embeddings"], undefined],
+      ["openai.transcription", SAMPLE_MODELS["openai.transcription"], undefined],
     ]);
     const [chat, , transcription] = examples;
     expect(chat).toMatchObject({
@@ -127,23 +124,79 @@ describe("first requests for an app", () => {
       method: "POST",
       url: `${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
       headers: { "x-end-user-id": "user-123", "Content-Type": "application/json" },
-      body: { model: "gpt-4o-mini", messages: [{ role: "user", content: "Hello!" }] },
+      body: { model: chatModel, messages: [{ role: "user", content: "Hello!" }] },
     });
     expect(chat!.curl).toBe(
       [
         `( set +x; printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
         `-H 'x-end-user-id: user-123'`,
         `-H 'Content-Type: application/json'`,
-        `-d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}' )`,
+        `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}]}' )`,
       ].join(" \\\n  "),
     );
     expect(chat!.text).toBe(chat!.curl);
     // A form, by the proxy's rule: the model as a text field, the file apart.
-    expect(transcription).toMatchObject({ form: { model: "whisper-1" }, file: { field: "file", name: "audio.mp3" } });
-    expect(transcription!.curl).toContain(`--form-string 'model=whisper-1' \\\n  -F 'file=@audio.mp3' )`);
+    expect(transcription).toMatchObject({ form: { model: SAMPLE_MODELS["openai.transcription"] }, file: { field: "file", name: "audio.mp3" } });
+    expect(transcription!.curl).toContain(`--form-string 'model=${SAMPLE_MODELS["openai.transcription"]}' \\\n  -F 'file=@audio.mp3' )`);
     expect(notes).toContainEqual(expect.stringContaining("Set APP_AI_GATEWAY_KEY to one of this app's keys"));
     expect(notes).toContainEqual(`${slug}: openai.speech and openai.realtime have no example here. Send them as the provider's own API reference describes, to ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/.`);
     expect(JSON.stringify(examples)).not.toContain(PROVIDER_KEY);
+  });
+
+  it("prefers the curated sample when the app admits it, and labels the app's own model where only that is admitted", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const sample = SAMPLE_MODELS["openai.chat"]!;
+    const both = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-5.4-pro", sample] } } },
+    });
+    expect(both.examples.map((example) => [example.model, example.caveat])).toEqual([[sample, undefined]]);
+
+    const own = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-5.4-pro"] } } },
+    });
+    const [example] = own.examples;
+    expect(example).toMatchObject({ model: "gpt-5.4-pro", caveat: "Uses this app's configured model gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint." });
+    expect(example!.text).toBe(`# ${example!.caveat}\n${example!.curl}`);
+  });
+
+  it("skips a model whose path the gateway's own matcher would refuse, and asks for another", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key, { type: "gemini", name: "Gemini", slug: `gemini-${crypto.randomUUID().slice(0, 6)}` });
+    const { examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["gemini.generate.v1beta"], models: ["team/gemini"] } }, model_rewrites: { "team/gemini": SAMPLE_MODELS["gemini.generate.v1beta"]! } },
+    });
+    expect(examples).toEqual([]);
+    expect(notes).toContainEqual(`${slug}: gemini.generate.v1beta has no example: pick a model for it and list it in the route.`);
+  });
+
+  it("keeps the curated samples to models our price list has, still listed and not retiring", () => {
+    for (const [operation, model] of Object.entries(SAMPLE_MODELS)) {
+      const type = operation.split(".")[0]!;
+      // OpenRouter is not in our price list: it reports each request's cost.
+      if (type === "openrouter") continue;
+      const entry = PRICE_FILE[type]?.[model] as { unlisted_since?: string; retirement_date?: string } | undefined;
+      expect(entry, `${operation}: ${model}`).toBeDefined();
+      expect(entry!.unlisted_since, `${operation}: ${model}`).toBeUndefined();
+      expect(entry!.retirement_date, `${operation}: ${model}`).toBeUndefined();
+    }
+  });
+
+  it("gives a preset with fixed parameters a note, never a command", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const { appId, examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"] } } },
+      presets: { tuned: { provider: slug, operation: "openai.chat", model: "gpt-4o-mini", params: { temperature: 0 } } },
+    });
+    expect(examples.map((example) => example.preset)).toEqual([undefined]);
+    expect(notes).toContainEqual(
+      `The preset tuned sets fixed parameters, so it has no example here. Send its request as its provider's own API reference describes, without a model, to ${ORIGIN}/v2/apps/${appId}/presets/tuned.`,
+    );
   });
 
   it("asks for a model where none the route allows is admitted for the operation", async () => {
@@ -328,7 +381,7 @@ describe("first requests for an app", () => {
     const slug = await provider(key);
     const { appId, examples, notes } = await snippetFor(key, {
       authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.snippet" } },
-      routing: { providers: { [slug]: { operations: ["openai.chat", "openai.transcription"], models: ["gpt-4o-mini", "whisper-1"] } } },
+      routing: { providers: { [slug]: { operations: ["openai.chat", "openai.transcription"] } } },
     });
     const [chat, transcription] = examples;
     expect(chat!.curl).toBeUndefined();
@@ -338,11 +391,11 @@ describe("first requests for an app", () => {
         "Content-Type: application/json",
         "(The Swift SDK adds the gateway token and the App Attest proof.)",
         "",
-        JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hello!" }] }, null, 2),
+        JSON.stringify({ model: SAMPLE_MODELS["openai.chat"], messages: [{ role: "user", content: "Hello!" }] }, null, 2),
       ].join("\n"),
     );
     expect(transcription!.text).toContain("Content-Type: multipart/form-data");
-    expect(transcription!.text).toMatch(/\nmodel: whisper-1\nfile: the file audio\.mp3$/u);
+    expect(transcription!.text.endsWith(`\nmodel: ${SAMPLE_MODELS["openai.transcription"]}\nfile: the file audio.mp3`)).toBe(true);
     expect(notes[0]).toMatch(/App Attest, which curl cannot do.*Swift SDK/u);
   });
 
