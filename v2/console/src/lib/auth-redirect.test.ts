@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
   AUTH_PATHS,
+  checkoutReturnAccount,
   consoleUrl,
   isRetryableError,
   isSafeReturnPath,
@@ -38,6 +39,16 @@ describe("isSafeReturnPath", () => {
     expect(isSafeReturnPath("apps")).toBe(false);
     expect(isSafeReturnPath(null)).toBe(false);
     expect(isSafeReturnPath("")).toBe(false);
+  });
+
+  it("rejects a path that does not parse, or that the browser would read as another origin, without throwing (Sol 7b-8)", () => {
+    // `from=%2F%09%2F`: a tab is dropped from URLs, leaving "//", which does not parse.
+    expect(() => isSafeReturnPath("/\t/")).not.toThrow();
+    expect(isSafeReturnPath("/\t/")).toBe(false);
+    expect(isSafeReturnPath("/\t/evil.example")).toBe(false);
+    expect(isSafeReturnPath("/\n/evil.example")).toBe(false);
+    expect(returnPathFrom("?from=%2F%09%2F")).toBe("/apps");
+    expect(checkoutReturnAccount("?from=%2F%09%2F")).toBeNull();
   });
 
   it("rejects the auth screens so re-auth cannot loop", () => {

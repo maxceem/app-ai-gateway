@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { entitledPlan, priceFor } from "@/lib/billing";
 import { DEFAULT_LANDING, planKeyFrom, FREE_PLAN_KEY } from "@/lib/auth-redirect";
 import { useConsoleSession } from "@/lib/console-session";
+import { openPaymentPage } from "@/lib/payment-page";
+import { tabAccount } from "@/lib/tab-account";
 import { useBillingPlans, useBillingStatus, useStartCheckout } from "@/lib/queries";
 
 const BILLING_PATH = "/billing";
@@ -78,8 +80,10 @@ export function CheckoutPage() {
     // The catalog is monthly-only today, but the period a plan is actually
     // sold on is the plan's to state, not this page's to assume.
     const billingPeriod = priceFor(plan, "month") ? "month" : "year";
+    // The payment page is followed only while this tab still names the account it was asked for.
+    const startedFor = tabAccount();
     startCheckout({ planKey: plan.planKey, billingPeriod })
-      .then(({ url }) => window.location.assign(url))
+      .then(({ url }) => openPaymentPage(url, startedFor))
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : "Could not start checkout");
       });

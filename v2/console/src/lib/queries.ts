@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tansta
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
 import { currentSearch, setTabAccount, tabAccount } from "./tab-account";
+import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
 import { checkoutReturnAccount } from "./auth-redirect";
 import type { Session } from "./types";
 import {
@@ -64,48 +65,67 @@ export function useCapabilities() {
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
-export const readSession = async (rereads = 0): Promise<Session | null> => {
+/** The session as the gateway answers it for `account`; null asks for the account the shared cookie selects. */
+async function sessionFor(account: string | null, signal?: AbortSignal): Promise<Session> {
+  // An empty header asks for the cookie's account even while the tab names one.
+  const headers = { [CONSOLE_ACCOUNT_HEADER]: account ?? "" };
+  return (await call("getAdminSession", { headers, ...(signal === undefined ? {} : { signal }) })).session;
+}
+
+function aborted(): Error {
+  return new DOMException("The session read was stopped", "AbortError");
+}
+
+export const readSession = async (signal?: AbortSignal, rereads = 0): Promise<Session | null> => {
   if (await plainlySignedOut()) {
-    setTabAccount(null);
+    if (!signal?.aborted) setTabAccount(null);
     return null;
   }
   const named = tabAccount();
-  // Each reread below happens at most a couple of times; past that the answer is taken as it is.
-  const again = rereads < 2 ? () => readSession(rereads + 1) : null;
+  // Only a read that is still current may change the tab's account: not
+  // stopped, and for the account the tab names now. A read that a switch
+  // overtook is for the account left, and changes nothing.
+  const current = () => !signal?.aborted && tabAccount() === named;
+  // A read overtaken without being stopped is read again for the account the
+  // tab names now, a couple of times at most.
+  const overtaken = async (): Promise<Session | null> => {
+    if (signal?.aborted || rereads >= 2) throw aborted();
+    return readSession(signal, rereads + 1);
+  };
   let session: Session;
   try {
-    session = (await call("getAdminSession")).session;
+    session = await sessionFor(named, signal);
   } catch (error) {
-    // The tab names an account the person is not (or no longer) a member of:
-    // it opens on the account the session selects instead.
-    if (!(error instanceof ApiError && error.code === "account_forbidden") || tabAccount() === null || again === null) throw error;
-    setTabAccount(null);
-    return again();
+    // The tab names an account the person is not (or no longer) a member of.
+    // The tab keeps naming it until the replacement session is read, then
+    // opens on the account the session selects.
+    if (!(error instanceof ApiError && error.code === "account_forbidden") || named === null) throw error;
+    if (!current()) return overtaken();
+    const replacement = await sessionFor(null, signal);
+    if (!current()) return overtaken();
+    setTabAccount(replacement.account.id);
+    return replacement;
   }
-  // The tab switched account while this read was out: its answer is for the
-  // account left, so it is read again for the one the tab now names. The
-  // account shown and the account each request names never differ.
-  const now = tabAccount();
-  if (now !== null && now !== named && again !== null) return again();
-  if (now === null) {
-    // A tab opening takes the account the session answers with, and keeps it:
-    // later reads name it, so a switch in another tab never moves this one.
-    // A checkout return carried through sign-in names its account: the tab
-    // opens on it if the person is an active member of it.
-    const returned = checkoutReturnAccount(currentSearch());
-    if (returned !== null && returned !== session.account.id && again !== null && session.accounts.some((entry) => entry.id === returned)) {
-      setTabAccount(returned);
-      return again();
-    }
-    setTabAccount(session.account.id);
+  if (!current()) return overtaken();
+  if (named !== null) return session;
+  // A tab opening with no account of its own. A checkout return (or the
+  // sign-in page carrying one) names the account it was for: it is a
+  // candidate only, taken when the person is an active member of it.
+  const returned = checkoutReturnAccount(currentSearch());
+  if (returned !== null && returned !== session.account.id && session.accounts.some((entry) => entry.id === returned)) {
+    const forReturn = await sessionFor(returned, signal);
+    if (!current()) return overtaken();
+    setTabAccount(forReturn.account.id);
+    return forReturn;
   }
+  setTabAccount(session.account.id);
   return session;
 };
 
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: () => readSession(),
+    queryFn: ({ signal }) => readSession(signal),
     retry: false,
     staleTime: 60_000,
   });

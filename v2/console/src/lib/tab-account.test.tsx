@@ -23,7 +23,8 @@ function stubGateway(
   const accounts = members.map((id) => membership(id, id));
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    const account = new Headers(init?.headers).get("x-account-id");
+    // An empty header names no account, as at the gateway.
+    const account = new Headers(init?.headers).get("x-account-id") || null;
     sent.push({ url, account });
     if (url.includes("/v2/admin/session")) await hold(account);
     if (url.includes("/get-session")) return new Response(JSON.stringify({ session: {} }), { status: 200 });
@@ -90,9 +91,11 @@ describe("a console tab's account", () => {
     expect(sessionReads()).toEqual(["acct-gone", null]);
   });
 
-  it("opens on the account a checkout return names", () => {
+  it("opens a tab with no account of its own on the account a checkout return names, if the person is a member of it", async () => {
+    stubGateway({ selected: "acct-1" });
     window.history.replaceState(null, "", "/v2/apps?checkout=success&plan=pro&account=acct-2");
     resetTabAccountForTests();
+    expect((await readSession())?.account.id).toBe("acct-2");
     expect(tabAccount()).toBe("acct-2");
   });
 
@@ -129,6 +132,38 @@ describe("a console tab's account", () => {
     expect(sessionStorage.getItem("agw.tab-account")).toBeNull();
     expect((await readSession())?.account.id).toBe("acct-1");
     expect(sent.every((entry) => entry.account === null || entry.account === "acct-1")).toBe(true);
+  });
+
+  it("lets a session read a switch overtook change nothing: A's late refusal keeps the header on B, and nothing asks for the cookie's account (Sol 7b-8)", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    // The person has left acct-1; the cookie selects acct-3.
+    const { sent } = stubGateway({ selected: "acct-3" }, ["acct-2", "acct-3"], (account) => (account === "acct-1" ? held : Promise.resolve()));
+    setTabAccount("acct-1");
+    const client = testQueryClient();
+    const late = client.fetchQuery({ queryKey: keys.session, queryFn: ({ signal }) => readSession(signal), staleTime: 0 }).catch(() => undefined);
+    await vi.waitFor(() => expect(sent.some((entry) => entry.url.includes("/v2/admin/session"))).toBe(true));
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useSelectAccount(), { wrapper });
+    await act(() => result.current.mutateAsync("acct-2"));
+    const afterSwitch = sent.length;
+    // acct-1's read now answers 403.
+    release();
+    await late;
+    expect(tabAccount()).toBe("acct-2");
+    expect(sent.slice(afterSwitch).filter((entry) => entry.account !== "acct-2")).toEqual([]);
+    await call("listApps");
+    expect(sent.at(-1)!.account).toBe("acct-2");
+  });
+
+  it("never lets a checkout return carried through sign-in replace the tab's own saved account (Sol 7b-8)", async () => {
+    stubGateway({ selected: "acct-1" });
+    // A reload of a tab that had saved acct-1, on the sign-in page carrying a return for acct-2.
+    resetTabAccountForTests();
+    sessionStorage.setItem("agw.tab-account", "acct-1");
+    window.history.replaceState(null, "", `/v2/login?from=${encodeURIComponent("/apps?checkout=success&plan=pro&account=acct-2")}`);
+    expect((await readSession())?.account.id).toBe("acct-1");
+    expect(tabAccount()).toBe("acct-1");
   });
 
   it("opens on the account a checkout return names after signing in, only if the person is a member of it (Sol 7b-8)", async () => {

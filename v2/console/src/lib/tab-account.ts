@@ -1,5 +1,5 @@
 import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
-import { checkoutReturnAccount, isAccountId } from "./auth-redirect";
+import { isAccountId } from "./auth-redirect";
 
 /**
  * The account this browser tab acts in.
@@ -11,9 +11,13 @@ import { checkoutReturnAccount, isAccountId } from "./auth-redirect";
  * answers with.
  *
  * It is kept in `sessionStorage`, which is per tab, so a reload stays on the
- * same account. A checkout return names the account it was for, and the tab
- * opens on that account (the gateway checks the person is a member). An id
- * of the wrong shape, from the address or from storage, is ignored.
+ * same account. A tab with no account yet opens on the one a checkout return
+ * names, if the person is an active member of it (`readSession`). An id of
+ * the wrong shape, from the address or from storage, is ignored.
+ *
+ * `setTabAccount` is the only way it changes: an explicit switch, a tab
+ * opening, the fallback when the account named is no longer the person's,
+ * and signing out.
  */
 const STORE_KEY = "agw.tab-account";
 
@@ -21,11 +25,6 @@ const STORE_KEY = "agw.tab-account";
 let current: string | null | undefined;
 
 function opening(): string | null {
-  const returned = checkoutReturnAccount(currentSearch());
-  if (returned !== null) {
-    store(returned);
-    return returned;
-  }
   try {
     const stored = sessionStorage.getItem(STORE_KEY);
     if (isAccountId(stored)) return stored;

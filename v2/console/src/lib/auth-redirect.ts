@@ -42,7 +42,22 @@ export function isSafeReturnPath(path: string | null | undefined): path is strin
   if (!path) return false;
   // "//host" and "/\host" are protocol-relative; browsers navigate off-origin.
   if (!path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\")) return false;
-  return !AUTH_PATHS.has(new URL(path, "https://console.invalid").pathname);
+  const parsed = parsedReturnPath(path);
+  // A path the browser would read as another origin (tabs and newlines are
+  // dropped from URLs, so "/\t/host" is "//host") is not ours to return to.
+  return parsed !== null && !AUTH_PATHS.has(parsed.pathname);
+}
+
+const RETURN_BASE = "https://console.invalid";
+
+/** The path read as the browser would, or null when it does not parse or leaves the console's origin. */
+function parsedReturnPath(path: string): URL | null {
+  try {
+    const parsed = new URL(path, RETURN_BASE);
+    return parsed.origin === RETURN_BASE ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -145,7 +160,7 @@ export function checkoutReturnAccount(search: string): string | null {
   if (checkoutSucceeded(search)) return checkoutAccountFrom(search);
   const back = new URLSearchParams(search).get(RETURN_PARAM);
   if (!isSafeReturnPath(back)) return null;
-  const query = new URL(back, "https://console.invalid").search;
+  const query = parsedReturnPath(back)?.search ?? "";
   return checkoutSucceeded(query) ? checkoutAccountFrom(query) : null;
 }
 

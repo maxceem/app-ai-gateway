@@ -5,8 +5,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { BillingPage } from "./billing";
 import { renderAuthenticated } from "@/test/render";
+import { setTabAccount } from "@/lib/tab-account";
 import type {
   BillingAccess,
   EntitledPlan,
@@ -298,6 +300,57 @@ describe("BillingPage", () => {
     features: [],
     trialDays: 0,
     prices: prices.map((price) => ({ ...price, priceCurrency: "USD" })),
+  });
+
+  /** A billing stub whose checkout and change answer only once released, the change with a confirmation link. */
+  function heldPaymentPages(access: BillingAccess, plans: unknown[] = PLANS) {
+    const fetchMock = stubBilling(access, undefined, null, plans);
+    const answer = fetchMock.getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/billing/checkout") || url.includes("/billing/change")) await held;
+      if (url.includes("/billing/change")) return new Response(JSON.stringify({ ok: true, requiredActionUrl: "https://pay.example/confirm" }), { status: 200 });
+      return answer(input, init);
+    });
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
+    const sent = (path: string) => fetchMock.mock.calls.some(([url]) => String(url).includes(path));
+    return { assign, release, sent };
+  }
+
+  it("opens no checkout page for an account the tab has left since the checkout started (Sol 7b-8)", async () => {
+    const info = vi.spyOn(toast, "info");
+    setTabAccount("acct-1");
+    const { assign, release, sent } = heldPaymentPages(billed(FREE_PLAN));
+    renderBilling();
+    await userEvent.click(await screen.findByRole("button", { name: /upgrade to Pro/i }));
+    await waitFor(() => expect(sent("/billing/checkout")).toBe(true));
+    // The tab switches to acct-2 before the checkout page for acct-1 arrives.
+    setTabAccount("acct-2");
+    release();
+    await waitFor(() => expect(info).toHaveBeenCalledWith("You switched account, so the payment page was not opened."));
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("opens no change confirmation page for an account the tab has left since the change started (Sol 7b-8)", async () => {
+    const info = vi.spyOn(toast, "info");
+    setTabAccount("acct-1");
+    const { assign, release, sent } = heldPaymentPages(
+      billed(PAID_PLAN, subscription()),
+      [...PLANS, TEAM([{ billingPeriod: "month", priceAmountCents: 5000 }])],
+    );
+    renderBilling();
+    const team = (await screen.findByText("Team")).closest("[data-slot=card]") as HTMLElement;
+    await userEvent.click(within(team).getByRole("button", { name: /upgrade to Team/i }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+    await waitFor(() => expect(sent("/billing/change")).toBe(true));
+    setTabAccount("acct-2");
+    release();
+    await waitFor(() => expect(info).toHaveBeenCalledWith("You switched account, so the payment page was not opened."));
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("shows, confirms and submits a change at the subscription's own period and price (Sol 7b-8)", async () => {
