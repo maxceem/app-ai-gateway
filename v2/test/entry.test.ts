@@ -7,7 +7,7 @@
  * path and the health check are in `worker.test.ts`.
  */
 import { env, exports } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as entry from "../src/index.ts";
 import { CATALOG, type OperationName } from "../src/contracts/catalog.ts";
 import { CLIENT_CATALOG } from "../src/contracts/client-catalog.ts";
@@ -110,20 +110,18 @@ describe("the operation catalogs", () => {
    * documented operation that answers 404, which the console and the CLI
    * would still call.
    */
-  it(
-    "serve every operation they document",
-    async () => {
-      captureLogs();
-      await loadManagement();
-      const missing: string[] = [];
-      for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
-        const response = await exports.default.fetch(requestFor(spec));
-        if (await unserved(response)) missing.push(`${name} ${spec.method} ${spec.path}`);
-      }
-      expect(missing).toEqual([]);
-    },
-    LOAD_MANAGEMENT_TIMEOUT_MS,
-  );
+  // The management code loads lazily; loading it once here keeps that cost out of the test.
+  beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
+
+  it("serve every operation they document", async () => {
+    captureLogs();
+    const missing: string[] = [];
+    for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
+      const response = await exports.default.fetch(requestFor(spec));
+      if (await unserved(response)) missing.push(`${name} ${spec.method} ${spec.path}`);
+    }
+    expect(missing).toEqual([]);
+  });
 
   it("give each operation a route of its own", () => {
     const routes = Object.values<OperationSpec>(CATALOG).map((spec) => `${spec.method} ${spec.path}`);
