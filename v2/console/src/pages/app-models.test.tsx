@@ -71,6 +71,12 @@ describe("rewriteProblem and presetOperations", () => {
     expect(operations.every((name) => name.startsWith("openai."))).toBe(true);
     expect(operations).not.toContain("passthrough");
   });
+
+  it("offers a custom provider's operation only at a path a preset can use, as the gateway judges it", () => {
+    const custom = (path: string) => ({ type: "custom", baseUrl: "https://llm.example.test", passthrough: [{ method: "POST" as const, path, style: "openai-chat" as const }] });
+    expect(presetOperations(custom("v1/chat/{deployment}/completions"))).toEqual([]);
+    expect(presetOperations(custom("v1/chat/completions"))).toEqual(["custom.openai-chat"]);
+  });
 });
 
 describe("Rewrites tab", () => {
@@ -124,7 +130,9 @@ describe("Presets tab", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Add preset" }));
     await userEvent.type(screen.getByLabelText("Name"), "summarize");
     await chooseOption("Provider", "openai");
-    expect(screen.getByRole("combobox", { name: "Operation" }).textContent).toContain("openai.chat");
+    // No operation is picked for the person.
+    expect(within(fieldOf(screen.getByRole("combobox", { name: "Operation" }))).getByRole("alert").textContent).toBe("Choose an operation.");
+    await chooseOption("Operation", "openai.chat");
     await userEvent.type(screen.getByLabelText("Model"), "gpt-5.5-mini");
     await userEvent.type(screen.getByLabelText("Most output tokens"), "500");
     await userEvent.click(screen.getByLabelText("Fixed parameters (JSON)"));
@@ -197,6 +205,23 @@ describe("Presets tab", () => {
 
     expect(server.patches[0]!.operations).toEqual([
       { op: "replace", path: "/config/presets/quick/fallback", value: [{ provider: "gemini-eu", operation: "gemini.generate.v1", model: "gemini-b" }] },
+    ]);
+  });
+
+  it("leaves the operation to choose when the new provider does not have it, never another API", async () => {
+    const server = appServer(appWith({ presets: { quick: { provider: "openai", operation: "openai.chat", model: "gpt-a" } } }), PROVIDERS);
+    renderTab("presets");
+
+    await screen.findByLabelText("Model");
+    await chooseOption("Provider", "anthropic");
+    expect(within(fieldOf(screen.getByRole("combobox", { name: "Operation" }))).getByRole("alert").textContent).toBe("Choose an operation.");
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
+
+    await chooseOption("Operation", "anthropic.messages");
+    await saveAndSettle("Save presets", "Presets saved");
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/presets/quick/provider", value: "anthropic" },
+      { op: "replace", path: "/config/presets/quick/operation", value: "anthropic.messages" },
     ]);
   });
 

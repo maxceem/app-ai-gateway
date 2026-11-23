@@ -441,6 +441,35 @@ describe("Sign-in tab", () => {
     ]);
   });
 
+  it("adds an entitlement to a RevenueCat row whose stored path has a trailing space", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "revenueCatEntitlements ", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements ", contains: ["pro", "max"] }] },
+    ]);
+  });
+
+  it("reads any signed-in user from a label with no claims, and leaves the label alone when another field is edited", async () => {
+    const issuer = { ...FIREBASE_ISSUER, provider: "custom", entitlement: "revenuecat", required_claims: [] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("radio", { name: /Any signed-in user/ })).getAttribute("aria-checked")).toBe("true");
+    await userEvent.type(screen.getByLabelText("JWKS URL"), "?v=2");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/jwks_url", value: `${FIREBASE_ISSUER.jwks_url}?v=2` },
+    ]);
+  });
+
   it("shows a refusal about the sign-in inside the field it names", async () => {
     const server = appServer(testApp());
     server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.header: cannot be xi-api-key: the gateway already uses that header" };

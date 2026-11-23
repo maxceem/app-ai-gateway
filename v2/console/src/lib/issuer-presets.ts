@@ -179,7 +179,11 @@ export function emptyIssuer(): IssuerDraft {
 /** The claim a RevenueCat entitlement arrives in, as RevenueCat's own Firebase function kit writes it. */
 export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";
 
-/** Whether only paid users may call: the token must carry at least one required claim. */
+/**
+ * Whether only paid users may call, as the gateway checks it: the token must
+ * carry at least one required claim. The console's own `entitlement` label
+ * says nothing by itself; with no claims, any signed-in user may call.
+ */
 export function requiresPayment(issuer: IssuerDraft): boolean {
-  return issuer.entitlement !== undefined || issuer.required_claims.length > 0;
+  return issuer.required_claims.length > 0;
 }

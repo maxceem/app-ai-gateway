@@ -679,7 +679,8 @@ function ClaimsEditor({
             disabled={disabled}
             onClick={() => {
               // One RevenueCat row: a second entitlement is another value of it, so either admits the user.
-              const index = claims.findIndex((claim) => claim.path === REVENUECAT_CLAIM_PATH && claim.equals === undefined && claim.contains !== undefined);
+              // Matched as the gateway reads a path: trimmed.
+              const index = claims.findIndex((claim) => claim.path.trim() === REVENUECAT_CLAIM_PATH && claim.equals === undefined && claim.contains !== undefined);
               if (index === -1) {
                 onChange([...claims, { path: REVENUECAT_CLAIM_PATH, contains: "" }]);
                 return;
@@ -788,7 +789,7 @@ function ClaimsEditor({
                 <Trash2 className="size-4" />
               </Button>
             </div>
-            {claim.path === REVENUECAT_CLAIM_PATH ? (
+            {claim.path.trim() === REVENUECAT_CLAIM_PATH ? (
               <p className="text-xs text-muted-foreground">
                 RevenueCat entitlements: in RevenueCat under Product catalog, Entitlements, the identifier, not the display name. The values in
                 this row are alternatives, so a user with any one of them is admitted; every row, though, must match. The claim is where

@@ -17,14 +17,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
-import { operationsOf } from "@/lib/providers";
 import { useProviders } from "@/lib/queries";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { configIssue, usePatchForm } from "@/lib/save-app";
 import type { App, ProviderConnection } from "@/lib/types";
 import { PRESET_SLUG_PATTERN, PresetsConfigSchema, RoutingConfigSchema, type Preset } from "@contracts/app-config";
 import { sameJson } from "@contracts/canonical-json";
+import { CUSTOM_PROVIDER_TYPE, customDescription } from "@providers/custom";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
+import type { ProviderDescription } from "@providers/operation";
 import { declaredOperation, presetOperationProblem } from "@providers/presets";
 
 function Problem({ children }: { children: string | undefined }) {
@@ -260,13 +261,23 @@ function presetsOf(drafts: PresetDraft[]): Presets {
  * answer, a POST, naming its model where the preset can set it. The gateway
  * checks the rest when the preset is saved.
  */
-export function presetOperations(connection: Pick<ProviderConnection, "type" | "passthrough">): string[] {
-  const description = Object.hasOwn(BUILT_IN_PROVIDERS, connection.type) ? BUILT_IN_PROVIDERS[connection.type] : undefined;
-  if (description !== undefined) {
-    return description.operations.filter((operation) => presetOperationProblem(description, operation) === null).map((operation) => operation.name);
-  }
-  // A custom provider: an operation for each API style it lists a path for.
-  return operationsOf(connection).filter((operation) => operation.name !== "passthrough" && declaredOperation(operation.name)?.style !== undefined).map((operation) => operation.name);
+export function presetOperations(connection: { type: string; baseUrl?: string | null; passthrough?: ProviderConnection["passthrough"] }): string[] {
+  const description = describe(connection);
+  if (description === null) return [];
+  // The gateway's own rule (`presetOperationProblem`), on the operations at the paths this connection really has.
+  const names = description.operations.filter((operation) => presetOperationProblem(description, operation) === null).map((operation) => operation.name);
+  return [...new Set(names)];
+}
+
+/**
+ * A connection's description, as the gateway builds it: a built-in type's
+ * own, or a custom provider's from its base URL and listed paths. The key
+ * header does not change which operations it has, so a stand-in is used.
+ */
+function describe(connection: { type: string; baseUrl?: string | null; passthrough?: ProviderConnection["passthrough"] }): ProviderDescription | null {
+  if (Object.hasOwn(BUILT_IN_PROVIDERS, connection.type)) return BUILT_IN_PROVIDERS[connection.type]!;
+  if (connection.type !== CUSTOM_PROVIDER_TYPE || !connection.baseUrl) return null;
+  return customDescription({ baseUrl: connection.baseUrl, auth: { header: "authorization", format: "{key}" }, paths: connection.passthrough ?? [] });
 }
 
 /** Whether a parsed value holds a number JSON cannot carry: one too large, which reads as Infinity and would be sent as null. */
@@ -442,8 +453,8 @@ export function PresetsTab({ app }: { app: App }) {
                     onValueChange={(slug) => {
                       const next = connections.find((item) => item.slug === slug);
                       const offered = next ? presetOperations(next) : [];
-                      // The chosen operation stays when the new provider has it too.
-                      update(draft.key, { provider: slug, operation: offered.includes(draft.operation) ? draft.operation : (offered[0] ?? "") });
+                      // The chosen operation stays when the new provider has it too; otherwise the person chooses one, never another API picked for them.
+                      update(draft.key, { provider: slug, operation: offered.includes(draft.operation) ? draft.operation : "" });
                     }}
                   >
                     <SelectTrigger id={`preset-provider-${draft.key}`} className="w-full">
