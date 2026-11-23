@@ -301,6 +301,7 @@ function SnippetExample({ example }: { example: AppSnippetExample }) {
     <CommandBlock
       label={`${title} ${kind}`}
       text={example.text}
+      caveat={example.caveat}
       heading={
         <>
           <span className="font-mono">{title}</span> · {kind}
@@ -316,7 +317,7 @@ function SnippetExample({ example }: { example: AppSnippetExample }) {
 }
 
 /** A command or request to copy, as the gateway wrote it, with its heading. */
-function CommandBlock({ label, text, heading }: { label: string; text: string; heading?: React.ReactNode }) {
+function CommandBlock({ label, text, heading, caveat }: { label: string; text: string; heading?: React.ReactNode; caveat?: string | undefined }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -333,6 +334,8 @@ function CommandBlock({ label, text, heading }: { label: string; text: string; h
           <Copy />
         </Button>
       </div>
+      {/* Plain text beside the command, never part of what is copied. */}
+      {caveat === undefined ? null : <p className="text-xs text-muted-foreground">{caveat}</p>}
       <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs whitespace-pre">{text}</pre>
     </section>
   );

@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -37,7 +37,7 @@ interface Seen {
  * what the server saw, the arguments curl got, and everything written:
  * output, the shell's trace and any curl trace.
  */
-async function run(build: (base: string) => string): Promise<{ seen: Seen; exchanged: Seen | undefined; args: string; written: string }> {
+async function run(build: (base: string) => string): Promise<{ seen: Seen; exchanged: Seen | undefined; args: string; written: string; ran: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), "agw-snippet-"));
   let seen: Seen | undefined;
   let exchanged: Seen | undefined;
@@ -88,7 +88,7 @@ async function run(build: (base: string) => string): Promise<{ seen: Seen; excha
     assert.equal(code, 0, written);
     assert.ok(seen, "the server saw no request");
     const trace = await readFile(join(dir, "trace.txt"), "utf8").catch(() => "");
-    return { seen, exchanged, args: await readFile(argsFile, "utf8"), written: written + trace };
+    return { seen, exchanged, args: await readFile(argsFile, "utf8"), written: written + trace, ran: await readdir(dir) };
   } finally {
     server.close();
     await rm(dir, { recursive: true, force: true });
@@ -116,6 +116,20 @@ test("a JSON example sends the app key read from the environment, and curl never
   // Neither the shell's trace (set -x) nor a .curlrc trace shows it.
   assert.ok(!written.includes(APP_KEY), "the app key was written out");
   assert.match(written, /\+ set \+x/u);
+});
+
+test("app-controlled text stays data: a quote, $(...), backticks and a line break in a model run nothing", { skip }, async () => {
+  for (const model of ["it's $(touch pwned)", "a`touch pwned`b", "line\nbreak $(touch pwned)"]) {
+    const url = (base: string) => `${base}/v2/apps/app_1/proxy/gemini/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const json = await run((base) => curlCommand({ method: "POST", url: url(base), headers: { "x-end-user-id": model.replaceAll("\n", " "), "Content-Type": "application/json" }, body: { model } }, CREDENTIAL));
+    // Sent as written, and nothing extra ran: no file appeared.
+    assert.deepEqual(JSON.parse(json.seen.body), { model });
+    assert.ok(json.seen.url.endsWith(`${encodeURIComponent(model)}:generateContent`), json.seen.url);
+    assert.equal(json.ran.includes("pwned"), false, `something ran: ${json.ran.join(", ")}`);
+    const form = await run((base) => curlCommand({ method: "POST", url: url(base), headers: {}, form: { model }, file: { field: "file", name: "audio.mp3" } }, CREDENTIAL));
+    assert.ok(form.seen.body.includes(`name="model"\r\n\r\n${model.replaceAll("\n", "\r\n")}`) || form.seen.body.includes(model), "the form did not carry the model as written");
+    assert.equal(form.ran.includes("pwned"), false, `something ran: ${form.ran.join(", ")}`);
+  }
 });
 
 test("an upload sends the model as a text field beside the file", { skip }, async () => {

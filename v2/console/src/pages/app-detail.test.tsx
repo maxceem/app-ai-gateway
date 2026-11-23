@@ -364,7 +364,18 @@ describe("AppDetailPage", () => {
           app_id: "my-app",
           base_url: "https://gateway.test",
           examples: [
-            { provider: "openai", operation: "openai.chat", style: "openai-chat", method: "POST", url: "https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions", model: "gpt-4o-mini", headers: {}, curl, text: curl },
+            {
+              provider: "openai",
+              operation: "openai.chat",
+              style: "openai-chat",
+              method: "POST",
+              url: "https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions",
+              model: "gpt-4o-mini",
+              caveat: "Uses this app's configured model gpt-4o-mini: it works if gpt-4o-mini supports this endpoint.",
+              headers: {},
+              curl,
+              text: curl,
+            },
             {
               preset: "support",
               operation: "openai.chat",
@@ -385,8 +396,10 @@ describe("AppDetailPage", () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     renderTab("overview");
     const chat = await screen.findByRole("region", { name: "openai openai-chat" });
-    expect(within(chat).getByText(/gpt-4o-mini/u)).toBeTruthy();
+    expect(within(chat).getByText("gpt-4o-mini")).toBeTruthy();
     expect(chat.querySelector("pre")!.textContent).toBe(curl);
+    // The caveat is text beside the command, never in what is copied.
+    expect(within(chat).getByText(/it works if gpt-4o-mini supports this endpoint/u).tagName).toBe("P");
     // Without curl, the whole request as the gateway described it.
     const preset = screen.getByRole("region", { name: "Preset support openai-chat" });
     expect(preset.querySelector("pre")!.textContent).toBe(described);

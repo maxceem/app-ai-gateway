@@ -158,8 +158,60 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-5.4-pro"] } } },
     });
     const [example] = own.examples;
-    expect(example).toMatchObject({ model: "gpt-5.4-pro", caveat: "Uses this app's configured model gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint." });
-    expect(example!.text).toBe(`# ${example!.caveat}\n${example!.curl}`);
+    const caveat = "Uses this app's configured model gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint.";
+    expect(example).toMatchObject({ model: "gpt-5.4-pro", caveat });
+    // Plain text beside the command, repeated in the notes; never part of what runs.
+    expect(example!.text).toBe(example!.curl);
+    expect(own.notes).toContainEqual(`${slug}: openai.chat: ${caveat}`);
+  });
+
+  it("counts the sample as curated only while the app's rewrites leave it as it is", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const sample = SAMPLE_MODELS["openai.chat"]!;
+    const { examples } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: [sample] } }, model_rewrites: { [sample]: "gpt-5.4-pro" } },
+    });
+    expect(examples).toEqual([
+      expect.objectContaining({ model: sample, caveat: `Uses this app's configured model ${sample}: it works if ${sample} supports this endpoint.` }),
+    ]);
+  });
+
+  it("writes no command for a model with a control character, and keeps a quote or $(...) inside single quotes", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const sample = SAMPLE_MODELS["openai.chat"]!;
+    const broken = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["bad\nalias"] } }, model_rewrites: { "bad\nalias": sample } },
+    });
+    expect(broken.examples).toEqual([]);
+    expect(broken.notes).toContainEqual(`${slug}: openai.chat has no example: a value it would send holds a control character, such as a line break.`);
+
+    const hostile = "it's $(touch pwned)";
+    const quoted = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.chat"], models: [hostile] } }, model_rewrites: { [hostile]: sample } },
+    });
+    const [example] = quoted.examples;
+    expect(example!.model).toBe(hostile);
+    // The single quote is closed, escaped and reopened: the $(...) stays inside quotes.
+    expect(example!.curl).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}]}' )`);
+  });
+
+  it("gives a Responses route or preset with an output cap below OpenAI's 16 tokens a note", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const { examples, notes } = await snippetFor(key, {
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: { providers: { [slug]: { operations: ["openai.responses", "openai.chat"], max_output_tokens: 8 } } },
+      presets: { tiny: { provider: slug, operation: "openai.responses", model: SAMPLE_MODELS["openai.responses"]!, max_output_tokens: 8 } },
+    });
+    // Chat completions take any cap of 1 or more.
+    expect(examples.map((example) => example.operation)).toEqual(["openai.chat"]);
+    expect(notes).toContainEqual(`${slug}: openai.responses has no example: its output cap of 8 tokens is below the 16 the provider requires.`);
+    expect(notes).toContainEqual("The preset tiny has no example: its output cap of 8 tokens is below the 16 the provider requires.");
   });
 
   it("skips a model whose path the gateway's own matcher would refuse, and asks for another", async () => {

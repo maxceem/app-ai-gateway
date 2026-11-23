@@ -717,7 +717,12 @@ export const AppSnippetExampleSchema = z
     url: z.string(),
     /** The model it names; null for a preset, which names its own. */
     model: z.string().nullable(),
-    /** Set when the model is the app's own rather than a sample known to work here, such as "works if <model> supports this endpoint". */
+    /**
+     * Set when the model is the app's own rather than a sample known to work
+     * here, such as "works if <model> supports this endpoint". Plain text to
+     * show beside the example, never part of `curl` or `text`; the notes
+     * repeat it.
+     */
     caveat: z.string().optional(),
     /** Headers that hold no secret. How the caller proves who it is comes apart: see `text`. */
     headers: z.record(z.string(), z.string()),

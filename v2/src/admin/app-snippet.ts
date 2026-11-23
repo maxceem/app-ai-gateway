@@ -67,6 +67,28 @@ const COVERED_STYLES: Partial<Readonly<Record<ApiStyle, Readonly<Record<string, 
   "openai-transcription": "form",
 };
 
+/**
+ * The smallest output cap a provider accepts, where the gateway writes the
+ * route's or the preset's cap into a request that names none: OpenAI's
+ * Responses refuses `max_output_tokens` below 16. Chat completions, Anthropic
+ * and Gemini take any cap of 1 or more; the others have no output cap.
+ */
+const MIN_OUTPUT_CAP: Partial<Readonly<Record<ApiStyle, number>>> = { "openai-responses": 16 };
+
+/** Why an output cap breaks this style's request, or null. */
+function capProblem(style: ApiStyle, cap: number | undefined): string | null {
+  const minimum = MIN_OUTPUT_CAP[style];
+  return cap === undefined || minimum === undefined || cap >= minimum ? null : `its output cap of ${cap} tokens is below the ${minimum} the provider requires`;
+}
+
+/** Whether any text in `value` holds a control character, such as a line break: such a value never goes into a command. */
+function holdsControl(value: unknown): boolean {
+  if (typeof value === "string") return /\p{Cc}/u.test(value);
+  if (Array.isArray(value)) return value.some(holdsControl);
+  if (typeof value === "object" && value !== null) return Object.entries(value).some(([key, inner]) => holdsControl(key) || holdsControl(inner));
+  return false;
+}
+
 /** Headers a style's API needs that a client may not know to send, as the preset path adds them. */
 const STYLE_HEADERS: Partial<Readonly<Record<ApiStyle, Readonly<Record<string, string>>>>> = {
   "anthropic-messages": { "anthropic-version": "2023-06-01" },
@@ -145,21 +167,25 @@ function exampleModel(
 ): { readonly model: string; readonly configured: boolean } | null {
   const kind = STYLE_KINDS[operation.style!];
   const sources = priceSources(connection);
-  const admitted = (candidate: string): boolean => {
-    if (!pathAccepts(candidate)) return false;
+  /** The model a candidate is billed as, when serving admits it here; null otherwise. */
+  const admitted = (candidate: string): string | null => {
+    if (!pathAccepts(candidate)) return null;
     const call = resolveCall(route, rewrites, sources, operation, candidate);
-    if (call.kind !== "admitted") return false;
+    if (call.kind !== "admitted") return null;
     const billed = listedKind(connection.type, call.model);
-    return kind === undefined || billed === undefined || billed === kind;
+    return kind === undefined || billed === undefined || billed === kind ? call.model : null;
   };
   const sample = SAMPLE_MODELS[operation.name];
-  if (sample !== undefined && admitted(sample)) return { model: sample, configured: false };
+  // Curated only while it is still the curated model: an app's rewrite may send it as another.
+  const sent = sample === undefined ? null : admitted(sample);
+  if (sample !== undefined && sent === sample) return { model: sample, configured: false };
   const own = [
     ...(route.models ?? []),
     ...Object.keys(rewrites ?? {}),
     ...(connection.rates_json === null ? [] : Object.keys(JSON.parse(connection.rates_json) as Record<string, unknown>)),
   ];
-  const found = [...new Set(own)].find(admitted);
+  if (sample !== undefined && sent !== null) own.unshift(sample);
+  const found = [...new Set(own)].find((candidate) => admitted(candidate) !== null);
   return found === undefined ? null : { model: found, configured: true };
 }
 
@@ -287,10 +313,20 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const caller = callerOf(config, origin, row.id);
   const notes = [...caller.notes];
   const examples: Example[] = [];
+  /**
+   * Adds an example. Every value from the app's settings reaches the command
+   * only single-quoted (`shellWord`) or through curl's stdin; a value with a
+   * control character, such as a line break, gets no command at all, only a
+   * note. A caveat is plain text beside the command, never part of it.
+   */
   const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, request: SnippetRequest) => {
+    const who = example.preset === undefined ? `${example.provider}: ${example.operation}` : `The preset ${example.preset}`;
+    if (holdsControl([example.model, request.url, request.headers, request.body, request.form])) {
+      notes.push(`${who} has no example: a value it would send holds a control character, such as a line break.`);
+      return;
+    }
+    if (example.caveat !== undefined) notes.push(`${who}: ${example.caveat}`);
     const curl = caller.credential === null ? undefined : curlCommand(request, caller.credential, caller.exchange);
-    // A caveat leads the text as a comment, so it is read before the command is run.
-    const lead = example.caveat === undefined ? "" : `# ${example.caveat}\n`;
     examples.push({
       ...example,
       method: request.method,
@@ -300,7 +336,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
       ...(request.form === undefined ? {} : { form: { ...request.form } }),
       ...(request.file === undefined ? {} : { file: { ...request.file } }),
       ...(curl === undefined ? {} : { curl }),
-      text: `${lead}${curl ?? requestText(request, caller.line)}`,
+      text: curl ?? requestText(request, caller.line),
     });
   };
   /** The connection a route or preset names, when it can serve; otherwise a note says why. */
@@ -326,6 +362,11 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         continue;
       }
       if (seen.has(operation.style!)) continue;
+      const tooSmall = capProblem(operation.style!, route.max_output_tokens);
+      if (tooSmall !== null) {
+        notes.push(`${slug}: ${name} has no example: ${tooSmall}.`);
+        continue;
+      }
       const picked = exampleModel(connection, route, config.routing.model_rewrites, operation, (model) => pathAccepts(description, operation, filledPath(operation, model), model));
       if (picked === null) {
         unpicked.push(name);
@@ -370,6 +411,11 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     const operation = style === undefined ? null : presetOperation(description, style, preset.operation);
     if (operation === null || !covered(description, operation)) {
       notes.push(`The preset ${slug} has no example here. Send its request as its provider's own API reference describes, without a model, to ${origin}/v2/apps/${row.id}/presets/${slug}.`);
+      continue;
+    }
+    const tooSmall = capProblem(operation.style!, preset.max_output_tokens);
+    if (tooSmall !== null) {
+      notes.push(`The preset ${slug} has no example: ${tooSmall}.`);
       continue;
     }
     add(
