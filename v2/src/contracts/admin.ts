@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { AppConfigSchema, PROVIDER_SLUG_PATTERN } from "./app-config.ts";
 import { RATE_FIELDS } from "../usage/token-rates.ts";
+import { wellFormedText } from "../core/well-formed.ts";
 import { parseServiceModeName } from "../usage/service-modes.ts";
 
 export const APP_STATUSES = ["active", "disabled"] as const;
@@ -162,6 +163,67 @@ export const ModelPricingSchema = z
 
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
+/** The one name that cannot be a key anywhere in prices: as a key it would reach the object's prototype, not be stored. */
+export const RESERVED_PRICE_KEY = "__proto__";
+
+/**
+ * How deep prices are walked: well past any price's shape. The gateway's walk
+ * below and the console's form (`formCanShow`) share it.
+ */
+export const PRICE_WALK_DEPTH = 32;
+
+/**
+ * Where a `__proto__` key stands in prices, as a dotted path, or null: model
+ * names trimmed, nested keys as written. Walked with an explicit stack, never
+ * recursing, and only `PRICE_WALK_DEPTH` levels down, so a deeply nested body
+ * gets the schema's own 400, never a server error.
+ */
+export function reservedPriceKeyPath(value: unknown): string | null {
+  const stack: { value: unknown; path: readonly string[] }[] = [{ value, path: [] }];
+  while (stack.length > 0) {
+    const { value: current, path } = stack.pop()!;
+    if (typeof current !== "object" || current === null || Array.isArray(current)) continue;
+    for (const [key, inner] of Object.entries(current)) {
+      const name = path.length === 0 ? key.trim() : key;
+      if (name === RESERVED_PRICE_KEY) return [...path, key].join(".");
+      if (path.length + 1 < PRICE_WALK_DEPTH) stack.push({ value: inner, path: [...path, key] });
+    }
+  }
+  return null;
+}
+
+/**
+ * A connection's own prices as a request sends them. Model names are trimmed
+ * when saved, so two that differ only by surrounding spaces would quietly
+ * become one, keeping only the last: such a pair is refused instead, naming
+ * both. A `__proto__` key anywhere in them is refused first, naming where it
+ * stands, before the record is read; `constructor` and `prototype` stay
+ * ordinary model names, as they always were. Prices already saved are never
+ * judged by this again.
+ */
+const ProviderPricingInputSchema = z.preprocess((value, context) => {
+  const reserved = reservedPriceKeyPath(value);
+  if (reserved !== null) {
+    context.issues.push({ code: "custom", input: value, message: `${reserved}: "__proto__" cannot be a name in prices` });
+    return value;
+  }
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const seen = new Map<string, string>();
+    for (const name of Object.keys(value)) {
+      const trimmed = name.trim();
+      const earlier = seen.get(trimmed);
+      if (earlier !== undefined) {
+        context.issues.push({
+          code: "custom",
+          input: value,
+          message: `${JSON.stringify(earlier)} and ${JSON.stringify(name)} name the same model once surrounding spaces are removed`,
+        });
+      } else seen.set(trimmed, name);
+    }
+  }
+  return value;
+}, ProviderPricingSchema);
+
 /**
  * The built-in API styles a custom provider's path may name. Each is served
  * as an operation named `custom.<style>`, metered by that style's usage
@@ -312,7 +374,8 @@ export function providerSecretAccepted(value: string): boolean {
 
 export const ProviderSecretSchema = SecretSchema.refine(providerSecretAccepted, { error: PROVIDER_SECRET_RULE });
 
-const CloudflareIdSchema = z.string().trim().min(1).max(100);
+// Text with half a surrogate pair cannot go in a URL, so such an id could never have reached Cloudflare.
+const CloudflareIdSchema = z.string().trim().min(1).max(100).refine(wellFormedText, { error: "must be well-formed text" });
 
 /**
  * For Vercel AI Gateway: the serving providers a connection may use, pinned
@@ -347,7 +410,7 @@ export const ProviderCreateRequestSchema = z
     passthrough: PassthroughListSchema.optional(),
     /** For type `custom` only, and needed there with `baseUrl`: how its key is sent. */
     auth: CustomAuthSchema.optional(),
-    pricing: ProviderPricingSchema.optional(),
+    pricing: ProviderPricingInputSchema.optional(),
   })
   .strict()
   .meta({ id: "ProviderCreateRequest" });
@@ -370,7 +433,7 @@ export const ProviderUpdateRequestSchema = z
     passthrough: PassthroughListSchema.nullable().optional(),
     /** A custom provider's new key header and format. */
     auth: CustomAuthSchema.optional(),
-    pricing: ProviderPricingSchema.nullable().optional(),
+    pricing: ProviderPricingInputSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })
   .strict()

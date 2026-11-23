@@ -9,6 +9,7 @@ import { useConsoleSession } from "@/lib/console-session";
 import { ROLE_LABELS, shouldShowAccountSwitcher } from "@/lib/permissions";
 import { useIsMutating } from "@tanstack/react-query";
 import { PAYMENT_ACTION_KEY, useSelectAccount } from "@/lib/queries";
+import { confirmLeaving } from "@/components/leave-guard";
 
 /**
  * Switches the account the console acts in, as a section of the account menu.
@@ -29,6 +30,8 @@ export function AccountMenuItems() {
 
   const switchTo = async (accountId: string) => {
     if (accountId === account.id) return;
+    // Unsaved changes on the page are asked about first, in the page: staying changes nothing.
+    if (!(await confirmLeaving())) return;
     try {
       await select.mutateAsync(accountId);
     } catch (error) {

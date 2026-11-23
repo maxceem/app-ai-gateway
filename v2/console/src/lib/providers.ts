@@ -1,4 +1,5 @@
 import { CUSTOM_PATH_STYLES, CUSTOM_PROVIDER_TYPE } from "@contracts/admin";
+import { destinationText, keyDestinations, type RouteSetting } from "@providers/destinations";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
 import type { SuggestedPath } from "@providers/operation";
 
@@ -6,6 +7,18 @@ import type { SuggestedPath } from "@providers/operation";
 export function providerLabel(type: string): string {
   if (type === CUSTOM_PROVIDER_TYPE) return "Custom provider";
   return Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]!.label : type;
+}
+
+/**
+ * Every place a connection's provider key can be sent, for the given settings,
+ * as the gateway's own routing works it out (`@providers/destinations`), in
+ * words: such as "fal.run, queue.fal.run". Empty when there is nowhere yet
+ * (a custom provider with no base URL).
+ */
+export function keyDestinationText(type: string, setting: RouteSetting): string {
+  const description = Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type]! : null;
+  if (description === null && type !== CUSTOM_PROVIDER_TYPE) return "";
+  return destinationText(keyDestinations(description, setting));
 }
 
 /** Whether a provider type can be reached through Cloudflare AI Gateway (D13). */

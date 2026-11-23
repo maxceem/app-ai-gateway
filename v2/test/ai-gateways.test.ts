@@ -304,6 +304,84 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(offWithKey.body.provider.cloudflareGateway).toBeNull();
   });
 
+  it("answers a stale revision as a conflict before judging the change against what moved", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY });
+    const id = created.body.provider.id as string;
+    // Someone turns Cloudflare on; a dialog still at revision 1 then sends a base URL, which a
+    // Cloudflare connection could not take. It is told the connection changed, not that the URL is wrong.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN }, secret: null })).status).toBe(200);
+    const stale = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, baseUrl: "https://other.example.com/v1", secret: PROVIDER_KEY });
+    expect(stale.status).toBe(409);
+  });
+
+  it("takes a connection with a base URL to Cloudflare when the same save removes the base URL", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, baseUrl: "https://self-hosted.example.com/v1/" });
+    const id = created.body.provider.id as string;
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN }, baseUrl: null, secret: PROVIDER_KEY });
+    expect(moved.status).toBe(200);
+    expect(moved.body.provider.baseUrl).toBeNull();
+    expect(moved.body.provider.cloudflareGateway).toMatchObject({ accountId: "acct", gatewayId: "gw" });
+  });
+
+  it("refuses prices whose model names collide once trimmed, naming both, on create and on update", async () => {
+    const key = await seedManagementKey();
+    const pricing = { "gpt-x": { per_request: 1 }, " gpt-x ": { per_request: 2 } };
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, pricing });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain('\\"gpt-x\\" and \\" gpt-x \\" name the same model');
+    const plain = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "y", slug: slugFor("openai"), secret: PROVIDER_KEY });
+    const updated = await admin(key, "PUT", `/v2/admin/providers/${plain.body.provider.id}`, { revision: 1, pricing });
+    expect(updated.status).toBe(400);
+  });
+
+  it("refuses a __proto__ key anywhere in prices, naming where, and keeps constructor and prototype as model names", async () => {
+    const key = await seedManagementKey();
+    const send = (pricing: string) =>
+      admin(key, "POST", "/v2/admin/providers", JSON.parse(`{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":${pricing}}`));
+    const top = await send('{" __proto__ ":{"per_request":1}}');
+    expect(top.status).toBe(400);
+    expect(JSON.stringify(top.body)).toContain('cannot be a name in prices');
+    const nested = await send('{"img":{"per_image":0.04,"by":{"quality":{"__proto__":{"per_image":0.08}}}}}');
+    expect(nested.status).toBe(400);
+    expect(JSON.stringify(nested.body)).toContain("img.by.quality.__proto__");
+    // These worked before and keep working: a price list with them can be saved and updated.
+    const created = await send('{"prototype":{"input":1,"output":2},"constructor":{"input":2,"output":4}}');
+    expect(created.status).toBe(201);
+    const updated = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, pricing: { prototype: { input: 3, output: 6 } } });
+    expect(updated.status).toBe(200);
+    expect(updated.body.provider.pricing).toEqual({ prototype: { input: 3, output: 6 } });
+  });
+
+  it("answers a deeply nested malformed price with the schema's 400, not a server error", async () => {
+    const key = await seedManagementKey();
+    // Written as text: building it as an object and stringifying it would overflow the test itself.
+    const depth = 50000;
+    const deep = `${'{"x":'.repeat(depth)}1${"}".repeat(depth)}`;
+    const body = `{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":{"m":{"input":${deep},"output":2}}}`;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/providers`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses a Cloudflare id that is not well-formed text, which could never reach Cloudflare", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", {
+      type: "openai",
+      name: "x",
+      slug: slugFor("openai"),
+      cloudflareGateway: { accountId: "acct\uD800", gatewayId: "gw", token: CF_TOKEN },
+    });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain("well-formed");
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

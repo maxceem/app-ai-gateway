@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Ban, CheckCircle2, CircleSlash, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -44,6 +44,8 @@ import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { SignInTab } from "@/pages/app-auth";
+import { AppNotices } from "@/components/app-notices";
+import { LeaveGuard } from "@/components/leave-guard";
 import { ErrorsTab } from "@/pages/app-errors";
 import { PresetsTab, RewritesTab } from "@/pages/app-models";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
@@ -125,6 +127,8 @@ export function AppDetailPage() {
           </Link>
         ))}
       </nav>
+
+      <AppNotices app={data} />
 
       {/* Keyed by the app, so moving straight from one cached app to another starts every
           tab afresh: no page cursor, filter or draft carries over to the wrong app. */}
@@ -353,6 +357,7 @@ function ProvidersTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={dirty} />
       <p className="text-sm text-muted-foreground">
         The app may call only what is allowed here. Leave models empty to allow every model with a price.
       </p>
@@ -533,6 +538,10 @@ function LimitsTab({ app }: { app: App }) {
       : (["install", "apple_account"] as const);
   const user = scopeOf(perUser);
   const whole = scopeOf(perApp);
+  const limitsDirty =
+    JSON.stringify(perUser) !== JSON.stringify(scopeDraft(limits.per_user)) ||
+    JSON.stringify(perApp) !== JSON.stringify(scopeDraft(limits.per_app)) ||
+    budgetScope !== (limits.per_user.spending.scope ?? "");
 
   const submit = async () => {
     if (!user || !whole) return;
@@ -548,6 +557,7 @@ function LimitsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={limitsDirty} />
       <p className="text-sm text-muted-foreground">Leave a field empty for no limit. Budgets are in dollars a month.</p>
       <Card>
         <CardHeader>
@@ -1012,6 +1022,8 @@ function SettingsTab({ app }: { app: App }) {
   const validate = useValidateApp(app.id);
   const remove = useDeleteApp();
   const stored = JSON.stringify(app.config, null, 2);
+  const [conversationChanged, setConversationChanged] = useState(false);
+  const releaseLeave = useRef<(() => void) | null>(null);
   const [name, setName] = useState(app.name);
   const [text, setText] = useState(stored);
   const [deleting, setDeleting] = useState(false);
@@ -1087,6 +1099,8 @@ function SettingsTab({ app }: { app: App }) {
     try {
       await remove.mutateAsync(app.id);
       toast.success("App deleted");
+      // Nothing is left to save once the app is gone.
+      releaseLeave.current?.();
       await navigate("/apps", { replace: true });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete the app");
@@ -1095,6 +1109,7 @@ function SettingsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={!draftsSaved || conversationChanged} releaseRef={releaseLeave} />
       {changedElsewhere && (name.trim() !== app.name || !sameJson(text, stored)) ? (
         <Alert>
           <AlertCircle />
@@ -1136,7 +1151,7 @@ function SettingsTab({ app }: { app: App }) {
         </CardContent>
       </Card>
 
-      <ConversationStorage app={app} />
+      <ConversationStorage app={app} onChanged={setConversationChanged} />
 
       <Card>
         <CardHeader>
@@ -1214,7 +1229,7 @@ type KeptMedia = Record<(typeof MEDIA_KINDS)[number][0], boolean>;
  * off. A plan that does not include it is refused on save, with the reason.
  * An app storing them can always switch it off.
  */
-function ConversationStorage({ app }: { app: App }) {
+function ConversationStorage({ app, onChanged }: { app: App; onChanged: (changed: boolean) => void }) {
   const { readOnly, capabilities } = useConsoleSession();
   const { save, pending } = useSaveApp(app);
   const available = capabilities.conversationStorage === true;
@@ -1236,6 +1251,11 @@ function ConversationStorage({ app }: { app: App }) {
   const daysValid = Number.isInteger(days) && days >= CONVERSATION_RETENTION_DAYS.min && days <= CONVERSATION_RETENTION_DAYS.max;
   const saved = draftOf();
   const changed = draft.store !== saved.store || (draft.store && (draft.days !== saved.days || MEDIA_KINDS.some(([kind]) => draft.keep[kind] !== saved.keep[kind])));
+  // The Settings tab asks before leaving with this unsaved too: one question for the whole tab.
+  useEffect(() => {
+    onChanged(changed);
+    return () => onChanged(false);
+  }, [changed, onChanged]);
 
   const submit = async () => {
     const conversations = { store: draft.store, keep: draft.keep, retention_days: draft.store ? days : (stored?.retention_days ?? CONVERSATION_RETENTION_DAYS.default) };

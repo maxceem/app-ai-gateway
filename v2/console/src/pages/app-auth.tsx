@@ -19,6 +19,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { useConsoleSession } from "@/lib/console-session";
 import { usePatchForm } from "@/lib/save-app";
+import { LeaveGuard } from "@/components/leave-guard";
 import type { App } from "@/lib/types";
 import type { AuthenticationConfig } from "@contracts/app-config";
 
@@ -49,6 +50,7 @@ export function SignInTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={form.dirty} />
       {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
       <Card>
         <CardHeader>

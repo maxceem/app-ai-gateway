@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, Cloud, DollarSign, KeyRound, ListTree, Plus, Power, Trash2 } from "lucide-react";
+import { AlertCircle, Ban, CheckCircle2, Cloud, DollarSign, Globe, KeyRound, ListTree, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -16,9 +16,11 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
+import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -51,6 +53,10 @@ export function ProvidersPage() {
   const listing = list.data?.providers.find((provider) => provider.id === pathsId) ?? null;
   const [pricesId, setPricesId] = useState<string | null>(null);
   const pricing = list.data?.providers.find((provider) => provider.id === pricesId) ?? null;
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const renaming = list.data?.providers.find((provider) => provider.id === renamingId) ?? null;
+  const [hostId, setHostId] = useState<string | null>(null);
+  const hosting = list.data?.providers.find((provider) => provider.id === hostId) ?? null;
   useEffect(() => {
     if (pathsId !== null && list.data && listing === null) setPathsId(null);
   }, [pathsId, list.data, listing]);
@@ -143,6 +149,10 @@ export function ProvidersPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <RowActions label={provider.name}>
+                      <RowAction onSelect={() => setRenamingId(provider.id)}>
+                        <Pencil />
+                        Rename
+                      </RowAction>
                       <RowAction onSelect={() => setRotatingId(provider.id)}>
                         <KeyRound />
                         Replace key
@@ -155,6 +165,12 @@ export function ProvidersPage() {
                         <DollarSign />
                         Your prices
                       </RowAction>
+                      {provider.type !== "custom" && !provider.cloudflareGateway ? (
+                        <RowAction onSelect={() => setHostId(provider.id)}>
+                          <Globe />
+                          Host
+                        </RowAction>
+                      ) : null}
                       {cloudflareCapable(provider.type) ? (
                         <RowAction onSelect={() => setCloudflareId(provider.id)}>
                           <Cloud />
@@ -184,6 +200,8 @@ export function ProvidersPage() {
       <CloudflareDialog key={`cf-${cloudflareId ?? "none"}`} provider={routing} onClose={() => setCloudflareId(null)} />
       <PathsDialog key={`paths-${pathsId ?? "none"}`} provider={listing} onClose={() => setPathsId(null)} />
       <PricesDialog key={`prices-${pricesId ?? "none"}`} provider={pricing} onClose={() => setPricesId(null)} />
+      <RenameDialog key={`rename-${renamingId ?? "none"}`} provider={renaming} onClose={() => setRenamingId(null)} />
+      <HostDialog key={`host-${hostId ?? "none"}`} provider={hosting} onClose={() => setHostId(null)} />
 
       <ConfirmDialog
         open={removing !== null}
@@ -299,8 +317,18 @@ const NO_CLOUDFLARE: CloudflareDraft = { on: false, accountId: "", gatewayId: ""
 
 /** Complete enough to send: the ids, and a token unless the stored one may be kept. */
 function cloudflareReady(draft: CloudflareDraft, tokenOptional: boolean): boolean {
-  return !draft.on || (draft.accountId.trim() !== "" && draft.gatewayId.trim() !== "" && (tokenOptional || draft.token !== ""));
+  return (
+    !draft.on ||
+    (draft.accountId.trim() !== "" &&
+      draft.gatewayId.trim() !== "" &&
+      wellFormedText(draft.accountId) &&
+      wellFormedText(draft.gatewayId) &&
+      (tokenOptional || draft.token !== ""))
+  );
 }
+
+/** An id with half a surrogate pair cannot go in a URL: said beside the field. */
+const ID_PROBLEM = "Use plain text: this has a character that cannot be sent.";
 
 function cloudflareBody(draft: CloudflareDraft): CloudflareBody {
   return { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim(), ...(draft.token ? { token: draft.token } : {}) };
@@ -318,7 +346,7 @@ function CloudflareFields({
   return (
     <>
       <label className="flex items-center gap-2 text-sm font-medium">
-        <Checkbox checked={draft.on} onCheckedChange={(checked) => onChange({ ...draft, on: checked === true })} />
+        <Checkbox checked={draft.on} onCheckedChange={(checked) => onChange({ ...draft, on: checked === true, token: "" })} />
         Send through Cloudflare AI Gateway
       </label>
       {draft.on ? (
@@ -328,16 +356,19 @@ function CloudflareFields({
               id="cloudflare-account"
               value={draft.accountId}
               autoComplete="off"
-              onChange={(event) => onChange({ ...draft, accountId: event.target.value })}
+              // The token belongs to the account and gateway it was typed for.
+              onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
+            {wellFormedText(draft.accountId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
             <Input
               id="cloudflare-gateway"
               value={draft.gatewayId}
               autoComplete="off"
-              onChange={(event) => onChange({ ...draft, gatewayId: event.target.value })}
+              onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
+            {wellFormedText(draft.gatewayId) ? null : <p className="text-sm text-destructive">{ID_PROBLEM}</p>}
           </Field>
           <Field
             label="Cloudflare token"
@@ -368,11 +399,30 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const [type, setType] = useState(PROVIDER_TYPES[0]?.type ?? "");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [secret, setSecret] = useState("");
   const [cloudflare, setCloudflare] = useState<CloudflareDraft>(NO_CLOUDFLARE);
   const [custom, setCustom] = useState<CustomDraft>(NO_CUSTOM);
+  const [host, setHost] = useState("");
+  const slugInvalid = slug !== "" && !SLUG.test(slug);
+  const isCustom = type === "custom";
+  // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
+  const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
+  // The base URL is judged only on the route that uses it.
+  const hostChecked = !isCustom && !viaCloudflare ? checkedHost(host) : null;
+  const hostProblem = hostChecked !== null && !hostChecked.ok ? hostChecked.message : null;
+  // Every host the key would be sent to, as the gateway routes it once it has saved the base URL. A key is kept only for these.
+  const customChecked = isCustom ? checkedHost(custom.baseUrl) : null;
+  const savedBase = (checked: ReturnType<typeof checkedHost>) => (checked !== null && checked.ok ? checked.baseUrl : null);
+  const destinations = keyDestinationText(type, {
+    baseUrl: isCustom ? savedBase(customChecked) : savedBase(hostChecked),
+    cloudflareGateway: viaCloudflare ? { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim() } : null,
+  });
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([type, destinations, isCustom ? [custom.header.trim().toLowerCase(), custom.format] : null]));
+  // Through Cloudflare, the destination is named only once both ids say which gateway it is.
+  const gatewayNamed = !viaCloudflare || (cloudflare.accountId.trim() !== "" && cloudflare.gatewayId.trim() !== "");
+  const sentTo = destinations === "" || !gatewayNamed ? "" : ` Sent only to ${destinations}.`;
 
   const reset = () => {
+    setHost("");
     setName("");
     setSlug("");
     setSecret("");
@@ -380,17 +430,15 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     setCustom(NO_CUSTOM);
     test.clear();
   };
-  const slugInvalid = slug !== "" && !SLUG.test(slug);
-  const isCustom = type === "custom";
-  // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
-  const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
-  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom));
+  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom)) && hostProblem === null;
   // A new setting always carries its token.
   const route = viaCloudflare
     ? { cloudflareGateway: { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim(), token: cloudflare.token } }
     : isCustom
       ? { baseUrl: custom.baseUrl.trim(), auth: { header: custom.header.trim().toLowerCase(), format: custom.format } }
-      : {};
+      : host.trim() !== ""
+        ? { baseUrl: host.trim() }
+        : {};
 
   const submit = async () => {
     try {
@@ -425,6 +473,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
             setType(value);
             setCloudflare(NO_CLOUDFLARE);
             setCustom(NO_CUSTOM);
+            setHost("");
             test.clear();
           }}
         >
@@ -467,6 +516,17 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           }}
         />
       ) : null}
+      {!isCustom && !viaCloudflare ? (
+        <HostField
+          id="provider-host"
+          value={host}
+          problem={hostProblem}
+          onChange={(next) => {
+            setHost(next);
+            test.clear();
+          }}
+        />
+      ) : null}
       {isCustom ? (
         <CustomFields
           draft={custom}
@@ -480,11 +540,13 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         label="API key"
         htmlFor="provider-secret"
         hint={
-          viaCloudflare
+          (viaCloudflare
             ? "Optional through Cloudflare: leave it empty to use the keys stored in your Cloudflare AI Gateway. Stored encrypted if given."
             : isCustom
-              ? "Stored encrypted, and sent only to the base URL above, in the header you name. It is never shown again, only its last characters."
-              : "Stored encrypted. It is never shown again, only its last characters."
+              ? "Stored encrypted, and sent in the header you name. It is never shown again, only its last characters."
+              : "Stored encrypted. It is never shown again, only its last characters.") +
+          sentTo +
+          " Changing where requests go clears it."
         }
       >
         <div className="flex gap-2">
@@ -799,32 +861,31 @@ function fieldsOf(listed: readonly ListedPath[]): Record<string, FieldSetting[]>
 function PathsDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const custom = provider?.type === "custom";
-  // The version the draft was made from: it is saved at that revision, never at a newer one the list
-  // loaded since, so another admin's change is never quietly overwritten.
-  const [base, setBase] = useState({ revision: provider?.revision ?? 0, listed: provider?.passthrough ?? [] });
-  const [text, setText] = useState(base.listed.map(pathLine).join("\n"));
+  // The paths the draft was made from, saved at the revision it was opened at (`useOpenedRevision`).
+  const [listed, setListed] = useState(provider?.passthrough ?? []);
+  const [text, setText] = useState(listed.map(pathLine).join("\n"));
   const [trusted, setTrusted] = useState(false);
-  const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(base.listed));
-  const [conflict, setConflict] = useState(false);
+  const [fields, setFields] = useState<Record<string, FieldSetting[]>>(() => fieldsOf(listed));
   // Field values as typed so far, by path and field (`textKey`): saving checks the ones still shown.
   const [texts, setTexts] = useState<Record<string, string>>({});
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      const now = latest.passthrough ?? [];
+      setListed(now);
+      setText(now.map(pathLine).join("\n"));
+      setFields(fieldsOf(now));
+      setTexts({});
+    },
+    onClose,
+  );
   const parsed = parsePathLines(text, custom);
   // A first listing on a built-in provider needs the choice made; a custom provider made it when added.
-  const choosing = !custom && base.listed.length === 0;
+  const choosing = !custom && listed.length === 0;
   const paths = "paths" in parsed ? parsed.paths : null;
   const type = provider?.type ?? "";
-  const saved = new Set(base.listed.map(pathKey));
+  const saved = new Set(listed.map(pathKey));
   const anyTokens = paths !== null && paths.some((path) => suggestedPath(type, path.method, path.path)?.liveToken === true);
-
-  /** Starts again from the provider as it is now, dropping the draft. */
-  const reload = () => {
-    const listed = provider?.passthrough ?? [];
-    setBase({ revision: provider?.revision ?? 0, listed });
-    setText(listed.map(pathLine).join("\n"));
-    setFields(fieldsOf(listed));
-    setTexts({});
-    setConflict(false);
-  };
 
   const save = async () => {
     if (!provider || paths === null) return;
@@ -845,12 +906,12 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       return;
     }
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: base.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, passthrough: paths.length === 0 ? null : pathsToSave(paths, fields) } });
+      if (!opened.mounted.current) return;
       toast.success(paths.length === 0 ? "No paths listed" : "Paths saved");
       onClose();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) setConflict(true);
-      else toast.error(error instanceof Error ? error.message : "Could not save the paths");
+      opened.failed(error, "Could not save the paths");
     } finally {
       update.reset();
     }
@@ -870,20 +931,17 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
       }
       submitLabel="Save paths"
       pending={update.isPending}
-      disabled={conflict || paths === null || (choosing && paths.length > 0 && !trusted)}
+      disabled={opened.conflict || opened.reloading || paths === null || (choosing && paths.length > 0 && !trusted)}
       onSubmit={() => void save()}
     >
-      {conflict ? (
-        <Alert variant="destructive">
-          <AlertCircle />
-          <AlertTitle>These paths changed since you opened them</AlertTitle>
-          <AlertDescription>
-            <p>Someone else saved this provider. Reload to see their paths, then make your change again.</p>
-            <Button type="button" variant="outline" size="sm" onClick={reload}>
-              Reload paths
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {opened.conflict ? (
+        <ConflictNotice
+          reloading={opened.reloading}
+          onReload={() => void opened.reload()}
+          title="These paths changed since you opened them"
+          body="Someone else saved this provider. Reload to see their paths, then make your change again."
+          label="Reload paths"
+        />
       ) : null}
       <Field
         label="One path per line"
@@ -935,22 +993,22 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
 function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const test = useKeyTest();
-  const [secret, setSecret] = useState("");
-
-  const close = () => {
-    setSecret("");
-    test.clear();
-    onClose();
-  };
+  const opened = useOpenedRevision(provider, () => test.clear(), onClose);
+  // Where the key goes, from the connection as the list now has it: a host moved elsewhere clears the key.
+  const destinations = provider
+    ? keyDestinationText(provider.type, { baseUrl: provider.baseUrl, cloudflareGateway: provider.cloudflareGateway ?? null })
+    : "";
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([destinations, opened.revision, opened.conflict]));
 
   const submit = async () => {
     if (!provider) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, secret } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, secret } });
+      if (!opened.mounted.current) return;
       toast.success("Key replaced");
-      close();
+      onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not replace the key");
+      opened.failed(error, "Could not replace the key");
     } finally {
       update.reset();
     }
@@ -960,22 +1018,24 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
     <FormDialog
       open={provider !== null}
       onOpenChange={(open) => {
-        if (!open) close();
+        if (!open) onClose();
       }}
       title="Replace the key"
       description={provider ? `Apps using ${provider.slug} switch to the new key at once.` : undefined}
       submitLabel="Replace key"
       pending={update.isPending}
-      disabled={!secret}
+      disabled={opened.conflict || opened.reloading || !secret}
       onSubmit={() => void submit()}
     >
-      <Field label="New API key" htmlFor="provider-new-secret">
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+      <Field label="New API key" htmlFor="provider-new-secret" hint={destinations ? `Sent only to ${destinations}.` : undefined}>
         <div className="flex gap-2">
           <Input
             id="provider-new-secret"
             type="password"
             value={secret}
             autoComplete="off"
+            disabled={opened.conflict}
             onChange={(event) => {
               setSecret(event.target.value);
               test.clear();
@@ -986,7 +1046,7 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
             <Button
               type="button"
               variant="outline"
-              disabled={!secret || !provider || test.pending}
+              disabled={!secret || !provider || test.pending || opened.conflict}
               // Against the connection's own host, if it has one.
               onClick={() =>
                 provider &&
@@ -1004,28 +1064,358 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
 }
 
 /**
+ * A built-in provider's own host, replaced: a self-hosted server, a regional
+ * host or Azure OpenAI. Requests are still priced from our list.
+ */
+function HostField({ id, value, problem, onChange }: { id: string; value: string; problem: string | null; onChange: (value: string) => void }) {
+  return (
+    <Field
+      label="Base URL (optional)"
+      htmlFor={id}
+      hint="Send requests to another host, such as a self-hosted server, a regional host or Azure OpenAI. Leave it empty to use the provider's own host. Prices still come from our list."
+    >
+      <Input
+        id={id}
+        value={value}
+        placeholder="https://"
+        autoComplete="off"
+        aria-invalid={problem !== null || undefined}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {problem !== null ? <p className="text-sm text-destructive">{problem}</p> : null}
+    </Field>
+  );
+}
+
+/** A typed base URL as the gateway would save it, or its refusal; null when empty. */
+function checkedHost(typed: string, stored: string | null = null): ReturnType<typeof normalizedBaseUrl> | null {
+  return typed.trim() === "" ? null : normalizedBaseUrl(typed, stored);
+}
+
+/**
+ * A typed key, kept only for the binding it was typed under: where it would
+ * go (every host the gateway can send it to) and, for an existing connection,
+ * the revision the dialog holds and whether that revision was refused. Once
+ * any of them changes, the key is deleted, not hidden: going back to an
+ * earlier destination never brings it back, so a test or a save can only send
+ * a key to where the person typed it for.
+ */
+function useBoundSecret(binding: string): [string, (value: string) => void] {
+  const [state, setState] = useState({ binding, value: "" });
+  const set = (value: string) => setState({ binding, value });
+  if (state.binding !== binding) {
+    setState({ binding, value: "" });
+    return ["", set];
+  }
+  return [state.value, set];
+}
+
+/**
+ * The revision a connection dialog was opened at, kept until the person
+ * reloads: a save never takes a newer revision the list loaded since, so
+ * another admin's change is refused rather than overwritten. `mounted` says
+ * whether the dialog is still the one for this connection when an answer
+ * comes back.
+ */
+function useOpenedRevision(provider: ProviderConnection | null, onLoaded: (latest: ProviderConnection) => void, onGone: () => void) {
+  const fresh = useFreshProvider();
+  const [revision, setRevision] = useState(provider?.revision ?? 0);
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const reload = async () => {
+    if (!provider) return;
+    setReloading(true);
+    try {
+      const latest = await fresh(provider.id);
+      if (!mounted.current) return;
+      if (latest === null) {
+        toast.error("This provider was deleted");
+        onGone();
+        return;
+      }
+      setRevision(latest.revision);
+      onLoaded(latest);
+      setConflict(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reload the connection");
+    } finally {
+      if (mounted.current) setReloading(false);
+    }
+  };
+  /** Records a save's failure: a conflict shows the reload, anything else a toast. */
+  const failed = (error: unknown, fallback: string) => {
+    if (!mounted.current) return;
+    if (error instanceof ApiError && error.status === 409) setConflict(true);
+    else toast.error(error instanceof Error ? error.message : fallback);
+  };
+  return { revision, conflict, reloading, reload, failed, mounted };
+}
+
+function ConflictNotice({
+  reloading,
+  onReload,
+  title = "This connection changed since you opened it",
+  body = "Someone else saved it. Reload to see their change, then make yours again.",
+  label = "Reload",
+}: {
+  reloading: boolean;
+  onReload: () => void;
+  title?: string;
+  body?: string;
+  label?: string;
+}) {
+  return (
+    <Alert variant="destructive">
+      <AlertCircle />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>
+        <p>{body}</p>
+        <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={onReload}>
+          {label}
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** A new name for a connection. The slug apps use stays as it is. */
+function RenameDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const [name, setName] = useState(provider?.name ?? "");
+  const [stored, setStored] = useState(provider?.name ?? "");
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      setName(latest.name);
+      setStored(latest.name);
+    },
+    onClose,
+  );
+  const trimmed = name.trim();
+
+  const submit = async () => {
+    if (!provider) return;
+    try {
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, name: trimmed } });
+      if (!opened.mounted.current) return;
+      toast.success("Connection renamed");
+      onClose();
+    } catch (error) {
+      opened.failed(error, "Could not rename the connection");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Rename the connection"
+      description={provider ? `Apps keep naming it ${provider.slug}: the slug does not change.` : undefined}
+      submitLabel="Rename"
+      pending={update.isPending}
+      disabled={opened.conflict || opened.reloading || trimmed === "" || trimmed === stored}
+      onSubmit={() => void submit()}
+    >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+      <Field label="Name" htmlFor="provider-rename">
+        <Input id="provider-rename" value={name} maxLength={100} autoComplete="off" readOnly={opened.reloading} onChange={(event) => setName(event.target.value)} />
+      </Field>
+    </FormDialog>
+  );
+}
+
+/**
+ * Where a built-in provider's requests go: its own host, or a base URL. A key
+ * goes only where it was given: a new base URL needs a key typed for it, and
+ * going back to the provider's own hosts sends the stored key there only when
+ * the person says so, or takes a replacement key. Every confirmation names
+ * every host the key would reach.
+ */
+function HostDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const test = useKeyTest();
+  const [stored, setStored] = useState(provider?.baseUrl ?? "");
+  const [host, setHost] = useState(provider?.baseUrl ?? "");
+  const [keepKey, setKeepKey] = useState(false);
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      // Now through Cloudflare, whose own dialog sets where it goes.
+      if (latest.cloudflareGateway) {
+        toast.info("This connection now goes through Cloudflare AI Gateway");
+        onClose();
+        return;
+      }
+      setStored(latest.baseUrl ?? "");
+      setHost(latest.baseUrl ?? "");
+      setKeepKey(false);
+      test.clear();
+    },
+    onClose,
+  );
+  const next = host.trim();
+  const type = provider?.type ?? "";
+  // As the gateway would save it: the hosts named, and the key's binding, follow the saved form.
+  const checked = checkedHost(next, stored === "" ? null : stored);
+  const invalid = checked !== null && !checked.ok;
+  const saved = checked !== null && checked.ok ? checked.baseUrl : "";
+  const destinations = keyDestinationText(type, { baseUrl: saved === "" ? null : saved, cloudflareGateway: null });
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([destinations, opened.revision, opened.conflict]));
+  const changed = (next === "" ? "" : invalid ? next : saved) !== stored;
+  // A new base URL needs a key typed for it.
+  const needsKey = changed && next !== "";
+  // Back to the provider's own hosts: the stored key goes there only when the person says so.
+  const toOwnHost = changed && next === "";
+  const ready = changed && !invalid && (needsKey ? secret !== "" : !toOwnHost || keepKey || secret !== "");
+
+  const save = async () => {
+    if (!provider) return;
+    try {
+      await update.mutateAsync({
+        id: provider.id,
+        body: { revision: opened.revision, baseUrl: next === "" ? null : next, ...(secret ? { secret } : {}) },
+      });
+      if (!opened.mounted.current) return;
+      toast.success(next === "" ? "Connection uses the provider's own host" : "Base URL saved");
+      onClose();
+    } catch (error) {
+      opened.failed(error, "Could not change the host");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Host"
+      description="Where this connection's requests go."
+      submitLabel="Save"
+      pending={update.isPending}
+      disabled={opened.conflict || opened.reloading || !ready}
+      onSubmit={() => void save()}
+    >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+      <HostField
+        id="provider-host-change"
+        value={host}
+        problem={checked !== null && !checked.ok ? checked.message : null}
+        onChange={(value) => {
+          setHost(value);
+          setKeepKey(false);
+          test.clear();
+        }}
+      />
+      {toOwnHost ? (
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={keepKey} disabled={secret !== "" || opened.conflict} onCheckedChange={(checked) => setKeepKey(checked === true)} />
+          Send the current key to {destinations}
+        </label>
+      ) : null}
+      {needsKey || toOwnHost ? (
+        <>
+          <Field
+            label={toOwnHost ? "Or a replacement key" : "API key"}
+            htmlFor="provider-host-secret"
+            hint={`${toOwnHost ? "A key typed here replaces the current one." : "A key goes only where it was given, so a new host needs it again."} Sent only to ${destinations}. Changing the address clears it.`}
+          >
+            <div className="flex gap-2">
+              <Input
+                id="provider-host-secret"
+                type="password"
+                value={secret}
+                autoComplete="off"
+                disabled={opened.conflict}
+                onChange={(event) => {
+                  setSecret(event.target.value);
+                  if (event.target.value !== "") setKeepKey(false);
+                  test.clear();
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!secret || invalid || !provider || test.pending || opened.conflict}
+                onClick={() => provider && test.run({ type: provider.type, secret, ...(next === "" ? {} : { baseUrl: next }) })}
+              >
+                Test key
+              </Button>
+            </div>
+          </Field>
+          <TestResult result={test.result} />
+        </>
+      ) : null}
+    </FormDialog>
+  );
+}
+
+/**
  * Sending an existing connection through Cloudflare AI Gateway, changing it,
  * or stopping. The key's origin moves with it, so a connection that keeps a
  * key needs it again, or uses the keys stored in Cloudflare instead.
  */
 function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
-  const stored = provider?.cloudflareGateway ?? null;
+  const [stored, setStored] = useState(provider?.cloudflareGateway ?? null);
   const [draft, setDraft] = useState<CloudflareDraft>(
     stored ? { on: true, accountId: stored.accountId, gatewayId: stored.gatewayId, token: "" } : { ...NO_CLOUDFLARE, on: true },
   );
-  const [secret, setSecret] = useState("");
   const [storedKeys, setStoredKeys] = useState(false);
+  // Going direct again is its own step, which asks for the provider's key for where it then goes.
+  const [stopping, setStopping] = useState(false);
+  // A connection with a base URL loses it once its traffic goes through Cloudflare: the person confirms that, by name.
+  const [dropBase, setDropBase] = useState(false);
+  const [base, setBase] = useState(provider?.baseUrl ?? null);
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      const now = latest.cloudflareGateway ?? null;
+      setStored(now);
+      setDraft(now ? { on: true, accountId: now.accountId, gatewayId: now.gatewayId, token: "" } : { ...NO_CLOUDFLARE, on: true });
+      setStoredKeys(false);
+      setStopping(false);
+      setDropBase(false);
+      setBase(latest.baseUrl ?? null);
+    },
+    onClose,
+  );
   const sameGateway = stored !== null && draft.accountId.trim() === stored.accountId && draft.gatewayId.trim() === stored.gatewayId;
+  const type = provider?.type ?? "";
+  // Where a key typed here goes: the gateway being set, or, when stopping, the provider's own route.
+  const throughGateway = keyDestinationText(type, {
+    baseUrl: null,
+    cloudflareGateway: { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim() },
+  });
+  const direct = keyDestinationText(type, { baseUrl: base, cloudflareGateway: null });
+  // The gateway's address is named only once both ids are filled.
+  const gatewayNamed = draft.accountId.trim() !== "" && draft.gatewayId.trim() !== "" && throughGateway !== "";
+  // Turning Cloudflare on for a connection with a base URL removes the base URL in the same save.
+  const removesBase = stored === null && base !== null;
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([stopping ? direct : throughGateway, opened.revision, opened.conflict]));
 
   const save = async (body: Record<string, unknown>, done: string) => {
     if (!provider) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, ...body } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, ...body } });
+      if (!opened.mounted.current) return;
       toast.success(done);
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not change the connection");
+      opened.failed(error, "Could not change the connection");
     } finally {
       update.reset();
     }
@@ -1034,6 +1424,39 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
   const key = storedKeys ? { secret: null } : secret ? { secret } : {};
   // A new gateway, or turning it on, moves the key: it must be sent again, or given up for Cloudflare's own.
   const moving = !sameGateway;
+  const blocked = opened.conflict || opened.reloading;
+
+  if (stopping) {
+    return (
+      <FormDialog
+        open={provider !== null}
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+        title="Stop using Cloudflare AI Gateway"
+        description={`Requests go straight to ${direct} again. A key is never moved there from the gateway: enter the provider's key for it.`}
+        submitLabel="Go direct"
+        pending={update.isPending}
+        disabled={blocked || !secret}
+        onSubmit={() => void save({ cloudflareGateway: null, secret }, "Connection goes direct again")}
+      >
+        {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+        <Field label="The provider's API key" htmlFor="cloudflare-direct-secret" hint={`Sent only to ${direct}.`}>
+          <Input
+            id="cloudflare-direct-secret"
+            type="password"
+            value={secret}
+            autoComplete="off"
+            disabled={blocked}
+            onChange={(event) => setSecret(event.target.value)}
+          />
+        </Field>
+        <Button type="button" variant="outline" size="sm" onClick={() => setStopping(false)}>
+          Back
+        </Button>
+      </FormDialog>
+    );
+  }
 
   return (
     <FormDialog
@@ -1045,21 +1468,30 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={!cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys)}
-      onSubmit={() => void save({ cloudflareGateway: cloudflareBody(draft), ...key }, "Cloudflare AI Gateway saved")}
+      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
+      onSubmit={() =>
+        void save({ cloudflareGateway: cloudflareBody(draft), ...(removesBase ? { baseUrl: null } : {}), ...key }, "Cloudflare AI Gateway saved")
+      }
     >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
       <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
+      {removesBase ? (
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={dropBase} disabled={blocked} onCheckedChange={(checked) => setDropBase(checked === true)} />
+          Remove the base URL {base}: Cloudflare AI Gateway sends requests to the provider itself
+        </label>
+      ) : null}
       <Field
         label="API key"
         htmlFor="cloudflare-provider-secret"
-        hint="A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare. Going direct again needs it too."
+        hint={`A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare.${gatewayNamed ? ` Sent only to ${throughGateway}.` : ""} Changing the account or gateway clears it.`}
       >
         <Input
           id="cloudflare-provider-secret"
           type="password"
           value={secret}
           autoComplete="off"
-          disabled={storedKeys}
+          disabled={storedKeys || blocked}
           onChange={(event) => setSecret(event.target.value)}
         />
       </Field>
@@ -1074,13 +1506,7 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
         Use the keys stored in Cloudflare, and remove this connection&apos;s key
       </label>
       {stored ? (
-        <Button
-          type="button"
-          variant="outline"
-          // Going direct needs the provider's key: the one sent to the gateway is not reused.
-          disabled={update.isPending || !secret || storedKeys}
-          onClick={() => void save({ cloudflareGateway: null, secret }, "Connection goes direct again")}
-        >
+        <Button type="button" variant="outline" disabled={blocked} onClick={() => setStopping(true)}>
           Stop using Cloudflare AI Gateway
         </Button>
       ) : null}
@@ -1097,7 +1523,10 @@ export function pricesText(pricing: ProviderConnection["pricing"]): string {
 }
 
 /** What the prices text saves: null for none, the prices, or a problem to show. */
-export function parsePricesText(text: string): { pricing: NonNullable<ProviderConnection["pricing"]> | null } | { problem: string } {
+export function parsePricesText(
+  text: string,
+  stored = "",
+): { pricing: NonNullable<ProviderConnection["pricing"]> | null } | { problem: string } {
   if (text.trim() === "") return { pricing: null };
   let value: unknown;
   try {
@@ -1106,6 +1535,10 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
     return { problem: "Write the prices as JSON: an object with one entry per model." };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { problem: "Write the prices as an object with one entry per model." };
+  // Each amount as written, by the gateway's money rule: a float may read some as another figure.
+  // Amounts already saved (`stored`) are not judged again: an old price never locks the editor.
+  const amounts = jsonPriceProblem(text, stored);
+  if (amounts !== null) return { problem: amounts };
   // The server checks every price; the console only checks the shape.
   return { pricing: Object.keys(value).length === 0 ? null : (value as NonNullable<ProviderConnection["pricing"]>) };
 }
@@ -1114,68 +1547,80 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
  * A connection's own prices, in dollars: for a model our price list does not
  * have, such as a fal model priced per job, or to replace a listed price. The
  * server checks every price when it is saved.
+ *
+ * The form shows the common rates per model. Anything else a price carries
+ * stays exactly as stored; "Edit as JSON" shows and edits all of it.
  */
 function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
-  const fresh = useFreshProvider();
-  // The version the draft was made from: it is saved at that revision, never at a newer one the list
-  // loaded since, so another admin's change is never quietly overwritten.
-  const [revision, setRevision] = useState(provider?.revision ?? 0);
+  // Prices the form cannot show without losing something open as JSON.
+  const [mode, setMode] = useState<"form" | "json">(() => (formCanShow(provider?.pricing ?? null) ? "form" : "json"));
+  const [rows, setRows] = useState<PriceRow[]>(() => (formCanShow(provider?.pricing ?? null) ? rowsOf(provider?.pricing ?? null) : []));
+  const [saved, setSaved] = useState<ProviderConnection["pricing"]>(provider?.pricing ?? null);
+  const [modeProblem, setModeProblem] = useState<string | null>(null);
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
-  const [conflict, setConflict] = useState(false);
-  const [reloading, setReloading] = useState(false);
-  const parsed = parsePricesText(text);
-  // A save or reload that ends after this dialog closed must not touch the page: closing it
-  // remounts the dialog, so a late answer would otherwise close the next provider's dialog
-  // and throw away its draft.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  /**
-   * Starts again from the provider as the server has it now, read fresh, not
-   * from a list that may still be the old one. The draft is dropped only once
-   * that read succeeds; if it fails, the draft and the conflict notice stay.
-   */
-  const reload = async () => {
-    if (!provider) return;
-    setReloading(true);
-    try {
-      const latest = await fresh(provider.id);
-      if (!mounted.current) return;
-      if (latest === null) {
-        toast.error("This provider was deleted");
-        onClose();
-        return;
-      }
-      setRevision(latest.revision);
+  // The JSON text "Edit as JSON" showed: while it is unchanged, going back to the form keeps the rows as they were.
+  const [jsonFrom, setJsonFrom] = useState<string | null>(null);
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      setSaved(latest.pricing);
       setText(pricesText(latest.pricing));
-      setConflict(false);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not reload the prices");
-    } finally {
-      setReloading(false);
+      setJsonFrom(null);
+      setModeProblem(null);
+      if (formCanShow(latest.pricing)) setRows(rowsOf(latest.pricing));
+      else {
+        setRows([]);
+        setMode("json");
+      }
+    },
+    onClose,
+  );
+  const reloading = opened.reloading;
+  const problems = rows.map((row) => rowProblems(row, rows));
+  const formValid = problems.every((found) => Object.keys(found).length === 0);
+  const parsed =
+    mode === "json" ? parsePricesText(text, pricesText(saved)) : formValid ? { pricing: pricingOf(rows) } : { problem: "Fix the prices marked below." };
+  const untouchedJson = mode === "json" && text === jsonFrom;
+
+  const switchMode = () => {
+    setModeProblem(null);
+    if (mode === "form") {
+      // The form's prices when they are complete; otherwise the saved prices, as they are.
+      const shown = pricesText("problem" in parsed ? saved : parsed.pricing);
+      setText(shown);
+      setJsonFrom(shown);
+      if ("problem" in parsed) setModeProblem("The form had changes that are not complete, so this shows the saved prices.");
+      setMode("json");
+      return;
     }
+    if (untouchedJson) {
+      setMode("form");
+      return;
+    }
+    if ("problem" in parsed) return;
+    if (!formCanShow(parsed.pricing)) {
+      setModeProblem("Some entries are not prices the form can show, such as a model whose value is not an object. Keep editing them as JSON.");
+      return;
+    }
+    setRows(rowsOf(parsed.pricing));
+    setMode("form");
   };
 
   const submit = async () => {
     if (!provider || "problem" in parsed) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision, pricing: parsed.pricing } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, pricing: parsed.pricing } });
       toast.success(parsed.pricing === null ? "Your prices removed" : "Your prices saved");
-      if (mounted.current) onClose();
+      if (opened.mounted.current) onClose();
     } catch (error) {
-      if (!mounted.current) return;
-      if (error instanceof ApiError && error.status === 409) setConflict(true);
-      else toast.error(error instanceof Error ? error.message : "Could not save the prices");
+      opened.failed(error, "Could not save the prices");
     } finally {
       update.reset();
     }
   };
+
+  const setRow = (index: number, change: Partial<PriceRow>) => setRows(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
 
   return (
     <FormDialog
@@ -1187,40 +1632,148 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       description="Your own prices for this connection's models, in dollars. Use them for a model our price list does not have, or to replace a listed price."
       submitLabel="Save prices"
       pending={update.isPending}
-      disabled={conflict || "problem" in parsed}
+      disabled={opened.conflict || reloading || "problem" in parsed}
       onSubmit={() => void submit()}
     >
-      {conflict ? (
-        <Alert variant="destructive">
-          <AlertCircle />
-          <AlertTitle>These prices changed since you opened them</AlertTitle>
-          <AlertDescription>
-            <p>Someone else saved this provider. Reload to see their prices, then make your change again.</p>
-            <Button type="button" variant="outline" size="sm" disabled={reloading} onClick={() => void reload()}>
-              Reload prices
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
-      <Field
-        label="Prices by model"
-        htmlFor="provider-prices"
-        hint={
-          'One entry per model. Tokens are per million; other rates are per their unit: per_request (a job or call), per_image, per_video, per_unit (the provider\'s own billed unit), per_second, per_minute. For example: {"fal-ai/some-model": {"per_request": 0.02}}. Leave it empty to use only our price list.'
-        }
-      >
-        <Textarea
-          id="provider-prices"
-          className="min-h-40 font-mono text-xs"
-          value={text}
-          spellCheck={false}
-          // While a reload is reading the server's prices, nothing typed can be lost to its answer.
-          readOnly={reloading}
-          aria-busy={reloading}
-          onChange={(event) => setText(event.target.value)}
+      {opened.conflict ? (
+        <ConflictNotice
+          reloading={reloading}
+          onReload={() => void opened.reload()}
+          title="These prices changed since you opened them"
+          body="Someone else saved this provider. Reload to see their prices, then make your change again."
+          label="Reload prices"
         />
-      </Field>
-      {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
+      ) : null}
+      {mode === "form" ? (
+        <fieldset className="space-y-3" disabled={reloading} aria-busy={reloading}>
+          <p className="text-sm text-muted-foreground">Token rates are per million tokens. A unit rate is per the unit you pick.</p>
+          {rows.length === 0 ? <p className="text-sm text-muted-foreground">No prices of your own. Our price list is used.</p> : null}
+          {rows.map((row, index) => (
+            <PriceRowFields
+              key={row.key}
+              row={row}
+              problems={problems[index]!}
+              onChange={(change) => setRow(index, change)}
+              onRemove={() => setRows(rows.filter((_, at) => at !== index))}
+            />
+          ))}
+          <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, emptyRow()])}>
+            <Plus className="size-4" />
+            Add a model
+          </Button>
+        </fieldset>
+      ) : (
+        <>
+          <Field
+            label="Prices by model"
+            htmlFor="provider-prices"
+            hint={
+              'One entry per model. Tokens are per million; other rates are per their unit: per_request (a job or call), per_image, per_video, per_unit (the provider\'s own billed unit), per_second, per_minute. For example: {"fal-ai/some-model": {"per_request": 0.02}}. Leave it empty to use only our price list.'
+            }
+          >
+            <Textarea
+              id="provider-prices"
+              className="min-h-40 font-mono text-xs"
+              value={text}
+              spellCheck={false}
+              // While a reload is reading the server's prices, nothing typed can be lost to its answer.
+              readOnly={reloading}
+              aria-busy={reloading}
+              onChange={(event) => setText(event.target.value)}
+            />
+          </Field>
+          {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
+        </>
+      )}
+      {modeProblem ? <p className="text-sm text-muted-foreground">{modeProblem}</p> : null}
+      <Button type="button" variant="link" size="sm" className="px-0" disabled={mode === "json" && !untouchedJson && "problem" in parsed} onClick={switchMode}>
+        {mode === "form" ? "Edit as JSON" : "Edit as a form"}
+      </Button>
     </FormDialog>
+  );
+}
+
+/** One model's row in the prices form. */
+function PriceRowFields({
+  row,
+  problems,
+  onChange,
+  onRemove,
+}: {
+  row: PriceRow;
+  problems: Record<string, string>;
+  onChange: (change: Partial<PriceRow>) => void;
+  onRemove: () => void;
+}) {
+  const id = row.key;
+  const kept = hiddenFields(row);
+  const locked = severalUnits(row);
+  return (
+    <div className="space-y-2 rounded-md border p-3" role="group" aria-label={row.model.trim() === "" ? "New model" : row.model}>
+      <div className="flex items-end gap-2">
+        <Field label="Model" htmlFor={`${id}-model`} className="flex-1">
+          <Input
+            id={`${id}-model`}
+            value={row.model}
+            autoComplete="off"
+            aria-invalid={problems.model ? true : undefined}
+            onChange={(event) => onChange({ model: event.target.value })}
+          />
+        </Field>
+        <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${row.model.trim() || "this model"}`} onClick={onRemove}>
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+      {problems.model ? <p className="text-sm text-destructive">{problems.model}</p> : null}
+      <div className="grid grid-cols-3 gap-2">
+        {TOKEN_FIELDS.map(({ field, label }) => (
+          <Field key={field} label={`${label} $/1M`} htmlFor={`${id}-${field}`}>
+            <Input
+              id={`${id}-${field}`}
+              inputMode="decimal"
+              value={row.tokens[field]}
+              autoComplete="off"
+              aria-invalid={problems[field] ? true : undefined}
+              onChange={(event) => onChange({ tokens: { ...row.tokens, [field]: event.target.value } })}
+            />
+          </Field>
+        ))}
+      </div>
+      {TOKEN_FIELDS.map(({ field }) => (problems[field] ? <p key={field} className="text-sm text-destructive">{problems[field]}</p> : null))}
+      <div className="flex items-end gap-2">
+        <Field label="Unit rate $" htmlFor={`${id}-unit-amount`} className="w-32">
+          <Input
+            id={`${id}-unit-amount`}
+            inputMode="decimal"
+            value={row.unitAmount}
+            autoComplete="off"
+            disabled={locked || row.unitField === ""}
+            aria-invalid={problems.unit ? true : undefined}
+            onChange={(event) => onChange({ unitAmount: event.target.value })}
+          />
+        </Field>
+        <Field label="Unit" htmlFor={`${id}-unit`} className="flex-1">
+          <Select disabled={locked} value={row.unitField === "" ? "none" : row.unitField} onValueChange={(value) => onChange({ unitField: value === "none" ? "" : value })}>
+            <SelectTrigger id={`${id}-unit`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No unit rate</SelectItem>
+              {UNIT_FIELDS.map((entry) => (
+                <SelectItem key={entry.field} value={entry.field}>
+                  {entry.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      {problems.unit ? <p className="text-sm text-destructive">{problems.unit}</p> : null}
+      {locked ? <p className="text-xs text-muted-foreground">This model has several unit rates. Edit them as JSON.</p> : null}
+      {problems.row ? <p className="text-sm text-destructive">{problems.row}</p> : null}
+      {kept.length > 0 ? (
+        <p className="text-xs text-muted-foreground">Also kept as saved: {kept.join(", ")}. Edit them as JSON.</p>
+      ) : null}
+    </div>
   );
 }

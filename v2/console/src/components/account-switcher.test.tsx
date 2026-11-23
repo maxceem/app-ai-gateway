@@ -6,7 +6,8 @@ import { DropdownMenu, DropdownMenuContent } from "@/components/ui/dropdown-menu
 import { fireEvent } from "@testing-library/react";
 import { toast } from "sonner";
 import { membership, renderAuthenticated, testSession } from "@/test/render";
-import { tabAccount } from "@/lib/tab-account";
+import { isLeavingForAccountSwitch, resetTabAccountForTests, tabAccount } from "@/lib/tab-account";
+import { LeaveGuard } from "./leave-guard";
 import { useStartCheckout } from "@/lib/queries";
 import { SidebarContent } from "./app-sidebar";
 
@@ -139,5 +140,56 @@ describe("signing out", () => {
     await openUserMenu();
     await userEvent.click(await screen.findByRole("menuitem", { name: /sign out/i }));
     await waitFor(() => expect(router.location.pathname).toBe("/login"));
+  });
+});
+
+describe("switching accounts with unsaved changes", () => {
+  afterEach(() => resetTabAccountForTests());
+
+  /** The account menu beside a page that has unsaved changes. */
+  function withUnsavedPage() {
+    return (
+      <>
+        <LeaveGuard dirty />
+        {inOpenMenu()}
+      </>
+    );
+  }
+
+  function setup() {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ session: testSession({ account: { id: "acct-2", name: "Globex" } }) }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const reload = vi.fn();
+    const real = window.location;
+    vi.stubGlobal("location", { get pathname() { return real.pathname; }, get search() { return real.search; }, reload });
+    renderAuthenticated(withUnsavedPage(), {
+      session: { accounts: [membership("acct-1", "Acme", "owner"), membership("acct-2", "Globex", "member")] },
+    });
+    return { fetchMock, reload };
+  }
+
+  it("asks first, and staying leaves everything as it was: nothing is sent and requests still work", async () => {
+    const { fetchMock, reload } = setup();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /globex/i }));
+    expect(await screen.findByText(/leave without saving/i)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByText(/leave without saving/i)).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(isLeavingForAccountSwitch()).toBe(false);
+    expect(screen.getByRole("menuitem", { name: /globex/i }).getAttribute("data-disabled")).toBeNull();
+  });
+
+  it("switches once the person confirms, and reloads without the browser asking again", async () => {
+    const { fetchMock, reload } = setup();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /globex/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^leave$/i }));
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(tabAccount()).toBe("acct-2");
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   });
 });

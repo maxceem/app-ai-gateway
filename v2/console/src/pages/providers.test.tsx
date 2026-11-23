@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { parsePathLines, parsePricesText, pathLine, pricesText, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
+import { chooseOption } from "@/test/select";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
 
 const PROVIDER = {
@@ -106,6 +107,7 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
     const box = await screen.findByLabelText(/prices by model/i);
     expect((box as HTMLTextAreaElement).value).toContain("fal-ai/old");
     await userEvent.clear(box);
@@ -401,6 +403,7 @@ describe("PricesDialog after a conflict", () => {
     renderAuthenticated(<ProvidersPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
     const box = await screen.findByLabelText(/prices by model/i);
     await userEvent.clear(box);
     await userEvent.click(box);
@@ -426,6 +429,7 @@ describe("PricesDialog reload after a conflict", () => {
   async function intoConflict() {
     await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
     const box = await screen.findByLabelText(/prices by model/i);
     await userEvent.clear(box);
     await userEvent.click(box);
@@ -534,6 +538,7 @@ describe("PricesDialog closed while its save is pending", () => {
     renderAuthenticated(<ProvidersPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
     const first = await screen.findByLabelText(/prices by model/i);
     await userEvent.click(first);
     await userEvent.paste('{"fal-ai/a": {"per_request": 0.01}}');
@@ -544,6 +549,7 @@ describe("PricesDialog closed while its save is pending", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Actions for fal-two" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
     const second = (await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement;
     await userEvent.click(second);
     await userEvent.paste('{"fal-ai/b": {"per_request": 0.02}}');
@@ -756,5 +762,544 @@ describe("listed path lines", () => {
     ]) {
       expect(parsePathLines(pathLine(path), true)).toEqual({ paths: [path] });
     }
+  });
+});
+
+describe("provider gaps from v1", () => {
+  it("renames a connection without touching its slug", async () => {
+    const fetchMock = stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /rename/i }));
+    const box = await screen.findByLabelText(/^name$/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste("OpenAI EU");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, name: "OpenAI EU" }));
+  });
+
+  it("adds a built-in provider at another host, priced from our list", async () => {
+    const fetchMock = stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Azure");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("http://insecure.example.com");
+    expect(screen.getByText(/base url must use https/i)).toBeTruthy();
+    await userEvent.clear(screen.getByLabelText(/base url/i));
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://my-azure.example.com/openai/v1");
+    await userEvent.click(screen.getByLabelText(/api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^add provider$/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({
+        type: "openai",
+        name: "Azure",
+        secret: SECRET,
+        baseUrl: "https://my-azure.example.com/openai/v1",
+      }),
+    );
+  });
+
+  it("moves a connection to another host only with a key typed for it, and back to the provider's own only when told to", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
+    const fetchMock = stub([hosted]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    const box = await screen.findByLabelText(/base url/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste("https://other.example.com/v1");
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByLabelText(/api key/i));
+    await userEvent.paste(SECRET);
+    expect(save.disabled).toBe(false);
+    // Another address: the key typed for the first one is gone.
+    await userEvent.type(box, "2");
+    expect((screen.getByLabelText(/api key/i) as HTMLInputElement).value).toBe("");
+    expect(save.disabled).toBe(true);
+    // Back to the provider's own host: nothing moves until the person says so.
+    await userEvent.clear(box);
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /send the current key to api\.openai\.com/i }));
+    await userEvent.click(save);
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, baseUrl: null }));
+  });
+
+  it("goes back to the provider's own host with a replacement key instead", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
+    const fetchMock = stub([hosted]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByLabelText(/replacement key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, baseUrl: null, secret: SECRET }));
+  });
+
+  it("clears a typed key in the add form when where it goes changes", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    const key = () => screen.getByLabelText(/api key/i) as HTMLInputElement;
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://one.example.com");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(screen.getByLabelText(/base url/i), "x");
+    expect(key().value).toBe("");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("checkbox", { name: /cloudflare/i }));
+    expect(key().value).toBe("");
+    await userEvent.click(screen.getByRole("checkbox", { name: /cloudflare/i }));
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "Anthropic");
+    expect(key().value).toBe("");
+  });
+
+  it("renames at the revision it opened at: a conflict asks for a reload, and only then saves", async () => {
+    const changed = { ...PROVIDER, revision: 4, name: "Renamed elsewhere" };
+    let puts = 0;
+    let lists = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: changed }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? PROVIDER : changed] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const putBodies = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /rename/i }));
+    const box = await screen.findByLabelText(/^name$/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste("Mine");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    // The list is at revision 4 now; the dialog still holds 3, so it will not save.
+    expect((screen.getByRole("button", { name: /^rename$/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Renamed elsewhere"));
+    await userEvent.clear(screen.getByLabelText(/^name$/i));
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Mine");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect(putBodies()).toEqual([{ revision: 3, name: "Mine" }, { revision: 4, name: "Mine" }]));
+  });
+
+  it("lets a late rename close nothing once its dialog is gone", async () => {
+    const other = { ...PROVIDER, id: "prov-2", slug: "openai-2", name: "OpenAI two" };
+    let release: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return new Response(JSON.stringify({ provider: PROVIDER }));
+        }
+        return new Response(JSON.stringify({ providers: [PROVIDER, other] }));
+      }),
+    );
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /rename/i }));
+    await userEvent.type(await screen.findByLabelText(/^name$/i), " x");
+    await userEvent.click(screen.getByRole("button", { name: /^rename$/i }));
+    await waitFor(() => expect(release).not.toBeNull());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByLabelText(/^name$/i)).toBeNull());
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI two" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    const box = await screen.findByLabelText(/base url/i);
+    await userEvent.click(box);
+    await userEvent.paste("https://draft.example.com");
+    release!();
+    await waitFor(() => expect(screen.getByRole("dialog", { name: /^host$/i })).toBeTruthy());
+    expect((screen.getByLabelText(/base url/i) as HTMLInputElement).value).toBe("https://draft.example.com");
+  });
+
+  it("keeps several unit rates as stored: their controls are locked, and a token edit leaves them", async () => {
+    const stored = { "m": { input: 1, output: 2, per_image: 0.04, per_megapixel: 0.01 } };
+    const fetchMock = stub([{ ...PROVIDER, pricing: stored }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const row = await screen.findByRole("group", { name: "m" });
+    expect(within(row).getByText(/several unit rates/i)).toBeTruthy();
+    expect((within(row).getByRole("combobox", { name: /^unit$/i }) as HTMLButtonElement).disabled).toBe(true);
+    const output = within(row).getByLabelText(/^output/i);
+    await userEvent.clear(output);
+    await userEvent.click(output);
+    await userEvent.paste("3");
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, pricing: { m: { input: 1, output: 3, per_image: 0.04, per_megapixel: 0.01 } } }),
+    );
+  });
+
+  it("opens prices the form cannot show as JSON, and says so rather than switching a JSON it cannot show", async () => {
+    stub([{ ...PROVIDER, pricing: { tiny: { per_request: 1e-9 } } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    // A rate written with an exponent reads back as itself.
+    const row = await screen.findByRole("group", { name: "tiny" });
+    expect((within(row).getByLabelText(/unit rate/i) as HTMLInputElement).value).toBe("1e-9");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": null}');
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect(screen.getByText(/not prices the form can show/i)).toBeTruthy();
+    expect(screen.getByLabelText(/prices by model/i)).toBeTruthy();
+  });
+
+  it("opens stored prices the form cannot represent straight as JSON", async () => {
+    stub([{ ...PROVIDER, pricing: { odd: { input: "1", output: 2 } } as never }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    expect(((await screen.findByLabelText(/prices by model/i)) as HTMLTextAreaElement).value).toContain('"input": "1"');
+  });
+
+  it("edits a model's rates in the prices form and keeps what the form does not show", async () => {
+    const stored = { "gpt-x": { input: 1, output: 4, modes: { flex: { factor: 0.5 } } } };
+    const fetchMock = stub([{ ...PROVIDER, pricing: stored }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    const row = await screen.findByRole("group", { name: "gpt-x" });
+    expect(within(row).getByText(/also kept as saved: modes/i)).toBeTruthy();
+    const output = within(row).getByLabelText(/^output/i);
+    await userEvent.clear(output);
+    await userEvent.click(output);
+    await userEvent.paste("5");
+    await userEvent.click(screen.getByRole("button", { name: /add a model/i }));
+    const added = screen.getByRole("group", { name: "New model" });
+    await userEvent.click(within(added).getByLabelText(/^model$/i));
+    await userEvent.paste("fal-ai/new");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    await chooseOption(within(screen.getByRole("group", { name: "fal-ai/new" })).getByRole("combobox", { name: /^unit$/i }), "per request or job");
+    await userEvent.click(within(screen.getByRole("group", { name: "fal-ai/new" })).getByLabelText(/unit rate/i));
+    await userEvent.paste("0.02");
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        pricing: { "gpt-x": { input: 1, output: 5, modes: { flex: { factor: 0.5 } } }, "fal-ai/new": { per_request: 0.02 } },
+      }),
+    );
+  });
+});
+
+describe("a typed key stays with where it was typed for", () => {
+  /** A list that answers `before` first and `after` from then on, and a PUT that answers 409 once, then saves. */
+  function moving(before: unknown, after: unknown) {
+    let lists = 0;
+    let puts = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: after }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? before : after] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const putBodies = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    return { putBodies, lists: () => lists };
+  }
+
+  it("clears a replacement key once another admin moved the host, and saves nothing until a reload", async () => {
+    const moved = { ...PROVIDER, revision: 4, baseUrl: "https://elsewhere.example.com/v1/" };
+    const { putBodies, lists } = moving(PROVIDER, moved);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /replace key/i }));
+    expect(await screen.findByText(/sent only to api\.openai\.com/i)).toBeTruthy();
+    await userEvent.click(screen.getByLabelText(/new api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^replace key$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await waitFor(() => expect(lists()).toBeGreaterThan(1));
+    // The key typed for api.openai.com is gone; nothing can be tested or saved until a reload.
+    expect((screen.getByLabelText(/new api key/i) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("button", { name: /^replace key$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /test key/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect(screen.getByText(/sent only to elsewhere\.example\.com\/v1/i)).toBeTruthy());
+    expect((screen.getByLabelText(/new api key/i) as HTMLInputElement).value).toBe("");
+    await userEvent.click(screen.getByLabelText(/new api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^replace key$/i }));
+    await waitFor(() => expect(putBodies()).toEqual([{ revision: 3, secret: SECRET }, { revision: 4, secret: SECRET }]));
+  });
+
+  it("does not bring a key back when the address returns to where it was typed", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    const url = () => screen.getByLabelText(/base url/i) as HTMLInputElement;
+    const key = () => screen.getByLabelText(/api key/i) as HTMLInputElement;
+    await userEvent.click(url());
+    await userEvent.paste("https://a.example.com");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(url(), "x");
+    expect(key().value).toBe("");
+    await userEvent.type(url(), "{Backspace}");
+    expect(url().value).toBe("https://a.example.com");
+    expect(key().value).toBe("");
+  });
+
+  it("names both of fal's hosts before the stored key goes back to them", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", baseUrl: "https://fal-proxy.example.com/" };
+    const fetchMock = stub([fal]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Send the current key to fal.run, queue.fal.run" }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-fal", "PUT")).toEqual({ revision: 3, baseUrl: null }));
+  });
+
+  it("closes Host after a conflict when the connection now goes through Cloudflare", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
+    const viaCloudflare = { ...PROVIDER, revision: 4, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } };
+    moving(hosted, viaCloudflare);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByRole("checkbox", { name: /send the current key to api\.openai\.com/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /^host$/i })).toBeNull());
+  });
+
+  it("clears the provider key and the token when the Cloudflare account or gateway changes", async () => {
+    stub([{ ...PROVIDER, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    const key = () => screen.getByLabelText(/^api key$/i) as HTMLInputElement;
+    const token = () => screen.getByLabelText(/cloudflare token/i) as HTMLInputElement;
+    await userEvent.click(token());
+    await userEvent.paste("cf-token-0123456789");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(screen.getByLabelText(/cloudflare gateway id/i), "2");
+    expect(key().value).toBe("");
+    expect(token().value).toBe("");
+  });
+
+  it("asks for the provider's key, naming where it goes, before going direct again", async () => {
+    const fetchMock = stub([{ ...PROVIDER, secretHint: null, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /stop using cloudflare ai gateway/i }));
+    expect(screen.getByText(/sent only to api\.openai\.com/i)).toBeTruthy();
+    const go = screen.getByRole("button", { name: /go direct/i }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    await userEvent.click(screen.getByLabelText(/the provider's api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(go);
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, cloudflareGateway: null, secret: SECRET }));
+  });
+
+  it("names the hosts a base URL routes to as the gateway saves it: fal's queue under the regional host", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "fal");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://regional.example.com");
+    expect(screen.getByText(/sent only to regional\.example\.com, regional\.example\.com\/queue\./i)).toBeTruthy();
+  });
+
+  it("judges the base URL only on the route that uses it: through Cloudflare it does not block adding", async () => {
+    const fetchMock = stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Via Cloudflare");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("http://not-https.example.com");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    const add = screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement;
+    expect(add.disabled).toBe(false);
+    await userEvent.click(add);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({
+        type: "openai",
+        name: "Via Cloudflare",
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-0123456789" },
+      }),
+    );
+  });
+
+  it("turns Cloudflare on for a connection with a base URL only once removing it is confirmed, in the same save", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1/" };
+    const fetchMock = stub([hosted]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    await userEvent.click(screen.getByLabelText(/^api key$/i));
+    await userEvent.paste(SECRET);
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /remove the base url https:\/\/my-azure\.example\.com\/openai\/v1\//i }));
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-0123456789" },
+        baseUrl: null,
+        secret: SECRET,
+      }),
+    );
+  });
+
+  it("names where a key goes through Cloudflare only once both ids are filled", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    expect(screen.queryByText(/sent only to/i)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    expect(screen.queryByText(/sent only to/i)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    expect(screen.getByText(/sent only to gateway\.ai\.cloudflare\.com/i)).toBeTruthy();
+  });
+
+  it("says beside the field when a Cloudflare id has a character that cannot be sent, and does not break", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("x");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct\uD800");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    expect(screen.getByText(/use plain text: this has a character that cannot be sent/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("the prices editor", () => {
+  /** Opens the prices dialog on a connection with these stored prices. */
+  async function openPrices(pricing: unknown) {
+    const fetchMock = stub([{ ...PROVIDER, pricing }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    return fetchMock;
+  }
+
+  it("refuses a JSON price a float would read as another figure, before switching to the form or saving", async () => {
+    await openPrices(null);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": {"per_request": 1e-400}}');
+    expect(screen.getByText(/per_request 1e-400: .*stored as 0/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Edit as a form" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+
+  it("keeps a too deeply nested JSON draft and says so, rather than reading it into the form", async () => {
+    await openPrices(null);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const deep = `{"m": {"input": 1, "output": 2, "by": ${'{"x":'.repeat(40)}1${"}".repeat(40)}}}`;
+    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
+    await userEvent.click(box);
+    await userEvent.paste(deep);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect(screen.getByText(/not prices the form can show/i)).toBeTruthy();
+    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toBe(deep);
+  });
+
+
+  it("never locks a stored price the text rules would refuse, in the form or as JSON", async () => {
+    const fetchMock = await openPrices({ m: { per_request: 1e-10 } });
+    const row = await screen.findByRole("group", { name: "m" });
+    expect((within(row).getByLabelText(/unit rate/i) as HTMLInputElement).value).toBe("1e-10");
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement;
+    expect(box.value).toContain("1e-10");
+    // Another model added beside it: only the new amount is judged.
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": {"per_request": 1e-10}, "n": {"per_request": 0.02}}');
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: /save prices/i }));
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, pricing: { m: { per_request: 1e-10 }, n: { per_request: 0.02 } } }),
+    );
+  });
+
+  it("keeps the form's rows as they were after a look at the JSON that changed nothing", async () => {
+    await openPrices({ m: { input: 1, output: 2 } });
+    const row = await screen.findByRole("group", { name: "m" });
+    const output = within(row).getByLabelText(/^output/i);
+    await userEvent.clear(output);
+    await userEvent.click(output);
+    await userEvent.paste("3.10");
+    // An unfinished row: the JSON shows the saved prices instead.
+    await userEvent.click(screen.getByRole("button", { name: /add a model/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    expect((screen.getByLabelText(/prices by model/i) as HTMLTextAreaElement).value).toContain('"output": 2');
+    await userEvent.click(screen.getByRole("button", { name: "Edit as a form" }));
+    expect((within(screen.getByRole("group", { name: "m" })).getByLabelText(/^output/i) as HTMLInputElement).value).toBe("3.10");
+    expect(screen.getByRole("group", { name: "New model" })).toBeTruthy();
   });
 });

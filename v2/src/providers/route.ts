@@ -19,12 +19,12 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import {
-  CLOUDFLARE_AI_GATEWAY_ORIGIN,
   upstreamOrigin,
   type ConnectionRecord,
   type UpstreamCredentials,
 } from "./connections.ts";
 import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
+import { cloudflareGatewayOrigin } from "./destinations.ts";
 
 /** Cloudflare AI Gateway's own request headers that an app may send: caching and retries (v1). */
 const CLOUDFLARE_CLIENT_HEADERS: readonly string[] = [
@@ -94,20 +94,7 @@ function asciiJson(value: unknown): string {
   return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/**
- * A test deployment's stand-in for Cloudflare AI Gateway (the mock), set at
- * build time by `define` in its own gitignored Wrangler config, and in no other
- * build. Nothing at run time can set it: a Worker variable could otherwise
- * send Cloudflare tokens and provider keys to any origin.
- */
-declare const __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__: string | undefined;
-
-/** Where requests through Cloudflare AI Gateway go: Cloudflare, unless this is a test deployment's build. */
-export function cloudflareOrigin(): string {
-  const moved = typeof __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ === "string" ? __TEST_CLOUDFLARE_AI_GATEWAY_ORIGIN__ : "";
-  if (moved === "") return CLOUDFLARE_AI_GATEWAY_ORIGIN;
-  return moved.endsWith("/") ? moved : `${moved}/`;
-}
+export { cloudflareOrigin } from "./destinations.ts";
 
 /** The connection type's own request decoration (`attributionHeaders`). */
 function attribution(description: ProviderDescription, input: UpstreamRequestInput): Record<string, string> {
@@ -136,7 +123,7 @@ export function upstreamUrl(
   }
   const prefix = route.stripPathPrefix;
   const path = prefix !== undefined && input.path.startsWith(prefix) ? input.path.slice(prefix.length) : input.path;
-  return `${cloudflareOrigin()}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/${route.slug}/${path}${input.query}`;
+  return `${cloudflareGatewayOrigin(gateway)}${route.slug}/${path}${input.query}`;
 }
 
 /** The URL and headers of one request to a connection's provider. */

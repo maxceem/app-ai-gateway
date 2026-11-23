@@ -46,7 +46,6 @@ import {
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
-import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
 import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
@@ -85,7 +84,8 @@ import {
 } from "../providers/matcher.ts";
 import type { FieldSetting, OperationDescription, ProviderAuth, ProviderDescription, SuggestedPath } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
-import { normalizePath, TemplateError, type PathRefusal } from "../providers/path.ts";
+import { TemplateError } from "../providers/path.ts";
+import { normalizedBaseUrl } from "../providers/destinations.ts";
 import { upstreamRequest } from "../providers/route.ts";
 import { openSecret, sealSecret } from "../vault/secrets.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
@@ -778,32 +778,14 @@ function assertFieldsFit(
   }
 }
 
-/** Why a base URL's path could reach another path at the provider than the one judged, in words. */
-const BASE_PATH_PROBLEMS: Readonly<Record<PathRefusal, string>> = {
-  bad_encoding: "has broken percent-encoding",
-  dot_segment: "has a . or .. segment",
-  encoded_separator: "has an encoded / or \\",
-  control_character: "has a control character",
-};
-
 /**
- * A base URL, checked when saved: the origin guard, then its path through
- * the same normalization request paths get (`normalizePath`). Listings are
- * judged on its segments (`upstreamTargets`), so an encoded slash, a
- * backslash, a dot segment, broken encoding or an empty segment, which the
- * provider could read as other segments, is refused. A stored base URL sent
- * back unchanged (`unchanged`) is not judged again.
+ * A base URL, checked when saved (`normalizedBaseUrl`, shared with the
+ * console). A stored base URL sent back unchanged (`unchanged`) is not judged
+ * again.
  */
 export function checkedBaseUrl(raw: string, unchanged: string | null = null): string {
-  const checked = checkOperatorBaseUrl(raw);
+  const checked = normalizedBaseUrl(raw, unchanged);
   if (!checked.ok) throw new GatewayError(400, "invalid_request", `baseUrl: ${checked.message}`);
-  if (checked.baseUrl === unchanged) return checked.baseUrl;
-  const pathname = new URL(checked.baseUrl).pathname;
-  const normalized = normalizePath(pathname);
-  if (!normalized.ok) throw new GatewayError(400, "invalid_request", `baseUrl: its path ${BASE_PATH_PROBLEMS[normalized.reason]}`);
-  if (pathname.length > 1 && pathname.slice(1, -1).split("/").includes("")) {
-    throw new GatewayError(400, "invalid_request", "baseUrl: its path has an empty segment (//)");
-  }
   return checked.baseUrl;
 }
 
@@ -919,6 +901,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, ProviderUpdateRequestSchema);
   const current = await connectionRow(c.env.DB, actor.accountId, c.req.param("id")!);
+  // A change made since it was read is a conflict before anything is judged against what changed; the write checks again.
+  if (current.revision !== body.revision) throw new GatewayError(409, "conflict", "The provider connection changed since it was read; read it again and retry");
   const custom = current.type === CUSTOM_PROVIDER_TYPE;
   const description = builtInProvider(current.type);
   assertFieldsFit(current.type, body);
