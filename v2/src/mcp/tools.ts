@@ -20,6 +20,8 @@
  * The order is deliberate: `tools/list` answers with it, and a stable order
  * lets a client cache the list.
  */
+import type { AppPatchOperation } from "../contracts/admin.ts";
+import { shortcutInput, shortcutOperations, usedShortcuts, type ShortcutApp } from "./shortcuts.ts";
 import { z } from "zod";
 import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
 import type { CliToolHint } from "../contracts/cli.ts";
@@ -113,8 +115,16 @@ export interface McpTool {
   readonly next?: Partial<Record<ErrorCode, string>>;
   /** A check of the tool's own, run before the operation. */
   check?(input: Record<string, unknown>): void;
+  /**
+   * A read to run first, whose answer `request` is given: for a tool whose
+   * request depends on what is stored now (`patch_app`'s shortcuts). Null
+   * when this call needs none. When it is run and the write then answers
+   * `retryOnConflict`, both run once more.
+   */
+  before?(input: Record<string, unknown>): ToolRequest | null;
+  readonly retryOnConflict?: ErrorCode;
   /** The operation one call runs, and its request. */
-  request(input: Record<string, unknown>): ToolRequest;
+  request(input: Record<string, unknown>, read?: unknown): ToolRequest;
   /** Where a tool answers with part of the operation's body: that part. */
   result?(body: unknown, input: Record<string, unknown>): unknown;
   /** One or two sentences for the text block beside the structured result. */
@@ -846,28 +856,48 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "patch_app",
     title: "Change part of an app",
     description:
-      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. A value is written as given, so null means unlimited for a limit; only remove deletes. Send the revision get_app returned. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted.",
+      "Changes only the settings named, leaving the rest of the app as it is: the way to make a small edit. The common settings have shortcut arguments (name, status, team_id, bundle_id, attest_environments, verify_on), which may be sent without a revision: they apply to the app as it is now. For anything else, operations are RFC 6902 add, replace or remove, applied in order, each at a JSON Pointer into get_app's app document: /name, /status, or under /config, such as /config/limits/per_app/requests/per_minute. A value is written as given, so null means unlimited for a limit; only remove deletes. Operations need the revision get_app returned; shortcuts sent beside them apply after them. The result is judged exactly as update_app would judge the whole document, and nothing is saved unless every operation applies and the result is accepted.",
     operations: ["patchApp"],
-    input: z.object({
-      app: PATH_ARGUMENTS.app!,
-      revision: APP_PATCH.shape.revision.meta({ description: "The revision get_app returned." }),
-      operations: APP_PATCH.shape.operations.meta({
-        description: "RFC 6902 add, replace or remove operations at JSON Pointers into get_app's app document, applied in order.",
-      }),
-    }),
+    input: z
+      .object({
+        app: PATH_ARGUMENTS.app!,
+        revision: APP_PATCH.shape.revision.meta({ description: "The revision get_app returned. Needed with operations; shortcuts alone apply to the app as it is now." }),
+        operations: APP_PATCH.shape.operations.optional().meta({
+          description: "RFC 6902 add, replace or remove operations at JSON Pointers into get_app's app document, applied in order.",
+        }),
+      })
+      .extend(shortcutInput()),
     annotations: writes({ destructive: false, idempotent: false }),
     cli: { command: "app update", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
-    check: refuseCredentialTargets,
+    check: (input) => {
+      refuseCredentialTargets(input);
+      const explicit = Array.isArray(input.operations) ? input.operations : [];
+      if (explicit.length === 0 && usedShortcuts(input).length === 0) {
+        throw new GatewayError(400, "invalid_request", "Name what to change: a shortcut such as name or status, or operations with the revision; nothing was saved");
+      }
+      if (explicit.length > 0 && input.revision === undefined) {
+        throw new GatewayError(400, "app_revision_required", "Operations need the revision get_app returned; nothing was saved");
+      }
+    },
+    // Shortcuts are judged against the app as it is now, and alone they take its revision too.
+    before: (input) => (usedShortcuts(input).length === 0 ? null : { operation: "getApp", params: pathOnly("getApp", input) }),
+    retryOnConflict: "app_revision_conflict",
     next: {
       app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
-      app_revision_required: "Send the revision get_app returned.",
-      invalid_request: "The message names the operation by index, or the setting the result got wrong. Call get_app to see what is at each path, fix that operation and send the patch again; nothing was saved.",
+      app_revision_required: "Send the revision get_app returned, or make the change with shortcut arguments alone.",
+      invalid_request: "The message names the operation by index, the shortcut, or the setting the result got wrong. Call get_app to see what is at each path, fix it and send the patch again; nothing was saved.",
     },
-    request: ({ revision, operations, ...rest }) => ({
-      operation: "patchApp",
-      params: pathOnly("patchApp", rest),
-      body: { ...(revision === undefined ? {} : { revision }), operations },
-    }),
+    request: (input, read) => {
+      const current = (read as { app?: ShortcutApp & { revision?: number } } | undefined)?.app;
+      const explicit = Array.isArray(input.operations) ? (input.operations as AppPatchOperation[]) : [];
+      const operations = [...explicit, ...(current === undefined ? [] : shortcutOperations(input, current))];
+      const revision = explicit.length > 0 || current === undefined ? input.revision : current.revision;
+      return {
+        operation: "patchApp",
+        params: pathOnly("patchApp", { app: input.app }),
+        body: { ...(revision === undefined ? {} : { revision }), operations },
+      };
+    },
     summary: appSaved,
   },
   tool({

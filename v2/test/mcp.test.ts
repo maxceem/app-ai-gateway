@@ -374,6 +374,61 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).status).toBe(404);
   });
 
+  it("change an app with shortcut arguments, with no revision, as v1's tools did", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    const renamed = await callTool(key, "patch_app", { app: app.id, name: "Shortcut", status: "disabled" });
+    expect(renamed.isError ?? false, JSON.stringify(renamed.structuredContent)).toBe(false);
+    expect(renamed.structuredContent.app).toMatchObject({ name: "Shortcut", status: "disabled", revision: app.revision + 1 });
+    // Beside operations, they apply after them, at the revision the caller read.
+    const both = await callTool(key, "patch_app", {
+      app: app.id,
+      revision: app.revision + 1,
+      operations: [{ op: "replace", path: "/name", value: "First" }],
+      status: "active",
+    });
+    expect(both.structuredContent.app).toMatchObject({ name: "First", status: "active", revision: app.revision + 2 });
+    // An iOS setting on a server app is refused by name, and nothing is saved.
+    const ios = await callTool(key, "patch_app", { app: app.id, team_id: "ABCDE12345" });
+    expect(ios.structuredContent).toMatchObject({ error: "invalid_request" });
+    expect(ios.structuredContent.message).toContain("team_id");
+    // Nothing named, or operations without a revision, is refused before anything runs.
+    expect((await callTool(key, "patch_app", { app: app.id })).structuredContent.error).toBe("invalid_request");
+    const unread = await callTool(key, "patch_app", { app: app.id, operations: [{ op: "replace", path: "/name", value: "X" }] });
+    expect(unread.structuredContent.error).toBe("app_revision_required");
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ name: "First", revision: app.revision + 2 });
+  });
+
+  it("set an iOS app's App Attest settings with shortcuts", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/apps", {
+      name: "iOS",
+      config: {
+        authentication: {
+          type: "apple_app_attest",
+          end_user: { source: "app_install" },
+          app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app" },
+        },
+        routing: { providers: {} },
+      },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = created.body.app.id as string;
+    const patched = await callTool(key, "patch_app", {
+      app: id,
+      bundle_id: "com.example.other",
+      attest_environments: ["production", "development"],
+      verify_on: "token_exchange",
+    });
+    expect(patched.isError ?? false, JSON.stringify(patched.structuredContent)).toBe(false);
+    expect(patched.structuredContent.app.config.authentication.app_attest).toMatchObject({
+      team_id: "ABCDE12345",
+      bundle_id: "com.example.other",
+      environments: ["production", "development"],
+      verify_on: "token_exchange",
+    });
+  });
+
   it("validate a new app's document, and a refusal names what is wrong", async () => {
     const key = await seedManagementKey();
     const draft = await callTool(key, "validate_app", {
