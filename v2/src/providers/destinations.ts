@@ -9,10 +9,10 @@
  */
 import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import { wellFormedText } from "../core/well-formed.ts";
-
-export { wellFormedText };
 import type { ProviderDescription } from "./operation.ts";
 import { normalizePath, type PathRefusal } from "./path.ts";
+
+export { wellFormedText };
 
 /** Cloudflare AI Gateway's own origin. */
 export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";

@@ -1,4 +1,4 @@
-import { RESERVED_PRICE_KEY } from "@contracts/admin";
+import { PRICE_WALK_DEPTH, RESERVED_PRICE_KEY } from "@contracts/admin";
 import { readPrice, readsAsWritten } from "@contracts/price-amount";
 
 /**
@@ -73,16 +73,13 @@ export function severalUnits(row: PriceRow): boolean {
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** How deep prices may nest: well past any price's shape (the gateway walks as far). */
-const MAX_DEPTH = 32;
-
 /** Whether a value nests deeper than any price can, found with an explicit stack, never recursing. */
 function nestsTooDeep(value: unknown): boolean {
   const stack: { value: unknown; depth: number }[] = [{ value, depth: 0 }];
   while (stack.length > 0) {
     const { value: current, depth } = stack.pop()!;
     if (typeof current !== "object" || current === null) continue;
-    if (depth >= MAX_DEPTH) return true;
+    if (depth >= PRICE_WALK_DEPTH) return true;
     for (const inner of Object.values(current)) stack.push({ value: inner, depth: depth + 1 });
   }
   return false;

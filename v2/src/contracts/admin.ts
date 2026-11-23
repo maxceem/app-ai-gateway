@@ -166,8 +166,11 @@ const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelP
 /** The one name that cannot be a key anywhere in prices: as a key it would reach the object's prototype, not be stored. */
 export const RESERVED_PRICE_KEY = "__proto__";
 
-/** How deep the walk below looks: well past any price's shape, which the schema then refuses as it would anyway. */
-const PRICE_WALK_DEPTH = 32;
+/**
+ * How deep prices are walked: well past any price's shape. The gateway's walk
+ * below and the console's form (`formCanShow`) share it.
+ */
+export const PRICE_WALK_DEPTH = 32;
 
 /**
  * Where a `__proto__` key stands in prices, as a dotted path, or null: model
