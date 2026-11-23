@@ -32,6 +32,7 @@ import { isSecretFieldName, type ResultPath } from "./secret-fields.ts";
 export const MCP_READ_OPERATIONS = [
   "getAdminSession",
   "listModelPrices",
+  "listProviderTypes",
   "listProviders",
   "listApps",
   "getApp",
@@ -422,6 +423,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
       const models = providers.reduce((sum, provider) => sum + Object.keys(prices[provider]!).length, 0);
       return `${plural(models, "priced model")} across ${plural(providers.length, "provider type")}.`;
     },
+  }),
+  tool({
+    name: "list_provider_types",
+    title: "List provider types",
+    description:
+      "Returns every provider type a connection can be added for: its label, the API styles its operations speak, whether it may go through Cloudflare AI Gateway, and whether it is the custom type. Use it to choose a type before adding a provider connection. A custom provider needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+    operation: "listProviderTypes",
+    cli: {
+      command: "provider types",
+      view: { rows: "types", columns: ["type", "label", "styles", "cloudflareGateway=Cloudflare", "custom"] },
+    },
+    summary: ({ types }) => `${plural(types.length, "provider type")}: ${listed(types.map((entry) => entry.type), 30)}.`,
   }),
   tool({
     name: "list_providers",

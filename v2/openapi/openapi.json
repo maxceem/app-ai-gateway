@@ -3171,6 +3171,50 @@
           "prices"
         ]
       },
+      "ProviderTypeListResponse": {
+        "type": "object",
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderType"
+            }
+          }
+        },
+        "required": [
+          "types"
+        ]
+      },
+      "ProviderType": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "styles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cloudflareGateway": {
+            "type": "boolean"
+          },
+          "custom": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "label",
+          "styles",
+          "cloudflareGateway",
+          "custom"
+        ]
+      },
       "ProviderListResponse": {
         "type": "object",
         "properties": {
@@ -10593,6 +10637,76 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PriceListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/provider-types": {
+      "get": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "listProviderTypes",
+        "summary": "List provider types",
+        "description": "Every provider type a connection can be added for, with the API styles its operations speak, read from the provider descriptions this deployment runs. `custom` is a provider the gateway does not know: it needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider types, built-in ones by label, then custom.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTypeListResponse"
                 }
               }
             }

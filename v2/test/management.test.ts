@@ -8,6 +8,8 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { billingPlanLimits } from "../src/billing/access.ts";
+import { CUSTOM_PATH_STYLES } from "../src/contracts/admin.ts";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ACCOUNT_ID, clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -713,6 +715,20 @@ describe("price list and key test", () => {
     const prices = await request(reader, "GET", "/v2/admin/prices");
     expect(prices.status).toBe(200);
     expect(prices.body.prices.openai["gpt-4o-mini"]).toMatchObject({ input: expect.any(Number), output: expect.any(Number) });
+  });
+
+  it("lists the provider types with the API styles of their operations, built-in ones by label, then custom", async () => {
+    const reader = await seedManagementKey({ grant: "read" });
+    const listed = await request(reader, "GET", "/v2/admin/provider-types");
+    expect(listed.status).toBe(200);
+    const types = listed.body.types as { type: string; label: string; styles: string[]; cloudflareGateway: boolean; custom: boolean }[];
+    expect(types.map((entry) => entry.type)).toEqual([...Object.values(BUILT_IN_PROVIDERS).map((description) => description.type).sort((a, b) => BUILT_IN_PROVIDERS[a]!.label.localeCompare(BUILT_IN_PROVIDERS[b]!.label)), "custom"]);
+    const openai = types.find((entry) => entry.type === "openai")!;
+    expect(openai).toMatchObject({ label: "OpenAI", cloudflareGateway: true, custom: false });
+    // Each style once, in the order the description declares its operations.
+    expect(openai.styles.slice(0, 3)).toEqual(["openai-chat", "openai-responses", "openai-transcription"]);
+    expect(new Set(openai.styles).size).toBe(openai.styles.length);
+    expect(types.at(-1)).toEqual({ type: "custom", label: "Custom provider", styles: [...CUSTOM_PATH_STYLES], cloudflareGateway: false, custom: true });
   });
 
   it("tests a key on the host live requests would use, and stores nothing", async () => {

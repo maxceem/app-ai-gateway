@@ -689,6 +689,26 @@ export const PriceListResponseSchema = z
   .object({ prices: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))) })
   .meta({ id: "PriceListResponse" });
 
+/**
+ * A provider type a connection can be added for: what the console and the CLI
+ * call it, and the API styles its operations speak, read from its provider
+ * description. A custom provider speaks the styles its listed paths name.
+ */
+export const ProviderTypeSchema = z
+  .object({
+    type: z.string(),
+    label: z.string(),
+    /** The API styles of its operations, in the order it declares them. */
+    styles: z.array(z.string()),
+    /** Whether a connection of this type may go through Cloudflare AI Gateway. */
+    cloudflareGateway: z.boolean(),
+    /** A custom provider: it needs `baseUrl` and `auth`, and speaks the styles its paths name. */
+    custom: z.boolean(),
+  })
+  .meta({ id: "ProviderType" });
+
+export const ProviderTypeListResponseSchema = z.object({ types: z.array(ProviderTypeSchema) }).meta({ id: "ProviderTypeListResponse" });
+
 export const ProviderTestRequestSchema = z
   .object({
     type: z.string().trim().min(1),

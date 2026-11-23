@@ -150,6 +150,11 @@ describe("the MCP endpoint", () => {
     const names = (listed.message.result.tools as { name: string }[]).map((tool) => tool.name);
     expect(names).toEqual(MCP_TOOLS.map((tool) => tool.name));
 
+    const types = await callTool(key, "list_provider_types");
+    expect(types.isError ?? false).toBe(false);
+    expect(types.structuredContent.types.at(-1).type).toBe("custom");
+    expect(types.content[0]!.text).toMatch(/^\d+ provider types: /u);
+
     const apps = await callTool(key, "list_apps");
     expect(apps.isError ?? false).toBe(false);
     expect(apps.structuredContent.apps.map((entry: { id: string }) => entry.id)).toContain(app.id);

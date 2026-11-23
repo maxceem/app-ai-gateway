@@ -40,6 +40,7 @@ import {
   EndUserQuerySchema,
   EndUserResponseSchema,
   PriceListResponseSchema,
+  ProviderTypeListResponseSchema,
   ProviderCreateRequestSchema,
   ProviderDeleteResponseSchema,
   ProviderListResponseSchema,
@@ -574,6 +575,19 @@ export const CATALOG = {
     security: "management",
     response: PriceListResponseSchema,
     responseDescription: "The price list this deployment bills with.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listProviderTypes: {
+    method: "GET",
+    path: "/v2/admin/provider-types",
+    tags: ["Admin providers"],
+    summary: "List provider types",
+    description:
+      "Every provider type a connection can be added for, with the API styles its operations speak, read from the provider descriptions this deployment runs. `custom` is a provider the gateway does not know: it needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+    security: "management",
+    response: ProviderTypeListResponseSchema,
+    responseDescription: "The provider types, built-in ones by label, then custom.",
     errors: ADMIN_ERRORS,
   },
 

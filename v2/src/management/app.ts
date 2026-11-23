@@ -57,6 +57,7 @@ import {
   revealOperation,
 } from "../admin/handoffs.ts";
 import { listModelPrices } from "../admin/prices.ts";
+import { listProviderTypes } from "../admin/provider-types.ts";
 import { createProvider, deleteProvider, getProvider, listProviders, testProvider, updateProvider } from "../admin/providers.ts";
 import { blockAppUser, getAppUser, listAppUsers, unblockAppUser } from "../admin/users.ts";
 import { listAppJobs } from "../admin/jobs.ts";
@@ -111,6 +112,7 @@ admin.get(path("getAppUser"), getAppUser);
 admin.post(path("blockAppUser"), blockAppUser);
 admin.post(path("unblockAppUser"), unblockAppUser);
 admin.get(path("listModelPrices"), listModelPrices);
+admin.get(path("listProviderTypes"), listProviderTypes);
 admin.get(path("listProviders"), listProviders);
 admin.post(path("testProvider"), testProvider);
 admin.post(path("createProvider"), createProvider);

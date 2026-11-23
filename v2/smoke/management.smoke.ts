@@ -63,6 +63,14 @@ test("the price list names priced models", { skip }, async () => {
   assert.equal(typeof prices.body.prices.openai["gpt-4o-mini"].input, "number");
 });
 
+test("the provider types name their API styles, and the custom type", { skip }, async () => {
+  const listed = await admin("GET", "/v2/admin/provider-types");
+  assert.equal(listed.status, 200);
+  const openai = listed.body.types.find((entry: { type: string }) => entry.type === "openai");
+  assert.ok(openai?.styles.includes("openai-chat"), "openai does not list the openai-chat style");
+  assert.equal(listed.body.types.at(-1)?.type, "custom");
+});
+
 test("a key test reports a good key, a rejected one, and stores nothing", { skip }, async () => {
   const good = await admin("POST", "/v2/admin/providers/test", { type: "openai", secret: "sk-mock-smoke-key", baseUrl: mockUrl });
   assert.deepEqual(good, { status: 200, body: { validated: true } });
