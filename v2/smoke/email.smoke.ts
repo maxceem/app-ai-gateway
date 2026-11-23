@@ -14,10 +14,12 @@
  * person at a random `example.test` address, which no API can delete, and
  * deletes the app it makes.
  *
- * Where the deployment offers human support (its help desk is the mock in
- * `smoke/helpdesk-mock/`, which emails through the mail mock), the same person
- * then writes to support and reads the reference back from the mail mock.
- * Nothing reaches a real help desk or inbox.
+ * Where the deployment offers human support, the same person then writes to
+ * support and reads the reference back from the mail mock, but only once a
+ * probe proved the deployment's help desk is the mock in `smoke/helpdesk-mock/`
+ * (which emails only the sender, through the mail mock): a message carrying a
+ * key, which any help desk refuses without keeping it, is refused in the
+ * mock's own words. Otherwise it skips, and nothing reaches a real help desk.
  */
 import { test } from "node:test";
 import {
@@ -130,6 +132,14 @@ test("a message to human support opens a ticket, and its reference reaches the p
   }
   check(person !== undefined, "the sign-up check before this one did not finish");
   const { email, cookie } = person;
+  // The probe: a message with a key in it, which a help desk refuses and keeps nothing of. Only the mock refuses it in its own words.
+  const probe = await asConsole(cookie, "/v2/admin/support", { json: { kind: "feedback", message: `Smoke probe: sk-${"0".repeat(32)}` } });
+  const probed = await readJson(probe);
+  const fromMock = probe.status === 400 && typeof probed.error?.message === "string" && probed.error.message.startsWith("Help desk mock:");
+  if (!fromMock) {
+    t.skip("the deployment's help desk did not answer as the help desk mock, so nothing is sent to it");
+    return;
+  }
   const sent = await asConsole(cookie, "/v2/admin/support", { json: { kind: "feedback", message: "Smoke check: please ignore.", page: "/apps" } });
   await expectResponse(sent, 200, "the support message");
   const answer = await readJson(sent);
