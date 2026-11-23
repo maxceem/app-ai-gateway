@@ -15,8 +15,15 @@
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { SupportMessageRequestSchema } from "../contracts/support.ts";
-import { billingPlanLimits, billingWhileUnreachable, planFeatureRefusal, planIncludes, readBillingForConsole } from "../billing/access.ts";
-import { PLAN_LIMIT_KEYS, type GatewayBillingAccess } from "../contracts/billing.ts";
+import {
+  billingWhileUnreachable,
+  planFeatureRefusal,
+  planIncludes,
+  readBillingForConsole,
+  rememberSupportRead,
+  requireWellFormedPlan,
+} from "../billing/access.ts";
+import type { GatewayBillingAccess } from "../contracts/billing.ts";
 import { consoleOrigin, hostedDeployment, setting } from "../auth/settings.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -75,20 +82,23 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
   // The plan, read fresh with the console's deadline, not from the cache. A
   // read that answers with no plan, or one that leaves support out, is
   // refused. A read that fails or runs late falls back on v1's rule: the last
-  // known plan decides, and with none the message is sent, because an outage
+  // known plan decides (the newer of support's own last read and app
+  // traffic's), and with none the message is sent, because an outage
   // is when a paying customer most needs to write in. Either way the ticket
   // then says the plan is unknown: a kept plan is never named as the current one.
   let access: GatewayBillingAccess;
   let fresh = true;
+  const readAt = Date.now();
   try {
     access = await readBillingForConsole(c.env, actor.accountId);
+    rememberSupportRead(actor.accountId, access, readAt);
   } catch (error) {
     if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
     access = billingWhileUnreachable(actor.accountId);
     fresh = false;
   }
   // As v1: the plan's limits are read whole, and a malformed one is a `502`, not a guess either way.
-  billingPlanLimits(access, PLAN_LIMIT_KEYS);
+  requireWellFormedPlan(access);
   if (!planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
   const plan = fresh && access.state === "billed" ? access.plan : null;
 

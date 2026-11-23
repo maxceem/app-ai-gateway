@@ -8,6 +8,7 @@
  */
 import {
   PLAN_FEATURES,
+  PLAN_LIMIT_KEYS,
   PlanLimitInputSchema,
   type BillingAccess,
   type GatewayBillingAccess,
@@ -113,12 +114,52 @@ function withoutBilling(accountId: string, code?: string | null): GatewayBilling
 }
 
 /**
- * What app traffic falls back on while billing cannot answer: the last known
- * plan, marked stale, or unavailable. It only reads; nothing is stored or
- * forgotten. Support uses it when its own fresh read fails (v1's rule).
+ * Support's own fresh reads, the latest per account. Kept as long as app
+ * traffic's last known plan, so that while billing is down the newer of the
+ * two decides. Without it, a plan app traffic kept from before an upgrade
+ * ended could admit support that a fresh read had just refused.
+ */
+const supportReads = ttlCache<string, GatewayBillingAccess & { state: "billed" }>({
+  name: "billing-support-read",
+  ttlMs: BILLING_STALE_MAX_MS,
+  maxEntries: 5_000,
+});
+
+/** Records support's fresh read, begun at `readAt`. Only an answered plan (or no plan) is kept. */
+export function rememberSupportRead(accountId: string, access: GatewayBillingAccess, readAt: number): void {
+  if (access.state === "billed" && access.stale !== true) supportReads.set(accountId, access, { storedAt: readAt });
+}
+
+/**
+ * The plan support goes by while billing cannot answer (v1's rule): the newer
+ * of support's own last fresh read and app traffic's last known plan, marked
+ * stale, or unavailable when neither is known or the newer one's paid period
+ * has ended. It only reads; nothing is stored or forgotten.
  */
 export function billingWhileUnreachable(accountId: string): GatewayBillingAccess {
-  return withoutBilling(accountId);
+  const own = supportReads.get(accountId) === undefined ? undefined : supportReads.peek(accountId);
+  const kept = lastKnownAccess.get(accountId) === undefined ? undefined : lastKnownAccess.peek(accountId);
+  if (own === undefined || (kept !== undefined && kept.storedAt > own.storedAt)) return withoutBilling(accountId);
+  const endsAt = entitlementEndsAt(own.value);
+  if (endsAt !== null && endsAt <= Date.now()) return { state: "unavailable" };
+  return { ...own.value, stale: true };
+}
+
+/**
+ * Checks a plan's limits whole, as v1 did, the legacy `maxProviderGateways`
+ * too: a malformed one is `502 billing_unavailable`, never a guess either way.
+ * For support, which v1 refused on any malformed plan; the request path reads
+ * each limit on its own instead.
+ */
+export function requireWellFormedPlan(access: GatewayBillingAccess): void {
+  billingPlanLimits(access, PLAN_LIMIT_KEYS);
+  if (access.state !== "billed" || access.plan === null || access.plan.limits === undefined) return;
+  const legacy = (access.plan.limits as Record<string, unknown>).maxProviderGateways;
+  if (legacy === undefined) return;
+  const parsed = PlanLimitInputSchema.safeParse(legacy);
+  if (!parsed.success || parsed.data === undefined) {
+    throw new GatewayError(502, "billing_unavailable", "Billing plan limit maxProviderGateways is invalid");
+  }
 }
 
 /** The account's billing access. Self-hosted (no binding) reads nothing. */
