@@ -14,6 +14,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SMOKE_CLIENT } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
@@ -24,7 +25,7 @@ const noKey = consoleUrl === "" || managementKey === "" ? "V2_CONSOLE_URL and V2
 const MODERN = "2026-07-28";
 const ENVELOPE = {
   "io.modelcontextprotocol/protocolVersion": MODERN,
-  "io.modelcontextprotocol/clientInfo": { name: "agw-smoke", version: "1.0.0" },
+  "io.modelcontextprotocol/clientInfo": { name: SMOKE_CLIENT, version: "1.0.0" },
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
