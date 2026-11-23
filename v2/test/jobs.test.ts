@@ -268,6 +268,8 @@ describe("submitting a job", () => {
     falAnswers({ submit: () => Response.json({ status: "IN_QUEUE" }) });
     const { response } = await submit(appId, slug, key);
     expect(response.status).toBe(502);
+    // The provider answered, so its time is in server-timing even though the gateway refused its answer.
+    expect((response.headers.get("server-timing") ?? "").split(", ").map((entry) => entry.split(";")[0])).toEqual(["auth", "prepare", "limiter", "provider_ttfb"]);
     expect(await charges(appId)).toMatchObject([{ kind: "estimate", cost_nano: 50_000_000 }]);
     expect(await openWork(appId)).toEqual([]);
     expect(logged("job_submission_lost")).toBe(true);

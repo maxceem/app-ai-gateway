@@ -13,7 +13,7 @@
 import { z } from "zod";
 import type { AppPatchOperation } from "../contracts/admin.ts";
 import { APP_STATUSES } from "../contracts/admin.ts";
-import { APP_ATTEST_ENVIRONMENTS, APP_ATTEST_VERIFY_ON } from "../contracts/app-config.ts";
+import { APP_ATTEST_VERIFY_ON, AppAttestEnvironmentsSchema, AppleBundleIdSchema, AppleTeamIdSchema } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 
 /** The app document as `get_app` answers it: only what the shortcuts read. */
@@ -53,15 +53,15 @@ export const APP_SHORTCUTS: Readonly<Record<string, Shortcut>> = {
     operations: (value: string) => [set("/status", value)],
   },
   team_id: {
-    schema: z.string().trim().min(1).meta({ description: "An iOS app's Apple team ID, ten uppercase letters or digits." }),
+    schema: AppleTeamIdSchema.meta({ description: "An iOS app's Apple team ID, ten uppercase letters or digits." }),
     operations: appAttest("team_id", "team_id"),
   },
   bundle_id: {
-    schema: z.string().trim().min(1).meta({ description: "An iOS app's bundle ID, such as com.example.app." }),
+    schema: AppleBundleIdSchema.meta({ description: "An iOS app's bundle ID, such as com.example.app." }),
     operations: appAttest("bundle_id", "bundle_id"),
   },
   attest_environments: {
-    schema: z.array(z.enum(APP_ATTEST_ENVIRONMENTS)).min(1).meta({
+    schema: AppAttestEnvironmentsSchema.meta({
       description: "The App Attest environments an iOS app accepts. A release build should accept production only.",
     }),
     operations: appAttest("attest_environments", "environments"),

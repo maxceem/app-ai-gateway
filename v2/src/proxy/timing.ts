@@ -23,6 +23,8 @@ export interface ServedTimings {
   limiterMs?: number;
   /** When `prepare` began: set as `auth` ends. */
   prepareStartedAt?: number;
+  /** The provider's time to its first byte, once it answered: kept for an answer the gateway then refuses (a job with no id). */
+  providerTtfbMs?: number;
 }
 
 /** One request's timings, found again by the error handler. Keyed by the request, so nothing is kept once it is gone. */
@@ -85,7 +87,7 @@ export function serverTiming(timings: ServedTimings, providerTtfbMs?: number): s
     ["auth", timings.authMs],
     ["prepare", timings.prepareMs],
     ["limiter", timings.limiterMs],
-    ["provider_ttfb", providerTtfbMs],
+    ["provider_ttfb", providerTtfbMs ?? timings.providerTtfbMs],
   ];
   const named: string[] = [];
   for (const [name, durationMs] of entries) {
@@ -102,4 +104,10 @@ export function setServerTiming(headers: Headers, request: Request, providerTtfb
   const value = serverTiming(timings, providerTtfbMs);
   if (value === "") headers.delete("server-timing");
   else headers.set("server-timing", value);
+}
+
+/** Records the provider's time to its first byte as soon as it answered, before its answer is judged. */
+export function providerAnswered(request: Request, providerTtfbMs: number): void {
+  const timings = timingsOf(request);
+  if (timings !== undefined) timings.providerTtfbMs = providerTtfbMs;
 }

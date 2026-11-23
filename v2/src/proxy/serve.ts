@@ -68,7 +68,7 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { setting } from "../core/query-budget.ts";
-import { authDone, authRefused, prepareDone, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
+import { authDone, authRefused, prepareDone, providerAnswered, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -1269,6 +1269,8 @@ function answer(
   sent?: SentAttempt,
 ): Response | Promise<Response> {
   const { description, operation, attempt } = prepared;
+  // Recorded before the answer is judged: an answer the gateway then refuses (a job with no id) still says how long the provider took.
+  providerAnswered(c.req.raw, latencyMs);
   // A job submit the provider redirected was not accepted: nothing is charged, and its
   // `Location` never reaches the app (a client following it would resend the job's body,
   // and any token header the app signs in with, to another host).

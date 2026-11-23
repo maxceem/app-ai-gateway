@@ -485,6 +485,15 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ status: "active", revision: app.revision });
   });
 
+  it("check an iOS shortcut's value as the app's own rules do, before the app is read", async () => {
+    const key = await seedManagementKey();
+    // An app that does not exist: a bad value is refused before it is looked up.
+    for (const args of [{ team_id: "bad" }, { bundle_id: "nodots" }, { attest_environments: ["production", "production"] }, { attest_environments: [] }]) {
+      const refused = await callTool(key, "patch_app", { app: "app_missing", ...args });
+      expect(refused.structuredContent.error, JSON.stringify(args)).toBe("invalid_request");
+    }
+  });
+
   it("set a field a shortcut names even when an operation before it replaced its parent without it", async () => {
     const key = await seedManagementKey();
     const created = await admin(key, "POST", "/v2/admin/apps", {
