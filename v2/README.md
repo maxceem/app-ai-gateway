@@ -35,10 +35,11 @@ what is built so far.
 | `src/do/` | Durable Objects: the three limiters (the end user's, with the App Attest replay counter and the user's limits; the app's; the account's plan allowance), the sign-in flood limiter, and the per-app store for ledger writes that failed. |
 | `src/limits/` | Admission: the three limiters one after another, the replay check's own deadline and the one deadline the other checks share, and budget totals from the rollups. |
 | `src/billing/` | The hosted billing service (the optional `BILLING` binding): reading an account's plan, plan periods from 00:00 UTC on the renewal day, and spending the plan allowance without ever failing a request. |
+| `src/helpdesk/`, `src/admin/support.ts` | Human support: the help desk contract (the optional `HELPDESK` binding) and the support message. Offered only with billing, a help desk and `SUPPORT_EMAIL`, for a plan that includes `humanSupport`. |
 | `src/http/` | Reading request bodies with the 20 MiB limit, and the 10-second deadline on sign-in calls. |
 | `src/core/`, `src/apps/` | Errors, logs, isolate caches with stale fallback, the origin guard, and loading an app. |
 | `test/` | Tests that run in the Workers runtime, and compile-time checks (`operation-types.ts`). |
-| `smoke/` | Checks against a live deployment; `smoke/mock/`, a mock OpenAI-compatible provider to call them against; and `smoke/billing-mock/`, a mock of the hosted billing service for the test deployment. |
+| `smoke/` | Checks against a live deployment; `smoke/mock/`, a mock OpenAI-compatible provider to call them against; `smoke/billing-mock/`, a mock of the hosted billing service for the test deployment; `smoke/mail-mock/`, which stands in for the email sender and sends nothing; and `smoke/helpdesk-mock/`, which stands in for the help desk and emails only through the mail mock. |
 
 ## Commands
 
