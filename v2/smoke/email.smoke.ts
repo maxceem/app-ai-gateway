@@ -14,12 +14,12 @@
  * person at a random `example.test` address, which no API can delete, and
  * deletes the app it makes.
  *
- * Where the deployment offers human support, the same person then writes to
- * support and reads the reference back from the mail mock, but only once a
- * probe proved the deployment's help desk is the mock in `smoke/helpdesk-mock/`
- * (which emails only the sender, through the mail mock): a message carrying a
- * key, which any help desk refuses without keeping it, is refused in the
- * mock's own words. Otherwise it skips, and nothing reaches a real help desk.
+ * With `V2_HELPDESK_MOCK=1`, the same person then writes to human support and
+ * reads the reference back from the mail mock. Set it only for a deployment
+ * whose `HELPDESK` binding is the mock in `smoke/helpdesk-mock/`, which emails
+ * only the sender, through the mail mock. The check also needs the support
+ * inbox the deployment names to be an `example.test` address. Without both it
+ * skips and sends nothing.
  */
 import { test } from "node:test";
 import {
@@ -37,6 +37,7 @@ import {
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
 const mailUrl = process.env.V2_MAIL_URL ?? "";
+const helpdeskMock = process.env.V2_HELPDESK_MOCK === "1";
 const skip = base === "" || consoleUrl === "" || mailUrl === "" ? "V2_BASE_URL, V2_CONSOLE_URL and V2_MAIL_URL are needed" : false;
 
 /** A console page's call, with the person's cookie. */
@@ -125,21 +126,17 @@ test("a sign-up is sent a verification link, and its apps serve requests once it
 });
 
 test("a message to human support opens a ticket, and its reference reaches the person through the mail mock", { skip, timeout: TEST_TIMEOUT_MS }, async (t) => {
+  if (!helpdeskMock) {
+    t.skip("V2_HELPDESK_MOCK=1 is needed: set it only for a deployment whose help desk is the mock");
+    return;
+  }
   const capabilities = await readJson(await send("/v2/console/capabilities", consoleUrl));
-  if (typeof capabilities.supportEmail !== "string") {
-    t.skip("this deployment offers no human support");
+  if (typeof capabilities.supportEmail !== "string" || !capabilities.supportEmail.endsWith("@example.test")) {
+    t.skip("the deployment's support inbox is not an example.test address, so nothing is sent");
     return;
   }
   check(person !== undefined, "the sign-up check before this one did not finish");
   const { email, cookie } = person;
-  // The probe: a message with a key in it, which a help desk refuses and keeps nothing of. Only the mock refuses it in its own words.
-  const probe = await asConsole(cookie, "/v2/admin/support", { json: { kind: "feedback", message: `Smoke probe: sk-${"0".repeat(32)}` } });
-  const probed = await readJson(probe);
-  const fromMock = probe.status === 400 && typeof probed.error?.message === "string" && probed.error.message.startsWith("Help desk mock:");
-  if (!fromMock) {
-    t.skip("the deployment's help desk did not answer as the help desk mock, so nothing is sent to it");
-    return;
-  }
   const sent = await asConsole(cookie, "/v2/admin/support", { json: { kind: "feedback", message: "Smoke check: please ignore.", page: "/apps" } });
   await expectResponse(sent, 200, "the support message");
   const answer = await readJson(sent);

@@ -4,7 +4,7 @@
  * page that is not a URL, as the real help desk does.
  */
 import { describe, expect, it } from "vitest";
-import { MOCK_MARK, newReference, refusal, SERVICE_ID } from "../smoke/helpdesk-mock/index.ts";
+import { newReference, refusal, SERVICE_ID } from "../smoke/helpdesk-mock/index.ts";
 import type { HelpdeskTicketInput } from "../src/helpdesk/contract.ts";
 import { HELPDESK_SERVICE_ID } from "../src/admin/support.ts";
 
@@ -30,7 +30,5 @@ describe("the help desk mock", () => {
     expect(refusal({ ...TICKET, context: { key: "agw_app_0123456789abcdefghij" } })?.code).toBe("credential_detected");
     expect(refusal({ ...TICKET, page: "/apps" })?.code).toBe("invalid_input");
     expect(refusal({ ...TICKET, page: "javascript:alert(1)" })?.code).toBe("invalid_input");
-    // In its own words, which no real help desk says: what the smoke check's probe looks for.
-    expect(refusal({ ...TICKET, message: `Smoke probe: sk-${"0".repeat(32)}` })?.message.startsWith(MOCK_MARK)).toBe(true);
   });
 });

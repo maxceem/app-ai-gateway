@@ -60,6 +60,12 @@ Inside `v2/`:
   `V2_CONSOLE_URL` (the deployment's `CONSOLE_ORIGIN`), from the environment only. The console
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
+  The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
+- `node --experimental-strip-types --test smoke/email.smoke.ts`: the email check, run on its own. It
+  needs `V2_BASE_URL`, `V2_CONSOLE_URL` and `V2_MAIL_URL` (the deployed `smoke/mail-mock/`). Its
+  support check also needs `V2_HELPDESK_MOCK=1`, set only for a deployment whose `HELPDESK` binding
+  is `smoke/helpdesk-mock/`, and runs only when the deployment's support inbox is an `example.test`
+  address. Otherwise it skips and sends nothing to any help desk.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
 

@@ -11,9 +11,8 @@
  * `example.test` addresses. A ticket for any other address is opened but not
  * delivered, and nobody is ever emailed.
  *
- * Its refusals say they come from the mock (`MOCK_MARK`), so a smoke check can
- * prove a deployment is bound to it, with a message both it and a real help
- * desk refuse, before sending anything a real one would keep.
+ * Its refusals say they come from the mock (`MOCK_MARK`), so they are never
+ * mistaken for a real help desk's.
  *
  * Deploy: `pnpm exec wrangler deploy -c smoke/helpdesk-mock/wrangler.jsonc`.
  * The test deployment binds it as HELPDESK (gitignored wrangler.test.jsonc).
