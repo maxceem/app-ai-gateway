@@ -30,6 +30,8 @@ const AUTHOR_NAMESPACES: ReadonlyMap<string, string> = new Map(Object.entries({
   mistral: "Mistral",
   "x-ai": "xAI",
   xai: "xAI",
+  // Vercel AI Gateway names xAI's models `spacexai/…`.
+  spacexai: "xAI",
   moonshotai: "Moonshot AI",
   "z-ai": "Z.ai",
   zai: "Z.ai",

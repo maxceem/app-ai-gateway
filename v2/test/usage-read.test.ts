@@ -311,6 +311,7 @@ describe("charges", () => {
     await seed({ appId, usedAt: day + 4, id: "author_custom", provider: "custom", model: "my-model" });
     await seed({ appId, usedAt: day + 5, id: "author_proto", provider: "openrouter", model: "__proto__/model" });
     await seed({ appId, usedAt: day + 6, id: "author_constructor", provider: "openrouter", model: "constructor/model" });
+    await seed({ appId, usedAt: day + 7, id: "author_vercel_xai", provider: "vercel", model: "spacexai/grok-4" });
     const read = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-06-01&to=2025-06-01`);
     expect(read.status).toBe(200);
     const authors = Object.fromEntries(read.body.charges.map((row: any) => [row.id, row.model_author]));
@@ -322,7 +323,20 @@ describe("charges", () => {
       author_custom: null,
       author_proto: null,
       author_constructor: null,
+      author_vercel_xai: "xAI",
     });
+  });
+
+  it("know the author of every namespace a gateway provider declares, so none comes back null", async () => {
+    const { BUILT_IN_PROVIDERS } = await import("../src/providers/index.ts");
+    const { modelAuthor } = await import("../src/providers/model-author.ts");
+    const missing: string[] = [];
+    for (const provider of Object.values(BUILT_IN_PROVIDERS)) {
+      for (const namespace of Object.keys(provider.modelNamespaces ?? {})) {
+        if (modelAuthor(provider.type, `${namespace}/a-model-no-list-names`) === null) missing.push(`${provider.type}: ${namespace}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 
   it("hand out a cursor only when an older charge exists: none after exactly a full page (Sol 7b-6)", async () => {
