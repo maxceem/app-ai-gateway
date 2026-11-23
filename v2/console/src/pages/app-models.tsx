@@ -3,7 +3,7 @@
  * form with one save. Both live in the app configuration, and every other
  * part of it is sent back as it was read.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, ArrowRight, Loader2, Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -19,9 +19,10 @@ import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import { operationsOf } from "@/lib/providers";
 import { useProviders } from "@/lib/queries";
-import { configIssue, useSaveApp } from "@/lib/save-app";
+import { StaleDraftNotice } from "@/components/stale-draft-notice";
+import { configIssue, usePatchForm } from "@/lib/save-app";
 import type { App, ProviderConnection } from "@/lib/types";
-import { PRESET_SLUG_PATTERN, PresetsConfigSchema, type Preset } from "@contracts/app-config";
+import { PRESET_SLUG_PATTERN, PresetsConfigSchema, RoutingConfigSchema, type Preset } from "@contracts/app-config";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
 import { declaredOperation, presetOperationProblem } from "@providers/presets";
 
@@ -43,20 +44,27 @@ interface Refusal {
 // Model rewrites
 
 type RewriteRow = { from: string; to: string };
+type Rewrites = Record<string, string> | undefined;
 
-const rowsOf = (app: App): RewriteRow[] => Object.entries(app.config.routing.model_rewrites ?? {}).map(([from, to]) => ({ from, to }));
+const readRewrites = (app: App): Rewrites => app.config.routing.model_rewrites;
+const rowsOf = (stored: Rewrites): RewriteRow[] => Object.entries(stored ?? {}).map(([from, to]) => ({ from, to }));
+const mapOf = (rows: RewriteRow[]): Rewrites =>
+  rows.length === 0 ? undefined : Object.fromEntries(rows.map((row) => [row.from.trim(), row.to.trim()]));
 
-/** What is wrong with the rows, if anything, in words. */
+/** What is wrong with the rows, if anything, in words: the form's own rules, then the contract's. */
 export function rewriteProblem(rows: RewriteRow[]): string | undefined {
-  const sources = rows.map((row) => row.from.trim());
   if (rows.some((row) => row.from.trim() === "" || row.to.trim() === "")) return "Fill in both models on every row, or remove the row.";
   const seen = new Set<string>();
-  for (const source of sources) {
+  for (const row of rows) {
+    const source = row.from.trim();
     if (seen.has(source)) return `${source} is rewritten twice. Keep one row for it.`;
     seen.add(source);
   }
-  if (sources.includes("__proto__")) return "__proto__ is not a model name.";
-  return undefined;
+  const parsed = RoutingConfigSchema.shape.model_rewrites.safeParse(mapOf(rows));
+  if (parsed.success) return undefined;
+  const issue = parsed.error.issues[0];
+  const where = issue?.path[0] === undefined ? "" : `${String(issue.path[0])}: `;
+  return `${where}${issue?.message ?? "is not valid"}`;
 }
 
 /**
@@ -65,29 +73,16 @@ export function rewriteProblem(rows: RewriteRow[]): string | undefined {
  */
 export function RewritesTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
-  const { save, pending } = useSaveApp(app);
-  const [rows, setRows] = useState(() => rowsOf(app));
+  const form = usePatchForm<Rewrites, RewriteRow[]>(app, "/config/routing/model_rewrites", readRewrites, { toDraft: rowsOf, toStored: mapOf });
+  const rows = form.draft;
   const [refused, setRefused] = useState<Refusal | null>(null);
-  useEffect(() => {
-    setRows(rowsOf(app));
-    setRefused(null);
-  }, [app.revision]);
 
   const change = (next: RewriteRow[]) => {
-    setRows(next);
+    form.setDraft(next);
     setRefused(null);
   };
   const problem = rewriteProblem(rows);
-  const map = Object.fromEntries(rows.map((row) => [row.from.trim(), row.to.trim()]));
-  const dirty = JSON.stringify(map) !== JSON.stringify(app.config.routing.model_rewrites ?? {});
-  const disabled = readOnly || pending;
-
-  const submit = async () => {
-    const { model_rewrites: _old, ...routing } = app.config.routing;
-    // An empty list is the default, so it is left out rather than written.
-    const next = rows.length === 0 ? routing : { ...routing, model_rewrites: map };
-    await save({ config: { ...app.config, routing: next } }, "Rewrites saved", (error) => setRefused(configIssue(error)));
-  };
+  const disabled = readOnly || form.pending;
 
   return (
     <Card>
@@ -99,6 +94,7 @@ export function RewritesTab({ app }: { app: App }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
         {rows.length === 0 ? <p className="text-sm text-muted-foreground">No rewrites. Every call gets the model it asks for.</p> : null}
         {rows.map((row, index) => (
           <div key={index} className="flex items-center gap-2">
@@ -133,8 +129,12 @@ export function RewritesTab({ app }: { app: App }) {
             <Plus className="size-4" />
             Add rewrite
           </Button>
-          <GuardedButton size="sm" disabled={!dirty || problem !== undefined || pending} onClick={() => void submit()}>
-            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+          <GuardedButton
+            size="sm"
+            disabled={!form.dirty || form.stale || problem !== undefined || form.pending}
+            onClick={() => void form.save("Rewrites saved", (error) => setRefused(configIssue(error)))}
+          >
+            {form.pending ? <Loader2 className="size-4 animate-spin" /> : null}
             Save rewrites
           </GuardedButton>
         </div>
@@ -147,6 +147,8 @@ export function RewritesTab({ app }: { app: App }) {
 // Presets
 
 interface FallbackDraft {
+  /** The stored fallback this row edits, kept whole so fields the form does not show survive. */
+  original: Record<string, unknown> | null;
   provider: string;
   operation: string;
   model: string;
@@ -155,6 +157,8 @@ interface FallbackDraft {
 interface PresetDraft {
   /** Which card this is while its name is edited. */
   key: number;
+  /** The stored preset this card edits, kept whole, or null for a new one. */
+  original: Record<string, unknown> | null;
   slug: string;
   provider: string;
   operation: string;
@@ -164,19 +168,72 @@ interface PresetDraft {
   fallback: FallbackDraft[];
 }
 
-let nextKey = 0;
+type Presets = Record<string, Preset> | undefined;
 
-function draftsOf(app: App): PresetDraft[] {
-  return Object.entries(app.config.presets ?? {}).map(([slug, preset]) => ({
-    key: nextKey++,
+/** Keys for cards added in this form; stored ones are keyed by position, so the same app reads the same drafts. */
+let nextKey = 1_000_000;
+
+const textOf = (value: unknown) => (value === undefined ? "" : JSON.stringify(value, null, 2));
+
+function draftsOf(stored: Presets): PresetDraft[] {
+  return Object.entries(stored ?? {}).map(([slug, preset], index) => ({
+    key: index,
+    original: preset as unknown as Record<string, unknown>,
     slug,
     provider: preset.provider,
     operation: preset.operation,
     model: preset.model,
     maxOutputTokens: preset.max_output_tokens === undefined ? "" : String(preset.max_output_tokens),
-    params: preset.params === undefined ? "" : JSON.stringify(preset.params, null, 2),
-    fallback: (preset.fallback ?? []).map((one) => ({ provider: one.provider, operation: one.operation ?? "", model: one.model })),
+    params: textOf(preset.params),
+    fallback: (preset.fallback ?? []).map((one) => ({
+      original: one as unknown as Record<string, unknown>,
+      provider: one.provider,
+      operation: one.operation ?? "",
+      model: one.model,
+    })),
   }));
+}
+
+/** A row's field, written onto a copy of what was stored only when it moved. */
+function edited(target: Record<string, unknown>, key: string, value: unknown) {
+  if (value === undefined) delete target[key];
+  else target[key] = value;
+}
+
+/**
+ * The stored presets the drafts save as. Each preset and fallback starts from
+ * a copy of the stored object, and only the fields the person changed are
+ * written, so a field this console does not show, or a stored empty list,
+ * stays as it was. Call only for drafts with no problems.
+ */
+function presetsOf(drafts: PresetDraft[]): Presets {
+  if (drafts.length === 0) return undefined;
+  return Object.fromEntries(
+    drafts.map((draft) => {
+      const original = draft.original ?? {};
+      const preset = structuredClone(original);
+      preset.provider = draft.provider;
+      preset.operation = draft.operation;
+      preset.model = draft.model.trim();
+      if (draft.maxOutputTokens !== (original.max_output_tokens === undefined ? "" : String(original.max_output_tokens))) {
+        edited(preset, "max_output_tokens", draft.maxOutputTokens.trim() === "" ? undefined : Number(draft.maxOutputTokens.trim()));
+      }
+      if (draft.params !== textOf(original.params)) {
+        edited(preset, "params", draft.params.trim() === "" ? undefined : (JSON.parse(draft.params) as unknown));
+      }
+      const fallback = draft.fallback.map((one) => {
+        const row = structuredClone(one.original ?? {});
+        row.provider = one.provider;
+        edited(row, "operation", one.operation === "" ? undefined : one.operation);
+        row.model = one.model.trim();
+        return row;
+      });
+      // Without fallbacks: a preset that had none keeps having none, a stored empty list stays as it was, and removing every row removes the list.
+      const stored = original.fallback;
+      edited(preset, "fallback", fallback.length > 0 ? fallback : Array.isArray(stored) && stored.length === 0 ? stored : undefined);
+      return [draft.slug, preset as unknown as Preset];
+    }),
+  );
 }
 
 /**
@@ -193,45 +250,43 @@ export function presetOperations(connection: Pick<ProviderConnection, "type" | "
   return operationsOf(connection).filter((operation) => operation.name !== "passthrough" && declaredOperation(operation.name)?.style !== undefined).map((operation) => operation.name);
 }
 
-/** What is wrong with one preset draft, by field, in words. */
-function presetProblems(draft: PresetDraft, slugs: string[]): Record<string, string> {
+/** What is wrong with one preset draft, by field, in words: the form's own rules, and the chosen operation's. */
+function presetProblems(draft: PresetDraft, slugs: string[], connections: ProviderConnection[]): Record<string, string> {
   const problems: Record<string, string> = {};
   if (!PRESET_SLUG_PATTERN.test(draft.slug)) problems.slug = "Use 1 to 64 characters from a-z, 0-9 and -.";
   else if (slugs.filter((slug) => slug === draft.slug).length > 1) problems.slug = "Another preset has this name.";
   if (draft.provider === "") problems.provider = "Choose a provider.";
   if (draft.operation === "") problems.operation = "Choose an operation.";
   if (draft.model.trim() === "") problems.model = "Name the model.";
-  if (draft.maxOutputTokens.trim() !== "" && !/^[1-9]\d*$/u.test(draft.maxOutputTokens.trim())) problems.max_output_tokens = "Use a whole number, or leave it empty.";
+  const operation = draft.operation === "" ? null : declaredOperation(draft.operation);
+  if (draft.maxOutputTokens.trim() !== "") {
+    if (!/^[1-9]\d*$/u.test(draft.maxOutputTokens.trim())) problems.max_output_tokens = "Use a whole number, or leave it empty.";
+    else if (operation !== null && operation.policy?.outputCap === undefined) problems.max_output_tokens = `${operation.name} has no output to cap. Leave it empty.`;
+  }
   if (draft.params.trim() !== "") {
-    try {
-      const parsed: unknown = JSON.parse(draft.params);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) problems.params = "Write a JSON object, such as {\"temperature\": 0.2}.";
-    } catch {
-      problems.params = "Not valid JSON.";
+    if (operation !== null && operation.model.in === "form") {
+      problems.params = `${operation.name} takes an upload; fixed parameters apply only to JSON requests. Leave it empty.`;
+    } else {
+      try {
+        const parsed: unknown = JSON.parse(draft.params);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) problems.params = "Write a JSON object, such as {\"temperature\": 0.2}.";
+      } catch {
+        problems.params = "Not valid JSON.";
+      }
     }
   }
-  if (draft.fallback.some((one) => one.provider === "" || one.model.trim() === "")) problems.fallback = "Every fallback needs a provider and a model.";
+  draft.fallback.forEach((one, index) => {
+    if (one.provider === "" || one.model.trim() === "") {
+      problems[`fallback.${index}`] = "Choose a provider and name the model.";
+      return;
+    }
+    const connection = connections.find((item) => item.slug === one.provider);
+    const style = operation?.style;
+    if (connection !== undefined && style !== undefined && !presetOperations(connection).some((name) => declaredOperation(name)?.style === style)) {
+      problems[`fallback.${index}`] = `${one.provider} has no ${style} operation a preset can use. A fallback must speak the preset's API.`;
+    }
+  });
   return problems;
-}
-
-/** The stored preset a draft saves as. Call only when it has no problems. */
-function presetOf(draft: PresetDraft): Preset {
-  return {
-    provider: draft.provider,
-    operation: draft.operation,
-    model: draft.model.trim(),
-    ...(draft.params.trim() === "" ? {} : { params: JSON.parse(draft.params) as Record<string, unknown> }),
-    ...(draft.maxOutputTokens.trim() === "" ? {} : { max_output_tokens: Number(draft.maxOutputTokens.trim()) }),
-    ...(draft.fallback.length === 0
-      ? {}
-      : {
-          fallback: draft.fallback.map((one) => ({
-            provider: one.provider,
-            ...(one.operation === "" ? {} : { operation: one.operation }),
-            model: one.model.trim(),
-          })),
-        }),
-  };
 }
 
 /**
@@ -242,34 +297,26 @@ function presetOf(draft: PresetDraft): Preset {
 export function PresetsTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
   const providers = useProviders();
-  const { save, pending } = useSaveApp(app);
-  const [drafts, setDrafts] = useState(() => draftsOf(app));
+  const form = usePatchForm<Presets, PresetDraft[]>(app, "/config/presets", (from) => from.config.presets, { toDraft: draftsOf, toStored: presetsOf });
+  const drafts = form.draft;
   const [refused, setRefused] = useState<Refusal | null>(null);
-  useEffect(() => {
-    setDrafts(draftsOf(app));
-    setRefused(null);
-  }, [app.revision]);
 
   const change = (next: PresetDraft[]) => {
-    setDrafts(next);
+    form.setDraft(next);
     setRefused(null);
   };
   const update = (key: number, next: Partial<PresetDraft>) => change(drafts.map((draft) => (draft.key === key ? { ...draft, ...next } : draft)));
-  const slugs = drafts.map((draft) => draft.slug);
-  const problems = new Map(drafts.map((draft) => [draft.key, presetProblems(draft, slugs)]));
-  const valid = [...problems.values()].every((found) => Object.keys(found).length === 0);
-  const presets = valid ? Object.fromEntries(drafts.map((draft) => [draft.slug, presetOf(draft)])) : null;
-  const schemaProblem = presets === null ? undefined : PresetsConfigSchema.safeParse(presets).error?.issues[0]?.message;
-  const dirty = presets === null || JSON.stringify(presets) !== JSON.stringify(app.config.presets ?? {});
-  const disabled = readOnly || pending;
   const connections = providers.data?.providers ?? [];
+  const slugs = drafts.map((draft) => draft.slug);
+  const problems = new Map(drafts.map((draft) => [draft.key, presetProblems(draft, slugs, connections)]));
+  const valid = [...problems.values()].every((found) => Object.keys(found).length === 0);
+  const presets = valid ? presetsOf(drafts) : undefined;
+  const schemaProblem = !valid || presets === undefined ? undefined : PresetsConfigSchema.safeParse(presets).error?.issues[0]?.message;
+  const disabled = readOnly || form.pending;
 
   const submit = async () => {
-    if (presets === null) return;
-    const { presets: _old, ...rest } = app.config;
-    // No presets is the default, so it is left out rather than written.
-    const config = Object.keys(presets).length === 0 ? rest : { ...rest, presets };
-    await save({ config }, "Presets saved", (error) => setRefused(configIssue(error)));
+    if (!valid) return;
+    await form.save("Presets saved", (error) => setRefused(configIssue(error)));
   };
 
   /** A refusal about a field of one preset, shown under that field. */
@@ -293,6 +340,7 @@ export function PresetsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
       <p className="text-sm text-muted-foreground">
         The app calls a preset at <code className="text-xs">/v2/apps/{app.id}/presets/&lt;name&gt;</code>. Each try is one charge; a try
         that fails costs nothing.
@@ -346,7 +394,9 @@ export function PresetsTab({ app }: { app: App }) {
                     disabled={disabled}
                     onValueChange={(slug) => {
                       const next = connections.find((item) => item.slug === slug);
-                      update(draft.key, { provider: slug, operation: next ? (presetOperations(next)[0] ?? "") : "" });
+                      const offered = next ? presetOperations(next) : [];
+                      // The chosen operation stays when the new provider has it too.
+                      update(draft.key, { provider: slug, operation: offered.includes(draft.operation) ? draft.operation : (offered[0] ?? "") });
                     }}
                   >
                     <SelectTrigger id={`preset-provider-${draft.key}`} className="w-full">
@@ -489,17 +539,16 @@ export function PresetsTab({ app }: { app: App }) {
                           <Trash2 className="size-4" />
                         </Button>
                       </div>
-                      <Problem>{refusedAt(draft.slug, `fallback.${index}`)}</Problem>
+                      <Problem>{found[`fallback.${index}`] ?? refusedAt(draft.slug, `fallback.${index}`)}</Problem>
                     </div>
                   );
                 })}
-                <Problem>{found.fallback}</Problem>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   disabled={disabled || connections.length === 0}
-                  onClick={() => update(draft.key, { fallback: [...draft.fallback, { provider: "", operation: "", model: "" }] })}
+                  onClick={() => update(draft.key, { fallback: [...draft.fallback, { original: null, provider: "", operation: "", model: "" }] })}
                 >
                   <Plus className="size-4" />
                   Add fallback
@@ -524,14 +573,14 @@ export function PresetsTab({ app }: { app: App }) {
           variant="outline"
           disabled={disabled || connections.length === 0}
           onClick={() =>
-            change([...drafts, { key: nextKey++, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [] }])
+            change([...drafts, { key: nextKey++, original: null, slug: "", provider: "", operation: "", model: "", maxOutputTokens: "", params: "", fallback: [] }])
           }
         >
           <Plus className="size-4" />
           Add preset
         </Button>
-        <GuardedButton disabled={!dirty || !valid || schemaProblem !== undefined || pending} onClick={() => void submit()}>
-          {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+        <GuardedButton disabled={!form.dirty || form.stale || !valid || schemaProblem !== undefined || form.pending} onClick={() => void submit()}>
+          {form.pending ? <Loader2 className="size-4 animate-spin" /> : null}
           Save presets
         </GuardedButton>
       </div>

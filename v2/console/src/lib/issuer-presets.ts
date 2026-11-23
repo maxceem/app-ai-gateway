@@ -94,6 +94,8 @@ export const ISSUER_PRESETS: IssuerPreset[] = [
       { key: "frontend_api", label: "Frontend API host", placeholder: "clean-mayfly-62.clerk.accounts.dev", hint: "Your Clerk Frontend API host or custom domain, without https://" },
       { key: "audience", label: "Audience", placeholder: "my-app", hint: "The aud your Clerk JWT template sets. The default session token has none, so add one." },
     ],
+    warning:
+      "Clerk's own guidance also checks the azp claim against your allowed origins. A native app has no origin to check, so this preset leaves it out. If your tokens carry azp, add a claim requirement for it in the configuration on the Settings tab.",
     build: ({ frontend_api = "", audience = "" }) => {
       const host = trimHost(frontend_api);
       return { jwks_url: `https://${host}/.well-known/jwks.json`, issuer: `https://${host}`, audience };
@@ -123,27 +125,34 @@ export function issuerPreset(id: IssuerProvider | undefined): IssuerPreset {
 /** The first of a stored list, or the string itself. */
 const first = (value: string | string[]): string => (Array.isArray(value) ? (value[0] ?? "") : value);
 
-/** The preset an issuer was made with, and the inputs that made it, so the form reopens on them. */
+/**
+ * The preset an issuer was made with, and the inputs that made it, so the
+ * form reopens on them. It counts only when the preset rebuilds the stored
+ * fields exactly, whether or not the issuer names its provider: anything else
+ * opens in the custom editor, which shows every stored value, so no field is
+ * hidden behind a preset that would rewrite it.
+ */
 export function matchIssuerPreset(issuer: IssuerDraft): { preset: IssuerPreset; values: Record<string, string> } {
   const stored = { jwks_url: issuer.jwks_url, issuer: first(issuer.issuer), audience: first(issuer.audience) };
+  const custom = { preset: CUSTOM, values: stored };
   const several = (value: string | string[]) => Array.isArray(value) && value.length > 1;
   // A list of several issuers or audiences is something no preset writes.
-  if (several(issuer.issuer) || several(issuer.audience)) return { preset: CUSTOM, values: stored };
-  if (issuer.provider) {
-    const preset = issuerPreset(issuer.provider);
-    return { preset, values: preset.read(stored) };
-  }
-  // An issuer with no provider named counts as a preset only when the preset rebuilds it exactly.
-  for (const preset of ISSUER_PRESETS) {
+  if (several(issuer.issuer) || several(issuer.audience)) return custom;
+  const candidates = issuer.provider ? [issuerPreset(issuer.provider)] : ISSUER_PRESETS;
+  for (const preset of candidates) {
     if (preset === CUSTOM) continue;
     const values = preset.read(stored);
-    if (!preset.inputs.every((input) => (values[input.key] ?? "").trim() !== "")) continue;
-    const rebuilt = preset.build(values);
+    const rebuilt = buildIssuer(preset, values);
     if (rebuilt.jwks_url === stored.jwks_url && rebuilt.issuer === stored.issuer && rebuilt.audience === stored.audience) {
       return { preset, values };
     }
   }
-  return { preset: CUSTOM, values: stored };
+  return custom;
+}
+
+/** The inputs of a preset still empty. */
+export function missingInputs(preset: IssuerPreset, values: Record<string, string>): PresetInput[] {
+  return preset.inputs.filter((input) => (values[input.key] ?? "").trim() === "");
 }
 
 /** The issuer fields a preset writes from its inputs, trimmed. */
@@ -151,13 +160,11 @@ export function buildIssuer(preset: IssuerPreset, values: Record<string, string>
   return preset.build(Object.fromEntries(preset.inputs.map((input) => [input.key, (values[input.key] ?? "").trim()])));
 }
 
-/** A new issuer: Firebase, verifying `sub`, tokens up to a day old. */
+/** A new issuer: Firebase with its project id still to fill in, verifying `sub`, tokens up to a day old. */
 export function emptyIssuer(): IssuerDraft {
   return {
     provider: "firebase",
-    jwks_url: "",
-    issuer: "",
-    audience: "",
+    ...buildIssuer(issuerPreset("firebase"), {}),
     user_id_claim: "sub",
     required_claims: [],
     max_token_lifetime_seconds: 86400,

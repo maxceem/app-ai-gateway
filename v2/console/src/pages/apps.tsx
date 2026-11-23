@@ -27,7 +27,6 @@ import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
 import { MonthPicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
-import { requiresPayment } from "@/lib/issuer-presets";
 import { useAccountUsage, useApps, useCreateApp } from "@/lib/queries";
 import type { App, CreatedApp } from "@/lib/types";
 
@@ -181,7 +180,7 @@ const KINDS: Choice<Kind>[] = [
   },
 ];
 
-/** The sign-in a new app of each kind starts from. */
+/** The sign-in a new app of each kind starts from; who may call is asked before it is used. */
 function startingAuth(kind: Kind): AuthDraft {
   return kind === "ios"
     ? { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "", bundle_id: "" } }
@@ -216,22 +215,19 @@ const STEP_TITLES: Record<StepId, string> = {
   paid: "Paid users only",
 };
 
-/** Whether a step's own answers are complete: judged by the schema's problems under its part only. */
-function stepDone(step: StepId, name: string, auth: AuthDraft, issues: AuthIssues): boolean {
+/** Whether a step's own answers are complete: judged by the problems under its part only. */
+function stepDone(step: StepId, name: string, answered: boolean, issues: AuthIssues): boolean {
   switch (step) {
     case "basics":
       return name.trim() !== "";
     case "identity":
       return issueAt(issues, "app_attest") === undefined;
     case "users":
-      return issueAt(issues, "end_user.header") === undefined;
+      return answered && issueAt(issues, "end_user.header") === undefined;
     case "provider":
-      return (["jwks_url", "issuer", "audience"] as const).every((field) => issueAt(issues, `end_user.issuer.${field}`) === undefined);
-    case "paid": {
-      const endUser = auth.end_user;
-      const noClaim = endUser.source === "issuer" && requiresPayment(endUser.issuer) && endUser.issuer.required_claims.length === 0;
-      return issues.size === 0 && !noClaim;
-    }
+      return (["preset", "jwks_url", "issuer", "audience"] as const).every((field) => issueAt(issues, `end_user.issuer.${field}`) === undefined);
+    case "paid":
+      return issues.size === 0;
   }
 }
 
@@ -247,20 +243,23 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>("ios");
   const [auth, setAuth] = useState<AuthDraft>(() => startingAuth("ios"));
+  // Who may call has no default answer: the person chooses, as v1 asked it.
+  const [answered, setAnswered] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [created, setCreated] = useState<CreatedApp | null>(null);
 
-  const issuer = auth.end_user.source === "issuer";
+  const issuer = answered && auth.end_user.source === "issuer";
   const steps: StepId[] = ["basics", ...(kind === "ios" ? (["identity"] as const) : []), "users", ...(issuer ? (["provider", "paid"] as const) : [])];
   const step = steps[Math.min(stepIndex, steps.length - 1)]!;
   const last = stepIndex >= steps.length - 1;
   const issues = authIssues(auth);
-  const done = stepDone(step, name, auth, issues);
+  const done = stepDone(step, name, answered, issues);
 
   const reset = () => {
     setName("");
     setKind("ios");
     setAuth(startingAuth("ios"));
+    setAnswered(false);
     setStepIndex(0);
   };
 
@@ -318,6 +317,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                   if (next === kind) return;
                   setKind(next);
                   setAuth(startingAuth(next));
+                  setAnswered(false);
                 }}
               />
             </div>
@@ -327,7 +327,15 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
           <AppAttestFields value={auth.app_attest} issues={issues} withVerifyOn={false} onChange={(app_attest) => setAuth({ ...auth, app_attest })} />
         ) : null}
         {step === "users" ? (
-          <UserSourceFields type={auth.type} value={auth.end_user} issues={issues} onChange={(end_user) => setAuth({ ...auth, end_user } as AuthDraft)} />
+          <UserSourceFields
+            type={auth.type}
+            value={answered ? auth.end_user : null}
+            issues={issues}
+            onChange={(end_user) => {
+              setAnswered(true);
+              setAuth({ ...auth, end_user } as AuthDraft);
+            }}
+          />
         ) : null}
         {step === "provider" && auth.end_user.source === "issuer" ? (
           <IdentityProviderFields

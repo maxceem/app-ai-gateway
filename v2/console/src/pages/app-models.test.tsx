@@ -1,38 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
+import { toast } from "sonner";
 import { AppDetailPage } from "./app-detail";
 import { presetOperations, rewriteProblem } from "./app-models";
+import { appServer } from "@/test/app-server";
 import { testApp } from "@/test/fixtures";
 import { renderAuthenticated } from "@/test/render";
+import { chooseOption } from "@/test/select";
 
-const APP_URL = "/v2/admin/apps/my-app";
+const connection = (id: string, type: string, slug: string) => ({
+  id, type, slug, name: slug, status: "active", secretHint: "abcd", baseUrl: null, pricing: null, revision: 1,
+  createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z",
+});
 
 const PROVIDERS = {
-  providers: [
-    { id: "p1", type: "openai", slug: "openai", name: "OpenAI main", status: "active", secretHint: "abcd", baseUrl: null, pricing: null, revision: 1, createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z" },
-    { id: "p2", type: "anthropic", slug: "anthropic", name: "Anthropic", status: "active", secretHint: "efgh", baseUrl: null, pricing: null, revision: 1, createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z" },
-  ],
+  "/v2/admin/providers": {
+    providers: [connection("p1", "openai", "openai"), connection("p2", "openai", "openai-eu"), connection("p3", "anthropic", "anthropic")],
+  },
 };
 
-type Answer = { status?: number; body: unknown };
-
-function stub(app: unknown, put?: Answer) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    const answer = method === "PUT" && url === APP_URL ? (put ?? { body: { app } }) : url === "/v2/admin/providers" ? { body: PROVIDERS } : { body: { app } };
-    return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200 });
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
+function appWith(config: Record<string, unknown>) {
+  return testApp({ config: { ...testApp().config, ...config } });
 }
-
-const putBody = (fetchMock: ReturnType<typeof stub>) => {
-  const found = fetchMock.mock.calls.find(([input, init]) => String(input) === APP_URL && init?.method === "PUT");
-  return found ? JSON.parse(String(found[1]!.body)) : undefined;
-};
 
 function renderTab(tab: string) {
   return renderAuthenticated(
@@ -43,13 +34,29 @@ function renderTab(tab: string) {
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+/** The field a label names: its label, input and any problem said under it. */
+const fieldOf = (label: string | HTMLElement) =>
+  (typeof label === "string" ? screen.getByLabelText(label) : label).closest("div.space-y-2") as HTMLElement;
+
+/** Saves, and waits until the save went through and the form is clean again. */
+async function saveAndSettle(button: string, done: string) {
+  const saved = vi.spyOn(toast, "success");
+  await userEvent.click(screen.getByRole("button", { name: button }));
+  await waitFor(() => expect(saved).toHaveBeenCalledWith(done));
+  await waitFor(() => expect(screen.getByRole("button", { name: button }).hasAttribute("disabled")).toBe(true));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("rewriteProblem and presetOperations", () => {
-  it("asks for both sides of every rewrite, once per model", () => {
+  it("asks for both sides of every rewrite, once per model, within the contract's limits", () => {
     expect(rewriteProblem([{ from: "a", to: "b" }])).toBeUndefined();
     expect(rewriteProblem([{ from: "a", to: "" }])).toMatch(/both models/);
     expect(rewriteProblem([{ from: "a", to: "b" }, { from: " a ", to: "c" }])).toMatch(/rewritten twice/);
+    expect(rewriteProblem([{ from: "a", to: "m".repeat(201) }])).toMatch(/^a: /);
   });
 
   it("offers only the operations a preset can use", () => {
@@ -61,85 +68,155 @@ describe("rewriteProblem and presetOperations", () => {
 });
 
 describe("Rewrites tab", () => {
-  it("adds a rewrite and saves it, keeping the providers", async () => {
-    const fetchMock = stub(testApp());
+  it("adds the first rewrite as one operation, and the saved form is clean", async () => {
+    const server = appServer(testApp());
     renderTab("rewrites");
 
     await userEvent.click(await screen.findByRole("button", { name: "Add rewrite" }));
     await userEvent.type(screen.getByLabelText("Rewrite 1: model asked for"), "house-model");
     expect(screen.getByRole("button", { name: "Save rewrites" }).hasAttribute("disabled")).toBe(true);
     await userEvent.type(screen.getByLabelText("Rewrite 1: model sent"), "gpt-5.5-mini");
-    await userEvent.click(screen.getByRole("button", { name: "Save rewrites" }));
+    await saveAndSettle("Save rewrites", "Rewrites saved");
 
-    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
-    const body = putBody(fetchMock);
-    expect(body.config.routing).toEqual({ providers: testApp().config.routing.providers, model_rewrites: { "house-model": "gpt-5.5-mini" } });
+    expect(server.patches).toEqual([
+      { revision: 2, operations: [{ op: "add", path: "/config/routing/model_rewrites", value: { "house-model": "gpt-5.5-mini" } }] },
+    ]);
+    expect((screen.getByLabelText("Rewrite 1: model sent") as HTMLInputElement).value).toBe("gpt-5.5-mini");
   });
 
-  it("leaves the field out once the last rewrite is removed", async () => {
-    const app = testApp({ config: { ...testApp().config, routing: { ...testApp().config.routing, model_rewrites: { a: "b" } } } });
-    const fetchMock = stub(app);
+  it("removes the field once the last rewrite is removed", async () => {
+    const server = appServer(appWith({ routing: { ...testApp().config.routing, model_rewrites: { a: "b" } } }));
     renderTab("rewrites");
 
     await userEvent.click(await screen.findByRole("button", { name: "Remove rewrite 1" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save rewrites" }));
+    await saveAndSettle("Save rewrites", "Rewrites saved");
 
-    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
-    expect(putBody(fetchMock).config.routing).toEqual({ providers: testApp().config.routing.providers });
+    expect(server.patches[0]!.operations).toEqual([{ op: "remove", path: "/config/routing/model_rewrites" }]);
+  });
+
+  it("refuses a model name longer than the contract allows", async () => {
+    appServer(testApp());
+    renderTab("rewrites");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add rewrite" }));
+    await userEvent.type(screen.getByLabelText("Rewrite 1: model asked for"), "a");
+    await userEvent.click(screen.getByLabelText("Rewrite 1: model sent"));
+    await userEvent.paste("m".repeat(201));
+
+    expect(screen.getByRole("alert").textContent).toMatch(/^a: /);
+    expect(screen.getByRole("button", { name: "Save rewrites" }).hasAttribute("disabled")).toBe(true);
   });
 });
 
 describe("Presets tab", () => {
-  it("adds a preset with parameters, a cap and a fallback, and saves it", async () => {
-    const fetchMock = stub(testApp());
+  const QUICK = { provider: "openai", operation: "openai.responses", model: "gpt-5.5-mini", fallback: [] };
+
+  it("adds a preset with parameters, a cap and a fallback, as one operation", async () => {
+    const server = appServer(testApp(), PROVIDERS);
     renderTab("presets");
 
     await userEvent.click(await screen.findByRole("button", { name: "Add preset" }));
     await userEvent.type(screen.getByLabelText("Name"), "summarize");
-    await userEvent.click(screen.getByRole("combobox", { name: "Provider" }));
-    await userEvent.click(await screen.findByRole("option", { name: "openai" }));
+    await chooseOption("Provider", "openai");
     expect(screen.getByRole("combobox", { name: "Operation" }).textContent).toContain("openai.chat");
     await userEvent.type(screen.getByLabelText("Model"), "gpt-5.5-mini");
     await userEvent.type(screen.getByLabelText("Most output tokens"), "500");
     await userEvent.click(screen.getByLabelText("Fixed parameters (JSON)"));
     await userEvent.paste('{"temperature": 0.2}');
     await userEvent.click(screen.getByRole("button", { name: "Add fallback" }));
-    await userEvent.click(screen.getAllByRole("combobox", { name: "Provider" })[1]!);
-    await userEvent.click(await screen.findByRole("option", { name: "openai" }));
-    await userEvent.type(screen.getAllByLabelText("Model")[1]!, "gpt-5.5-nano");
-    await userEvent.click(screen.getByRole("button", { name: "Save presets" }));
+    await chooseOption(screen.getAllByRole("combobox", { name: "Provider" })[1]!, "anthropic");
+    await userEvent.type(screen.getAllByLabelText("Model")[1]!, "claude-haiku-5-5");
+    await saveAndSettle("Save presets", "Presets saved");
 
-    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
-    const body = putBody(fetchMock);
-    expect(body.config.presets).toEqual({
-      summarize: {
-        provider: "openai",
-        operation: "openai.chat",
-        model: "gpt-5.5-mini",
-        params: { temperature: 0.2 },
-        max_output_tokens: 500,
-        fallback: [{ provider: "openai", model: "gpt-5.5-nano" }],
+    expect(server.patches).toEqual([
+      {
+        revision: 2,
+        operations: [
+          {
+            op: "add",
+            path: "/config/presets",
+            value: {
+              summarize: {
+                provider: "openai",
+                operation: "openai.chat",
+                model: "gpt-5.5-mini",
+                max_output_tokens: 500,
+                params: { temperature: 0.2 },
+                fallback: [{ provider: "anthropic", model: "claude-haiku-5-5" }],
+              },
+            },
+          },
+        ],
       },
+    ]);
+  });
+
+  it("saves only the field changed, leaving other presets and a stored empty fallback list alone", async () => {
+    const server = appServer(appWith({ presets: { quick: QUICK, other: { provider: "openai", operation: "openai.chat", model: "gpt-a" } } }), PROVIDERS);
+    renderTab("presets");
+
+    const model = (await screen.findAllByLabelText("Model"))[0]!;
+    await userEvent.clear(model);
+    await userEvent.type(model, "gpt-5.5");
+    await saveAndSettle("Save presets", "Presets saved");
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/model", value: "gpt-5.5" }]);
+    expect((server.state.app.config as { presets: unknown }).presets).toEqual({
+      quick: { ...QUICK, model: "gpt-5.5" },
+      other: { provider: "openai", operation: "openai.chat", model: "gpt-a" },
     });
-    expect(body.config.routing).toEqual(testApp().config.routing);
+  });
+
+  it("keeps the operation when the new provider has it too", async () => {
+    const server = appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
+    renderTab("presets");
+
+    await screen.findByLabelText("Model");
+    await chooseOption("Provider", "openai-eu");
+    expect(screen.getByRole("combobox", { name: "Operation" }).textContent).toContain("openai.responses");
+    await saveAndSettle("Save presets", "Presets saved");
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/provider", value: "openai-eu" }]);
+  });
+
+  it("applies the chosen operation's rules before saving", async () => {
+    appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
+    renderTab("presets");
+
+    await screen.findByLabelText("Model");
+    await chooseOption("Operation", "openai.transcription");
+    await userEvent.type(screen.getByLabelText("Fixed parameters (JSON)"), "{{}");
+    expect(within(fieldOf("Fixed parameters (JSON)")).getByRole("alert").textContent).toMatch(/takes an upload/);
+
+    await chooseOption("Operation", "openai.embeddings");
+    await userEvent.clear(screen.getByLabelText("Fixed parameters (JSON)"));
+    await userEvent.type(screen.getByLabelText("Most output tokens"), "100");
+    expect(within(fieldOf("Most output tokens")).getByRole("alert").textContent).toMatch(/has no output to cap/);
+    await userEvent.clear(screen.getByLabelText("Most output tokens"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add fallback" }));
+    await chooseOption(screen.getAllByRole("combobox", { name: "Provider" })[1]!, "anthropic");
+    await userEvent.type(screen.getAllByLabelText("Model")[1]!, "claude-haiku-5-5");
+    expect(screen.getByText(/anthropic has no openai-embeddings operation/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("checks the name and the parameters before saving", async () => {
-    stub(testApp());
+    appServer(testApp(), PROVIDERS);
     renderTab("presets");
 
     await userEvent.click(await screen.findByRole("button", { name: "Add preset" }));
     await userEvent.type(screen.getByLabelText("Name"), "Bad Name");
     await userEvent.type(screen.getByLabelText("Fixed parameters (JSON)"), "not json");
 
-    expect(screen.getByText("Use 1 to 64 characters from a-z, 0-9 and -.")).toBeTruthy();
-    expect(screen.getByText("Not valid JSON.")).toBeTruthy();
+    expect(within(fieldOf("Name")).getByRole("alert").textContent).toBe("Use 1 to 64 characters from a-z, 0-9 and -.");
+    expect(within(fieldOf("Fixed parameters (JSON)")).getByRole("alert").textContent).toBe("Not valid JSON.");
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("shows a refusal about one preset's field beside that field", async () => {
-    const app = testApp({ config: { ...testApp().config, presets: { quick: { provider: "openai", operation: "openai.chat", model: "gpt-5.5-mini" } } } });
-    stub(app, { status: 400, body: { error: { code: "invalid_request", message: "config.presets.quick.model: gpt-unknown has no price" } } });
+  it("shows a refusal about one preset's field inside that field", async () => {
+    const server = appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.presets.quick.model: gpt-unknown has no price" };
     renderTab("presets");
 
     const model = await screen.findByLabelText("Model");
@@ -147,19 +224,17 @@ describe("Presets tab", () => {
     await userEvent.type(model, "gpt-unknown");
     await userEvent.click(screen.getByRole("button", { name: "Save presets" }));
 
-    expect(await screen.findByRole("alert")).toBeTruthy();
-    expect(screen.getAllByText("gpt-unknown has no price").length).toBeGreaterThan(0);
+    await waitFor(() => expect(within(fieldOf("Model")).queryByRole("alert")).not.toBeNull());
+    expect(within(fieldOf("Model")).getByRole("alert").textContent).toBe("gpt-unknown has no price");
   });
 
-  it("removes a preset, leaving the field out when none is left", async () => {
-    const app = testApp({ config: { ...testApp().config, presets: { quick: { provider: "openai", operation: "openai.chat", model: "gpt-5.5-mini" } } } });
-    const fetchMock = stub(app);
+  it("removes the field when the last preset is removed", async () => {
+    const server = appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
     renderTab("presets");
 
     await userEvent.click(await screen.findByRole("button", { name: "Remove preset quick" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save presets" }));
+    await saveAndSettle("Save presets", "Presets saved");
 
-    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
-    expect(putBody(fetchMock).config).not.toHaveProperty("presets");
+    expect(server.patches[0]!.operations).toEqual([{ op: "remove", path: "/config/presets" }]);
   });
 });

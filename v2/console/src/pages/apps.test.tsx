@@ -96,8 +96,10 @@ describe("AppsPage", () => {
     await userEvent.paste("Backend");
     await userEvent.click(screen.getByRole("radio", { name: /server/i }));
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
-    // Who may call: no end users, the default for a server.
-    expect(screen.getByRole("radio", { name: /No end users/ }).getAttribute("aria-checked")).toBe("true");
+    // Who may call has no default answer: nothing is chosen, and the app cannot be created yet.
+    expect(screen.getAllByRole("radio").every((radio) => radio.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByRole("radio", { name: /No end users/ }));
     await userEvent.click(screen.getByRole("button", { name: /create app/i }));
 
     await waitFor(() => {
@@ -140,9 +142,13 @@ describe("AppsPage", () => {
     await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
     await userEvent.click(screen.getByRole("checkbox", { name: /Development/ }));
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    // Who may call has no default answer for an iOS app either.
+    expect(screen.getAllByRole("radio").every((radio) => radio.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(screen.getByRole("button", { name: /^(Next|Create app)$/ }).hasAttribute("disabled")).toBe(true);
     await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Enter the firebase project id.")).toBeTruthy();
     await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByRole("radio", { name: /Signed-in users only/ }).getAttribute("aria-checked")).toBe("true");
