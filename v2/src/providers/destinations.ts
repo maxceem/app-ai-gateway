@@ -7,7 +7,9 @@
  * Plain functions of a connection's settings and its provider description,
  * with no Worker code, so the console can import them.
  */
+import { checkOperatorBaseUrl } from "../core/origin-guard.ts";
 import type { ProviderDescription } from "./operation.ts";
+import { normalizePath, type PathRefusal } from "./path.ts";
 
 /** Cloudflare AI Gateway's own origin. */
 export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
@@ -86,4 +88,33 @@ export function keyDestinations(description: ProviderDescription | null, setting
 /** The destinations as a person reads them: each without its scheme or trailing slash. */
 export function destinationText(origins: readonly string[]): string {
   return origins.map((origin) => origin.replace(/^https?:\/\//u, "").replace(/\/$/u, "")).join(", ");
+}
+
+/** Why a base URL's path could reach another path at the provider than the one judged, in words. */
+const BASE_PATH_PROBLEMS: Readonly<Record<PathRefusal, string>> = {
+  bad_encoding: "has broken percent-encoding",
+  dot_segment: "has a . or .. segment",
+  encoded_separator: "has an encoded / or \\",
+  control_character: "has a control character",
+};
+
+/**
+ * A base URL as the gateway saves it, or why it is refused: the origin guard,
+ * then its path through the same normalization request paths get
+ * (`normalizePath`). Listings are judged on its segments, so an encoded
+ * slash, a backslash, a dot segment, broken encoding or an empty segment,
+ * which the provider could read as other segments, is refused. A stored base
+ * URL sent back unchanged (`unchanged`) is not judged again. The console runs
+ * a typed base URL through this too, so the hosts it names for a key are the
+ * ones the saved URL routes to.
+ */
+export function normalizedBaseUrl(raw: string, unchanged: string | null = null): { readonly ok: true; readonly baseUrl: string } | { readonly ok: false; readonly message: string } {
+  const checked = checkOperatorBaseUrl(raw);
+  if (!checked.ok) return { ok: false, message: checked.message };
+  if (checked.baseUrl === unchanged) return checked;
+  const pathname = new URL(checked.baseUrl).pathname;
+  const normalized = normalizePath(pathname);
+  if (!normalized.ok) return { ok: false, message: `its path ${BASE_PATH_PROBLEMS[normalized.reason]}` };
+  if (pathname.length > 1 && pathname.slice(1, -1).split("/").includes("")) return { ok: false, message: "its path has an empty segment (//)" };
+  return checked;
 }

@@ -1,4 +1,4 @@
-import { priceAmountProblem } from "@contracts/price-amount";
+import { priceTextProblem } from "@contracts/price-amount";
 
 /**
  * A connection's own prices as a form edits them: one row per model, with the
@@ -136,7 +136,7 @@ function amountProblem(text: string): string | null {
   if (value === null) return null;
   // A positive amount typed so small that it reads as 0.
   if (value === 0 && /[1-9]/u.test(text.trim().split(/[eE]/u)[0]!)) return "This amount is too small: it would be stored as 0.";
-  return priceAmountProblem(value);
+  return priceTextProblem(text);
 }
 
 /** Model names that cannot be a key of the prices object, as app settings refuse them. */

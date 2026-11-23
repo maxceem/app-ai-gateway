@@ -17,6 +17,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { normalizedBaseUrl } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
@@ -393,9 +394,14 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const isCustom = type === "custom";
   // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
   const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
-  // Every host the key would be sent to, as the gateway routes it. A key is kept only for these.
+  // The base URL is judged only on the route that uses it.
+  const hostChecked = !isCustom && !viaCloudflare ? checkedHost(host) : null;
+  const hostProblem = hostChecked !== null && !hostChecked.ok ? hostChecked.message : null;
+  // Every host the key would be sent to, as the gateway routes it once it has saved the base URL. A key is kept only for these.
+  const customChecked = isCustom ? checkedHost(custom.baseUrl) : null;
+  const savedBase = (checked: ReturnType<typeof checkedHost>) => (checked !== null && checked.ok ? checked.baseUrl : null);
   const destinations = keyDestinationText(type, {
-    baseUrl: isCustom ? custom.baseUrl.trim() || null : host.trim() || null,
+    baseUrl: isCustom ? savedBase(customChecked) : savedBase(hostChecked),
     cloudflareGateway: viaCloudflare ? { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim() } : null,
   });
   const [secret, setSecret] = useBoundSecret(JSON.stringify([type, destinations, isCustom ? [custom.header.trim().toLowerCase(), custom.format] : null]));
@@ -410,8 +416,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     setCustom(NO_CUSTOM);
     test.clear();
   };
-  const hostInvalid = host.trim() !== "" && !host.trim().startsWith("https://");
-  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom)) && !hostInvalid;
+  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom)) && hostProblem === null;
   // A new setting always carries its token.
   const route = viaCloudflare
     ? { cloudflareGateway: { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim(), token: cloudflare.token } }
@@ -501,6 +506,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         <HostField
           id="provider-host"
           value={host}
+          problem={hostProblem}
           onChange={(next) => {
             setHost(next);
             test.clear();
@@ -1051,8 +1057,7 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
  * A built-in provider's own host, replaced: a self-hosted server, a regional
  * host or Azure OpenAI. Requests are still priced from our list.
  */
-function HostField({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
-  const invalid = value.trim() !== "" && !value.trim().startsWith("https://");
+function HostField({ id, value, problem, onChange }: { id: string; value: string; problem: string | null; onChange: (value: string) => void }) {
   return (
     <Field
       label="Base URL (optional)"
@@ -1064,12 +1069,17 @@ function HostField({ id, value, onChange }: { id: string; value: string; onChang
         value={value}
         placeholder="https://"
         autoComplete="off"
-        aria-invalid={invalid || undefined}
+        aria-invalid={problem !== null || undefined}
         onChange={(event) => onChange(event.target.value)}
       />
-      {invalid ? <p className="text-sm text-destructive">Use an https:// address.</p> : null}
+      {problem !== null ? <p className="text-sm text-destructive">{problem}</p> : null}
     </Field>
   );
+}
+
+/** A typed base URL as the gateway would save it, or its refusal; null when empty. */
+function checkedHost(typed: string, stored: string | null = null): ReturnType<typeof normalizedBaseUrl> | null {
+  return typed.trim() === "" ? null : normalizedBaseUrl(typed, stored);
 }
 
 /**
@@ -1234,10 +1244,13 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
   );
   const next = host.trim();
   const type = provider?.type ?? "";
-  const destinations = keyDestinationText(type, { baseUrl: next === "" ? null : next, cloudflareGateway: null });
+  // As the gateway would save it: the hosts named, and the key's binding, follow the saved form.
+  const checked = checkedHost(next, stored === "" ? null : stored);
+  const invalid = checked !== null && !checked.ok;
+  const saved = checked !== null && checked.ok ? checked.baseUrl : "";
+  const destinations = keyDestinationText(type, { baseUrl: saved === "" ? null : saved, cloudflareGateway: null });
   const [secret, setSecret] = useBoundSecret(JSON.stringify([destinations, opened.revision, opened.conflict]));
-  const invalid = next !== "" && !next.startsWith("https://");
-  const changed = next !== stored;
+  const changed = (next === "" ? "" : invalid ? next : saved) !== stored;
   // A new base URL needs a key typed for it.
   const needsKey = changed && next !== "";
   // Back to the provider's own hosts: the stored key goes there only when the person says so.
@@ -1278,6 +1291,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
       <HostField
         id="provider-host-change"
         value={host}
+        problem={checked !== null && !checked.ok ? checked.message : null}
         onChange={(value) => {
           setHost(value);
           setKeepKey(false);

@@ -788,7 +788,7 @@ describe("provider gaps from v1", () => {
     await userEvent.paste("Azure");
     await userEvent.click(screen.getByLabelText(/base url/i));
     await userEvent.paste("http://insecure.example.com");
-    expect(screen.getByText(/use an https:\/\/ address/i)).toBeTruthy();
+    expect(screen.getByText(/base url must use https/i)).toBeTruthy();
     await userEvent.clear(screen.getByLabelText(/base url/i));
     await userEvent.click(screen.getByLabelText(/base url/i));
     await userEvent.paste("https://my-azure.example.com/openai/v1");
@@ -1131,5 +1131,43 @@ describe("a typed key stays with where it was typed for", () => {
     await userEvent.paste(SECRET);
     await userEvent.click(go);
     await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, cloudflareGateway: null, secret: SECRET }));
+  });
+
+  it("names the hosts a base URL routes to as the gateway saves it: fal's queue under the regional host", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "fal");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("https://regional.example.com");
+    expect(screen.getByText(/sent only to regional\.example\.com, regional\.example\.com\/queue\./i)).toBeTruthy();
+  });
+
+  it("judges the base URL only on the route that uses it: through Cloudflare it does not block adding", async () => {
+    const fetchMock = stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    await userEvent.click(screen.getByLabelText(/^name$/i));
+    await userEvent.paste("Via Cloudflare");
+    await userEvent.click(screen.getByLabelText(/base url/i));
+    await userEvent.paste("http://not-https.example.com");
+    await userEvent.click(screen.getByRole("checkbox", { name: /send through cloudflare ai gateway/i }));
+    await userEvent.click(screen.getByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    const add = screen.getByRole("button", { name: /^add provider$/i }) as HTMLButtonElement;
+    expect(add.disabled).toBe(false);
+    await userEvent.click(add);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers", "POST")).toEqual({
+        type: "openai",
+        name: "Via Cloudflare",
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-0123456789" },
+      }),
+    );
   });
 });

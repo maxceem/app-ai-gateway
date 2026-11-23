@@ -63,6 +63,12 @@ describe("the prices form", () => {
     expect(rowProblems(tiny, [tiny]).unit).toBe("This amount is too small: it would be stored as 0.");
     const fine = priced("1e-10");
     expect(rowProblems(fine, [fine]).unit).toMatch(/kept to \$0\.000000001; this would be stored as 0\.000000001/u);
+    const float = priced("1.0000000000000001");
+    expect(rowProblems(float, [float]).unit).toMatch(/would be stored as 1\.$/u);
+    for (const fine of ["0.000000001", "1e-9", "2.50", "1234.5678", "3e5"]) {
+      const row = priced(fine);
+      expect(rowProblems(row, [row]).unit).toBeUndefined();
+    }
     const zero = priced("0");
     expect(rowProblems(zero, [zero]).unit).toBeUndefined();
   });
