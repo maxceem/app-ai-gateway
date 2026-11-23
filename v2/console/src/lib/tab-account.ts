@@ -1,5 +1,5 @@
 import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
-import { checkoutAccountFrom, checkoutSucceeded } from "./auth-redirect";
+import { checkoutReturnAccount, isAccountId } from "./auth-redirect";
 
 /**
  * The account this browser tab acts in.
@@ -12,7 +12,8 @@ import { checkoutAccountFrom, checkoutSucceeded } from "./auth-redirect";
  *
  * It is kept in `sessionStorage`, which is per tab, so a reload stays on the
  * same account. A checkout return names the account it was for, and the tab
- * opens on that account (the gateway checks the person is a member).
+ * opens on that account (the gateway checks the person is a member). An id
+ * of the wrong shape, from the address or from storage, is ignored.
  */
 const STORE_KEY = "agw.tab-account";
 
@@ -20,17 +21,19 @@ const STORE_KEY = "agw.tab-account";
 let current: string | null | undefined;
 
 function opening(): string | null {
-  const search = typeof window === "undefined" ? "" : window.location.search;
-  const returned = checkoutSucceeded(search) ? checkoutAccountFrom(search) : null;
+  const returned = checkoutReturnAccount(currentSearch());
   if (returned !== null) {
     store(returned);
     return returned;
   }
   try {
-    return sessionStorage.getItem(STORE_KEY);
+    const stored = sessionStorage.getItem(STORE_KEY);
+    if (isAccountId(stored)) return stored;
+    if (stored !== null) sessionStorage.removeItem(STORE_KEY);
   } catch {
-    return null;
+    // No storage: the tab opens on the session's account.
   }
+  return null;
 }
 
 function store(accountId: string | null): void {
@@ -50,8 +53,13 @@ export function tabAccount(): string | null {
 
 /** Sets the account this tab acts in; null forgets it (signing out). */
 export function setTabAccount(accountId: string | null): void {
-  current = accountId;
-  store(accountId);
+  current = isAccountId(accountId) ? accountId : null;
+  store(current);
+}
+
+/** The address's query string, where a checkout return or the sign-in page carrying one names its account. */
+export function currentSearch(): string {
+  return typeof window === "undefined" ? "" : window.location.search;
 }
 
 /** Adds this tab's account to a request's headers, unless the request names one itself. */

@@ -120,10 +120,33 @@ export const CHECKOUT_SUCCESS = "success";
  */
 export const ACCOUNT_PARAM = "account";
 
+/**
+ * The shape of an account id. The value arrives from a link or from storage
+ * and is sent back as a request header, so it is held to a shape that cannot
+ * carry anything else (a newline would make every request throw).
+ */
+const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/u;
+
+export function isAccountId(value: unknown): value is string {
+  return typeof value === "string" && ACCOUNT_ID_PATTERN.test(value);
+}
+
 /** The account a checkout return names, or `null`. */
 export function checkoutAccountFrom(search: string): string | null {
   const raw = new URLSearchParams(search).get(ACCOUNT_PARAM);
-  return raw !== null && raw.length > 0 && raw.length <= 200 ? raw : null;
+  return isAccountId(raw) ? raw : null;
+}
+
+/**
+ * The account a checkout return names, whether this is the return itself or
+ * the sign-in page it was sent to (the return travels in `from`), or `null`.
+ */
+export function checkoutReturnAccount(search: string): string | null {
+  if (checkoutSucceeded(search)) return checkoutAccountFrom(search);
+  const back = new URLSearchParams(search).get(RETURN_PARAM);
+  if (!isSafeReturnPath(back)) return null;
+  const query = new URL(back, "https://console.invalid").search;
+  return checkoutSucceeded(query) ? checkoutAccountFrom(query) : null;
 }
 
 /** True when this load is the return leg of a completed checkout. */

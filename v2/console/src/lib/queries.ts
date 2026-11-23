@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
-import { setTabAccount, tabAccount } from "./tab-account";
+import { currentSearch, setTabAccount, tabAccount } from "./tab-account";
+import { checkoutReturnAccount } from "./auth-redirect";
+import type { Session } from "./types";
 import {
   changePassword,
   plainlySignedOut,
@@ -62,31 +64,48 @@ export function useCapabilities() {
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
-export const readSession = async () => {
+export const readSession = async (rereads = 0): Promise<Session | null> => {
   if (await plainlySignedOut()) {
     setTabAccount(null);
     return null;
   }
-  let session;
+  const named = tabAccount();
+  // Each reread below happens at most a couple of times; past that the answer is taken as it is.
+  const again = rereads < 2 ? () => readSession(rereads + 1) : null;
+  let session: Session;
   try {
     session = (await call("getAdminSession")).session;
   } catch (error) {
     // The tab names an account the person is not (or no longer) a member of:
     // it opens on the account the session selects instead.
-    if (!(error instanceof ApiError && error.code === "account_forbidden") || tabAccount() === null) throw error;
+    if (!(error instanceof ApiError && error.code === "account_forbidden") || tabAccount() === null || again === null) throw error;
     setTabAccount(null);
-    session = (await call("getAdminSession")).session;
+    return again();
   }
-  // A tab opening takes the account the session answers with, and keeps it:
-  // later reads name it, so a switch in another tab never moves this one.
-  if (tabAccount() === null) setTabAccount(session.account.id);
+  // The tab switched account while this read was out: its answer is for the
+  // account left, so it is read again for the one the tab now names. The
+  // account shown and the account each request names never differ.
+  const now = tabAccount();
+  if (now !== null && now !== named && again !== null) return again();
+  if (now === null) {
+    // A tab opening takes the account the session answers with, and keeps it:
+    // later reads name it, so a switch in another tab never moves this one.
+    // A checkout return carried through sign-in names its account: the tab
+    // opens on it if the person is an active member of it.
+    const returned = checkoutReturnAccount(currentSearch());
+    if (returned !== null && returned !== session.account.id && again !== null && session.accounts.some((entry) => entry.id === returned)) {
+      setTabAccount(returned);
+      return again();
+    }
+    setTabAccount(session.account.id);
+  }
   return session;
 };
 
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: readSession,
+    queryFn: () => readSession(),
     retry: false,
     staleTime: 60_000,
   });
@@ -154,6 +173,9 @@ export function useSelectAccount() {
   return useMutation({
     mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
     onSuccess: async (result) => {
+      // A session read still out is for the account left: it is stopped, so
+      // its late answer can never put that account back on screen.
+      await client.cancelQueries({ queryKey: keys.session });
       // This tab moves to it; the gateway also makes it the account new tabs open on.
       setTabAccount(result.session.account.id);
       client.setQueryData(keys.session, result.session);
