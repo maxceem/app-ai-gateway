@@ -429,7 +429,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_provider_types",
     title: "List provider types",
     description:
-      "Returns every provider type a connection can be added for: its label, the API styles its operations speak, whether it may go through Cloudflare AI Gateway, and whether it is the custom type. Use it to choose a type before adding a provider connection. A custom provider needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
+      "Returns every provider type a connection can be added for: its label, the API styles its operations speak, the names of its operations (which an app's routing allows), whether it may go through Cloudflare AI Gateway, and whether it is the custom type. Use it to choose a type before adding a provider connection, or an operation before allowing one in an app. A custom provider needs a base URL and how its key is sent, and speaks the styles its listed paths name.",
     operation: "listProviderTypes",
     cli: {
       command: "provider types",

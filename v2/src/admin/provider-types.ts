@@ -7,7 +7,7 @@
 import type { Context } from "hono";
 import { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { CUSTOM_LABEL, CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
+import { CUSTOM_LABEL, CUSTOM_PROVIDER_TYPE, customOperationName } from "../providers/custom.ts";
 import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
 import type { AdminVariables } from "./actor.ts";
 
@@ -23,11 +23,19 @@ export function providerTypes(): ProviderTypes {
         type: description.type,
         label: description.label,
         styles: [...new Set(description.operations.flatMap((operation) => (operation.style === undefined ? [] : [operation.style])))],
+        operations: description.operations.map((operation) => operation.name),
         cloudflareGateway: description.cloudflareGateway !== undefined,
         custom: false,
       }))
       .sort((a, b) => a.label.localeCompare(b.label)),
-    { type: CUSTOM_PROVIDER_TYPE, label: CUSTOM_LABEL, styles: [...CUSTOM_PATH_STYLES], cloudflareGateway: false, custom: true },
+    {
+      type: CUSTOM_PROVIDER_TYPE,
+      label: CUSTOM_LABEL,
+      styles: [...CUSTOM_PATH_STYLES],
+      operations: CUSTOM_PATH_STYLES.map(customOperationName),
+      cloudflareGateway: false,
+      custom: true,
+    },
   ];
   return built;
 }

@@ -721,14 +721,23 @@ describe("price list and key test", () => {
     const reader = await seedManagementKey({ grant: "read" });
     const listed = await request(reader, "GET", "/v2/admin/provider-types");
     expect(listed.status).toBe(200);
-    const types = listed.body.types as { type: string; label: string; styles: string[]; cloudflareGateway: boolean; custom: boolean }[];
+    const types = listed.body.types as { type: string; label: string; styles: string[]; operations: string[]; cloudflareGateway: boolean; custom: boolean }[];
     expect(types.map((entry) => entry.type)).toEqual([...Object.values(BUILT_IN_PROVIDERS).map((description) => description.type).sort((a, b) => BUILT_IN_PROVIDERS[a]!.label.localeCompare(BUILT_IN_PROVIDERS[b]!.label)), "custom"]);
     const openai = types.find((entry) => entry.type === "openai")!;
     expect(openai).toMatchObject({ label: "OpenAI", cloudflareGateway: true, custom: false });
     // Each style once, in the order the description declares its operations.
     expect(openai.styles.slice(0, 3)).toEqual(["openai-chat", "openai-responses", "openai-transcription"]);
     expect(new Set(openai.styles).size).toBe(openai.styles.length);
-    expect(types.at(-1)).toEqual({ type: "custom", label: "Custom provider", styles: [...CUSTOM_PATH_STYLES], cloudflareGateway: false, custom: true });
+    // The operations an app's routing names, in the description's order.
+    expect(openai.operations).toEqual(BUILT_IN_PROVIDERS.openai!.operations.map((operation) => operation.name));
+    expect(types.at(-1)).toEqual({
+      type: "custom",
+      label: "Custom provider",
+      styles: [...CUSTOM_PATH_STYLES],
+      operations: CUSTOM_PATH_STYLES.map((style) => `custom.${style}`),
+      cloudflareGateway: false,
+      custom: true,
+    });
   });
 
   it("tests a key on the host live requests would use, and stores nothing", async () => {

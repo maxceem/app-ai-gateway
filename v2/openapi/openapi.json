@@ -3269,6 +3269,12 @@
               "type": "string"
             }
           },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "cloudflareGateway": {
             "type": "boolean"
           },

@@ -32,13 +32,13 @@ export const commands = {
   "account logout": { args: 0, flags: "", summary: "End this CLI's sign-in and forget it" },
   "provider add": {
     args: 0,
-    flags: `type name slug base-url pricing cloudflare-account-id cloudflare-gateway-id ${secret}`,
+    flags: `type name slug base-url pricing cloudflare-account-id cloudflare-gateway-id key-header key-format path* ${secret}`,
     summary: "Add a provider; its key goes in a hidden prompt, stdin or a browser",
   },
   "provider rotate-key": { args: 1, flags: secret, summary: "Replace a provider's key, by id or slug" },
   "app add": {
     args: 0,
-    flags: "type name team-id bundle-id user-header file key-output dry-run!",
+    flags: "type name team-id bundle-id attest-environments* verify-on user-header providers* status file key-output dry-run!",
     summary: "Add an iOS or server app; a server app's key goes to a private file",
   },
   "app key add": { args: 1, flags: "name key-output", summary: "Create a server app key, written to a private file" },
@@ -83,6 +83,12 @@ export interface Flags {
   "cloudflare-gateway-id"?: string;
   pricing?: string;
   "team-id"?: string;
+  "attest-environments"?: string | string[];
+  "verify-on"?: string;
+  providers?: string | string[];
+  "key-header"?: string;
+  "key-format"?: string;
+  path?: string | string[];
   "bundle-id"?: string;
   "user-header"?: string;
   file?: string;
@@ -196,6 +202,13 @@ export function parse(argv: string[]): ParseResult {
     ["no-open", "device"],
     ["file", "name"],
     ["file", "type"],
+    ["file", "team-id"],
+    ["file", "bundle-id"],
+    ["file", "attest-environments"],
+    ["file", "verify-on"],
+    ["file", "user-header"],
+    ["file", "providers"],
+    ["file", "status"],
   ]) {
     if (group.filter((k) => collected[k] !== undefined).length > 1)
       fail(

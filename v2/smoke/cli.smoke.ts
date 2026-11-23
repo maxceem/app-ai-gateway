@@ -116,6 +116,50 @@ test("agw 2 connects with a management key and manages an app", { skip, timeout:
   }
 });
 
+test("agw 2 lists provider types, adds an iOS app with the settings its flags name, and shows its first requests", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "agw-smoke-"));
+  let created: string | undefined;
+  try {
+    expectCli(await agw(home, "deployment", "connect", "--url", consoleOrigin()), "agw connected");
+    const types = await agw(home, "provider", "types");
+    expectCli(types, "agw provider types");
+    const openai = types.json.result.types.find((entry: { type: string }) => entry.type === "openai");
+    check(Array.isArray(openai?.operations) && openai.operations.includes("openai.chat"), "agw provider types names no openai.chat operation");
+
+    const added = await agw(
+      home, "app", "add", "--type", "ios", "--name", "agw smoke flags", "--team-id", "ABCDE12345", "--bundle-id", "com.example.agwsmokeflags",
+      "--attest-environments", "production,development", "--verify-on", "token_exchange", "--status", "disabled",
+    );
+    expectCli(added, "agw added with flags");
+    created = checkId(added.json.result?.app?.id, "the app agw added with flags");
+    same(added.json.result.app.status, "disabled", "the app agw added is not disabled");
+    const attest = added.json.result.app.config.authentication.app_attest;
+    same(attest.environments, ["production", "development"], "the app's environments are not the ones named");
+    same(attest.verify_on, "token_exchange", "the app's verify_on is not token_exchange");
+
+    const snippet = await agw(home, "app", "snippet", created);
+    expectCli(snippet, "agw app snippet");
+    check(Array.isArray(snippet.json.result.examples), "agw app snippet answered no examples list");
+    check(snippet.json.result.notes.some((line: string) => line.includes("Swift SDK")), "agw app snippet did not point an iOS app to the Swift SDK");
+  } finally {
+    try {
+      const id = created;
+      await cleanUp(
+        id === undefined
+          ? []
+          : [
+              async () => {
+                const removed = await agw(home, "app", "remove", id, "--yes");
+                return { status: removed.code === 0 ? 200 : 500 };
+              },
+            ],
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+});
+
 const base = process.env.V2_BASE_URL ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skipRoundTrip = skip !== false ? skip : base === "" || mockUrl === "" ? "V2_BASE_URL and V2_MOCK_URL are needed" : false;

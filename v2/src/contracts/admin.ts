@@ -739,6 +739,12 @@ export const ProviderTypeSchema = z
     label: z.string(),
     /** The API styles of its operations, in the order it declares them. */
     styles: z.array(z.string()),
+    /**
+     * The names of its operations, which an app's routing allows, in the order
+     * it declares them. A custom provider's are one per API style its paths
+     * may name. Optional: a gateway from before it leaves it out.
+     */
+    operations: z.array(z.string()).optional(),
     /** Whether a connection of this type may go through Cloudflare AI Gateway. */
     cloudflareGateway: z.boolean(),
     /** A custom provider: it needs `baseUrl` and `auth`, and speaks the styles its paths name. */

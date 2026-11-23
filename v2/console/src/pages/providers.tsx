@@ -16,12 +16,13 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
+import { cloudflareCapable, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { normalizedBaseUrl, wellFormedText } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
+import { parsePathLines, pathLine } from "@contracts/path-lines";
 
 /**
  * Provider connections: one provider's key, saved once and used by every app
@@ -656,49 +657,8 @@ type ListedPath = NonNullable<ProviderConnection["passthrough"]>[number];
 
 type FieldSetting = NonNullable<ListedPath["set_fields"]>[number];
 
-/** One listed path as a line: method, path, then a price in dollars or an API style. Its field settings are kept apart. */
-export function pathLine(path: ListedPath): string {
-  return [path.method, path.path, ...(path.per_request !== undefined ? [`$${path.per_request}`] : []), ...(path.style !== undefined ? [path.style] : [])].join(" ");
-}
-
-const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
-
-/**
- * Lines back to listed paths. Each line is a method and a path, then
- * optionally `$<dollars>` per request or, on a custom provider, an API style.
- * Returns the paths, or the first problem with its line number.
- */
-export function parsePathLines(text: string, custom: boolean): { paths: ListedPath[] } | { problem: string } {
-  const paths: ListedPath[] = [];
-  const lines = text.split("\n");
-  for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (line === "") continue;
-    const where = `Line ${index + 1}`;
-    const [method, path, ...rest] = line.split(/\s+/u);
-    const upper = method!.toUpperCase();
-    if (!(METHODS as readonly string[]).includes(upper)) return { problem: `${where}: start with GET, POST, PUT, PATCH or DELETE.` };
-    if (path === undefined) return { problem: `${where}: add the path after the method.` };
-    const entry: ListedPath = { method: upper as ListedPath["method"], path };
-    for (const token of rest) {
-      if (token.startsWith("$")) {
-        const price = Number(token.slice(1));
-        if (token.length === 1 || !Number.isFinite(price) || price < 0) return { problem: `${where}: a price is $ and a number, such as $0.002.` };
-        entry.per_request = price;
-      } else if (custom && CUSTOM_STYLES.includes(token)) {
-        entry.style = token as ListedPath["style"];
-      } else {
-        return {
-          problem: custom
-            ? `${where}: ${token} is not a price or an API style (${CUSTOM_STYLES.join(", ")}).`
-            : `${where}: ${token} is not a price. Write a price as $0.002.`,
-        };
-      }
-    }
-    paths.push(entry);
-  }
-  return { paths };
-}
+// Shared with `agw provider add --path`, so a path line reads the same wherever it is typed.
+export { parsePathLines, pathLine };
 
 /**
  * The key a listed path's field settings are kept under while its line is
