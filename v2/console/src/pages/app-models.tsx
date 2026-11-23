@@ -326,7 +326,7 @@ function presetProblems(draft: PresetDraft, slugs: string[], connections: Provid
     const offered = presetOperations(connection);
     if (one.operation !== "") {
       // A named operation must itself speak the preset's API, on this provider.
-      if (!offered.includes(one.operation)) problems[`fallback.${index}`] = `${one.operation} is not an operation of ${one.provider} a preset can use.`;
+      if (!offered.includes(one.operation)) problems[`fallback.${index}`] = `${one.provider} does not offer ${one.operation}. Choose an operation for this fallback.`;
       else if (declaredOperation(one.operation)?.style !== style) problems[`fallback.${index}`] = `${one.operation} does not speak ${style}, the preset's API. A fallback must speak it.`;
     } else if (!offered.some((name) => declaredOperation(name)?.style === style)) {
       problems[`fallback.${index}`] = `${one.provider} has no ${style} operation a preset can use. A fallback must speak the preset's API.`;
@@ -542,12 +542,9 @@ export function PresetsTab({ app }: { app: App }) {
                           <Label htmlFor={`fallback-provider-${draft.key}-${index}`} className="text-xs text-muted-foreground">
                             Provider
                           </Label>
-                          <Select value={one.provider} disabled={disabled} onValueChange={(provider) => {
-                              // A named operation stays when the new provider offers it and it still speaks the preset's API.
-                              const next = connections.find((item) => item.slug === provider);
-                              const keeps = one.operation !== "" && next !== undefined && presetOperations(next).includes(one.operation) && declaredOperation(one.operation)?.style === style;
-                              setFallback({ provider, operation: keeps ? one.operation : "" });
-                            }}>
+                          {/* A named operation is kept as it is: where the new provider does not offer it, the row says so and
+                              Save waits for a choice, and going back to the first provider finds it unchanged. */}
+                          <Select value={one.provider} disabled={disabled} onValueChange={(provider) => setFallback({ provider })}>
                             <SelectTrigger id={`fallback-provider-${draft.key}-${index}`} className="w-full">
                               <SelectValue placeholder="Choose" />
                             </SelectTrigger>

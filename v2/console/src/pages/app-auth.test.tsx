@@ -470,6 +470,31 @@ describe("Sign-in tab", () => {
     ]);
   });
 
+  it("refuses a number JSON cannot keep exactly, asking for a large id as text", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "uid", equals: "1" }] } } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals number");
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "9007199254740993");
+
+    expect(screen.getByText(/This number cannot be kept exactly. A large id must be text/)).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("asks for an equals rule on RevenueCat's claim to be changed by hand, adding no row", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "revenueCatEntitlements", equals: "pro" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+
+    expect(screen.getByRole("status").textContent).toMatch(/already compares it with equals/);
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
   it("shows a refusal about the sign-in inside the field it names", async () => {
     const server = appServer(testApp());
     server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.header: cannot be xi-api-key: the gateway already uses that header" };

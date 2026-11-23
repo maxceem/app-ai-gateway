@@ -6,7 +6,7 @@
  * `authentication` block in place, so a field the person does not change
  * keeps its stored value, and the rules are the contract's own schema.
  */
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -96,7 +96,14 @@ export function authIssues(draft: AuthDraft): AuthIssues {
     }
     (claims as ClaimDraft[]).forEach((claim, index) => {
       if (unfinished(claim)) {
-        issues.set(`end_user.issuer.required_claims.${index}.equals`, claim._match === "boolean" ? "Choose true or false." : "Enter a number, such as 3 or 1.05.");
+        issues.set(
+          `end_user.issuer.required_claims.${index}.equals`,
+          claim._match === "boolean"
+            ? "Choose true or false."
+            : typeof claim.equals === "string" && NUMBER.test(claim.equals.trim())
+              ? "This number cannot be kept exactly. A large id must be text, in the token and in this rule: choose equals text."
+              : "Enter a number, such as 3 or 1.05.",
+        );
       }
     });
   }
@@ -106,14 +113,14 @@ export function authIssues(draft: AuthDraft): AuthIssues {
 /** Whether a claim's typed value is not finished yet: a number that does not read as one, or a true or false not chosen. */
 function unfinished(claim: ClaimDraft): boolean {
   if (claim._match === "boolean") return typeof claim.equals !== "boolean";
-  if (claim._match === "number") return typeof claim.equals !== "string" || !NUMBER.test(claim.equals.trim());
+  if (claim._match === "number") return typeof claim.equals !== "string" || !exactNumber(claim.equals);
   return false;
 }
 
 /** The claim as it saves: working state dropped, a number typed as text made a number once it reads as one. */
 function claimForSave(claim: ClaimDraft): ClaimRequirement {
   const { _match, _values, ...stored } = claim;
-  if (_match === "number" && typeof stored.equals === "string" && NUMBER.test(stored.equals.trim())) return { ...stored, equals: Number(stored.equals.trim()) };
+  if (_match === "number" && typeof stored.equals === "string" && exactNumber(stored.equals)) return { ...stored, equals: Number(stored.equals.trim()) };
   return stored;
 }
 
@@ -615,6 +622,21 @@ function modeOf(claim: ClaimDraft): ClaimMode {
 
 const NUMBER = /^-?\d+(?:\.\d+)?$/u;
 
+/**
+ * Whether typed text is a number JSON keeps exactly: a whole number within
+ * the safe range, or a decimal that reads back as written (trailing zeros
+ * aside). `9007199254740993` is neither: as a number it would become
+ * `9007199254740992`, and the rule would check another value.
+ */
+function exactNumber(text: string): boolean {
+  const trimmed = text.trim();
+  if (!NUMBER.test(trimmed)) return false;
+  const value = Number(trimmed);
+  if (!trimmed.includes(".")) return Number.isSafeInteger(value);
+  const written = trimmed.replace(/0+$/u, "").replace(/\.$/u, "").replace(/^(-?)0+(?=\d)/u, "$1");
+  return Number.isFinite(value) && String(value) === (written === "-0" ? "0" : written);
+}
+
 /** A claim's value in its current match type. */
 const valueOf = (claim: ClaimDraft): ClaimValue => (claim.equals === undefined ? { contains: claim.contains } : { equals: claim.equals });
 
@@ -659,9 +681,18 @@ function ClaimsEditor({
   disabled?: boolean;
   onChange: (next: ClaimDraft[]) => void;
 }) {
-  const replace = (index: number, claim: ClaimDraft) => onChange(claims.map((item, position) => (position === index ? claim : item)));
+  const [helperNote, setHelperNote] = useState<string | null>(null);
+  const replace = (index: number, claim: ClaimDraft) => {
+    setHelperNote(null);
+    onChange(claims.map((item, position) => (position === index ? claim : item)));
+  };
   return (
     <div className="space-y-3">
+      {helperNote ? (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+          {helperNote}
+        </p>
+      ) : null}
       <div className="flex items-start justify-between gap-4">
         <p className="text-xs text-muted-foreground">
           Claims the sign-in token must carry, by dot path. Contains matches lists and space-separated scopes; equals compares exactly.
@@ -680,6 +711,13 @@ function ClaimsEditor({
             onClick={() => {
               // One RevenueCat row: a second entitlement is another value of it, so either admits the user.
               // Matched as the gateway reads a path: trimmed.
+              const atPath = claims.filter((claim) => claim.path.trim() === REVENUECAT_CLAIM_PATH);
+              if (atPath.some((claim) => claim.equals !== undefined)) {
+                // An equals rule there says something else; changing it is the person's call, made on that row.
+                setHelperNote(`A rule on ${REVENUECAT_CLAIM_PATH} already compares it with equals. Change that rule to contains to list entitlements.`);
+                return;
+              }
+              setHelperNote(null);
               const index = claims.findIndex((claim) => claim.path.trim() === REVENUECAT_CLAIM_PATH && claim.equals === undefined && claim.contains !== undefined);
               if (index === -1) {
                 onChange([...claims, { path: REVENUECAT_CLAIM_PATH, contains: "" }]);

@@ -225,6 +225,24 @@ describe("Presets tab", () => {
     ]);
   });
 
+  it("keeps a fallback's named operation through a provider that lacks it, asking for a choice, and finds it again on the way back", async () => {
+    const preset = { provider: "openai", operation: "openai.images", model: "gpt-image", fallback: [{ provider: "openai", operation: "openai.images.edits", model: "gpt-image-2" }] };
+    appServer(appWith({ presets: { quick: preset } }), PROVIDERS);
+    renderTab("presets");
+
+    await screen.findAllByLabelText("Model");
+    const fallbackProvider = () => screen.getAllByRole("combobox", { name: "Provider" })[1]!;
+    await chooseOption(fallbackProvider(), "anthropic");
+    expect(screen.getAllByRole("combobox", { name: "Operation" })[1]!.textContent).toContain("openai.images.edits");
+    expect(screen.getByText("anthropic does not offer openai.images.edits. Choose an operation for this fallback.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
+
+    await chooseOption(fallbackProvider(), "openai");
+    expect(screen.getAllByRole("combobox", { name: "Operation" })[1]!.textContent).toContain("openai.images.edits");
+    expect(screen.queryByText(/does not offer/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("applies the chosen operation's rules before saving", async () => {
     appServer(appWith({ presets: { quick: QUICK } }), PROVIDERS);
     renderTab("presets");
