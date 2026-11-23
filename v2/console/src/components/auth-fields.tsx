@@ -18,6 +18,7 @@ import { ChoiceList, type Choice } from "@/components/choice-list";
 import { Field } from "@/components/field";
 import {
   ISSUER_PRESETS,
+  REVENUECAT_CLAIM_PATH,
   buildIssuer,
   emptyIssuer,
   issuerPreset,
@@ -554,7 +555,9 @@ export function SubscriptionFields({
   };
   const chooseCheck = (next: PaidCheck) => {
     if (next === check) return;
-    onChange({ ...issuer, entitlement: next, required_claims: next === "revenuecat" ? [revenueCatClaim(entitlement ?? "")] : issuer.required_claims });
+    // A claim RevenueCat's form can hold is kept as it is, path included; only a new check starts from the default.
+    const keep = next === "custom" || (issuer.required_claims.length === 1 && entitlement !== null);
+    onChange({ ...issuer, entitlement: next, required_claims: keep ? issuer.required_claims : [revenueCatClaim("")] });
   };
   return (
     <div className="space-y-4">
@@ -579,22 +582,22 @@ export function SubscriptionFields({
             <Field
               label="Entitlement identifier"
               htmlFor="paid-entitlement"
-              hint="In RevenueCat under Product catalog, Entitlements: the identifier, not the display name. Several, separated by commas, admit a user with any one of them."
+              hint="In RevenueCat under Product catalog, Entitlements: the identifier, not the display name. With several, a user with any one of them is admitted."
             >
-              <Input
+              <ValuesEditor
                 id="paid-entitlement"
-                value={entitlement ?? ""}
-                placeholder="pro"
-                className="max-w-80 font-mono text-xs"
-                autoComplete="off"
+                label="Entitlement"
+                value={issuer.required_claims[0]?.contains ?? ""}
+                issuePath="end_user.issuer.required_claims.0.contains"
+                issues={issues}
                 disabled={disabled}
                 // The stored claim's path stays; only a new check gets the default one.
-                onChange={(event) => {
+                onChange={(contains) => {
                   const current = issuer.required_claims[0];
-                  onChange({ ...issuer, required_claims: [{ ...current, ...revenueCatClaim(event.target.value, current?.path) }] });
+                  onChange({ ...issuer, required_claims: [{ ...current, path: current?.path ?? REVENUECAT_CLAIM_PATH, contains }] });
                 }}
               />
-              <Problem>{issueAt(issues, "end_user.issuer.required_claims")}</Problem>
+              <Problem>{issues.get("end_user.issuer.required_claims")}</Problem>
             </Field>
           ) : (
             <ClaimsEditor
@@ -631,8 +634,7 @@ function claimIn(claim: ClaimDraft, mode: ClaimMode, text: string): ClaimDraft {
   const { contains: _contains, equals: _equals, _match: _previous, ...rest } = claim;
   let next: ClaimDraft;
   if (mode === "contains") {
-    const values = text.split(",").map((value) => value.trim());
-    next = { ...rest, contains: values.length > 1 ? values : text };
+    next = { ...rest, contains: text };
   } else if (mode === "boolean") {
     next = { ...rest, equals: text === "true" };
   } else if (mode === "number") {
@@ -670,7 +672,8 @@ function ClaimsEditor({
       </div>
       {claims.map((claim, index) => {
         const mode = modeOf(claim);
-        const text = claim.equals === undefined ? (Array.isArray(claim.contains) ? claim.contains.join(", ") : (claim.contains ?? "")) : String(claim.equals);
+        // What a change of match type carries over: the value, or the first of several.
+        const text = claim.equals === undefined ? (Array.isArray(claim.contains) ? (claim.contains[0] ?? "") : (claim.contains ?? "")) : String(claim.equals);
         return (
           <div key={index} className="space-y-1">
             <div className="flex flex-wrap items-end gap-2">
@@ -723,12 +726,23 @@ function ClaimsEditor({
                       <SelectItem value="false">false</SelectItem>
                     </SelectContent>
                   </Select>
+                ) : mode === "contains" ? (
+                  // Each value its own input, so a comma inside one stays part of it.
+                  <ValuesEditor
+                    id={`claim-value-${index}`}
+                    label="Value"
+                    value={claim.contains ?? ""}
+                    issuePath={`end_user.issuer.required_claims.${index}.contains`}
+                    issues={issues}
+                    disabled={disabled}
+                    onChange={(contains) => replace(index, { ...claim, contains })}
+                  />
                 ) : (
                   <Input
                     id={`claim-value-${index}`}
                     value={text}
                     inputMode={mode === "number" ? "decimal" : undefined}
-                    placeholder={mode === "contains" ? "pro, pro_test" : mode === "number" ? "3" : "pro"}
+                    placeholder={mode === "number" ? "3" : "pro"}
                     className="font-mono text-xs"
                     autoComplete="off"
                     disabled={disabled}

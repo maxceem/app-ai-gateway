@@ -17,7 +17,13 @@ const connection = (id: string, type: string, slug: string) => ({
 
 const PROVIDERS = {
   "/v2/admin/providers": {
-    providers: [connection("p1", "openai", "openai"), connection("p2", "openai", "openai-eu"), connection("p3", "anthropic", "anthropic")],
+    providers: [
+      connection("p1", "openai", "openai"),
+      connection("p2", "openai", "openai-eu"),
+      connection("p3", "anthropic", "anthropic"),
+      connection("p4", "gemini", "gemini"),
+      connection("p5", "gemini", "gemini-eu"),
+    ],
   },
 };
 
@@ -177,6 +183,21 @@ describe("Presets tab", () => {
     await saveAndSettle("Save presets", "Presets saved");
 
     expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/presets/quick/provider", value: "openai-eu" }]);
+  });
+
+  it("keeps a fallback's named operation when its new provider offers it too", async () => {
+    const preset = { provider: "gemini", operation: "gemini.generate.v1", model: "gemini-a", fallback: [{ provider: "gemini", operation: "gemini.generate.v1", model: "gemini-b" }] };
+    const server = appServer(appWith({ presets: { quick: preset } }), PROVIDERS);
+    renderTab("presets");
+
+    await screen.findAllByLabelText("Model");
+    await chooseOption(screen.getAllByRole("combobox", { name: "Provider" })[1]!, "gemini-eu");
+    expect(screen.getAllByRole("combobox", { name: "Operation" })[1]!.textContent).toContain("gemini.generate.v1");
+    await saveAndSettle("Save presets", "Presets saved");
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/presets/quick/fallback", value: [{ provider: "gemini-eu", operation: "gemini.generate.v1", model: "gemini-b" }] },
+    ]);
   });
 
   it("applies the chosen operation's rules before saving", async () => {

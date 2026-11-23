@@ -132,7 +132,9 @@ describe("Sign-in tab", () => {
 
     expect(((await screen.findByLabelText("Firebase project id")) as HTMLInputElement).value).toBe("my-project");
     await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
-    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro, pro_test");
+    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add entitlement" }));
+    await userEvent.type(screen.getByLabelText("Entitlement 2"), "pro_test");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
@@ -286,12 +288,41 @@ describe("Sign-in tab", () => {
     const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
     renderSignIn();
 
-    await userEvent.type(await screen.findByLabelText("Entitlement identifier"), ", max");
+    await userEvent.click(await screen.findByRole("button", { name: "Add entitlement" }));
+    await userEvent.type(screen.getByLabelText("Entitlement 2"), "max");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
       { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "entitlements", contains: ["pro", "max"] }] },
     ]);
+  });
+
+  it("keeps a comma inside a stored entitlement literal when another is edited", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "revenueCatEntitlements", contains: ["paid,trial", "pro"] }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    expect(((await screen.findByLabelText("Entitlement identifier")) as HTMLInputElement).value).toBe("paid,trial");
+    await userEvent.type(screen.getByLabelText("Entitlement 2"), "-plus");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["paid,trial", "pro-plus"] }] },
+    ]);
+  });
+
+  it("reopens RevenueCat on the claim it had, path included, after a look at custom claims", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "billing.entitlements", contains: "pro" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Entitlement identifier");
+    await chooseOption("Which claim says the user has paid", "Custom claims");
+    expect((screen.getByLabelText("Path") as HTMLInputElement).value).toBe("billing.entitlements");
+    await chooseOption("Which claim says the user has paid", "RevenueCat entitlement");
+    expect((screen.getByLabelText("Entitlement identifier") as HTMLInputElement).value).toBe("pro");
+    // Back to what is stored: nothing to save.
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
   });
 
   it("saves a change of a claim's match type alone, text 3 becoming the number 3", async () => {

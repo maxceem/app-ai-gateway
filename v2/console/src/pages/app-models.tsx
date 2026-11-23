@@ -531,7 +531,12 @@ export function PresetsTab({ app }: { app: App }) {
                           <Label htmlFor={`fallback-provider-${draft.key}-${index}`} className="text-xs text-muted-foreground">
                             Provider
                           </Label>
-                          <Select value={one.provider} disabled={disabled} onValueChange={(provider) => setFallback({ provider, operation: "" })}>
+                          <Select value={one.provider} disabled={disabled} onValueChange={(provider) => {
+                              // A named operation stays when the new provider offers it and it still speaks the preset's API.
+                              const next = connections.find((item) => item.slug === provider);
+                              const keeps = one.operation !== "" && next !== undefined && presetOperations(next).includes(one.operation) && declaredOperation(one.operation)?.style === style;
+                              setFallback({ provider, operation: keeps ? one.operation : "" });
+                            }}>
                             <SelectTrigger id={`fallback-provider-${draft.key}-${index}`} className="w-full">
                               <SelectValue placeholder="Choose" />
                             </SelectTrigger>
