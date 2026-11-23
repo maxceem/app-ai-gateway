@@ -13,6 +13,7 @@
  */
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
+import { accountNotifierFor } from "../analytics/hook.ts";
 import { createIdentity, IDENTITY_BASE_PATH, oauthRelayOrigin } from "../auth/identity.ts";
 import { consoleReturnPath, personToVerify, sendFirstVerificationEmail } from "../auth/email-verification.ts";
 import { consoleOrigin, registrationAllowed, V2_PATH } from "../auth/settings.ts";
@@ -150,7 +151,12 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   // Where the first verification link continues: the console path the sign-up came from.
   const signUpCallback = signUp && emailVerificationRequired(c.env) ? await submittedField(request, "callbackURL") : undefined;
   let denied = false;
-  const identity = await createIdentity(c.env, c.req.url, { onRegistrationDenied: () => { denied = true; } }, c.req.header("cf-ray") ?? null);
+  const identity = await createIdentity(
+    c.env,
+    c.req.url,
+    { onRegistrationDenied: () => { denied = true; }, notifyAccount: accountNotifierFor(c) },
+    c.req.header("cf-ray") ?? null,
+  );
   const handled = await identity.handler(request);
   const response = post && c.req.path === SOCIAL_SIGN_IN_PATH ? await relaySocialSignIn(c.env, c.req.url, handled) : handled;
   if (denied || (await isDisabledSignup(response))) {
