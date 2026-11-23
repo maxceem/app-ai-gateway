@@ -1,3 +1,4 @@
+import { supportCommand } from "./support.ts";
 import { Writable } from "node:stream";
 import {
   FileCatalogCache,
@@ -102,7 +103,7 @@ function release(capabilities: { readonly serverVersion?: string } | undefined):
   return capabilities?.serverVersion === undefined ? {} : { serverVersion: capabilities.serverVersion };
 }
 
-export async function execute(parsed: ParsedCommand, ctx: Context): Promise<CommandResult> {
+export async function execute(parsed: ParsedCommand, ctx: Context, stdin: () => Promise<string> = readStdin): Promise<CommandResult> {
   const { command, flags, args } = parsed;
   switch (command) {
     case "deployment connect":
@@ -126,6 +127,8 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
       return conversationsCommand(ctx, first(args), flags);
     case "app update":
       return appUpdate(ctx, first(args), flags);
+    case "support send":
+      return supportCommand(ctx, flags, stdin);
     case "operation wait": {
       const seconds = flags.timeout === undefined ? 300 : Number(flags.timeout);
       if (!Number.isInteger(seconds) || seconds < 1) throw new CliError("invalid_input", "--timeout must be a whole number of seconds.");
@@ -297,7 +300,7 @@ export async function main(
       await catalog.observe(outcome.revision);
       return 0;
     }
-    const result = await execute(parsed, ctx);
+    const result = await execute(parsed, ctx, stdin);
     const context = outputContext(ctx);
     const rendered = result;
     // `notices` only when there is one, so the envelope of an ordinary run is

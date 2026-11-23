@@ -2,6 +2,7 @@
  * The built-in commands' results as a terminal shows them. `--json` prints the
  * same results as one document instead.
  */
+import type { SupportResult } from "./support.ts";
 import type { CommandName } from "./parser.ts";
 import type { CommandResult, DeploymentStatusResult, OperationStatus } from "./results.ts";
 import type { AppAddResult, AppKeyAddResult, AppUpdateResult, ProviderResult, StoredKey } from "./commands.ts";
@@ -83,6 +84,14 @@ export function humanResult(command: CommandName, result: CommandResult, _contex
   } else if (command === "app key add") {
     const out = result as AppKeyAddResult;
     lines = [`${style.headline("Created a key")} for ${clean(out.app_id)}`, ...keyLines(out.key, style)];
+  } else if (command === "support send") {
+    const out = result as SupportResult;
+    lines = [
+      style.headline(
+        out.duplicate ? `Already sent as ${clean(out.reference)} in the last ten minutes; nothing new was sent.` : `Sent to human support as ${clean(out.reference)}.`,
+      ),
+      `Replies go to ${clean(out.replyTo)}`,
+    ];
   } else if (command === "app update") {
     const { app } = result as AppUpdateResult;
     lines = [`${style.headline("Saved")} app ${clean(app.name)} (${clean(app.id)}): ${clean(app.status)}, revision ${clean(app.revision)}`];

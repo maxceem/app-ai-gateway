@@ -1,3 +1,4 @@
+import type { SupportResult } from "./support.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import type {
   AppAddResult,
@@ -37,4 +38,5 @@ export type CommandResult =
   | AppKeyAddResult
   | AppUpdateResult
   | ConversationsExportResult
+  | SupportResult
   | OperationStatus;
