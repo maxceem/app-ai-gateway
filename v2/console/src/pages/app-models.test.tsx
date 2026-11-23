@@ -106,6 +106,19 @@ describe("Rewrites tab", () => {
     expect(server.patches[0]!.operations).toEqual([{ op: "remove", path: "/config/routing/model_rewrites" }]);
   });
 
+  it("shows a refusal whose path holds a model name with a colon", async () => {
+    const server = appServer(appWith({ routing: { ...testApp().config.routing, model_rewrites: { "openai/gpt-4o:free": "gpt-a" } } }));
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.routing.model_rewrites.openai/gpt-4o:free: gpt-b has no price" };
+    renderTab("rewrites");
+
+    const target = await screen.findByLabelText("Rewrite 1: model sent");
+    await userEvent.clear(target);
+    await userEvent.type(target, "gpt-b");
+    await userEvent.click(screen.getByRole("button", { name: "Save rewrites" }));
+
+    expect(await screen.findByText("gpt-b has no price")).toBeTruthy();
+  });
+
   it("refuses a model name longer than the contract allows", async () => {
     appServer(testApp());
     renderTab("rewrites");

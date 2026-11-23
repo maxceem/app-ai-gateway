@@ -1,34 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AppsPage, newAppConfig } from "./apps";
+import { AppsPage } from "./apps";
 import { testApp } from "@/test/fixtures";
 import { renderAuthenticated } from "@/test/render";
 
 afterEach(() => vi.unstubAllGlobals());
-
-describe("newAppConfig", () => {
-  it("starts an iOS app on App Attest as answered, trimmed", () => {
-    expect(
-      newAppConfig({ type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: " ABCDE12345 ", bundle_id: "com.example.app " } }),
-    ).toEqual({
-      authentication: {
-        type: "apple_app_attest",
-        end_user: { source: "app_install" },
-        app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app" },
-      },
-    });
-  });
-
-  it("starts a server app with or without an end user header", () => {
-    expect(newAppConfig({ type: "api_key", end_user: { source: "none" } })).toEqual({
-      authentication: { type: "api_key", end_user: { source: "none" } },
-    });
-    expect(newAppConfig({ type: "api_key", end_user: { source: "header", header: " x-user " } })).toEqual({
-      authentication: { type: "api_key", end_user: { source: "header", header: "x-user" } },
-    });
-  });
-});
 
 describe("AppsPage", () => {
   it("lists apps with their kind and providers, linking to each", async () => {

@@ -14,6 +14,10 @@
  * identity provider, a claim's match type) keeps what the other answers
  * held inside the draft, so switching away and back brings them back. A new
  * draft, after a save or a discard, starts from the stored block alone.
+ *
+ * The paid check is the one choice that does not remember its claims, on
+ * purpose: choosing Any signed-in user clears them, so choosing Paid users
+ * only again starts from a blank claim. Discard brings the stored ones back.
  */
 import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
@@ -186,6 +190,8 @@ function issuerFields(form: IssuerForm): Pick<IssuerAuthentication, "jwks_url" |
 
 function issuerOf(form: IssuerForm): IssuerAuthentication {
   const issuer: IssuerAuthentication = { ...form.original, ...issuerFields(form), required_claims: form.claims.map(claimOf) };
+  // Choosing Any signed-in user drops the console's own label for the check it ends; otherwise the label stays as stored.
+  if (form.claims.length === 0 && form.original.required_claims.length > 0) delete issuer.entitlement;
   // The provider label is written only when the editor shown is not the one the stored issuer opens in.
   if (form.provider !== matchIssuerPreset(form.original).preset.id) issuer.provider = form.provider;
   return issuer;
@@ -226,6 +232,23 @@ export function signInEdits(draft: SignInDraft): unknown {
 
 // ---------------------------------------------------------------------------
 // Checks
+
+/**
+ * The fields the Sign-in cards say problems beside, by path inside
+ * `authentication`, grouped as the wizard asks them. A problem elsewhere is
+ * said above the save button instead.
+ */
+export const SIGN_IN_FIELDS = {
+  identity: ["app_attest.team_id", "app_attest.bundle_id", "app_attest.environments"],
+  users: ["end_user.header"],
+  provider: ["end_user.issuer.preset", "end_user.issuer.jwks_url", "end_user.issuer.issuer", "end_user.issuer.audience"],
+  paid: ["end_user.issuer.required_claims"],
+} as const;
+
+/** Whether a problem at this path is said beside a field the cards show. */
+export function shownField(path: string, fields: readonly string[] = Object.values(SIGN_IN_FIELDS).flat()): boolean {
+  return fields.some((field) => path === field || path.startsWith(`${field}.`));
+}
 
 /** Problems by path inside `authentication`, such as `app_attest.team_id`. */
 export type AuthIssues = Map<string, string>;
@@ -274,6 +297,15 @@ export function issueAt(issues: AuthIssues, path: string): string | undefined {
   return undefined;
 }
 
+/** Whether a number as typed is whole: every digit after its decimal point, once the exponent moves it, is zero. */
+function typedWhole(typed: string): boolean {
+  const [mantissa = "", exponent = "0"] = typed.replace(/^-/u, "").split(/[eE]/u);
+  const [whole = "", fraction = ""] = mantissa.split(".");
+  const digits = whole + fraction;
+  const point = whole.length + Number(exponent);
+  return /^0*$/u.test(point <= 0 ? digits : digits.slice(point));
+}
+
 /** A number as typed: digits, an optional fraction, an optional exponent. */
 const NUMBER = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/u;
 
@@ -290,7 +322,9 @@ function exactNumber(text: string): boolean {
   if (!NUMBER.test(trimmed)) return false;
   const value = Number(trimmed);
   if (!Number.isFinite(value)) return false;
-  if (Number.isInteger(value)) return Number.isSafeInteger(value);
+  // A value that reads as whole must be whole as typed too: no non-zero digit
+  // after the point was rounded away (`9007199254740991.1`, `1e-400` read as 0).
+  if (Number.isInteger(value)) return Number.isSafeInteger(value) && typedWhole(trimmed);
   if (/[eE]/u.test(trimmed)) return false;
   const written = trimmed.replace(/0+$/u, "").replace(/\.$/u, "").replace(/^(-?)0+(?=\d)/u, "$1");
   return String(value) === written;
@@ -507,7 +541,7 @@ function ValuesEditor({
           </div>
         );
       })}
-      {values.length > 1 ? <Problem>{issues.get(issuePath)}</Problem> : null}
+      {values.length !== 1 ? <Problem>{issues.get(issuePath)}</Problem> : null}
       <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => onChange([...values, ""])}>
         <Plus className="size-3.5" />
         Add {label.toLowerCase()}

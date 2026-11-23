@@ -16,7 +16,8 @@ import {
   signInIssues,
   SubscriptionFields,
   UserSourceFields,
-  issueAt,
+  SIGN_IN_FIELDS,
+  shownField,
   type AuthIssues,
   type SignInDraft,
 } from "@/components/auth-fields";
@@ -31,8 +32,7 @@ import { StatCard } from "@/components/stat-card";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useAccountUsage, useApps, useCreateApp } from "@/lib/queries";
 import type { App, CreatedApp } from "@/lib/types";
-import type { z } from "zod";
-import { AuthenticationConfigSchema, type AuthenticationConfig } from "@contracts/app-config";
+import type { AuthenticationConfig } from "@contracts/app-config";
 
 /** What kind of app it is, as a person reads it. */
 export function appKind(app: App): string {
@@ -195,24 +195,6 @@ function startingDraft(kind: Kind): SignInDraft {
   return signInDraftOf(stored, { unanswered: true });
 }
 
-/** A sign-in block as it is sent to be created: the schema's input, where defaults may be left out. */
-type NewAuthentication = z.input<typeof AuthenticationConfigSchema>;
-
-/** The first settings of a new app: its sign-in as answered, trimmed, and nothing else yet. */
-export function newAppConfig(authentication: NewAuthentication): { authentication: NewAuthentication } {
-  const endUser = authentication.end_user.source === "header" ? { ...authentication.end_user, header: authentication.end_user.header.trim() } : authentication.end_user;
-  if (authentication.type === "apple_app_attest") {
-    const { team_id, bundle_id } = authentication.app_attest;
-    return {
-      authentication: {
-        ...authentication,
-        end_user: endUser as typeof authentication.end_user,
-        app_attest: { ...authentication.app_attest, team_id: team_id.trim(), bundle_id: bundle_id.trim() },
-      },
-    };
-  }
-  return { authentication: { ...authentication, end_user: endUser as typeof authentication.end_user } };
-}
 
 type StepId = "basics" | "identity" | "users" | "provider" | "paid";
 
@@ -230,11 +212,10 @@ function stepDone(step: StepId, name: string, draft: SignInDraft, issues: AuthIs
     case "basics":
       return name.trim() !== "";
     case "identity":
-      return issueAt(issues, "app_attest") === undefined;
-    case "users":
-      return draft.source !== null && issueAt(issues, "end_user.header") === undefined;
     case "provider":
-      return (["preset", "jwks_url", "issuer", "audience"] as const).every((field) => issueAt(issues, `end_user.issuer.${field}`) === undefined);
+      return [...issues.keys()].every((path) => !shownField(path, SIGN_IN_FIELDS[step]));
+    case "users":
+      return draft.source !== null && [...issues.keys()].every((path) => !shownField(path, SIGN_IN_FIELDS.users));
     case "paid":
       return issues.size === 0;
   }
@@ -274,7 +255,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
 
   const submit = async () => {
     try {
-      const result = await create.mutateAsync({ name: name.trim(), config: newAppConfig(signInConfig(draft)) });
+      const result = await create.mutateAsync({ name: name.trim(), config: { authentication: signInConfig(draft) } });
       reset();
       onOpenChange(false);
       toast.success("App created");

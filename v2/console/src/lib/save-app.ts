@@ -25,7 +25,8 @@ export function saveError(error: unknown, fallback: string, keepsEdits: boolean)
  */
 export function configIssue(error: unknown): { path: string; message: string } | null {
   if (!(error instanceof ApiError) || error.code === "app_revision_conflict") return null;
-  const match = /^config\.([^:\s]+): (.+)$/su.exec(error.message);
+  // The path ends at the first ": "; a model name in it may hold ":" or spaces.
+  const match = /^config\.(.+?): (.+)$/su.exec(error.message);
   return match ? { path: match[1]!, message: match[2]! } : null;
 }
 

@@ -537,6 +537,60 @@ describe("Sign-in tab", () => {
     expect(saveButton().hasAttribute("disabled")).toBe(true);
   });
 
+  it("refuses a number whose typed digits a whole reading would lose", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "uid", equals: "1" }] } } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals number");
+    for (const typed of ["9007199254740991.1", "1.00000000000000001", "1e-400", "1.00000000000000001e15"]) {
+      await userEvent.clear(screen.getByLabelText("Value"));
+      await userEvent.type(screen.getByLabelText("Value"), typed);
+      expect(screen.getByText(/This number cannot be kept exactly/)).toBeTruthy();
+      expect(saveButton().hasAttribute("disabled")).toBe(true);
+    }
+  });
+
+  it("says a refusal about a field the cards do not show above the save button, leaving Save usable", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.issuer.token_header: cannot be xi-api-key: the gateway already uses that header" };
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(saveButton());
+
+    const notice = (await screen.findByText("Not saved")).closest("[role=alert]") as HTMLElement;
+    expect(within(notice).getByText("cannot be xi-api-key: the gateway already uses that header")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("says what is wrong when the only value with a line break is removed", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, provider: "custom", audience: ["staff\ninternal"] } } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove audience 1" }));
+
+    const field = screen.getByText("Audience (aud)").closest("div.space-y-2") as HTMLElement;
+    expect(within(field).getByRole("alert")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("drops the console's label for a paid check when Any signed-in user ends it", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Any signed-in user/ }));
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [] },
+      { op: "remove", path: "/config/authentication/end_user/issuer/entitlement" },
+    ]);
+  });
+
   it("shows a refusal about the sign-in inside the field it names", async () => {
     const server = appServer(testApp());
     server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.header: cannot be xi-api-key: the gateway already uses that header" };

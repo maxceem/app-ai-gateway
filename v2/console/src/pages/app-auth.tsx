@@ -8,6 +8,7 @@ import {
   IdentityProviderFields,
   SubscriptionFields,
   UserSourceFields,
+  shownField,
   signInConfig,
   signInDraftOf,
   signInEdits,
@@ -15,7 +16,6 @@ import {
   type SignInDraft,
 } from "@/components/auth-fields";
 import { GuardedButton } from "@/components/guarded-button";
-import { Problem } from "@/components/problem";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { useConsoleSession } from "@/lib/console-session";
 import { usePatchForm } from "@/lib/save-app";
@@ -23,6 +23,7 @@ import type { App } from "@/lib/types";
 import type { AuthenticationConfig } from "@contracts/app-config";
 
 const readAuthentication = (app: App) => app.config.authentication as AuthenticationConfig;
+
 
 /**
  * Who may call this app, as v1's auth policy asked it: how the app proves
@@ -40,7 +41,9 @@ export function SignInTab({ app }: { app: App }) {
   const issues = signInIssues(draft);
   // A refusal from the gateway is shown where it applies, until the form changes.
   const refused = form.refused;
-  const refusedHere = refused?.path.startsWith("authentication.") ? refused.path.slice("authentication.".length) : null;
+  const refusedAt = refused?.path.startsWith("authentication.") ? refused.path.slice("authentication.".length) : null;
+  // Only a refusal about a field these cards show is said beside it; any other is said above the save button.
+  const refusedHere = refusedAt !== null && shownField(refusedAt) ? refusedAt : null;
   if (refused && refusedHere !== null && !issues.has(refusedHere)) issues.set(refusedHere, refused.message);
   const disabled = readOnly || form.pending;
 
@@ -78,7 +81,6 @@ export function SignInTab({ app }: { app: App }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <UserSourceFields draft={draft} issues={issues} disabled={disabled} onChange={form.setDraft} />
-          {refusedHere === "end_user" ? <Problem>{refused?.message}</Problem> : null}
         </CardContent>
       </Card>
 
