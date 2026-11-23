@@ -46,6 +46,7 @@ import { confirmEmailVerification, sendVerificationEmail } from "../auth/email-v
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { emailSetup } from "../email/sender.ts";
 import { log } from "../core/log.ts";
+import { supportInbox } from "../admin/support.ts";
 
 type ConsoleEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth>; authState: AuthState } };
 type ConsoleContext = Context<ConsoleEnv>;
@@ -62,6 +63,7 @@ consoleRoutes.get(path("getConsoleCapabilities"), (c) =>
     oauth: oauthIssuer(c.env) !== null,
     conversationStorage: conversationsBucket(c.env) !== null,
     emailVerification: emailVerificationRequired(c.env),
+    ...(supportInbox(c.env) === null ? {} : { supportEmail: supportInbox(c.env)! }),
     ...(setting(c.env, "TERMS_OF_SERVICE_URL") === undefined ? {} : { termsOfServiceUrl: setting(c.env, "TERMS_OF_SERVICE_URL") }),
     ...(setting(c.env, "PRIVACY_POLICY_URL") === undefined ? {} : { privacyPolicyUrl: setting(c.env, "PRIVACY_POLICY_URL") }),
     serverVersion: SERVER_VERSION,

@@ -133,7 +133,7 @@ export const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1
  * `limits.includes` (v1's rule: no list means every feature). Renaming one is
  * a breaking change for every plan that lists it.
  */
-export const PLAN_FEATURES = ["conversationStorage"] as const;
+export const PLAN_FEATURES = ["conversationStorage", "humanSupport"] as const;
 export const PlanFeatureSchema = z.enum(PLAN_FEATURES);
 
 /** Whether the account's plan includes each feature, as the gateway decides it. */

@@ -131,7 +131,7 @@ export async function checkConversations(env: Env, accountId: string, next: AppC
   if (conversationsBucket(env) === null) {
     throw invalid("config.conversations.store: conversation storage is not set up on this deployment (it needs a CONVERSATIONS bucket)");
   }
-  await requirePlanFeature(env, accountId, "conversationStorage", "Conversation history");
+  await requirePlanFeature(env, accountId, "conversationStorage");
 }
 
 /** An app's stored routing entries and presets, by slug, read loosely: they were valid when saved. */

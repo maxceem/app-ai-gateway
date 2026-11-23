@@ -281,15 +281,35 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
 
 export { PLAN_FEATURES, type PlanFeature };
 
+/** How each plan feature is named and refused, and whether it stays usable while billing cannot be read (v1's policy). */
+interface FeaturePolicy {
+  /** How the feature is named in a refusal, at the start of a sentence. */
+  readonly name: string;
+  /** The refusal's code. Its own code only where a client already reads one. */
+  readonly code: "billing_feature_not_included" | "support_plan_required";
+  /**
+   * Whether the feature stays usable while billing cannot be read. Usually
+   * not: admitting it would mean guessing the plan. Human support is the
+   * exception, because an outage is when a paying customer most needs it.
+   */
+  readonly whileBillingUnavailable: boolean;
+}
+
+const FEATURE_POLICY = {
+  conversationStorage: { name: "Conversation history", code: "billing_feature_not_included", whileBillingUnavailable: false },
+  humanSupport: { name: "Human support", code: "support_plan_required", whileBillingUnavailable: true },
+} as const satisfies Record<PlanFeature, FeaturePolicy>;
+
 /**
  * Whether the account's plan includes `feature` (v1's `planIncludes`).
- * Self-hosted: always. Billing that cannot be read: never, because storing
- * conversations is not something to guess a plan for. A `limits.includes`
+ * Self-hosted: always. Billing that cannot be read: as the feature's policy
+ * says, since an outage says nothing about the plan. A `limits.includes`
  * that is not a list of strings throws `502`: the plan is misconfigured.
  */
 export function planIncludes(access: GatewayBillingAccess, feature: PlanFeature): boolean {
   if (access.state === "self_hosted") return true;
-  if (access.state === "unavailable" || access.plan === null) return false;
+  if (access.state === "unavailable") return FEATURE_POLICY[feature].whileBillingUnavailable;
+  if (access.plan === null) return false;
   const limits = access.plan.limits;
   if (limits === undefined || limits === null) return true;
   if (typeof limits !== "object" || Array.isArray(limits)) {
@@ -353,14 +373,15 @@ export function billingRpcError(error: unknown): GatewayError {
 }
 
 /**
- * Turning a feature on needs a plan that includes it. Like any settings write,
- * billing that cannot be read answers 503 rather than guessing.
+ * Refuses the call unless the account's plan includes the feature, and
+ * answers with the billing access it read. Billing that cannot be read
+ * answers 503 rather than guessing, unless the feature's policy allows it
+ * (human support).
  */
-export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature, name: string): Promise<void> {
-  const access = requireActiveBilling(await getBillingAccess(env, accountId));
-  if (!planIncludes(access, feature)) {
-    throw new GatewayError(403, "billing_feature_not_included", `${name} is not included in this account's plan`, undefined, {
-      data: { feature },
-    });
-  }
+export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature): Promise<GatewayBillingAccess> {
+  const access = await getBillingAccess(env, accountId);
+  if (planIncludes(access, feature)) return access;
+  requireActiveBilling(access);
+  const policy = FEATURE_POLICY[feature];
+  throw new GatewayError(403, policy.code, `${policy.name} is not included in this account's plan`, undefined, { data: { feature } });
 }

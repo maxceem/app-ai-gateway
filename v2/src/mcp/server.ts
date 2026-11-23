@@ -16,7 +16,7 @@ import { asGatewayError } from "../core/platform-errors.ts";
 import { MCP_GUIDE, MCP_GUIDE_URI, MCP_INSTRUCTIONS } from "./guide.ts";
 import { runTool, type ToolCaller } from "./run.ts";
 import { redactSecrets } from "./secret-fields.ts";
-import { MCP_TOOLS, nextAction, type McpTool } from "./tools.ts";
+import { nextAction, toolsFor, type McpTool } from "./tools.ts";
 
 type Sdk = typeof import("@modelcontextprotocol/server");
 
@@ -101,7 +101,7 @@ function mcpServer(sdk: Sdk, caller: ToolCaller, requestId: string | null): McpS
       cacheHints: { "tools/list": PUBLIC_DAY, "resources/list": PUBLIC_DAY, "resources/read": PUBLIC_DAY },
     },
   );
-  for (const tool of MCP_TOOLS) {
+  for (const tool of toolsFor(caller.env)) {
     server.registerTool(
       tool.name,
       { title: tool.title, description: tool.description, inputSchema: advertised(tool.input), annotations: tool.annotations },

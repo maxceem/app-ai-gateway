@@ -72,6 +72,7 @@ export type ErrorCode =
   | "registration_disabled"
   | "email_unverified"
   | "email_unavailable"
+  | "support_plan_required"
   // MCP tools and the CLI's tool catalog (v1's codes).
   | "tool_not_found"
   | "tool_changed";
