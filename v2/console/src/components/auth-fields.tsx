@@ -620,21 +620,26 @@ function modeOf(claim: ClaimDraft): ClaimMode {
   return claim._match ?? (typeof claim.equals === "number" ? "number" : typeof claim.equals === "boolean" ? "boolean" : "string");
 }
 
-const NUMBER = /^-?\d+(?:\.\d+)?$/u;
+/** A number as typed: digits, an optional fraction, an optional exponent. */
+const NUMBER = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/u;
 
 /**
- * Whether typed text is a number JSON keeps exactly: a whole number within
- * the safe range, or a decimal that reads back as written (trailing zeros
- * aside). `9007199254740993` is neither: as a number it would become
- * `9007199254740992`, and the rule would check another value.
+ * Whether typed text is a number JSON keeps exactly. A whole number, however
+ * it is written (`9007199254740992`, `9007199254740992.0`, `9.007199254740992e15`),
+ * must be within the safe range: beyond it, `9007199254740993` would become
+ * `9007199254740992`, and the rule would check another value. Any other
+ * number must be a plain decimal that reads back as written (trailing zeros
+ * aside).
  */
 function exactNumber(text: string): boolean {
   const trimmed = text.trim();
   if (!NUMBER.test(trimmed)) return false;
   const value = Number(trimmed);
-  if (!trimmed.includes(".")) return Number.isSafeInteger(value);
+  if (!Number.isFinite(value)) return false;
+  if (Number.isInteger(value)) return Number.isSafeInteger(value);
+  if (/[eE]/u.test(trimmed)) return false;
   const written = trimmed.replace(/0+$/u, "").replace(/\.$/u, "").replace(/^(-?)0+(?=\d)/u, "$1");
-  return Number.isFinite(value) && String(value) === (written === "-0" ? "0" : written);
+  return String(value) === written;
 }
 
 /** A claim's value in its current match type. */

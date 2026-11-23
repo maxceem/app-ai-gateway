@@ -481,6 +481,23 @@ describe("Sign-in tab", () => {
 
     expect(screen.getByText(/This number cannot be kept exactly. A large id must be text/)).toBeTruthy();
     expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    // The same limit, however the whole number is written.
+    for (const spelling of ["9007199254740992.0", "9.007199254740992e15"]) {
+      await userEvent.clear(screen.getByLabelText("Value"));
+      await userEvent.type(screen.getByLabelText("Value"), spelling);
+      expect(screen.getByText(/This number cannot be kept exactly. A large id must be text/)).toBeTruthy();
+      expect(saveButton().hasAttribute("disabled")).toBe(true);
+    }
+
+    // A safe whole number written with a fraction or an exponent is fine.
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "3.0");
+    expect(screen.queryByText(/cannot be kept exactly|Enter a number/)).toBeNull();
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "3e2");
+    expect(screen.queryByText(/cannot be kept exactly|Enter a number/)).toBeNull();
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
   });
 
   it("asks for an equals rule on RevenueCat's claim to be changed by hand, adding no row", async () => {
