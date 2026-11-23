@@ -26,7 +26,12 @@ interface Shortcut {
   readonly operations: (value: never, app: ShortcutApp) => AppPatchOperation[];
 }
 
-const replace = (path: string, value: unknown): AppPatchOperation => ({ op: "replace", path, value }) as AppPatchOperation;
+/**
+ * Each shortcut sets one object field with JSON Patch `add`, which writes the
+ * field whether or not it is there: an operation before it may have replaced
+ * its parent without it (an `app_attest` without `verify_on`).
+ */
+const set = (path: string, value: unknown): AppPatchOperation => ({ op: "add", path, value }) as AppPatchOperation;
 
 /** A setting only an iOS app has, refused by name for any other. */
 function appAttest(argument: string, setting: string): Shortcut["operations"] {
@@ -34,18 +39,18 @@ function appAttest(argument: string, setting: string): Shortcut["operations"] {
     if (app.config?.authentication?.type !== "apple_app_attest") {
       throw new GatewayError(400, "invalid_request", `${argument}: only an iOS (App Attest) app has this setting; nothing was saved`);
     }
-    return [replace(`/config/authentication/app_attest/${setting}`, value)];
+    return [set(`/config/authentication/app_attest/${setting}`, value)];
   };
 }
 
 export const APP_SHORTCUTS: Readonly<Record<string, Shortcut>> = {
   name: {
     schema: z.string().trim().min(1).max(100).meta({ description: "The app's new name." }),
-    operations: (value: string) => [replace("/name", value)],
+    operations: (value: string) => [set("/name", value)],
   },
   status: {
     schema: z.enum(APP_STATUSES).meta({ description: "active serves requests; disabled pauses the app, reversibly." }),
-    operations: (value: string) => [replace("/status", value)],
+    operations: (value: string) => [set("/status", value)],
   },
   team_id: {
     schema: z.string().trim().min(1).meta({ description: "An iOS app's Apple team ID, ten uppercase letters or digits." }),

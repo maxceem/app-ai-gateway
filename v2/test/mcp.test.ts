@@ -454,6 +454,37 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${id}`)).body.app.revision).toBe(revision);
   });
 
+  it("judge mixed operations as the save would before applying them: their shape, then the revision", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    const shapeless = await callTool(key, "patch_app", { app: app.id, revision: app.revision, operations: [{ op: "replace", value: "No path" }], status: "disabled" });
+    expect(shapeless.structuredContent.error).toBe("invalid_request");
+    expect((await admin(key, "PATCH", `/v2/admin/apps/${app.id}`, { revision: app.revision, operations: [{ op: "replace", path: "/name", value: "Elsewhere" }] })).status).toBe(200);
+    const stale = await callTool(key, "patch_app", { app: app.id, revision: app.revision, operations: [{ op: "remove", path: "/config/limits" }], status: "disabled" });
+    expect(stale.structuredContent.error).toBe("app_revision_conflict");
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ name: "Elsewhere", status: "active" });
+  });
+
+  it("set a field a shortcut names even when an operation before it replaced its parent without it", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/apps", {
+      name: "iOS add",
+      config: {
+        authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app" } },
+        routing: { providers: {} },
+      },
+    });
+    const { id, revision } = created.body.app as { id: string; revision: number };
+    const patched = await callTool(key, "patch_app", {
+      app: id,
+      revision,
+      operations: [{ op: "replace", path: "/config/authentication/app_attest", value: { team_id: "ABCDE12345", bundle_id: "com.example.next" } }],
+      verify_on: "token_exchange",
+    });
+    expect(patched.isError ?? false, JSON.stringify(patched.structuredContent)).toBe(false);
+    expect(patched.structuredContent.app.config.authentication.app_attest).toMatchObject({ bundle_id: "com.example.next", verify_on: "token_exchange" });
+  });
+
   it("set an iOS app's App Attest settings with shortcuts", async () => {
     const key = await seedManagementKey();
     const created = await admin(key, "POST", "/v2/admin/apps", {

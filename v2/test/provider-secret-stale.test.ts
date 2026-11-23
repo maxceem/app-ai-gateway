@@ -15,7 +15,7 @@ import { KmsClientError } from "@maxceem/cf-kms/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { credentialStillCurrent, loadConnection, opened, type ConnectionRecord } from "../src/providers/connections.ts";
 import { isVaultTransportFailure } from "../src/vault/index.ts";
-import { SecretVaultBlobError, SecretVaultConfigurationError } from "../src/vault/types.ts";
+import { SecretVaultBlobError, SecretVaultConfigurationError, VAULT_SERVICE } from "../src/vault/types.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount } from "./helpers.ts";
 
 const SECRET = "sk-test-stale-provider-key-5678";
@@ -221,7 +221,7 @@ describe("a cf-kms that never answers", () => {
     const vault = createKmsSecretVault({}, "https://kms.example.test", "test-token");
     // A well-formed envelope, so the client asks cf-kms rather than refusing it itself.
     const blob = "cfkms-env1.AAAA.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA";
-    const opening = vault.decryptSecret(blob, { purpose: "test" }).catch((error: unknown) => error);
+    const opening = vault.decryptSecret(blob, { service: VAULT_SERVICE, purpose: "test" }).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(KMS_CALL_DEADLINE_MS + 1);
     const error = await opening;
     expect(hung).toHaveBeenCalledTimes(1);

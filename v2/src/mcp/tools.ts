@@ -896,6 +896,19 @@ export const MCP_TOOLS: readonly McpTool[] = [
     request: (input, read) => {
       const current = (read as { app?: ShortcutApp & { revision?: number; name?: string; status?: string; config?: unknown } } | undefined)?.app;
       const explicit = Array.isArray(input.operations) ? (input.operations as AppPatchOperation[]) : [];
+      if (current !== undefined && explicit.length > 0) {
+        // Judged as the save would judge them, before anything is applied here:
+        // the operations' shape first, then the revision the caller read.
+        const shaped = APP_PATCH.safeParse({ revision: input.revision, operations: explicit });
+        if (!shaped.success) {
+          const issue = shaped.error.issues[0];
+          const where = issue === undefined || issue.path.length === 0 ? "" : `${issue.path.map(String).join(".")}: `;
+          throw new GatewayError(400, "invalid_request", `${where}${issue?.message ?? "The operations are invalid"}; nothing was saved`);
+        }
+        if (input.revision !== current.revision) {
+          throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
+        }
+      }
       // Shortcuts apply after the explicit operations, so they are judged against what those produce.
       const base = current === undefined || explicit.length === 0 ? current : (applyAppPatch({ name: current.name, status: current.status, config: current.config }, explicit) as ShortcutApp);
       const operations = [...explicit, ...(base === undefined ? [] : shortcutOperations(input, base))];
