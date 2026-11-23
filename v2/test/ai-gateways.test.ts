@@ -304,6 +304,17 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(offWithKey.body.provider.cloudflareGateway).toBeNull();
   });
 
+  it("answers a stale revision as a conflict before judging the change against what moved", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY });
+    const id = created.body.provider.id as string;
+    // Someone turns Cloudflare on; a dialog still at revision 1 then sends a base URL, which a
+    // Cloudflare connection could not take. It is told the connection changed, not that the URL is wrong.
+    expect((await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN }, secret: null })).status).toBe(200);
+    const stale = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, baseUrl: "https://other.example.com/v1", secret: PROVIDER_KEY });
+    expect(stale.status).toBe(409);
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

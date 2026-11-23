@@ -15,7 +15,7 @@ function appNaming(): App {
   return testApp({
     config: {
       ...testApp().config,
-      routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-new", "gpt-old"] } }, model_rewrites: { "gpt-4": "gpt-gone" } },
+      routing: { providers: { openai: { operations: ["openai.chat"], models: ["gpt-new", "gpt-old", "gpt-4"] } }, model_rewrites: { "gpt-4": "gpt-gone" } },
       presets: { chat: { provider: "openai", operation: "openai.chat", model: "gpt-old" } },
     },
   }) as unknown as App;
@@ -47,6 +47,13 @@ describe("the app page's notices", () => {
     expect(retiringModels(enabling(["openai.chat"]), [OPENAI] as never, PRICES as never).map((entry) => entry.where)).toEqual([["rewrite from gpt-4"]]);
     // A live session is not rewritten, so a rewrite on an app enabling only that warns of nothing.
     expect(retiringModels(enabling(["openai.realtime"]), [OPENAI] as never, PRICES as never)).toEqual([]);
+    // A source the connection does not allow is refused before it could be rewritten.
+    const allowing = (models: string[]) =>
+      testApp({
+        config: { ...testApp().config, routing: { providers: { openai: { operations: ["openai.chat"], models } }, model_rewrites: { "gpt-4": "gpt-gone" } } },
+      }) as unknown as App;
+    expect(retiringModels(allowing(["gpt-new"]), [OPENAI] as never, PRICES as never)).toEqual([]);
+    expect(retiringModels(allowing(["gpt-4"]), [OPENAI] as never, PRICES as never).map((entry) => entry.model)).toEqual(["gpt-gone"]);
   });
 
   it("shows the leaving models and a key-protected app's missing key", async () => {

@@ -1,3 +1,5 @@
+import { priceAmountProblem } from "@contracts/price-amount";
+
 /**
  * A connection's own prices as a form edits them: one row per model, with the
  * token rates most prices use and one unit rate. Anything else a stored price
@@ -123,16 +125,38 @@ function amountOf(text: string): number | null | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * What is wrong with a typed amount, by the gateway's own money rules, or
+ * null: not an amount, a positive amount too small to read as one (it would
+ * become 0), or one the gateway would store as a different figure.
+ */
+function amountProblem(text: string): string | null {
+  const value = amountOf(text);
+  if (value === undefined) return "Enter an amount, such as 2.5.";
+  if (value === null) return null;
+  // A positive amount typed so small that it reads as 0.
+  if (value === 0 && /[1-9]/u.test(text.trim().split(/[eE]/u)[0]!)) return "This amount is too small: it would be stored as 0.";
+  return priceAmountProblem(value);
+}
+
+/** Model names that cannot be a key of the prices object, as app settings refuse them. */
+const RESERVED_MODELS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
 /** What is wrong with a row, field by field, in words. */
 export function rowProblems(row: PriceRow, rows: readonly PriceRow[]): Record<string, string> {
   const problems: Record<string, string> = {};
   const model = row.model.trim();
   if (model === "") problems.model = "Name the model.";
+  else if (RESERVED_MODELS.has(model)) problems.model = "This is not a model name.";
   else if (rows.some((other) => other !== row && other.model.trim() === model)) problems.model = "This model is listed twice.";
   for (const { field } of TOKEN_FIELDS) {
-    if (amountOf(row.tokens[field]) === undefined) problems[field] = "Enter an amount, such as 2.5.";
+    const problem = amountProblem(row.tokens[field]);
+    if (problem !== null) problems[field] = problem;
   }
-  if (!severalUnits(row) && row.unitField !== "" && amountOf(row.unitAmount) === undefined) problems.unit = "Enter an amount, such as 0.04.";
+  if (!severalUnits(row) && row.unitField !== "") {
+    const problem = amountProblem(row.unitAmount);
+    if (problem !== null) problems.unit = problem === "Enter an amount, such as 2.5." ? "Enter an amount, such as 0.04." : problem;
+  }
   const input = amountOf(row.tokens.input);
   const output = amountOf(row.tokens.output);
   if (!problems.input && !problems.output && (input === null) !== (output === null)) {
@@ -145,7 +169,8 @@ export function rowProblems(row: PriceRow, rows: readonly PriceRow[]): Record<st
 
 /** The pricing the rows save as: each row's stored price with only the fields its inputs show changed. */
 export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
-  const pricing: StoredPricing = {};
+  // Each model is a plain own property: no name can reach the object's prototype.
+  const pricing: StoredPricing = Object.create(null) as StoredPricing;
   for (const row of rows) {
     const price: StoredPrice = row.original === null ? {} : structuredClone(row.original);
     for (const { field } of TOKEN_FIELDS) {
@@ -161,7 +186,7 @@ export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
       if (value === null || value === undefined) delete price[row.unitField];
       else price[row.unitField] = value;
     }
-    pricing[row.model.trim()] = price;
+    Object.defineProperty(pricing, row.model.trim(), { value: price, enumerable: true, writable: true, configurable: true });
   }
-  return Object.keys(pricing).length === 0 ? null : pricing;
+  return Object.keys(pricing).length === 0 ? null : { ...pricing };
 }

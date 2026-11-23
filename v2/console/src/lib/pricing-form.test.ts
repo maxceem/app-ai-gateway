@@ -41,7 +41,7 @@ describe("the prices form", () => {
   });
 
   it("reads back every stored rate as itself, exponents included", () => {
-    for (const value of [1e-9, 2.5e-7, 0.000001, 1234.5678, 3e21]) {
+    for (const value of [1e-9, 2.5e-7, 0.000001, 1234.5678, 3e5]) {
       const [row] = rowsOf({ m: { per_request: value } });
       expect(rowProblems(row!, [row!])).toEqual({});
       expect(pricingOf([row!])).toEqual({ m: { per_request: value } });
@@ -55,5 +55,25 @@ describe("the prices form", () => {
     expect(formCanShow({ m: [1] })).toBe(false);
     expect(formCanShow({ m: { input: "1" } })).toBe(false);
     expect(formCanShow([])).toBe(false);
+  });
+
+  it("refuses an amount the gateway would store as another figure, or as 0", () => {
+    const priced = (text: string) => ({ ...emptyRow(), model: "m", unitField: "per_request", unitAmount: text });
+    const tiny = priced("1e-400");
+    expect(rowProblems(tiny, [tiny]).unit).toBe("This amount is too small: it would be stored as 0.");
+    const fine = priced("1e-10");
+    expect(rowProblems(fine, [fine]).unit).toMatch(/kept to \$0\.000000001; this would be stored as 0\.000000001/u);
+    const zero = priced("0");
+    expect(rowProblems(zero, [zero]).unit).toBeUndefined();
+  });
+
+  it("refuses model names that cannot be a key of the prices, and builds the prices without a prototype path", () => {
+    for (const model of ["__proto__", "constructor", "prototype"]) {
+      const row = { ...emptyRow(), model, unitField: "per_request", unitAmount: "1" };
+      expect(rowProblems(row, [row]).model).toBe("This is not a model name.");
+    }
+    const built = pricingOf([{ ...emptyRow(), model: "m", unitField: "per_request", unitAmount: "1" }]);
+    expect(Object.getPrototypeOf(built)).toBe(Object.prototype);
+    expect(built).toEqual({ m: { per_request: 1 } });
   });
 });

@@ -34,7 +34,8 @@ function rewriteApplies(type: string, operations: readonly string[], from: strin
 /**
  * The models an app names with the connection types they are called through:
  * its allowed models, its presets and their fallbacks, and its rewrite
- * targets, counted on each connection where an enabled operation applies them.
+ * targets, counted on each connection whose allowed models admit the source
+ * and where an enabled operation applies them.
  * Each is looked up as our price list names it (`listedAs`), so a gateway's
  * namespaced model, such as Vercel's `openai/gpt-4.1`, finds its entry.
  */
@@ -51,6 +52,8 @@ function namedModels(app: App, providers: readonly ProviderConnection[]): { type
     if (type === undefined) continue;
     for (const model of entry.models ?? []) add(type, model, `allowed on ${slug}`);
     for (const [from, to] of Object.entries(app.config.routing.model_rewrites ?? {})) {
+      // A request naming a model the connection does not allow is refused before any rewrite (the gateway's rule).
+      if (entry.models !== undefined && !entry.models.includes(from)) continue;
       if (rewriteApplies(type, entry.operations, from, to)) add(type, to, `rewrite from ${from}`);
     }
   }

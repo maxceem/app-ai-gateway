@@ -165,7 +165,8 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
  * Cloudflare setting, never a base URL. Only a test deployment's own build
  * moves it (`./route.ts`).
  */
-export const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
+export { CLOUDFLARE_AI_GATEWAY_ORIGIN } from "./destinations.ts";
+import { CLOUDFLARE_AI_GATEWAY_ORIGIN, directOrigin } from "./destinations.ts";
 
 /**
  * The origin a connection's provider key is given for, which seals it: the
@@ -279,21 +280,8 @@ export function upstreamOrigin(
   hostKey: string,
   passthrough = false,
 ): string {
-  const host = description.hosts[hostKey];
-  if (host === undefined) throw new GatewayError(500, "internal_error", "The provider description names an unknown host");
-  if (connection.baseUrl !== null && (passthrough || !isDeclaredHost(description, connection.baseUrl))) {
-    return hostKey === "main" ? connection.baseUrl : `${connection.baseUrl}${hostKey}/`;
-  }
-  return `https://${host}/`;
-}
-
-/** Whether `baseUrl` is exactly one of the provider's declared hosts, as its default routing would address it. */
-function isDeclaredHost(description: ProviderDescription, baseUrl: string): boolean {
-  let href: string;
-  try {
-    href = new URL(baseUrl).href;
-  } catch {
-    return false;
-  }
-  return Object.values(description.hosts).some((declared) => new URL(`https://${declared}/`).href === href);
+  // Where the key goes is worked out once, with the console (`./destinations.ts`).
+  const origin = directOrigin(connection, description, hostKey, passthrough);
+  if (origin === null) throw new GatewayError(500, "internal_error", "The provider description names an unknown host");
+  return origin;
 }

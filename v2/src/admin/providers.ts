@@ -919,6 +919,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
   requireManage(actor);
   const body = await parseBody(c, ProviderUpdateRequestSchema);
   const current = await connectionRow(c.env.DB, actor.accountId, c.req.param("id")!);
+  // A change made since it was read is a conflict before anything is judged against what changed; the write checks again.
+  if (current.revision !== body.revision) throw new GatewayError(409, "conflict", "The provider connection changed since it was read; read it again and retry");
   const custom = current.type === CUSTOM_PROVIDER_TYPE;
   const description = builtInProvider(current.type);
   assertFieldsFit(current.type, body);

@@ -16,7 +16,7 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerHost, providerLabel, suggestedPath } from "@/lib/providers";
+import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
 import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
@@ -335,7 +335,7 @@ function CloudflareFields({
   return (
     <>
       <label className="flex items-center gap-2 text-sm font-medium">
-        <Checkbox checked={draft.on} onCheckedChange={(checked) => onChange({ ...draft, on: checked === true })} />
+        <Checkbox checked={draft.on} onCheckedChange={(checked) => onChange({ ...draft, on: checked === true, token: "" })} />
         Send through Cloudflare AI Gateway
       </label>
       {draft.on ? (
@@ -345,7 +345,8 @@ function CloudflareFields({
               id="cloudflare-account"
               value={draft.accountId}
               autoComplete="off"
-              onChange={(event) => onChange({ ...draft, accountId: event.target.value })}
+              // The token belongs to the account and gateway it was typed for.
+              onChange={(event) => onChange({ ...draft, accountId: event.target.value, token: "" })}
             />
           </Field>
           <Field label="Cloudflare gateway ID" htmlFor="cloudflare-gateway">
@@ -353,7 +354,7 @@ function CloudflareFields({
               id="cloudflare-gateway"
               value={draft.gatewayId}
               autoComplete="off"
-              onChange={(event) => onChange({ ...draft, gatewayId: event.target.value })}
+              onChange={(event) => onChange({ ...draft, gatewayId: event.target.value, token: "" })}
             />
           </Field>
           <Field
@@ -392,13 +393,13 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const isCustom = type === "custom";
   // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
   const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
-  // Where the key would go. A key is kept only for the destination it was typed for.
-  const destination = JSON.stringify([
-    type,
-    viaCloudflare ? [cloudflare.accountId.trim(), cloudflare.gatewayId.trim()] : null,
-    isCustom ? [custom.baseUrl.trim(), custom.header.trim().toLowerCase(), custom.format] : host.trim(),
-  ]);
-  const [secret, setSecret] = useBoundSecret(destination);
+  // Every host the key would be sent to, as the gateway routes it. A key is kept only for these.
+  const destinations = keyDestinationText(type, {
+    baseUrl: isCustom ? custom.baseUrl.trim() || null : host.trim() || null,
+    cloudflareGateway: viaCloudflare ? { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim() } : null,
+  });
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([type, destinations, isCustom ? [custom.header.trim().toLowerCase(), custom.format] : null]));
+  const sentTo = destinations === "" ? "" : ` Sent only to ${destinations}.`;
 
   const reset = () => {
     setHost("");
@@ -519,11 +520,13 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         label="API key"
         htmlFor="provider-secret"
         hint={
-          viaCloudflare
+          (viaCloudflare
             ? "Optional through Cloudflare: leave it empty to use the keys stored in your Cloudflare AI Gateway. Stored encrypted if given."
             : isCustom
-              ? "Stored encrypted, and sent only to the base URL above, in the header you name. It is never shown again, only its last characters. Changing where requests go clears it."
-              : "Stored encrypted. It is never shown again, only its last characters. Changing where requests go clears it."
+              ? "Stored encrypted, and sent in the header you name. It is never shown again, only its last characters."
+              : "Stored encrypted. It is never shown again, only its last characters.") +
+          sentTo +
+          " Changing where requests go clears it."
         }
       >
         <div className="flex gap-2">
@@ -974,22 +977,22 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
 function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const test = useKeyTest();
-  const [secret, setSecret] = useState("");
-
-  const close = () => {
-    setSecret("");
-    test.clear();
-    onClose();
-  };
+  const opened = useOpenedRevision(provider, () => test.clear(), onClose);
+  // Where the key goes, from the connection as the list now has it: a host moved elsewhere clears the key.
+  const destinations = provider
+    ? keyDestinationText(provider.type, { baseUrl: provider.baseUrl, cloudflareGateway: provider.cloudflareGateway ?? null })
+    : "";
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([destinations, opened.revision, opened.conflict]));
 
   const submit = async () => {
     if (!provider) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, secret } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, secret } });
+      if (!opened.mounted.current) return;
       toast.success("Key replaced");
-      close();
+      onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not replace the key");
+      opened.failed(error, "Could not replace the key");
     } finally {
       update.reset();
     }
@@ -999,22 +1002,24 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
     <FormDialog
       open={provider !== null}
       onOpenChange={(open) => {
-        if (!open) close();
+        if (!open) onClose();
       }}
       title="Replace the key"
       description={provider ? `Apps using ${provider.slug} switch to the new key at once.` : undefined}
       submitLabel="Replace key"
       pending={update.isPending}
-      disabled={!secret}
+      disabled={opened.conflict || opened.reloading || !secret}
       onSubmit={() => void submit()}
     >
-      <Field label="New API key" htmlFor="provider-new-secret">
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+      <Field label="New API key" htmlFor="provider-new-secret" hint={destinations ? `Sent only to ${destinations}.` : undefined}>
         <div className="flex gap-2">
           <Input
             id="provider-new-secret"
             type="password"
             value={secret}
             autoComplete="off"
+            disabled={opened.conflict}
             onChange={(event) => {
               setSecret(event.target.value);
               test.clear();
@@ -1025,7 +1030,7 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
             <Button
               type="button"
               variant="outline"
-              disabled={!secret || !provider || test.pending}
+              disabled={!secret || !provider || test.pending || opened.conflict}
               // Against the connection's own host, if it has one.
               onClick={() =>
                 provider &&
@@ -1068,13 +1073,21 @@ function HostField({ id, value, onChange }: { id: string; value: string; onChang
 }
 
 /**
- * A typed key, kept only for the destination it was typed for: once where the
- * requests go changes, the key reads as empty, so a test or a save can never
- * send it somewhere the person did not type it for.
+ * A typed key, kept only for the binding it was typed under: where it would
+ * go (every host the gateway can send it to) and, for an existing connection,
+ * the revision the dialog holds and whether that revision was refused. Once
+ * any of them changes, the key is deleted, not hidden: going back to an
+ * earlier destination never brings it back, so a test or a save can only send
+ * a key to where the person typed it for.
  */
-function useBoundSecret(destination: string): [string, (value: string) => void] {
-  const [state, setState] = useState({ destination, value: "" });
-  return [state.destination === destination ? state.value : "", (value: string) => setState({ destination, value })];
+function useBoundSecret(binding: string): [string, (value: string) => void] {
+  const [state, setState] = useState({ binding, value: "" });
+  const set = (value: string) => setState({ binding, value });
+  if (state.binding !== binding) {
+    setState({ binding, value: "" });
+    return ["", set];
+  }
+  return [state.value, set];
 }
 
 /**
@@ -1193,17 +1206,25 @@ function RenameDialog({ provider, onClose }: { provider: ProviderConnection | nu
 /**
  * Where a built-in provider's requests go: its own host, or a base URL. A key
  * goes only where it was given: a new base URL needs a key typed for it, and
- * going back to the provider's own host sends the stored key there only when
- * the person says so, or takes a replacement key.
+ * going back to the provider's own hosts sends the stored key there only when
+ * the person says so, or takes a replacement key. Every confirmation names
+ * every host the key would reach.
  */
 function HostDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
   const test = useKeyTest();
   const [stored, setStored] = useState(provider?.baseUrl ?? "");
   const [host, setHost] = useState(provider?.baseUrl ?? "");
+  const [keepKey, setKeepKey] = useState(false);
   const opened = useOpenedRevision(
     provider,
     (latest) => {
+      // Now through Cloudflare, whose own dialog sets where it goes.
+      if (latest.cloudflareGateway) {
+        toast.info("This connection now goes through Cloudflare AI Gateway");
+        onClose();
+        return;
+      }
       setStored(latest.baseUrl ?? "");
       setHost(latest.baseUrl ?? "");
       setKeepKey(false);
@@ -1212,15 +1233,15 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
     onClose,
   );
   const next = host.trim();
-  const [secret, setSecret] = useBoundSecret(next);
-  const [keepKey, setKeepKey] = useState(false);
+  const type = provider?.type ?? "";
+  const destinations = keyDestinationText(type, { baseUrl: next === "" ? null : next, cloudflareGateway: null });
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([destinations, opened.revision, opened.conflict]));
   const invalid = next !== "" && !next.startsWith("https://");
   const changed = next !== stored;
   // A new base URL needs a key typed for it.
   const needsKey = changed && next !== "";
-  // Back to the provider's own host: the stored key goes there only when the person says so.
+  // Back to the provider's own hosts: the stored key goes there only when the person says so.
   const toOwnHost = changed && next === "";
-  const ownHost = provider ? providerHost(provider.type) : "";
   const ready = changed && !invalid && (needsKey ? secret !== "" : !toOwnHost || keepKey || secret !== "");
 
   const save = async () => {
@@ -1265,12 +1286,8 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
       />
       {toOwnHost ? (
         <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={keepKey}
-            disabled={secret !== ""}
-            onCheckedChange={(checked) => setKeepKey(checked === true)}
-          />
-          Send the current key to {ownHost}
+          <Checkbox checked={keepKey} disabled={secret !== "" || opened.conflict} onCheckedChange={(checked) => setKeepKey(checked === true)} />
+          Send the current key to {destinations}
         </label>
       ) : null}
       {needsKey || toOwnHost ? (
@@ -1278,11 +1295,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
           <Field
             label={toOwnHost ? "Or a replacement key" : "API key"}
             htmlFor="provider-host-secret"
-            hint={
-              toOwnHost
-                ? `A key typed here replaces the current one and goes to ${ownHost}.`
-                : "A key goes only where it was given, so a new host needs it again. Changing the address clears it."
-            }
+            hint={`${toOwnHost ? "A key typed here replaces the current one." : "A key goes only where it was given, so a new host needs it again."} Sent only to ${destinations}. Changing the address clears it.`}
           >
             <div className="flex gap-2">
               <Input
@@ -1290,6 +1303,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
                 type="password"
                 value={secret}
                 autoComplete="off"
+                disabled={opened.conflict}
                 onChange={(event) => {
                   setSecret(event.target.value);
                   if (event.target.value !== "") setKeepKey(false);
@@ -1299,7 +1313,7 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
               <Button
                 type="button"
                 variant="outline"
-                disabled={!secret || invalid || !provider || test.pending}
+                disabled={!secret || invalid || !provider || test.pending || opened.conflict}
                 onClick={() => provider && test.run({ type: provider.type, secret, ...(next === "" ? {} : { baseUrl: next }) })}
               >
                 Test key
@@ -1320,22 +1334,43 @@ function HostDialog({ provider, onClose }: { provider: ProviderConnection | null
  */
 function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
-  const stored = provider?.cloudflareGateway ?? null;
+  const [stored, setStored] = useState(provider?.cloudflareGateway ?? null);
   const [draft, setDraft] = useState<CloudflareDraft>(
     stored ? { on: true, accountId: stored.accountId, gatewayId: stored.gatewayId, token: "" } : { ...NO_CLOUDFLARE, on: true },
   );
-  const [secret, setSecret] = useState("");
   const [storedKeys, setStoredKeys] = useState(false);
+  // Going direct again is its own step, which asks for the provider's key for where it then goes.
+  const [stopping, setStopping] = useState(false);
+  const opened = useOpenedRevision(
+    provider,
+    (latest) => {
+      const now = latest.cloudflareGateway ?? null;
+      setStored(now);
+      setDraft(now ? { on: true, accountId: now.accountId, gatewayId: now.gatewayId, token: "" } : { ...NO_CLOUDFLARE, on: true });
+      setStoredKeys(false);
+      setStopping(false);
+    },
+    onClose,
+  );
   const sameGateway = stored !== null && draft.accountId.trim() === stored.accountId && draft.gatewayId.trim() === stored.gatewayId;
+  const type = provider?.type ?? "";
+  // Where a key typed here goes: the gateway being set, or, when stopping, the provider's own route.
+  const throughGateway = keyDestinationText(type, {
+    baseUrl: provider?.baseUrl ?? null,
+    cloudflareGateway: { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim() },
+  });
+  const direct = keyDestinationText(type, { baseUrl: provider?.baseUrl ?? null, cloudflareGateway: null });
+  const [secret, setSecret] = useBoundSecret(JSON.stringify([stopping ? direct : throughGateway, opened.revision, opened.conflict]));
 
   const save = async (body: Record<string, unknown>, done: string) => {
     if (!provider) return;
     try {
-      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, ...body } });
+      await update.mutateAsync({ id: provider.id, body: { revision: opened.revision, ...body } });
+      if (!opened.mounted.current) return;
       toast.success(done);
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not change the connection");
+      opened.failed(error, "Could not change the connection");
     } finally {
       update.reset();
     }
@@ -1344,6 +1379,39 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
   const key = storedKeys ? { secret: null } : secret ? { secret } : {};
   // A new gateway, or turning it on, moves the key: it must be sent again, or given up for Cloudflare's own.
   const moving = !sameGateway;
+  const blocked = opened.conflict || opened.reloading;
+
+  if (stopping) {
+    return (
+      <FormDialog
+        open={provider !== null}
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+        title="Stop using Cloudflare AI Gateway"
+        description={`Requests go straight to ${direct} again. A key is never moved there from the gateway: enter the provider's key for it.`}
+        submitLabel="Go direct"
+        pending={update.isPending}
+        disabled={blocked || !secret}
+        onSubmit={() => void save({ cloudflareGateway: null, secret }, "Connection goes direct again")}
+      >
+        {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
+        <Field label="The provider's API key" htmlFor="cloudflare-direct-secret" hint={`Sent only to ${direct}.`}>
+          <Input
+            id="cloudflare-direct-secret"
+            type="password"
+            value={secret}
+            autoComplete="off"
+            disabled={blocked}
+            onChange={(event) => setSecret(event.target.value)}
+          />
+        </Field>
+        <Button type="button" variant="outline" size="sm" onClick={() => setStopping(false)}>
+          Back
+        </Button>
+      </FormDialog>
+    );
+  }
 
   return (
     <FormDialog
@@ -1355,21 +1423,22 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={!cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys)}
+      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys)}
       onSubmit={() => void save({ cloudflareGateway: cloudflareBody(draft), ...key }, "Cloudflare AI Gateway saved")}
     >
+      {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
       <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
       <Field
         label="API key"
         htmlFor="cloudflare-provider-secret"
-        hint="A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare. Going direct again needs it too."
+        hint={`A connection's key goes only where it was given. Send it for a new gateway, or use the keys stored in Cloudflare. Sent only to ${throughGateway}. Changing the account or gateway clears it.`}
       >
         <Input
           id="cloudflare-provider-secret"
           type="password"
           value={secret}
           autoComplete="off"
-          disabled={storedKeys}
+          disabled={storedKeys || blocked}
           onChange={(event) => setSecret(event.target.value)}
         />
       </Field>
@@ -1384,13 +1453,7 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
         Use the keys stored in Cloudflare, and remove this connection&apos;s key
       </label>
       {stored ? (
-        <Button
-          type="button"
-          variant="outline"
-          // Going direct needs the provider's key: the one sent to the gateway is not reused.
-          disabled={update.isPending || !secret || storedKeys}
-          onClick={() => void save({ cloudflareGateway: null, secret }, "Connection goes direct again")}
-        >
+        <Button type="button" variant="outline" disabled={blocked} onClick={() => setStopping(true)}>
           Stop using Cloudflare AI Gateway
         </Button>
       ) : null}

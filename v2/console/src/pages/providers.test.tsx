@@ -1012,3 +1012,124 @@ describe("provider gaps from v1", () => {
     );
   });
 });
+
+describe("a typed key stays with where it was typed for", () => {
+  /** A list that answers `before` first and `after` from then on, and a PUT that answers 409 once, then saves. */
+  function moving(before: unknown, after: unknown) {
+    let lists = 0;
+    let puts = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        if (puts === 1) return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" } }), { status: 409 });
+        return new Response(JSON.stringify({ provider: after }));
+      }
+      lists += 1;
+      return new Response(JSON.stringify({ providers: [lists === 1 ? before : after] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const putBodies = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => JSON.parse(String(init!.body)));
+    return { putBodies, lists: () => lists };
+  }
+
+  it("clears a replacement key once another admin moved the host, and saves nothing until a reload", async () => {
+    const moved = { ...PROVIDER, revision: 4, baseUrl: "https://elsewhere.example.com/v1/" };
+    const { putBodies, lists } = moving(PROVIDER, moved);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /replace key/i }));
+    expect(await screen.findByText(/sent only to api\.openai\.com/i)).toBeTruthy();
+    await userEvent.click(screen.getByLabelText(/new api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^replace key$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await waitFor(() => expect(lists()).toBeGreaterThan(1));
+    // The key typed for api.openai.com is gone; nothing can be tested or saved until a reload.
+    expect((screen.getByLabelText(/new api key/i) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("button", { name: /^replace key$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /test key/i }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect(screen.getByText(/sent only to elsewhere\.example\.com\/v1/i)).toBeTruthy());
+    expect((screen.getByLabelText(/new api key/i) as HTMLInputElement).value).toBe("");
+    await userEvent.click(screen.getByLabelText(/new api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: /^replace key$/i }));
+    await waitFor(() => expect(putBodies()).toEqual([{ revision: 3, secret: SECRET }, { revision: 4, secret: SECRET }]));
+  });
+
+  it("does not bring a key back when the address returns to where it was typed", async () => {
+    stub([]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await chooseOption(screen.getByRole("combobox", { name: /provider/i }), "OpenAI");
+    const url = () => screen.getByLabelText(/base url/i) as HTMLInputElement;
+    const key = () => screen.getByLabelText(/api key/i) as HTMLInputElement;
+    await userEvent.click(url());
+    await userEvent.paste("https://a.example.com");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(url(), "x");
+    expect(key().value).toBe("");
+    await userEvent.type(url(), "{Backspace}");
+    expect(url().value).toBe("https://a.example.com");
+    expect(key().value).toBe("");
+  });
+
+  it("names both of fal's hosts before the stored key goes back to them", async () => {
+    const fal = { ...PROVIDER, id: "prov-fal", type: "fal", slug: "fal", name: "fal", baseUrl: "https://fal-proxy.example.com/" };
+    const fetchMock = stub([fal]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for fal" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Send the current key to fal.run, queue.fal.run" }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-fal", "PUT")).toEqual({ revision: 3, baseUrl: null }));
+  });
+
+  it("closes Host after a conflict when the connection now goes through Cloudflare", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1" };
+    const viaCloudflare = { ...PROVIDER, revision: 4, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } };
+    moving(hosted, viaCloudflare);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^host$/i }));
+    await userEvent.clear(await screen.findByLabelText(/base url/i));
+    await userEvent.click(screen.getByRole("checkbox", { name: /send the current key to api\.openai\.com/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText(/this connection changed since you opened it/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /^reload$/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /^host$/i })).toBeNull());
+  });
+
+  it("clears the provider key and the token when the Cloudflare account or gateway changes", async () => {
+    stub([{ ...PROVIDER, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    const key = () => screen.getByLabelText(/^api key$/i) as HTMLInputElement;
+    const token = () => screen.getByLabelText(/cloudflare token/i) as HTMLInputElement;
+    await userEvent.click(token());
+    await userEvent.paste("cf-token-0123456789");
+    await userEvent.click(key());
+    await userEvent.paste(SECRET);
+    await userEvent.type(screen.getByLabelText(/cloudflare gateway id/i), "2");
+    expect(key().value).toBe("");
+    expect(token().value).toBe("");
+  });
+
+  it("asks for the provider's key, naming where it goes, before going direct again", async () => {
+    const fetchMock = stub([{ ...PROVIDER, secretHint: null, cloudflareGateway: { accountId: "acct", gatewayId: "gw", tokenHint: "abcd" } }]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /stop using cloudflare ai gateway/i }));
+    expect(screen.getByText(/sent only to api\.openai\.com/i)).toBeTruthy();
+    const go = screen.getByRole("button", { name: /go direct/i }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    await userEvent.click(screen.getByLabelText(/the provider's api key/i));
+    await userEvent.paste(SECRET);
+    await userEvent.click(go);
+    await waitFor(() => expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({ revision: 3, cloudflareGateway: null, secret: SECRET }));
+  });
+});
