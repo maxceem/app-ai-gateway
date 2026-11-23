@@ -465,6 +465,16 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ name: "Elsewhere", status: "active" });
   });
 
+  it("refuse operations that are not a non-empty list, before any shortcut is expanded", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    for (const operations of [null, {}, [], "replace"]) {
+      const refused = await callTool(key, "patch_app", { app: app.id, operations, status: "disabled" });
+      expect(refused.structuredContent.error, JSON.stringify(operations)).toBe("invalid_request");
+    }
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ status: "active", revision: app.revision });
+  });
+
   it("set a field a shortcut names even when an operation before it replaced its parent without it", async () => {
     const key = await seedManagementKey();
     const created = await admin(key, "POST", "/v2/admin/apps", {

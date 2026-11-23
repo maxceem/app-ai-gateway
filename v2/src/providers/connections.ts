@@ -16,7 +16,6 @@ import { ttlCache } from "../core/ttl-cache.ts";
 import { database } from "../db/index.ts";
 import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { isVaultTransportFailure } from "../vault/index.ts";
 import { openSecret } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
@@ -76,8 +75,6 @@ export function readCloudflareGateway(stored: unknown): CloudflareGatewaySetting
 
 const CONNECTION_CACHE_TTL_MS = 60_000;
 const SECRET_CACHE_TTL_MS = 10 * 60_000;
-/** How long past its expiry a provider secret may still serve while the vault cannot be reached (v1). */
-const SECRET_STALE_MAX_MS = 60 * 60_000;
 
 const connectionCache = ttlCache<string, ConnectionRecord | null>({
   name: "provider_connection",
@@ -197,47 +194,8 @@ export interface UpstreamCredentials {
   readonly cloudflareToken: string | null;
 }
 
-/** How long the check that a stale key is still the connection's own may take. */
-const STALE_CHECK_MS = 1_000;
-
-/**
- * Whether a credential is still the one stored now: a D1 read past this
- * isolate's cache, so a key rotated or a connection disabled in another
- * isolate is seen. The same connection, still active, with the same sealed
- * blob opened under the same context. A read that fails, or takes longer than
- * a second, is a no: a stale key is served only when it is known to be current.
- */
-export async function credentialStillCurrent(env: Env, connection: ConnectionRecord, what: "providerKey" | "cloudflareGatewayToken", blob: string): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), STALE_CHECK_MS); // real-timer: a deadline on a D1 read, cleared when it answers.
-  });
-  try {
-    const fresh = await Promise.race([readConnection(env, connection.accountId, connection.slug), late]);
-    if (fresh === null || fresh.id !== connection.id || fresh.status !== "active") return false;
-    if (what === "providerKey") {
-      return fresh.secretBlob === blob && fresh.type === connection.type && keyOrigin(fresh) === keyOrigin(connection);
-    }
-    return fresh.cloudflareGateway?.tokenBlob === blob;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * One sealed credential, opened once and cached by the blob it came from, so a
- * rotated one is never served from the cache. `stillCurrent` is asked only
- * before a stale copy would be served.
- */
-export async function opened(
-  connection: ConnectionRecord,
-  what: string,
-  open: () => Promise<string>,
-  blob: string,
-  stillCurrent: () => Promise<boolean>,
-): Promise<string> {
+/** One sealed credential, opened once and cached by the blob it came from, so a rotated one is never served from the cache. */
+async function opened(connection: ConnectionRecord, what: string, open: () => Promise<string>, blob: string): Promise<string> {
   const key = `${connection.id}\u0000${what}\u0000${blob}`;
   const cached = secretCache.get(key);
   if (cached !== undefined) return cached;
@@ -246,35 +204,6 @@ export async function opened(
     secretCache.set(key, secret);
     return secret;
   } catch (error) {
-    // The vault could not be reached: the last copy opened from this very blob
-    // serves for up to an hour past its expiry, as v1 (`provider_secret_stale`),
-    // once D1 confirms it is still the connection's own. A fault in the
-    // deployment's own setup, or a refusal the vault meant, never does: the
-    // copy is dropped, so a later outage cannot bring it back.
-    const unreachable = isVaultTransportFailure(error);
-    if (!unreachable) secretCache.delete(key);
-    const usable = (entry: ReturnType<typeof secretCache.peek>) => entry !== undefined && Date.now() - entry.expiresAt < SECRET_STALE_MAX_MS;
-    const stale = unreachable ? secretCache.peek(key) : undefined;
-    if (stale !== undefined && usable(stale) && (await stillCurrent())) {
-      // The D1 check waited: another request may have opened the key afresh
-      // meanwhile, or met a refusal that dropped this copy. A fresh copy is
-      // used; a dropped or replaced one, or one past the window now, is not.
-      const fresh = secretCache.get(key);
-      if (fresh !== undefined) return fresh;
-      const again = secretCache.peek(key);
-      if (again === stale && usable(again)) {
-        log("warn", "provider_secret_stale", {
-          account: connection.accountId,
-          connection: connection.id,
-          providerType: connection.type,
-          credential: what,
-          ageMs: Date.now() - stale.storedAt,
-          error: errorFacts(error),
-        });
-        // Not refreshed: the next request goes back to the vault.
-        return stale.value;
-      }
-    }
     log("error", "provider_secret_unavailable", {
       account: connection.accountId,
       connection: connection.id,
@@ -305,7 +234,6 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
           () =>
             openSecret(env, "providerKey", [connection.accountId, connection.id, connection.type, keyOrigin(connection)], connection.secretBlob!),
           connection.secretBlob,
-          () => credentialStillCurrent(env, connection, "providerKey", connection.secretBlob!),
         );
   const cloudflareToken =
     gateway === null
@@ -315,7 +243,6 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
           "cloudflareGatewayToken",
           () => openSecret(env, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob),
           gateway.tokenBlob,
-          () => credentialStillCurrent(env, connection, "cloudflareGatewayToken", gateway.tokenBlob),
         );
   return { providerKey, cloudflareToken };
 }

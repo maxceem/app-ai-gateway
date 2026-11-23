@@ -876,6 +876,10 @@ export const MCP_TOOLS: readonly McpTool[] = [
     cli: { command: "app update", args: ["app"], view: { record: "app", columns: ["name", "id", "status", "revision"] } },
     check: (input) => {
       refuseCredentialTargets(input);
+      // Operations, when sent, are a non-empty list: anything else is refused before any shortcut is expanded.
+      if (input.operations !== undefined && (!Array.isArray(input.operations) || input.operations.length === 0)) {
+        throw new GatewayError(400, "invalid_request", "operations must be a non-empty list of patch operations, or left out; nothing was saved");
+      }
       const explicit = Array.isArray(input.operations) ? input.operations : [];
       if (explicit.length === 0 && usedShortcuts(input).length === 0) {
         throw new GatewayError(400, "invalid_request", "Name what to change: a shortcut such as name or status, or operations with the revision; nothing was saved");
