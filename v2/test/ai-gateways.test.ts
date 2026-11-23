@@ -354,6 +354,22 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(updated.body.provider.pricing).toEqual({ prototype: { input: 3, output: 6 } });
   });
 
+  it("answers a deeply nested malformed price with the schema's 400, not a server error", async () => {
+    const key = await seedManagementKey();
+    // Written as text: building it as an object and stringifying it would overflow the test itself.
+    const depth = 50000;
+    const deep = `${'{"x":'.repeat(depth)}1${"}".repeat(depth)}`;
+    const body = `{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":{"m":{"input":${deep},"output":2}}}`;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/providers`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(400);
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

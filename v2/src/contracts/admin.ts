@@ -165,14 +165,25 @@ const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelP
 /** The one name that cannot be a key anywhere in prices: as a key it would reach the object's prototype, not be stored. */
 export const RESERVED_PRICE_KEY = "__proto__";
 
-/** Where a `__proto__` key stands in prices, as a dotted path, or null: model names trimmed, nested keys as written. */
-export function reservedPriceKeyPath(value: unknown, path: readonly string[] = []): string | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  for (const [key, inner] of Object.entries(value)) {
-    const name = path.length === 0 ? key.trim() : key;
-    if (name === RESERVED_PRICE_KEY) return [...path, key].join(".");
-    const found = reservedPriceKeyPath(inner, [...path, key]);
-    if (found !== null) return found;
+/** How deep the walk below looks: well past any price's shape, which the schema then refuses as it would anyway. */
+const PRICE_WALK_DEPTH = 32;
+
+/**
+ * Where a `__proto__` key stands in prices, as a dotted path, or null: model
+ * names trimmed, nested keys as written. Walked with an explicit stack, never
+ * recursing, and only `PRICE_WALK_DEPTH` levels down, so a deeply nested body
+ * gets the schema's own 400, never a server error.
+ */
+export function reservedPriceKeyPath(value: unknown): string | null {
+  const stack: { value: unknown; path: readonly string[] }[] = [{ value, path: [] }];
+  while (stack.length > 0) {
+    const { value: current, path } = stack.pop()!;
+    if (typeof current !== "object" || current === null || Array.isArray(current)) continue;
+    for (const [key, inner] of Object.entries(current)) {
+      const name = path.length === 0 ? key.trim() : key;
+      if (name === RESERVED_PRICE_KEY) return [...path, key].join(".");
+      if (path.length + 1 < PRICE_WALK_DEPTH) stack.push({ value: inner, path: [...path, key] });
+    }
   }
   return null;
 }

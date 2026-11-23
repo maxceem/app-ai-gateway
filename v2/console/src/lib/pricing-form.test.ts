@@ -117,7 +117,7 @@ describe("the prices form", () => {
   });
 
   it("refuses a positive mode factor that would read as 0, and leaves factors free of the dollar precision rule", () => {
-    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 1e-400}}}}')).toBe("factor 1e-400: this factor is too small: it would be read as 0.");
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 1e-400}}}}')).toBe("factor 1e-400: this factor would be read as 0. Write it with fewer digits.");
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.33333333333333}}}}')).toBeNull();
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0}}}}')).toBeNull();
   });
@@ -128,5 +128,22 @@ describe("the prices form", () => {
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"__proto__": {"factor": 0.5}}}}')).toBe('"__proto__" cannot be a name in prices.');
     expect(jsonPriceProblem('{"constructor": {"per_request": 1}, "prototype": {"per_request": 2}}')).toBeNull();
     expect(jsonPriceProblem('{"m": {"per_request": 1, "by": {"constructor": {"x": {"per_request": 1}}}}}')).toBeNull();
+  });
+
+  it("refuses a factor or threshold whose value would change once read, compared as written", () => {
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.99999999999999999}}}}')).toBe(
+      "factor 0.99999999999999999: this factor would be read as 1. Write it with fewer digits.",
+    );
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "long_input": 2, "long_output": 4, "long_context_threshold": 200000.00000000001}}')).toMatch(
+      /^long_context_threshold 200000\.00000000001: this would be read as 200000\./u,
+    );
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "long_input": 2, "long_output": 4, "long_context_threshold": 200000.5}}')).toBe(
+      "long_context_threshold 200000.5: write a whole number of tokens.",
+    );
+    // Written another way, the same value is fine.
+    for (const factor of ["0.5", "5e-1", "0.50", "1", "1.0", "2E3", "0.333333333333333"]) {
+      expect(jsonPriceProblem(`{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": ${factor}}}}}`)).toBeNull();
+    }
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "long_input": 2, "long_output": 4, "long_context_threshold": 2e5}}')).toBeNull();
   });
 });

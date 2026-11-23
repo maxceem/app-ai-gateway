@@ -195,9 +195,27 @@ export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
 /** Fields of a price whose numbers are not dollar amounts: a mode's multiplier and a token count. */
 const NOT_AMOUNTS: ReadonlySet<string> = new Set(["factor", "long_context_threshold"]);
 
-/** Whether a number written with a non-zero digit reads as 0 once parsed (it underflowed). */
-function underflows(number: string): boolean {
-  return Number(number) === 0 && /[1-9]/u.test(number.split(/[eE]/u)[0]!);
+/** A decimal as sign, significant digits and the power of ten of its first digit; zero is `{digits: ""}`. */
+function decimalParts(text: string): { negative: boolean; digits: string; exponent: number } | null {
+  const match = /^(-?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/u.exec(text);
+  if (match === null) return null;
+  const whole = match[2] ?? "";
+  const all = `${whole}${match[3] ?? ""}`;
+  const leading = /^0*/u.exec(all)![0].length;
+  const digits = all.slice(leading).replace(/0+$/u, "");
+  if (digits === "") return { negative: false, digits: "", exponent: 0 };
+  return { negative: match[1] === "-", digits, exponent: whole.length - leading + Number(match[4] ?? "0") };
+}
+
+/**
+ * Whether the number sent for `number` is exactly the one written: a float
+ * reads `0.99999999999999999` as 1, and `1e-400` as 0. Compared as decimals,
+ * never through a float.
+ */
+function readsAsWritten(number: string): boolean {
+  const written = decimalParts(number);
+  const read = decimalParts(String(Number(number)));
+  return written !== null && read !== null && written.negative === read.negative && written.digits === read.digits && written.exponent === read.exponent;
 }
 
 /**
@@ -258,7 +276,14 @@ export function jsonPriceProblem(text: string): string | null {
     if (char === "-" || (char >= "0" && char <= "9")) {
       const number = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(text.slice(index))?.[0] ?? char;
       index += number.length;
-      if (key === "factor" && underflows(number)) return `factor ${number}: this factor is too small: it would be read as 0.`;
+      // Factors and thresholds are not dollar amounts, but they must still be sent as written.
+      if (key === "factor" && !readsAsWritten(number)) {
+        return `factor ${number}: this factor would be read as ${String(Number(number))}. Write it with fewer digits.`;
+      }
+      if (key === "long_context_threshold") {
+        if (!readsAsWritten(number)) return `long_context_threshold ${number}: this would be read as ${String(Number(number))}. Write a whole number of tokens.`;
+        if (!Number.isInteger(Number(number))) return `long_context_threshold ${number}: write a whole number of tokens.`;
+      }
       if (key !== null && !NOT_AMOUNTS.has(key)) {
         const problem = priceTextProblem(number);
         if (problem !== null) return `${key} ${number}: ${problem}`;
