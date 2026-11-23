@@ -102,7 +102,8 @@ describe("Sign-in tab", () => {
     await userEvent.type(screen.getByLabelText("Tenant domain"), "my-tenant.us.auth0.com");
     await userEvent.type(screen.getByLabelText("API identifier"), "https://api.my-app.com");
     await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
-    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
     await saveAndSettle();
 
     expect(server.state.app.config).toEqual({
@@ -119,7 +120,6 @@ describe("Sign-in tab", () => {
             user_id_claim: "sub",
             required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
             max_token_lifetime_seconds: 86400,
-            entitlement: "revenuecat",
           },
         },
       },
@@ -132,14 +132,14 @@ describe("Sign-in tab", () => {
 
     expect(((await screen.findByLabelText("Firebase project id")) as HTMLInputElement).value).toBe("my-project");
     await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
-    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
-    await userEvent.click(screen.getByRole("button", { name: "Add entitlement" }));
-    await userEvent.type(screen.getByLabelText("Entitlement 2"), "pro_test");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add value" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "pro_test");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
       { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["pro", "pro_test"] }] },
-      { op: "add", path: "/config/authentication/end_user/issuer/entitlement", value: "revenuecat" },
     ]);
   });
 
@@ -189,8 +189,6 @@ describe("Sign-in tab", () => {
     renderSignIn();
 
     await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
-    await chooseOption("Which claim says the user has paid", "Custom claims");
-    await userEvent.click(screen.getByRole("button", { name: "Remove claim 1" }));
     expect(screen.getByText("Add at least one claim, or choose Any signed-in user.")).toBeTruthy();
     expect(saveButton().hasAttribute("disabled")).toBe(true);
 
@@ -274,22 +272,20 @@ describe("Sign-in tab", () => {
     renderSignIn();
 
     await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
-    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
     await saveAndSettle();
 
-    expect(server.patches[0]!.operations.map((operation) => operation.path)).toEqual([
-      "/config/authentication/end_user/issuer/required_claims",
-      "/config/authentication/end_user/issuer/entitlement",
-    ]);
+    expect(server.patches[0]!.operations.map((operation) => operation.path)).toEqual(["/config/authentication/end_user/issuer/required_claims"]);
   });
 
-  it("keeps a RevenueCat check's stored claim path when its entitlement is edited", async () => {
+  it("edits a stored entitlement row with its own path", async () => {
     const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "entitlements", contains: "pro" }] };
     const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
     renderSignIn();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Add entitlement" }));
-    await userEvent.type(screen.getByLabelText("Entitlement 2"), "max");
+    await userEvent.click(await screen.findByRole("button", { name: "Add value" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
@@ -302,8 +298,8 @@ describe("Sign-in tab", () => {
     const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
     renderSignIn();
 
-    expect(((await screen.findByLabelText("Entitlement identifier")) as HTMLInputElement).value).toBe("paid,trial");
-    await userEvent.type(screen.getByLabelText("Entitlement 2"), "-plus");
+    expect(((await screen.findByLabelText("Value")) as HTMLInputElement).value).toBe("paid,trial");
+    await userEvent.type(screen.getByLabelText("Value 2"), "-plus");
     await saveAndSettle();
 
     expect(server.patches[0]!.operations).toEqual([
@@ -311,17 +307,56 @@ describe("Sign-in tab", () => {
     ]);
   });
 
-  it("reopens RevenueCat on the claim it had, path included, after a look at custom claims", async () => {
+  it("shows a stored billing.entitlements row as it is, with nothing to save", async () => {
     const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "billing.entitlements", contains: "pro" }] };
     appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
     renderSignIn();
 
-    await screen.findByLabelText("Entitlement identifier");
-    await chooseOption("Which claim says the user has paid", "Custom claims");
-    expect((screen.getByLabelText("Path") as HTMLInputElement).value).toBe("billing.entitlements");
-    await chooseOption("Which claim says the user has paid", "RevenueCat entitlement");
-    expect((screen.getByLabelText("Entitlement identifier") as HTMLInputElement).value).toBe("pro");
-    // Back to what is stored: nothing to save.
+    expect(((await screen.findByLabelText("Path")) as HTMLInputElement).value).toBe("billing.entitlements");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("adds a RevenueCat entitlement as one more row, keeping the claims already there", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "roles", contains: "member" }, { path: "plan", equals: "team" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getAllByLabelText("Value")[2]!, "pro");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      {
+        op: "replace",
+        path: "/config/authentication/end_user/issuer/required_claims",
+        value: [{ path: "roles", contains: "member" }, { path: "plan", equals: "team" }, { path: "revenueCatEntitlements", contains: "pro" }],
+      },
+    ]);
+  });
+
+  it("keeps false when a claim moves from true or false to text and back", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "suspended", equals: false }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("false");
+    await chooseOption("Match", "equals true or false");
+    expect(screen.getByRole("combobox", { name: "Value" }).textContent).toContain("false");
+    // The same claim as stored: nothing to save.
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("asks for true or false when a value cannot become one", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "tier", equals: "gold" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals true or false");
+    expect(screen.getByText("Choose true or false.")).toBeTruthy();
     expect(saveButton().hasAttribute("disabled")).toBe(true);
   });
 

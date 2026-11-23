@@ -157,7 +157,8 @@ describe("AppsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
     expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(true);
-    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
     await userEvent.click(screen.getByRole("button", { name: /create app/i }));
 
     await waitFor(() => {
@@ -178,7 +179,6 @@ describe("AppsPage", () => {
                 user_id_claim: "sub",
                 required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
                 max_token_lifetime_seconds: 86400,
-                entitlement: "revenuecat",
               },
             },
           },

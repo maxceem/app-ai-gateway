@@ -24,12 +24,8 @@ import {
   issuerPreset,
   matchIssuerPreset,
   missingInputs,
-  paidCheckOf,
   requiresPayment,
-  revenueCatClaim,
-  revenueCatEntitlement,
   type IssuerDraft,
-  type PaidCheck,
 } from "@/lib/issuer-presets";
 import {
   APP_ATTEST_ENVIRONMENTS,
@@ -99,6 +95,9 @@ export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}):
       issues.set("end_user.issuer.required_claims", "Add at least one claim, or choose Any signed-in user.");
     }
     (claims as ClaimDraft[]).forEach((claim, index) => {
+      if (claim._match === "boolean" && typeof claim.equals !== "boolean") {
+        issues.set(`end_user.issuer.required_claims.${index}.equals`, "Choose true or false.");
+      }
       if (claim._match === "number" && typeof claim.equals === "string" && !NUMBER.test(claim.equals.trim())) {
         issues.set(`end_user.issuer.required_claims.${index}.equals`, "Enter a number, such as 3 or 1.05.");
       }
@@ -520,13 +519,12 @@ const SUBSCRIPTION_CHOICES: Choice<Subscription>[] = [
   { value: "paid", label: "Paid users only", description: "The sign-in token must carry a claim that says the user has paid." },
 ];
 
-const PAID_CHECK_LABELS: Record<PaidCheck, string> = {
-  revenuecat: "RevenueCat entitlement",
-  custom: "Custom claims",
-};
-
 /**
- * Whether signed-in users must also have paid, and which claim says so.
+ * Whether signed-in users must also have paid, and which claims say so: one
+ * list of claim rows, each edited as stored, path included. RevenueCat is a
+ * helper that adds a row in the shape it writes, not a mode, so nothing is
+ * recreated or erased by switching.
+ *
  * `paid` is the person's choice, held by the form: removing the last claim
  * does not quietly turn the check off, only choosing Any signed-in user does.
  */
@@ -545,68 +543,26 @@ export function SubscriptionFields({
   onChange: (next: IssuerDraft) => void;
   onPaidChange: (paid: boolean) => void;
 }) {
-  const check = paidCheckOf(issuer);
-  const entitlement = revenueCatEntitlement(issuer.required_claims);
   const choose = (next: Subscription) => {
     if (next === (paid ? "paid" : "any")) return;
     onPaidChange(next === "paid");
-    const { entitlement: _label, ...rest } = issuer;
-    onChange(next === "any" ? { ...rest, required_claims: [] } : { ...rest, entitlement: "revenuecat", required_claims: [revenueCatClaim("")] });
-  };
-  const chooseCheck = (next: PaidCheck) => {
-    if (next === check) return;
-    // A claim RevenueCat's form can hold is kept as it is, path included; only a new check starts from the default.
-    const keep = next === "custom" || (issuer.required_claims.length === 1 && entitlement !== null);
-    onChange({ ...issuer, entitlement: next, required_claims: keep ? issuer.required_claims : [revenueCatClaim("")] });
+    // Any signed-in user drops the claims and the console's own label for them; paid users only starts from what is there.
+    if (next === "any") {
+      const { entitlement: _label, ...rest } = issuer;
+      onChange({ ...rest, required_claims: [] });
+    }
   };
   return (
     <div className="space-y-4">
       <ChoiceList label="Paid users only" choices={SUBSCRIPTION_CHOICES} value={paid ? "paid" : "any"} disabled={disabled} onChange={choose} />
       {paid ? (
         <div className="space-y-4 border-t pt-4">
-          <Field label="Which claim says the user has paid" htmlFor="paid-check">
-            <Select value={check} disabled={disabled} onValueChange={(next) => chooseCheck(next as PaidCheck)}>
-              <SelectTrigger id="paid-check" className="w-full sm:w-80">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(PAID_CHECK_LABELS) as PaidCheck[]).map((item) => (
-                  <SelectItem key={item} value={item}>
-                    {PAID_CHECK_LABELS[item]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          {check === "revenuecat" ? (
-            <Field
-              label="Entitlement identifier"
-              htmlFor="paid-entitlement"
-              hint="In RevenueCat under Product catalog, Entitlements: the identifier, not the display name. With several, a user with any one of them is admitted."
-            >
-              <ValuesEditor
-                id="paid-entitlement"
-                label="Entitlement"
-                value={issuer.required_claims[0]?.contains ?? ""}
-                issuePath="end_user.issuer.required_claims.0.contains"
-                issues={issues}
-                disabled={disabled}
-                // The stored claim's path stays; only a new check gets the default one.
-                onChange={(contains) => {
-                  const current = issuer.required_claims[0];
-                  onChange({ ...issuer, required_claims: [{ ...current, path: current?.path ?? REVENUECAT_CLAIM_PATH, contains }] });
-                }}
-              />
-              <Problem>{issues.get("end_user.issuer.required_claims")}</Problem>
-            </Field>
-          ) : (
-            <ClaimsEditor
-              claims={issuer.required_claims}
-              issues={issues}
-              disabled={disabled}
-              onChange={(required_claims) => onChange({ ...issuer, required_claims })}
-            />
-          )}
+          <ClaimsEditor
+            claims={issuer.required_claims}
+            issues={issues}
+            disabled={disabled}
+            onChange={(required_claims) => onChange({ ...issuer, required_claims })}
+          />
         </div>
       ) : null}
     </div>
@@ -636,14 +592,17 @@ function claimIn(claim: ClaimDraft, mode: ClaimMode, text: string): ClaimDraft {
   if (mode === "contains") {
     next = { ...rest, contains: text };
   } else if (mode === "boolean") {
-    next = { ...rest, equals: text === "true" };
+    // Only true or false carries over; anything else starts unanswered, and saving needs a choice.
+    next = { ...rest, equals: text === "true" ? true : text === "false" ? false : "" };
   } else if (mode === "number") {
     // Kept as typed; `authForSave` makes it a number.
     next = { ...rest, equals: text };
   } else {
     next = { ...rest, equals: text };
   }
-  return { ...next, _match: mode };
+  // The type is kept in the draft only where the value alone does not say it (a number still typed as text,
+  // a true or false not chosen yet), so a claim that returns to its stored value is no edit.
+  return modeOf(next) === mode ? next : { ...next, _match: mode };
 }
 
 /** Every claim the token must carry, one row each. */
@@ -665,10 +624,23 @@ function ClaimsEditor({
         <p className="text-xs text-muted-foreground">
           Claims the sign-in token must carry, by dot path. Contains matches lists and space-separated scopes; equals compares exactly.
         </p>
-        <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => onChange([...claims, { path: "", contains: "" }])}>
-          <Plus className="size-3.5" />
-          Add claim
-        </Button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => onChange([...claims, { path: "", contains: "" }])}>
+            <Plus className="size-3.5" />
+            Add claim
+          </Button>
+          {/* A helper, not a mode: it adds one row in the shape RevenueCat's Firebase function kit writes. */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onChange([...claims, { path: REVENUECAT_CLAIM_PATH, contains: "" }])}
+          >
+            <Plus className="size-3.5" />
+            Add RevenueCat entitlement
+          </Button>
+        </div>
       </div>
       {claims.map((claim, index) => {
         const mode = modeOf(claim);
@@ -698,7 +670,7 @@ function ClaimsEditor({
                 <Select
                   value={mode}
                   disabled={disabled}
-                  onValueChange={(next) => replace(index, claimIn(claim, next as ClaimMode, next === "boolean" ? "true" : text))}
+                  onValueChange={(next) => replace(index, claimIn(claim, next as ClaimMode, text))}
                 >
                   <SelectTrigger id={`claim-mode-${index}`} className="w-full">
                     <SelectValue />
@@ -717,9 +689,13 @@ function ClaimsEditor({
                   Value
                 </Label>
                 {mode === "boolean" ? (
-                  <Select value={String(claim.equals)} disabled={disabled} onValueChange={(next) => replace(index, claimIn(claim, "boolean", next))}>
+                  <Select
+                    value={typeof claim.equals === "boolean" ? String(claim.equals) : ""}
+                    disabled={disabled}
+                    onValueChange={(next) => replace(index, claimIn(claim, "boolean", next))}
+                  >
                     <SelectTrigger id={`claim-value-${index}`} className="w-full">
-                      <SelectValue />
+                      <SelectValue placeholder="Choose" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="true">true</SelectItem>
@@ -761,6 +737,12 @@ function ClaimsEditor({
                 <Trash2 className="size-4" />
               </Button>
             </div>
+            {claim.path === REVENUECAT_CLAIM_PATH ? (
+              <p className="text-xs text-muted-foreground">
+                A RevenueCat entitlement: in RevenueCat under Product catalog, Entitlements, the identifier, not the display name. With several, a
+                user with any one of them is admitted. The claim is where RevenueCat's Firebase function kit puts it.
+              </p>
+            ) : null}
             <Problem>{issueAt(issues, `end_user.issuer.required_claims.${index}`)}</Problem>
           </div>
         );

@@ -4,7 +4,7 @@
  * project id, a tenant domain) into the issuer fields the gateway verifies
  * tokens with, and reads them back out so the same form reopens.
  */
-import type { ClaimRequirement, IssuerAuthentication } from "@contracts/app-config";
+import type { IssuerAuthentication } from "@contracts/app-config";
 
 export type IssuerProvider = NonNullable<IssuerAuthentication["provider"]>;
 
@@ -173,32 +173,6 @@ export function emptyIssuer(): IssuerDraft {
 
 /** The claim a RevenueCat entitlement arrives in, as RevenueCat's own Firebase function kit writes it. */
 export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";
-
-/**
- * A RevenueCat check: one claim at the known path. Several ids, comma
- * separated, are alternatives. A single id is kept as typed, so a comma being
- * typed is not swallowed.
- */
-export function revenueCatClaim(entitlements: string, path = REVENUECAT_CLAIM_PATH): ClaimRequirement {
-  const ids = entitlements.split(",").map((id) => id.trim());
-  return { path, contains: ids.length > 1 ? ids : entitlements };
-}
-
-/** The entitlement ids a RevenueCat check was written for, or null when the claims are something else. */
-export function revenueCatEntitlement(claims: ClaimRequirement[]): string | null {
-  if (claims.length === 0) return "";
-  const [claim, ...rest] = claims;
-  if (!claim || rest.length > 0 || claim.contains === undefined) return null;
-  return Array.isArray(claim.contains) ? claim.contains.join(", ") : claim.contains;
-}
-
-export type PaidCheck = "revenuecat" | "custom";
-
-/** Which paid-check form an issuer's claims reopen in. */
-export function paidCheckOf(issuer: IssuerDraft): PaidCheck {
-  const chosen = issuer.entitlement ?? (issuer.required_claims[0]?.path === REVENUECAT_CLAIM_PATH ? "revenuecat" : "custom");
-  return chosen === "revenuecat" && revenueCatEntitlement(issuer.required_claims) !== null ? "revenuecat" : "custom";
-}
 
 /** Whether only paid users may call: the token must carry at least one required claim. */
 export function requiresPayment(issuer: IssuerDraft): boolean {
