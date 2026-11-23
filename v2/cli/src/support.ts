@@ -63,7 +63,16 @@ export function supportContext(entries: readonly string[]): Record<string, strin
   return context;
 }
 
-/** What is about to be sent, exactly, written to stderr before the question. */
-function preview(kind: SupportMessageKind, message: string, context: Record<string, string>): string {
-  return [`To: human support (${SUPPORT_TOPICS[kind]})`, ...Object.entries(context).map(([name, value]) => `${name}: ${value}`), "", message, ""].join("\n");
+/**
+ * What is about to be sent, written to stderr before the question. Every
+ * control character but a line break is shown as its code (`\u001b`), so the
+ * person sees exactly what is sent and nothing in it can rewrite the terminal.
+ * The text sent is unchanged.
+ */
+export function preview(kind: SupportMessageKind, message: string, context: Record<string, string>): string {
+  return [`To: human support (${SUPPORT_TOPICS[kind]})`, ...Object.entries(context).map(([name, value]) => `${visible(name)}: ${visible(value)}`), "", visible(message), ""].join("\n");
+}
+
+function visible(text: string): string {
+  return text.replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" ? char : `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`));
 }

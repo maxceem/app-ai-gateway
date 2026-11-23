@@ -7,6 +7,7 @@ import { CliError, LocalDirectoryError, VERSION } from "../src/common.ts";
 import { customFields } from "../src/commands.ts";
 import { main, MemoryCatalogCache } from "../src/main.ts";
 import { signInFailure } from "../src/sign-in-retry.ts";
+import { preview } from "../src/support.ts";
 import { StateStore } from "../src/state.ts";
 import type { RequestOptions } from "../src/transport.ts";
 import { fakeClock, fakeTransport, memoryStore, signedInState, sinks } from "./helpers.ts";
@@ -860,4 +861,21 @@ test("support send reads the message from stdin, and sends nothing without a yes
   assert.equal(context.json().error.code, "invalid_input");
   const both = await run(["support", "send", "--type", "bug", "--message", "x", "--message-stdin", "--yes", "--json"], () => assert.fail("nothing is sent"));
   assert.equal(both.json().error.code, "conflicting_flags");
+});
+
+test("the support preview shows control characters as codes and keeps line breaks", async () => {
+  const message = "First line\nSecond \u001b[31mred\u0007 \u202Eturned\r";
+  const shown = preview("bug", message, { "app\u001b": "demo\u0000" });
+  assert.equal(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/.test(shown), false);
+  assert.match(shown, /First line\nSecond \\u001b\[31mred\\u0007 \\u202eturned\\u000d/);
+  assert.match(shown, /app\\u001b: demo\\u0000/);
+
+  // Only the preview changes: the message is sent as written.
+  const sent: unknown[] = [];
+  const result = await run(["support", "send", "--type", "bug", "--message", "Line one\nLine \u001b[31mtwo", "--yes", "--json"], (_path, options) => {
+    sent.push((options.body as { message: string }).message);
+    return { status: "sent", reference: "SUP-7F3K2Q", replyTo: "person@example.test", duplicate: false };
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(sent, ["Line one\nLine \u001b[31mtwo"]);
 });
