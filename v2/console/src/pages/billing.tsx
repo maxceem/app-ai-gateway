@@ -17,8 +17,6 @@ import { AllowanceBar } from "@/components/allowance-bar";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
-import { openPaymentPage } from "@/lib/payment-page";
-import { tabAccount } from "@/lib/tab-account";
 import { useConsoleSession } from "@/lib/console-session";
 import {
   billingNotice,
@@ -100,11 +98,9 @@ export function BillingPage() {
   const changePeriod: Period = subscriptionOf(access)?.billingPeriod ?? period;
 
   const subscribe = async (plan: BillingPlan) => {
-    // The payment page is followed only while this tab still names the account it was asked for.
-    const startedFor = tabAccount();
     try {
       const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
-      openPaymentPage(url, startedFor);
+      window.location.assign(url);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
     }
@@ -112,7 +108,6 @@ export function BillingPage() {
 
   const doChange = async () => {
     if (!confirmChange) return;
-    const startedFor = tabAccount();
     try {
       const result = await change.mutateAsync({
         planKey: confirmChange.plan.planKey,
@@ -122,7 +117,7 @@ export function BillingPage() {
       });
       setConfirmChange(null);
       if (result.requiredActionUrl) {
-        openPaymentPage(result.requiredActionUrl, startedFor);
+        window.location.assign(result.requiredActionUrl);
         return;
       }
       toast.success(`Moved to ${confirmChange.plan.name}`);
@@ -176,7 +171,6 @@ export function BillingPage() {
     // account is currently entitled to.
     const subscription = subscriptionOf(access);
     if (!subscription) return;
-    const startedFor = tabAccount();
     try {
       const result = await resume.mutateAsync({
         planKey: subscription.planKey,
@@ -184,7 +178,7 @@ export function BillingPage() {
         ...shownOf(access),
       });
       if (result.requiredActionUrl) {
-        openPaymentPage(result.requiredActionUrl, startedFor);
+        window.location.assign(result.requiredActionUrl);
         return;
       }
       toast.success("Subscription resumed");

@@ -92,17 +92,6 @@ export function useCheckoutSuccessToast(): void {
     };
   }, []);
 
-  // The person switched accounts while a payment was being confirmed: the
-  // confirmation was the other account's, so it stops and says nothing
-  // (Sol 7b-8).
-  useEffect(() => {
-    if (confirming.current === null || confirming.current === account.id) return;
-    confirming.current = null;
-    reads.current?.abort();
-    clearTimeout(timer.current);
-    toast.dismiss(TOAST_ID);
-  }, [account.id]);
-
   useEffect(() => {
     if (!succeeded || handled.current) return;
     handled.current = true;
@@ -140,8 +129,7 @@ export function useCheckoutSuccessToast(): void {
         void check(left);
         return;
       }
-      // Checked again as the answer lands: an account switched to meanwhile
-      // has already ended this confirmation.
+      // Checked again as the answer lands: the page may have gone meanwhile.
       if (confirming.current !== checkoutAccount) return;
       const access = read.kind === "plan" ? read.status.access : null;
       const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;

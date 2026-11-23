@@ -1,8 +1,7 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
-import { currentSearch, setTabAccount, tabAccount } from "./tab-account";
-import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
+import { currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
 import { checkoutReturnAccount } from "./auth-redirect";
 import type { Session } from "./types";
 import {
@@ -58,65 +57,43 @@ export function useCapabilities() {
 }
 
 /**
- * The operator's identity, current account and role.
+ * The operator's identity, current account and role, for the account this
+ * tab names (a new tab: the one the shared cookie selects).
  *
  * Better Auth is asked first, and a browser it says is signed out is answered
  * `null` without a management call, which could only have been refused. A
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
-/** The session as the gateway answers it for `account`; null asks for the account the shared cookie selects. */
-async function sessionFor(account: string | null, signal?: AbortSignal): Promise<Session> {
-  // An empty header asks for the cookie's account even while the tab names one.
-  const headers = { [CONSOLE_ACCOUNT_HEADER]: account ?? "" };
-  return (await call("getAdminSession", { headers, ...(signal === undefined ? {} : { signal }) })).session;
-}
+/** A page that is about to reload: nothing renders from it meanwhile. */
+const reloading = new Promise<never>(() => undefined);
 
-function aborted(): Error {
-  return new DOMException("The session read was stopped", "AbortError");
-}
-
-export const readSession = async (signal?: AbortSignal, rereads = 0): Promise<Session | null> => {
-  if (await plainlySignedOut()) {
-    if (!signal?.aborted) setTabAccount(null);
-    return null;
-  }
+export const readSession = async (signal?: AbortSignal): Promise<Session | null> => {
+  // A session that has expired keeps the tab's saved account: after signing
+  // in again, the tab comes back to it. Only signing out forgets it.
+  if (await plainlySignedOut()) return null;
   const named = tabAccount();
-  // Only a read that is still current may change the tab's account: not
-  // stopped, and for the account the tab names now. A read that a switch
-  // overtook is for the account left, and changes nothing.
-  const current = () => !signal?.aborted && tabAccount() === named;
-  // A read overtaken without being stopped is read again for the account the
-  // tab names now, a couple of times at most.
-  const overtaken = async (): Promise<Session | null> => {
-    if (signal?.aborted || rereads >= 2) throw aborted();
-    return readSession(signal, rereads + 1);
-  };
   let session: Session;
   try {
-    session = await sessionFor(named, signal);
+    session = (await call("getAdminSession", signal === undefined ? {} : { signal })).session;
   } catch (error) {
-    // The tab names an account the person is not (or no longer) a member of.
-    // The tab keeps naming it until the replacement session is read, then
-    // opens on the account the session selects.
-    if (!(error instanceof ApiError && error.code === "account_forbidden") || named === null) throw error;
-    if (!current()) return overtaken();
-    const replacement = await sessionFor(null, signal);
-    if (!current()) return overtaken();
-    setTabAccount(replacement.account.id);
-    return replacement;
+    // The tab's saved account is not (or no longer) the person's: the tab
+    // falls back to the account the session selects, by reloading once.
+    if (error instanceof ApiError && error.code === "account_forbidden" && named !== null) {
+      switchTabAccount(null);
+      return reloading;
+    }
+    throw error;
   }
-  if (!current()) return overtaken();
   if (named !== null) return session;
-  // A tab opening with no account of its own. A checkout return (or the
-  // sign-in page carrying one) names the account it was for: it is a
-  // candidate only, taken when the person is an active member of it.
+  // A tab with no saved account. A checkout return (or the sign-in page
+  // carrying one) names the account it was for: a candidate only, taken when
+  // the person is an active member of it, as an account switch.
   const returned = checkoutReturnAccount(currentSearch());
   if (returned !== null && returned !== session.account.id && session.accounts.some((entry) => entry.id === returned)) {
-    const forReturn = await sessionFor(returned, signal);
-    if (!current()) return overtaken();
-    setTabAccount(forReturn.account.id);
-    return forReturn;
+    await call("selectAccount", { body: { accountId: returned }, ...(signal === undefined ? {} : { signal }) });
+    switchTabAccount(returned);
+    return reloading;
   }
   setTabAccount(session.account.id);
   return session;
@@ -188,33 +165,23 @@ export function useConfirmEmailVerification() {
   });
 }
 
-export function useSelectAccount() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
-    onSuccess: async (result) => {
-      // A session read still out is for the account left: it is stopped, so
-      // its late answer can never put that account back on screen.
-      await client.cancelQueries({ queryKey: keys.session });
-      // This tab moves to it; the gateway also makes it the account new tabs open on.
-      setTabAccount(result.session.account.id);
-      client.setQueryData(keys.session, result.session);
-      await dropAccountData(client);
-    },
-  });
-}
+/** Marks an account switch in flight, so the console can block everything else meanwhile. */
+export const SELECT_ACCOUNT_KEY = ["select-account"] as const;
 
 /**
- * Every cached list belongs to the previous account, so its data is dropped.
- * Reset rather than `clear()`: clearing removes the queries the mounted pages
- * observe, which then keep showing the previous account's data and never
- * fetch again. A reset empties them in place and refetches the ones on
- * screen. The session was just replaced, and the capabilities describe the
- * deployment, so both are kept.
+ * Switches the account this tab acts in. The gateway makes it the account new
+ * tabs open on, and the page then reloads on it: nothing is swapped in place.
+ * The switch stays pending until the page goes, so nothing can be done meanwhile.
  */
-async function dropAccountData(client: QueryClient): Promise<void> {
-  const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
-  await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) });
+export function useSelectAccount() {
+  return useMutation({
+    mutationKey: SELECT_ACCOUNT_KEY,
+    mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
+    onSuccess: (result) => {
+      switchTabAccount(result.session.account.id);
+      return reloading;
+    },
+  });
 }
 
 /** Management keys, CLI logins and MCP connections, in one list. */

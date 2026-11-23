@@ -15,9 +15,12 @@ import { isAccountId } from "./auth-redirect";
  * names, if the person is an active member of it (`readSession`). An id of
  * the wrong shape, from the address or from storage, is ignored.
  *
- * `setTabAccount` is the only way it changes: an explicit switch, a tab
- * opening, the fallback when the account named is no longer the person's,
- * and signing out.
+ * `setTabAccount` is the only way it changes. A tab opening saves the
+ * account it loaded; signing out forgets it (an expired session keeps it).
+ * Any other change, an explicit switch, the fallback when the account named
+ * is no longer the person's, or a checkout return's account, goes through
+ * `switchTabAccount`, which reloads the page on the new account: nothing is
+ * swapped in place.
  */
 const STORE_KEY = "agw.tab-account";
 
@@ -56,6 +59,12 @@ export function setTabAccount(accountId: string | null): void {
   store(current);
 }
 
+/** Saves the tab's new account (null: the one the session selects) and reloads the page on it. */
+export function switchTabAccount(accountId: string | null): void {
+  setTabAccount(accountId);
+  window.location.reload();
+}
+
 /** The address's query string, where a checkout return or the sign-in page carrying one names its account. */
 export function currentSearch(): string {
   return typeof window === "undefined" ? "" : window.location.search;
@@ -72,4 +81,9 @@ export function withTabAccount(headers: Headers): Headers {
 export function resetTabAccountForTests(): void {
   current = undefined;
   store(null);
+}
+
+/** Tests only: the tab as a reload finds it, its account worked out again from storage. */
+export function reopenTabForTests(): void {
+  current = undefined;
 }

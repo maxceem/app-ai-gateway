@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { PanelLeft } from "lucide-react";
+import { useIsMutating } from "@tanstack/react-query";
+import { Loader2, PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { SidebarContent } from "@/components/app-sidebar";
@@ -8,6 +9,26 @@ import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { BillingBanner } from "@/components/plan-summary";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
+import { SELECT_ACCOUNT_KEY } from "@/lib/queries";
+
+/**
+ * While an account switch is in flight, and until the page reloads on the new
+ * account, the console takes no other action: everything is covered.
+ */
+function SwitchingAccount() {
+  const switching = useIsMutating({ mutationKey: SELECT_ACCOUNT_KEY }) > 0;
+  if (!switching) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-0 z-50 flex cursor-wait items-center justify-center gap-2 bg-background/70 text-sm text-muted-foreground"
+    >
+      <Loader2 className="size-4 animate-spin" />
+      Switching account…
+    </div>
+  );
+}
 
 /**
  * Below `lg` the sidebar becomes a drawer, so the same header carries the
@@ -64,6 +85,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </main>
       </div>
+      <SwitchingAccount />
     </div>
   );
 }

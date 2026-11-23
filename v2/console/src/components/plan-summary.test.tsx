@@ -15,9 +15,8 @@ import { BillingBanner } from "./plan-summary";
 import { CheckoutPage } from "@/pages/checkout";
 import { checkoutReturnPathFor, postAuthPath } from "@/lib/auth-redirect";
 import { PLAN_CONFIRM_CHECKS, PLAN_CONFIRM_INTERVAL_MS } from "@/lib/checkout-return";
-import { CAPABILITIES, membership, renderAuthenticated, settled, testSession } from "@/test/render";
-import { StrictMode, useState, type ReactNode } from "react";
-import { ConsoleSessionProvider } from "@/lib/console-session";
+import { renderAuthenticated, settled } from "@/test/render";
+import { StrictMode } from "react";
 import type { BillingAccess, PlanAllowance } from "@/lib/types";
 
 const FREE: BillingAccess = { state: "billed", plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null };
@@ -229,43 +228,6 @@ describe("the return from a completed checkout", () => {
     });
     await waitFor(() => expect(router.location.search).toBe(""));
     expect(loading).not.toHaveBeenCalled();
-    expect(success).not.toHaveBeenCalled();
-    expect(info).not.toHaveBeenCalled();
-  });
-
-  it("stops, saying nothing, when the person switches accounts while the payment is being confirmed (Sol 7b-8)", async () => {
-    const success = vi.spyOn(toast, "success");
-    const info = vi.spyOn(toast, "info");
-    const dismiss = vi.spyOn(toast, "dismiss");
-    const fetchMock = stubBilling(PAID);
-    const answer = fetchMock.getMockImplementation()!;
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    fetchMock.mockImplementation(async (input, init) => {
-      if (String(input).includes("/billing/status")) await held;
-      return answer(input, init);
-    });
-    let switchTo!: (accountId: string) => void;
-    function Switchable({ children }: { children: ReactNode }) {
-      const [accountId, setAccountId] = useState("acct-1");
-      switchTo = setAccountId;
-      const session = testSession({
-        account: { id: accountId, name: accountId },
-        accounts: [membership("acct-1", "Acme"), membership("acct-2", "Other")],
-      });
-      return <ConsoleSessionProvider session={session} capabilities={{ ...CAPABILITIES, billing: true }}>{children}</ConsoleSessionProvider>;
-    }
-    const { client } = renderAuthenticated(<Switchable><AppShell><p>Apps</p></AppShell></Switchable>, {
-      capabilities: { billing: true },
-      route: checkoutReturnPathFor("pro", "acct-1"),
-    });
-    await waitFor(() => expect(statusReads(fetchMock)).toBeGreaterThanOrEqual(1));
-    act(() => switchTo("acct-2"));
-    expect(dismiss).toHaveBeenCalledWith("checkout-return");
-    // The read for the first account lands afterwards, showing the plan bought: nothing is announced.
-    release();
-    await waitFor(() => expect(statusReads(fetchMock)).toBeGreaterThanOrEqual(2));
-    await settled(client);
     expect(success).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
   });
