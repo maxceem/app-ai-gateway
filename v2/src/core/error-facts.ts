@@ -31,7 +31,20 @@ const KNOWN_CLASSES = new Set([
   "Error",
 ]);
 
+/**
+ * Never throws: it runs inside error handlers, where an error whose
+ * properties cannot be read (a hostile getter, a revoked proxy) must still
+ * give a log line rather than a second failure.
+ */
 export function errorFacts(error: unknown): ErrorFacts {
+  try {
+    return facts(error);
+  } catch {
+    return { class: "unreadable" };
+  }
+}
+
+function facts(error: unknown): ErrorFacts {
   if (!(error instanceof Error)) return { class: "not_an_error" };
   const name = typeof error.name === "string" && KNOWN_CLASSES.has(error.name) ? error.name : "other";
   const facts: ErrorFacts = { class: name };
