@@ -31,7 +31,7 @@ import {
   type QuotaMeter,
 } from "@/lib/billing";
 import { cn } from "@/lib/utils";
-import { ApiError, call } from "@/lib/api";
+import { call } from "@/lib/api";
 import { goToPaymentPage } from "@/lib/tab-account";
 import {
   keys,
@@ -103,9 +103,7 @@ export function BillingPage() {
       const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
       goToPaymentPage(url);
     } catch (error) {
-      // A checkout whose outcome is unknown may have started: the plan is read
-      // again, so the page shows what is true before the person tries again.
-      if (error instanceof ApiError && error.code === "billing_outcome_unknown") void status.refetch();
+      // A checkout whose outcome is unknown has the billing status read again (`useStartCheckout`).
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
     }
   };
@@ -268,6 +266,17 @@ export function BillingPage() {
             <Skeleton key={entry} className="h-52 w-full" />
           ))}
         </div>
+      ) : plans.isError ? (
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>Could not load the plans</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>{plans.error instanceof Error ? plans.error.message : "The plans could not be read."}</span>
+            <Button size="sm" variant="outline" disabled={plans.isFetching} onClick={() => void plans.refetch()}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {catalog.map((plan) => {

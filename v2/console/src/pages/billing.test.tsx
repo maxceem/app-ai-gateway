@@ -450,6 +450,23 @@ describe("BillingPage", () => {
     expect((screen.getByRole("button", { name: /upgrade to Pro/i }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("says when the plans cannot be read, with a way to try again", async () => {
+    const fetchMock = stubBilling(billed(FREE_PLAN));
+    const answer = fetchMock.getMockImplementation()!;
+    let plansUp = false;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/plans") && !plansUp
+        ? new Response(JSON.stringify({ error: { code: "billing_unavailable", message: "The billing service is unavailable" } }), { status: 502 })
+        : answer(input, init));
+    renderBilling();
+    expect(await screen.findByText("Could not load the plans")).toBeTruthy();
+    expect(screen.getByText("The billing service is unavailable")).toBeTruthy();
+    plansUp = true;
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: /upgrade to Pro/i })).toBeTruthy();
+    expect(screen.queryByText("Could not load the plans")).toBeNull();
+  });
+
   it("offers no subscription action to an account that never subscribed", async () => {
     stubBilling(billed(FREE_PLAN));
     renderBilling();

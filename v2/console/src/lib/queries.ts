@@ -570,9 +570,18 @@ function useRefreshPlan() {
 export const PAYMENT_ACTION_KEY = ["payment-action"] as const;
 
 export function useStartCheckout() {
+  const client = useQueryClient();
   return useMutation({
     mutationKey: [...PAYMENT_ACTION_KEY, "checkout"],
     mutationFn: (input: OperationRequest<"startCheckout">) => call("startCheckout", { body: input }),
+    // A checkout whose outcome is unknown may have started: the billing status
+    // is read again wherever it shows next (the billing page, or the one the
+    // checkout landing points to), so it shows what is true before a retry.
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "billing_outcome_unknown") {
+        void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
+      }
+    },
   });
 }
 

@@ -104,4 +104,19 @@ describe("a plan chosen before sign-in", () => {
     const selfHosted = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: false }, route: "/checkout?plan=pro", path: "/checkout" });
     await waitFor(() => expect(selfHosted.router.location.pathname).toBe("/apps"));
   });
+
+  it("has the billing status read afresh after a checkout whose outcome is unknown, so Billing shows what is true (Sol 7b-8)", async () => {
+    const fetchMock = stubBilling(FREE);
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/checkout")
+        ? new Response(JSON.stringify({ error: { code: "billing_outcome_unknown", message: "The billing service did not answer in time. Check Billing before trying again" } }), { status: 504 })
+        : answer(input, init));
+    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
+    expect(await screen.findByText("The billing service did not answer in time. Check Billing before trying again")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Go to plans" }).getAttribute("href")).toBe("/billing");
+    // The status read before the checkout, and once more after its outcome came back unknown.
+    const statusReads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status")).length;
+    await waitFor(() => expect(statusReads()).toBe(2));
+  });
 });
