@@ -28,7 +28,6 @@ import {
   listedModelRefusal,
   priceSources,
   reachableCalls,
-  resolvePresetTarget,
   rewriteTargetBillable,
   type AppCall,
   type AppCallConfig,
@@ -41,11 +40,12 @@ import { CUSTOM_OPERATIONS } from "../providers/custom.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
 import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { attemptCopy, declaredOperation, presetOperationProblem } from "../providers/presets.ts";
+import { attemptCopy, presetShape } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
+import { sameJson } from "../contracts/canonical-json.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
 
 type AdminContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
@@ -567,46 +567,22 @@ async function checkPreset(
   connectionRow: (slug: string) => Promise<ConnectionRow | null>,
 ): Promise<void> {
   const where = `config.presets.${slug}`;
-  const declared = declaredOperation(preset.operation);
-  const style = declared?.style;
-  if (declared === null || style === undefined) {
-    throw invalid(`${where}.operation: ${preset.operation} is not an operation a preset can use`, { slug });
+  // Each target's connection, loaded once, for the shape rules the console shares (`presetShape`).
+  const rows = new Map<string, ConnectionRow | null>();
+  for (const provider of [preset.provider, ...(preset.fallback ?? []).map((fallback) => fallback.provider)]) {
+    if (!rows.has(provider)) rows.set(provider, await connectionRow(provider));
   }
-  if (preset.params !== undefined && declared.model.in === "form") {
-    throw invalid(`${where}.params: a ${style} preset takes an upload; params apply only to JSON requests`, { slug });
-  }
-  const targets: { label: string; provider: string; operation?: string | undefined; model: string }[] = [
-    { label: where, provider: preset.provider, operation: preset.operation, model: preset.model },
-    ...(preset.fallback ?? []).map((fallback, index) => ({ label: `${where}.fallback.${index}`, ...fallback })),
-  ];
-  for (const [index, target] of targets.entries()) {
-    const connection = await connectionRow(target.provider);
-    if (connection === null) {
-      throw invalid(`${target.label}.provider: no provider connection ${target.provider} exists`, { slug });
-    }
-    const description = rowDescription(connection);
-    if (description === null) {
-      throw invalid(`${target.label}.provider: provider type ${connection.type} is not supported`, { slug });
-    }
-    // The operation serving picks for the target (`resolvePresetTarget`).
-    const call = resolvePresetTarget(description, style, target, priceSources(connection), { primary: true, streaming: false });
-    if (call.kind === "refused" && call.reason === "no_operation") {
-      const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
-      throw invalid(
-        target.operation === undefined
-          ? `${target.label}.provider: ${connection.type} has no ${style} operation a preset can use`
-          : named === undefined
-            ? `${target.label}.operation: ${target.operation} is not an operation of ${connection.type}`
-            : named.style !== style
-              ? `${target.label}.operation: ${target.operation} is not a ${style} operation; a fallback must speak the preset's API style`
-              : `${target.label}.operation: ${presetOperationProblem(description, named) ?? `${target.operation} cannot be a preset`}`,
-        { slug },
-      );
-    }
-    const operation = call.operation;
-    if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
-      throw invalid(`${where}.max_output_tokens: ${operation.name} has no output to cap`, { slug });
-    }
+  const shape = presetShape(preset, (provider) => {
+    const row = rows.get(provider) ?? null;
+    return row === null ? null : { type: row.type, description: rowDescription(row) };
+  });
+  if (!shape.ok) throw invalid(`${where}.${shape.path}: ${shape.message}`, { slug });
+  const { declared } = shape;
+  for (const [index, target] of shape.targets.entries()) {
+    const label = target.where === "" ? where : `${where}.${target.where}`;
+    const connection = rows.get(target.provider)!;
+    const description = target.connection.description!;
+    const operation = target.operation;
     // The parameters are sent to every target, so each judges them as a
     // request would be judged: a background option, or an output field over
     // the preset's own cap, is refused now rather than on every call.
@@ -617,7 +593,7 @@ async function checkPreset(
         applyOutputCap(operation, judged, preset.max_output_tokens);
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
-        throw invalid(`${where}.params: ${error.message}${index === 0 ? "" : ` (for ${target.label})`}`, { slug });
+        throw invalid(`${where}.params: ${error.message}${index === 0 ? "" : ` (for ${label})`}`, { slug });
       }
     }
     // Naming a service mode in the parameters chooses it for every target, so
@@ -782,21 +758,6 @@ function judgedAgainst(current: AppRow, status: "active" | "disabled" | undefine
   return { stored, priced: current.status !== "active" && (status ?? current.status) === "active" ? NOTHING_STORED : stored };
 }
 
-/** JSON with every object's keys sorted, so equal values compare equal whatever their key order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sameJson(a: unknown, b: unknown): boolean {
-  return canonicalJson(a) === canonicalJson(b);
-}
 
 /**
  * Saves a whole app over a stored one, as `PUT` and `PATCH` both do: the

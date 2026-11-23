@@ -3,10 +3,24 @@ import { Link, useNavigate } from "react-router-dom";
 import { AlertCircle, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  AppAttestFields,
+  IdentityProviderFields,
+  signInConfig,
+  signInDraftOf,
+  signInIssues,
+  SubscriptionFields,
+  UserSourceFields,
+  SIGN_IN_FIELDS,
+  shownField,
+  type AuthIssues,
+  type SignInDraft,
+} from "@/components/auth-fields";
 import { ChoiceList, type Choice } from "@/components/choice-list";
 import { Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
@@ -18,6 +32,7 @@ import { StatCard } from "@/components/stat-card";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useAccountUsage, useApps, useCreateApp } from "@/lib/queries";
 import type { App, CreatedApp } from "@/lib/types";
+import type { AuthenticationConfig } from "@contracts/app-config";
 
 /** What kind of app it is, as a person reads it. */
 export function appKind(app: App): string {
@@ -169,65 +184,78 @@ const KINDS: Choice<Kind>[] = [
   },
 ];
 
-const TEAM_ID = /^[A-Z0-9]{10}$/u;
-const BUNDLE_ID = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u;
-const HEADER = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u;
-
-/** The first settings of a new app: its sign-in, and nothing else yet. */
-export function newAppConfig(input: {
-  kind: Kind;
-  teamId: string;
-  bundleId: string;
-  userHeader: string;
-}): Record<string, unknown> {
-  if (input.kind === "ios") {
-    return {
-      authentication: {
-        type: "apple_app_attest",
-        end_user: { source: "app_install" },
-        app_attest: { team_id: input.teamId.trim(), bundle_id: input.bundleId.trim() },
-      },
-    };
-  }
-  const header = input.userHeader.trim();
-  return {
-    authentication: {
-      type: "api_key",
-      end_user: header ? { source: "header", header } : { source: "none" },
-    },
-  };
+/** The sign-in a new app of each kind starts from, with who may call still to be answered. */
+function startingDraft(kind: Kind): SignInDraft {
+  // Only what the person answers is sent: App Attest's environments and checking are left to their defaults.
+  const stored = (
+    kind === "ios"
+      ? { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "", bundle_id: "" } }
+      : { type: "api_key", end_user: { source: "none" } }
+  ) as AuthenticationConfig;
+  return signInDraftOf(stored, { unanswered: true });
 }
 
+
+type StepId = "basics" | "identity" | "users" | "provider" | "paid";
+
+const STEP_TITLES: Record<StepId, string> = {
+  basics: "Name and kind",
+  identity: "How the app proves itself",
+  users: "Who may call",
+  provider: "Identity provider",
+  paid: "Paid users only",
+};
+
+/** Whether a step's own answers are complete: judged by the problems under its part only. */
+function stepDone(step: StepId, name: string, draft: SignInDraft, issues: AuthIssues): boolean {
+  switch (step) {
+    case "basics":
+      return name.trim() !== "";
+    case "identity":
+    case "provider":
+      return [...issues.keys()].every((path) => !shownField(path, SIGN_IN_FIELDS[step]));
+    case "users":
+      return draft.source !== null && [...issues.keys()].every((path) => !shownField(path, SIGN_IN_FIELDS.users));
+    case "paid":
+      return issues.size === 0;
+  }
+}
+
+/**
+ * Creating an app, one question at a time, as v1's wizard asked it: its name
+ * and kind, how an iOS app proves itself, who may call, and for signed-in
+ * users, where they sign in and whether they must have paid. The same fields
+ * as the app's Sign-in tab, which changes any answer later.
+ */
 function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate();
   const create = useCreateApp();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>("ios");
-  const [teamId, setTeamId] = useState("");
-  const [bundleId, setBundleId] = useState("");
-  const [userHeader, setUserHeader] = useState("");
+  // The sign-in answers; who may call has no default answer, as v1 asked it.
+  const [draft, setDraft] = useState<SignInDraft>(() => startingDraft("ios"));
+  const [stepIndex, setStepIndex] = useState(0);
   const [created, setCreated] = useState<CreatedApp | null>(null);
 
-  const teamInvalid = teamId !== "" && !TEAM_ID.test(teamId.trim());
-  const bundleInvalid = bundleId !== "" && !BUNDLE_ID.test(bundleId.trim());
-  const headerInvalid = userHeader !== "" && !HEADER.test(userHeader.trim());
-  const ready =
-    name.trim() !== "" &&
-    (kind === "ios" ? TEAM_ID.test(teamId.trim()) && BUNDLE_ID.test(bundleId.trim()) : !headerInvalid);
+  const issuer = draft.source === "issuer";
+  const steps: StepId[] = ["basics", ...(kind === "ios" ? (["identity"] as const) : []), "users", ...(issuer ? (["provider", "paid"] as const) : [])];
+  const step = steps[Math.min(stepIndex, steps.length - 1)]!;
+  const last = stepIndex >= steps.length - 1;
+  const issues = signInIssues(draft);
+  const done = stepDone(step, name, draft, issues);
 
   const reset = () => {
     setName("");
     setKind("ios");
-    setTeamId("");
-    setBundleId("");
-    setUserHeader("");
+    setDraft(startingDraft("ios"));
+    setStepIndex(0);
   };
 
   const open_ = (app: CreatedApp) => void navigate(`/apps/${encodeURIComponent(app.app.id)}`);
 
   const submit = async () => {
     try {
-      const result = await create.mutateAsync({ name: name.trim(), config: newAppConfig({ kind, teamId, bundleId, userHeader }) });
+      const result = await create.mutateAsync({ name: name.trim(), config: { authentication: signInConfig(draft) } });
       reset();
       onOpenChange(false);
       toast.success("App created");
@@ -248,55 +276,47 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
           onOpenChange(next);
         }}
         title="Create an app"
-        submitLabel="Create app"
+        description={`Step ${stepIndex + 1} of ${steps.length}: ${STEP_TITLES[step]}`}
+        submitLabel={last ? "Create app" : "Next"}
         pending={create.isPending}
-        disabled={!ready}
-        onSubmit={() => void submit()}
+        disabled={!done}
+        className="sm:max-w-lg"
+        secondaryAction={
+          stepIndex > 0 ? (
+            <Button type="button" variant="ghost" className="sm:mr-auto" onClick={() => setStepIndex(stepIndex - 1)}>
+              Back
+            </Button>
+          ) : null
+        }
+        onSubmit={() => (last ? void submit() : setStepIndex(stepIndex + 1))}
       >
-        <Field label="Name" htmlFor="app-name">
-          <Input id="app-name" value={name} maxLength={100} autoFocus autoComplete="off" onChange={(event) => setName(event.target.value)} />
-        </Field>
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Where do calls come from?</p>
-          <ChoiceList label="App kind" choices={KINDS} value={kind} onChange={setKind} />
-        </div>
-        {kind === "ios" ? (
+        {step === "basics" ? (
           <>
-            <Field label="Apple Team ID" htmlFor="app-team" hint="Ten letters and digits, from your Apple developer account.">
-              <Input
-                id="app-team"
-                value={teamId}
-                autoComplete="off"
-                aria-invalid={teamInvalid || undefined}
-                onChange={(event) => setTeamId(event.target.value.toUpperCase())}
-              />
+            <Field label="Name" htmlFor="app-name">
+              <Input id="app-name" value={name} maxLength={100} autoFocus autoComplete="off" onChange={(event) => setName(event.target.value)} />
             </Field>
-            <Field label="Bundle ID" htmlFor="app-bundle" hint="Such as com.example.app.">
-              <Input
-                id="app-bundle"
-                value={bundleId}
-                autoComplete="off"
-                aria-invalid={bundleInvalid || undefined}
-                onChange={(event) => setBundleId(event.target.value)}
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Where do calls come from?</p>
+              <ChoiceList
+                label="App kind"
+                choices={KINDS}
+                value={kind}
+                onChange={(next) => {
+                  if (next === kind) return;
+                  setKind(next);
+                  // Another kind asks every sign-in question again.
+                  setDraft(startingDraft(next));
+                }}
               />
-            </Field>
+            </div>
           </>
-        ) : (
-          <Field
-            label="End user header (optional)"
-            htmlFor="app-user-header"
-            hint="The header your server sends each user's id in, so limits can apply per user. Leave it empty if there are no end users."
-          >
-            <Input
-              id="app-user-header"
-              value={userHeader}
-              placeholder="x-end-user-id"
-              autoComplete="off"
-              aria-invalid={headerInvalid || undefined}
-              onChange={(event) => setUserHeader(event.target.value)}
-            />
-          </Field>
-        )}
+        ) : null}
+        {step === "identity" && draft.appAttest !== null ? (
+          <AppAttestFields value={draft.appAttest} issues={issues} withVerifyOn={false} onChange={(appAttest) => setDraft({ ...draft, appAttest })} />
+        ) : null}
+        {step === "users" ? <UserSourceFields draft={draft} issues={issues} onChange={setDraft} /> : null}
+        {step === "provider" ? <IdentityProviderFields form={draft.issuer} issues={issues} onChange={(form) => setDraft({ ...draft, issuer: form })} /> : null}
+        {step === "paid" ? <SubscriptionFields form={draft.issuer} issues={issues} onChange={(form) => setDraft({ ...draft, issuer: form })} /> : null}
       </FormDialog>
 
       <SecretRevealDialog

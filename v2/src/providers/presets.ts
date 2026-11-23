@@ -75,6 +75,86 @@ export function presetOperation(
   );
 }
 
+/** A preset as its shape is judged: what the contract's preset holds. */
+export interface PresetShape {
+  readonly provider: string;
+  readonly operation: string;
+  readonly model: string;
+  readonly params?: unknown;
+  readonly max_output_tokens?: number | undefined;
+  readonly fallback?: readonly { readonly provider: string; readonly operation?: string | undefined; readonly model: string }[] | undefined;
+}
+
+/** A connection as a preset's shape needs it: its type, and its description (null when the type is not supported). */
+export interface PresetConnection {
+  readonly type: string;
+  readonly description: ProviderDescription | null;
+}
+
+/** One target a preset tries: the preset itself (`where` is "") or a fallback (`fallback.<n>`), with the operation it uses. */
+export interface PresetTarget {
+  readonly where: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly connection: PresetConnection;
+  readonly operation: OperationDescription;
+}
+
+/**
+ * Whether a preset has a shape the gateway can serve, by the rules the
+ * gateway saves it with, shared with the console so the two never differ:
+ * its operation is one a preset can use; parameters only for a JSON request;
+ * each target's connection exists and is supported, and has an operation of
+ * the preset's API style a preset can use (the named one, when a target names
+ * one); and an output cap only where the operation has output to cap.
+ *
+ * `connection` gives a connection by slug, or null when there is none. A
+ * problem names its field inside the preset, such as `fallback.0.operation`.
+ */
+export function presetShape(
+  preset: PresetShape,
+  connection: (slug: string) => PresetConnection | null,
+): { readonly ok: true; readonly style: ApiStyle; readonly declared: OperationDescription; readonly targets: readonly PresetTarget[] } | { readonly ok: false; readonly path: string; readonly message: string } {
+  const declared = declaredOperation(preset.operation);
+  const style = declared?.style;
+  if (declared === null || style === undefined) return { ok: false, path: "operation", message: `${preset.operation} is not an operation a preset can use` };
+  if (preset.params !== undefined && declared.model.in === "form") {
+    return { ok: false, path: "params", message: `a ${style} preset takes an upload; params apply only to JSON requests` };
+  }
+  const listed = [
+    { where: "", provider: preset.provider, operation: preset.operation as string | undefined, model: preset.model },
+    ...(preset.fallback ?? []).map((fallback, index) => ({ where: `fallback.${index}`, ...fallback })),
+  ];
+  const targets: PresetTarget[] = [];
+  for (const [index, target] of listed.entries()) {
+    const at = (field: string) => (target.where === "" ? field : `${target.where}.${field}`);
+    const found = connection(target.provider);
+    if (found === null) return { ok: false, path: at("provider"), message: `no provider connection ${target.provider} exists` };
+    const description = found.description;
+    if (description === null) return { ok: false, path: at("provider"), message: `provider type ${found.type} is not supported` };
+    const operation = presetOperation(description, style, target.operation);
+    if (operation === null) {
+      const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
+      if (target.operation === undefined) return { ok: false, path: at("provider"), message: `${found.type} has no ${style} operation a preset can use` };
+      return {
+        ok: false,
+        path: at("operation"),
+        message:
+          named === undefined
+            ? `${target.operation} is not an operation of ${found.type}`
+            : named.style !== style
+              ? `${target.operation} is not a ${style} operation; a fallback must speak the preset's API style`
+              : (presetOperationProblem(description, named) ?? `${target.operation} cannot be a preset`),
+      };
+    }
+    if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
+      return { ok: false, path: "max_output_tokens", message: `${operation.name} has no output to cap` };
+    }
+    targets.push({ where: target.where, provider: target.provider, model: target.model, connection: found, operation });
+  }
+  return { ok: true, style, declared, targets };
+}
+
 /**
  * Gemini's streaming method for a `generateContent` operation, as a preset
  * called with `?alt=sse` asks for (v1): the operation of the same style at

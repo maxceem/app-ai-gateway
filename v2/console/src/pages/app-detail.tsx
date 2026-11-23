@@ -20,8 +20,8 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
-import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
+import { useSaveApp } from "@/lib/save-app";
 import { formatCost, formatNumber } from "@/lib/format";
 import { dollarsToNano, nanoToDollarText, nanoToDollars } from "@/lib/money";
 import { operationsOf, providerLabel } from "@/lib/providers";
@@ -37,14 +37,15 @@ import {
   useDeleteApp,
   useProviders,
   useRevokeAppKey,
-  useUpdateApp,
   useUserAction,
   useValidateApp,
 } from "@/lib/queries";
 import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
+import { SignInTab } from "@/pages/app-auth";
 import { ErrorsTab } from "@/pages/app-errors";
+import { PresetsTab, RewritesTab } from "@/pages/app-models";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
 
 /** The Usage tab carries the chart library, so it loads only when opened. */
@@ -61,7 +62,10 @@ const TABS: Tab[] = [
   { slug: "overview", label: "Overview" },
   { slug: "usage", label: "Usage" },
   { slug: "errors", label: "Errors" },
+  { slug: "sign-in", label: "Sign-in" },
   { slug: "providers", label: "Providers" },
+  { slug: "rewrites", label: "Rewrites" },
+  { slug: "presets", label: "Presets" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
   { slug: "jobs", label: "Jobs" },
@@ -70,45 +74,6 @@ const TABS: Tab[] = [
 ];
 
 export const DEFAULT_APP_TAB = "overview";
-
-/**
- * What a save refusal means for the person, in words. Settings keeps what
- * was typed through a conflict; the shorter forms reload and ask again.
- */
-function saveError(error: unknown, fallback: string, keepsEdits: boolean): string {
-  if (error instanceof ApiError && error.code === "app_revision_conflict") {
-    return keepsEdits
-      ? "The app changed since you opened it. Your edits are kept; save again to replace it."
-      : "The app changed since you opened it. The latest version is loaded; make your change again.";
-  }
-  return error instanceof Error ? error.message : fallback;
-}
-
-/**
- * Saves the app with one part of it changed, at the revision it was read at.
- * Returns the app as the gateway stored it, or null when the save failed.
- */
-function useSaveApp(app: App, { keepsEdits = false }: { keepsEdits?: boolean } = {}) {
-  const update = useUpdateApp(app.id);
-  const save = async (change: { name?: string; status?: App["status"]; config?: AppConfig | unknown }, done: string) => {
-    try {
-      const result = await update.mutateAsync({
-        name: change.name ?? app.name,
-        status: change.status ?? app.status,
-        // An explicit config is sent as typed, even `null`: the gateway refuses
-        // what is not valid, rather than this page saving the old one instead.
-        config: "config" in change ? change.config : app.config,
-        revision: app.revision,
-      });
-      toast.success(done);
-      return result.app;
-    } catch (error) {
-      toast.error(saveError(error, "Could not save the app", keepsEdits));
-      return null;
-    }
-  };
-  return { save, pending: update.isPending };
-}
 
 export function AppDetailPage() {
   const { appId = "", tab = DEFAULT_APP_TAB } = useParams();
@@ -171,7 +136,10 @@ export function AppDetailPage() {
           </Suspense>
         ) : null}
         {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
+        {active.slug === "sign-in" ? <SignInTab app={data} /> : null}
         {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
+        {active.slug === "rewrites" ? <RewritesTab app={data} /> : null}
+        {active.slug === "presets" ? <PresetsTab app={data} /> : null}
         {active.slug === "limits" ? <LimitsTab app={data} /> : null}
         {active.slug === "users" ? <UsersTab app={data} /> : null}
         {active.slug === "jobs" ? <JobsTab app={data} /> : null}

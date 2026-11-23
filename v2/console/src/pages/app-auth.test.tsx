@@ -1,0 +1,659 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Route, Routes } from "react-router-dom";
+import { toast } from "sonner";
+import { AppDetailPage } from "./app-detail";
+import { appServer } from "@/test/app-server";
+import { testApp } from "@/test/fixtures";
+import { renderAuthenticated } from "@/test/render";
+import { chooseOption } from "@/test/select";
+
+const IOS_AUTH = {
+  type: "apple_app_attest",
+  end_user: { source: "app_install" },
+  app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production"], verify_on: "every_request" },
+};
+
+const FIREBASE_ISSUER = {
+  provider: "firebase",
+  jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+  issuer: ["https://securetoken.google.com/my-project"],
+  audience: ["my-project"],
+  user_id_claim: "sub",
+  required_claims: [],
+  max_token_lifetime_seconds: 86400,
+};
+
+function appWith(authentication: unknown) {
+  return testApp({ config: { ...testApp().config, authentication } });
+}
+
+function renderSignIn() {
+  return renderAuthenticated(
+    <Routes>
+      <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+    </Routes>,
+    { route: "/apps/my-app/sign-in" },
+  );
+}
+
+/** The field a label names: its label, input and any problem said under it. */
+const fieldOf = (label: string) => screen.getByLabelText(label).closest("div.space-y-2") as HTMLElement;
+
+const saveButton = () => screen.getByRole("button", { name: "Save sign-in" });
+
+/** Saves, and waits until the page shows the save went through and the form is clean again. */
+async function saveAndSettle() {
+  const saved = vi.spyOn(toast, "success");
+  await userEvent.click(saveButton());
+  await waitFor(() => expect(saved).toHaveBeenCalledWith("Sign-in saved"));
+  await waitFor(() => expect(saveButton().hasAttribute("disabled")).toBe(true));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("Sign-in tab", () => {
+  it("saves only the App Attest fields that changed, at the read revision", async () => {
+    const server = appServer(appWith(IOS_AUTH));
+    renderSignIn();
+
+    const team = await screen.findByLabelText("Apple Team ID");
+    await userEvent.clear(team);
+    await userEvent.type(team, "zyxwv98765");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Development/ }));
+    await userEvent.click(screen.getByRole("radio", { name: /Token exchange/ }));
+    await saveAndSettle();
+
+    expect(server.patches).toEqual([
+      {
+        revision: 2,
+        operations: [
+          { op: "replace", path: "/config/authentication/app_attest/team_id", value: "ZYXWV98765" },
+          { op: "replace", path: "/config/authentication/app_attest/environments", value: ["production", "development"] },
+          { op: "replace", path: "/config/authentication/app_attest/verify_on", value: "token_exchange" },
+        ],
+      },
+    ]);
+    expect(server.state.app.revision).toBe(3);
+  });
+
+  it("says what is wrong with a team id inside its field, and will not save it", async () => {
+    appServer(appWith(IOS_AUTH));
+    renderSignIn();
+
+    const team = await screen.findByLabelText("Apple Team ID");
+    await userEvent.clear(team);
+    await userEvent.type(team, "short");
+
+    expect(within(fieldOf("Apple Team ID")).getByRole("alert").textContent).toBe("team_id must contain ten uppercase letters or digits");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("signs a server app's users in through Auth0, paid users only, with a RevenueCat entitlement", async () => {
+    const server = appServer(testApp());
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Signed-in users only/ }));
+    await chooseOption("Identity provider", "Auth0");
+    await userEvent.type(screen.getByLabelText("Tenant domain"), "my-tenant.us.auth0.com");
+    await userEvent.type(screen.getByLabelText("API identifier"), "https://api.my-app.com");
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await saveAndSettle();
+
+    expect(server.state.app.config).toEqual({
+      ...testApp().config,
+      authentication: {
+        type: "api_key",
+        end_user: {
+          source: "issuer",
+          issuer: {
+            provider: "auth0",
+            jwks_url: "https://my-tenant.us.auth0.com/.well-known/jwks.json",
+            issuer: ["https://my-tenant.us.auth0.com/"],
+            audience: ["https://api.my-app.com"],
+            user_id_claim: "sub",
+            required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+            max_token_lifetime_seconds: 86400,
+          },
+        },
+      },
+    });
+  });
+
+  it("reopens a Firebase issuer on its project, and saves only the paid check, leaving the stored lists and fields alone", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, token_header: "x-user-token" } } }));
+    renderSignIn();
+
+    expect(((await screen.findByLabelText("Firebase project id")) as HTMLInputElement).value).toBe("my-project");
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add value" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "pro_test");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["pro", "pro_test"] }] },
+    ]);
+  });
+
+  it("opens an issuer no preset reproduces in the custom editor, one input per audience", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["my-project", "my-other-project"] } } }),
+    );
+    renderSignIn();
+
+    expect((await screen.findByRole("combobox", { name: "Identity provider" })).textContent).toContain("Custom issuer");
+    expect((screen.getByLabelText("Audience (aud)") as HTMLInputElement).value).toBe("my-project");
+    expect((screen.getByLabelText("Audience 2") as HTMLInputElement).value).toBe("my-other-project");
+    await userEvent.click(screen.getByRole("button", { name: "Add audience" }));
+    await userEvent.type(screen.getByLabelText("Audience 3"), "third");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["my-project", "my-other-project", "third"] },
+    ]);
+  });
+
+  it("brings a source's settings back when it is chosen again", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Your server sends the user id/ }));
+    expect(screen.queryByLabelText("Firebase project id")).toBeNull();
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+
+    expect((screen.getByLabelText("Firebase project id") as HTMLInputElement).value).toBe("my-project");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("asks for a provider's own inputs, such as a Supabase project ref", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Firebase project id");
+    await chooseOption("Identity provider", "Supabase Auth");
+
+    expect(screen.getByText("Enter the project ref.")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("stores an equals claim as the type chosen, starting from the empty claim paid users only adds", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    renderSignIn();
+
+    // Choosing paid users only adds an empty claim, which cannot be saved as it is.
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    await userEvent.type(screen.getByLabelText("Path"), "tier");
+    await chooseOption("Match", "equals number");
+    await userEvent.type(screen.getByLabelText("Value"), "x");
+    expect(screen.getByText("Enter a number, such as 3 or 1.05.")).toBeTruthy();
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "1.05");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("1.05");
+    await saveAndSettle();
+
+    const issuer = (server.state.app.config as { authentication: { end_user: { issuer: { required_claims: unknown } } } }).authentication.end_user.issuer;
+    expect(issuer.required_claims).toEqual([{ path: "tier", equals: 1.05 }]);
+  });
+
+  it("keeps a paid check made outside the console, its last claim staying until Any signed-in user is chosen", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "paid", equals: true }] } } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("radio", { name: /Paid users only/ })).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Value" }).textContent).toContain("true");
+    // The last claim stays: the check is turned off only by choosing Any signed-in user.
+    expect(screen.queryByRole("button", { name: "Remove claim 1" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("radio", { name: /Any signed-in user/ }));
+    await saveAndSettle();
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [] }]);
+  });
+
+  it("forgets what another caller choice held once a new draft starts", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "header", header: "x-user" } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /No end users/ }));
+    await saveAndSettle();
+    await userEvent.click(screen.getByRole("radio", { name: /Your server sends the user id/ }));
+
+    // Not the header the last draft held: the saved app has none, so this starts afresh.
+    expect((screen.getByLabelText("Header name") as HTMLInputElement).value).toBe("x-end-user-id");
+    expect(server.patches).toHaveLength(1);
+  });
+
+  it("keeps each stored audience exactly as stored, line breaks and spaces included, when another is edited", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["staff\ninternal", "main"] } } }),
+    );
+    renderSignIn();
+
+    // The value with a line break is shown as it is, not in an input that would change it.
+    const first = await screen.findByLabelText("Audience 1");
+    expect(first.tagName).toBe("PRE");
+    expect(first.textContent).toBe("staff\ninternal");
+    expect(screen.getByText(/Contains a line break, so it cannot be edited here/)).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("Audience 2"), "-2");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["staff\ninternal", "main-2"] },
+    ]);
+  });
+
+  it("can remove a value with a line break", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, audience: ["staff\ninternal", "main"] } } }),
+    );
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove audience 1" }));
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/audience", value: ["main"] }]);
+  });
+
+  it("saves a paid claim for an issuer whose stored values a preset would not accept", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, issuer: [" ", "main"] } } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations.map((operation) => operation.path)).toEqual(["/config/authentication/end_user/issuer/required_claims"]);
+  });
+
+  it("edits a stored entitlement row with its own path", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "entitlements", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add value" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "entitlements", contains: ["pro", "max"] }] },
+    ]);
+  });
+
+  it("keeps a comma inside a stored entitlement literal when another is edited", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "revenueCatEntitlements", contains: ["paid,trial", "pro"] }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    expect(((await screen.findByLabelText("Value")) as HTMLInputElement).value).toBe("paid,trial");
+    await userEvent.type(screen.getByLabelText("Value 2"), "-plus");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["paid,trial", "pro-plus"] }] },
+    ]);
+  });
+
+  it("shows a stored billing.entitlements row as it is, with nothing to save", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "billing.entitlements", contains: "pro" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    expect(((await screen.findByLabelText("Path")) as HTMLInputElement).value).toBe("billing.entitlements");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("adds a RevenueCat entitlement as one more row, keeping the claims already there", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "roles", contains: "member" }, { path: "plan", equals: "team" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getAllByLabelText("Value")[2]!, "pro");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      {
+        op: "replace",
+        path: "/config/authentication/end_user/issuer/required_claims",
+        value: [{ path: "roles", contains: "member" }, { path: "plan", equals: "team" }, { path: "revenueCatEntitlements", contains: "pro" }],
+      },
+    ]);
+  });
+
+  it("keeps false when a claim moves from true or false to text and back", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "suspended", equals: false }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("false");
+    await chooseOption("Match", "equals true or false");
+    expect(screen.getByRole("combobox", { name: "Value" }).textContent).toContain("false");
+    // The same claim as stored: nothing to save.
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("asks for true or false when a value cannot become one", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "tier", equals: "gold" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals true or false");
+    expect(screen.getByText("Choose true or false.")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("saves a change of a claim's match type alone, text 3 becoming the number 3", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "custom", required_claims: [{ path: "tier", equals: "3" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    await chooseOption("Match", "equals number");
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "tier", equals: 3 }] }]);
+  });
+
+  it("lets a field a newer gateway wrote through, sending only what changed", async () => {
+    const server = appServer(appWith({ ...IOS_AUTH, app_attest: { ...IOS_AUTH.app_attest, future_setting: "kept" } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Token exchange/ }));
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/app_attest/verify_on", value: "token_exchange" }]);
+  });
+
+  it("keeps a paid-users choice through a refresh, as an edit made before the app changed", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    const { client } = renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    server.changeElsewhere((app) => ({ ...app, name: "Renamed elsewhere" }));
+    await act(() => client.invalidateQueries());
+
+    expect(await screen.findByText("This app changed since you started editing")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /Paid users only/ }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("brings a claim's earlier values back when its match type returns", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "plan", contains: ["pro", "max"] }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    await chooseOption("Match", "contains");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    expect((screen.getByLabelText("Value 2") as HTMLInputElement).value).toBe("max");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("counts a number back at its stored value as no edit", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "tier", equals: 1.05 }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await chooseOption("Match", "equals number");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("1.05");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("adds a second RevenueCat entitlement to the same row, as an alternative", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["pro", "max"] }] },
+    ]);
+  });
+
+  it("adds an entitlement to a RevenueCat row whose stored path has a trailing space", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "revenueCatEntitlements ", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements ", contains: ["pro", "max"] }] },
+    ]);
+  });
+
+  it("reads any signed-in user from a label with no claims, and leaves the label alone when another field is edited", async () => {
+    const issuer = { ...FIREBASE_ISSUER, provider: "custom", entitlement: "revenuecat", required_claims: [] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("radio", { name: /Any signed-in user/ })).getAttribute("aria-checked")).toBe("true");
+    await userEvent.type(screen.getByLabelText("JWKS URL"), "?v=2");
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/jwks_url", value: `${FIREBASE_ISSUER.jwks_url}?v=2` },
+    ]);
+  });
+
+  it("refuses a number JSON cannot keep exactly, asking for a large id as text", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "uid", equals: "1" }] } } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals number");
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "9007199254740993");
+
+    expect(screen.getByText(/This number cannot be kept exactly. A large id must be text/)).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    // The same limit, however the whole number is written.
+    for (const spelling of ["9007199254740992.0", "9.007199254740992e15"]) {
+      await userEvent.clear(screen.getByLabelText("Value"));
+      await userEvent.type(screen.getByLabelText("Value"), spelling);
+      expect(screen.getByText(/This number cannot be kept exactly. A large id must be text/)).toBeTruthy();
+      expect(saveButton().hasAttribute("disabled")).toBe(true);
+    }
+
+    // A safe whole number written with a fraction or an exponent is fine.
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "3.0");
+    expect(screen.queryByText(/cannot be kept exactly|Enter a number/)).toBeNull();
+    await userEvent.clear(screen.getByLabelText("Value"));
+    await userEvent.type(screen.getByLabelText("Value"), "3e2");
+    expect(screen.queryByText(/cannot be kept exactly|Enter a number/)).toBeNull();
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("asks for an equals rule on RevenueCat's claim to be changed by hand, adding no row", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "revenueCatEntitlements", equals: "pro" }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add RevenueCat entitlement" }));
+
+    expect(screen.getByRole("status").textContent).toMatch(/already compares it with equals/);
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("brings a custom issuer's audiences back after a look at another provider", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, provider: "custom", audience: ["one", "two", "three"] } } }),
+    );
+    renderSignIn();
+
+    await screen.findByLabelText("Audience (aud)");
+    await chooseOption("Identity provider", "Auth0");
+    expect(screen.getByLabelText("Tenant domain")).toBeTruthy();
+    await chooseOption("Identity provider", "Custom issuer");
+
+    expect((screen.getByLabelText("Audience (aud)") as HTMLInputElement).value).toBe("one");
+    expect((screen.getByLabelText("Audience 2") as HTMLInputElement).value).toBe("two");
+    expect((screen.getByLabelText("Audience 3") as HTMLInputElement).value).toBe("three");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(server.patches).toEqual([]);
+  });
+
+  it("opens an issuer without a provider label in the custom editor, guessing nothing", async () => {
+    const { provider: _label, ...unlabelled } = FIREBASE_ISSUER;
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: unlabelled } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("combobox", { name: "Identity provider" })).textContent).toContain("Custom issuer");
+    expect((screen.getByLabelText("JWKS URL") as HTMLInputElement).value).toBe(FIREBASE_ISSUER.jwks_url);
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("refuses a number whose typed digits a whole reading would lose", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "uid", equals: "1" }] } } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals number");
+    for (const typed of ["9007199254740991.1", "1.00000000000000001", "1e-400", "1.00000000000000001e15"]) {
+      await userEvent.clear(screen.getByLabelText("Value"));
+      await userEvent.type(screen.getByLabelText("Value"), typed);
+      expect(screen.getByText(/This number cannot be kept exactly/)).toBeTruthy();
+      expect(saveButton().hasAttribute("disabled")).toBe(true);
+    }
+  });
+
+  it("says a refusal about a field the cards do not show above the save button, leaving Save usable", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.issuer.token_header: cannot be xi-api-key: the gateway already uses that header" };
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(saveButton());
+
+    const notice = (await screen.findByText("Not saved")).closest("[role=alert]") as HTMLElement;
+    expect(within(notice).getByText("cannot be xi-api-key: the gateway already uses that header")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("says what is wrong when the only value with a line break is removed", async () => {
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, provider: "custom", audience: ["staff\ninternal"] } } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove audience 1" }));
+
+    const field = screen.getByText("Audience (aud)").closest("div.space-y-2") as HTMLElement;
+    expect(within(field).getByRole("alert")).toBeTruthy();
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("drops the console's label for a paid check when Any signed-in user ends it", async () => {
+    const issuer = { ...FIREBASE_ISSUER, entitlement: "revenuecat", required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }] };
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Any signed-in user/ }));
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [] },
+      { op: "remove", path: "/config/authentication/end_user/issuer/entitlement" },
+    ]);
+  });
+
+  it("shows a refusal about the sign-in inside the field it names", async () => {
+    const server = appServer(testApp());
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.header: cannot be xi-api-key: the gateway already uses that header" };
+    renderSignIn();
+
+    const header = await screen.findByLabelText("Header name");
+    await userEvent.clear(header);
+    await userEvent.type(header, "x-user");
+    await userEvent.click(saveButton());
+
+    await waitFor(() => expect(within(fieldOf("Header name")).queryByRole("alert")).not.toBeNull());
+    expect(within(fieldOf("Header name")).getByRole("alert").textContent).toBe("cannot be xi-api-key: the gateway already uses that header");
+  });
+
+  it("explains a refusal about another part of the app, such as per-user limits", async () => {
+    const server = appServer(testApp());
+    server.state.refuse = { status: 400, code: "invalid_request", message: "config.limits.per_user: needs an authentication.end_user source other than none" };
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /No end users/ }));
+    await userEvent.click(saveButton());
+
+    const notice = (await screen.findByText("Not saved")).closest("[role=alert]") as HTMLElement;
+    expect(within(notice).getByText("needs an authentication.end_user source other than none")).toBeTruthy();
+  });
+
+  it("keeps an edit made before the app changed elsewhere, and will not save it at the newer revision", async () => {
+    const server = appServer(appWith(IOS_AUTH));
+    const { client } = renderSignIn();
+
+    const team = await screen.findByLabelText("Apple Team ID");
+    await userEvent.clear(team);
+    await userEvent.type(team, "ZYXWV98765");
+    server.changeElsewhere((app) => ({ ...app, name: "Renamed elsewhere" }));
+    await act(() => client.invalidateQueries());
+
+    expect(await screen.findByText("This app changed since you started editing")).toBeTruthy();
+    expect((screen.getByLabelText("Apple Team ID") as HTMLInputElement).value).toBe("ZYXWV98765");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(server.patches).toEqual([]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Discard my edits" }));
+    expect((screen.getByLabelText("Apple Team ID") as HTMLInputElement).value).toBe("ABCDE12345");
+    expect(screen.queryByText("This app changed since you started editing")).toBeNull();
+  });
+
+  it("follows a newer version of the app while nothing is edited", async () => {
+    const server = appServer(appWith(IOS_AUTH));
+    const { client } = renderSignIn();
+
+    await screen.findByLabelText("Apple Team ID");
+    server.changeElsewhere((app) => ({ ...app, config: { ...(app.config as object), authentication: { ...IOS_AUTH, app_attest: { ...IOS_AUTH.app_attest, team_id: "NEWTEAM123" } } } }));
+    await act(() => client.invalidateQueries());
+
+    await waitFor(() => expect((screen.getByLabelText("Apple Team ID") as HTMLInputElement).value).toBe("NEWTEAM123"));
+    await userEvent.click(screen.getByRole("radio", { name: /Token exchange/ }));
+    await saveAndSettle();
+    expect(server.patches[0]!.revision).toBe(3);
+  });
+
+  it("offers nothing to save until something changes", async () => {
+    appServer(appWith(IOS_AUTH));
+    renderSignIn();
+    expect((await screen.findByRole("button", { name: "Save sign-in" })).hasAttribute("disabled")).toBe(true);
+  });
+});

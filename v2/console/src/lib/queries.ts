@@ -273,6 +273,23 @@ export function useUpdateApp(appId: string) {
   });
 }
 
+/**
+ * Changes part of an app with JSON Patch operations, at the revision the form
+ * was read at, as the CLI and MCP do: the gateway applies them to the stored
+ * app, so nothing the form did not change is sent back.
+ */
+export function usePatchApp(appId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: OperationRequest<"patchApp">) => call("patchApp", { params: { app: appId }, body }),
+    onSuccess: (result) => {
+      client.setQueryData(keys.app(appId), result);
+      invalidateApp(client, appId);
+    },
+    onError: () => invalidateApp(client, appId),
+  });
+}
+
 /** Checks a whole app as a save would, without saving it. */
 export function useValidateApp(appId: string) {
   return useMutation({

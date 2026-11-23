@@ -1,32 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AppsPage, newAppConfig } from "./apps";
+import { AppsPage } from "./apps";
 import { testApp } from "@/test/fixtures";
 import { renderAuthenticated } from "@/test/render";
 
 afterEach(() => vi.unstubAllGlobals());
-
-describe("newAppConfig", () => {
-  it("starts an iOS app on App Attest, counting each install", () => {
-    expect(newAppConfig({ kind: "ios", teamId: " ABCDE12345 ", bundleId: "com.example.app", userHeader: "" })).toEqual({
-      authentication: {
-        type: "apple_app_attest",
-        end_user: { source: "app_install" },
-        app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app" },
-      },
-    });
-  });
-
-  it("starts a server app with or without an end user header", () => {
-    expect(newAppConfig({ kind: "server", teamId: "", bundleId: "", userHeader: "" })).toEqual({
-      authentication: { type: "api_key", end_user: { source: "none" } },
-    });
-    expect(newAppConfig({ kind: "server", teamId: "", bundleId: "", userHeader: "x-user" })).toEqual({
-      authentication: { type: "api_key", end_user: { source: "header", header: "x-user" } },
-    });
-  });
-});
 
 describe("AppsPage", () => {
   it("lists apps with their kind and providers, linking to each", async () => {
@@ -93,6 +72,11 @@ describe("AppsPage", () => {
     await userEvent.click(screen.getByLabelText(/^name$/i));
     await userEvent.paste("Backend");
     await userEvent.click(screen.getByRole("radio", { name: /server/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    // Who may call has no default answer: nothing is chosen, and the app cannot be created yet.
+    expect(screen.getAllByRole("radio").every((radio) => radio.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByRole("radio", { name: /No end users/ }));
     await userEvent.click(screen.getByRole("button", { name: /create app/i }));
 
     await waitFor(() => {
@@ -112,8 +96,101 @@ describe("AppsPage", () => {
     renderAuthenticated(<AppsPage />);
     await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
     await userEvent.type(screen.getByLabelText(/^name$/i), "Phone");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.type(screen.getByLabelText(/team id/i), "short");
     await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    expect(screen.getByText("team_id must contain ten uppercase letters or digits")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("creates an iOS app for signed-in, paid users, going back without losing an answer", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Response(JSON.stringify({ app: testApp({ id: "phone" }) }), { status: 201 })
+        : new Response(JSON.stringify({ apps: [] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { router } = renderAuthenticated(<AppsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Phone");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText(/team id/i), "abcde12345");
+    await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Development/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    // Who may call has no default answer for an iOS app either.
+    expect(screen.getAllByRole("radio").every((radio) => radio.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(screen.getByRole("button", { name: /^(Next|Create app)$/ }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Enter the firebase project id.")).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("radio", { name: /Signed-in users only/ }).getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect((screen.getByLabelText("Firebase project id") as HTMLInputElement).value).toBe("my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
     expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: /create app/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post && JSON.parse(String(post[1]!.body))).toEqual({
+        name: "Phone",
+        config: {
+          authentication: {
+            type: "apple_app_attest",
+            app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production", "development"] },
+            end_user: {
+              source: "issuer",
+              issuer: {
+                provider: "firebase",
+                jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+                issuer: ["https://securetoken.google.com/my-project"],
+                audience: ["my-project"],
+                user_id_claim: "sub",
+                required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+                max_token_lifetime_seconds: 86400,
+              },
+            },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(router.location.pathname).toBe("/apps/phone"));
+  });
+
+  it("forgets a paid answer when the app's kind changes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ apps: [] }))));
+    renderAuthenticated(<AppsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Backend");
+    await userEvent.click(screen.getByRole("radio", { name: /server/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
+
+    for (let step = 0; step < 3; step += 1) await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await userEvent.click(screen.getByRole("radio", { name: /iOS app/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText(/team id/i), "ABCDE12345");
+    await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(screen.getByRole("radio", { name: /Any signed-in user/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(false);
   });
 });
