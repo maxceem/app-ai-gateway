@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { BillingPage } from "./billing";
 import { renderAuthenticated } from "@/test/render";
 import type {
@@ -414,6 +415,44 @@ describe("BillingPage", () => {
     renderBilling();
 
     expect(await screen.findByRole("button", { name: /resume subscription/i })).toBeTruthy();
+  });
+
+  it("confirms a resume at the price it will charge, and sends that price (Sol 7b-8)", async () => {
+    const fetchMock = stubBilling(billed(PAID_PLAN, subscription({ status: "cancelled", endsAt: "2026-09-15T00:00:00.000Z" })));
+    renderBilling();
+    await userEvent.click(await screen.findByRole("button", { name: /resume subscription/i }));
+    const dialog = await screen.findByRole("dialog");
+    // The plan's current monthly price, read afresh as the dialog opened.
+    expect(within(dialog).getByText("$20/mo")).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/resume"))).toBe(false);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Resume subscription" }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/resume"));
+      expect(JSON.parse(String(call![1]!.body))).toMatchObject({
+        planKey: "pro",
+        billingPeriod: "month",
+        price: { priceAmountCents: 2000, priceCurrency: "USD" },
+        subscriptionId: "sub-console-page",
+        subscriptionStatus: "cancelled",
+      });
+    });
+  });
+
+  it("says a checkout's outcome is unknown and reads the plan again when the billing service did not answer in time (Sol 7b-8)", async () => {
+    const error = vi.spyOn(toast, "error");
+    const fetchMock = stubBilling(billed(FREE_PLAN));
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/checkout")
+        ? new Response(JSON.stringify({ error: { code: "billing_outcome_unknown", message: "The billing service did not answer in time. Check Billing before trying again" } }), { status: 504 })
+        : answer(input, init));
+    renderBilling();
+    await userEvent.click(await screen.findByRole("button", { name: /upgrade to Pro/i }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("The billing service did not answer in time. Check Billing before trying again"));
+    const statusReads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status")).length;
+    await waitFor(() => expect(statusReads()).toBeGreaterThanOrEqual(2));
+    // The button works again.
+    expect((screen.getByRole("button", { name: /upgrade to Pro/i }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("offers no subscription action to an account that never subscribed", async () => {

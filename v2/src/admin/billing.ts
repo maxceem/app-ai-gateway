@@ -266,13 +266,16 @@ export async function getBillingStatus(c: AdminContext): Promise<Response> {
   } satisfies OperationResponse<"getBillingStatus">);
 }
 
+/** How long starting a checkout may take: the billing service asks the payment provider for it. */
+export const BILLING_CHECKOUT_DEADLINE_MS = 10_000;
+
 export async function startCheckout(c: AdminContext): Promise<Response> {
   const runtime = billingManager(c);
   const input = await parseBody(c, BillingCheckoutRequestSchema);
   const accountId = c.get("actor").accountId;
   // Each checkout is the billing service's own: keeping one per account, and
   // reconciling a second one paid, is its job, not this gateway's.
-  const result = await rpc(() =>
+  const created = rpc(() =>
     runtime.createCheckout({
       serviceId: BILLING_SERVICE_ID,
       tenantId: accountId,
@@ -281,6 +284,18 @@ export async function startCheckout(c: AdminContext): Promise<Response> {
       ...consoleReturnUrls(c, input.planKey, accountId),
     }),
   );
+  // A billing service that does not answer in time may still have made the
+  // checkout: the answer says the outcome is unknown, so the person checks
+  // Billing before trying again.
+  const result = await withDeadline(created, BILLING_CHECKOUT_DEADLINE_MS, "starting the checkout").catch((error: unknown) => {
+    if (error instanceof GatewayError) throw error;
+    log("warn", "billing_checkout_slow", { account: accountId, deadlineMs: BILLING_CHECKOUT_DEADLINE_MS });
+    throw new GatewayError(
+      504,
+      "billing_outcome_unknown",
+      "The billing service did not answer in time, so the checkout may or may not have been started. Check Billing before trying again",
+    );
+  });
   const url = paymentPage(c.env, result.url);
   invalidateBillingAccess(accountId);
   return c.json({ url } satisfies OperationResponse<"startCheckout">);
@@ -307,6 +322,10 @@ export async function resumeSubscription(c: AdminContext): Promise<Response> {
   const input = await parseBody(c, BillingResumeRequestSchema);
   const accountId = c.get("actor").accountId;
   await requireShownSubscription(c, accountId, input);
+  // A resume can charge at once, like a change: the billing service resumes on
+  // the plan's current price for this plan and period, so the price shown in
+  // the confirmation must still be that price (Sol 7b-8).
+  await requireShownPrice(runtime, input.planKey, input.billingPeriod, input.price);
   const result = await rpc(() =>
     runtime.resumeSubscription({ serviceId: BILLING_SERVICE_ID, tenantId: accountId, planKey: input.planKey, billingPeriod: input.billingPeriod }),
   );

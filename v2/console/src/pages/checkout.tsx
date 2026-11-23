@@ -11,6 +11,17 @@ import { useBillingPlans, useBillingStatus, useStartCheckout } from "@/lib/queri
 const BILLING_PATH = "/billing";
 
 /**
+ * Whether this page was loaded by going back or forward in history, to a
+ * checkout landing that already sent the person to pay once. Such a load does
+ * not start a checkout by itself: it asks first.
+ */
+function loadedFromHistory(): boolean {
+  if (typeof performance === "undefined" || typeof performance.getEntriesByType !== "function") return false;
+  const entry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  return entry?.type === "back_forward";
+}
+
+/**
  * The landing point for a plan chosen before the account existed.
  *
  * Someone presses a price on the marketing site, signs up, and arrives here
@@ -41,6 +52,19 @@ export function CheckoutPage() {
   // let the second pass open a second checkout for the same plan.
   const started = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  // Only a fresh arrival from a plan link starts a checkout by itself. One
+  // reached through Back or Forward (the page reloaded from history, or
+  // restored from the browser's page cache) asks with a button instead.
+  const [askFirst, setAskFirst] = useState(loadedFromHistory);
+  useEffect(() => {
+    const restored = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      started.current = false;
+      setAskFirst(true);
+    };
+    window.addEventListener("pageshow", restored);
+    return () => window.removeEventListener("pageshow", restored);
+  }, []);
 
   const planKey = planKeyFrom(location.search);
   const catalog = plans.data?.plans ?? [];
@@ -68,7 +92,7 @@ export function CheckoutPage() {
   // plan, so an unknown one is not concluded until it has answered.
   const unknownPlan = landing === null && plans.isSuccess && !plan;
   // The current plan is read first: buying the plan already held is sent to the plans instead.
-  const ready = landing === null && plan !== undefined && error === null && status.isSuccess;
+  const ready = landing === null && plan !== undefined && error === null && status.isSuccess && !askFirst;
   // The current plan could not be read: say so rather than wait on it for good.
   const statusFailed = landing === null && status.isError;
 
@@ -123,6 +147,20 @@ export function CheckoutPage() {
             </Button>
           </AlertDescription>
         </Alert>
+      </div>
+    );
+  }
+
+  if (askFirst && plan !== undefined && landing === null) {
+    return (
+      <div className="flex min-h-60 flex-col items-center justify-center gap-3 py-10 text-center">
+        <p className="text-sm text-muted-foreground">You came back from checkout for {plan.name}.</p>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button onClick={() => setAskFirst(false)}>Continue to checkout</Button>
+          <Button asChild variant="outline">
+            <Link to={BILLING_PATH}>Go to plans</Link>
+          </Button>
+        </div>
       </div>
     );
   }

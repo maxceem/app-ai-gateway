@@ -11,9 +11,9 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { getAppTrafficBillingAccess, getBillingAccess } from "../src/billing/access.ts";
-import { readCatalog } from "../src/admin/billing.ts";
+import { BILLING_CHECKOUT_DEADLINE_MS, readCatalog } from "../src/admin/billing.ts";
 import type { BillingRuntime } from "../src/billing/contract.ts";
-import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
+import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, useFakeClock } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -267,7 +267,7 @@ describe("billing operations", () => {
     });
     const paid = billingFake(growth());
     paid.state.actionUrl = "http://pay.example.test/confirm";
-    expect(await send(caller, "POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", ...SHOWN }, paid.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/resume", { planKey: "growth", billingPeriod: "month", ...SHOWN, price: SHOWN_PRICE }, paid.env)).toMatchObject({
       status: 502,
       body: { error: { code: "billing_unavailable" } },
     });
@@ -286,7 +286,7 @@ describe("billing operations", () => {
     ] as const) {
       for (const [path, body] of [
         ["/v2/admin/billing/change", { ...selection, ...shown, price: SHOWN_PRICE }],
-        ["/v2/admin/billing/resume", { ...selection, ...shown }],
+        ["/v2/admin/billing/resume", { ...selection, ...shown, price: SHOWN_PRICE }],
         ["/v2/admin/billing/cancel", { ...shown }],
       ] as const) {
         expect(await send(caller, "POST", path, body, fake.env), `${path} ${JSON.stringify(shown)}`).toMatchObject({
@@ -313,7 +313,7 @@ describe("billing operations", () => {
     const shown = { ...SHOWN, subscriptionUpdatedAt: SUBSCRIPTION.updatedAt };
     for (const [path, body] of [
       ["/v2/admin/billing/change", { ...selection, ...shown, price: SHOWN_PRICE }],
-      ["/v2/admin/billing/resume", { ...selection, ...shown }],
+      ["/v2/admin/billing/resume", { ...selection, ...shown, price: SHOWN_PRICE }],
       ["/v2/admin/billing/cancel", { ...shown }],
     ] as const) {
       expect(await send(caller, "POST", path, body, fake.env), path).toMatchObject({ status: 409, body: { error: { code: "subscription_changed" } } });
@@ -334,7 +334,7 @@ describe("billing operations", () => {
     const fake = billingFake(growth());
     const selection = { planKey: "growth", billingPeriod: "month", ...SHOWN };
     expect(await send(caller, "POST", "/v2/admin/billing/change", { ...selection, price: SHOWN_PRICE }, fake.env)).toMatchObject({ status: 200, body: { ok: true } });
-    expect(await send(caller, "POST", "/v2/admin/billing/resume", selection, fake.env)).toMatchObject({
+    expect(await send(caller, "POST", "/v2/admin/billing/resume", { ...selection, price: SHOWN_PRICE }, fake.env)).toMatchObject({
       status: 200,
       body: { ok: true, requiredActionUrl: "https://pay.example.test/confirm" },
     });
@@ -364,6 +364,34 @@ describe("billing operations", () => {
       body: { error: { code: "billing_not_found" } },
     });
     expect(fake.calls.some((call) => call.method === "changePlan")).toBe(false);
+  });
+
+  it("refuse a resume whose price moved since its confirmation showed it, before asking billing to resume (Sol 7b-8)", async () => {
+    const { caller } = await person();
+    const fake = billingFake(growth());
+    const selection = { planKey: "growth", billingPeriod: "month", ...SHOWN };
+    // The billing service resumes on the plan's current price for the plan and period: the catalog's.
+    for (const price of [{ priceAmountCents: 1500, priceCurrency: "USD" }, { priceAmountCents: 1900, priceCurrency: "EUR" }]) {
+      expect(await send(caller, "POST", "/v2/admin/billing/resume", { ...selection, price }, fake.env), JSON.stringify(price)).toMatchObject({
+        status: 409,
+        body: { error: { code: "price_changed" } },
+      });
+    }
+    expect(fake.calls.some((call) => call.method === "resumeSubscription")).toBe(false);
+    // A resume that names no price is refused as invalid.
+    expect((await send(caller, "POST", "/v2/admin/billing/resume", selection, fake.env)).status).toBe(400);
+    expect(await send(caller, "POST", "/v2/admin/billing/resume", { ...selection, price: SHOWN_PRICE }, fake.env)).toMatchObject({ status: 200 });
+  });
+
+  it("say the outcome is unknown when the billing service does not answer a checkout in time (Sol 7b-8)", async () => {
+    const { caller } = await person();
+    const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
+    fake.state.checkoutGate = new Promise(() => undefined);
+    useFakeClock();
+    const pending = send(caller, "POST", "/v2/admin/billing/checkout", { planKey: "growth", billingPeriod: "month" }, fake.env);
+    await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "createCheckout")).toBe(true));
+    await vi.advanceTimersByTimeAsync(BILLING_CHECKOUT_DEADLINE_MS);
+    expect(await pending).toMatchObject({ status: 504, body: { error: { code: "billing_outcome_unknown" } } });
   });
 
   it("leave buying, changing and cancelling to owners and admins; a member may read", async () => {

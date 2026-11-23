@@ -57,6 +57,7 @@ export type ErrorCode =
   | "billing_conflict"
   | "subscription_changed"
   | "price_changed"
+  | "billing_outcome_unknown"
   // Sign-in and accounts (v1's codes).
   | "session_required"
   | "not_a_member"

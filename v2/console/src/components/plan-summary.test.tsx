@@ -156,6 +156,19 @@ describe("a plan chosen before sign-in", () => {
     expect(JSON.parse(String(call![1]!.body))).toEqual({ planKey: "pro", billingPeriod: "month" });
   });
 
+  it("asks before starting a checkout on a page reached through Back or Forward (Sol 7b-8)", async () => {
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "back_forward" } as unknown as PerformanceEntry]);
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
+    const fetchMock = stubBilling(FREE);
+    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
+    const proceed = await screen.findByRole("button", { name: "Continue to checkout" });
+    expect(screen.getByRole("link", { name: "Go to plans" }).getAttribute("href")).toBe("/billing");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/checkout"))).toBe(false);
+    await userEvent.click(proceed);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
+  });
+
   it("sends a member, or a plan already held, to the plans page, and a deployment without billing to the apps", async () => {
     stubBilling(FREE);
     const member = renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, session: { role: "member" }, route: "/checkout?plan=pro", path: "/checkout" });

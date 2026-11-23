@@ -165,6 +165,9 @@ export function useConfirmEmailVerification() {
   });
 }
 
+/** How long a switch request may take before the page carries on without it. */
+export const SWITCH_DEADLINE_MS = 10_000;
+
 /**
  * Switches the account this tab acts in. The gateway makes it the account new
  * tabs open on, and the page then reloads on it: nothing is swapped in place.
@@ -172,12 +175,22 @@ export function useConfirmEmailVerification() {
  */
 export function useSelectAccount() {
   return useMutation({
-    mutationFn: (accountId: string) => {
+    mutationFn: async (accountId: string) => {
       // The switch request is sent first; from the moment it is out, the page
-      // sends nothing else (`./api` refuses) and takes no input.
-      const switched = call("selectAccount", { body: { accountId } });
+      // sends nothing else (`./api` refuses) and takes no input. It has a
+      // deadline, so a gateway that never answers cannot lock the page.
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), SWITCH_DEADLINE_MS);
+      const switched = call("selectAccount", { body: { accountId }, signal: deadline.signal });
       beginAccountSwitch();
-      return switched;
+      try {
+        return await switched;
+      } catch (error) {
+        if (deadline.signal.aborted) throw new Error("Switching account took too long. Try again.");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     },
     onError: () => cancelAccountSwitch(),
     onSuccess: (result) => {

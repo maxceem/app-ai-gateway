@@ -31,7 +31,7 @@ import {
   type QuotaMeter,
 } from "@/lib/billing";
 import { cn } from "@/lib/utils";
-import { call } from "@/lib/api";
+import { ApiError, call } from "@/lib/api";
 import {
   keys,
   useBillingPlans,
@@ -80,6 +80,10 @@ export function BillingPage() {
   // bills without another screen in between.
   const [confirmChange, setConfirmChange] = useState<{ plan: BillingPlan; price: BillingPrice; shown: Shown } | null>(null);
   const [preparingChange, setPreparingChange] = useState(false);
+  // A resume can charge at once too: its plan, price and period, and what it
+  // acts on, held until it is confirmed.
+  const [confirmResume, setConfirmResume] = useState<{ plan: BillingPlan; price: BillingPrice; shown: Shown } | null>(null);
+  const [preparingResume, setPreparingResume] = useState(false);
   const client = useQueryClient();
 
   const status = useBillingStatus(capabilities.billing, account.id);
@@ -102,6 +106,9 @@ export function BillingPage() {
       const { url } = await checkout.mutateAsync({ planKey: plan.planKey, billingPeriod: period });
       window.location.assign(url);
     } catch (error) {
+      // A checkout whose outcome is unknown may have started: the plan is read
+      // again, so the page shows what is true before the person tries again.
+      if (error instanceof ApiError && error.code === "billing_outcome_unknown") void status.refetch();
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
     }
   };
@@ -166,17 +173,44 @@ export function BillingPage() {
     }
   };
 
-  const doResume = async () => {
+  // A resume's dialog shows the price the billing service will resume at: the
+  // plan's current price for the subscription's plan and period, read afresh
+  // from the catalog as it opens. That price is the one sent, and the gateway
+  // refuses the resume if it moved since (Sol 7b-8).
+  const openResume = async () => {
     // Resuming acts on the subscription, which is not necessarily the plan the
     // account is currently entitled to.
     const subscription = subscriptionOf(access);
     if (!subscription) return;
+    const shown = shownOf(access);
+    const resumePeriod: Period = subscription.billingPeriod ?? period;
+    setPreparingResume(true);
+    try {
+      const fresh = await client.fetchQuery({ queryKey: keys.billingPlans, queryFn: () => call("listBillingPlans"), staleTime: 0 });
+      const current = fresh.plans.find((entry) => entry.planKey === subscription.planKey);
+      const price = current ? priceFor(current, resumePeriod) : undefined;
+      if (!current || !price) {
+        toast.error(`This plan has no ${resumePeriod === "year" ? "yearly" : "monthly"} price right now`);
+        return;
+      }
+      setConfirmResume({ plan: current, price, shown });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not read the plans");
+    } finally {
+      setPreparingResume(false);
+    }
+  };
+
+  const doResume = async () => {
+    if (!confirmResume) return;
     try {
       const result = await resume.mutateAsync({
-        planKey: subscription.planKey,
-        billingPeriod: subscription.billingPeriod ?? period,
-        ...shownOf(access),
+        planKey: confirmResume.plan.planKey,
+        billingPeriod: confirmResume.price.billingPeriod,
+        price: { priceAmountCents: confirmResume.price.priceAmountCents, priceCurrency: confirmResume.price.priceCurrency },
+        ...confirmResume.shown,
       });
+      setConfirmResume(null);
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
         return;
@@ -219,9 +253,9 @@ export function BillingPage() {
         actions={status.data?.actions}
         pending={status.isPending}
         cancelPending={cancel.isPending}
-        resumePending={resume.isPending}
+        resumePending={resume.isPending || preparingResume}
         onCancel={() => setConfirmCancel(shownOf(access))}
-        onResume={() => void doResume()}
+        onResume={() => void openResume()}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -279,6 +313,24 @@ export function BillingPage() {
         confirmLabel="Change plan"
         pending={change.isPending}
         onConfirm={() => void doChange()}
+      />
+
+      <ConfirmDialog
+        open={confirmResume !== null}
+        onOpenChange={(open) => setConfirmResume(open ? confirmResume : null)}
+        title="Resume subscription"
+        description={
+          <p>
+            Your subscription to {confirmResume?.plan.name} resumes at{" "}
+            <span className="tabular font-medium text-foreground">
+              {confirmResume ? formatPrice(confirmResume.price) : ""}
+            </span>
+            . The billing provider may charge for it right away.
+          </p>
+        }
+        confirmLabel="Resume subscription"
+        pending={resume.isPending}
+        onConfirm={() => void doResume()}
       />
 
       <ConfirmDialog

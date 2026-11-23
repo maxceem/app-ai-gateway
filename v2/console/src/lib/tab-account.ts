@@ -88,8 +88,13 @@ export function beginAccountSwitch(): void {
   setSwitching(true);
 }
 
-/** The switch request failed: the page carries on with the account it has. */
+/**
+ * The switch request failed or ran out of time: the page carries on with the
+ * account it has. Once the page is being reloaded or sent elsewhere, the
+ * switch is final and nothing unlocks it.
+ */
 export function cancelAccountSwitch(): void {
+  if (switchedAlready) return;
   setSwitching(false);
 }
 
@@ -107,7 +112,8 @@ export function switchTabAccount(accountId: string | null): void {
   if (switchedAlready) return;
   switchedAlready = true;
   setSwitching(true);
-  if (routerPath(window.location.pathname) === CHECKOUT_PATH) window.location.assign(consoleUrl("/billing"));
+  // Replaced, not added: Back must not return to the checkout landing and start it again.
+  if (routerPath(window.location.pathname) === CHECKOUT_PATH) window.location.replace(consoleUrl("/billing"));
   else window.location.reload();
 }
 

@@ -158,9 +158,10 @@ const BILLING_ACTION_ERRORS = {
   ...SESSION_ONLY_ERRORS,
   403: "Only a person signed in to the console can do this (`session_required`), only an owner or admin can (`forbidden`), or the billing service does not allow it for this account (`billing_action_forbidden`).",
   404: "This deployment has no billing (`not_found`), or the plan or price does not exist (`billing_not_found`).",
-  409: "The account already has a live subscription (`billing_conflict`), the subscription changed since the dialog opened (`subscription_changed`), or the plan's price changed since it was shown (`price_changed`).",
+  409: "The account already has a live subscription (`billing_conflict`), the subscription changed since the dialog opened (`subscription_changed`), or the plan's price changed since it was shown, for a change or a resume (`price_changed`).",
   502: "The billing service could not be reached, or answered a payment page outside the configured payment hosts (`billing_unavailable`).",
   503: "The subscription could not be read to check it (`billing_unavailable`). Retry shortly.",
+  504: "Starting a checkout: the billing service did not answer in time, so the outcome is unknown (`billing_outcome_unknown`). Check the billing status before trying again.",
 } as const;
 
 /** Errors the console's own pages can answer with. */

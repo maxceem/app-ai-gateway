@@ -234,8 +234,12 @@ export const BillingChangeRequestSchema = BillingPlanSelectionSchema.extend({
   price: ShownPriceSchema,
 }).meta({ id: "BillingChangeRequest" });
 
-/** A resume, on the account and subscription the console showed. */
-export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend(ShownSubscription).meta({
+/**
+ * A resume, on the subscription the console showed, at the price its
+ * confirmation showed: the plan's current price for the plan and period
+ * resumed, which the billing service charges.
+ */
+export const BillingResumeRequestSchema = BillingPlanSelectionSchema.extend({ ...ShownSubscription, price: ShownPriceSchema }).meta({
   id: "BillingResumeRequest",
 });
 
