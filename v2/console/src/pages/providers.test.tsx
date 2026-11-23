@@ -1170,4 +1170,46 @@ describe("a typed key stays with where it was typed for", () => {
       }),
     );
   });
+
+  it("refuses a JSON price a float would read as another figure, before switching to the form or saving", async () => {
+    stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    const box = screen.getByLabelText(/prices by model/i);
+    await userEvent.click(box);
+    await userEvent.paste('{"m": {"per_request": 1e-400}}');
+    expect(screen.getByText(/per_request 1e-400: .*stored as 0/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Edit as a form" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("turns Cloudflare on for a connection with a base URL only once removing it is confirmed, in the same save", async () => {
+    const hosted = { ...PROVIDER, baseUrl: "https://my-azure.example.com/openai/v1/" };
+    const fetchMock = stub([hosted]);
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /cloudflare ai gateway/i }));
+    await userEvent.click(await screen.findByLabelText(/cloudflare account id/i));
+    await userEvent.paste("acct");
+    await userEvent.click(screen.getByLabelText(/cloudflare gateway id/i));
+    await userEvent.paste("gw");
+    await userEvent.click(screen.getByLabelText(/cloudflare token/i));
+    await userEvent.paste("cf-token-0123456789");
+    await userEvent.click(screen.getByLabelText(/^api key$/i));
+    await userEvent.paste(SECRET);
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /remove the base url https:\/\/my-azure\.example\.com\/openai\/v1\//i }));
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "/v2/admin/providers/prov-1", "PUT")).toEqual({
+        revision: 3,
+        cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: "cf-token-0123456789" },
+        baseUrl: null,
+        secret: SECRET,
+      }),
+    );
+  });
 });

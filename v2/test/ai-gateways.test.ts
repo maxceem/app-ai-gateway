@@ -315,6 +315,16 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(stale.status).toBe(409);
   });
 
+  it("takes a connection with a base URL to Cloudflare when the same save removes the base URL", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, baseUrl: "https://self-hosted.example.com/v1/" });
+    const id = created.body.provider.id as string;
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN }, baseUrl: null, secret: PROVIDER_KEY });
+    expect(moved.status).toBe(200);
+    expect(moved.body.provider.baseUrl).toBeNull();
+    expect(moved.body.provider.cloudflareGateway).toMatchObject({ accountId: "acct", gatewayId: "gw" });
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

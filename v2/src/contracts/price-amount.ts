@@ -19,16 +19,20 @@ function dollarsText(nanos: number): string {
   return fraction === "" ? whole : `${whole}.${fraction}`;
 }
 
+/** A typed decimal's parts: its digits, and where the point stands. */
+const DECIMAL = /^(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/u;
+
+/** The most digits, and the largest exponent, a typed price may have; far beyond any price, and small enough to compute exactly. */
+const MAX_DIGITS = 40;
+const MAX_EXPONENT = 400;
+
 /**
  * The typed decimal as whole nano-dollars, exactly, without passing through a
- * float; null when it is finer than one nano-dollar or not a plain decimal.
+ * float; null when it is finer than one nano-dollar. `digits` and `exponent`
+ * are already bounded, so the power stays small.
  */
-function exactNanos(text: string): bigint | null {
-  const match = /^(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/u.exec(text.trim());
-  if (match === null || `${match[1]}${match[2] ?? ""}` === "") return null;
-  const fraction = match[2] ?? "";
-  const digits = `${match[1]}${fraction}`;
-  const shift = Number(match[3] ?? "0") - fraction.length + NANO_DIGITS;
+function exactNanos(digits: string, fraction: string, exponent: number): bigint | null {
+  const shift = exponent - fraction.length + NANO_DIGITS;
   if (shift >= 0) return BigInt(digits) * 10n ** BigInt(shift);
   const kept = digits.length + shift;
   // Every digit past the nano-dollar must be 0.
@@ -38,13 +42,25 @@ function exactNanos(text: string): bigint | null {
 
 /**
  * What is wrong with storing a typed price, or null when the gateway stores
- * exactly what was typed: too large to store, or finer than the smallest step
- * and so stored as another figure, which the message names. The typed text is
- * compared as a decimal, so `1.0000000000000001` is caught even where a float
- * reads it as 1.
+ * exactly what was typed: not a plain amount, negative, absurdly long, too
+ * large to store, or finer than the smallest step and so stored as another
+ * figure, which the message names. The typed text is compared as a decimal,
+ * so `1.0000000000000001` is caught even where a float reads it as 1.
  */
 export function priceTextProblem(text: string): string | null {
-  const dollars = Number(text.trim());
+  const trimmed = text.trim();
+  if (trimmed.startsWith("-")) return "A price cannot be negative.";
+  const match = DECIMAL.exec(trimmed);
+  if (match === null || `${match[1]}${match[2] ?? ""}` === "") return "Enter an amount, such as 2.5.";
+  const fraction = match[2] ?? "";
+  const digits = `${match[1]}${fraction}`;
+  // Zero, however it is written, is stored as zero.
+  if (/^0*$/u.test(digits)) return null;
+  const exponentText = (match[3] ?? "0").replace(/^\+/u, "");
+  if (digits.length > MAX_DIGITS || exponentText.replace(/^-/u, "").replace(/^0+/u, "").length > 3 || Math.abs(Number(exponentText)) > MAX_EXPONENT) {
+    return "This amount has too many digits, or too large an exponent, to be a price.";
+  }
+  const dollars = Number(trimmed);
   let stored: number;
   try {
     stored = rateFromDollarsPerMillion(dollars);
@@ -52,6 +68,6 @@ export function priceTextProblem(text: string): string | null {
     if (error instanceof MoneyError) return "This price is too large to store.";
     throw error;
   }
-  if (exactNanos(text) === BigInt(stored)) return null;
+  if (exactNanos(digits, fraction, Number(exponentText)) === BigInt(stored)) return null;
   return `Prices are kept to $0.000000001; this would be stored as ${dollarsText(stored)}.`;
 }

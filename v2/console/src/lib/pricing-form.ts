@@ -190,3 +190,49 @@ export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
   }
   return Object.keys(pricing).length === 0 ? null : { ...pricing };
 }
+
+/** Fields of a price whose numbers are not dollar amounts: a mode's multiplier and a token count. */
+const NOT_AMOUNTS: ReadonlySet<string> = new Set(["factor", "long_context_threshold"]);
+
+/**
+ * What is wrong with the amounts in prices typed as JSON, judged on each
+ * number as it was written, not as a float reads it: `1e-400` is refused, as
+ * the form refuses it, though `JSON.parse` reads it as 0. Walks the text once,
+ * skipping strings, and judges each number by the field it belongs to.
+ * Returns null when every amount is stored exactly as written.
+ */
+export function jsonPriceProblem(text: string): string | null {
+  let key: string | null = null;
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '"') {
+      // A string: read it, unescaping only enough to know where it ends.
+      let end = index + 1;
+      let value = "";
+      while (end < text.length && text[end] !== '"') {
+        if (text[end] === "\\") {
+          value += text[end + 1] ?? "";
+          end += 2;
+        } else value += text[end++];
+      }
+      index = end + 1;
+      // A string followed by ':' is a key.
+      let after = index;
+      while (after < text.length && /\s/u.test(text[after]!)) after += 1;
+      if (text[after] === ":") key = value;
+      continue;
+    }
+    if (char === "-" || (char >= "0" && char <= "9")) {
+      const number = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(text.slice(index))?.[0] ?? char;
+      index += number.length;
+      if (key !== null && !NOT_AMOUNTS.has(key)) {
+        const problem = priceTextProblem(number);
+        if (problem !== null) return `${key} ${number}: ${problem}`;
+      }
+      continue;
+    }
+    index += 1;
+  }
+  return null;
+}

@@ -20,7 +20,7 @@ import { cloudflareCapable, CUSTOM_STYLES, keyDestinationText, PROVIDER_TYPES, p
 import { normalizedBaseUrl } from "@providers/destinations";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
-import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
+import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf, severalUnits, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -1355,6 +1355,9 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
   const [storedKeys, setStoredKeys] = useState(false);
   // Going direct again is its own step, which asks for the provider's key for where it then goes.
   const [stopping, setStopping] = useState(false);
+  // A connection with a base URL loses it once its traffic goes through Cloudflare: the person confirms that, by name.
+  const [dropBase, setDropBase] = useState(false);
+  const [base, setBase] = useState(provider?.baseUrl ?? null);
   const opened = useOpenedRevision(
     provider,
     (latest) => {
@@ -1363,6 +1366,8 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       setDraft(now ? { on: true, accountId: now.accountId, gatewayId: now.gatewayId, token: "" } : { ...NO_CLOUDFLARE, on: true });
       setStoredKeys(false);
       setStopping(false);
+      setDropBase(false);
+      setBase(latest.baseUrl ?? null);
     },
     onClose,
   );
@@ -1370,10 +1375,12 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
   const type = provider?.type ?? "";
   // Where a key typed here goes: the gateway being set, or, when stopping, the provider's own route.
   const throughGateway = keyDestinationText(type, {
-    baseUrl: provider?.baseUrl ?? null,
+    baseUrl: null,
     cloudflareGateway: { accountId: draft.accountId.trim(), gatewayId: draft.gatewayId.trim() },
   });
-  const direct = keyDestinationText(type, { baseUrl: provider?.baseUrl ?? null, cloudflareGateway: null });
+  const direct = keyDestinationText(type, { baseUrl: base, cloudflareGateway: null });
+  // Turning Cloudflare on for a connection with a base URL removes the base URL in the same save.
+  const removesBase = stored === null && base !== null;
   const [secret, setSecret] = useBoundSecret(JSON.stringify([stopping ? direct : throughGateway, opened.revision, opened.conflict]));
 
   const save = async (body: Record<string, unknown>, done: string) => {
@@ -1437,11 +1444,19 @@ function CloudflareDialog({ provider, onClose }: { provider: ProviderConnection 
       description="Requests go to your Cloudflare AI Gateway, which passes them to the provider. Costs are read from the provider's own answers."
       submitLabel="Save"
       pending={update.isPending}
-      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys)}
-      onSubmit={() => void save({ cloudflareGateway: cloudflareBody(draft), ...key }, "Cloudflare AI Gateway saved")}
+      disabled={blocked || !cloudflareReady(draft, sameGateway) || (moving && !secret && !storedKeys) || (removesBase && !dropBase)}
+      onSubmit={() =>
+        void save({ cloudflareGateway: cloudflareBody(draft), ...(removesBase ? { baseUrl: null } : {}), ...key }, "Cloudflare AI Gateway saved")
+      }
     >
       {opened.conflict ? <ConflictNotice reloading={opened.reloading} onReload={() => void opened.reload()} /> : null}
       <CloudflareFields draft={draft} onChange={(next) => setDraft({ ...next, on: true })} tokenOptional={sameGateway} />
+      {removesBase ? (
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={dropBase} disabled={blocked} onCheckedChange={(checked) => setDropBase(checked === true)} />
+          Remove the base URL {base}: Cloudflare AI Gateway sends requests to the provider itself
+        </label>
+      ) : null}
       <Field
         label="API key"
         htmlFor="cloudflare-provider-secret"
@@ -1493,6 +1508,9 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
     return { problem: "Write the prices as JSON: an object with one entry per model." };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { problem: "Write the prices as an object with one entry per model." };
+  // Each amount as written, by the gateway's money rule: a float may read some as another figure.
+  const amounts = jsonPriceProblem(text);
+  if (amounts !== null) return { problem: amounts };
   // The server checks every price; the console only checks the shape.
   return { pricing: Object.keys(value).length === 0 ? null : (value as NonNullable<ProviderConnection["pricing"]>) };
 }

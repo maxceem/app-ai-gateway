@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { emptyRow, formCanShow, hiddenFields, pricingOf, rowProblems, rowsOf } from "./pricing-form";
+import { emptyRow, formCanShow, hiddenFields, jsonPriceProblem, pricingOf, rowProblems, rowsOf } from "./pricing-form";
+import { priceTextProblem } from "@contracts/price-amount";
 
 describe("the prices form", () => {
   it("changes only the fields a row shows, and keeps everything else a price carries", () => {
@@ -81,5 +82,23 @@ describe("the prices form", () => {
     const built = pricingOf([{ ...emptyRow(), model: "m", unitField: "per_request", unitAmount: "1" }]);
     expect(Object.getPrototypeOf(built)).toBe(Object.prototype);
     expect(built).toEqual({ m: { per_request: 1 } });
+  });
+
+  it("judges JSON amounts as written, not as a float reads them, and leaves factors and thresholds alone", () => {
+    expect(jsonPriceProblem('{"m": {"per_request": 1e-400}}')).toMatch(/^per_request 1e-400: .*stored as 0\./u);
+    expect(jsonPriceProblem('{"m": {"input": 1.0000000000000001, "output": 2}}')).toMatch(/^input 1\.0000000000000001: /u);
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2.5, "long_context_threshold": 200000, "modes": {"flex": {"factor": 0.33333333333}}}}')).toBeNull();
+    // A number inside a string is not an amount.
+    expect(jsonPriceProblem('{"1e-400 model": {"per_request": 0.02}}')).toBeNull();
+  });
+
+  it("never throws on an absurd amount: zero is zero, and a huge exponent is refused", () => {
+    expect(priceTextProblem("0e9007199254740992")).toBeNull();
+    expect(priceTextProblem("0.000e-99999")).toBeNull();
+    expect(priceTextProblem("1e9007199254740992")).toMatch(/too large an exponent/u);
+    expect(priceTextProblem("1e-9007199254740992")).toMatch(/too large an exponent/u);
+    expect(priceTextProblem(`1${"0".repeat(60)}`)).toMatch(/too many digits/u);
+    expect(priceTextProblem("1e300")).toBe("This price is too large to store.");
+    expect(priceTextProblem("-1")).toBe("A price cannot be negative.");
   });
 });
