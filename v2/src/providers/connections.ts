@@ -166,7 +166,7 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
  * moves it (`./route.ts`).
  */
 export { CLOUDFLARE_AI_GATEWAY_ORIGIN } from "./destinations.ts";
-import { CLOUDFLARE_AI_GATEWAY_ORIGIN, directOrigin } from "./destinations.ts";
+import { CLOUDFLARE_AI_GATEWAY_ORIGIN, cloudflareGatewayPath, directOrigin } from "./destinations.ts";
 
 /**
  * The origin a connection's provider key is given for, which seals it: the
@@ -181,7 +181,10 @@ export function keyOrigin(connection: {
   if (connection.baseUrl !== null) return connection.baseUrl;
   const gateway = connection.cloudflareGateway;
   if (gateway === null) return "";
-  return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
+  // The one place ids become an address (`cloudflareGatewayPath`). Ids that lead nowhere (`.`, `..`)
+  // seal to a label no address has: nothing is ever sent for them.
+  const path = cloudflareGatewayPath(gateway);
+  return path === null ? `${CLOUDFLARE_AI_GATEWAY_ORIGIN}#nowhere` : `${CLOUDFLARE_AI_GATEWAY_ORIGIN}${path}`;
 }
 
 /**

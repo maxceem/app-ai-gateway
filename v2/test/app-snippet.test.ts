@@ -127,7 +127,7 @@ describe("first requests for an app", () => {
       // A small output limit of its own, in the field OpenAI's Chat Completions reads.
       body: { model: chatModel, messages: [{ role: "user", content: "Hello!" }], max_completion_tokens: 256 },
     });
-    expect(chat!.curl).toBe(
+    expect(chat!.text).toBe(
       [
         `( set +x; printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
         `-H 'x-end-user-id: user-123'`,
@@ -135,10 +135,9 @@ describe("first requests for an app", () => {
         `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`,
       ].join(" \\\n  "),
     );
-    expect(chat!.text).toBe(chat!.curl);
     // A form, by the proxy's rule: the model as a text field, the file apart.
     expect(transcription).toMatchObject({ form: { model: SAMPLE_MODELS["openai.transcription"] }, file: { field: "file", name: "audio.mp3" } });
-    expect(transcription!.curl).toContain(`--form-string 'model=${SAMPLE_MODELS["openai.transcription"]}' \\\n  -F 'file=@audio.mp3' )`);
+    expect(transcription!.text).toContain(`--form-string 'model=${SAMPLE_MODELS["openai.transcription"]}' \\\n  -F 'file=@audio.mp3' )`);
     expect(notes).toContainEqual(expect.stringContaining("Set APP_AI_GATEWAY_KEY to one of this app's keys"));
     expect(notes).toContainEqual(`${slug}: openai.speech and openai.realtime have no example here. Send them as the provider's own API reference describes, to ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/.`);
     expect(JSON.stringify(examples)).not.toContain(PROVIDER_KEY);
@@ -162,7 +161,7 @@ describe("first requests for an app", () => {
     const caveat = "Uses this app's configured model gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint.";
     expect(example).toMatchObject({ model: "gpt-5.4-pro", caveat });
     // Plain text beside the command, repeated in the notes; never part of what runs.
-    expect(example!.text).toBe(example!.curl);
+    expect(example!.text.startsWith("( set +x; printf")).toBe(true);
     expect(own.notes).toContainEqual(`${slug}: openai.chat: ${caveat}`);
   });
 
@@ -175,7 +174,7 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: [sample] } }, model_rewrites: { [sample]: "gpt-5.4-pro" } },
     });
     expect(examples).toEqual([
-      expect.objectContaining({ model: sample, caveat: `Uses this app's configured model ${sample}: it works if ${sample} supports this endpoint.` }),
+      expect.objectContaining({ model: sample, caveat: `Uses this app's configured model ${sample}, sent as gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint.` }),
     ]);
   });
 
@@ -206,7 +205,7 @@ describe("first requests for an app", () => {
     const [example] = quoted.examples;
     expect(example!.model).toBe(hostile);
     // The single quote is closed, escaped and reopened: the $(...) stays inside quotes.
-    expect(example!.curl).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`);
+    expect(example!.text).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`);
   });
 
   it("asks for a small output of its own, never the route's whole cap: a DeepSeek route capped at 500000 sends 256", async () => {
@@ -253,20 +252,6 @@ describe("first requests for an app", () => {
     });
     expect(preset.examples).toEqual([]);
     expect(preset.notes).toContainEqual("The preset ask has no example: this app names its end user in anthropic-version, a header the request itself must send.");
-  });
-
-  it("gives a Responses route or preset with an output cap below OpenAI's 16 tokens a note", async () => {
-    const key = await seedManagementKey();
-    const slug = await provider(key);
-    const { examples, notes } = await snippetFor(key, {
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["openai.responses", "openai.chat"], max_output_tokens: 8 } } },
-      presets: { tiny: { provider: slug, operation: "openai.responses", model: SAMPLE_MODELS["openai.responses"]!, max_output_tokens: 8 } },
-    });
-    // Chat completions take any cap of 1 or more.
-    expect(examples.map((example) => example.operation)).toEqual(["openai.chat"]);
-    expect(notes).toContainEqual(`${slug}: openai.responses has no example: its output cap of 8 tokens is below the 16 the provider requires.`);
-    expect(notes).toContainEqual("The preset tiny has no example: its output cap of 8 tokens is below the 16 the provider requires.");
   });
 
   it("skips a model whose path the gateway's own matcher would refuse, and asks for another", async () => {
@@ -491,7 +476,6 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat", "openai.transcription"] } } },
     });
     const [chat, transcription] = examples;
-    expect(chat!.curl).toBeUndefined();
     expect(chat!.text).toBe(
       [
         `POST ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
@@ -514,7 +498,7 @@ describe("first requests for an app", () => {
       authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     });
-    const curl = examples[0]!.curl as string;
+    const curl = examples[0]!.text as string;
     expect(curl.split("\n").slice(0, 4)).toEqual([
       "( set +x",
       `  APP_AI_GATEWAY_TOKEN="$(printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --silent --show-error --fail --config - '${ORIGIN}/v2/apps/${appId}/auth/token' -H 'Content-Type: application/json' | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')"`,

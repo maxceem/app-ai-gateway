@@ -7,16 +7,19 @@
  * It covers a fixed set of well-known requests on built-in providers, and
  * only those: chat completions in the OpenAI style, OpenAI responses,
  * Anthropic messages, Gemini generateContent, embeddings, image generation
- * and transcription (`COVERED_STYLES`). Anything else (fill-in-the-middle, an
- * image edit, a custom provider's path, an operation with no known body) gets
- * a short note pointing to the provider's own API reference, never a command
+ * and transcription (`STYLES`). Anything else (fill-in-the-middle, an image
+ * edit, a custom provider's path, an operation with no known body) gets a
+ * short note pointing to the provider's own API reference, never a command
  * that the provider or the gateway would refuse.
  *
  * - An example appears only for an active app, on an enabled connection.
- * - Its model is one the app names (the route's model list, its rewrites, the
- *   connection's own prices), or else a curated sample for that exact
- *   operation (`SAMPLE_MODELS`); either only when serving admits it for that
- *   operation (`resolveCall`). With none, a note asks the person to pick one.
+ * - Its model is the curated sample for that exact operation
+ *   (`SAMPLE_MODELS`), on the provider's own hosts; else, a model from the
+ *   route's own list, labelled with a caveat. Either only when the gateway's
+ *   path matcher and serving (`resolveCall`) take it for that operation. With
+ *   none, a note asks the person to pick one.
+ * - It asks for a small output of its own, in the field the proxy writes a
+ *   cap to (`applyOutputCap`).
  * - A preset is resolved to the operation its connection actually runs, and
  *   judged the same way.
  * - An app called with a key gets curl that never prints a credential
@@ -29,9 +32,10 @@ import type { OperationResponse } from "../contracts/catalog.ts";
 import { UNSAFE_COMMAND_TEXT } from "../contracts/cli.ts";
 import { describeConnection } from "../providers/connections.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
-import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import { declaredOperation, presetOperation } from "../providers/presets.ts";
+import { applyOutputCap } from "../proxy/policy.ts";
 import { matcherFor } from "../proxy/serve.ts";
 import { priceSources, resolveCall, servedNow } from "../pricing/billability.ts";
 import { PRICE_FILE } from "../pricing/price-file.ts";
@@ -57,55 +61,30 @@ const GATEWAY_TOKEN_VARIABLE = "APP_AI_GATEWAY_TOKEN";
 
 const SWIFT_SDK = "https://github.com/maxceem/app-ai-gateway-swift";
 
-/** The well-known requests an example is written for, each with its smallest useful JSON body without the model (transcription is a form). */
-const COVERED_STYLES: Partial<Readonly<Record<ApiStyle, Readonly<Record<string, unknown>> | "form">>> = {
-  "openai-chat": { messages: [{ role: "user", content: PROMPT }] },
-  "openai-responses": { input: PROMPT },
-  "anthropic-messages": { messages: [{ role: "user", content: PROMPT }] },
-  "gemini-generate": { contents: [{ role: "user", parts: [{ text: PROMPT }] }] },
-  "openai-embeddings": { input: PROMPT },
-  "openai-images": { prompt: "A lighthouse at dawn" },
-  "openai-transcription": "form",
+/**
+ * The well-known requests an example is written for, by API style: the body
+ * without its model (`form` for an upload with the recording), the kind of
+ * model our price list says serves it, and headers the API needs that a client
+ * may not know to send, as the preset path adds them.
+ */
+interface StyleExample {
+  readonly body: Readonly<Record<string, unknown>> | "form";
+  readonly kind: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+const STYLES: Partial<Readonly<Record<ApiStyle, StyleExample>>> = {
+  "openai-chat": { body: { messages: [{ role: "user", content: PROMPT }] }, kind: "text" },
+  "openai-responses": { body: { input: PROMPT }, kind: "text" },
+  "anthropic-messages": { body: { messages: [{ role: "user", content: PROMPT }] }, kind: "text", headers: { "anthropic-version": "2023-06-01" } },
+  "gemini-generate": { body: { contents: [{ role: "user", parts: [{ text: PROMPT }] }] }, kind: "text" },
+  "openai-embeddings": { body: { input: PROMPT }, kind: "embedding" },
+  "openai-images": { body: { prompt: "A lighthouse at dawn" }, kind: "image" },
+  "openai-transcription": { body: "form", kind: "transcription" },
 };
 
-/**
- * The smallest output cap a provider accepts, where the gateway writes the
- * route's or the preset's cap into a request that names none: OpenAI's
- * Responses refuses `max_output_tokens` below 16. Chat completions, Anthropic
- * and Gemini take any cap of 1 or more; the others have no output cap.
- */
-const MIN_OUTPUT_CAP: Partial<Readonly<Record<ApiStyle, number>>> = { "openai-responses": 16 };
-
-/** Why an output cap breaks this style's request, or null. */
-function capProblem(style: ApiStyle, cap: number | undefined): string | null {
-  const minimum = MIN_OUTPUT_CAP[style];
-  return cap === undefined || minimum === undefined || cap >= minimum ? null : `its output cap of ${cap} tokens is below the ${minimum} the provider requires`;
-}
-
-/** The output limit an example asks for: small, and never above the route's or the preset's cap. */
+/** The output an example asks for: small, and never above the route's or the preset's cap. */
 const SAMPLE_OUTPUT_LIMIT = 256;
-
-/**
- * An explicit output limit, in the field the operation's API reads it from
- * (the proxy's `outputCap`), so the proxy never writes a large cap into the
- * example for it: `min(256, cap)`. Nothing for an operation with no output cap.
- */
-function outputLimit(operation: OperationDescription, cap: number | undefined): Record<string, unknown> {
-  const limit = Math.min(SAMPLE_OUTPUT_LIMIT, cap ?? SAMPLE_OUTPUT_LIMIT);
-  switch (operation.policy?.outputCap) {
-    case "chat":
-    case "anthropic":
-      return { max_tokens: limit };
-    case "chat-completion-tokens":
-      return { max_completion_tokens: limit };
-    case "responses":
-      return { max_output_tokens: limit };
-    case "gemini":
-      return { generationConfig: { maxOutputTokens: limit } };
-    default:
-      return {};
-  }
-}
 
 /** Whether any text in `value` holds a control character, such as a line break: such a value never goes into a command. */
 function holdsControl(value: unknown): boolean {
@@ -114,22 +93,6 @@ function holdsControl(value: unknown): boolean {
   if (typeof value === "object" && value !== null) return Object.entries(value).some(([key, inner]) => holdsControl(key) || holdsControl(inner));
   return false;
 }
-
-/** Headers a style's API needs that a client may not know to send, as the preset path adds them. */
-const STYLE_HEADERS: Partial<Readonly<Record<ApiStyle, Readonly<Record<string, string>>>>> = {
-  "anthropic-messages": { "anthropic-version": "2023-06-01" },
-};
-
-/** The kind of model in our price list each covered style serves. */
-const STYLE_KINDS: Partial<Readonly<Record<ApiStyle, string>>> = {
-  "openai-chat": "text",
-  "openai-responses": "text",
-  "anthropic-messages": "text",
-  "gemini-generate": "text",
-  "openai-embeddings": "embedding",
-  "openai-images": "image",
-  "openai-transcription": "transcription",
-};
 
 /**
  * A curated sample model for each operation an example may name one for,
@@ -155,7 +118,7 @@ function covered(description: ProviderDescription, operation: OperationDescripti
   return (
     description.type !== CUSTOM_PROVIDER_TYPE &&
     style !== undefined &&
-    COVERED_STYLES[style] !== undefined &&
+    STYLES[style] !== undefined &&
     servedNow(operation) &&
     // An image edit needs the image it edits.
     (operation.imageFormFields ?? []).length === 0 &&
@@ -172,57 +135,52 @@ function listedKind(type: string, model: string): string | undefined {
 }
 
 /**
- * The model an example names, of those whose path the gateway accepts
- * (`pathAccepts`) and that serving admits for this exact operation
- * (`resolveCall`):
+ * The model an example names, and the model it is sent as, of those the
+ * gateway's path matcher reads as this operation and serving admits for it
+ * (`resolveCall`, the app's rewrites applied) with a model of its kind:
  *
- * - the operation's curated sample, known to work on it;
- * - only when the app's own settings exclude it, a model the app names (the
- *   route's model list, its rewrites, the connection's prices) whose billed
- *   model is of the operation's kind, marked `configured`: it works only if
- *   that model serves this endpoint.
+ * - the operation's curated sample, known to work on it, while the
+ *   connection reaches the provider's own hosts (a Cloudflare AI Gateway in
+ *   front counts) and the app sends it as itself;
+ * - else a model from the route's own list, marked `configured`: it works
+ *   only if that model serves this endpoint.
  *
  * Null when none is.
  */
 function exampleModel(
+  description: ProviderDescription,
   connection: ConnectionRow,
   route: ProviderRouting,
   rewrites: AppConfig["routing"]["model_rewrites"],
   operation: OperationDescription,
-  pathAccepts: (model: string) => boolean,
-): { readonly model: string; readonly configured: boolean } | null {
-  const kind = STYLE_KINDS[operation.style!];
+): { readonly model: string; readonly sent: string; readonly configured: boolean } | null {
+  const kind = STYLES[operation.style!]!.kind;
   const sources = priceSources(connection);
-  /** The model a candidate is billed as, when serving admits it here; null otherwise. */
+  /** The model a candidate is sent as, when the path and serving take it here; null otherwise. */
   const admitted = (candidate: string): string | null => {
-    if (!pathAccepts(candidate)) return null;
+    if (!pathAccepts(description, operation, candidate)) return null;
     const call = resolveCall(route, rewrites, sources, operation, candidate);
     if (call.kind !== "admitted") return null;
     const billed = listedKind(connection.type, call.model);
-    return kind === undefined || billed === undefined || billed === kind ? call.model : null;
+    return billed === undefined || billed === kind ? call.model : null;
   };
-  // A sample is known to work on the provider's own hosts only (a Cloudflare AI Gateway in front of them counts): never at a base URL.
   const sample = connection.base_url === null ? SAMPLE_MODELS[operation.name] : undefined;
-  // Curated only while it is still the curated model: an app's rewrite may send it as another.
-  const sent = sample === undefined ? null : admitted(sample);
-  if (sample !== undefined && sent === sample) return { model: sample, configured: false };
-  const own = [
-    ...(route.models ?? []),
-    ...Object.keys(rewrites ?? {}),
-    ...(connection.rates_json === null ? [] : Object.keys(JSON.parse(connection.rates_json) as Record<string, unknown>)),
-  ];
-  if (sample !== undefined && sent !== null) own.unshift(sample);
-  const found = [...new Set(own)].find((candidate) => admitted(candidate) !== null);
-  return found === undefined ? null : { model: found, configured: true };
+  const sentSample = sample === undefined ? null : admitted(sample);
+  if (sample !== undefined && sentSample === sample) return { model: sample, sent: sample, configured: false };
+  for (const candidate of new Set([...(sample !== undefined && sentSample !== null ? [sample] : []), ...(route.models ?? [])])) {
+    const sent = admitted(candidate);
+    if (sent !== null) return { model: candidate, sent, configured: true };
+  }
+  return null;
 }
 
 /**
- * Whether the gateway's own matcher reads `path` as `operation`, with `model`
- * where the operation reads it: a model whose path the gateway would refuse
- * (a `/` in a path part, say) never makes an example.
+ * Whether the gateway's own matcher reads the operation's path, with `model`
+ * filled in, as that operation and that model: a model whose path the gateway
+ * would refuse (a `/` in a path part, say) never makes an example.
  */
-function pathAccepts(description: ProviderDescription, operation: OperationDescription, path: string, model: string): boolean {
-  const match = matcherFor(description).match(operation.match.method, path);
+function pathAccepts(description: ProviderDescription, operation: OperationDescription, model: string): boolean {
+  const match = matcherFor(description).match(operation.match.method, filledPath(operation, model));
   if (match.kind !== "operation" || match.operation.name !== operation.name) return false;
   return operation.model.in !== "path" || match.parts[operation.model.part] === model;
 }
@@ -235,30 +193,27 @@ function filledPath(operation: OperationDescription, model: string): string {
 }
 
 /**
- * The request to a covered operation at `url`, by the proxy's own rule for its
- * body (`requestBodyKind`) and model (`modelBodyField`); `model` is null for a
- * preset, which sends none. A sample's output cap never asks for more than
- * the route or the preset allows.
+ * The request to a covered operation at `url`: a form or JSON, as its style
+ * says, with the model where the proxy reads it (`modelBodyField`); `model` is
+ * null for a preset, which sends none. A JSON body asks for a small output of
+ * its own, never above the route's or the preset's cap, in the field the
+ * proxy writes a cap to (`applyOutputCap`).
  */
 function requestFor(url: string, operation: OperationDescription, model: string | null, outputCap: number | undefined): SnippetRequest {
-  const style = operation.style!;
+  const style = STYLES[operation.style!]!;
   const field = model === null ? null : modelBodyField(operation);
-  const styleHeaders = STYLE_HEADERS[style] ?? {};
   const base = { method: operation.match.method, url };
-  if (requestBodyKind(operation) === "form") {
+  if (style.body === "form") {
     return {
       ...base,
-      headers: { ...styleHeaders },
+      headers: { ...style.headers },
       ...(field === null ? {} : { form: { [field]: model! } }),
       file: { field: operation.audioFormFields?.[0] ?? "file", name: "audio.mp3" },
     };
   }
-  const shape = COVERED_STYLES[style] as Readonly<Record<string, unknown>>;
-  return {
-    ...base,
-    headers: { ...styleHeaders, "Content-Type": "application/json" },
-    body: { ...(field === null ? {} : { [field]: model }), ...shape, ...outputLimit(operation, outputCap) },
-  };
+  const body: Record<string, unknown> = { ...(field === null ? {} : { [field]: model }), ...style.body };
+  applyOutputCap(operation, body, Math.min(SAMPLE_OUTPUT_LIMIT, outputCap ?? SAMPLE_OUTPUT_LIMIT));
+  return { ...base, headers: { ...style.headers, "Content-Type": "application/json" }, body };
 }
 
 /** How this app's requests prove who calls: a credential curl sends (after an exchange, for an issuer app), or a line for a person; and what to know about it. */
@@ -342,17 +297,13 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   /**
    * Adds an example. Every value from the app's settings reaches the command
    * only single-quoted (`shellWord`) or through curl's stdin; a value with a
-   * control character, such as a line break, gets no command at all, only a
-   * note. A caveat is plain text beside the command, never part of it.
+   * control or invisible character gets no command at all, only a note. A
+   * caveat is plain text beside the command, never part of it.
    */
   const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, built: SnippetRequest) => {
     const who = example.preset === undefined ? `${example.provider}: ${example.operation}` : `The preset ${example.preset}`;
-    // The end user's header must not be one the example itself sends: its own headers, the credential's, and the form's content type.
-    const own = new Set(
-      [...Object.keys(built.headers), ...(caller.credential === null ? [] : [caller.credential.header]), ...(built.form !== undefined || built.file !== undefined ? ["content-type"] : [])].map(
-        (name) => name.toLowerCase(),
-      ),
-    );
+    // The end user's header must not be one the example itself sends. The gateway refuses the credential's and the content type as an end-user header.
+    const own = new Set(Object.keys(built.headers).map((name) => name.toLowerCase()));
     const clash = Object.keys(caller.endUser).find((name) => own.has(name.toLowerCase()));
     if (clash !== undefined) {
       notes.push(`${who} has no example: this app names its end user in ${clash}, a header the request itself must send.`);
@@ -364,7 +315,6 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
       return;
     }
     if (example.caveat !== undefined) notes.push(`${who}: ${example.caveat}`);
-    const curl = caller.credential === null ? undefined : curlCommand(request, caller.credential, caller.exchange);
     examples.push({
       ...example,
       method: request.method,
@@ -373,8 +323,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
       ...(request.body === undefined ? {} : { body: request.body }),
       ...(request.form === undefined ? {} : { form: { ...request.form } }),
       ...(request.file === undefined ? {} : { file: { ...request.file } }),
-      ...(curl === undefined ? {} : { curl }),
-      text: curl ?? requestText(request, caller.line),
+      text: caller.credential === null ? requestText(request, caller.line) : curlCommand(request, caller.credential, caller.exchange),
     });
   };
   /** The connection a route or preset names, when it can serve; otherwise a note says why. */
@@ -400,17 +349,13 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         continue;
       }
       if (seen.has(operation.style!)) continue;
-      const tooSmall = capProblem(operation.style!, route.max_output_tokens);
-      if (tooSmall !== null) {
-        notes.push(`${slug}: ${name} has no example: ${tooSmall}.`);
-        continue;
-      }
-      const picked = exampleModel(connection, route, config.routing.model_rewrites, operation, (model) => pathAccepts(description, operation, filledPath(operation, model), model));
+      const picked = exampleModel(description, connection, route, config.routing.model_rewrites, operation);
       if (picked === null) {
         unpicked.push(name);
         continue;
       }
-      const { model, configured } = picked;
+      const { model, sent, configured } = picked;
+      const as = sent === model ? model : `${model}, sent as ${sent}`;
       seen.add(operation.style!);
       add(
         {
@@ -418,7 +363,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
           operation: name,
           style: operation.style!,
           model,
-          ...(configured ? { caveat: `Uses this app's configured model ${model}: it works if ${model} supports this endpoint.` } : {}),
+          ...(configured ? { caveat: `Uses this app's configured model ${as}: it works if ${sent} supports this endpoint.` } : {}),
         },
         requestFor(`${origin}/v2/apps/${row.id}/proxy/${slug}/${filledPath(operation, model)}`, operation, model, route.max_output_tokens),
       );
@@ -449,11 +394,6 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     const operation = style === undefined ? null : presetOperation(description, style, preset.operation);
     if (operation === null || !covered(description, operation)) {
       notes.push(`The preset ${slug} has no example here. Send its request as its provider's own API reference describes, without a model, to ${origin}/v2/apps/${row.id}/presets/${slug}.`);
-      continue;
-    }
-    const tooSmall = capProblem(operation.style!, preset.max_output_tokens);
-    if (tooSmall !== null) {
-      notes.push(`The preset ${slug} has no example: ${tooSmall}.`);
       continue;
     }
     add(

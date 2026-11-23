@@ -1,6 +1,8 @@
 import { CUSTOM_PATH_STYLES, CUSTOM_PROVIDER_TYPE } from "@contracts/admin";
 import { destinationText, keyDestinations, type RouteSetting } from "@providers/destinations";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
+import { providerTypes } from "@providers/provider-types";
+import { connectionOperations } from "@contracts/connection-operations";
 import type { SuggestedPath } from "@providers/operation";
 
 /** What people call each built-in provider, and a custom one. A type this build does not know shows as itself. */
@@ -27,12 +29,7 @@ export function cloudflareCapable(type: string): boolean {
 }
 
 /** Every provider type a connection can be added for, by label, then a custom provider. */
-export const PROVIDER_TYPES: { type: string; label: string }[] = [
-  ...Object.keys(BUILT_IN_PROVIDERS)
-    .map((type) => ({ type, label: providerLabel(type) }))
-    .sort((a, b) => a.label.localeCompare(b.label)),
-  { type: CUSTOM_PROVIDER_TYPE, label: providerLabel(CUSTOM_PROVIDER_TYPE) },
-];
+export const PROVIDER_TYPES: { type: string; label: string }[] = providerTypes().map(({ type, label }) => ({ type, label }));
 
 /** A provider's suggested path for a listed method and path (plan section 4.5): its safe defaults, and whether it mints a live-session secret. */
 export function suggestedPath(type: string, method: string, path: string): SuggestedPath | null {
@@ -62,14 +59,7 @@ interface ConnectionShape {
  * `passthrough` when it lists paths to pass through.
  */
 export function operationsOf(connection: ConnectionShape): OperationChoice[] {
-  const { type } = connection;
-  const description = Object.hasOwn(BUILT_IN_PROVIDERS, type) ? BUILT_IN_PROVIDERS[type] : undefined;
-  const declared = (description?.operations ?? []).map((operation) => ({
-    name: operation.name,
-    session: operation.session !== undefined,
-  }));
-  const listed = connection.passthrough ?? [];
-  const styles = type === CUSTOM_PROVIDER_TYPE ? listed.flatMap((path) => (path.style === undefined ? [] : [{ name: `${CUSTOM_PROVIDER_TYPE}.${path.style}`, session: false }])) : [];
-  const passthrough = listed.some((path) => path.style === undefined) ? [{ name: "passthrough", session: false }] : [];
-  return [...declared, ...styles, ...passthrough];
+  const description = Object.hasOwn(BUILT_IN_PROVIDERS, connection.type) ? BUILT_IN_PROVIDERS[connection.type] : undefined;
+  const sessions = new Set((description?.operations ?? []).filter((operation) => operation.session !== undefined).map((operation) => operation.name));
+  return connectionOperations(connection, (description?.operations ?? []).map((operation) => operation.name)).map((name) => ({ name, session: sessions.has(name) }));
 }

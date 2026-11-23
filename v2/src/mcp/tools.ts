@@ -521,7 +521,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       command: "app snippet",
       summary: "Show first requests for an app, as curl where it can send them",
       args: ["app"],
-      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"] },
+      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"], blockTitle: ["provider", "preset", "operation", "model"] },
     },
     summary: ({ app_id, examples }) =>
       examples.length === 0

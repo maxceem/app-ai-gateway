@@ -118,16 +118,17 @@ test("a JSON example sends the app key read from the environment, and curl never
   assert.match(written, /\+ set \+x/u);
 });
 
-test("app-controlled text stays data: a quote, $(...), backticks and a line break in a model run nothing", { skip }, async () => {
-  for (const model of ["it's $(touch pwned)", "a`touch pwned`b", "line\nbreak $(touch pwned)"]) {
+test("app-controlled text stays data: a quote, $(...) and backticks in a model run nothing", { skip }, async () => {
+  // A line break never reaches a command: the gateway writes none for such a value.
+  for (const model of ["it's $(touch pwned)", "a`touch pwned`b"]) {
     const url = (base: string) => `${base}/v2/apps/app_1/proxy/gemini/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    const json = await run((base) => curlCommand({ method: "POST", url: url(base), headers: { "x-end-user-id": model.replaceAll("\n", " "), "Content-Type": "application/json" }, body: { model } }, CREDENTIAL));
+    const json = await run((base) => curlCommand({ method: "POST", url: url(base), headers: { "x-end-user-id": model, "Content-Type": "application/json" }, body: { model } }, CREDENTIAL));
     // Sent as written, and nothing extra ran: no file appeared.
     assert.deepEqual(JSON.parse(json.seen.body), { model });
     assert.ok(json.seen.url.endsWith(`${encodeURIComponent(model)}:generateContent`), json.seen.url);
     assert.equal(json.ran.includes("pwned"), false, `something ran: ${json.ran.join(", ")}`);
     const form = await run((base) => curlCommand({ method: "POST", url: url(base), headers: {}, form: { model }, file: { field: "file", name: "audio.mp3" } }, CREDENTIAL));
-    assert.ok(form.seen.body.includes(`name="model"\r\n\r\n${model.replaceAll("\n", "\r\n")}`) || form.seen.body.includes(model), "the form did not carry the model as written");
+    assert.ok(form.seen.body.includes(`name="model"\r\n\r\n${model}\r\n`), "the form did not carry the model as written");
     assert.equal(form.ran.includes("pwned"), false, `something ran: ${form.ran.join(", ")}`);
   }
 });

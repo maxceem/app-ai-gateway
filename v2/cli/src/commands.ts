@@ -5,7 +5,8 @@
  * built from its tool list.
  */
 import { readFile, unlink } from "node:fs/promises";
-import { APP_STATUSES } from "../../src/contracts/admin.ts";
+import { APP_STATUSES, CUSTOM_PROVIDER_TYPE } from "../../src/contracts/admin.ts";
+import { connectionOperations } from "../../src/contracts/connection-operations.ts";
 import type { OperationResponse } from "../../src/contracts/catalog.ts";
 import { parsePathLines, type ListedPath } from "../../src/contracts/path-lines.ts";
 import { CliError, fail } from "./common.ts";
@@ -184,8 +185,7 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
  */
 export function customFields(type: string, flags: Flags): { auth: { header: string; format: string }; passthrough?: ListedPath[] } | null {
   const lines = flagList(flags.path);
-  // The custom type by its name: importing it would bring every provider description into agw.
-  if (type !== "custom") {
+  if (type !== CUSTOM_PROVIDER_TYPE) {
     const given = (["key-header", "key-format"] as const).filter((name) => flags[name] !== undefined).map((name) => `--${name}`);
     if (lines.length > 0) given.push("--path");
     if (given.length > 0)
@@ -324,15 +324,13 @@ async function routingOf(ctx: Context, entries: string[]): Promise<{ routing?: {
     connections ??= (await ctx.call("listProviders")).data.providers;
     const connection = connections.find((candidate) => candidate.slug === slug);
     if (!connection) fail("provider_not_found", `None of your provider connections has the slug ${slug}.`, "Run agw provider list to see them.", 4);
-    let first: string | undefined;
-    if (connection.type === "custom") {
-      // A custom provider serves the API styles its paths name.
-      const styled = (connection.passthrough ?? []).find((path) => path.style !== undefined);
-      first = styled ? `custom.${styled.style}` : (connection.passthrough ?? []).length > 0 ? "passthrough" : undefined;
-    } else {
+    // The type's own operations come from the gateway; a custom provider's from its paths.
+    let declared: readonly string[] = [];
+    if (connection.type !== CUSTOM_PROVIDER_TYPE) {
       if (types === undefined) types = await providerTypes(ctx);
-      first = types?.find((candidate) => candidate.type === connection.type)?.operations?.[0];
+      declared = types?.find((candidate) => candidate.type === connection.type)?.operations ?? [];
     }
+    const first: string | undefined = connectionOperations(connection, declared)[0];
     if (first === undefined)
       fail(
         "invalid_input",

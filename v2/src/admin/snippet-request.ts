@@ -28,8 +28,6 @@ export interface SnippetRequest {
   readonly form?: Readonly<Record<string, string>>;
   /** A file sent as the form field `field`. */
   readonly file?: { readonly field: string; readonly name: string };
-  /** Where an answer that is a file is saved. */
-  readonly output?: string;
 }
 
 /** A credential a request sends in a header, read from an environment variable. */
@@ -61,7 +59,7 @@ function configPipe(line: string, variables: readonly string[]): string {
   return `printf ${shellWord(`${line}\\n`)} ${variables.map((name) => `"$${name}"`).join(" ")} | curl --disable`;
 }
 
-/** The request's own curl arguments after its URL: headers, body, form, file and output. */
+/** The request's own curl arguments after its URL: headers, body, form and file. */
 function requestArguments(request: SnippetRequest): string[] {
   const lines: string[] = [];
   const sendsBody = request.body !== undefined || request.form !== undefined || request.file !== undefined;
@@ -71,7 +69,6 @@ function requestArguments(request: SnippetRequest): string[] {
   // --form-string: a value starting with @ or < is sent as text, never read as a file.
   for (const [name, value] of Object.entries(request.form ?? {})) lines.push(`--form-string ${shellWord(`${name}=${value}`)}`);
   if (request.file !== undefined) lines.push(`-F ${shellWord(`${request.file.field}=@${request.file.name}`)}`);
-  if (request.output !== undefined) lines.push(`--output ${shellWord(request.output)}`);
   return lines;
 }
 

@@ -199,21 +199,28 @@ export function humanToolResult(
     if (document !== undefined) lines.push("", style.json(printable(document)));
   }
   for (const path of view?.blocks ?? []) {
-    for (const text of textsAt(result, path)) lines.push("", ...block(text));
+    for (const { text, parent } of textsAt(result, path)) {
+      // A short heading naming the example, from the keys the view gives, cleaned like every remote value.
+      const title = (view?.blockTitle ?? []).map((key) => (isRecord(parent) ? parent[key] : undefined)).filter((value) => typeof value === "string" && value !== "");
+      lines.push("", ...(title.length > 0 ? [style.headline(cut(clean(title.join(" · ")), 120))] : []), ...block(text));
+    }
   }
   return lines.join("\n") + "\n";
 }
 
-/** Every string at a dotted path; `*` goes through each item of an array or entry of an object. */
-function textsAt(result: unknown, path: string): string[] {
-  let values: unknown[] = [result];
+/** Every string at a dotted path, with the object it was read from; `*` goes through each item of an array or entry of an object. */
+function textsAt(result: unknown, path: string): { text: string; parent: unknown }[] {
+  let values: { value: unknown; parent: unknown }[] = [{ value: result, parent: undefined }];
   for (const segment of path ? path.split(".") : []) {
-    values = values.flatMap((value) => {
-      if (segment === "*") return Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
-      return isRecord(value) && value[segment] !== undefined ? [value[segment]] : [];
+    values = values.flatMap(({ value }) => {
+      if (segment === "*") {
+        const items = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
+        return items.map((item) => ({ value: item, parent: value }));
+      }
+      return isRecord(value) && value[segment] !== undefined ? [{ value: value[segment], parent: value }] : [];
     });
   }
-  return values.filter((value): value is string => typeof value === "string");
+  return values.flatMap(({ value, parent }) => (typeof value === "string" ? [{ text: value, parent }] : []));
 }
 
 /**
@@ -223,9 +230,10 @@ function textsAt(result: unknown, path: string): string[] {
  */
 function block(text: string): string[] {
   const lines = text.split("\n");
-  if (lines.some((line) => UNSAFE_COMMAND_TEXT.test(line)) || lines.length > 200) {
+  if (lines.some((line) => UNSAFE_COMMAND_TEXT.test(line))) {
     return ["(This example holds a character a terminal could misread, so it is not shown. Run the command with --json to see it.)"];
   }
+  if (lines.length > 200) return ["(This example is too long to show here. Run the command with --json to see it.)"];
   return lines;
 }
 

@@ -373,7 +373,6 @@ describe("AppDetailPage", () => {
               model: "gpt-4o-mini",
               caveat: "Uses this app's configured model gpt-4o-mini: it works if gpt-4o-mini supports this endpoint.",
               headers: {},
-              curl,
               text: curl,
             },
             {

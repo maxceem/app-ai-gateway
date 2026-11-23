@@ -119,7 +119,7 @@ test("the app's first request, as the gateway writes it, is served", { skip }, a
   assert.ok(!JSON.stringify(snippet.body).includes(appKey), "the snippet holds the app key");
   const [chat] = snippet.body.examples;
   assert.equal(chat?.operation, "openai.chat");
-  assert.ok(String(chat.curl).includes("$APP_AI_GATEWAY_KEY"), "the curl does not read the key from APP_AI_GATEWAY_KEY");
+  assert.ok(String(chat.text).includes("$APP_AI_GATEWAY_KEY"), "the curl does not read the key from APP_AI_GATEWAY_KEY");
   const response = await fetch(chat.url, {
     method: chat.method,
     headers: { ...chat.headers, authorization: `Bearer ${appKey}` },
@@ -131,7 +131,7 @@ test("the app's first request, as the gateway writes it, is served", { skip }, a
   // The curl itself, run in a shell where curl is installed: it reads the key from the environment.
   const curl = spawnSync("sh", ["-c", "command -v curl"]).stdout.toString().trim();
   if (curl === "") return;
-  const ran = spawnSync("sh", ["-c", chat.curl], {
+  const ran = spawnSync("sh", ["-c", chat.text], {
     env: { PATH: process.env.PATH ?? "", APP_AI_GATEWAY_KEY: appKey } as Record<string, string> as NodeJS.ProcessEnv,
     timeout: 30_000,
   });

@@ -564,7 +564,11 @@ test("help lists the gateway's commands beside the built-in ones, and explains o
 test("app snippet shows an iOS app's whole requests by default, and provider types their operations", async () => {
   const snippet = cliTool(
     "get_app_snippet",
-    { command: "app snippet", args: ["app"], view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"] } },
+    {
+      command: "app snippet",
+      args: ["app"],
+      view: { rows: "examples", columns: ["provider", "preset", "operation", "model"], notes: ["notes"], blocks: ["examples.*.text"], blockTitle: ["provider", "preset", "operation", "model"] },
+    },
     { properties: { app: { type: "string" } }, required: ["app"] },
   );
   const types = cliTool("list_provider_types", {
@@ -593,8 +597,8 @@ test("app snippet shows an iOS app's whole requests by default, and provider typ
   });
   const shown = await run(["app", "snippet", "app_1"], fake);
   assert.equal(shown.code, 0, shown.err);
-  // The whole request, line by line, as the gateway wrote it.
-  assert.ok(shown.out.includes(`\n\n${request.replace('{\n  "model"', '{\n  "model"')}\n`), shown.out);
+  // The whole request, line by line, as the gateway wrote it, under a short heading naming the example.
+  assert.ok(shown.out.includes(`\n\nopenai · openai.chat · gpt-4o-mini\n${request}\n`), shown.out);
   assert.match(shown.out, /- This iOS app signs every request with App Attest\./u);
 
   const listed = await run(["provider", "types"], fake);
@@ -662,24 +666,25 @@ test("views lay out records, notes, documents and rows a wildcard reaches", () =
   // misread (an escape, a zero-width joiner) is never rewritten: it is not shown at all.
   const snippet = cliTool("get_app_snippet", {
     command: "app snippet",
-    view: { rows: "examples", columns: ["style"], blocks: ["examples.*.curl"] },
+    view: { rows: "examples", columns: ["style"], blocks: ["examples.*.text"] },
   });
   const hidden = "(This example holds a character a terminal could misread, so it is not shown. Run the command with --json to see it.)";
   assert.equal(
     humanToolResult(
       snippet,
-      "3 examples.",
+      "4 examples.",
       {
         examples: [
-          { style: "openai-chat", curl: "curl 'https://x' \\\n  -d '{}'" },
-          { style: "openai-speech", curl: "curl\u001b[2J 'https://y'" },
-          { style: "openai-images", curl: "curl 'https://z' -d '{\"model\":\"gpt‍mini\"}'" },
+          { style: "openai-chat", text: "curl 'https://x' \\\n  -d '{}'" },
+          { style: "openai-speech", text: "curl\u001b[2J 'https://y'" },
+          { style: "openai-images", text: "curl 'https://z' -d '{\"model\":\"gpt‍mini\"}'" },
+          { style: "openai-chat", text: Array.from({ length: 201 }, () => "x").join("\n") },
         ],
       },
       [snippet],
       plain,
     ),
-    `3 examples.\n\nStyle\nopenai-chat\nopenai-speech\nopenai-images\n\ncurl 'https://x' \\\n  -d '{}'\n\n${hidden}\n\n${hidden}\n`,
+    `4 examples.\n\nStyle\nopenai-chat\nopenai-speech\nopenai-images\nopenai-chat\n\ncurl 'https://x' \\\n  -d '{}'\n\n${hidden}\n\n${hidden}\n\n(This example is too long to show here. Run the command with --json to see it.)\n`,
   );
   // Without a view: the plain fields, then the first list of objects as a table.
   const bare = cliTool("get_thing", { command: "thing show" });

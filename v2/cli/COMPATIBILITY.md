@@ -78,6 +78,22 @@ From v2 on, every `agw` 2.x keeps working against every later v2 gateway:
 - Secrets never reach stdout: a provider key comes from a hidden prompt,
   stdin or the console; a new app key goes to a private file.
 
+## Differences from agw 1.x
+
+agw 2 keeps most of agw 1.x's commands and flags. A few work differently:
+
+- `agw app add --providers <slug>` allows the connection's first operation,
+  as the console does when a connection is allowed. agw 1.x allowed all of
+  them. Name the operations to allow more: `--providers <slug>=<operation>+<operation>`
+  (`agw provider types` lists them).
+- A Cloudflare AI Gateway is set on the connection itself:
+  `agw provider add --cloudflare-account-id <id> --cloudflare-gateway-id <id> --browser`.
+  There is no separate `provider-gateway` command. Its token is never a flag:
+  the person approving the browser step enters it.
+- `agw app snippet <app>` takes only the app. The gateway writes the examples
+  for every route and preset the app has (agw 1.x took `--language`,
+  `--provider`, `--endpoint` and `--output`).
+
 ## For contributors
 
 Before changing anything `agw` reads, check it against the list above. A

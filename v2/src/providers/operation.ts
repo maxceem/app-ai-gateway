@@ -415,17 +415,6 @@ export type ModelLocation<Part extends string = string> =
   | { readonly in: "fixed"; readonly model: string };
 
 /**
- * How a request to an operation sends its body: its raw bytes for one that
- * takes them (`rawBody`), a multipart form for an upload or a transcription,
- * else JSON. What the proxy expects and what the app snippet writes.
- */
-export function requestBodyKind(operation: Pick<OperationDescription, "rawBody" | "transport" | "style">): "json" | "form" | "raw" {
-  if (operation.rawBody === true) return "raw";
-  if (operation.transport === "upload" || operation.style === "openai-transcription") return "form";
-  return "json";
-}
-
-/**
  * The body field or form field a request names its model in, or null when the
  * model is in the path, the query, or fixed. A model the description places
  * in the `body` is read from a form's field of that name too: the proxy

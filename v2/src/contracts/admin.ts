@@ -699,9 +699,10 @@ export const ConversationFileQuerySchema = z.object({
 
 /**
  * One first request an app can send: to a provider route, one per API style
- * the route serves (or per operation, for one with none), or to a preset.
- * Built by the gateway from the operation descriptions, so the console and
- * the CLI show the same request. No credential is ever part of it.
+ * of a small set of well-known requests the route serves, or to a preset.
+ * Anything else gets a note in the answer instead. Built by the gateway from
+ * the operation descriptions, so the console and the CLI show the same
+ * request. No credential is ever part of it.
  */
 export const AppSnippetExampleSchema = z
   .object({
@@ -711,8 +712,8 @@ export const AppSnippetExampleSchema = z
     preset: z.string().optional(),
     /** The operation it is served as, such as `openai.chat`. */
     operation: z.string(),
-    /** The operation's API style; left out for an operation with none. */
-    style: z.string().optional(),
+    /** The operation's API style, such as `openai-chat`. */
+    style: z.string(),
     method: z.string(),
     url: z.string(),
     /** The model it names; null for a preset, which names its own. */
@@ -720,8 +721,7 @@ export const AppSnippetExampleSchema = z
     /**
      * Set when the model is the app's own rather than a sample known to work
      * here, such as "works if <model> supports this endpoint". Plain text to
-     * show beside the example, never part of `curl` or `text`; the notes
-     * repeat it.
+     * show beside the example, never part of `text`; the notes repeat it.
      */
     caveat: z.string().optional(),
     /** Headers that hold no secret. How the caller proves who it is comes apart: see `text`. */
@@ -730,15 +730,15 @@ export const AppSnippetExampleSchema = z
     body: z.unknown().optional(),
     /** A form's text fields, where the request is an upload. */
     form: z.record(z.string(), z.string()).optional(),
-    /** The file it sends: as the form field `field`, or as the whole body when there is no field. */
-    file: z.object({ field: z.string().optional(), name: z.string(), type: z.string().optional() }).optional(),
+    /** The file an upload sends, as the form field `field`. */
+    file: z.object({ field: z.string(), name: z.string() }).optional(),
     /**
-     * The request as a curl command, for an app called with a key. It reads
-     * the credential from an environment variable and gives it to curl on
-     * stdin, never as an argument.
+     * The example as a person copies it. For an app called with a key, a
+     * curl command that reads the credential from an environment variable
+     * and gives it to curl on stdin, never as an argument, and never prints
+     * it. For an iOS app, the whole request described: method, URL, headers,
+     * body or upload.
      */
-    curl: z.string().optional(),
-    /** The example as a person reads it: the curl command, or else the whole request described (method, URL, headers, body or upload). */
     text: z.string(),
   })
   .meta({ id: "AppSnippetExample" });
