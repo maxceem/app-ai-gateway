@@ -7,7 +7,8 @@ import {
   type OperationRequest,
   type OperationResponse,
 } from "@contracts/catalog";
-import { withTabAccount } from "./tab-account";
+import { isSwitchingAccount, switchTabAccount, tabAccount, withTabAccount } from "./tab-account";
+import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
 
 export class ApiError extends Error {
   constructor(
@@ -64,6 +65,11 @@ function toApiError(status: number, payload: unknown): ApiError {
  * entry to be sent through.
  */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // A page switching account sends nothing more: it would go out under the
+  // account it is leaving, or under the next one before the page shows it.
+  if (isSwitchingAccount()) {
+    throw new ApiError(0, "account_switching", "The console is switching account; the page is reloading");
+  }
   const headers = withTabAccount(new Headers(init.headers));
   headers.set("x-console-request", "1");
   if (init.body !== undefined) headers.set("content-type", "application/json");
@@ -78,7 +84,15 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     payload = null;
   }
 
-  if (!response.ok) throw toApiError(response.status, payload);
+  if (!response.ok) {
+    const error = toApiError(response.status, payload);
+    // The account this tab uses is no longer the person's (removed from it
+    // mid-session, say): the tab forgets it and reloads once, on the account
+    // the session selects.
+    const named = headers.get(CONSOLE_ACCOUNT_HEADER);
+    if (error.code === "account_forbidden" && named !== null && named === tabAccount()) switchTabAccount(null);
+    throw error;
+  }
   return payload as T;
 }
 

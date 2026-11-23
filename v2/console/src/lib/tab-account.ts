@@ -1,5 +1,5 @@
 import { CONSOLE_ACCOUNT_HEADER } from "@contracts/access";
-import { isAccountId } from "./auth-redirect";
+import { CHECKOUT_PATH, consoleUrl, isAccountId, routerPath } from "./auth-redirect";
 
 /**
  * The account this browser tab acts in.
@@ -59,10 +59,56 @@ export function setTabAccount(accountId: string | null): void {
   store(current);
 }
 
-/** Saves the tab's new account (null: the one the session selects) and reloads the page on it. */
+/**
+ * Whether this page is switching account. From the start of a switch until
+ * the page reloads, it sends no new request (`./api` refuses them) and takes
+ * no input (the shell is inert): the page still shows the account it is
+ * leaving, while the tab's saved account may already be the next one.
+ */
+let switching = false;
+const switchListeners = new Set<() => void>();
+
+export function isSwitchingAccount(): boolean {
+  return switching;
+}
+
+export function onSwitchingAccount(listener: () => void): () => void {
+  switchListeners.add(listener);
+  return () => switchListeners.delete(listener);
+}
+
+function setSwitching(value: boolean): void {
+  if (switching === value) return;
+  switching = value;
+  for (const listener of switchListeners) listener();
+}
+
+/** A switch has started: the page stops sending requests and taking input. */
+export function beginAccountSwitch(): void {
+  setSwitching(true);
+}
+
+/** The switch request failed: the page carries on with the account it has. */
+export function cancelAccountSwitch(): void {
+  setSwitching(false);
+}
+
+/** Set once the page has been sent away: a second switch on the same page loads nothing more. */
+let switchedAlready = false;
+
+/**
+ * Saves the tab's new account (null: the one the session selects) and loads
+ * the page again on it, once. On the checkout landing, the page goes to
+ * Billing instead, so a checkout meant for the account left never starts for
+ * the new one.
+ */
 export function switchTabAccount(accountId: string | null): void {
   setTabAccount(accountId);
-  window.location.reload();
+  if (switchedAlready) return;
+  switchedAlready = true;
+  setSwitching(true);
+  if (routerPath(window.location.pathname) === CHECKOUT_PATH) window.location.assign(consoleUrl("/billing"));
+  else window.location.reload();
 }
 
 /** The address's query string, where a checkout return or the sign-in page carrying one names its account. */
@@ -81,9 +127,13 @@ export function withTabAccount(headers: Headers): Headers {
 export function resetTabAccountForTests(): void {
   current = undefined;
   store(null);
+  switching = false;
+  switchedAlready = false;
 }
 
 /** Tests only: the tab as a reload finds it, its account worked out again from storage. */
 export function reopenTabForTests(): void {
   current = undefined;
+  switching = false;
+  switchedAlready = false;
 }

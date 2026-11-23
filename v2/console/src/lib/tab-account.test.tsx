@@ -9,7 +9,7 @@ import { act, renderHook } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { call } from "./api";
 import { readSession, useSelectAccount, useSignOut } from "./queries";
-import { reopenTabForTests, resetTabAccountForTests, setTabAccount, tabAccount } from "./tab-account";
+import { reopenTabForTests, resetTabAccountForTests, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
 import { membership, testQueryClient, testSession } from "@/test/render";
 
 interface Gateway {
@@ -32,6 +32,9 @@ function stubGateway(gateway: Gateway, members: readonly string[] = ["acct-1", "
       gateway.signedIn = false;
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
+    if (url.includes("/billing/status") && account !== null && !members.includes(account)) {
+      return new Response(JSON.stringify({ error: { code: "account_forbidden", message: "You are not a member of this account" } }), { status: 403 });
+    }
     if (url.includes("/v2/admin/session")) {
       if (account !== null && !members.includes(account)) {
         return new Response(JSON.stringify({ error: { code: "account_forbidden", message: "You are not a member of this account" } }), { status: 403 });
@@ -53,9 +56,11 @@ function stubGateway(gateway: Gateway, members: readonly string[] = ["acct-1", "
 }
 
 let reload: ReturnType<typeof vi.fn>;
+let assign: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   reload = vi.fn();
+  assign = vi.fn();
   // The page's own address, as `history.replaceState` moves it, with a reload that only records itself.
   const real = window.location;
   vi.stubGlobal("location", {
@@ -64,6 +69,7 @@ beforeEach(() => {
     get search() { return real.search; },
     get origin() { return real.origin; },
     reload,
+    assign,
   });
 });
 
@@ -208,13 +214,80 @@ describe("a console tab's account", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("is forgotten on signing out", async () => {
-    stubGateway({ selected: "acct-1", signedIn: true });
+  it("is forgotten on signing out, and kept when signing out fails (Sol 7b-8)", async () => {
+    const gateway = { selected: "acct-1", signedIn: true };
+    stubGateway(gateway);
     setTabAccount("acct-2");
     const client = testQueryClient();
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
     const { result } = renderHook(() => useSignOut(), { wrapper });
+    // The sign-out fails: the person is still signed in, on the same account.
+    const answer = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify({ message: "down" }), { status: 503 }));
+    await act(() => expect(result.current.mutateAsync()).rejects.toThrow());
+    expect(tabAccount()).toBe("acct-2");
+    vi.mocked(fetch).mockImplementation(answer);
     await act(() => result.current.mutateAsync());
     expect(tabAccount()).toBeNull();
+  });
+
+  it("refuses every request from the start of a switch until the page reloads (Sol 7b-8)", async () => {
+    const { sent } = stubGateway({ selected: "acct-1", signedIn: true });
+    setTabAccount("acct-1");
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    const real = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/accounts/select")) await answered;
+      return real(input, init);
+    });
+    const client = testQueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useSelectAccount(), { wrapper });
+    act(() => void result.current.mutateAsync("acct-2").catch(() => undefined));
+    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/accounts/select"))).toBe(true));
+    // The switch request is out: nothing else leaves the page.
+    await expect(call("listApps")).rejects.toMatchObject({ code: "account_switching" });
+    expect(sent.filter((entry) => entry.url.includes("/apps"))).toEqual([]);
+    answer();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    await expect(call("listApps")).rejects.toMatchObject({ code: "account_switching" });
+  });
+
+  it("lets the page carry on when the switch request fails", async () => {
+    stubGateway({ selected: "acct-1", signedIn: true }, ["acct-1"]);
+    setTabAccount("acct-1");
+    const real = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input).includes("/accounts/select")
+        ? new Response(JSON.stringify({ error: { code: "forbidden", message: "no" } }), { status: 403 })
+        : real(input, init));
+    const client = testQueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useSelectAccount(), { wrapper });
+    await act(() => expect(result.current.mutateAsync("acct-2")).rejects.toThrow());
+    expect(tabAccount()).toBe("acct-1");
+    expect(reload).not.toHaveBeenCalled();
+    await expect(call("listApps")).resolves.toBeDefined();
+  });
+
+  it("goes to Billing instead of reloading the checkout landing, so no checkout starts for the new account (Sol 7b-8)", () => {
+    window.history.replaceState(null, "", "/v2/checkout?plan=pro");
+    setTabAccount("acct-1");
+    switchTabAccount("acct-2");
+    expect(assign).toHaveBeenCalledWith("/v2/billing");
+    expect(reload).not.toHaveBeenCalled();
+    expect(tabAccount()).toBe("acct-2");
+  });
+
+  it("forgets an account the person was removed from mid-session, on any request, reloading once (Sol 7b-8)", async () => {
+    stubGateway({ selected: "acct-1", signedIn: true }, ["acct-1"]);
+    setTabAccount("acct-2");
+    await expect(call("getBillingStatus")).rejects.toMatchObject({ code: "account_forbidden" });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(tabAccount()).toBeNull();
+    // The page is reloading: nothing more is sent, and nothing reloads it twice.
+    await expect(call("getBillingStatus")).rejects.toMatchObject({ code: "account_switching" });
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
 import { ApiError, call } from "./api";
-import { currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
+import { beginAccountSwitch, cancelAccountSwitch, currentSearch, setTabAccount, switchTabAccount, tabAccount } from "./tab-account";
 import { checkoutReturnAccount } from "./auth-redirect";
 import type { Session } from "./types";
 import {
@@ -77,12 +77,10 @@ export const readSession = async (signal?: AbortSignal): Promise<Session | null>
   try {
     session = (await call("getAdminSession", signal === undefined ? {} : { signal })).session;
   } catch (error) {
-    // The tab's saved account is not (or no longer) the person's: the tab
-    // falls back to the account the session selects, by reloading once.
-    if (error instanceof ApiError && error.code === "account_forbidden" && named !== null) {
-      switchTabAccount(null);
-      return reloading;
-    }
+    // The tab's saved account is not (or no longer) the person's: the
+    // request code has already made the tab fall back to the account the
+    // session selects, reloading once.
+    if (error instanceof ApiError && error.code === "account_forbidden" && named !== null) return reloading;
     throw error;
   }
   if (named !== null) return session;
@@ -128,9 +126,11 @@ export function useSignOut() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => signOut(),
-    // Clearing rather than invalidating drops every account-scoped cache, so
-    // the next operator never sees the previous one's data.
-    onSettled: () => {
+    // Only once signing out succeeded: the tab forgets its account, and
+    // clearing rather than invalidating drops every account-scoped cache, so
+    // the next operator never sees the previous one's data. A failed sign-out
+    // leaves the person signed in, on the same account.
+    onSuccess: () => {
       setTabAccount(null);
       client.clear();
     },
@@ -165,9 +165,6 @@ export function useConfirmEmailVerification() {
   });
 }
 
-/** Marks an account switch in flight, so the console can block everything else meanwhile. */
-export const SELECT_ACCOUNT_KEY = ["select-account"] as const;
-
 /**
  * Switches the account this tab acts in. The gateway makes it the account new
  * tabs open on, and the page then reloads on it: nothing is swapped in place.
@@ -175,8 +172,14 @@ export const SELECT_ACCOUNT_KEY = ["select-account"] as const;
  */
 export function useSelectAccount() {
   return useMutation({
-    mutationKey: SELECT_ACCOUNT_KEY,
-    mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
+    mutationFn: (accountId: string) => {
+      // The switch request is sent first; from the moment it is out, the page
+      // sends nothing else (`./api` refuses) and takes no input.
+      const switched = call("selectAccount", { body: { accountId } });
+      beginAccountSwitch();
+      return switched;
+    },
+    onError: () => cancelAccountSwitch(),
     onSuccess: (result) => {
       switchTabAccount(result.session.account.id);
       return reloading;
@@ -550,8 +553,15 @@ function useRefreshPlan() {
  * back (the apps page, which announces it, or the plans), and answers the same
  * page again while a checkout for the same plan is open.
  */
+/**
+ * Marks a billing action that can send the page to a payment page (checkout,
+ * change, resume): while one is pending, the account cannot be switched.
+ */
+export const PAYMENT_ACTION_KEY = ["payment-action"] as const;
+
 export function useStartCheckout() {
   return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "checkout"],
     mutationFn: (input: OperationRequest<"startCheckout">) => call("startCheckout", { body: input }),
   });
 }
@@ -559,6 +569,7 @@ export function useStartCheckout() {
 export function useChangePlan() {
   const refresh = useRefreshPlan();
   return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "change"],
     mutationFn: (input: OperationRequest<"changePlan">) => call("changePlan", { body: input }),
     onSuccess: refresh,
   });
@@ -567,6 +578,7 @@ export function useChangePlan() {
 export function useResumeSubscription() {
   const refresh = useRefreshPlan();
   return useMutation({
+    mutationKey: [...PAYMENT_ACTION_KEY, "resume"],
     mutationFn: (input: OperationRequest<"resumeSubscription">) => call("resumeSubscription", { body: input }),
     onSuccess: refresh,
   });
