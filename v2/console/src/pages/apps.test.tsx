@@ -8,8 +8,10 @@ import { renderAuthenticated } from "@/test/render";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("newAppConfig", () => {
-  it("starts an iOS app on App Attest, counting each install", () => {
-    expect(newAppConfig({ kind: "ios", teamId: " ABCDE12345 ", bundleId: "com.example.app", userHeader: "" })).toEqual({
+  it("starts an iOS app on App Attest as answered, trimmed", () => {
+    expect(
+      newAppConfig({ type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: " ABCDE12345 ", bundle_id: "com.example.app " } }),
+    ).toEqual({
       authentication: {
         type: "apple_app_attest",
         end_user: { source: "app_install" },
@@ -19,10 +21,10 @@ describe("newAppConfig", () => {
   });
 
   it("starts a server app with or without an end user header", () => {
-    expect(newAppConfig({ kind: "server", teamId: "", bundleId: "", userHeader: "" })).toEqual({
+    expect(newAppConfig({ type: "api_key", end_user: { source: "none" } })).toEqual({
       authentication: { type: "api_key", end_user: { source: "none" } },
     });
-    expect(newAppConfig({ kind: "server", teamId: "", bundleId: "", userHeader: "x-user" })).toEqual({
+    expect(newAppConfig({ type: "api_key", end_user: { source: "header", header: " x-user " } })).toEqual({
       authentication: { type: "api_key", end_user: { source: "header", header: "x-user" } },
     });
   });
@@ -93,6 +95,9 @@ describe("AppsPage", () => {
     await userEvent.click(screen.getByLabelText(/^name$/i));
     await userEvent.paste("Backend");
     await userEvent.click(screen.getByRole("radio", { name: /server/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    // Who may call: no end users, the default for a server.
+    expect(screen.getByRole("radio", { name: /No end users/ }).getAttribute("aria-checked")).toBe("true");
     await userEvent.click(screen.getByRole("button", { name: /create app/i }));
 
     await waitFor(() => {
@@ -112,8 +117,68 @@ describe("AppsPage", () => {
     renderAuthenticated(<AppsPage />);
     await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
     await userEvent.type(screen.getByLabelText(/^name$/i), "Phone");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.type(screen.getByLabelText(/team id/i), "short");
     await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    expect(screen.getByText("team_id must contain ten uppercase letters or digits")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("creates an iOS app for signed-in, paid users, going back without losing an answer", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Response(JSON.stringify({ app: testApp({ id: "phone" }) }), { status: 201 })
+        : new Response(JSON.stringify({ apps: [] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { router } = renderAuthenticated(<AppsPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new app/i }));
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Phone");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(screen.getByLabelText(/team id/i), "abcde12345");
+    await userEvent.type(screen.getByLabelText(/bundle id/i), "com.example.app");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Development/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Signed-in users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+    await userEvent.type(screen.getByLabelText("Firebase project id"), "my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("radio", { name: /Signed-in users only/ }).getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect((screen.getByLabelText("Firebase project id") as HTMLInputElement).value).toBe("my-project");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("radio", { name: /Paid users only/ }));
     expect(screen.getByRole("button", { name: /create app/i }).hasAttribute("disabled")).toBe(true);
+    await userEvent.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: /create app/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post && JSON.parse(String(post[1]!.body))).toEqual({
+        name: "Phone",
+        config: {
+          authentication: {
+            type: "apple_app_attest",
+            app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production", "development"] },
+            end_user: {
+              source: "issuer",
+              issuer: {
+                provider: "firebase",
+                jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+                issuer: "https://securetoken.google.com/my-project",
+                audience: "my-project",
+                user_id_claim: "sub",
+                required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+                max_token_lifetime_seconds: 86400,
+                entitlement: "revenuecat",
+              },
+            },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(router.location.pathname).toBe("/apps/phone"));
   });
 });
