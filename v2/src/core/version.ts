@@ -3,7 +3,7 @@
 // nothing else. The CLI is released with it under the same number
 // (`cli/package.json`), which a test checks.
 import { version } from "../../package.json";
-import models from "../pricing/models.json";
+import { PRICE_FILE } from "../pricing/price-file.ts";
 
 /**
  * The gateway release this Worker is, as `GET /v2/console/capabilities`
@@ -30,7 +30,7 @@ let prices: Promise<PricesRevision> | undefined;
 /** The price list's revision, worked out once per isolate. */
 export function pricesRevision(): Promise<PricesRevision> {
   prices ??= crypto.subtle
-    .digest("SHA-256", new TextEncoder().encode(JSON.stringify(models)))
+    .digest("SHA-256", new TextEncoder().encode(JSON.stringify(PRICE_FILE)))
     .then((digest) => ({
       revision: [...new Uint8Array(digest)]
         .slice(0, 6)
