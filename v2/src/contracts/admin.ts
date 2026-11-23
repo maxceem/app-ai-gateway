@@ -162,17 +162,25 @@ export const ModelPricingSchema = z
 
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
+/** Names that cannot be a key of a prices object without reaching its prototype. */
+export const RESERVED_PRICE_MODELS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
 /**
  * A connection's own prices as a request sends them. Model names are trimmed
  * when saved, so two that differ only by surrounding spaces would quietly
  * become one, keeping only the last: such a pair is refused instead, naming
- * both. Prices already saved are never judged by this again.
+ * both. A reserved name (`RESERVED_PRICE_MODELS`) is refused too, before the
+ * record is read. Prices already saved are never judged by this again.
  */
 const ProviderPricingInputSchema = z.preprocess((value, context) => {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const seen = new Map<string, string>();
     for (const name of Object.keys(value)) {
       const trimmed = name.trim();
+      if (RESERVED_PRICE_MODELS.has(trimmed)) {
+        context.issues.push({ code: "custom", input: value, message: `${JSON.stringify(name)} is not a model name` });
+        continue;
+      }
       const earlier = seen.get(trimmed);
       if (earlier !== undefined) {
         context.issues.push({

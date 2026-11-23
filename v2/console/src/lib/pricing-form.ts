@@ -1,3 +1,4 @@
+import { RESERVED_PRICE_MODELS } from "@contracts/admin";
 import { priceTextProblem } from "@contracts/price-amount";
 
 /**
@@ -139,8 +140,8 @@ function amountProblem(text: string): string | null {
   return priceTextProblem(text);
 }
 
-/** Model names that cannot be a key of the prices object, as app settings refuse them. */
-const RESERVED_MODELS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+/** Model names that cannot be a key of the prices object: the gateway's own list. */
+const RESERVED_MODELS = RESERVED_PRICE_MODELS;
 
 /** What is wrong with a row, field by field, in words. */
 export function rowProblems(row: PriceRow, rows: readonly PriceRow[]): Record<string, string> {
@@ -246,6 +247,8 @@ export function jsonPriceProblem(text: string): string | null {
       while (after < text.length && /\s/u.test(text[after]!)) after += 1;
       if (text[after] === ":") {
         const seen = objects[objects.length - 1];
+        // A model name is a key of the outermost object.
+        if (objects.length === 1 && RESERVED_MODELS.has(value.trim())) return `${JSON.stringify(value)} is not a model name.`;
         if (seen?.has(value)) return `${JSON.stringify(value)} is written twice in one object; only the last would be kept.`;
         seen?.add(value);
         key = value;

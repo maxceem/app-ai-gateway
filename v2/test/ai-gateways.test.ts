@@ -336,6 +336,16 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(updated.status).toBe(400);
   });
 
+  it("refuses reserved model names in prices, surrounding spaces or not", async () => {
+    const key = await seedManagementKey();
+    for (const name of ["__proto__", " __proto__ ", "constructor", "prototype"]) {
+      const body = JSON.parse(`{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":{${JSON.stringify(name)}:{"per_request":1}}}`);
+      const created = await admin(key, "POST", "/v2/admin/providers", body);
+      expect(created.status).toBe(400);
+      expect(JSON.stringify(created.body)).toContain("is not a model name");
+    }
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

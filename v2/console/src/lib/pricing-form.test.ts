@@ -116,4 +116,14 @@ describe("the prices form", () => {
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.33333333333333}}}}')).toBeNull();
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0}}}}')).toBeNull();
   });
+
+  it("refuses reserved model names in JSON prices, surrounding spaces or not, as the form does", () => {
+    for (const name of ["__proto__", " __proto__ ", "constructor", "prototype"]) {
+      expect(jsonPriceProblem(`{${JSON.stringify(name)}: {"per_request": 1}}`)).toBe(`${JSON.stringify(name)} is not a model name.`);
+      const row = { ...emptyRow(), model: name, unitField: "per_request", unitAmount: "1" };
+      expect(rowProblems(row, [row]).model).toBe("This is not a model name.");
+    }
+    // Only a model name is judged: a field of that name deeper in is not one.
+    expect(jsonPriceProblem('{"m": {"per_request": 1, "by": {"constructor": {"x": {"per_request": 1}}}}}')).toBeNull();
+  });
 });
