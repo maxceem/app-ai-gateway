@@ -172,6 +172,19 @@ export async function followSelectedAccount(client: QueryClient, refusedAccountI
   }
 }
 
+/**
+ * The account the browser has selected right now, read afresh from the
+ * session (another tab may have switched it), or null when it cannot be read.
+ */
+export async function selectedAccountNow(client: QueryClient): Promise<string | null> {
+  try {
+    const session = await client.fetchQuery({ queryKey: keys.session, queryFn: readSession, staleTime: 0, retry: false });
+    return session?.account.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Management keys, CLI logins and MCP connections, in one list. */
 export function useCredentials() {
   return useQuery({

@@ -91,21 +91,11 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-/** When billing gave each reading app traffic holds: how old the plan a refusal rests on is. */
-const readAt = new WeakMap<GatewayBillingAccess, number>();
-
-/** How long ago billing gave this reading; a reading it did not give (a fallback) has no age. */
-export function billingReadAgeMs(access: GatewayBillingAccess, now: number = Date.now()): number {
-  const at = readAt.get(access);
-  return at === undefined ? Number.POSITIVE_INFINITY : now - at;
-}
-
 async function loadBillingAccess(binding: BillingRuntime, accountId: string): Promise<GatewayBillingAccess> {
   try {
     const access = await binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId });
     const value = { state: "billed", plan: access.plan, subscription: access.subscription } satisfies GatewayBillingAccess;
     const now = Date.now();
-    readAt.set(value, now);
     const endsAt = entitlementEndsAt(value);
     if (endsAt !== null && endsAt <= now) {
       log("error", "billing_expired_entitlement", { account: accountId });
@@ -161,30 +151,6 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
     billingAccessCache.set(accountId, pending, { storedAt: now, ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 });
   });
   return pending;
-}
-
-/** How old the plan a refusal rests on may be before billing is asked again. */
-export const BILLING_RECHECK_AFTER_MS = 5_000;
-
-/**
- * The account's plan, read at most `maxAgeMs` ago: this isolate's reading (or
- * the read in flight) when it is that recent, otherwise a new read that
- * replaces it. App traffic asks for it only before refusing a request on a
- * used-up allowance: the cached plan can be up to 30 s old, and an upgrade
- * paid since must not be refused on (Sol 7b-8). Requests at the same moment
- * share one read, so a busy account at its allowance costs at most one
- * billing read per interval in each isolate. Never rejects.
- */
-export function recentBillingAccess(
-  env: Env,
-  accountId: string,
-  maxAgeMs: number = BILLING_RECHECK_AFTER_MS,
-): Promise<GatewayBillingAccess> {
-  const now = Date.now();
-  const entry = billingAccessCache.peek(accountId);
-  if (entry !== undefined && entry.expiresAt > now && now - entry.storedAt < maxAgeMs) return entry.value;
-  billingAccessCache.delete(accountId);
-  return getBillingAccess(env, accountId);
 }
 
 /** When a console read of an account last failed or ran late: within the retry interval, none is started. */

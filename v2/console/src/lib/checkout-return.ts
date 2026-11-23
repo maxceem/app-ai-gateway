@@ -6,7 +6,7 @@ import { ApiError, call } from "./api";
 import type { OperationResponse } from "@contracts/catalog";
 import { checkoutAccountFrom, checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { useConsoleSession } from "./console-session";
-import { keys } from "./queries";
+import { keys, selectedAccountNow } from "./queries";
 
 /**
  * How often, and how many times, the plan is read after the return. The
@@ -83,6 +83,15 @@ export function useCheckoutSuccessToast(): void {
     return () => {
       controller.abort();
       clearTimeout(timer.current);
+      // The page went (signing out, say) while a payment was being confirmed:
+      // its spinner goes with it (Sol 7b-8). Under StrictMode the page is
+      // mounted again at once and carries on, so the spinner is taken down
+      // only if no new mount has replaced this one by the next task.
+      setTimeout(() => {
+        if (reads.current !== controller || confirming.current === null) return;
+        confirming.current = null;
+        toast.dismiss(TOAST_ID);
+      }, 0);
     };
   }, []);
 
@@ -117,6 +126,13 @@ export function useCheckoutSuccessToast(): void {
       received();
       return;
     }
+    /*
+     * Right before the final notice, the selected account is read afresh: the
+     * gateway checked it when the plan read started, and another tab may have
+     * switched since (Sol 7b-8). If it cannot be read, or names another
+     * account, the confirmation ends silently.
+     */
+    const stillThisAccount = async (): Promise<boolean> => (await selectedAccountNow(client)) === checkoutAccount;
     toast.loading("Confirming your payment…", { id: TOAST_ID });
     confirming.current = checkoutAccount;
     const done = () => {
@@ -142,18 +158,26 @@ export function useCheckoutSuccessToast(): void {
         toast.dismiss(TOAST_ID);
         return;
       }
-      if (read.kind === "plan") {
-        const access = read.status.access;
-        if (access.state === "billed" && access.plan?.planKey === planKey) {
-          done();
-          toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${access.plan.planName} plan.` });
+      const access = read.kind === "plan" ? read.status.access : null;
+      const bought = access?.state === "billed" && access.plan?.planKey === planKey ? access.plan : null;
+      if (bought !== null || left <= 1) {
+        const announce = await stillThisAccount();
+        if (stop.signal.aborted) {
+          void check(left);
+          return;
+        }
+        if (confirming.current !== checkoutAccount) return;
+        done();
+        if (!announce) {
+          toast.dismiss(TOAST_ID);
+          return;
+        }
+        if (bought !== null) {
+          toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${bought.planName} plan.` });
           void client.invalidateQueries({ queryKey: keys.session });
           void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
           return;
         }
-      }
-      if (left <= 1) {
-        done();
         received();
         return;
       }

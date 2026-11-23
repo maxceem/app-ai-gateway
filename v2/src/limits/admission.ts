@@ -24,23 +24,15 @@
  */
 import { configuredBudgetScope, scopeHasLimits, type BudgetScope, type LimitScope } from "../contracts/app-config.ts";
 import { admitAllowance } from "../billing/allowance.ts";
-import {
-  admitAppTraffic,
-  BILLING_RECHECK_AFTER_MS,
-  billingReadAgeMs,
-  getAppTrafficBillingAccess,
-  recentBillingAccess,
-  APP_TRAFFIC_BILLING_DEADLINE_MS,
-} from "../billing/access.ts";
+import { admitAppTraffic, getAppTrafficBillingAccess, APP_TRAFFIC_BILLING_DEADLINE_MS } from "../billing/access.ts";
 import { billingBinding } from "../billing/contract.ts";
-import { billingQuotaFor, type BillingQuota } from "../billing/quota.ts";
+import { billingQuotaFor } from "../billing/quota.ts";
 import { installLimiterName } from "../client-auth/replay.ts";
 import type { GatewayBillingAccess } from "../contracts/billing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import type { AppRecord, GatewayIdentity } from "../core/types.ts";
-import type { AllowanceAdmission } from "../do/AccountLimiter.ts";
 import type { RequestLimitResult } from "../do/request-limits.ts";
 import { nextUtcMonthStart, type SpendKey } from "./spend.ts";
 
@@ -300,16 +292,21 @@ async function admitPlanAllowance(
   }
   const quota = quotaAnswer.value;
   if (quota.kind === "unmetered") return;
-  const first = await spendAllowance(input, quota, remaining);
-  if (first === null) return;
-  // The refusal rests on the plan as this isolate read it, which can be up to
-  // 30 s old: an upgrade paid since must not be refused on. So the plan is
-  // read again first, unless it was read within the last few seconds, and the
-  // request is refused only if the plan read now still has its allowance used
-  // up. A read that cannot answer in time serves the request (Sol 7b-8).
-  const confirmed = await confirmUsedUp(input, access, quota, first, remaining);
-  if (confirmed === null) return;
-  const { refusal, period } = confirmed;
+  const { period } = quota;
+  if (remaining() <= 0) {
+    log("warn", "allowance_uncounted", { account: app.accountId, reason: "deadline" });
+    return;
+  }
+  const outcome = await admitAllowance(
+    env.ACCOUNT_LIMITER.getByName(app.accountId),
+    app.accountId,
+    { periodId: period.periodId, periodEnd: period.periodEnd, limit: quota.limit },
+    input.waitUntil,
+    remaining(),
+  );
+  if (outcome.kind === "uncounted") return;
+  const refusal = outcome.kind === "exhausted" ? outcome : outcome.admission;
+  if (refusal.allowed) return;
   throw refuse(
     new GatewayError(
       429,
@@ -330,66 +327,4 @@ async function admitPlanAllowance(
     "blocked_billing",
     "account",
   );
-}
-
-type Refusal = AllowanceAdmission & { allowed: false };
-type MeteredQuota = BillingQuota & { kind: "metered" };
-
-/** Spends one request of `quota` in the account's limiter: the refusal, or null when the request is served. */
-async function spendAllowance(input: AdmissionInput, quota: MeteredQuota, remaining: () => number): Promise<Refusal | null> {
-  const { env, app } = input;
-  if (remaining() <= 0) {
-    log("warn", "allowance_uncounted", { account: app.accountId, reason: "deadline" });
-    return null;
-  }
-  const outcome = await admitAllowance(
-    env.ACCOUNT_LIMITER.getByName(app.accountId),
-    app.accountId,
-    { periodId: quota.period.periodId, periodEnd: quota.period.periodEnd, limit: quota.limit },
-    input.waitUntil,
-    remaining(),
-  );
-  if (outcome.kind === "uncounted") return null;
-  const result = outcome.kind === "exhausted" ? outcome : outcome.admission;
-  return result.allowed ? null : result;
-}
-
-/**
- * A used-up allowance, checked against the plan as billing has it now: the
- * refusal to make, or null when the request is served. A plan read within
- * `BILLING_RECHECK_AFTER_MS` is refused on as it is; an older one is read
- * again, and requests at the same moment share that read. When the new reading differs, the request is admitted
- * against it; when billing cannot answer within the deadline, the request
- * is served uncounted and logged (AGENTS.md: refuse only when the allowance
- * is known to be used up).
- */
-async function confirmUsedUp(
-  input: AdmissionInput,
-  access: GatewayBillingAccess,
-  quota: MeteredQuota,
-  refusal: Refusal,
-  remaining: () => number,
-): Promise<{ refusal: Refusal; period: MeteredQuota["period"] } | null> {
-  const { env, app } = input;
-  const uncounted = (reason: string): null => {
-    log("warn", "allowance_uncounted", { account: app.accountId, reason });
-    return null;
-  };
-  // A plan read within the interval is recent enough to refuse on.
-  if (billingReadAgeMs(access) < BILLING_RECHECK_AFTER_MS) return { refusal, period: quota.period };
-  const fresh = remaining() <= 0 ? LATE : await within(recentBillingAccess(env, app.accountId), remaining(), input.waitUntil);
-  if (fresh.kind !== "answer") return uncounted(fresh.kind === "late" ? "recheck_deadline" : "recheck_failed");
-  // The same reading: nothing new to learn.
-  if (fresh.value === access) return { refusal, period: quota.period };
-  const next = fresh.value;
-  if (next.state !== "billed" || next.stale === true) return uncounted("recheck_unavailable");
-  admitAppTraffic(next, app.accountId);
-  const nextQuota = remaining() <= 0 ? LATE : await within(billingQuotaFor(next, env, app.accountId), remaining(), input.waitUntil);
-  if (nextQuota.kind !== "answer") return uncounted(nextQuota.kind === "late" ? "recheck_deadline" : "plan_unreadable");
-  if (nextQuota.value.kind === "unmetered") return null;
-  const { period, limit } = nextQuota.value;
-  // The same allowance read again: the limiter's refusal stands.
-  if (period.periodId === quota.period.periodId && limit === quota.limit) return { refusal, period };
-  const second = await spendAllowance(input, nextQuota.value, remaining);
-  return second === null ? null : { refusal: second, period };
 }

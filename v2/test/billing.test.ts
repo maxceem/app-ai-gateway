@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { getAppTrafficBillingAccess, getBillingAccess, recentBillingAccess } from "../src/billing/access.ts";
+import { getAppTrafficBillingAccess, getBillingAccess } from "../src/billing/access.ts";
 import { readCatalog } from "../src/admin/billing.ts";
 import type { BillingRuntime } from "../src/billing/contract.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
@@ -598,17 +598,17 @@ describe("the last known plan (Sol 7b-8)", () => {
     vi.useFakeTimers({ toFake: ["Date"], now });
     // An old read of the free plan is held.
     const older = getBillingAccess(fake.env, accountId);
-    // Over 5 s on, a newer read replaces it and answers growth.
+    // Once the cache's 30 s are up, a newer read replaces it and answers growth.
     service.getTenantAccess = original;
     fake.state.access = growth();
-    vi.setSystemTime(now + 6_000);
-    expect(await recentBillingAccess(fake.env, accountId)).toMatchObject({ plan: { planKey: "growth" } });
+    vi.setSystemTime(now + 31_000);
+    expect(await getBillingAccess(fake.env, accountId)).toMatchObject({ plan: { planKey: "growth" } });
     // The older read lands last.
     release();
     expect(await older).toMatchObject({ plan: { planKey: "free" } });
     // With billing down and the cache expired, app traffic falls back on growth, not free.
     fake.state.access = "down";
-    vi.setSystemTime(now + 40_000);
+    vi.setSystemTime(now + 70_000);
     expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ stale: true, plan: { planKey: "growth" } });
   });
 });
