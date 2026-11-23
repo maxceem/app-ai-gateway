@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, Cloud, DollarSign, KeyRound, ListTree, Plus, Power, Trash2 } from "lucide-react";
+import { AlertCircle, Ban, CheckCircle2, Cloud, DollarSign, Globe, KeyRound, ListTree, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { RowAction, RowActions } from "@/components/row-actions";
 import { cloudflareCapable, CUSTOM_STYLES, PROVIDER_TYPES, providerLabel, suggestedPath } from "@/lib/providers";
 import { ApiError } from "@/lib/api";
 import { useCreateProvider, useDeleteProvider, useFreshProvider, useProviders, useTestProvider, useUpdateProvider } from "@/lib/queries";
+import { emptyRow, hiddenFields, pricingOf, rowProblems, rowsOf, TOKEN_FIELDS, UNIT_FIELDS, type PriceRow } from "@/lib/pricing-form";
 import type { ProviderConnection, ProviderTestResult } from "@/lib/types";
 
 /**
@@ -51,6 +52,10 @@ export function ProvidersPage() {
   const listing = list.data?.providers.find((provider) => provider.id === pathsId) ?? null;
   const [pricesId, setPricesId] = useState<string | null>(null);
   const pricing = list.data?.providers.find((provider) => provider.id === pricesId) ?? null;
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const renaming = list.data?.providers.find((provider) => provider.id === renamingId) ?? null;
+  const [hostId, setHostId] = useState<string | null>(null);
+  const hosting = list.data?.providers.find((provider) => provider.id === hostId) ?? null;
   useEffect(() => {
     if (pathsId !== null && list.data && listing === null) setPathsId(null);
   }, [pathsId, list.data, listing]);
@@ -143,6 +148,10 @@ export function ProvidersPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <RowActions label={provider.name}>
+                      <RowAction onSelect={() => setRenamingId(provider.id)}>
+                        <Pencil />
+                        Rename
+                      </RowAction>
                       <RowAction onSelect={() => setRotatingId(provider.id)}>
                         <KeyRound />
                         Replace key
@@ -155,6 +164,12 @@ export function ProvidersPage() {
                         <DollarSign />
                         Your prices
                       </RowAction>
+                      {provider.type !== "custom" && !provider.cloudflareGateway ? (
+                        <RowAction onSelect={() => setHostId(provider.id)}>
+                          <Globe />
+                          Host
+                        </RowAction>
+                      ) : null}
                       {cloudflareCapable(provider.type) ? (
                         <RowAction onSelect={() => setCloudflareId(provider.id)}>
                           <Cloud />
@@ -184,6 +199,8 @@ export function ProvidersPage() {
       <CloudflareDialog key={`cf-${cloudflareId ?? "none"}`} provider={routing} onClose={() => setCloudflareId(null)} />
       <PathsDialog key={`paths-${pathsId ?? "none"}`} provider={listing} onClose={() => setPathsId(null)} />
       <PricesDialog key={`prices-${pricesId ?? "none"}`} provider={pricing} onClose={() => setPricesId(null)} />
+      <RenameDialog key={`rename-${renamingId ?? "none"}`} provider={renaming} onClose={() => setRenamingId(null)} />
+      <HostDialog key={`host-${hostId ?? "none"}`} provider={hosting} onClose={() => setHostId(null)} />
 
       <ConfirmDialog
         open={removing !== null}
@@ -371,8 +388,10 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const [secret, setSecret] = useState("");
   const [cloudflare, setCloudflare] = useState<CloudflareDraft>(NO_CLOUDFLARE);
   const [custom, setCustom] = useState<CustomDraft>(NO_CUSTOM);
+  const [host, setHost] = useState("");
 
   const reset = () => {
+    setHost("");
     setName("");
     setSlug("");
     setSecret("");
@@ -384,13 +403,16 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const isCustom = type === "custom";
   // Through Cloudflare, the key is optional: Cloudflare can use the keys it stores.
   const viaCloudflare = cloudflareCapable(type) && cloudflare.on;
-  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom));
+  const hostInvalid = host.trim() !== "" && !host.trim().startsWith("https://");
+  const ready = cloudflareReady(cloudflare, false) && (secret !== "" || viaCloudflare) && (!isCustom || customReady(custom)) && !hostInvalid;
   // A new setting always carries its token.
   const route = viaCloudflare
     ? { cloudflareGateway: { accountId: cloudflare.accountId.trim(), gatewayId: cloudflare.gatewayId.trim(), token: cloudflare.token } }
     : isCustom
       ? { baseUrl: custom.baseUrl.trim(), auth: { header: custom.header.trim().toLowerCase(), format: custom.format } }
-      : {};
+      : host.trim() !== ""
+        ? { baseUrl: host.trim() }
+        : {};
 
   const submit = async () => {
     try {
@@ -425,6 +447,7 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
             setType(value);
             setCloudflare(NO_CLOUDFLARE);
             setCustom(NO_CUSTOM);
+            setHost("");
             test.clear();
           }}
         >
@@ -463,6 +486,16 @@ function AddProviderDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           draft={cloudflare}
           onChange={(next) => {
             setCloudflare(next);
+            test.clear();
+          }}
+        />
+      ) : null}
+      {!isCustom && !viaCloudflare ? (
+        <HostField
+          id="provider-host"
+          value={host}
+          onChange={(next) => {
+            setHost(next);
             test.clear();
           }}
         />
@@ -1004,6 +1037,155 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
 }
 
 /**
+ * A built-in provider's own host, replaced: a self-hosted server, a regional
+ * host or Azure OpenAI. Requests are still priced from our list.
+ */
+function HostField({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
+  const invalid = value.trim() !== "" && !value.trim().startsWith("https://");
+  return (
+    <Field
+      label="Base URL (optional)"
+      htmlFor={id}
+      hint="Send requests to another host, such as a self-hosted server, a regional host or Azure OpenAI. Leave it empty to use the provider's own host. Prices still come from our list."
+    >
+      <Input
+        id={id}
+        value={value}
+        placeholder="https://"
+        autoComplete="off"
+        aria-invalid={invalid || undefined}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {invalid ? <p className="text-sm text-destructive">Use an https:// address.</p> : null}
+    </Field>
+  );
+}
+
+/** A new name for a connection. The slug apps use stays as it is. */
+function RenameDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const [name, setName] = useState(provider?.name ?? "");
+  const trimmed = name.trim();
+
+  const submit = async () => {
+    if (!provider) return;
+    try {
+      await update.mutateAsync({ id: provider.id, body: { revision: provider.revision, name: trimmed } });
+      toast.success("Connection renamed");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not rename the connection");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Rename the connection"
+      description={provider ? `Apps keep naming it ${provider.slug}: the slug does not change.` : undefined}
+      submitLabel="Rename"
+      pending={update.isPending}
+      disabled={trimmed === "" || trimmed === provider?.name}
+      onSubmit={() => void submit()}
+    >
+      <Field label="Name" htmlFor="provider-rename">
+        <Input id="provider-rename" value={name} maxLength={100} autoComplete="off" onChange={(event) => setName(event.target.value)} />
+      </Field>
+    </FormDialog>
+  );
+}
+
+/**
+ * Where a built-in provider's requests go: its own host, or a base URL. A key
+ * goes only where it was given, so a new base URL needs the key again; going
+ * back to the provider's own host does not.
+ */
+function HostDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
+  const update = useUpdateProvider();
+  const test = useKeyTest();
+  const [host, setHost] = useState(provider?.baseUrl ?? "");
+  const [secret, setSecret] = useState("");
+  const next = host.trim();
+  const stored = provider?.baseUrl ?? "";
+  const invalid = next !== "" && !next.startsWith("https://");
+  const changed = next !== stored;
+  // A new base URL takes the key with it; the provider's own host keeps the stored one.
+  const needsKey = changed && next !== "";
+
+  const save = async () => {
+    if (!provider) return;
+    try {
+      await update.mutateAsync({
+        id: provider.id,
+        body: { revision: provider.revision, baseUrl: next === "" ? null : next, ...(needsKey ? { secret } : {}) },
+      });
+      toast.success(next === "" ? "Connection uses the provider's own host" : "Base URL saved");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not change the host");
+    } finally {
+      update.reset();
+    }
+  };
+
+  return (
+    <FormDialog
+      open={provider !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Host"
+      description="Where this connection's requests go."
+      submitLabel="Save"
+      pending={update.isPending}
+      disabled={!changed || invalid || (needsKey && !secret)}
+      onSubmit={() => void save()}
+    >
+      <HostField
+        id="provider-host-change"
+        value={host}
+        onChange={(value) => {
+          setHost(value);
+          test.clear();
+        }}
+      />
+      {needsKey ? (
+        <>
+          <Field label="API key" htmlFor="provider-host-secret" hint="A key goes only where it was given, so a new host needs it again.">
+            <div className="flex gap-2">
+              <Input
+                id="provider-host-secret"
+                type="password"
+                value={secret}
+                autoComplete="off"
+                onChange={(event) => {
+                  setSecret(event.target.value);
+                  test.clear();
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!secret || invalid || !provider || test.pending}
+                onClick={() => provider && test.run({ type: provider.type, secret, baseUrl: next })}
+              >
+                Test key
+              </Button>
+            </div>
+          </Field>
+          <TestResult result={test.result} />
+        </>
+      ) : null}
+    </FormDialog>
+  );
+}
+
+/**
  * Sending an existing connection through Cloudflare AI Gateway, changing it,
  * or stopping. The key's origin moves with it, so a connection that keeps a
  * key needs it again, or uses the keys stored in Cloudflare instead.
@@ -1114,6 +1296,9 @@ export function parsePricesText(text: string): { pricing: NonNullable<ProviderCo
  * A connection's own prices, in dollars: for a model our price list does not
  * have, such as a fal model priced per job, or to replace a listed price. The
  * server checks every price when it is saved.
+ *
+ * The form shows the common rates per model. Anything else a price carries
+ * stays exactly as stored; "Edit as JSON" shows and edits all of it.
  */
 function PricesDialog({ provider, onClose }: { provider: ProviderConnection | null; onClose: () => void }) {
   const update = useUpdateProvider();
@@ -1121,10 +1306,14 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
   // The version the draft was made from: it is saved at that revision, never at a newer one the list
   // loaded since, so another admin's change is never quietly overwritten.
   const [revision, setRevision] = useState(provider?.revision ?? 0);
+  const [mode, setMode] = useState<"form" | "json">("form");
+  const [rows, setRows] = useState<PriceRow[]>(() => rowsOf(provider?.pricing ?? null));
   const [text, setText] = useState(() => pricesText(provider?.pricing ?? null));
   const [conflict, setConflict] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const parsed = parsePricesText(text);
+  const problems = rows.map((row) => rowProblems(row, rows));
+  const formValid = problems.every((found) => Object.keys(found).length === 0);
+  const parsed = mode === "json" ? parsePricesText(text) : formValid ? { pricing: pricingOf(rows) } : { problem: "Fix the prices marked below." };
   // A save or reload that ends after this dialog closed must not touch the page: closing it
   // remounts the dialog, so a late answer would otherwise close the next provider's dialog
   // and throw away its draft.
@@ -1135,6 +1324,11 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       mounted.current = false;
     };
   }, []);
+
+  const startFrom = (pricing: ProviderConnection["pricing"]) => {
+    setRows(rowsOf(pricing));
+    setText(pricesText(pricing));
+  };
 
   /**
    * Starts again from the provider as the server has it now, read fresh, not
@@ -1153,13 +1347,20 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
         return;
       }
       setRevision(latest.revision);
-      setText(pricesText(latest.pricing));
+      startFrom(latest.pricing);
       setConflict(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not reload the prices");
     } finally {
       setReloading(false);
     }
+  };
+
+  const switchMode = () => {
+    if ("problem" in parsed) return;
+    if (mode === "form") setText(pricesText(parsed.pricing));
+    else setRows(rowsOf(parsed.pricing));
+    setMode(mode === "form" ? "json" : "form");
   };
 
   const submit = async () => {
@@ -1176,6 +1377,8 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
       update.reset();
     }
   };
+
+  const setRow = (index: number, change: Partial<PriceRow>) => setRows(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
 
   return (
     <FormDialog
@@ -1202,25 +1405,133 @@ function PricesDialog({ provider, onClose }: { provider: ProviderConnection | nu
           </AlertDescription>
         </Alert>
       ) : null}
-      <Field
-        label="Prices by model"
-        htmlFor="provider-prices"
-        hint={
-          'One entry per model. Tokens are per million; other rates are per their unit: per_request (a job or call), per_image, per_video, per_unit (the provider\'s own billed unit), per_second, per_minute. For example: {"fal-ai/some-model": {"per_request": 0.02}}. Leave it empty to use only our price list.'
-        }
-      >
-        <Textarea
-          id="provider-prices"
-          className="min-h-40 font-mono text-xs"
-          value={text}
-          spellCheck={false}
-          // While a reload is reading the server's prices, nothing typed can be lost to its answer.
-          readOnly={reloading}
-          aria-busy={reloading}
-          onChange={(event) => setText(event.target.value)}
-        />
-      </Field>
-      {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
+      {mode === "form" ? (
+        <fieldset className="space-y-3" disabled={reloading} aria-busy={reloading}>
+          <p className="text-sm text-muted-foreground">Token rates are per million tokens. A unit rate is per the unit you pick.</p>
+          {rows.length === 0 ? <p className="text-sm text-muted-foreground">No prices of your own. Our price list is used.</p> : null}
+          {rows.map((row, index) => (
+            <PriceRowFields
+              key={row.key}
+              row={row}
+              problems={problems[index]!}
+              onChange={(change) => setRow(index, change)}
+              onRemove={() => setRows(rows.filter((_, at) => at !== index))}
+            />
+          ))}
+          <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, emptyRow()])}>
+            <Plus className="size-4" />
+            Add a model
+          </Button>
+        </fieldset>
+      ) : (
+        <>
+          <Field
+            label="Prices by model"
+            htmlFor="provider-prices"
+            hint={
+              'One entry per model. Tokens are per million; other rates are per their unit: per_request (a job or call), per_image, per_video, per_unit (the provider\'s own billed unit), per_second, per_minute. For example: {"fal-ai/some-model": {"per_request": 0.02}}. Leave it empty to use only our price list.'
+            }
+          >
+            <Textarea
+              id="provider-prices"
+              className="min-h-40 font-mono text-xs"
+              value={text}
+              spellCheck={false}
+              // While a reload is reading the server's prices, nothing typed can be lost to its answer.
+              readOnly={reloading}
+              aria-busy={reloading}
+              onChange={(event) => setText(event.target.value)}
+            />
+          </Field>
+          {"problem" in parsed && text.trim() !== "" ? <p className="text-sm text-destructive">{parsed.problem}</p> : null}
+        </>
+      )}
+      <Button type="button" variant="link" size="sm" className="px-0" disabled={"problem" in parsed} onClick={switchMode}>
+        {mode === "form" ? "Edit as JSON" : "Edit as a form"}
+      </Button>
     </FormDialog>
+  );
+}
+
+/** One model's row in the prices form. */
+function PriceRowFields({
+  row,
+  problems,
+  onChange,
+  onRemove,
+}: {
+  row: PriceRow;
+  problems: Record<string, string>;
+  onChange: (change: Partial<PriceRow>) => void;
+  onRemove: () => void;
+}) {
+  const id = row.key;
+  const kept = hiddenFields(row);
+  return (
+    <div className="space-y-2 rounded-md border p-3" role="group" aria-label={row.model.trim() === "" ? "New model" : row.model}>
+      <div className="flex items-end gap-2">
+        <Field label="Model" htmlFor={`${id}-model`} className="flex-1">
+          <Input
+            id={`${id}-model`}
+            value={row.model}
+            autoComplete="off"
+            aria-invalid={problems.model ? true : undefined}
+            onChange={(event) => onChange({ model: event.target.value })}
+          />
+        </Field>
+        <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${row.model.trim() || "this model"}`} onClick={onRemove}>
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+      {problems.model ? <p className="text-sm text-destructive">{problems.model}</p> : null}
+      <div className="grid grid-cols-3 gap-2">
+        {TOKEN_FIELDS.map(({ field, label }) => (
+          <Field key={field} label={`${label} $/1M`} htmlFor={`${id}-${field}`}>
+            <Input
+              id={`${id}-${field}`}
+              inputMode="decimal"
+              value={row.tokens[field]}
+              autoComplete="off"
+              aria-invalid={problems[field] ? true : undefined}
+              onChange={(event) => onChange({ tokens: { ...row.tokens, [field]: event.target.value } })}
+            />
+          </Field>
+        ))}
+      </div>
+      {TOKEN_FIELDS.map(({ field }) => (problems[field] ? <p key={field} className="text-sm text-destructive">{problems[field]}</p> : null))}
+      <div className="flex items-end gap-2">
+        <Field label="Unit rate $" htmlFor={`${id}-unit-amount`} className="w-32">
+          <Input
+            id={`${id}-unit-amount`}
+            inputMode="decimal"
+            value={row.unitAmount}
+            autoComplete="off"
+            disabled={row.unitField === ""}
+            aria-invalid={problems.unit ? true : undefined}
+            onChange={(event) => onChange({ unitAmount: event.target.value })}
+          />
+        </Field>
+        <Field label="Unit" htmlFor={`${id}-unit`} className="flex-1">
+          <Select value={row.unitField === "" ? "none" : row.unitField} onValueChange={(value) => onChange({ unitField: value === "none" ? "" : value })}>
+            <SelectTrigger id={`${id}-unit`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No unit rate</SelectItem>
+              {UNIT_FIELDS.map((entry) => (
+                <SelectItem key={entry.field} value={entry.field}>
+                  {entry.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      {problems.unit ? <p className="text-sm text-destructive">{problems.unit}</p> : null}
+      {problems.row ? <p className="text-sm text-destructive">{problems.row}</p> : null}
+      {kept.length > 0 ? (
+        <p className="text-xs text-muted-foreground">Also kept as saved: {kept.join(", ")}. Edit them as JSON.</p>
+      ) : null}
+    </div>
   );
 }
