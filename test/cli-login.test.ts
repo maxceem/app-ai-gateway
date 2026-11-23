@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { createIdentityAuth, operationSweepStatements } from "../src/auth/identity";
 import { operationSweepStatementCount } from "@maxceem/cf-auth";
@@ -385,12 +385,24 @@ describe("CLI browser login", () => {
   });
 
   it("rate limits code lookups per network address", async () => {
-    const testEnv = runtime();
-    const statuses: number[] = [];
-    for (let attempt = 0; attempt < 11; attempt++)
-      statuses.push((await send(testEnv, "POST", "/browser/lookup", { userCode: "AAAA-AAAA" }, { origin: ORIGIN })).status);
-    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200));
-    expect(statuses[10]).toBe(429);
+    // The limit counts in fixed one-minute windows. Under load the eleven
+    // lookups could cross a window's end and start counting again, so the
+    // clock is frozen ten seconds into a minute that has not begun yet. Only
+    // `Date` is faked: the limiter's Durable Object reads it in this isolate,
+    // and requests keep running on real timers.
+    const MINUTE = 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Math.floor(Date.now() / MINUTE) * MINUTE + MINUTE + 10_000);
+    try {
+      const testEnv = runtime();
+      const statuses: number[] = [];
+      for (let attempt = 0; attempt < 11; attempt++)
+        statuses.push((await send(testEnv, "POST", "/browser/lookup", { userCode: "AAAA-AAAA" }, { origin: ORIGIN })).status);
+      expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200));
+      expect(statuses[10]).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("releases a loopback login's key only to the redeem code, once", async () => {
