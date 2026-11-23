@@ -280,6 +280,7 @@ export function FirstRequests({ app, base }: { app: App; base: string }) {
           <p className="text-destructive">Could not load the example requests.</p>
         ) : (
           <>
+            {snippet.data.exchange === undefined ? null : <CommandBlock label="Exchange for a gateway token" text={snippet.data.exchange} />}
             {snippet.data.examples.map((example) => (
               <SnippetExample key={`${example.provider ?? ""}/${example.preset ?? ""}/${example.style ?? example.operation}`} example={example} />
             ))}
@@ -295,9 +296,28 @@ export function FirstRequests({ app, base }: { app: App; base: string }) {
 
 function SnippetExample({ example }: { example: AppSnippetExample }) {
   // The gateway's own text: curl for an app called with a key, the whole request for an iOS app.
-  const text = example.text;
   const kind = example.style ?? example.operation;
   const title = example.preset !== undefined ? `Preset ${example.preset}` : example.provider ?? "";
+  return (
+    <CommandBlock
+      label={`${title} ${kind}`}
+      text={example.text}
+      heading={
+        <>
+          <span className="font-mono">{title}</span> · {kind}
+          {example.model === null ? null : (
+            <>
+              {" "}· <span className="font-mono">{example.model}</span>
+            </>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+/** A command or request to copy, as the gateway wrote it, with its heading. */
+function CommandBlock({ label, text, heading }: { label: string; text: string; heading?: React.ReactNode }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -307,17 +327,10 @@ function SnippetExample({ example }: { example: AppSnippetExample }) {
     }
   };
   return (
-    <section aria-label={`${title} ${kind}`} className="space-y-1">
+    <section aria-label={label} className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs">
-          <span className="font-mono">{title}</span> · {kind}
-          {example.model === null ? null : (
-            <>
-              {" "}· <span className="font-mono">{example.model}</span>
-            </>
-          )}
-        </p>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label={`Copy the ${kind} request`} title="Copy" onClick={() => void copy()}>
+        <p className="text-xs">{heading ?? label}</p>
+        <Button type="button" variant="ghost" size="icon-xs" aria-label={`Copy: ${label}`} title="Copy" onClick={() => void copy()}>
           <Copy />
         </Button>
       </div>

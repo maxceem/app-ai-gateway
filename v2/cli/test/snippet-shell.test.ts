@@ -30,11 +30,13 @@ interface Seen {
 }
 
 /**
- * Runs `command` with `sh` in a folder holding audio.mp3, behind a `curl` that
- * writes its arguments to a file and then runs the real one. Answers what the
- * server saw and the arguments curl got.
+ * Runs `command` with `sh -x` (tracing every command) in a folder holding
+ * audio.mp3 and a `.curlrc` that turns on curl's own trace, behind a `curl`
+ * that writes its arguments to a file and then runs the real one. Answers
+ * what the server saw, the arguments curl got, and everything written:
+ * output, the shell's trace and any curl trace.
  */
-async function run(build: (base: string) => string): Promise<{ seen: Seen; args: string }> {
+async function run(build: (base: string) => string): Promise<{ seen: Seen; args: string; written: string }> {
   const dir = await mkdtemp(join(tmpdir(), "agw-snippet-"));
   let seen: Seen | undefined;
   const server = createServer((request, response) => {
@@ -51,19 +53,33 @@ async function run(build: (base: string) => string): Promise<{ seen: Seen; args:
     await writeFile(join(dir, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$AGW_TEST_ARGS"\nexec ${realCurl} "$@"\n`);
     await chmod(join(dir, "curl"), 0o755);
     await writeFile(join(dir, "audio.mp3"), "ID3 not really audio");
+    // What a .curlrc could do: trace every header to a file, and print it all.
+    await writeFile(join(dir, ".curlrc"), `trace-ascii = "${join(dir, "trace.txt")}"\nverbose\n`);
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    let written = "";
     const code = await new Promise<number | null>((resolve, reject) => {
-      const child = spawn("sh", ["-c", build(base)], {
+      const child = spawn("sh", ["-x", "-c", build(base)], {
         cwd: dir,
-        env: { PATH: `${dir}:${process.env.PATH ?? ""}`, APP_AI_GATEWAY_KEY: APP_KEY, ISSUER_TOKEN, AGW_TEST_ARGS: argsFile },
-        stdio: ["ignore", "ignore", "pipe"],
+        env: {
+          PATH: `${dir}:${process.env.PATH ?? ""}`,
+          HOME: dir,
+          CURL_HOME: dir,
+          XDG_CONFIG_HOME: dir,
+          APP_AI_GATEWAY_KEY: APP_KEY,
+          ISSUER_TOKEN,
+          AGW_TEST_ARGS: argsFile,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
       });
+      child.stdout.on("data", (chunk: Buffer) => (written += chunk.toString()));
+      child.stderr.on("data", (chunk: Buffer) => (written += chunk.toString()));
       child.on("error", reject);
       child.on("close", resolve);
     });
-    assert.equal(code, 0);
+    assert.equal(code, 0, written);
     assert.ok(seen, "the server saw no request");
-    return { seen, args: await readFile(argsFile, "utf8") };
+    const trace = await readFile(join(dir, "trace.txt"), "utf8").catch(() => "");
+    return { seen, args: await readFile(argsFile, "utf8"), written: written + trace };
   } finally {
     server.close();
     await rm(dir, { recursive: true, force: true });
@@ -71,7 +87,7 @@ async function run(build: (base: string) => string): Promise<{ seen: Seen; args:
 }
 
 test("a JSON example sends the app key read from the environment, and curl never gets it as an argument", { skip }, async () => {
-  const { seen, args } = await run((base) =>
+  const { seen, args, written } = await run((base) =>
     curlCommand(
       {
         method: "POST",
@@ -86,11 +102,15 @@ test("a JSON example sends the app key read from the environment, and curl never
   assert.equal(seen.headers["x-end-user-id"], "user-123");
   assert.deepEqual(JSON.parse(seen.body), { model: "gpt-4o-mini", messages: [{ role: "user", content: "it's $HOME" }] });
   assert.ok(!args.includes(APP_KEY), "curl got the app key as an argument");
-  assert.match(args, /^--config\n-\n/u);
+  // --disable first, so no .curlrc is read.
+  assert.match(args, /^--disable\n--config\n-\n/u);
+  // Neither the shell's trace (set -x) nor a .curlrc trace shows it.
+  assert.ok(!written.includes(APP_KEY), "the app key was written out");
+  assert.match(written, /\+ set \+x/u);
 });
 
 test("an upload sends the model as a text field beside the file", { skip }, async () => {
-  const { seen, args } = await run((base) =>
+  const { seen, args, written } = await run((base) =>
     curlCommand(
       { method: "POST", url: `${base}/v1/speech-to-text`, headers: {}, form: { model_id: "@scribe_v2" }, file: { field: "file", name: "audio.mp3" } },
       CREDENTIAL,
@@ -101,12 +121,14 @@ test("an upload sends the model as a text field beside the file", { skip }, asyn
   assert.match(seen.body, /name="model_id"\r\n\r\n@scribe_v2\r\n/u);
   assert.match(seen.body, /name="file"; filename="audio\.mp3"/u);
   assert.ok(!args.includes(APP_KEY));
+  assert.ok(!written.includes(APP_KEY));
 });
 
 test("the issuer exchange sends the key and the user's token in its body, neither as an argument", { skip }, async () => {
-  const { seen, args } = await run((base) => exchangeCommand(`${base}/v2/apps/app_1/auth/token`, "APP_AI_GATEWAY_KEY", "ISSUER_TOKEN"));
+  const { seen, args, written } = await run((base) => exchangeCommand(`${base}/v2/apps/app_1/auth/token`, "APP_AI_GATEWAY_KEY", "ISSUER_TOKEN"));
   assert.equal(seen.method, "POST");
   assert.equal(seen.headers["content-type"], "application/json");
   assert.deepEqual(JSON.parse(seen.body), { api_key: APP_KEY, issuer_token: ISSUER_TOKEN });
   assert.ok(!args.includes(APP_KEY) && !args.includes(ISSUER_TOKEN), "curl got a credential as an argument");
+  assert.ok(!written.includes(APP_KEY) && !written.includes(ISSUER_TOKEN), "a credential was written out");
 });

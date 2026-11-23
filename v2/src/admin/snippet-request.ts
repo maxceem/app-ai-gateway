@@ -3,10 +3,15 @@
  * described line by line. Plain functions with no Worker code (`./app-snippet.ts`
  * builds the requests), so a test can run the commands in a real shell.
  *
- * A credential never becomes a process argument: the command reads it from
- * an environment variable and hands it to curl on stdin as a config line
- * (`printf … | curl --config -`). `printf` is built into the shell, so the
- * value never shows in the system's list of processes either.
+ * A credential never becomes a process argument, and is never logged:
+ *
+ * - the command reads it from an environment variable and hands it to curl
+ *   on stdin as a config line (`printf … | curl --config -`); `printf` is
+ *   built into the shell, so the value never shows in the list of processes;
+ * - it runs in a subshell with tracing off (`( set +x; … )`), so a shell run
+ *   with `set -x` never prints the value;
+ * - `--disable`, curl's first argument, stops it reading a `.curlrc`, which
+ *   could turn on a trace that writes every header.
  */
 
 /** One request, without any credential. */
@@ -38,9 +43,17 @@ export function shellWord(text: string): string {
   return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
-/** A printf that writes curl config lines, each `%s` filled from a variable, piped into curl. */
+/**
+ * A printf that writes curl config lines, each `%s` filled from a variable,
+ * piped into curl, opening a subshell with tracing off. `closeCommand` ends it.
+ */
 function configPipe(lines: string, variables: readonly string[]): string {
-  return `printf ${shellWord(`${lines}\\n`)} ${variables.map((name) => `"$${name}"`).join(" ")} | curl --config -`;
+  return `( set +x; printf ${shellWord(`${lines}\\n`)} ${variables.map((name) => `"$${name}"`).join(" ")} | curl --disable --config -`;
+}
+
+/** The command's lines joined, the subshell closed after the last. */
+function closeCommand(lines: readonly string[]): string {
+  return `${lines.join(" \\\n  ")} )`;
 }
 
 /** The request as a curl command, one argument per line; the credential goes in through stdin. */
@@ -57,7 +70,7 @@ export function curlCommand(request: SnippetRequest, credential: SnippetCredenti
     lines.push(request.file.field === undefined ? `--data-binary ${shellWord(`@${request.file.name}`)}` : `-F ${shellWord(`${request.file.field}=@${request.file.name}`)}`);
   }
   if (request.output !== undefined) lines.push(`--output ${shellWord(request.output)}`);
-  return lines.join(" \\\n  ");
+  return closeCommand(lines);
 }
 
 /**
@@ -86,5 +99,5 @@ export function requestText(request: SnippetRequest, credential: string): string
  * line, both read from variables and handed to curl on stdin.
  */
 export function exchangeCommand(url: string, keyVariable: string, tokenVariable: string): string {
-  return `${configPipe('data = {"api_key":"%s","issuer_token":"%s"}', [keyVariable, tokenVariable])} ${shellWord(url)} -H 'Content-Type: application/json'`;
+  return closeCommand([`${configPipe('data = {"api_key":"%s","issuer_token":"%s"}', [keyVariable, tokenVariable])} ${shellWord(url)}`, `-H 'Content-Type: application/json'`]);
 }

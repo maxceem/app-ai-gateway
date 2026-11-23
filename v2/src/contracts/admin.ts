@@ -742,6 +742,12 @@ export const AppSnippetResponseSchema = z
     /** The address the examples call: the one this request reached. */
     base_url: z.string(),
     examples: z.array(AppSnippetExampleSchema),
+    /**
+     * For an app whose users sign in with their own issuer: the command that
+     * exchanges an app key and a user's token for the gateway token the
+     * examples send. It reads both from environment variables.
+     */
+    exchange: z.string().optional(),
     /** What to know before sending them, such as how this app's users sign in, or why a route has no example. */
     notes: z.array(z.string()),
   })

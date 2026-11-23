@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { shellWord } from "../src/admin/app-snippet.ts";
+import { SAMPLE_MODELS, shellWord } from "../src/admin/app-snippet.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -70,7 +70,7 @@ async function snippetFor(key: string, config: unknown) {
   return {
     appId,
     appKey: app.body.api_key?.key as string | undefined,
-    ...(answer.body as { app_id: string; base_url: string; examples: Example[]; notes: string[] }),
+    ...(answer.body as { app_id: string; base_url: string; examples: Example[]; notes: string[]; exchange?: string }),
   };
 }
 
@@ -132,17 +132,17 @@ describe("first requests for an app", () => {
     });
     expect(chat!.curl).toBe(
       [
-        `printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
+        `( set +x; printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
         `-H 'x-end-user-id: user-123'`,
         `-H 'Content-Type: application/json'`,
-        `-d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}'`,
+        `-d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}' )`,
       ].join(" \\\n  "),
     );
     expect(chat!.text).toBe(chat!.curl);
     // A form, by the proxy's rule: the model as a text field, the file apart.
     expect(transcription).toMatchObject({ form: { model: "whisper-1" }, file: { field: "file", name: "audio.mp3" } });
     expect(transcription!.curl).toContain(`--form-string 'model=whisper-1' \\\n  -F 'file=@audio.mp3'`);
-    expect(speech!.curl).toMatch(/--output 'speech\.mp3'$/u);
+    expect(speech!.curl).toMatch(/--output 'speech\.mp3' \)$/u);
     expect(notes).toContainEqual(expect.stringContaining("Set APP_AI_GATEWAY_KEY to one of this app's keys"));
     expect(notes).toContainEqual(expect.stringContaining(`${slug}: openai.realtime has no example here`));
     expect(JSON.stringify(examples)).not.toContain(PROVIDER_KEY);
@@ -174,15 +174,44 @@ describe("first requests for an app", () => {
     expect(preset!.body.max_tokens).toBe(100);
   });
 
-  it("leaves out an image edit, which needs an image an example cannot include, and still shows image generation", async () => {
+  it("leaves out an image edit, which needs an image an example cannot include, whatever the route's order, and still shows image generation", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
+    for (const operations of [["openai.images.edits", "openai.images"], ["openai.images", "openai.images.edits"]]) {
+      const { examples, notes } = await snippetFor(key, {
+        authentication: { type: "api_key", end_user: { source: "none" } },
+        routing: { providers: { [slug]: { operations, models: ["gpt-image-1.5"] } } },
+      });
+      expect(examples.map((example) => example.operation), operations.join()).toEqual(["openai.images"]);
+      expect(notes).toContainEqual(`${slug}: openai.images.edits: it needs an image to edit, which an example cannot include, so it has no example.`);
+    }
+  });
+
+  it("gives a disabled app no request to run, only a note that it is disabled", async () => {
+    const key = await seedManagementKey();
+    const slug = await provider(key);
+    const app = await request(key, "POST", "/v2/admin/apps", {
+      name: "Off",
+      status: "disabled",
+      config: { authentication: { type: "api_key", end_user: { source: "none" } }, routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } } },
+    });
+    expect(app.status, JSON.stringify(app.body)).toBe(201);
+    const answer = await request(key, "GET", `/v2/admin/apps/${app.body.app.id}/snippet`);
+    expect(answer.body.examples).toEqual([]);
+    expect(answer.body.notes).toEqual([expect.stringMatching(/^This app is disabled: every request to it is refused\./u)]);
+  });
+
+  it("names no model from the whole price list: Vercel and DeepSeek's fill-in-the-middle have no sample, so the note asks for one", async () => {
+    const key = await seedManagementKey();
+    const vercel = await provider(key, { type: "vercel", name: "Vercel", slug: `vercel-${crypto.randomUUID().slice(0, 6)}` });
+    const deepseek = await provider(key, { type: "deepseek", name: "DeepSeek", slug: `deepseek-${crypto.randomUUID().slice(0, 6)}` });
     const { examples, notes } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["openai.images.edits", "openai.images"], models: ["gpt-image-1.5"] } } },
+      routing: { providers: { [vercel]: { operations: ["vercel.chat"] }, [deepseek]: { operations: ["deepseek.chat", "deepseek.completions"] } } },
     });
-    expect(examples.map((example) => example.operation)).toEqual(["openai.images"]);
-    expect(notes).toContainEqual(`${slug}: openai.images.edits: it needs an image to edit, which an example cannot include, so it has no example.`);
+    expect(examples.map((example) => [example.operation, example.model])).toEqual([["deepseek.chat", SAMPLE_MODELS.deepseek!["openai-chat"]]]);
+    expect(notes).toContainEqual(`${vercel}: vercel.chat has no example: no sample model is known for it on vercel. Pick one: list it in the route, and the example names it.`);
+    expect(notes).toContainEqual(`${deepseek}: deepseek.completions has no example: no sample model is known for it on deepseek. Pick one: list it in the route, and the example names it.`);
   });
 
   it("names a sample model for a provider that reports its own costs, and says so plainly where none is known", async () => {
@@ -192,7 +221,7 @@ describe("first requests for an app", () => {
       authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { [router]: { operations: ["openrouter.chat"] } } },
     });
-    expect(examples).toEqual([expect.objectContaining({ operation: "openrouter.chat", model: "openai/gpt-4o-mini" })]);
+    expect(examples).toEqual([expect.objectContaining({ operation: "openrouter.chat", model: SAMPLE_MODELS.openrouter!["openai-chat"] })]);
 
     const hugging = await provider(key, { type: "huggingface", name: "Hugging Face", slug: `huggingface-${crypto.randomUUID().slice(0, 6)}` });
     const unknown = await snippetFor(key, {
@@ -200,7 +229,7 @@ describe("first requests for an app", () => {
       routing: { providers: { [hugging]: { operations: ["huggingface.chat"] } } },
     });
     expect(unknown.examples).toEqual([]);
-    expect(unknown.notes).toContainEqual(`${hugging}: huggingface.chat has no example: the gateway knows no sample model for huggingface. List a model in the route, and the example names it.`);
+    expect(unknown.notes).toContainEqual(`${hugging}: huggingface.chat has no example: no sample model is known for it on huggingface. Pick one: list it in the route, and the example names it.`);
   });
 
   it("sends its generated requests through the proxy, JSON and upload alike, and they are served", async () => {
@@ -228,7 +257,7 @@ describe("first requests for an app", () => {
     const slug = await provider(key, { type: "elevenlabs", name: "ElevenLabs", slug: `elevenlabs-${crypto.randomUUID().slice(0, 6)}` });
     const { examples, appKey } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: { providers: { [slug]: { operations: ["elevenlabs.stt"] } } },
+      routing: { providers: { [slug]: { operations: ["elevenlabs.stt"], models: ["scribe_v2"] } } },
     });
     const [stt] = examples;
     expect(stt).toMatchObject({ operation: "elevenlabs.stt", form: { model_id: stt!.model }, file: { field: "file" } });
@@ -242,7 +271,7 @@ describe("first requests for an app", () => {
     expect((await sentForm()).get("model_id")).toBe(stt!.model);
   });
 
-  it("puts a model in the path where the operation reads it there, picked from our price list when the route allows any", async () => {
+  it("puts a model in the path where the operation reads it there: the sample for the provider when the route allows any", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key, { type: "gemini", name: "Gemini", slug: `gemini-${crypto.randomUUID().slice(0, 6)}` });
     const { examples } = await snippetFor(key, {
@@ -250,7 +279,7 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["gemini.generate.v1beta"] } } },
     });
     const [generate] = examples;
-    expect(generate!.model).toEqual(expect.any(String));
+    expect(generate!.model).toBe(SAMPLE_MODELS.gemini!["gemini-generate"]);
     expect(generate!.url).toBe(`${ORIGIN}/v2/apps/${generate!.url.split("/")[5]}/proxy/${slug}/v1beta/models/${generate!.model}:generateContent`);
     expect(generate!.body).toEqual({ contents: [{ role: "user", parts: [{ text: "Hello!" }] }] });
   });
@@ -299,14 +328,16 @@ describe("first requests for an app", () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const issuer = { jwks_url: "https://issuer.example.com/jwks", issuer: ["https://issuer.example.com"], audience: ["snippet"], user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 3600 };
-    const { appId, examples, notes } = await snippetFor(key, {
+    const { appId, examples, notes, exchange } = await snippetFor(key, {
       authentication: { type: "api_key", end_user: { source: "issuer", issuer } },
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     });
-    expect(examples[0]!.curl).toMatch(/^printf 'header = "Authorization: Bearer %s"\\n' "\$APP_AI_GATEWAY_TOKEN" \| curl --config - /u);
-    expect(notes[0]).toContain(
-      `printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --config - '${ORIGIN}/v2/apps/${appId}/auth/token'`,
+    expect(examples[0]!.curl).toMatch(/^\( set \+x; printf 'header = "Authorization: Bearer %s"\\n' "\$APP_AI_GATEWAY_TOKEN" \| curl --disable --config - /u);
+    // The exchange is a command of its own, never cut inside a note.
+    expect(exchange).toBe(
+      `( set +x; printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/auth/token' \\\n  -H 'Content-Type: application/json' )`,
     );
+    expect(notes[0]).not.toContain("curl");
   });
 
   it("follows a custom provider's listed path, with a model it prices", async () => {

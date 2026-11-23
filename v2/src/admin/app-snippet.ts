@@ -23,7 +23,7 @@ import type { Context } from "hono";
 import { parseServedAppConfig, type AppConfig, type ProviderRouting } from "../contracts/app-config.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { describeConnection } from "../providers/connections.ts";
-import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, requestBodyKind, type ApiStyle, type OperationDescription } from "../providers/operation.ts";
 import { readCustomAuth, readPassthrough } from "../providers/passthrough.ts";
 import { declaredOperation } from "../providers/presets.ts";
 import { priceSources, resolveCall, servedNow } from "../pricing/billability.ts";
@@ -97,34 +97,37 @@ function listedKind(type: string, model: string): string | undefined {
 }
 
 /**
- * Sample models for providers whose models are neither in our price list nor
- * read through another provider's (`modelNamespaces`): ones that report each
- * request's cost themselves, such as OpenRouter. Each is still tried through
+ * A few sample models, by provider type and API style, each one the provider
+ * lists today with no retirement date in our price list. Kept small on
+ * purpose: an example names a model the app names itself, or one of these,
+ * never one picked from the whole price list. Each is still tried through
  * `resolveCall`, as any candidate is.
  */
-const SAMPLE_MODELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  openrouter: { text: "openai/gpt-4o-mini" },
+export const SAMPLE_MODELS: Readonly<Record<string, Partial<Readonly<Record<ApiStyle, string>>>>> = {
+  openai: {
+    "openai-chat": "gpt-5.4-mini",
+    "openai-responses": "gpt-5.4-mini",
+    "openai-embeddings": "text-embedding-3-small",
+    "openai-images": "gpt-image-2.6-flare",
+    "openai-transcription": "gpt-transcribe",
+  },
+  anthropic: { "anthropic-messages": "claude-haiku-4-5" },
+  gemini: { "gemini-generate": "gemini-3.5-flash" },
+  deepseek: { "openai-chat": "deepseek-v4-flash" },
+  // OpenRouter reports each request's cost itself.
+  openrouter: { "openai-chat": "openai/gpt-5.4-mini" },
 };
-
-/** The price list's models of `type` of `kind`, still listed, in its order. */
-function listedModels(type: string, kind: string | undefined): string[] {
-  const prices = Object.hasOwn(PRICE_FILE, type) ? PRICE_FILE[type]! : {};
-  return Object.entries(prices)
-    .filter(([, entry]) => entry.unlisted_since === undefined && (kind === undefined || entry.kind === kind))
-    .map(([model]) => model);
-}
 
 /**
  * The model an example names: the first serving admits (`resolveCall`, as the
- * proxy calls it) whose billed model is of the operation's kind. It tries the
- * route's model list; or else the connection's own prices, the app's
- * rewrites, our price list (through another provider's namespaces where the
- * provider reads its models that way), and a known sample. `unknown` when
- * there was no candidate at all; `refused` when none was admitted.
+ * proxy calls it) whose billed model is of the operation's kind. With a model
+ * list, only its models; else the connection's own prices, the app's
+ * rewrites, and the sample for this provider and style. `refused` when the
+ * route's own list has none that is admitted; `unknown` when nothing else
+ * offers one.
  */
 function exampleModel(
   connection: ConnectionRow,
-  description: ProviderDescription,
   route: ProviderRouting,
   rewrites: AppConfig["routing"]["model_rewrites"],
   operation: OperationDescription,
@@ -132,28 +135,22 @@ function exampleModel(
   const location = operation.model;
   const kind = kindOf(operation);
   const sources = priceSources(connection);
-  const namespaced = Object.entries(description.modelNamespaces ?? {}).flatMap(([namespace, type]) =>
-    listedModels(type, kind).map((model) => `${namespace}/${model}`),
-  );
-  const sample = kind === undefined ? undefined : SAMPLE_MODELS[connection.type]?.[kind];
+  const sample = operation.style === undefined ? undefined : SAMPLE_MODELS[connection.type]?.[operation.style];
   const candidates =
     location.in === "fixed"
       ? [location.model]
       : route.models ?? [
           ...(connection.rates_json === null ? [] : Object.keys(JSON.parse(connection.rates_json) as Record<string, unknown>)),
           ...Object.keys(rewrites ?? {}),
-          ...listedModels(connection.type, kind),
-          ...namespaced,
           ...(sample === undefined ? [] : [sample]),
         ];
-  if (candidates.length === 0) return { none: "unknown" };
   for (const candidate of new Set(candidates)) {
     const call = resolveCall(route, rewrites, sources, operation, candidate);
     if (call.kind !== "admitted") continue;
     const billed = listedKind(connection.type, call.model);
     if (kind === undefined || billed === undefined || billed === kind) return { model: candidate };
   }
-  return { none: "refused" };
+  return { none: route.models !== undefined && location.in !== "fixed" ? "refused" : "unknown" };
 }
 
 /**
@@ -223,7 +220,11 @@ function requestFor(
 }
 
 /** How this app's requests prove who calls: a credential curl sends, or a line for a person; and what to know about it. */
-function callerOf(config: AppConfig, base: string, appId: string): { credential: SnippetCredential | null; line: string; endUser: Record<string, string>; notes: string[] } {
+function callerOf(
+  config: AppConfig,
+  base: string,
+  appId: string,
+): { credential: SnippetCredential | null; line: string; endUser: Record<string, string>; notes: string[]; exchange?: string } {
   const authentication = config.authentication;
   if (authentication.type === "apple_app_attest") {
     return {
@@ -243,8 +244,9 @@ function callerOf(config: AppConfig, base: string, appId: string): { credential:
       line: `Authorization: Bearer <a gateway token, from ${GATEWAY_TOKEN_VARIABLE}>`,
       endUser: {},
       notes: [
-        `This app's users sign in with their own issuer. Set ${APP_KEY_VARIABLE} to an app key and ${ISSUER_TOKEN_VARIABLE} to the user's token, exchange them for a gateway token, valid for an hour, and set ${GATEWAY_TOKEN_VARIABLE} to its access_token: ${exchange}`,
+        `This app's users sign in with their own issuer. Set ${APP_KEY_VARIABLE} to an app key and ${ISSUER_TOKEN_VARIABLE} to the user's token, exchange them for a gateway token, valid for an hour, with the exchange command, and set ${GATEWAY_TOKEN_VARIABLE} to its access_token.`,
       ],
+      exchange,
     };
   }
   const notes = [`Set ${APP_KEY_VARIABLE} to one of this app's keys. Keep the key on your server: anyone who has it can call the app.`];
@@ -265,7 +267,12 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const accountId = c.get("actor").accountId;
   const row = await appRow(c.env.DB, accountId, c.req.param("app")!);
   const origin = new URL(c.req.url).origin;
-  const answer = (examples: Example[], notes: string[]) => c.json({ app_id: row.id, base_url: origin, examples, notes } satisfies Snippet);
+  const answer = (examples: Example[], notes: string[], exchange?: string) =>
+    c.json({ app_id: row.id, base_url: origin, examples, notes, ...(exchange === undefined ? {} : { exchange }) } satisfies Snippet);
+  // A disabled app's requests are all refused: nothing to run until it is turned on.
+  if (row.status !== "active") {
+    return answer([], ["This app is disabled: every request to it is refused. Turn it on in the console, or with agw app update --status active, to get examples."]);
+  }
   let config: AppConfig;
   try {
     config = parseServedAppConfig(JSON.parse(row.config_json)).config;
@@ -316,6 +323,12 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         without.push(name);
         continue;
       }
+      // Before the style is counted as shown: an image edit says why it has no example wherever the route lists it.
+      const missing = missingInput(operation);
+      if (missing !== null) {
+        needs.push(`${name}: ${missing}`);
+        continue;
+      }
       const key = operation.style ?? operation.name;
       if (seen.has(key)) continue;
       // Not served yet (a live session), or a JSON body this gateway has no example of.
@@ -323,12 +336,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
         without.push(name);
         continue;
       }
-      const missing = missingInput(operation);
-      if (missing !== null) {
-        needs.push(`${name}: ${missing}`);
-        continue;
-      }
-      const picked = exampleModel(connection, description!, route, config.routing.model_rewrites, operation);
+      const picked = exampleModel(connection, route, config.routing.model_rewrites, operation);
       if ("none" in picked) {
         (picked.none === "unknown" ? unknown : unpriced).push(name);
         continue;
@@ -347,7 +355,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     for (const line of needs) notes.push(`${slug}: ${line}, so it has no example.`);
     if (unknown.length > 0) {
       notes.push(
-        `${slug}: ${unknown.join(", ")} ${unknown.length === 1 ? "has" : "have"} no example: the gateway knows no sample model for ${connection.type}. List a model in the route, and the example names it.`,
+        `${slug}: ${unknown.join(", ")} ${unknown.length === 1 ? "has" : "have"} no example: no sample model is known for it on ${connection.type}. Pick one: list it in the route, and the example names it.`,
       );
     }
     if (unpriced.length > 0) {
@@ -374,5 +382,5 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   if (examples.length === 0 && Object.keys(config.routing.providers).length === 0) {
     notes.push("This app has no provider routes yet. Add one in the console, or with agw app update, to get an example.");
   }
-  return answer(examples, notes);
+  return answer(examples, notes, caller.exchange);
 }
