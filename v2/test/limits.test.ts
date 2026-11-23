@@ -364,6 +364,79 @@ describe("the plan allowance", () => {
     expect(logged(warn)).toEqual(expect.arrayContaining(["billing_access_stale", "allowance_uncounted"]));
   });
 
+  it("reads the plan again before refusing on one read over 5 s ago, and serves a request the new plan allows (Sol 7b-8)", async () => {
+    const accountId = `acc_recheck_${crypto.randomUUID().slice(0, 8)}`;
+    const at = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Recheck', 'usr_test', ?, ?)",
+    ).bind(accountId, at, at).run();
+    const plain = { ...input({ env }).app, accountId, limits: app().limits };
+    let limit = 1;
+    let asked = 0;
+    const changing = {
+      getTenantAccess: async () => {
+        asked += 1;
+        return { plan: { planKey: "p", planName: "P", isDefault: true, limits: { maxRequestsPerMonth: limit } }, subscription: null };
+      },
+    };
+    const hosted = { ...env, BILLING: changing } as unknown as Env;
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    // The plan's one request is used.
+    await admitRequest(input({ env: hosted, app: plain }));
+    // The plan was read under 5 s ago: refused on it, without asking billing again.
+    await expect(admitRequest(input({ env: hosted, app: plain }))).rejects.toMatchObject({ status: 429, code: "billing_request_quota_exceeded" });
+    expect(asked).toBe(1);
+    // 6 s on, billing is asked again first; the plan is the same, so the refusal stands.
+    vi.setSystemTime(now + 6_000);
+    await expect(admitRequest(input({ env: hosted, app: plain }))).rejects.toMatchObject({ status: 429, code: "billing_request_quota_exceeded" });
+    expect(asked).toBe(2);
+    // The account upgrades. App traffic's cached plan still says 1, but the
+    // request is checked against the plan read now, and served.
+    limit = 10;
+    vi.setSystemTime(now + 12_000);
+    await expect(admitRequest(input({ env: hosted, app: plain }))).resolves.toBeUndefined();
+    expect(asked).toBe(3);
+  });
+
+  it("serves a request, and logs it, when the plan cannot be read again in time before a refusal (Sol 7b-8)", async () => {
+    const accountId = `acc_recheck_${crypto.randomUUID().slice(0, 8)}`;
+    const at = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Recheck', 'usr_test', ?, ?)",
+    ).bind(accountId, at, at).run();
+    const plain = { ...input({ env }).app, accountId, limits: app().limits };
+    let isSlow = false;
+    const hosted = {
+      ...env,
+      BILLING: {
+        getTenantAccess: async () => {
+          if (isSlow) await slow.held();
+          return { plan: { planKey: "p", planName: "P", isDefault: true, limits: { maxRequestsPerMonth: 1 } }, subscription: null };
+        },
+      },
+    } as unknown as Env;
+    useFakeClock();
+    await admitRequest(input({ env: hosted, app: plain }));
+    vi.setSystemTime(Date.now() + 6_000);
+    isSlow = true;
+    const pending = admitRequest(input({ env: hosted, app: plain, limitsDeadlineMs: 50 }));
+    const done = watch(pending);
+    await slow.reached();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(done.settled).toBe(true);
+    await expect(pending).resolves.toBeUndefined();
+    const reasons = warn.mock.calls.flatMap((call) => {
+      try {
+        const event = JSON.parse(String(call[0])) as { message: string; reason?: string };
+        return event.message === "allowance_uncounted" ? [String(event.reason)] : [];
+      } catch {
+        return [];
+      }
+    });
+    expect(reasons).toContain("recheck_deadline");
+  });
+
   it("serves uncounted when plan data cannot be read as a limit", async () => {
     await seedAccount();
     const plain = { ...input({ env }).app, accountId: ACCOUNT_ID, limits: app().limits };

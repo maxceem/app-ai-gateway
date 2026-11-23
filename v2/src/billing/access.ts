@@ -91,19 +91,26 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-async function loadBillingAccess(binding: BillingRuntime, accountId: string, version: number): Promise<GatewayBillingAccess> {
+/** When billing gave each reading app traffic holds: how old the plan a refusal rests on is. */
+const readAt = new WeakMap<GatewayBillingAccess, number>();
+
+/** How long ago billing gave this reading; a reading it did not give (a fallback) has no age. */
+export function billingReadAgeMs(access: GatewayBillingAccess, now: number = Date.now()): number {
+  const at = readAt.get(access);
+  return at === undefined ? Number.POSITIVE_INFINITY : now - at;
+}
+
+async function loadBillingAccess(binding: BillingRuntime, accountId: string): Promise<GatewayBillingAccess> {
   try {
     const access = await binding.getTenantAccess({ serviceId: BILLING_SERVICE_ID, tenantId: accountId });
     const value = { state: "billed", plan: access.plan, subscription: access.subscription } satisfies GatewayBillingAccess;
     const now = Date.now();
+    readAt.set(value, now);
     const endsAt = entitlementEndsAt(value);
     if (endsAt !== null && endsAt <= now) {
       log("error", "billing_expired_entitlement", { account: accountId });
       return { state: "unavailable" };
     }
-    // A read begun before a change the account made since keeps its answer to
-    // itself: the old plan is never kept as the one to fall back on.
-    if (billingVersion(accountId) === version) lastKnownAccess.set(accountId, value, { storedAt: now });
     return value;
   } catch (error) {
     const code = billingErrorCodeOf(error);
@@ -135,14 +142,17 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
   if (cached) return cached;
   billingAccessCache.delete(accountId);
   const version = billingVersion(accountId);
-  const pending = loadBillingAccess(binding, accountId, version);
+  const pending = loadBillingAccess(binding, accountId);
   billingAccessCache.set(accountId, pending, { storedAt: now });
-  // A fresh answer keeps the full TTL, or less if the entitlement ends sooner.
-  // Anything else is held only for the retry interval. A read that a change
-  // made since has outdated stores nothing.
+  // A fresh answer keeps the full TTL, or less if the entitlement ends sooner,
+  // and becomes the last known plan. Anything else is held only for the retry
+  // interval. A read that is no longer the account's current one stores
+  // nothing at all, neither here nor as the last known plan: a change made
+  // since outdated it, or a newer read replaced it (Sol 7b-8).
   void pending.then((access) => {
     if (billingVersion(accountId) !== version || billingAccessCache.peek(accountId)?.value !== pending) return;
     if (access.state === "billed" && !access.stale) {
+      lastKnownAccess.set(accountId, access, { storedAt: now });
       const endsAt = entitlementEndsAt(access);
       if (endsAt === null) return;
       billingAccessCache.set(accountId, pending, { storedAt: now, ttlMs: Math.min(BILLING_ACCESS_CACHE_TTL_MS, endsAt - now) });
@@ -151,6 +161,30 @@ export function getBillingAccess(env: Env, accountId: string): Promise<GatewayBi
     billingAccessCache.set(accountId, pending, { storedAt: now, ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 });
   });
   return pending;
+}
+
+/** How old the plan a refusal rests on may be before billing is asked again. */
+export const BILLING_RECHECK_AFTER_MS = 5_000;
+
+/**
+ * The account's plan, read at most `maxAgeMs` ago: this isolate's reading (or
+ * the read in flight) when it is that recent, otherwise a new read that
+ * replaces it. App traffic asks for it only before refusing a request on a
+ * used-up allowance: the cached plan can be up to 30 s old, and an upgrade
+ * paid since must not be refused on (Sol 7b-8). Requests at the same moment
+ * share one read, so a busy account at its allowance costs at most one
+ * billing read per interval in each isolate. Never rejects.
+ */
+export function recentBillingAccess(
+  env: Env,
+  accountId: string,
+  maxAgeMs: number = BILLING_RECHECK_AFTER_MS,
+): Promise<GatewayBillingAccess> {
+  const now = Date.now();
+  const entry = billingAccessCache.peek(accountId);
+  if (entry !== undefined && entry.expiresAt > now && now - entry.storedAt < maxAgeMs) return entry.value;
+  billingAccessCache.delete(accountId);
+  return getBillingAccess(env, accountId);
 }
 
 /** When a console read of an account last failed or ran late: within the retry interval, none is started. */

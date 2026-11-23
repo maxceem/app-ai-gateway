@@ -198,11 +198,14 @@ interface ShownSubscription {
   readonly subscriptionId: string | null;
   readonly subscriptionStatus: string | null;
   readonly subscriptionPeriod: BillingPeriod | null;
+  /** Left out by a client that does not send it: then the other three decide. */
+  readonly subscriptionUpdatedAt?: string | null | undefined;
 }
 
 /**
  * The subscription a write acts on is the one the console showed when the
- * dialog opened: the same id, status and period. It is read afresh from the
+ * dialog opened: the same id, status and period, and unchanged since
+ * (`updatedAt`, when the client sends it). It is read afresh from the
  * billing service: one replaced, ended or moved to another period since is
  * refused before anything is asked of it (Sol 7b-8). Billing that cannot be
  * read answers 503, as any settings write does.
@@ -216,10 +219,23 @@ async function requireShownSubscription(c: AdminContext, accountId: string, show
   const same =
     (current?.subscriptionId ?? null) === shown.subscriptionId &&
     (current?.status ?? null) === shown.subscriptionStatus &&
-    (current?.billingPeriod ?? null) === shown.subscriptionPeriod;
+    (current?.billingPeriod ?? null) === shown.subscriptionPeriod &&
+    (shown.subscriptionUpdatedAt === undefined || (current?.updatedAt ?? null) === shown.subscriptionUpdatedAt);
   if (!same) {
     throw new GatewayError(409, "subscription_changed", "The subscription changed since the page was read; reload it");
   }
+}
+
+/** How long a read of the plans on offer may take; past it the read answers 502 `billing_unavailable`. */
+export const BILLING_CATALOG_DEADLINE_MS = 3_000;
+
+/**
+ * The plans on offer, read with a deadline: a billing service that hangs
+ * answers `billing_unavailable` rather than leaving the console waiting
+ * (Sol 7b-8). A read only, so cutting it off changes nothing.
+ */
+export function readCatalog(runtime: BillingRuntime, deadlineMs: number = BILLING_CATALOG_DEADLINE_MS) {
+  return rpc(() => withDeadline(Promise.resolve(runtime.listPlans({ serviceId: BILLING_SERVICE_ID })), deadlineMs, "reading the plans"));
 }
 
 /**
@@ -234,7 +250,7 @@ async function requireShownPrice(
   billingPeriod: BillingPeriod,
   shown: { readonly priceAmountCents: number; readonly priceCurrency: string },
 ): Promise<void> {
-  const { plans } = await rpc(() => runtime.listPlans({ serviceId: BILLING_SERVICE_ID }));
+  const { plans } = await readCatalog(runtime);
   const price = plans.find((plan) => plan.planKey === planKey)?.prices.find((entry) => entry.billingPeriod === billingPeriod);
   if (price === undefined) throw new GatewayError(404, "billing_not_found", "The requested plan was not found");
   if (price.priceAmountCents !== shown.priceAmountCents || price.priceCurrency.toLowerCase() !== shown.priceCurrency.toLowerCase()) {
@@ -244,7 +260,7 @@ async function requireShownPrice(
 
 export async function listBillingPlans(c: AdminContext): Promise<Response> {
   const runtime = billingCaller(c);
-  const { plans } = await rpc(() => runtime.listPlans({ serviceId: BILLING_SERVICE_ID }));
+  const { plans } = await readCatalog(runtime);
   return c.json({ plans } satisfies OperationResponse<"listBillingPlans">);
 }
 

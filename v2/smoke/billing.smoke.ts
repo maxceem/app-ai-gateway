@@ -108,6 +108,18 @@ test("a person reads the plans and the plan held, and starts a checkout that ret
   await expectResponse(elsewhere, 409, "a checkout for another account");
   expectCode(await readJson(elsewhere), "account_changed", "a checkout for another account");
 
+  // A write on a subscription changed since the dialog opened is refused: this
+  // account holds none, so one shown with a last-changed time is not it.
+  const changed = await asConsole("/v2/admin/billing/cancel", {
+    accountId,
+    subscriptionId: null,
+    subscriptionStatus: null,
+    subscriptionPeriod: null,
+    subscriptionUpdatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await expectResponse(changed, 409, "a cancel on a subscription changed since it was shown");
+  expectCode(await readJson(changed), "subscription_changed", "a cancel on a subscription changed since it was shown");
+
   // A plan the billing service does not sell is its refusal, in the gateway's words.
   const unknown = await asConsole("/v2/admin/billing/change", {
     planKey: "no-such-plan",

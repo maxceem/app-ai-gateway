@@ -10,7 +10,9 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { getAppTrafficBillingAccess } from "../src/billing/access.ts";
+import { getAppTrafficBillingAccess, getBillingAccess, recentBillingAccess } from "../src/billing/access.ts";
+import { readCatalog } from "../src/admin/billing.ts";
+import type { BillingRuntime } from "../src/billing/contract.ts";
 import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -312,6 +314,30 @@ describe("billing operations", () => {
     expect(fake.calls.filter((call) => call.method !== "getTenantAccess")).toEqual([]);
   });
 
+  it("refuse a write on a subscription changed in place since the dialog opened, as its updatedAt shows (Sol 7b-8)", async () => {
+    const { caller, accountId } = await person();
+    // The subscription moved to another plan: the same id, status and period, a later updatedAt.
+    const fake = billingFake({ ...growth(), subscription: { ...SUBSCRIPTION, planKey: "pro", planName: "Pro", updatedAt: "2026-11-20T00:00:00.000Z" } });
+    const selection = { planKey: "growth", billingPeriod: "month" };
+    const shown = { ...SHOWN, subscriptionUpdatedAt: SUBSCRIPTION.updatedAt };
+    for (const [path, body] of [
+      ["/v2/admin/billing/change", { ...selection, accountId, ...shown, price: SHOWN_PRICE }],
+      ["/v2/admin/billing/resume", { ...selection, accountId, ...shown }],
+      ["/v2/admin/billing/cancel", { accountId, ...shown }],
+    ] as const) {
+      expect(await send(caller, "POST", path, body, fake.env), path).toMatchObject({ status: 409, body: { error: { code: "subscription_changed" } } });
+    }
+    expect(fake.calls.filter((call) => call.method !== "getTenantAccess")).toEqual([]);
+    // Shown as it is now, the write goes ahead; a client that sends no updatedAt is checked on the rest.
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN, subscriptionUpdatedAt: "2026-11-20T00:00:00.000Z" }, fake.env)).toMatchObject({ status: 200 });
+    expect(await send(caller, "POST", "/v2/admin/billing/cancel", { accountId, ...SHOWN }, fake.env)).toMatchObject({ status: 200 });
+  });
+
+  it("answer billing_unavailable when the plans on offer cannot be read in time (Sol 7b-8)", async () => {
+    const stalled = { listPlans: () => new Promise(() => undefined) } as unknown as BillingRuntime;
+    await expect(readCatalog(stalled, 20)).rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
+  });
+
   it("change, resume, cancel and start a trial for the account", async () => {
     const { caller, accountId } = await person();
     const fake = billingFake(growth());
@@ -552,6 +578,38 @@ describe("app traffic's plan cache across a change the account makes (Sol 7b-8)"
     await before;
     fake.state.access = "down";
     expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ state: "unavailable" });
+  });
+});
+
+describe("the last known plan (Sol 7b-8)", () => {
+  it("is never overwritten by an older read that a newer one replaced", async () => {
+    const { accountId } = await person();
+    const fake = billingFake({ plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null });
+    const service = (fake.env as unknown as { BILLING: { getTenantAccess: (input: Record<string, unknown>) => Promise<unknown> } }).BILLING;
+    const original = service.getTenantAccess;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    service.getTenantAccess = async (input) => {
+      const answer = await original(input);
+      await gate;
+      return answer;
+    };
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    // An old read of the free plan is held.
+    const older = getBillingAccess(fake.env, accountId);
+    // Over 5 s on, a newer read replaces it and answers growth.
+    service.getTenantAccess = original;
+    fake.state.access = growth();
+    vi.setSystemTime(now + 6_000);
+    expect(await recentBillingAccess(fake.env, accountId)).toMatchObject({ plan: { planKey: "growth" } });
+    // The older read lands last.
+    release();
+    expect(await older).toMatchObject({ plan: { planKey: "free" } });
+    // With billing down and the cache expired, app traffic falls back on growth, not free.
+    fake.state.access = "down";
+    vi.setSystemTime(now + 40_000);
+    expect(await getAppTrafficBillingAccess(fake.env, accountId, () => undefined)).toMatchObject({ stale: true, plan: { planKey: "growth" } });
   });
 });
 

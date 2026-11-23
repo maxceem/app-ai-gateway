@@ -15,7 +15,9 @@ import { BillingBanner } from "./plan-summary";
 import { CheckoutPage } from "@/pages/checkout";
 import { checkoutReturnPathFor, postAuthPath } from "@/lib/auth-redirect";
 import { PLAN_CONFIRM_CHECKS, PLAN_CONFIRM_INTERVAL_MS } from "@/lib/checkout-return";
-import { renderAuthenticated, settled } from "@/test/render";
+import { CAPABILITIES, membership, renderAuthenticated, settled, testSession } from "@/test/render";
+import { useState, type ReactNode } from "react";
+import { ConsoleSessionProvider } from "@/lib/console-session";
 import type { BillingAccess, PlanAllowance } from "@/lib/types";
 
 const FREE: BillingAccess = { state: "billed", plan: { planKey: "free", planName: "Free", isDefault: true }, subscription: null };
@@ -125,6 +127,25 @@ describe("a plan chosen before sign-in", () => {
     expect(postAuthPath("?plan=<script>")).toBe("/apps");
   });
 
+  it("says when the plans cannot be read, with a way to try again and a way back to Billing (Sol 7b-8)", async () => {
+    const fetchMock = stubBilling(FREE);
+    const answer = fetchMock.getMockImplementation()!;
+    let plansUp = false;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/billing/plans") && !plansUp
+        ? new Response(JSON.stringify({ error: { code: "billing_unavailable", message: "The billing service is unavailable" } }), { status: 502 })
+        : answer(input, init),
+    );
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
+    renderAuthenticated(<CheckoutPage />, { capabilities: { billing: true }, route: "/checkout?plan=pro" });
+    expect(await screen.findByText("Could not load the plans")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Go to plans" }).getAttribute("href")).toBe("/billing");
+    plansUp = true;
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.example/pay"));
+  });
+
   it("starts the checkout for an owner and sends them to the provider's page", async () => {
     const assign = vi.fn();
     vi.stubGlobal("location", { ...window.location, origin: "https://console.test", assign });
@@ -210,7 +231,7 @@ describe("the return from a completed checkout", () => {
     expect(loading).not.toHaveBeenCalled();
     expect(success).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account="))).toBe(false);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account=acct-other"))).toBe(false);
   });
 
   it("stops, saying nothing, once the gateway says another account is selected (Sol 7b-8)", async () => {
@@ -228,7 +249,45 @@ describe("the return from a completed checkout", () => {
     await waitFor(() => expect(dismiss).toHaveBeenCalledWith("checkout-return"));
     expect(success).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account="))).toHaveLength(1);
+    // The page's own read and the one confirming read, neither retried.
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/billing/status?account="))).toHaveLength(2);
+  });
+
+  it("stops, saying nothing, when the person switches accounts while the payment is being confirmed (Sol 7b-8)", async () => {
+    const success = vi.spyOn(toast, "success");
+    const info = vi.spyOn(toast, "info");
+    const dismiss = vi.spyOn(toast, "dismiss");
+    const fetchMock = stubBilling(PAID);
+    const answer = fetchMock.getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).includes("/billing/status")) await held;
+      return answer(input, init);
+    });
+    let switchTo!: (accountId: string) => void;
+    function Switchable({ children }: { children: ReactNode }) {
+      const [accountId, setAccountId] = useState("acct-1");
+      switchTo = setAccountId;
+      const session = testSession({
+        account: { id: accountId, name: accountId },
+        accounts: [membership("acct-1", "Acme"), membership("acct-2", "Other")],
+      });
+      return <ConsoleSessionProvider session={session} capabilities={{ ...CAPABILITIES, billing: true }}>{children}</ConsoleSessionProvider>;
+    }
+    const { client } = renderAuthenticated(<Switchable><AppShell><p>Apps</p></AppShell></Switchable>, {
+      capabilities: { billing: true },
+      route: checkoutReturnPathFor("pro", "acct-1"),
+    });
+    await waitFor(() => expect(statusReads(fetchMock)).toBeGreaterThanOrEqual(1));
+    act(() => switchTo("acct-2"));
+    expect(dismiss).toHaveBeenCalledWith("checkout-return");
+    // The read for the first account lands afterwards, showing the plan bought: nothing is announced.
+    release();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/status?account=acct-2"))).toBe(true));
+    await settled(client);
+    expect(success).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
   });
 
   it("announces nothing on a console without billing, and still takes the marker off", async () => {

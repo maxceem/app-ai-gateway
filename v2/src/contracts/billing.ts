@@ -205,14 +205,18 @@ const ShownAccount = { accountId: z.string().min(1).max(200) };
 
 /**
  * The subscription the console showed when the dialog opened: its id, status
- * and period, each `null` where it showed none. A write on a subscription
- * replaced, or whose status or period changed since, is refused
- * (`subscription_changed`) rather than applied to what the person never saw.
+ * and period, each `null` where it showed none, and when the billing service
+ * last changed it. A write on a subscription replaced, or changed in any way
+ * since (a move between plans keeps the id, status and period, but not
+ * `updatedAt`), is refused (`subscription_changed`) rather than applied to
+ * what the person never saw. `subscriptionUpdatedAt` is optional: a client
+ * that sends none is checked on the other three alone.
  */
 const ShownSubscription = {
   subscriptionId: z.string().min(1).max(200).nullable(),
   subscriptionStatus: BillingSubscriptionStatusSchema.nullable(),
   subscriptionPeriod: BillingPeriodSchema.nullable(),
+  subscriptionUpdatedAt: z.string().min(1).max(100).nullable().optional(),
 };
 
 /**

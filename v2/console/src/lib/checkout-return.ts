@@ -73,6 +73,8 @@ export function useCheckoutSuccessToast(): void {
   const handled = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const reads = useRef<AbortController>(undefined);
+  // The account whose payment is being confirmed, while it is.
+  const confirming = useRef<string | null>(null);
   const succeeded = checkoutSucceeded(location.search);
 
   useEffect(() => {
@@ -83,6 +85,17 @@ export function useCheckoutSuccessToast(): void {
       clearTimeout(timer.current);
     };
   }, []);
+
+  // The person switched accounts while a payment was being confirmed: the
+  // confirmation was the other account's, so it stops and says nothing
+  // (Sol 7b-8).
+  useEffect(() => {
+    if (confirming.current === null || confirming.current === account.id) return;
+    confirming.current = null;
+    reads.current?.abort();
+    clearTimeout(timer.current);
+    toast.dismiss(TOAST_ID);
+  }, [account.id]);
 
   useEffect(() => {
     if (!succeeded || handled.current) return;
@@ -105,6 +118,10 @@ export function useCheckoutSuccessToast(): void {
       return;
     }
     toast.loading("Confirming your payment…", { id: TOAST_ID });
+    confirming.current = checkoutAccount;
+    const done = () => {
+      confirming.current = null;
+    };
 
     const check = async (left: number): Promise<void> => {
       // The page's reads stop when it goes. Under StrictMode the component is
@@ -117,20 +134,26 @@ export function useCheckoutSuccessToast(): void {
         void check(left);
         return;
       }
+      // Checked again as the answer lands: an account switched to meanwhile
+      // has already ended this confirmation.
+      if (confirming.current !== checkoutAccount) return;
       if (read.kind === "account_changed") {
+        done();
         toast.dismiss(TOAST_ID);
         return;
       }
       if (read.kind === "plan") {
         const access = read.status.access;
         if (access.state === "billed" && access.plan?.planKey === planKey) {
+          done();
           toast.success("Payment complete", { id: TOAST_ID, description: `You're on the ${access.plan.planName} plan.` });
           void client.invalidateQueries({ queryKey: keys.session });
-          void client.invalidateQueries({ queryKey: keys.billingStatus });
+          void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
           return;
         }
       }
       if (left <= 1) {
+        done();
         received();
         return;
       }

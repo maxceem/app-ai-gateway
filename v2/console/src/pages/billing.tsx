@@ -48,14 +48,16 @@ type Period = "month" | "year";
 /**
  * The account and subscription a write acts on, as the page showed them when
  * the person opened the dialog (or pressed the button): the gateway refuses a
- * write whose account, or whose subscription's id, status or period, has
- * changed since, rather than act on what the person never saw.
+ * write whose account or subscription has changed since, rather than act on
+ * what the person never saw.
  */
 interface Shown {
   accountId: string;
   subscriptionId: string | null;
   subscriptionStatus: NonNullable<ReturnType<typeof subscriptionOf>>["status"] | null;
   subscriptionPeriod: Period | null;
+  /** When the billing service last changed it: a move between plans changes nothing else shown here. */
+  subscriptionUpdatedAt: string | null;
 }
 
 function shownOf(accountId: string, access: BillingAccess | undefined): Shown {
@@ -65,6 +67,7 @@ function shownOf(accountId: string, access: BillingAccess | undefined): Shown {
     subscriptionId: subscription?.subscriptionId ?? null,
     subscriptionStatus: subscription?.status ?? null,
     subscriptionPeriod: subscription?.billingPeriod ?? null,
+    subscriptionUpdatedAt: subscription?.updatedAt ?? null,
   };
 }
 
@@ -81,7 +84,7 @@ export function BillingPage() {
   const [preparingChange, setPreparingChange] = useState(false);
   const client = useQueryClient();
 
-  const status = useBillingStatus(capabilities.billing);
+  const status = useBillingStatus(capabilities.billing, account.id);
   const plans = useBillingPlans(capabilities.billing);
   const checkout = useStartCheckout();
   const change = useChangePlan();

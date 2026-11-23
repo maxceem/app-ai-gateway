@@ -33,7 +33,7 @@ export function CheckoutPage() {
   const location = useLocation();
   const { capabilities, canManage, account } = useConsoleSession();
   const plans = useBillingPlans(capabilities.billing);
-  const status = useBillingStatus(capabilities.billing);
+  const status = useBillingStatus(capabilities.billing, account.id);
   const billing = status.data?.access;
   const { mutateAsync: startCheckout } = useStartCheckout();
   // Set before the request rather than after it: under StrictMode the effect
@@ -85,6 +85,28 @@ export function CheckoutPage() {
 
   if (landing !== null) return <Navigate to={landing} replace />;
   if (unknownPlan) return <Navigate to={BILLING_PATH} replace />;
+
+  // The catalog could not be read: say so, with a way to try again and a way
+  // out, rather than wait on it for good (Sol 7b-8).
+  if (landing === null && plans.isError && error === null) {
+    return (
+      <div className="mx-auto max-w-lg py-10">
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>Could not load the plans</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>{plans.error instanceof Error ? plans.error.message : "The plans could not be read."}</span>
+            <Button size="sm" variant="outline" disabled={plans.isFetching} onClick={() => void plans.refetch()}>
+              Try again
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link to={BILLING_PATH}>Go to plans</Link>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
 
   if (error !== null) {
     return (

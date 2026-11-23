@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { OperationQuery, OperationRequest } from "@contracts/catalog";
-import { call } from "./api";
+import { ApiError, call } from "./api";
 import {
   changePassword,
   plainlySignedOut,
@@ -34,7 +34,9 @@ export const keys = {
   rejections: (appId: string, query: unknown) => ["rejection-events", appId, query] as const,
   providers: ["providers"] as const,
   prices: ["prices"] as const,
-  billingStatus: ["billing-status"] as const,
+  /** Every account's billing status, for an invalidation that is about all of them. */
+  billingStatusPrefix: ["billing-status"] as const,
+  billingStatus: (accountId: string) => ["billing-status", accountId] as const,
   billingPlans: ["billing-plans"] as const,
 };
 
@@ -59,10 +61,12 @@ export function useCapabilities() {
  * 401 from the management API is still the unauthenticated case rather than
  * an error worth retrying, so the caller treats a failed query as "signed out".
  */
+const readSession = async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session;
+
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await plainlySignedOut()) ? null : (await call("getAdminSession")).session,
+    queryFn: readSession,
     retry: false,
     staleTime: 60_000,
   });
@@ -130,16 +134,42 @@ export function useSelectAccount() {
     mutationFn: (accountId: string) => call("selectAccount", { body: { accountId } }),
     onSuccess: async (result) => {
       client.setQueryData(keys.session, result.session);
-      // Every cached list belongs to the previous account, so its data is
-      // dropped. Reset rather than `clear()`: clearing removes the queries the
-      // mounted pages observe, which then keep showing the previous account's
-      // data and never fetch again. A reset empties them in place and
-      // refetches the ones on screen. The session was just replaced, and the
-      // capabilities describe the deployment, so both are kept.
-      const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
-      await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) });
+      await dropAccountData(client);
     },
   });
+}
+
+/**
+ * Every cached list belongs to the previous account, so its data is dropped.
+ * Reset rather than `clear()`: clearing removes the queries the mounted pages
+ * observe, which then keep showing the previous account's data and never
+ * fetch again. A reset empties them in place and refetches the ones on
+ * screen. The session was just replaced, and the capabilities describe the
+ * deployment, so both are kept.
+ */
+async function dropAccountData(client: QueryClient, alsoKept: (key: readonly unknown[]) => boolean = () => false): Promise<void> {
+  const kept: readonly unknown[] = [keys.session[0], keys.capabilities[0]];
+  await client.resetQueries({ predicate: (query) => !kept.includes(query.queryKey[0]) && !alsoKept(query.queryKey) });
+}
+
+/** The gateway refused a read for an account that is no longer the one selected. */
+export const isAccountChanged = (error: unknown) =>
+  error instanceof ApiError && error.status === 409 && error.code === "account_changed";
+
+/**
+ * Another tab selected another account: this tab takes it on, as if the
+ * switch were made here, so it never goes on showing one account's data under
+ * another's name (Sol 7b-8).
+ */
+export async function followSelectedAccount(client: QueryClient, refusedAccountId: string): Promise<void> {
+  const session = await client.fetchQuery({ queryKey: keys.session, queryFn: readSession, staleTime: 0 });
+  // Only a session that has moved on is followed: reading again for the
+  // account just refused would only be refused again.
+  // The refused read itself is left alone: it belongs to the account just
+  // left, and refetching it would only be refused again.
+  if (session && session.account.id !== refusedAccountId) {
+    await dropAccountData(client, (key) => key[0] === keys.billingStatusPrefix[0] && key[1] === refusedAccountId);
+  }
 }
 
 /** Management keys, CLI logins and MCP connections, in one list. */
@@ -470,11 +500,25 @@ export function useRejectionEvents(appId: string, query: RejectionQuery) {
 // Billing: a hosted deployment only (the `billing` capability). Nothing here
 // moves money: a checkout is finished on the billing provider's own page.
 
-/** The account's plan and allowance. Polled gently, since the allowance moves with every request. */
-export function useBillingStatus(enabled: boolean) {
+/**
+ * The account's plan and allowance. Polled gently, since the allowance moves
+ * with every request. Each read names the account the console shows, and is
+ * kept under it: if another tab has selected another account since, the
+ * gateway refuses rather than answer for that one (`account_changed`), and
+ * this tab follows the switch (Sol 7b-8).
+ */
+export function useBillingStatus(enabled: boolean, accountId: string) {
+  const client = useQueryClient();
   return useQuery({
-    queryKey: keys.billingStatus,
-    queryFn: () => call("getBillingStatus"),
+    queryKey: keys.billingStatus(accountId),
+    queryFn: async ({ signal }) => {
+      try {
+        return await call("getBillingStatus", { query: { account: accountId }, signal });
+      } catch (error) {
+        if (isAccountChanged(error)) void followSelectedAccount(client, accountId).catch(() => undefined);
+        throw error;
+      }
+    },
     enabled,
     staleTime: 30_000,
     refetchInterval: enabled ? 5 * 60_000 : false,
@@ -494,7 +538,7 @@ export function useBillingPlans(enabled: boolean) {
 function useRefreshPlan() {
   const client = useQueryClient();
   return () => {
-    void client.invalidateQueries({ queryKey: keys.billingStatus });
+    void client.invalidateQueries({ queryKey: keys.billingStatusPrefix });
     void client.invalidateQueries({ queryKey: keys.session });
   };
 }

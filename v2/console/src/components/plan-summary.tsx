@@ -15,8 +15,8 @@ import { cn } from "@/lib/utils";
  * guessing at a plan.
  */
 export function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
-  const { capabilities, canManage } = useConsoleSession();
-  const status = useBillingStatus(capabilities.billing);
+  const { capabilities, canManage, account } = useConsoleSession();
+  const status = useBillingStatus(capabilities.billing, account.id);
   const location = useLocation();
   if (!capabilities.billing || !status.data) return null;
 
@@ -61,8 +61,8 @@ export function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
  * off, and not on the billing page, which states all of it beside its controls.
  */
 export function BillingBanner() {
-  const { capabilities } = useConsoleSession();
-  const status = useBillingStatus(capabilities.billing);
+  const { capabilities, account } = useConsoleSession();
+  const status = useBillingStatus(capabilities.billing, account.id);
   const location = useLocation();
   if (!capabilities.billing || !status.data || location.pathname === "/billing") return null;
   const notice = quotaNotice(status.data.allowance) ?? billingNotice(status.data.access, status.data.limits);
