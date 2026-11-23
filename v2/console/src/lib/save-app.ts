@@ -32,14 +32,12 @@ export function configIssue(error: unknown): { path: string; message: string } |
 /**
  * Saves the app with one part of it changed, at the revision it was read at.
  * Returns the app as the gateway stored it, or null when the save failed.
- * `onRefused` hears the refusal too, so a form can show it beside the field.
  */
 export function useSaveApp(app: App, { keepsEdits = false }: { keepsEdits?: boolean } = {}) {
   const update = useUpdateApp(app.id);
   const save = async (
     change: { name?: string; status?: App["status"]; config?: AppConfig | unknown },
     done: string,
-    onRefused?: (error: unknown) => void,
   ) => {
     try {
       const result = await update.mutateAsync({
@@ -54,7 +52,6 @@ export function useSaveApp(app: App, { keepsEdits = false }: { keepsEdits?: bool
       return result.app;
     } catch (error) {
       toast.error(saveError(error, "Could not save the app", keepsEdits));
-      onRefused?.(error);
       return null;
     }
   };
@@ -94,15 +91,15 @@ export function usePatchForm<T, D = T>(
   };
   const [base, setBase] = useState(() => start(app));
   const [draft, setDraft] = useState<D>(() => convert.toDraft(base.stored));
-  // Counts the drafts this form has started, so a form can drop what it remembered about the last one.
-  const [generation, setGeneration] = useState(0);
+  // The gateway's refusal of the last save, until the draft changes or starts again.
+  const [refused, setRefused] = useState<{ path: string; message: string } | null>(null);
   const dirty = canonicalJson(edits(draft)) !== base.initial;
 
   const restart = (from: App) => {
     const next = start(from);
     setBase(next);
     setDraft(convert.toDraft(next.stored));
-    setGeneration((count) => count + 1);
+    setRefused(null);
   };
 
   // An unedited draft follows a newer version of the app; an edited one keeps its own.
@@ -114,8 +111,8 @@ export function usePatchForm<T, D = T>(
   /** The operations a valid draft saves as. */
   const operations = (value: D): PatchOperation[] => diffOperations(path, base.stored, convert.toStored(value));
 
-  /** Saves the changed fields; returns the stored app, or null when refused or unchanged. */
-  const save = async (done: string, onRefused?: (error: unknown) => void): Promise<App | null> => {
+  /** Saves the changed fields; returns the stored app, or null when refused or unchanged. A refusal stays in `refused`. */
+  const save = async (done: string): Promise<App | null> => {
     const changes = operations(draft);
     if (changes.length === 0) {
       restart(app);
@@ -132,22 +129,22 @@ export function usePatchForm<T, D = T>(
           ? "The app changed since you started editing. Discard your edits to load the latest version."
           : saveError(error, "Could not save the app", true),
       );
-      onRefused?.(error);
+      setRefused(configIssue(error));
       return null;
     }
   };
 
   return {
     draft,
-    setDraft,
-    /**
-     * Changes each time the form starts a new draft: after a save, a discard,
-     * or a clean form following a newer app. Key what the form remembers
-     * beside the draft by it.
-     */
-    generation,
+    /** Changes the draft; a refusal of the last save no longer applies to it. */
+    setDraft: (next: D) => {
+      setDraft(next);
+      setRefused(null);
+    },
     /** The part as stored when this draft started. */
     stored: base.stored,
+    /** Where the gateway refused the last save, as `config.<path>: <message>` said it, or null. */
+    refused,
     dirty,
     /** The app changed since this edited draft was read: saving it would be refused. */
     stale: dirty && app.revision !== base.revision,

@@ -11,13 +11,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   AppAttestFields,
   IdentityProviderFields,
-  authForSave,
+  signInConfig,
+  signInDraftOf,
+  signInIssues,
   SubscriptionFields,
   UserSourceFields,
-  authIssues,
   issueAt,
-  type AuthDraft,
   type AuthIssues,
+  type SignInDraft,
 } from "@/components/auth-fields";
 import { ChoiceList, type Choice } from "@/components/choice-list";
 import { Field, PageHeader } from "@/components/field";
@@ -30,6 +31,8 @@ import { StatCard } from "@/components/stat-card";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useAccountUsage, useApps, useCreateApp } from "@/lib/queries";
 import type { App, CreatedApp } from "@/lib/types";
+import type { z } from "zod";
+import { AuthenticationConfigSchema, type AuthenticationConfig } from "@contracts/app-config";
 
 /** What kind of app it is, as a person reads it. */
 export function appKind(app: App): string {
@@ -181,30 +184,34 @@ const KINDS: Choice<Kind>[] = [
   },
 ];
 
-/** The sign-in a new app of each kind starts from; who may call is asked before it is used. */
-function startingAuth(kind: Kind): AuthDraft {
-  return kind === "ios"
-    ? { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "", bundle_id: "" } }
-    : { type: "api_key", end_user: { source: "none" } };
+/** The sign-in a new app of each kind starts from, with who may call still to be answered. */
+function startingDraft(kind: Kind): SignInDraft {
+  // Only what the person answers is sent: App Attest's environments and checking are left to their defaults.
+  const stored = (
+    kind === "ios"
+      ? { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "", bundle_id: "" } }
+      : { type: "api_key", end_user: { source: "none" } }
+  ) as AuthenticationConfig;
+  return signInDraftOf(stored, { unanswered: true });
 }
 
+/** A sign-in block as it is sent to be created: the schema's input, where defaults may be left out. */
+type NewAuthentication = z.input<typeof AuthenticationConfigSchema>;
+
 /** The first settings of a new app: its sign-in as answered, trimmed, and nothing else yet. */
-export function newAppConfig(answered: AuthDraft): { authentication: AuthDraft } {
-  const authentication = authForSave(answered);
-  const endUser = authentication.end_user.source === "header"
-    ? { source: "header" as const, header: authentication.end_user.header.trim() }
-    : authentication.end_user;
+export function newAppConfig(authentication: NewAuthentication): { authentication: NewAuthentication } {
+  const endUser = authentication.end_user.source === "header" ? { ...authentication.end_user, header: authentication.end_user.header.trim() } : authentication.end_user;
   if (authentication.type === "apple_app_attest") {
     const { team_id, bundle_id } = authentication.app_attest;
     return {
       authentication: {
         ...authentication,
-        end_user: endUser,
+        end_user: endUser as typeof authentication.end_user,
         app_attest: { ...authentication.app_attest, team_id: team_id.trim(), bundle_id: bundle_id.trim() },
       },
     };
   }
-  return { authentication: { ...authentication, end_user: endUser } };
+  return { authentication: { ...authentication, end_user: endUser as typeof authentication.end_user } };
 }
 
 type StepId = "basics" | "identity" | "users" | "provider" | "paid";
@@ -218,14 +225,14 @@ const STEP_TITLES: Record<StepId, string> = {
 };
 
 /** Whether a step's own answers are complete: judged by the problems under its part only. */
-function stepDone(step: StepId, name: string, answered: boolean, issues: AuthIssues): boolean {
+function stepDone(step: StepId, name: string, draft: SignInDraft, issues: AuthIssues): boolean {
   switch (step) {
     case "basics":
       return name.trim() !== "";
     case "identity":
       return issueAt(issues, "app_attest") === undefined;
     case "users":
-      return answered && issueAt(issues, "end_user.header") === undefined;
+      return draft.source !== null && issueAt(issues, "end_user.header") === undefined;
     case "provider":
       return (["preset", "jwks_url", "issuer", "audience"] as const).every((field) => issueAt(issues, `end_user.issuer.${field}`) === undefined);
     case "paid":
@@ -244,24 +251,22 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const create = useCreateApp();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>("ios");
-  const [auth, setAuth] = useState<AuthDraft>(() => startingAuth("ios"));
-  // Who may call has no default answer: the person chooses, as v1 asked it.
-  const [answered, setAnswered] = useState(false);
+  // The sign-in answers; who may call has no default answer, as v1 asked it.
+  const [draft, setDraft] = useState<SignInDraft>(() => startingDraft("ios"));
   const [stepIndex, setStepIndex] = useState(0);
   const [created, setCreated] = useState<CreatedApp | null>(null);
 
-  const issuer = answered && auth.end_user.source === "issuer";
+  const issuer = draft.source === "issuer";
   const steps: StepId[] = ["basics", ...(kind === "ios" ? (["identity"] as const) : []), "users", ...(issuer ? (["provider", "paid"] as const) : [])];
   const step = steps[Math.min(stepIndex, steps.length - 1)]!;
   const last = stepIndex >= steps.length - 1;
-  const issues = authIssues(auth);
-  const done = stepDone(step, name, answered, issues);
+  const issues = signInIssues(draft);
+  const done = stepDone(step, name, draft, issues);
 
   const reset = () => {
     setName("");
     setKind("ios");
-    setAuth(startingAuth("ios"));
-    setAnswered(false);
+    setDraft(startingDraft("ios"));
     setStepIndex(0);
   };
 
@@ -269,7 +274,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
 
   const submit = async () => {
     try {
-      const result = await create.mutateAsync({ name: name.trim(), config: newAppConfig(auth) });
+      const result = await create.mutateAsync({ name: name.trim(), config: newAppConfig(signInConfig(draft)) });
       reset();
       onOpenChange(false);
       toast.success("App created");
@@ -318,41 +323,19 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                 onChange={(next) => {
                   if (next === kind) return;
                   setKind(next);
-                  setAuth(startingAuth(next));
-                  setAnswered(false);
-                              }}
+                  // Another kind asks every sign-in question again.
+                  setDraft(startingDraft(next));
+                }}
               />
             </div>
           </>
         ) : null}
-        {step === "identity" && auth.type === "apple_app_attest" ? (
-          <AppAttestFields value={auth.app_attest} issues={issues} withVerifyOn={false} onChange={(app_attest) => setAuth({ ...auth, app_attest })} />
+        {step === "identity" && draft.appAttest !== null ? (
+          <AppAttestFields value={draft.appAttest} issues={issues} withVerifyOn={false} onChange={(appAttest) => setDraft({ ...draft, appAttest })} />
         ) : null}
-        {step === "users" ? (
-          <UserSourceFields
-            type={auth.type}
-            value={answered ? auth.end_user : null}
-            issues={issues}
-            onChange={(end_user) => {
-              setAnswered(true);
-              setAuth({ ...auth, end_user } as AuthDraft);
-            }}
-          />
-        ) : null}
-        {step === "provider" && auth.end_user.source === "issuer" ? (
-          <IdentityProviderFields
-            issuer={auth.end_user.issuer}
-            issues={issues}
-            onChange={(next) => setAuth({ ...auth, end_user: { source: "issuer", issuer: next } } as AuthDraft)}
-          />
-        ) : null}
-        {step === "paid" && auth.end_user.source === "issuer" ? (
-          <SubscriptionFields
-            issuer={auth.end_user.issuer}
-            issues={issues}
-            onChange={(next) => setAuth({ ...auth, end_user: { source: "issuer", issuer: next } } as AuthDraft)}
-          />
-        ) : null}
+        {step === "users" ? <UserSourceFields draft={draft} issues={issues} onChange={setDraft} /> : null}
+        {step === "provider" ? <IdentityProviderFields form={draft.issuer} issues={issues} onChange={(form) => setDraft({ ...draft, issuer: form })} /> : null}
+        {step === "paid" ? <SubscriptionFields form={draft.issuer} issues={issues} onChange={(form) => setDraft({ ...draft, issuer: form })} /> : null}
       </FormDialog>
 
       <SecretRevealDialog

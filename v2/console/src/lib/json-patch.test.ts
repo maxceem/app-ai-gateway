@@ -18,13 +18,14 @@ describe("diffOperations", () => {
     ]);
   });
 
-  it("replaces whole objects when a change touches more fields than one request takes", () => {
+  it("replaces the whole part when a change touches more fields than one request takes", () => {
     const before = { a: Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`k${index}`, index])), b: { x: 1 } };
     const after = { a: Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`k${index}`, index + 1])), b: { x: 2 } };
-    const operations = diffOperations("/config/presets", before, after);
-    expect(operations).toEqual([
-      { op: "replace", path: "/config/presets/a", value: after.a },
-      { op: "replace", path: "/config/presets/b", value: after.b },
-    ]);
+    expect(diffOperations("/config/presets", before, after)).toEqual([{ op: "replace", path: "/config/presets", value: after }]);
+  });
+
+  it("adds a part that was not there, and removes one that goes", () => {
+    expect(diffOperations("/config/presets", undefined, { quick: { model: "m" } })).toEqual([{ op: "add", path: "/config/presets", value: { quick: { model: "m" } } }]);
+    expect(diffOperations("/config/presets", { quick: { model: "m" } }, undefined)).toEqual([{ op: "remove", path: "/config/presets" }]);
   });
 });

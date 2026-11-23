@@ -234,12 +234,12 @@ describe("Presets tab", () => {
     const fallbackProvider = () => screen.getAllByRole("combobox", { name: "Provider" })[1]!;
     await chooseOption(fallbackProvider(), "anthropic");
     expect(screen.getAllByRole("combobox", { name: "Operation" })[1]!.textContent).toContain("openai.images.edits");
-    expect(screen.getByText("anthropic does not offer openai.images.edits. Choose an operation for this fallback.")).toBeTruthy();
+    expect(screen.getByText("openai.images.edits is not an operation of anthropic")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
 
     await chooseOption(fallbackProvider(), "openai");
     expect(screen.getAllByRole("combobox", { name: "Operation" })[1]!.textContent).toContain("openai.images.edits");
-    expect(screen.queryByText(/does not offer/)).toBeNull();
+    expect(screen.queryByText(/is not an operation of/)).toBeNull();
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -343,7 +343,7 @@ describe("Presets tab", () => {
     const model = (await screen.findAllByLabelText("Model"))[0]!;
     await userEvent.type(model, "-2");
 
-    expect(screen.getByText("anthropic.messages does not speak openai-chat, the preset's API. A fallback must speak it.")).toBeTruthy();
+    expect(screen.getByText("anthropic.messages is not a openai-chat operation; a fallback must speak the preset's API style")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save presets" }).hasAttribute("disabled")).toBe(true);
   });
 

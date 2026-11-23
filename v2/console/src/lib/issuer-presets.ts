@@ -8,17 +8,6 @@ import type { IssuerAuthentication } from "@contracts/app-config";
 
 export type IssuerProvider = NonNullable<IssuerAuthentication["provider"]>;
 
-/**
- * The issuer as the console edits it: `issuer` and `audience` may still be a
- * single string, and `_paid` is the form's own paid-users choice, which is
- * never saved.
- */
-export type IssuerDraft = Omit<IssuerAuthentication, "issuer" | "audience"> & {
-  issuer: string | string[];
-  audience: string | string[];
-  _paid?: boolean;
-};
-
 export interface PresetInput {
   key: string;
   label: string;
@@ -127,32 +116,27 @@ export function issuerPreset(id: IssuerProvider | undefined): IssuerPreset {
   return ISSUER_PRESETS.find((preset) => preset.id === id) ?? CUSTOM;
 }
 
-/** The first of a stored list, or the string itself. */
-const first = (value: string | string[]): string => (Array.isArray(value) ? (value[0] ?? "") : value);
 
 /**
- * The preset an issuer was made with, and the inputs that made it, so the
- * form reopens on them. It counts only when the preset rebuilds the stored
- * fields exactly, whether or not the issuer names its provider: anything else
- * opens in the custom editor, which shows every stored value, so no field is
- * hidden behind a preset that would rewrite it.
+ * The preset a stored issuer was made with, and the inputs that made it, so
+ * the form reopens on them. Only an issuer that names its provider, and that
+ * the provider rebuilds exactly, opens on it; anything else, an issuer
+ * without a provider label included, opens in the custom editor, which shows
+ * every stored value.
  */
-export function matchIssuerPreset(issuer: IssuerDraft): { preset: IssuerPreset; values: Record<string, string> } {
-  const stored = { jwks_url: issuer.jwks_url, issuer: first(issuer.issuer), audience: first(issuer.audience) };
-  const custom = { preset: CUSTOM, values: stored };
-  const several = (value: string | string[]) => Array.isArray(value) && value.length > 1;
+export function matchIssuerPreset(issuer: Pick<IssuerAuthentication, "provider" | "jwks_url" | "issuer" | "audience">): {
+  preset: IssuerPreset;
+  values: Record<string, string>;
+} {
+  const custom = { preset: CUSTOM, values: {} };
+  if (issuer.provider === undefined || issuer.provider === "custom") return custom;
   // A list of several issuers or audiences is something no preset writes.
-  if (several(issuer.issuer) || several(issuer.audience)) return custom;
-  const candidates = issuer.provider ? [issuerPreset(issuer.provider)] : ISSUER_PRESETS;
-  for (const preset of candidates) {
-    if (preset === CUSTOM) continue;
-    const values = preset.read(stored);
-    const rebuilt = buildIssuer(preset, values);
-    if (rebuilt.jwks_url === stored.jwks_url && rebuilt.issuer === stored.issuer && rebuilt.audience === stored.audience) {
-      return { preset, values };
-    }
-  }
-  return custom;
+  if (issuer.issuer.length !== 1 || issuer.audience.length !== 1) return custom;
+  const stored = { jwks_url: issuer.jwks_url, issuer: issuer.issuer[0]!, audience: issuer.audience[0]! };
+  const preset = issuerPreset(issuer.provider);
+  const values = preset.read(stored);
+  const rebuilt = buildIssuer(preset, values);
+  return rebuilt.jwks_url === stored.jwks_url && rebuilt.issuer === stored.issuer && rebuilt.audience === stored.audience ? { preset, values } : custom;
 }
 
 /** The inputs of a preset still empty. */
@@ -166,10 +150,13 @@ export function buildIssuer(preset: IssuerPreset, values: Record<string, string>
 }
 
 /** A new issuer: Firebase with its project id still to fill in, verifying `sub`, tokens up to a day old. */
-export function emptyIssuer(): IssuerDraft {
+export function emptyIssuer(): IssuerAuthentication {
+  const built = buildIssuer(issuerPreset("firebase"), {});
   return {
     provider: "firebase",
-    ...buildIssuer(issuerPreset("firebase"), {}),
+    jwks_url: built.jwks_url,
+    issuer: [built.issuer],
+    audience: [built.audience],
     user_id_claim: "sub",
     required_claims: [],
     max_token_lifetime_seconds: 86400,
@@ -178,12 +165,3 @@ export function emptyIssuer(): IssuerDraft {
 
 /** The claim a RevenueCat entitlement arrives in, as RevenueCat's own Firebase function kit writes it. */
 export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";
-
-/**
- * Whether only paid users may call, as the gateway checks it: the token must
- * carry at least one required claim. The console's own `entitlement` label
- * says nothing by itself; with no claims, any signed-in user may call.
- */
-export function requiresPayment(issuer: IssuerDraft): boolean {
-  return issuer.required_claims.length > 0;
-}

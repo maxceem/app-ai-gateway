@@ -3,7 +3,6 @@
  * form with one save. Both live in the app configuration, and every other
  * part of it is sent back as it was read.
  */
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, ArrowRight, Loader2, Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -19,28 +18,15 @@ import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import { useProviders } from "@/lib/queries";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
-import { configIssue, usePatchForm } from "@/lib/save-app";
+import { Problem } from "@/components/problem";
+import { usePatchForm } from "@/lib/save-app";
 import type { App, ProviderConnection } from "@/lib/types";
 import { PRESET_SLUG_PATTERN, PresetsConfigSchema, RoutingConfigSchema, type Preset } from "@contracts/app-config";
 import { sameJson } from "@contracts/canonical-json";
 import { CUSTOM_PROVIDER_TYPE, customDescription } from "@providers/custom";
 import { BUILT_IN_PROVIDERS } from "@providers/index";
 import type { ProviderDescription } from "@providers/operation";
-import { declaredOperation, presetOperationProblem } from "@providers/presets";
-
-function Problem({ children }: { children: string | undefined }) {
-  return children ? (
-    <p role="alert" className="text-xs text-destructive">
-      {children}
-    </p>
-  ) : null;
-}
-
-/** A refusal shown under the matching part of the form, or above it. */
-interface Refusal {
-  path: string;
-  message: string;
-}
+import { declaredOperation, presetOperationProblem, presetShape } from "@providers/presets";
 
 // ---------------------------------------------------------------------------
 // Model rewrites
@@ -77,12 +63,7 @@ export function RewritesTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
   const form = usePatchForm<Rewrites, RewriteRow[]>(app, "/config/routing/model_rewrites", readRewrites, { toDraft: rowsOf, toStored: mapOf });
   const rows = form.draft;
-  const [refused, setRefused] = useState<Refusal | null>(null);
-
-  const change = (next: RewriteRow[]) => {
-    form.setDraft(next);
-    setRefused(null);
-  };
+  const change = form.setDraft;
   const problem = rewriteProblem(rows);
   const disabled = readOnly || form.pending;
 
@@ -125,7 +106,7 @@ export function RewritesTab({ app }: { app: App }) {
           </div>
         ))}
         <Problem>{problem}</Problem>
-        <Problem>{refused?.message}</Problem>
+        <Problem>{form.refused?.message}</Problem>
         <div className="flex gap-2">
           <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => change([...rows, { from: "", to: "" }])}>
             <Plus className="size-4" />
@@ -134,7 +115,7 @@ export function RewritesTab({ app }: { app: App }) {
           <GuardedButton
             size="sm"
             disabled={!form.dirty || form.stale || problem !== undefined || form.pending}
-            onClick={() => void form.save("Rewrites saved", (error) => setRefused(configIssue(error)))}
+            onClick={() => void form.save("Rewrites saved")}
           >
             {form.pending ? <Loader2 className="size-4 animate-spin" /> : null}
             Save rewrites
@@ -290,48 +271,36 @@ function hasNonFinite(value: unknown): boolean {
 
 /** What is wrong with one preset draft, by field, in words: the form's own rules, and the chosen operation's. */
 function presetProblems(draft: PresetDraft, slugs: string[], connections: ProviderConnection[]): Record<string, string> {
-  const judged = isChanged(draft);
   const problems: Record<string, string> = {};
   if (!PRESET_SLUG_PATTERN.test(draft.slug)) problems.slug = "Use 1 to 64 characters from a-z, 0-9 and -.";
   else if (slugs.filter((slug) => slug === draft.slug).length > 1) problems.slug = "Another preset has this name.";
   if (draft.provider === "") problems.provider = "Choose a provider.";
   if (draft.operation === "") problems.operation = "Choose an operation.";
   if (draft.model.trim() === "") problems.model = "Name the model.";
-  const operation = draft.operation === "" ? null : declaredOperation(draft.operation);
-  if (draft.maxOutputTokens.trim() !== "") {
-    if (!/^[1-9]\d*$/u.test(draft.maxOutputTokens.trim())) problems.max_output_tokens = "Use a whole number, or leave it empty.";
-    else if (judged && operation !== null && operation.policy?.outputCap === undefined) problems.max_output_tokens = `${operation.name} has no output to cap. Leave it empty.`;
-  }
+  if (draft.maxOutputTokens.trim() !== "" && !/^[1-9]\d*$/u.test(draft.maxOutputTokens.trim())) problems.max_output_tokens = "Use a whole number, or leave it empty.";
   if (draft.params.trim() !== "") {
-    if (judged && operation !== null && operation.model.in === "form") {
-      problems.params = `${operation.name} takes an upload; fixed parameters apply only to JSON requests. Leave it empty.`;
-    } else {
-      try {
-        const parsed: unknown = JSON.parse(draft.params);
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) problems.params = "Write a JSON object, such as {\"temperature\": 0.2}.";
-        else if (hasNonFinite(parsed)) problems.params = "A number is too large to send, such as 1e400. Use a smaller one.";
-      } catch {
-        problems.params = "Not valid JSON.";
-      }
+    try {
+      const parsed: unknown = JSON.parse(draft.params);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) problems.params = "Write a JSON object, such as {\"temperature\": 0.2}.";
+      else if (hasNonFinite(parsed)) problems.params = "A number is too large to send, such as 1e400. Use a smaller one.";
+    } catch {
+      problems.params = "Not valid JSON.";
     }
   }
   draft.fallback.forEach((one, index) => {
-    if (one.provider === "" || one.model.trim() === "") {
-      problems[`fallback.${index}`] = "Choose a provider and name the model.";
-      return;
-    }
-    const connection = connections.find((item) => item.slug === one.provider);
-    const style = operation?.style;
-    if (!judged || connection === undefined || style === undefined) return;
-    const offered = presetOperations(connection);
-    if (one.operation !== "") {
-      // A named operation must itself speak the preset's API, on this provider.
-      if (!offered.includes(one.operation)) problems[`fallback.${index}`] = `${one.provider} does not offer ${one.operation}. Choose an operation for this fallback.`;
-      else if (declaredOperation(one.operation)?.style !== style) problems[`fallback.${index}`] = `${one.operation} does not speak ${style}, the preset's API. A fallback must speak it.`;
-    } else if (!offered.some((name) => declaredOperation(name)?.style === style)) {
-      problems[`fallback.${index}`] = `${one.provider} has no ${style} operation a preset can use. A fallback must speak the preset's API.`;
-    }
+    if (one.provider === "" || one.model.trim() === "") problems[`fallback.${index}`] = "Choose a provider and name the model.";
   });
+  // The gateway's own shape rules (`presetShape`), for a new or changed preset only, as the gateway judges them.
+  if (Object.keys(problems).length > 0 || !isChanged(draft)) return problems;
+  const preset = presetsOf([draft])![draft.slug]!;
+  const shape = presetShape(preset, (slug) => {
+    const connection = connections.find((item) => item.slug === slug);
+    return connection === undefined ? null : { type: connection.type, description: describe(connection) };
+  });
+  if (!shape.ok) {
+    const [first, position] = shape.path.split(".");
+    problems[first === "fallback" ? `fallback.${position}` : (first ?? "operation")] = shape.message;
+  }
   return problems;
 }
 
@@ -345,12 +314,8 @@ export function PresetsTab({ app }: { app: App }) {
   const providers = useProviders();
   const form = usePatchForm<Presets, PresetDraft[]>(app, "/config/presets", (from) => from.config.presets, { toDraft: draftsOf, toStored: presetsOf });
   const drafts = form.draft;
-  const [refused, setRefused] = useState<Refusal | null>(null);
-
-  const change = (next: PresetDraft[]) => {
-    form.setDraft(next);
-    setRefused(null);
-  };
+  const change = form.setDraft;
+  const refused = form.refused;
   const update = (key: number, next: Partial<PresetDraft>) => change(drafts.map((draft) => (draft.key === key ? { ...draft, ...next } : draft)));
   const connections = providers.data?.providers ?? [];
   const slugs = drafts.map((draft) => draft.slug);
@@ -374,7 +339,7 @@ export function PresetsTab({ app }: { app: App }) {
 
   const submit = async () => {
     if (!valid) return;
-    await form.save("Presets saved", (error) => setRefused(configIssue(error)));
+    await form.save("Presets saved");
   };
 
   /** A refusal about a field of one preset, shown under that field. */

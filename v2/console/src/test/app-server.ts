@@ -1,33 +1,10 @@
 import { vi } from "vitest";
+// The gateway's own JSON Patch, so a test starts only from states the gateway can produce.
+import { applyAppPatch } from "../../../src/admin/app-patch.ts";
 
 const APP_URL = "/v2/admin/apps/my-app";
 
-type Operation = { op: "add" | "replace" | "remove"; path: string; value?: unknown };
-
-const unescape = (segment: string) => segment.replace(/~1/gu, "/").replace(/~0/gu, "~");
-
-/** Applies JSON Patch operations to a copy of `document`, as the gateway does (RFC 6902, add, replace and remove). */
-export function applyPatch<T>(document: T, operations: Operation[]): T {
-  const result = structuredClone(document) as Record<string, unknown>;
-  for (const operation of operations) {
-    const parts = operation.path.split("/").slice(1).map(unescape);
-    const last = parts.pop()!;
-    let target: Record<string, unknown> = result;
-    for (const part of parts) {
-      const next = target[part];
-      if (typeof next !== "object" || next === null) throw new Error(`${operation.path}: its parent does not exist`);
-      target = next as Record<string, unknown>;
-    }
-    if (operation.op === "remove") {
-      if (!Object.hasOwn(target, last)) throw new Error(`${operation.path}: nothing to remove`);
-      delete target[last];
-    } else {
-      if (operation.op === "replace" && !Object.hasOwn(target, last)) throw new Error(`${operation.path}: nothing to replace`);
-      target[last] = operation.value;
-    }
-  }
-  return result as T;
-}
+type Operation = Parameters<typeof applyAppPatch>[1][number];
 
 /**
  * A small stand-in for the gateway's app routes: reads answer the stored app,
@@ -51,7 +28,14 @@ export function appServer(app: Record<string, unknown>, extra: Record<string, un
         return reply({ error: { code, message } }, status);
       }
       if (body.revision !== state.app.revision) return reply({ error: { code: "app_revision_conflict", message: "The app changed since it was read" } }, 409);
-      state.app = { ...applyPatch(state.app, body.operations), revision: (state.app.revision as number) + 1 };
+      const { name, status, config } = state.app as { name: unknown; status: unknown; config: unknown };
+      let patched: Record<string, unknown>;
+      try {
+        patched = applyAppPatch({ name, status, config }, body.operations);
+      } catch (error) {
+        return reply({ error: { code: "invalid_request", message: error instanceof Error ? error.message : "invalid" } }, 400);
+      }
+      state.app = { ...state.app, ...patched, revision: (state.app.revision as number) + 1 };
       return reply({ app: state.app });
     }
     const found = Object.entries(extra).find(([prefix]) => url.startsWith(prefix));

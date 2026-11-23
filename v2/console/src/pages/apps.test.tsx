@@ -174,8 +174,8 @@ describe("AppsPage", () => {
               issuer: {
                 provider: "firebase",
                 jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
-                issuer: "https://securetoken.google.com/my-project",
-                audience: "my-project",
+                issuer: ["https://securetoken.google.com/my-project"],
+                audience: ["my-project"],
                 user_id_claim: "sub",
                 required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
                 max_token_lifetime_seconds: 86400,

@@ -115,8 +115,8 @@ describe("Sign-in tab", () => {
           issuer: {
             provider: "auth0",
             jwks_url: "https://my-tenant.us.auth0.com/.well-known/jwks.json",
-            issuer: "https://my-tenant.us.auth0.com/",
-            audience: "https://api.my-app.com",
+            issuer: ["https://my-tenant.us.auth0.com/"],
+            audience: ["https://api.my-app.com"],
             user_id_claim: "sub",
             required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
             max_token_lifetime_seconds: 86400,
@@ -184,15 +184,15 @@ describe("Sign-in tab", () => {
     expect(saveButton().hasAttribute("disabled")).toBe(true);
   });
 
-  it("stores an equals claim as the type chosen, and asks for a claim when a paid check has none", async () => {
+  it("stores an equals claim as the type chosen, starting from the empty claim paid users only adds", async () => {
     const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
     renderSignIn();
 
+    // Choosing paid users only adds an empty claim, which cannot be saved as it is.
     await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
-    expect(screen.getByText("Add at least one claim, or choose Any signed-in user.")).toBeTruthy();
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
     expect(saveButton().hasAttribute("disabled")).toBe(true);
 
-    await userEvent.click(screen.getByRole("button", { name: "Add claim" }));
     await userEvent.type(screen.getByLabelText("Path"), "tier");
     await chooseOption("Match", "equals number");
     await userEvent.type(screen.getByLabelText("Value"), "x");
@@ -206,17 +206,14 @@ describe("Sign-in tab", () => {
     expect(issuer.required_claims).toEqual([{ path: "tier", equals: 1.05 }]);
   });
 
-  it("keeps a paid check made outside the console when its last claim is removed, until Any signed-in user is chosen", async () => {
+  it("keeps a paid check made outside the console, its last claim staying until Any signed-in user is chosen", async () => {
     const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, required_claims: [{ path: "paid", equals: true }] } } }));
     renderSignIn();
 
     expect((await screen.findByRole("radio", { name: /Paid users only/ })).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("combobox", { name: "Value" }).textContent).toContain("true");
-    await userEvent.click(screen.getByRole("button", { name: "Remove claim 1" }));
-
-    expect(screen.getByRole("radio", { name: /Paid users only/ }).getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByText("Add at least one claim, or choose Any signed-in user.")).toBeTruthy();
-    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    // The last claim stays: the check is turned off only by choosing Any signed-in user.
+    expect(screen.queryByRole("button", { name: "Remove claim 1" })).toBeNull();
 
     await userEvent.click(screen.getByRole("radio", { name: /Any signed-in user/ }));
     await saveAndSettle();
@@ -509,6 +506,34 @@ describe("Sign-in tab", () => {
 
     expect(screen.getByRole("status").textContent).toMatch(/already compares it with equals/);
     expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("brings a custom issuer's audiences back after a look at another provider", async () => {
+    const server = appServer(
+      appWith({ type: "api_key", end_user: { source: "issuer", issuer: { ...FIREBASE_ISSUER, provider: "custom", audience: ["one", "two", "three"] } } }),
+    );
+    renderSignIn();
+
+    await screen.findByLabelText("Audience (aud)");
+    await chooseOption("Identity provider", "Auth0");
+    expect(screen.getByLabelText("Tenant domain")).toBeTruthy();
+    await chooseOption("Identity provider", "Custom issuer");
+
+    expect((screen.getByLabelText("Audience (aud)") as HTMLInputElement).value).toBe("one");
+    expect((screen.getByLabelText("Audience 2") as HTMLInputElement).value).toBe("two");
+    expect((screen.getByLabelText("Audience 3") as HTMLInputElement).value).toBe("three");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(server.patches).toEqual([]);
+  });
+
+  it("opens an issuer without a provider label in the custom editor, guessing nothing", async () => {
+    const { provider: _label, ...unlabelled } = FIREBASE_ISSUER;
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: unlabelled } }));
+    renderSignIn();
+
+    expect((await screen.findByRole("combobox", { name: "Identity provider" })).textContent).toContain("Custom issuer");
+    expect((screen.getByLabelText("JWKS URL") as HTMLInputElement).value).toBe(FIREBASE_ISSUER.jwks_url);
     expect(saveButton().hasAttribute("disabled")).toBe(true);
   });
 

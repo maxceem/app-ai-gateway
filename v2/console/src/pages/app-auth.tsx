@@ -1,4 +1,3 @@
-import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -9,19 +8,21 @@ import {
   IdentityProviderFields,
   SubscriptionFields,
   UserSourceFields,
-  authDraftOf,
-  authEdits,
-  authForSave,
-  authIssues,
-  type AuthDraft,
+  signInConfig,
+  signInDraftOf,
+  signInEdits,
+  signInIssues,
+  type SignInDraft,
 } from "@/components/auth-fields";
 import { GuardedButton } from "@/components/guarded-button";
+import { Problem } from "@/components/problem";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { useConsoleSession } from "@/lib/console-session";
-import { configIssue, usePatchForm } from "@/lib/save-app";
+import { usePatchForm } from "@/lib/save-app";
 import type { App } from "@/lib/types";
+import type { AuthenticationConfig } from "@contracts/app-config";
 
-const readAuthentication = (app: App) => app.config.authentication as AuthDraft;
+const readAuthentication = (app: App) => app.config.authentication as AuthenticationConfig;
 
 /**
  * Who may call this app, as v1's auth policy asked it: how the app proves
@@ -30,45 +31,34 @@ const readAuthentication = (app: App) => app.config.authentication as AuthDraft;
  */
 export function SignInTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
-  const form = usePatchForm(app, "/config/authentication", readAuthentication, {
-    toDraft: authDraftOf,
-    toStored: authForSave,
-    edits: authEdits,
+  const form = usePatchForm<AuthenticationConfig, SignInDraft>(app, "/config/authentication", readAuthentication, {
+    toDraft: (stored) => signInDraftOf(stored),
+    toStored: signInConfig,
+    edits: signInEdits,
   });
   const draft = form.draft;
-  const [refused, setRefused] = useState<{ path: string; message: string } | null>(null);
-  const change = (next: AuthDraft) => {
-    form.setDraft(next);
-    setRefused(null);
-  };
-  const issues = authIssues(draft);
+  const issues = signInIssues(draft);
   // A refusal from the gateway is shown where it applies, until the form changes.
+  const refused = form.refused;
   const refusedHere = refused?.path.startsWith("authentication.") ? refused.path.slice("authentication.".length) : null;
   if (refused && refusedHere !== null && !issues.has(refusedHere)) issues.set(refusedHere, refused.message);
   const disabled = readOnly || form.pending;
-  const endUser = draft.end_user;
-
-  const submit = async () => {
-    await form.save("Sign-in saved", (error) => setRefused(configIssue(error)));
-  };
 
   return (
     <div className="space-y-4">
       {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
-      {/* Keyed by the draft, so what the fields remember (each caller's settings, list text) starts again with it. */}
-      <Fragment key={form.generation}>
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">How the app proves itself</CardTitle>
           <CardDescription>
-            {draft.type === "apple_app_attest"
+            {draft.appAttest !== null
               ? "An iOS app. Only builds signed with this team and bundle id can call through the gateway."
               : "A server app. Your server proves itself with an app key."}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {draft.type === "apple_app_attest" ? (
-            <AppAttestFields value={draft.app_attest} issues={issues} disabled={disabled} onChange={(app_attest) => change({ ...draft, app_attest })} />
+          {draft.appAttest !== null ? (
+            <AppAttestFields value={draft.appAttest} issues={issues} disabled={disabled} onChange={(appAttest) => form.setDraft({ ...draft, appAttest })} />
           ) : (
             <p className="text-sm">
               Create and revoke its keys on the{" "}
@@ -87,22 +77,12 @@ export function SignInTab({ app }: { app: App }) {
           <CardDescription>Whether calls must come from users signed in to your app.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <UserSourceFields
-            type={draft.type}
-            value={endUser}
-            issues={issues}
-            disabled={disabled}
-            onChange={(end_user) => change({ ...draft, end_user } as AuthDraft)}
-          />
-          {refusedHere === "end_user" ? (
-            <p role="alert" className="text-xs text-destructive">
-              {refused?.message}
-            </p>
-          ) : null}
+          <UserSourceFields draft={draft} issues={issues} disabled={disabled} onChange={form.setDraft} />
+          {refusedHere === "end_user" ? <Problem>{refused?.message}</Problem> : null}
         </CardContent>
       </Card>
 
-      {endUser.source === "issuer" ? (
+      {draft.source === "issuer" ? (
         <>
           <Card>
             <CardHeader>
@@ -110,12 +90,7 @@ export function SignInTab({ app }: { app: App }) {
               <CardDescription>Where your users sign in. The gateway checks their sign-in tokens against it.</CardDescription>
             </CardHeader>
             <CardContent>
-              <IdentityProviderFields
-                issuer={endUser.issuer}
-                issues={issues}
-                disabled={disabled}
-                onChange={(issuer) => change({ ...draft, end_user: { ...endUser, issuer } } as AuthDraft)}
-              />
+              <IdentityProviderFields form={draft.issuer} issues={issues} disabled={disabled} onChange={(issuer) => form.setDraft({ ...draft, issuer })} />
             </CardContent>
           </Card>
           <Card>
@@ -124,18 +99,11 @@ export function SignInTab({ app }: { app: App }) {
               <CardDescription>Whether a user must have paid before they can call.</CardDescription>
             </CardHeader>
             <CardContent>
-              <SubscriptionFields
-                issuer={endUser.issuer}
-                issues={issues}
-                disabled={disabled}
-                onChange={(issuer) => change({ ...draft, end_user: { ...endUser, issuer } } as AuthDraft)}
-              />
+              <SubscriptionFields form={draft.issuer} issues={issues} disabled={disabled} onChange={(issuer) => form.setDraft({ ...draft, issuer })} />
             </CardContent>
           </Card>
         </>
       ) : null}
-
-      </Fragment>
 
       {refused && refusedHere === null ? (
         <Alert variant="destructive">
@@ -146,19 +114,11 @@ export function SignInTab({ app }: { app: App }) {
       ) : null}
 
       <div className="flex gap-2">
-        <GuardedButton disabled={!form.dirty || form.stale || issues.size > 0 || form.pending} onClick={() => void submit()}>
+        <GuardedButton disabled={!form.dirty || form.stale || issues.size > 0 || form.pending} onClick={() => void form.save("Sign-in saved")}>
           {form.pending ? <Loader2 className="size-4 animate-spin" /> : null}
           Save sign-in
         </GuardedButton>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!form.dirty || form.pending}
-          onClick={() => {
-            form.discard();
-            setRefused(null);
-          }}
-        >
+        <Button type="button" variant="outline" disabled={!form.dirty || form.pending} onClick={form.discard}>
           Discard changes
         </Button>
       </div>

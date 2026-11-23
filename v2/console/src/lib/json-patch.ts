@@ -25,38 +25,30 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const same = sameJson;
 
 /**
- * The operations that turn `before` into `after` at `path`, descending at
- * most `depth` objects. Objects are compared key by key; anything else,
- * arrays included, is replaced whole when it differs, and so is an object
- * that changed below `depth` or holds a key a patch path cannot name.
+ * The operations that turn `before` into `after` at `path`. Objects are
+ * compared key by key; anything else, arrays included, is replaced whole when
+ * it differs, and so is an object holding a key a patch path cannot name.
  * `undefined` means absent: a key that appears is added, one that goes is removed.
  */
-function diff(path: string, before: unknown, after: unknown, depth: number): PatchOperation[] {
+function diff(path: string, before: unknown, after: unknown): PatchOperation[] {
   if (after === undefined) return before === undefined ? [] : [{ op: "remove", path }];
   if (before === undefined) return [{ op: "add", path, value: after }];
   if (same(before, after)) return [];
-  if (!isObject(before) || !isObject(after) || depth === 0) return [{ op: "replace", path, value: after }];
+  if (!isObject(before) || !isObject(after)) return [{ op: "replace", path, value: after }];
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   if ([...keys].some((key) => RESERVED_KEYS.has(key))) return [{ op: "replace", path, value: after }];
-  const operations: PatchOperation[] = [];
-  for (const key of keys) {
-    const child = `${path}/${pointerSegment(key)}`;
-    operations.push(
-      ...diff(child, Object.hasOwn(before, key) ? before[key] : undefined, Object.hasOwn(after, key) ? after[key] : undefined, depth - 1),
-    );
-  }
-  return operations;
+  return [...keys].flatMap((key) =>
+    diff(`${path}/${pointerSegment(key)}`, Object.hasOwn(before, key) ? before[key] : undefined, Object.hasOwn(after, key) ? after[key] : undefined),
+  );
 }
 
 /**
- * The operations for a form's change, as few as the gateway takes in one
- * request: the finest that fit within its limit, coarser (whole objects
- * replaced) when a change touches more fields than that.
+ * The operations for a form's change, one per changed field. A change touching
+ * more fields than one request takes replaces the whole part instead.
  */
 export function diffOperations(path: string, before: unknown, after: unknown, max = APP_PATCH_MAX_OPERATIONS): PatchOperation[] {
-  for (let depth = 64; depth >= 0; depth -= 1) {
-    const operations = diff(path, before, after, depth);
-    if (operations.length <= max) return operations;
-  }
-  return diff(path, before, after, 0);
+  const operations = diff(path, before, after);
+  if (operations.length <= max) return operations;
+  if (after === undefined) return [{ op: "remove", path }];
+  return [{ op: before === undefined ? "add" : "replace", path, value: after }];
 }
