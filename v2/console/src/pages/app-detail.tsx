@@ -44,6 +44,7 @@ import type { App, AppConfig, CreatedAppKey, JobSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { SignInTab } from "@/pages/app-auth";
+import { AppNotices } from "@/components/app-notices";
 import { ErrorsTab } from "@/pages/app-errors";
 import { PresetsTab, RewritesTab } from "@/pages/app-models";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
@@ -125,6 +126,8 @@ export function AppDetailPage() {
           </Link>
         ))}
       </nav>
+
+      <AppNotices app={data} />
 
       {/* Keyed by the app, so moving straight from one cached app to another starts every
           tab afresh: no page cursor, filter or draft carries over to the wrong app. */}
