@@ -131,7 +131,9 @@ describe("error facts", () => {
       .toEqual({ class: "Error", platform: "platform_unavailable" });
     expect(errorFacts(new GatewayError(503, "issuer_verification_unavailable", SECRET)))
       .toEqual({ class: "GatewayError", code: "issuer_verification_unavailable" });
-    expect(errorFacts(new (class Unlisted extends Error {})("x"))).toEqual({ class: "other" });
+    expect(errorFacts(new (class extends Error {
+      override name = "Unlisted";
+    })("x"))).toEqual({ class: "other" });
     expect(errorFacts(SECRET)).toEqual({ class: "not_an_error" });
   });
 
