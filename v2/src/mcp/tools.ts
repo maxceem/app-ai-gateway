@@ -21,6 +21,7 @@
  * lets a client cache the list.
  */
 import type { AppPatchOperation } from "../contracts/admin.ts";
+import { applyAppPatch } from "../admin/app-patch.ts";
 import { shortcutInput, shortcutOperations, usedShortcuts, type ShortcutApp } from "./shortcuts.ts";
 import { z } from "zod";
 import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
@@ -118,11 +119,15 @@ export interface McpTool {
   /**
    * A read to run first, whose answer `request` is given: for a tool whose
    * request depends on what is stored now (`patch_app`'s shortcuts). Null
-   * when this call needs none. When it is run and the write then answers
-   * `retryOnConflict`, both run once more.
+   * when this call needs none.
    */
   before?(input: Record<string, unknown>): ToolRequest | null;
-  readonly retryOnConflict?: ErrorCode;
+  /**
+   * The refusal after which this call reads again and writes once more, when
+   * the write took what it needed from the read alone; null when the caller
+   * named what it read (a revision), whose conflict is the caller's to settle.
+   */
+  retryAfter?(input: Record<string, unknown>): ErrorCode | null;
   /** The operation one call runs, and its request. */
   request(input: Record<string, unknown>, read?: unknown): ToolRequest;
   /** Where a tool answers with part of the operation's body: that part. */
@@ -881,17 +886,21 @@ export const MCP_TOOLS: readonly McpTool[] = [
     },
     // Shortcuts are judged against the app as it is now, and alone they take its revision too.
     before: (input) => (usedShortcuts(input).length === 0 ? null : { operation: "getApp", params: pathOnly("getApp", input) }),
-    retryOnConflict: "app_revision_conflict",
+    // Only a call with no revision of its own took it from the read; one that named a revision keeps it, conflict and all.
+    retryAfter: (input) => (input.revision === undefined && usedShortcuts(input).length > 0 ? "app_revision_conflict" : null),
     next: {
       app_revision_conflict: "Someone changed the app since you read it. Call get_app for its current revision and settings, check your operations still make sense, and call patch_app again.",
       app_revision_required: "Send the revision get_app returned, or make the change with shortcut arguments alone.",
       invalid_request: "The message names the operation by index, the shortcut, or the setting the result got wrong. Call get_app to see what is at each path, fix it and send the patch again; nothing was saved.",
     },
     request: (input, read) => {
-      const current = (read as { app?: ShortcutApp & { revision?: number } } | undefined)?.app;
+      const current = (read as { app?: ShortcutApp & { revision?: number; name?: string; status?: string; config?: unknown } } | undefined)?.app;
       const explicit = Array.isArray(input.operations) ? (input.operations as AppPatchOperation[]) : [];
-      const operations = [...explicit, ...(current === undefined ? [] : shortcutOperations(input, current))];
-      const revision = explicit.length > 0 || current === undefined ? input.revision : current.revision;
+      // Shortcuts apply after the explicit operations, so they are judged against what those produce.
+      const base = current === undefined || explicit.length === 0 ? current : (applyAppPatch({ name: current.name, status: current.status, config: current.config }, explicit) as ShortcutApp);
+      const operations = [...explicit, ...(base === undefined ? [] : shortcutOperations(input, base))];
+      // The caller's revision, when it sent one, is used as it is; only a call without one takes the read's.
+      const revision = input.revision !== undefined ? input.revision : current?.revision;
       return {
         operation: "patchApp",
         params: pathOnly("patchApp", { app: input.app }),

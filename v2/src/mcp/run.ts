@@ -34,6 +34,7 @@ export async function runTool(
   refuseArguments(tool, input);
   tool.check?.(input);
   const before = tool.before?.(input) ?? null;
+  const retryAfter = before === null ? null : (tool.retryAfter?.(input) ?? null);
   let body: unknown;
   for (let attempt = 0; ; attempt++) {
     // What is stored now, for a request that depends on it; read again if the write finds it changed meanwhile.
@@ -42,8 +43,7 @@ export async function runTool(
       body = await callOperation(tool.request(input, read), caller);
       break;
     } catch (error) {
-      const conflict = error instanceof GatewayError && tool.retryOnConflict !== undefined && error.code === tool.retryOnConflict;
-      if (before !== null && attempt === 0 && conflict) continue;
+      if (attempt === 0 && retryAfter !== null && error instanceof GatewayError && error.code === retryAfter) continue;
       throw error;
     }
   }

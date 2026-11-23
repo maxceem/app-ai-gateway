@@ -399,6 +399,61 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ name: "First", revision: app.revision + 2 });
   });
 
+  it("keep a revision the caller sent: a stale one is a conflict to settle, never read past", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    expect((await admin(key, "PATCH", `/v2/admin/apps/${app.id}`, { revision: app.revision, operations: [{ op: "replace", path: "/name", value: "Elsewhere" }] })).status).toBe(200);
+    const stale = await callTool(key, "patch_app", { app: app.id, revision: app.revision, status: "disabled" });
+    expect(stale.structuredContent.error).toBe("app_revision_conflict");
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ name: "Elsewhere", status: "active", revision: app.revision + 1 });
+  });
+
+  it("read again and write once more when an unrelated edit lands during a call with no revision", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    const { default: management } = await import("../src/management/app.ts");
+    const original = management.fetch.bind(management);
+    let edited = false;
+    const spy = vi.spyOn(management, "fetch").mockImplementation(async (request: Request, ...rest: unknown[]) => {
+      // Between the read and the write: someone else renames the app.
+      if (!edited && request.method === "PATCH") {
+        edited = true;
+        await env.DB.prepare("UPDATE app SET name = 'Concurrent', revision = revision + 1 WHERE id = ?").bind(app.id).run();
+      }
+      return (original as (...args: unknown[]) => Promise<Response>)(request, ...rest);
+    });
+    try {
+      const patched = await callTool(key, "patch_app", { app: app.id, status: "disabled" });
+      expect(patched.isError ?? false, JSON.stringify(patched.structuredContent)).toBe(false);
+      // The other edit is kept, and the shortcut applies on top of it.
+      expect(patched.structuredContent.app).toMatchObject({ name: "Concurrent", status: "disabled", revision: app.revision + 2 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("judge shortcuts against what the operations before them produce", async () => {
+    const key = await seedManagementKey();
+    const created = await admin(key, "POST", "/v2/admin/apps", {
+      name: "iOS to server",
+      config: {
+        authentication: { type: "apple_app_attest", end_user: { source: "app_install" }, app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.app" } },
+        routing: { providers: {} },
+      },
+    });
+    expect(created.status).toBe(201);
+    const { id, revision } = created.body.app as { id: string; revision: number };
+    const refused = await callTool(key, "patch_app", {
+      app: id,
+      revision,
+      operations: [{ op: "replace", path: "/config/authentication", value: { type: "api_key", end_user: { source: "none" } } }],
+      team_id: "ZYXWV98765",
+    });
+    expect(refused.structuredContent).toMatchObject({ error: "invalid_request" });
+    expect(refused.structuredContent.message).toContain("team_id: only an iOS");
+    expect((await admin(key, "GET", `/v2/admin/apps/${id}`)).body.app.revision).toBe(revision);
+  });
+
   it("set an iOS app's App Attest settings with shortcuts", async () => {
     const key = await seedManagementKey();
     const created = await admin(key, "POST", "/v2/admin/apps", {
