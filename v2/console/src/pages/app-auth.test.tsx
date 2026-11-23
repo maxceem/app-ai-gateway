@@ -385,6 +385,62 @@ describe("Sign-in tab", () => {
     expect(server.patches[0]!.operations).toEqual([{ op: "replace", path: "/config/authentication/app_attest/verify_on", value: "token_exchange" }]);
   });
 
+  it("keeps a paid-users choice through a refresh, as an edit made before the app changed", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    const { client } = renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    server.changeElsewhere((app) => ({ ...app, name: "Renamed elsewhere" }));
+    await act(() => client.invalidateQueries());
+
+    expect(await screen.findByText("This app changed since you started editing")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /Paid users only/ }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("brings a claim's earlier values back when its match type returns", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "plan", contains: ["pro", "max"] }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    await chooseOption("Match", "contains");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("pro");
+    expect((screen.getByLabelText("Value 2") as HTMLInputElement).value).toBe("max");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("counts a number back at its stored value as no edit", async () => {
+    const issuer = { ...FIREBASE_ISSUER, required_claims: [{ path: "tier", equals: 1.05 }] };
+    appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer } }));
+    renderSignIn();
+
+    await screen.findByLabelText("Path");
+    await chooseOption("Match", "equals text");
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    await chooseOption("Match", "equals number");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("1.05");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("adds a second RevenueCat entitlement to the same row, as an alternative", async () => {
+    const server = appServer(appWith({ type: "api_key", end_user: { source: "issuer", issuer: FIREBASE_ISSUER } }));
+    renderSignIn();
+
+    await userEvent.click(await screen.findByRole("radio", { name: /Paid users only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value"), "pro");
+    await userEvent.click(screen.getByRole("button", { name: "Add RevenueCat entitlement" }));
+    await userEvent.type(screen.getByLabelText("Value 2"), "max");
+    expect(screen.getAllByLabelText("Path")).toHaveLength(1);
+    await saveAndSettle();
+
+    expect(server.patches[0]!.operations).toEqual([
+      { op: "replace", path: "/config/authentication/end_user/issuer/required_claims", value: [{ path: "revenueCatEntitlements", contains: ["pro", "max"] }] },
+    ]);
+  });
+
   it("shows a refusal about the sign-in inside the field it names", async () => {
     const server = appServer(testApp());
     server.state.refuse = { status: 400, code: "invalid_request", message: "config.authentication.end_user.header: cannot be xi-api-key: the gateway already uses that header" };

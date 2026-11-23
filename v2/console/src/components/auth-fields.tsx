@@ -36,11 +36,14 @@ import {
 } from "@contracts/app-config";
 
 /**
- * A claim as the form holds it: the stored requirement, plus the match type
- * the person chose (`_match`), kept in the draft beside the typed text so a
- * type change alone is an edit. `authForSave` drops it.
+ * A claim as the form holds it: the stored requirement, plus working state
+ * `authForSave` drops. `_match` is the match type chosen where the value alone
+ * does not say it (a number still typed as text, a true or false not chosen
+ * yet). `_values` keeps the value each other match type last held, so
+ * switching away and back brings it back.
  */
-type ClaimDraft = ClaimRequirement & { _match?: ClaimMode };
+type ClaimValue = Pick<ClaimRequirement, "contains" | "equals">;
+type ClaimDraft = ClaimRequirement & { _match?: ClaimMode; _values?: Partial<Record<ClaimMode, ClaimValue>> };
 
 type AppAttestSettings = {
   team_id: string;
@@ -70,11 +73,8 @@ export type AuthIssues = Map<string, string>;
  * rules, keyed by where. Fields this console does not know, which a newer
  * gateway may have written, are left to the gateway: they are sent back as
  * stored, and only the fields the form knows are judged here.
- *
- * `paid` is whether the person chose paid users only, which a draft whose
- * last claim was just removed no longer says by itself.
  */
-export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}): AuthIssues {
+export function authIssues(draft: AuthDraft): AuthIssues {
   const issues: AuthIssues = new Map();
   const parsed = AuthenticationConfigSchema.safeParse(authForSave(draft));
   if (!parsed.success) {
@@ -91,35 +91,67 @@ export function authIssues(draft: AuthDraft, { paid }: { paid?: boolean } = {}):
     const missing = preset.id === "custom" ? undefined : missingInputs(preset, values)[0];
     if (missing && !issues.has("end_user.issuer.preset")) issues.set("end_user.issuer.preset", `Enter the ${missing.label.toLowerCase()}.`);
     const claims = endUser.issuer.required_claims;
-    if ((paid ?? requiresPayment(endUser.issuer)) && claims.length === 0) {
+    if (paysOf(endUser.issuer) && claims.length === 0) {
       issues.set("end_user.issuer.required_claims", "Add at least one claim, or choose Any signed-in user.");
     }
     (claims as ClaimDraft[]).forEach((claim, index) => {
-      if (claim._match === "boolean" && typeof claim.equals !== "boolean") {
-        issues.set(`end_user.issuer.required_claims.${index}.equals`, "Choose true or false.");
-      }
-      if (claim._match === "number" && typeof claim.equals === "string" && !NUMBER.test(claim.equals.trim())) {
-        issues.set(`end_user.issuer.required_claims.${index}.equals`, "Enter a number, such as 3 or 1.05.");
+      if (unfinished(claim)) {
+        issues.set(`end_user.issuer.required_claims.${index}.equals`, claim._match === "boolean" ? "Choose true or false." : "Enter a number, such as 3 or 1.05.");
       }
     });
   }
   return issues;
 }
 
+/** Whether a claim's typed value is not finished yet: a number that does not read as one, or a true or false not chosen. */
+function unfinished(claim: ClaimDraft): boolean {
+  if (claim._match === "boolean") return typeof claim.equals !== "boolean";
+  if (claim._match === "number") return typeof claim.equals !== "string" || !NUMBER.test(claim.equals.trim());
+  return false;
+}
+
+/** The claim as it saves: working state dropped, a number typed as text made a number once it reads as one. */
+function claimForSave(claim: ClaimDraft): ClaimRequirement {
+  const { _match, _values, ...stored } = claim;
+  if (_match === "number" && typeof stored.equals === "string" && NUMBER.test(stored.equals.trim())) return { ...stored, equals: Number(stored.equals.trim()) };
+  return stored;
+}
+
+/** Whether only paid users may call, as the person chose it in this draft (`_paid`), or as the claims say. */
+export function paysOf(issuer: IssuerDraft): boolean {
+  return issuer._paid ?? requiresPayment(issuer);
+}
+
 /**
- * The block as it is saved: a number claim is typed as text, so a half-typed
- * number such as `1.` stays as typed in the form, and becomes a number only
- * here.
+ * The block as it is saved: the form's working state dropped (the paid
+ * choice, other match types' values), and a number claim, typed as text so
+ * `1.` can be on its way to `1.05`, made a number.
  */
 export function authForSave(draft: AuthDraft): AuthDraft {
   const endUser = draft.end_user;
   if (endUser.source !== "issuer") return draft;
+  const { _paid, ...issuer } = endUser.issuer;
+  const required_claims = (issuer.required_claims as ClaimDraft[]).map(claimForSave);
+  return { ...draft, end_user: { ...endUser, issuer: { ...issuer, required_claims } } } as AuthDraft;
+}
+
+/**
+ * What of a draft counts as an edit: the block it would save, the paid
+ * choice, and which claims are still being typed. A claim back at its stored
+ * value is no edit, whatever it passed through.
+ */
+export function authEdits(draft: AuthDraft): unknown {
+  const endUser = draft.end_user;
+  if (endUser.source !== "issuer") return { save: draft };
   const claims = endUser.issuer.required_claims as ClaimDraft[];
-  if (!claims.some((claim) => claim._match !== undefined)) return draft;
-  const required_claims = claims.map(({ _match, ...claim }) =>
-    _match === "number" && typeof claim.equals === "string" && NUMBER.test(claim.equals.trim()) ? { ...claim, equals: Number(claim.equals.trim()) } : claim,
-  );
-  return { ...draft, end_user: { ...endUser, issuer: { ...endUser.issuer, required_claims } } } as AuthDraft;
+  return { save: authForSave(draft), paid: paysOf(endUser.issuer), typing: claims.map((claim) => (unfinished(claim) ? claim : null)) };
+}
+
+/** A stored block as the form starts editing it: a copy, with the paid choice it says. */
+export function authDraftOf(stored: AuthDraft): AuthDraft {
+  const draft = structuredClone(stored);
+  if (draft.end_user.source === "issuer") draft.end_user.issuer._paid = requiresPayment(draft.end_user.issuer);
+  return draft;
 }
 
 /** The first problem at or under a path. */
@@ -522,35 +554,33 @@ const SUBSCRIPTION_CHOICES: Choice<Subscription>[] = [
 /**
  * Whether signed-in users must also have paid, and which claims say so: one
  * list of claim rows, each edited as stored, path included. RevenueCat is a
- * helper that adds a row in the shape it writes, not a mode, so nothing is
- * recreated or erased by switching.
+ * helper that adds an entitlement in the shape it writes, not a mode, so
+ * nothing is recreated or erased by switching.
  *
- * `paid` is the person's choice, held by the form: removing the last claim
- * does not quietly turn the check off, only choosing Any signed-in user does.
+ * The choice is part of the draft (`_paid`): removing the last claim does not
+ * quietly turn the check off, only choosing Any signed-in user does.
  */
 export function SubscriptionFields({
   issuer,
-  paid,
   issues,
   disabled,
   onChange,
-  onPaidChange,
 }: {
   issuer: IssuerDraft;
-  paid: boolean;
   issues: AuthIssues;
   disabled?: boolean;
   onChange: (next: IssuerDraft) => void;
-  onPaidChange: (paid: boolean) => void;
 }) {
+  const paid = paysOf(issuer);
   const choose = (next: Subscription) => {
     if (next === (paid ? "paid" : "any")) return;
-    onPaidChange(next === "paid");
-    // Any signed-in user drops the claims and the console's own label for them; paid users only starts from what is there.
-    if (next === "any") {
-      const { entitlement: _label, ...rest } = issuer;
-      onChange({ ...rest, required_claims: [] });
+    if (next === "paid") {
+      onChange({ ...issuer, _paid: true });
+      return;
     }
+    // Any signed-in user drops the claims and the console's own label for them.
+    const { entitlement: _label, ...rest } = issuer;
+    onChange({ ...rest, required_claims: [], _paid: false });
   };
   return (
     <div className="space-y-4">
@@ -585,24 +615,36 @@ function modeOf(claim: ClaimDraft): ClaimMode {
 
 const NUMBER = /^-?\d+(?:\.\d+)?$/u;
 
-/** A claim in a mode, keeping its path and what can be kept of its value, with the mode chosen. */
+/** A claim's value in its current match type. */
+const valueOf = (claim: ClaimDraft): ClaimValue => (claim.equals === undefined ? { contains: claim.contains } : { equals: claim.equals });
+
+/**
+ * A claim in another match type, keeping its path. The value it held is
+ * remembered for its type; a type it held before gets its value back;
+ * otherwise what can be carried over is (`text`), and what cannot starts
+ * unanswered.
+ */
 function claimIn(claim: ClaimDraft, mode: ClaimMode, text: string): ClaimDraft {
-  const { contains: _contains, equals: _equals, _match: _previous, ...rest } = claim;
+  const { contains: _contains, equals: _equals, _match: _previous, _values, ...rest } = claim;
+  const current = modeOf(claim);
+  // A new value in the same type is just that; switching remembers the value left behind.
+  const values = current === mode ? (_values ?? {}) : { ...(_values ?? {}), [current]: valueOf(claim) };
+  const remembered = current === mode ? undefined : values[mode];
   let next: ClaimDraft;
-  if (mode === "contains") {
+  if (remembered !== undefined) {
+    next = { ...rest, ...remembered };
+  } else if (mode === "contains") {
     next = { ...rest, contains: text };
   } else if (mode === "boolean") {
     // Only true or false carries over; anything else starts unanswered, and saving needs a choice.
     next = { ...rest, equals: text === "true" ? true : text === "false" ? false : "" };
-  } else if (mode === "number") {
-    // Kept as typed; `authForSave` makes it a number.
-    next = { ...rest, equals: text };
   } else {
+    // A number is kept as typed; `authForSave` makes it a number.
     next = { ...rest, equals: text };
   }
-  // The type is kept in the draft only where the value alone does not say it (a number still typed as text,
-  // a true or false not chosen yet), so a claim that returns to its stored value is no edit.
-  return modeOf(next) === mode ? next : { ...next, _match: mode };
+  // The type is kept only where the value alone does not say it.
+  const typed = modeOf(next) === mode ? next : { ...next, _match: mode };
+  return Object.keys(values).length === 0 ? typed : { ...typed, _values: values };
 }
 
 /** Every claim the token must carry, one row each. */
@@ -635,7 +677,16 @@ function ClaimsEditor({
             variant="outline"
             size="sm"
             disabled={disabled}
-            onClick={() => onChange([...claims, { path: REVENUECAT_CLAIM_PATH, contains: "" }])}
+            onClick={() => {
+              // One RevenueCat row: a second entitlement is another value of it, so either admits the user.
+              const index = claims.findIndex((claim) => claim.path === REVENUECAT_CLAIM_PATH && claim.equals === undefined && claim.contains !== undefined);
+              if (index === -1) {
+                onChange([...claims, { path: REVENUECAT_CLAIM_PATH, contains: "" }]);
+                return;
+              }
+              const contains = claims[index]!.contains!;
+              replace(index, { ...claims[index]!, contains: Array.isArray(contains) ? [...contains, ""] : [contains, ""] });
+            }}
           >
             <Plus className="size-3.5" />
             Add RevenueCat entitlement
@@ -739,8 +790,9 @@ function ClaimsEditor({
             </div>
             {claim.path === REVENUECAT_CLAIM_PATH ? (
               <p className="text-xs text-muted-foreground">
-                A RevenueCat entitlement: in RevenueCat under Product catalog, Entitlements, the identifier, not the display name. With several, a
-                user with any one of them is admitted. The claim is where RevenueCat's Firebase function kit puts it.
+                RevenueCat entitlements: in RevenueCat under Product catalog, Entitlements, the identifier, not the display name. The values in
+                this row are alternatives, so a user with any one of them is admitted; every row, though, must match. The claim is where
+                RevenueCat's Firebase function kit puts it.
               </p>
             ) : null}
             <Problem>{issueAt(issues, `end_user.issuer.required_claims.${index}`)}</Problem>

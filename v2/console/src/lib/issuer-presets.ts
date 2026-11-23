@@ -8,10 +8,15 @@ import type { IssuerAuthentication } from "@contracts/app-config";
 
 export type IssuerProvider = NonNullable<IssuerAuthentication["provider"]>;
 
-/** The issuer as the console edits it: `issuer` and `audience` may still be a single string. */
+/**
+ * The issuer as the console edits it: `issuer` and `audience` may still be a
+ * single string, and `_paid` is the form's own paid-users choice, which is
+ * never saved.
+ */
 export type IssuerDraft = Omit<IssuerAuthentication, "issuer" | "audience"> & {
   issuer: string | string[];
   audience: string | string[];
+  _paid?: boolean;
 };
 
 export interface PresetInput {

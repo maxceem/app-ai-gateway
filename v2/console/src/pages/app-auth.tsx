@@ -9,6 +9,8 @@ import {
   IdentityProviderFields,
   SubscriptionFields,
   UserSourceFields,
+  authDraftOf,
+  authEdits,
   authForSave,
   authIssues,
   type AuthDraft,
@@ -16,7 +18,6 @@ import {
 import { GuardedButton } from "@/components/guarded-button";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { useConsoleSession } from "@/lib/console-session";
-import { requiresPayment } from "@/lib/issuer-presets";
 import { configIssue, usePatchForm } from "@/lib/save-app";
 import type { App } from "@/lib/types";
 
@@ -30,25 +31,17 @@ const readAuthentication = (app: App) => app.config.authentication as AuthDraft;
 export function SignInTab({ app }: { app: App }) {
   const { readOnly } = useConsoleSession();
   const form = usePatchForm(app, "/config/authentication", readAuthentication, {
-    toDraft: (stored) => structuredClone(stored),
+    toDraft: authDraftOf,
     toStored: authForSave,
+    edits: authEdits,
   });
   const draft = form.draft;
   const [refused, setRefused] = useState<{ path: string; message: string } | null>(null);
-  // The paid choice the person made in this draft; a new draft reads it from the claims again.
-  const [paidChoice, setPaidChoice] = useState<{ generation: number; paid: boolean } | null>(null);
-  // Until the person chooses, it is what the stored block said when this draft started, so removing the last claim does not turn it off.
-  const storedEndUser = form.stored.end_user;
-  const paid =
-    paidChoice?.generation === form.generation
-      ? paidChoice.paid
-      : storedEndUser.source === "issuer" && requiresPayment(storedEndUser.issuer);
-
   const change = (next: AuthDraft) => {
     form.setDraft(next);
     setRefused(null);
   };
-  const issues = authIssues(draft, { paid });
+  const issues = authIssues(draft);
   // A refusal from the gateway is shown where it applies, until the form changes.
   const refusedHere = refused?.path.startsWith("authentication.") ? refused.path.slice("authentication.".length) : null;
   if (refused && refusedHere !== null && !issues.has(refusedHere)) issues.set(refusedHere, refused.message);
@@ -133,11 +126,9 @@ export function SignInTab({ app }: { app: App }) {
             <CardContent>
               <SubscriptionFields
                 issuer={endUser.issuer}
-                paid={paid}
                 issues={issues}
                 disabled={disabled}
                 onChange={(issuer) => change({ ...draft, end_user: { ...endUser, issuer } } as AuthDraft)}
-                onPaidChange={(next) => setPaidChoice({ generation: form.generation, paid: next })}
               />
             </CardContent>
           </Card>

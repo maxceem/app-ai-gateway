@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
 import { diffOperations, type PatchOperation } from "@/lib/json-patch";
+import { canonicalJson } from "@contracts/canonical-json";
 import { usePatchApp, useUpdateApp } from "@/lib/queries";
 import type { App, AppConfig } from "@/lib/types";
 
@@ -71,26 +72,31 @@ export function useSaveApp(app: App, { keepsEdits = false }: { keepsEdits?: bool
  * - `toDraft` and `toStored` turn the stored part into what the form edits and
  *   back, for a form whose rows are not the stored shape. `toStored` is called
  *   only for a draft the form has found valid.
+ * - `edits` says what of a draft counts as an edit: by default all of it. A
+ *   form that keeps working state in its draft (an earlier value, a half-typed
+ *   number) says here which of it matters, so returning to the stored value is
+ *   no edit while an unfinished input still is.
  */
 export function usePatchForm<T, D = T>(
   app: App,
   path: string,
   read: (app: App) => T,
-  convert: { toDraft: (stored: T) => D; toStored: (draft: D) => T } = {
+  convert: { toDraft: (stored: T) => D; toStored: (draft: D) => T; edits?: (draft: D) => unknown } = {
     toDraft: (stored) => structuredClone(stored) as unknown as D,
     toStored: (draft) => draft as unknown as T,
   },
 ) {
   const patch = usePatchApp(app.id);
+  const edits = convert.edits ?? ((value: D) => value);
   const start = (from: App) => {
     const stored = read(from);
-    return { revision: from.revision, stored, initial: JSON.stringify(convert.toDraft(stored)) };
+    return { revision: from.revision, stored, initial: canonicalJson(edits(convert.toDraft(stored))) };
   };
   const [base, setBase] = useState(() => start(app));
   const [draft, setDraft] = useState<D>(() => convert.toDraft(base.stored));
   // Counts the drafts this form has started, so a form can drop what it remembered about the last one.
   const [generation, setGeneration] = useState(0);
-  const dirty = JSON.stringify(draft) !== base.initial;
+  const dirty = canonicalJson(edits(draft)) !== base.initial;
 
   const restart = (from: App) => {
     const next = start(from);

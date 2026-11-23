@@ -247,7 +247,6 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const [auth, setAuth] = useState<AuthDraft>(() => startingAuth("ios"));
   // Who may call has no default answer: the person chooses, as v1 asked it.
   const [answered, setAnswered] = useState(false);
-  const [paid, setPaid] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [created, setCreated] = useState<CreatedApp | null>(null);
 
@@ -255,7 +254,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const steps: StepId[] = ["basics", ...(kind === "ios" ? (["identity"] as const) : []), "users", ...(issuer ? (["provider", "paid"] as const) : [])];
   const step = steps[Math.min(stepIndex, steps.length - 1)]!;
   const last = stepIndex >= steps.length - 1;
-  const issues = authIssues(auth, { paid });
+  const issues = authIssues(auth);
   const done = stepDone(step, name, answered, issues);
 
   const reset = () => {
@@ -263,7 +262,6 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setKind("ios");
     setAuth(startingAuth("ios"));
     setAnswered(false);
-    setPaid(false);
     setStepIndex(0);
   };
 
@@ -322,8 +320,7 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                   setKind(next);
                   setAuth(startingAuth(next));
                   setAnswered(false);
-                  setPaid(false);
-                }}
+                              }}
               />
             </div>
           </>
@@ -352,8 +349,6 @@ function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
         {step === "paid" && auth.end_user.source === "issuer" ? (
           <SubscriptionFields
             issuer={auth.end_user.issuer}
-            paid={paid}
-            onPaidChange={setPaid}
             issues={issues}
             onChange={(next) => setAuth({ ...auth, end_user: { source: "issuer", issuer: next } } as AuthDraft)}
           />
