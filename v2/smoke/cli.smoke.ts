@@ -139,8 +139,15 @@ test("agw 2 lists provider types, adds an iOS app with the settings its flags na
 
     const snippet = await agw(home, "app", "snippet", created);
     expectCli(snippet, "agw app snippet");
-    check(Array.isArray(snippet.json.result.examples), "agw app snippet answered no examples list");
-    check(snippet.json.result.notes.some((line: string) => line.includes("Swift SDK")), "agw app snippet did not point an iOS app to the Swift SDK");
+    // The app was added disabled: nothing to run, and the note says why.
+    check(Array.isArray(snippet.json.result.examples) && snippet.json.result.examples.length === 0, "agw app snippet gave a disabled app examples");
+    check(snippet.json.result.notes.some((line: string) => line.startsWith("This app is disabled")), "agw app snippet did not say the app is disabled");
+
+    const resumed = await agw(home, "app", "update", created, "--status", "active");
+    expectCli(resumed, "agw turned the app on");
+    const active = await agw(home, "app", "snippet", created);
+    expectCli(active, "agw app snippet for the active app");
+    check(active.json.result.notes.some((line: string) => line.includes("Swift SDK")), "agw app snippet did not point an iOS app to the Swift SDK");
   } finally {
     try {
       const id = created;
