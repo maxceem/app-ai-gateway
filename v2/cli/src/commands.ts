@@ -324,13 +324,14 @@ async function routingOf(ctx: Context, entries: string[]): Promise<{ routing?: {
     connections ??= (await ctx.call("listProviders")).data.providers;
     const connection = connections.find((candidate) => candidate.slug === slug);
     if (!connection) fail("provider_not_found", `None of your provider connections has the slug ${slug}.`, "Run agw provider list to see them.", 4);
-    // The type's own operations come from the gateway; a custom provider's from its paths.
-    let declared: readonly string[] = [];
-    if (connection.type !== CUSTOM_PROVIDER_TYPE) {
+    // A built-in connection's first operation is its type's first declared one, from the gateway, never
+    // `passthrough`; a custom provider's comes from its paths.
+    let first: string | undefined;
+    if (connection.type === CUSTOM_PROVIDER_TYPE) first = connectionOperations(connection, [])[0];
+    else {
       if (types === undefined) types = await providerTypes(ctx);
-      declared = types?.find((candidate) => candidate.type === connection.type)?.operations ?? [];
+      first = types?.find((candidate) => candidate.type === connection.type)?.operations?.[0];
     }
-    const first: string | undefined = connectionOperations(connection, declared)[0];
     if (first === undefined)
       fail(
         "invalid_input",

@@ -154,6 +154,26 @@ test("app add writes only the settings its flags name: environments, verificatio
   assert.match(older.json().error.message, /does not list its provider types' operations/u);
   assert.match(older.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
 
+  // A built-in connection with listed paths still takes its type's first declared operation, never passthrough;
+  // on a gateway that lists no operations, it is refused the same way.
+  const listed = { ...PROVIDER, passthrough: [{ method: "GET", path: "v1/files" }] };
+  const noOperations = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path) => {
+    if (path === "/v2/admin/providers") return { providers: [listed] };
+    if (path === "/v2/admin/provider-types") return { types: [{ type: "openai", label: "OpenAI", styles: [], cloudflareGateway: true, custom: false }] };
+    return assert.fail("nothing is created");
+  });
+  assert.equal(noOperations.json().error.code, "invalid_input");
+  assert.match(noOperations.json().error.nextAction, /--providers openai=<operation>\+<operation>/u);
+  const withOperations: unknown[] = [];
+  const declared = await run(["app", "add", "--name", "My App", "--team-id", "ABCDE12345", "--bundle-id", "com.example.app", "--providers", "openai", "--json"], (path, options) => {
+    if (path === "/v2/admin/providers") return { providers: [listed] };
+    if (path === "/v2/admin/provider-types") return { types: [{ type: "openai", label: "OpenAI", styles: [], operations: ["openai.chat"], cloudflareGateway: true, custom: false }] };
+    withOperations.push(options.body);
+    return { app: APP, api_key: null };
+  });
+  assert.equal(declared.code, 0, declared.err);
+  assert.deepEqual((withOperations[0] as { config: { routing: unknown } }).config.routing, { providers: { openai: { operations: ["openai.chat"] } } });
+
   // As before this release: a server app ignores --team-id and --bundle-id.
   const keys = await mkdtemp(join(tmpdir(), "agw-v2-"));
   try {
