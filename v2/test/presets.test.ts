@@ -560,6 +560,37 @@ describe("presets", () => {
     }
   });
 
+  it("starts the first-byte time with the provider attempt: opening the key first keeps its own budget", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // The provider answers 20 s after it is asked.
+      fetchSpy.mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((resolve, reject) => {
+            const timer = setTimeout(() => resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } })), 20_000); // real-timer: faked by vi.useFakeTimers above.
+            init?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+      // Opening the key takes 45 s, longer than the deployment's 30 s first-byte time.
+      const slowKey = () =>
+        new Promise<UpstreamCredentials>((resolve) => {
+          setTimeout(() => resolve({ providerKey: "sk-test-slow-open", cloudflareToken: null }), 45_000); // real-timer: faked by vi.useFakeTimers above.
+        });
+      const context = fakeContext({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: "30" } as Env);
+      const answered = sendAttempts(context.c, NO_CLIENT, [unitAttempt(1, { credentials: vi.fn(slowKey) })]);
+      await vi.advanceTimersByTimeAsync(45_000 + 20_001);
+      const response = await answered;
+      expect(response.status).toBe(200);
+      await response.text();
+      await context.done();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reads PROVIDER_TTFB_TIMEOUT_SECONDS as whole seconds, falling back to 120 and capped at half an hour", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const ms = (value: unknown) => providerTtfbTimeoutMs({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: value } as unknown as Env);

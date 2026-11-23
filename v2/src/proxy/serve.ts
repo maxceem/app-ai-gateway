@@ -103,6 +103,15 @@ export function providerTtfbTimeoutMs(env: Env): number {
 }
 
 /**
+ * How long opening the first attempt's key may take, before anything is sent:
+ * the operation's own time or the gateway's 120 s. Never the deployment's
+ * first-byte setting, which bounds the provider, not the vault.
+ */
+function keyOpenBudgetMs(operation: OperationDescription): number {
+  return operation.responseDeadlineMs ?? PROVIDER_TTFB_TIMEOUT_MS;
+}
+
+/**
  * How long an operation's provider may take to send its response headers: the
  * operation's own time (`responseDeadlineMs`, such as Deepgram's 20 minutes),
  * or the deployment's.
@@ -1057,7 +1066,10 @@ async function sendAttemptsKeptFor(
     }
     let credentials: UpstreamCredentials;
     try {
-      credentials = await withinMs(prepared.credentials(), deadline === undefined ? responseDeadlineMs(c.env, prepared.operation) : deadline - Date.now());
+      // Before the first fetch, opening the key has its own budget, as before
+      // the first-byte setting; that time starts with the provider attempt.
+      // A fallback's key shares what is left of it.
+      credentials = await withinMs(prepared.credentials(), deadline === undefined ? keyOpenBudgetMs(prepared.operation) : deadline - Date.now());
     } catch (error) {
       // With nothing tried before it and nothing after it, its failure is the answer.
       if (last && previous === null && failure === null) throw error;
