@@ -239,10 +239,12 @@ function openedProviderKey(env: Env, connection: ConnectionRecord, blob: string)
  */
 export async function connectionCredentials(env: Env, connection: ConnectionRecord): Promise<UpstreamCredentials> {
   const gateway = connection.cloudflareGateway;
-  // Saving never allows both. A row that has them anyway is refused before any
-  // key is opened: its key is sealed for one destination (`keyOrigin`, the
-  // base URL) while its requests would go to the other (Cloudflare).
-  if (connection.baseUrl !== null && gateway !== null) {
+  // Saving never allows both. A row that has them anyway and stores a provider
+  // key is refused before the key is opened: the key is sealed for one
+  // destination (`keyOrigin`, the base URL) while its requests would go to
+  // the other (Cloudflare). A row whose provider keys stay in Cloudflare has
+  // no key here to protect, and keeps going through Cloudflare as before.
+  if (connection.baseUrl !== null && gateway !== null && connection.secretBlob !== null) {
     log("error", "provider_connection_unusable", {
       account: connection.accountId,
       connection: connection.id,

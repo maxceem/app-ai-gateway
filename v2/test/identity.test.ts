@@ -247,13 +247,22 @@ async function googleRedirect(environment: Env, email: string, subject: string):
 const startsSession = (response: Response) => response.headers.getSetCookie().some((cookie) => /session_token=[^;]+/u.test(cookie) && !cookie.includes("Max-Age=0"));
 
 describe("Google's redirect callback", () => {
-  it("signs a listed email in and goes on to where the sign-in began", async () => {
+  it("signs a listed email in and goes on to where the sign-in began, and signs the same Google identity in again as the same person", async () => {
     const email = unique("redirect-listed");
-    const callback = await googleRedirect(withGoogle({ ALLOWED_REGISTRATION_EMAILS: email }), email, `sub-${crypto.randomUUID()}`);
+    const subject = `sub-${crypto.randomUUID()}`;
+    const environment = withGoogle({ ALLOWED_REGISTRATION_EMAILS: email });
+    const callback = await googleRedirect(environment, email, subject);
     expect(callback.status).toBe(302);
     expect(callback.headers.get("location")).toBe(`${API}/v2/apps`);
     expect(startsSession(callback)).toBe(true);
-    expect((await signInsOf(email)).users).toBe(1);
+    expect(await signInsOf(email)).toEqual({ users: 1, providers: ["google"] });
+    vi.restoreAllMocks();
+
+    const again = await googleRedirect(environment, email, subject);
+    expect(again.status).toBe(302);
+    expect(again.headers.get("location")).toBe(`${API}/v2/apps`);
+    expect(startsSession(again)).toBe(true);
+    expect(await signInsOf(email)).toEqual({ users: 1, providers: ["google"] });
   });
 
   it("sends an unlisted email back to the sign-in page, clears the flow's cookies, and starts no session", async () => {

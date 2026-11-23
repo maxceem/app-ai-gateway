@@ -113,19 +113,36 @@ describe("opening a connection's key", () => {
     await expect(connectionCredentials(env, await load(slug))).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
   });
 
-  it.each(["cold", "warm"])("refuses a row with both a base URL and a Cloudflare gateway, %s cache, before opening a key", async (cache) => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { id, slug } = await seedConnection("https://elsewhere.example.test/");
-    if (cache === "warm") await connectionCredentials(env, await load(slug));
+  async function addCloudflareGateway(id: string): Promise<void> {
     const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id], "cf-token");
     await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?")
       .bind(JSON.stringify({ account_id: "cf-account", gateway_id: "cf-gateway", token_blob: token }), id)
       .run();
-    invalidateConnection(ACCOUNT_ID, slug);
+  }
 
-    await expect(connectionCredentials(env, await load(slug))).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+  it.each(["cold", "warm"])("refuses a row with both a base URL and a Cloudflare gateway and a stored key, %s cache, before opening it", async (cache) => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { id, slug } = await seedConnection("https://elsewhere.example.test/");
+    if (cache === "warm") await connectionCredentials(env, await load(slug));
+    await addCloudflareGateway(id);
+    invalidateConnection(ACCOUNT_ID, slug);
+    const connection = await load(slug);
+    const decrypt = vi.spyOn(crypto.subtle, "decrypt");
+
+    await expect(connectionCredentials(env, connection)).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+    // Refused before anything was opened, whatever the cache held.
+    expect(decrypt).not.toHaveBeenCalled();
     const lines = errors.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(lines).toContainEqual(expect.objectContaining({ message: "provider_connection_unusable", connection: id, reason: "base_url_and_cloudflare_gateway" }));
     expect(errors.mock.calls.flat().join(" ")).not.toContain(SECRET);
+  });
+
+  it("keeps serving a Cloudflare connection whose provider keys stay in Cloudflare, whatever stray base URL it has", async () => {
+    const { id, slug } = await seedConnection("https://elsewhere.example.test/");
+    await addCloudflareGateway(id);
+    await env.DB.prepare("UPDATE provider_connection SET secret_blob = NULL WHERE id = ?").bind(id).run();
+    invalidateConnection(ACCOUNT_ID, slug);
+
+    await expect(connectionCredentials(env, await load(slug))).resolves.toEqual({ providerKey: null, cloudflareToken: "cf-token" });
   });
 });
