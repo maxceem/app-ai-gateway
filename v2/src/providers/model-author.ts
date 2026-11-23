@@ -17,7 +17,7 @@ import { listedAuthor } from "../pricing/prices.ts";
 import { builtInProvider } from "./index.ts";
 
 /** Namespaces in an aggregator's model ids, and who they mean. */
-const AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
+const AUTHOR_NAMESPACES: ReadonlyMap<string, string> = new Map(Object.entries({
   openai: "OpenAI",
   anthropic: "Anthropic",
   google: "Google",
@@ -54,7 +54,7 @@ const AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
   thinkingmachines: "Thinking Machines",
   rekaai: "Reka",
   sakana: "Sakana AI",
-};
+}));
 
 export function modelAuthor(providerType: string, model: string | null): string | null {
   if (model === null || model === "") return null;
@@ -64,7 +64,8 @@ export function modelAuthor(providerType: string, model: string | null): string 
   if (provider?.authorNamespacedModels === true) {
     const slash = model.indexOf("/");
     if (slash > 0) {
-      const author = AUTHOR_NAMESPACES[model.slice(0, slash).replace(/^~/u, "").toLowerCase()];
+      // A Map, so a namespace such as `__proto__` or `constructor` is just unknown.
+      const author = AUTHOR_NAMESPACES.get(model.slice(0, slash).replace(/^~/u, "").toLowerCase());
       if (author !== undefined) return author;
     }
     return null;

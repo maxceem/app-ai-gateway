@@ -309,6 +309,8 @@ describe("charges", () => {
     await seed({ appId, usedAt: day + 2, id: "author_type", provider: "openai", model: "gpt-unknown-preview" });
     await seed({ appId, usedAt: day + 3, id: "author_unknown", provider: "openrouter", model: "someone/model" });
     await seed({ appId, usedAt: day + 4, id: "author_custom", provider: "custom", model: "my-model" });
+    await seed({ appId, usedAt: day + 5, id: "author_proto", provider: "openrouter", model: "__proto__/model" });
+    await seed({ appId, usedAt: day + 6, id: "author_constructor", provider: "openrouter", model: "constructor/model" });
     const read = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-06-01&to=2025-06-01`);
     expect(read.status).toBe(200);
     const authors = Object.fromEntries(read.body.charges.map((row: any) => [row.id, row.model_author]));
@@ -318,6 +320,8 @@ describe("charges", () => {
       author_type: "OpenAI",
       author_unknown: null,
       author_custom: null,
+      author_proto: null,
+      author_constructor: null,
     });
   });
 
