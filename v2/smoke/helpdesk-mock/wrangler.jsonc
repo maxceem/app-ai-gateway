@@ -1,0 +1,14 @@
+// A mock of the help desk, for the v2 test deployment only: it keeps no ticket
+// and emails only through the mail mock, which sends nothing.
+// Deploy: `pnpm exec wrangler deploy -c smoke/helpdesk-mock/wrangler.jsonc`.
+// The test deployment binds its HelpdeskWorker entrypoint as HELPDESK (gitignored wrangler.test.jsonc).
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "agw-test-v2-helpdesk",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "SUPPORT_INBOX": "support@example.test" },
+  "services": [{ "binding": "EMAIL", "service": "agw-test-v2-mail", "entrypoint": "MailMock" }]
+}

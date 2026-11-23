@@ -13,6 +13,11 @@
  * `example.test` addresses; skipped without V2_MAIL_URL. It signs up a new
  * person at a random `example.test` address, which no API can delete, and
  * deletes the app it makes.
+ *
+ * Where the deployment offers human support (its help desk is the mock in
+ * `smoke/helpdesk-mock/`, which emails through the mail mock), the same person
+ * then writes to support and reads the reference back from the mail mock.
+ * Nothing reaches a real help desk or inbox.
  */
 import { test } from "node:test";
 import {
@@ -41,6 +46,9 @@ function asConsole(cookie: string, path: string, init: { method?: string; json?:
     ...(init.json === undefined ? {} : { body: JSON.stringify(init.json) }),
   });
 }
+
+/** The person the first check signed up and verified, for the support check after it. */
+let person: { email: string; cookie: string } | undefined;
 
 test("a sign-up is sent a verification link, and its apps serve requests once it is opened", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const health = await readJson(await send("/v2/healthz", base));
@@ -106,9 +114,34 @@ test("a sign-up is sent a verification link, and its apps serve requests once it
     const after = await session();
     same(after.user.emailVerified, true, "the address is not verified after confirming");
     same(after.account.verificationPending, undefined, "the session still says verification is pending");
+    person = { email, cookie };
     // Other isolates catch up within ten seconds.
     await poll(async () => ((await me()).status === 200 ? true : undefined), "the app was not served within a minute of verifying");
   } finally {
     await cleanUp([() => asConsole(cookie, `/v2/admin/apps/${encodeURIComponent(appId)}?confirm=${encodeURIComponent(appId)}`, { method: "DELETE" })]);
   }
+});
+
+test("a message to human support opens a ticket, and its reference reaches the person through the mail mock", { skip, timeout: TEST_TIMEOUT_MS }, async (t) => {
+  const capabilities = await readJson(await send("/v2/console/capabilities", consoleUrl));
+  if (typeof capabilities.supportEmail !== "string") {
+    t.skip("this deployment offers no human support");
+    return;
+  }
+  check(person !== undefined, "the sign-up check before this one did not finish");
+  const { email, cookie } = person;
+  const sent = await asConsole(cookie, "/v2/admin/support", { json: { kind: "feedback", message: "Smoke check: please ignore.", page: "/apps" } });
+  await expectResponse(sent, 200, "the support message");
+  const answer = await readJson(sent);
+  same(answer.status, "sent", "the support message was not sent");
+  same(answer.replyTo, email, "support would reply to another address");
+  const reference = String(answer.reference);
+  check(/^SUP-[A-Z0-9]{6}$/u.test(reference), "the answer carries no reference");
+
+  // The help desk mock emails the person through the mail mock, the reference in the subject.
+  const message = await poll(async () => {
+    const outbox = await readJson(await send(`/outbox?to=${encodeURIComponent(email)}`, mailUrl));
+    return (outbox.messages as { subject: string; text: string }[] | undefined)?.find((entry) => entry.subject.includes(reference));
+  }, "no support email reached the mail mock within a minute");
+  check(message.text.includes("Smoke check: please ignore."), "the support email does not carry the message");
 });
