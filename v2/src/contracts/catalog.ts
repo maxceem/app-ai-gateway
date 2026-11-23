@@ -1108,7 +1108,7 @@ export const CATALOG = {
     errors: {
       400: "The body is malformed, or carries something that looks like a credential (`invalid_request`).",
       401: "A valid management key, OAuth token or console sign-in is required.",
-      403: "The account's plan does not include human support (`support_plan_required`), or the credential has the read grant (`grant_insufficient`).",
+      403: "The account's plan does not include human support (`support_plan_required`), the person has not verified their email address (`email_unverified`), or the credential has the read grant (`grant_insufficient`).",
       404: "This deployment does not offer human support (`not_found`).",
       409: "The credential's owner has no email address to reply to (`conflict`).",
       429: "Too many messages were sent (`rate_limited`); `Retry-After` says when to try again.",
