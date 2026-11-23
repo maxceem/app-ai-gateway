@@ -1043,6 +1043,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
       invalid_request: "Remove whatever looks like a credential, show the person the corrected message, and send it only once they agree.",
       not_found: "This deployment does not offer human support. Tell the person.",
       conflict: "The credential's owner has no email address for support to reply to. Ask the person to contact support from the console instead.",
+      email_unverified: "Support replies by email, so the person must verify their email address first. Ask them to open the link in the verification email, or send a new one from the console, then try again.",
       rate_limited: "Too many messages were sent. Tell the person, and do not retry until the wait the message names has passed.",
     },
     request: (input) => ({

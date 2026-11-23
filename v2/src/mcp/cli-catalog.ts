@@ -45,8 +45,7 @@ function guardOf(tool: CliTool): string {
  */
 const built = new Map<string, Promise<CliToolCatalogResponse>>();
 
-export function cliToolCatalog(env: Env): Promise<CliToolCatalogResponse> {
-  const offered = toolsFor(env);
+export function cliToolCatalog(env: Env, offered: readonly McpTool[] = toolsFor(env)): Promise<CliToolCatalogResponse> {
   const key = offered.map((tool) => tool.name).join(",");
   const cached = built.get(key);
   if (cached !== undefined) return cached;
@@ -79,9 +78,10 @@ export async function callCliTool(
   /** The tool's `guard` in the caller's list, when it sent one. */
   guard?: string,
 ): Promise<{ response: CliToolCallResponse; revision: string }> {
-  const { revision, tools } = await cliToolCatalog(caller.env);
+  const offered = toolsFor(caller.env);
+  const { revision, tools } = await cliToolCatalog(caller.env, offered);
   try {
-    const tool = toolsFor(caller.env).find((candidate) => candidate.name === name);
+    const tool = offered.find((candidate) => candidate.name === name);
     if (!tool) throw new GatewayError(404, "tool_not_found", `This deployment has no tool named ${name}`);
     const current = tools.find((entry) => entry.name === name)?.guard;
     if (guard !== undefined && current !== undefined && guard !== current) {

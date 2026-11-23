@@ -10,7 +10,7 @@ import { useConsoleSession } from "@/lib/console-session";
 import { useBillingStatus, useSendSupportMessage } from "@/lib/queries";
 
 /** What each Support menu item opens: its own heading, prompt and examples (v1's). */
-export const SUPPORT_KINDS: Record<
+export const SUPPORT_COPY: Record<
   SupportMessageKind,
   {
     menuLabel: string;
@@ -101,7 +101,7 @@ export function SupportDialog({ kind, onOpenChange }: { kind: SupportMessageKind
   const [sender, setSender] = useState<string | null>(null);
   if (kind !== null && sender === null) setSender(session.user.id);
   if (kind === null && sender !== null && !message.trim()) setSender(null);
-  const copy = SUPPORT_KINDS[shown];
+  const copy = SUPPORT_COPY[shown];
   const email = session.user.email;
 
   const submit = async () => {

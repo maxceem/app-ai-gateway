@@ -16,7 +16,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SUPPORT_KINDS, SUPPORT_MESSAGE_ID, SupportDialog, useSupportAvailable } from "@/components/support-dialog";
+import { SUPPORT_COPY, SUPPORT_MESSAGE_ID, SupportDialog, useSupportAvailable } from "@/components/support-dialog";
 import { entitledPlan } from "@/lib/billing";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AccountMenuItems } from "@/components/account-switcher";
@@ -94,12 +94,12 @@ function SupportMenu({ onChoose }: { onChoose: (kind: SupportMessageKind) => voi
       <DropdownMenuPortal>
         <DropdownMenuSubContent className="min-w-52">
           {plan ? <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Included with your {plan.planName} plan</DropdownMenuLabel> : null}
-          {(Object.keys(SUPPORT_KINDS) as SupportMessageKind[]).map((kind) => {
+          {(Object.keys(SUPPORT_COPY) as SupportMessageKind[]).map((kind) => {
             const Icon = SUPPORT_ICONS[kind];
             return (
               <DropdownMenuItem key={kind} onSelect={() => onChoose(kind)}>
                 <Icon className="size-4" />
-                {SUPPORT_KINDS[kind].menuLabel}
+                {SUPPORT_COPY[kind].menuLabel}
               </DropdownMenuItem>
             );
           })}
