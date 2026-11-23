@@ -33,6 +33,26 @@ let invalidations = 0;
 /** How long a read that replaces an expired pending record may take before the request is told to retry. */
 export const PENDING_REFRESH_DEADLINE_MS = 5_000;
 
+/**
+ * The app each request's handler loaded, so a refusal's log line can name it
+ * (`../index.ts`). Only an app record the gateway read is named: a path
+ * segment that names no registered app is the caller's own text, and is never
+ * copied into a log.
+ */
+const loadedApps = new WeakMap<Request, string>();
+
+/** The app a request's handler loaded, if any. */
+export function loadedAppId(request: Request): string | undefined {
+  return loadedApps.get(request);
+}
+
+/** {@link loadApp} for a request's handler: the record, remembered against the request for its log line. */
+export async function loadRequestApp(c: { env: Env; req: { raw: Request } }, appId: string): Promise<AppRecord> {
+  const record = await loadApp(c.env, appId);
+  loadedApps.set(c.req.raw, record.id);
+  return record;
+}
+
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appCache.get(appId);
   if (cached) return cached;

@@ -55,11 +55,21 @@ function createVault(envObject: object): SecretVault {
   }
   if (mode === "kms") {
     rejectMixedBindings(env, "SECRET_VAULT_LOCAL_", mode);
-    return createKmsSecretVault(
-      envObject,
-      requiredString(env, "SECRET_VAULT_KMS_URL", mode),
-      requiredString(env, "SECRET_VAULT_KMS_TOKEN", mode),
-    );
+    const url = requiredString(env, "SECRET_VAULT_KMS_URL", mode);
+    const token = requiredString(env, "SECRET_VAULT_KMS_TOKEN", mode);
+    try {
+      return createKmsSecretVault(envObject, url, token);
+    } catch (error) {
+      // cf-kms refuses a URL its token would travel to in plain text. Named as
+      // the setting it is, so the log says which one to fix, never its value.
+      if (error instanceof KmsClientError && error.code === "insecure_url") {
+        throw new SecretVaultConfigurationError("SECRET_VAULT_KMS_URL must use https", {
+          setting: "SECRET_VAULT_KMS_URL",
+          problem: "invalid",
+        });
+      }
+      throw error;
+    }
   }
   rejectMixedBindings(env, "SECRET_VAULT_KMS_", mode);
   return createLocalSecretVault(env);
@@ -78,6 +88,16 @@ export function secretVault(env: unknown): SecretVault {
   } catch (error) {
     log("error", "secret_vault_misconfigured", {
       error: errorFacts(error),
+      // Which setting is wrong, as constants: never the setting's value.
+      ...(error instanceof SecretVaultConfigurationError
+        ? {
+            vault: {
+              setting: error.setting,
+              problem: error.problem,
+              ...(error.kekVersion !== undefined ? { kekVersion: error.kekVersion } : {}),
+            },
+          }
+        : {}),
     });
     throw error;
   }

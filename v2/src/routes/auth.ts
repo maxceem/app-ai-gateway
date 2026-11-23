@@ -9,7 +9,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
-import { assertAppServes, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadRequestApp } from "../apps/app-records.ts";
 import { clientAuth, type ExchangeType, type TokenExchange } from "../client-auth/client-auth.ts";
 import {
   CHALLENGE_TTL_SECONDS,
@@ -194,7 +194,7 @@ export function appAuthFloodLimit(
 
 export async function challengeHandler(c: AuthContext): Promise<Response> {
   const appId = appIdOf(c);
-  const app = await loadApp(c.env, appId);
+  const app = await loadRequestApp(c, appId);
   assertAppServes(c.env, app);
   assertAppAttest(app);
   const bytes = new Uint8Array(32);
@@ -252,7 +252,7 @@ export async function failureHandler(c: AuthContext): Promise<Response> {
   const report = parseRequest(AppAttestFailureReportSchema, await jsonObjectBody(c));
   // The report is recorded under the account that owns the app now, read
   // before the challenge is spent: an app gone since holds no challenges.
-  const app = await loadApp(c.env, appId).catch(() => null);
+  const app = await loadRequestApp(c, appId).catch(() => null);
   if (app === null) return c.json({ recorded: false } satisfies OperationResponse<"appAuthFailure">);
   const [issued] = await database(c.env.DB)
     .delete(appAuthChallenge)
@@ -284,7 +284,7 @@ export async function registerHandler(c: AuthContext): Promise<Response> {
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "register", rawBody, async (attempt) => {
     const appId = appIdOf(c);
-    const app = await loadApp(c.env, appId);
+    const app = await loadRequestApp(c, appId);
     attempt.accountId = app.accountId;
     assertAppServes(c.env, app);
     const { exchange } = clientAuth(app);
@@ -299,7 +299,7 @@ export async function tokenHandler(c: AuthContext): Promise<Response> {
   const rawBody = await jsonObjectBody(c);
   return recorded(c, "token_exchange", rawBody, async (attempt) => {
     const appId = appIdOf(c);
-    const app = await loadApp(c.env, appId);
+    const app = await loadRequestApp(c, appId);
     attempt.accountId = app.accountId;
     assertAppServes(c.env, app);
     const { exchange } = clientAuth(app);

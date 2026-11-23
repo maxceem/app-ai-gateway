@@ -176,6 +176,14 @@ describe("the MCP endpoint", () => {
     expect(cookie.status).toBe(401);
   });
 
+  // Ported from v1's `mcp.test.ts`: the endpoint keeps no session and sends
+  // nothing unasked, so a stream (GET) and a session end (DELETE) are not offered.
+  it.each(["GET", "DELETE"])("answers %s with 405, offering no stream and no session", async (method) => {
+    const key = await seedManagementKey();
+    const response = await send({ method, headers: { ...bearer(key), "mcp-protocol-version": MODERN } });
+    expect(response.status).toBe(405);
+  });
+
   it("answers only on the console's host, and only to browser origins it lists", async () => {
     const key = await seedManagementKey();
     const request = { headers: bearer(key), body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} } };

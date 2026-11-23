@@ -31,7 +31,7 @@
  * which picks its streaming method (v1).
  */
 import { timedAdmission, timingsOf } from "./timing.ts";
-import { assertAppServes, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadRequestApp } from "../apps/app-records.ts";
 import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -279,7 +279,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const slug = c.req.param("slug") ?? "";
-  const app = await loadApp(c.env, appId);
+  const app = await loadRequestApp(c, appId);
   assertAppServes(c.env, app);
   // Only a preset the app has is looked up further, as on the proxy.
   const preset = PRESET_SLUG_PATTERN.test(slug) && Object.hasOwn(app.presets, slug) ? app.presets[slug] : undefined;
