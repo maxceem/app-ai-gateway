@@ -10,7 +10,8 @@ import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
-import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { connectionCredentials, keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { sealSecret } from "../src/vault/secrets.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
 import { upstreamRequest } from "../src/providers/route.ts";
@@ -129,6 +130,22 @@ describe("where a request goes (route.ts)", () => {
     expect(byok.url).toBe("https://gateway.ai.cloudflare.com/v1/acct%201/gw-1/grok/v1/chat/completions?x=1");
     // Cloudflare uses the key in its own store.
     expect(byok.headers.authorization).toBeUndefined();
+  });
+
+  it("still opens a key sealed under the old label for a stored id of . or .., while sending nothing", async () => {
+    for (const gatewayId of [".", ".."]) {
+      // The label such keys were always sealed under: v1/ and both ids, encoded.
+      const label = `https://gateway.ai.cloudflare.com/v1/acct/${encodeURIComponent(gatewayId)}/`;
+      const setting = { accountId: "acct", gatewayId };
+      expect(keyOrigin({ baseUrl: null, cloudflareGateway: setting })).toBe(label);
+      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label], PROVIDER_KEY);
+      const tokenBlob = await sealSecret(env, "cloudflareGatewayToken", ["acc", "conn"], CF_TOKEN);
+      const stored = record({ secretBlob, cloudflareGateway: { ...setting, tokenBlob, tokenHint: null } });
+      expect(await connectionCredentials(env, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
+      expect(() =>
+        upstreamRequest(stored, BUILT_IN_PROVIDERS.openai!, { ...base, path: "v1/chat/completions", credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN } }),
+      ).toThrow(/not plain path segments/u);
+    }
   });
 
   it("sends nothing for a stored id a URL parser would read as a folder", () => {
