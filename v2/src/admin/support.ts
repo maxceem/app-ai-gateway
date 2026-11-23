@@ -88,7 +88,10 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
   if (access !== null) {
     // As v1: a malformed plan is a `502`, not a guess either way.
     requireWellFormedPlan(access);
-    if (!planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
+    // Whatever billing answered must name an eligible plan. Only a read that
+    // failed sends with the plan unknown: an answer whose paid period ended
+    // before it arrived (`unavailable` here) names none, and is refused.
+    if (access.state !== "billed" || !planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
   }
   const plan = access !== null && access.state === "billed" ? access.plan : null;
 

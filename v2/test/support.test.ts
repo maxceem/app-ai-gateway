@@ -31,7 +31,7 @@ const CONSOLE = "https://console.gateway.test";
 
 interface Access {
   plan: { planKey: string; planName: string; isDefault: boolean; limits?: Record<string, unknown> | null } | null;
-  subscription: null;
+  subscription: Record<string, unknown> | null;
 }
 
 /** A plan, with the features its plan data says it includes; without a list, every one. */
@@ -296,6 +296,25 @@ describe("support", () => {
     expect(held.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
     vi.useRealTimers();
     release();
+  });
+
+  it("refuses an answer whose paid period ended before it arrived: only a read that failed sends with the plan unknown", async () => {
+    const human = await seedHuman();
+    const ended = new Date(Date.now() - 60_000).toISOString();
+    const expired = runtime({
+      access: {
+        plan: { planKey: "pro", planName: "Pro", isDefault: false },
+        subscription: {
+          subscriptionId: "sub_1", status: "cancelled", planKey: "pro", planName: "Pro", billingPeriod: "month",
+          renewsAt: null, endsAt: ended, trialEndsAt: null, source: "lemon_squeezy",
+          createdAt: ended, updatedAt: ended, billingAnchorDay: null, billingAnchorAt: ended, billingScheduleUpdatedAt: ended,
+        },
+      },
+    });
+    const response = await send(expired.env, human, MESSAGE);
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("support_plan_required");
+    expect(expired.tickets).toHaveLength(0);
   });
 
   it("sends while billing cannot be read, whatever plan app traffic kept, with the plan unknown (the owner's decision)", async () => {
