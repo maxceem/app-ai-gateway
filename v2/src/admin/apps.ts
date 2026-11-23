@@ -5,6 +5,7 @@
  * model an app names is checked now, and a model with no price, ours or the
  * customer's, is refused. A mistake caught on save costs nothing.
  */
+import { appWarnings } from "./app-warnings.ts";
 import type { Context } from "hono";
 import { invalidateApp } from "../apps/app-records.ts";
 import { generateApiKey } from "../client-auth/api-keys.ts";
@@ -72,6 +73,7 @@ export function appView(row: AppRow) {
     status: row.status,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
+    warnings: appWarnings(),
   };
 }
 

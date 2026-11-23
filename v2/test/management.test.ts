@@ -69,6 +69,17 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("app warnings (as v1)", () => {
+  it("are read with every app, and are empty while nothing produces one", async () => {
+    const key = await seedManagementKey();
+    const { body } = await createApp(key);
+    expect(body.app.warnings).toEqual([]);
+    expect((await request(key, "GET", `/v2/admin/apps/${body.app.id}`)).body.app.warnings).toEqual([]);
+    const list = await request(key, "GET", "/v2/admin/apps");
+    expect(list.body.apps.find((app: { id: string }) => app.id === body.app.id).warnings).toEqual([]);
+  });
+});
+
 describe("app PATCH", () => {
   it("applies the operations to the app as read, and saves as PUT would", async () => {
     const key = await seedManagementKey();

@@ -14,6 +14,16 @@ export const APP_STATUSES = ["active", "disabled"] as const;
 
 export const AppNameSchema = z.string().trim().min(1).max(100);
 
+/** Something about an app that will stop working on a stated date (v1's `AppWarning`). */
+export const AppWarningSchema = z
+  .object({
+    code: z.string().meta({ description: "Stable identifier of what the warning is about." }),
+    message: z.string().meta({ description: "What will stop, when, and what to do about it, in one sentence or two." }),
+    until: z.string().optional().meta({ description: "ISO 8601 UTC instant the behaviour stops." }),
+    docs_url: z.string().optional().meta({ description: "Where the change is described." }),
+  })
+  .meta({ id: "AppWarning" });
+
 export const AppSchema = z
   .object({
     id: z.string(),
@@ -23,6 +33,10 @@ export const AppSchema = z
     status: z.enum(APP_STATUSES),
     created_at: z.string(),
     updated_at: z.string(),
+    warnings: z.array(AppWarningSchema).optional().meta({
+      description:
+        "Behaviour of this app that will stop on a stated date, worked out when the app is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date. Absent on older gateways.",
+    }),
   })
   .meta({ id: "App" });
 

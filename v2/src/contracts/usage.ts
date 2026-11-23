@@ -165,6 +165,7 @@ export const ChargeSchema = z
     operation: z.string(),
     preset: z.string().nullable(),
     model: z.string().nullable(),
+    model_author: z.string().nullable().optional().meta({ description: "Who made the model, from the price list or the model id, as v1. An analytics field only: it never affects prices or limits. Null when unknown." }),
     end_user_id: z.string().nullable(),
     install_id: z.string().nullable(),
     cost_nano: z.number().int().nullable().meta({ description: "In nano-dollars. Null for a failed attempt that cost nothing, shown as —." }),

@@ -1197,6 +1197,13 @@
           },
           "updated_at": {
             "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppWarning"
+            },
+            "description": "Behaviour of this app that will stop on a stated date, worked out when the app is read; empty when there is none. Read-only: tell the person who owns the app, and act before each date. Absent on older gateways."
           }
         },
         "required": [
@@ -1207,6 +1214,31 @@
           "status",
           "created_at",
           "updated_at"
+        ]
+      },
+      "AppWarning": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable identifier of what the warning is about."
+          },
+          "message": {
+            "type": "string",
+            "description": "What will stop, when, and what to do about it, in one sentence or two."
+          },
+          "until": {
+            "type": "string",
+            "description": "ISO 8601 UTC instant the behaviour stops."
+          },
+          "docs_url": {
+            "type": "string",
+            "description": "Where the change is described."
+          }
+        },
+        "required": [
+          "code",
+          "message"
         ]
       },
       "CreatedAppResponse": {
@@ -2423,6 +2455,13 @@
               "string",
               "null"
             ]
+          },
+          "model_author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the model, from the price list or the model id, as v1. An analytics field only: it never affects prices or limits. Null when unknown."
           },
           "end_user_id": {
             "type": [

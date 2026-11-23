@@ -17,6 +17,7 @@
  * may come back in another account after its app was deleted, and the ledger
  * keeps the first account's rows.
  */
+import { modelAuthor } from "../pricing/model-author.ts";
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import {
@@ -420,6 +421,7 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
     next_before: results.length > query.limit && last !== undefined ? `${last.used_at}.${last.id}` : null,
     charges: page.map((row) => ({
       ...row,
+      model_author: modelAuthor(row.provider_type, row.model),
       cost_usd: row.cost_nano === null ? null : row.cost_nano / 1e9,
       price_is_estimate: row.price_is_estimate === 1,
       used_at: new Date(row.used_at).toISOString(),
