@@ -263,6 +263,15 @@ describe("Google's redirect callback", () => {
     expect(again.headers.get("location")).toBe(`${API}/v2/apps`);
     expect(startsSession(again)).toBe(true);
     expect(await signInsOf(email)).toEqual({ users: 1, providers: ["google"] });
+
+    // Both sessions belong to the one person the first callback made.
+    const person = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ? COLLATE NOCASE").bind(email).first<{ id: string }>();
+    for (const signedIn of [callback, again]) {
+      const cookie = signedIn.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+      const session = await call(environment, "/v2/auth/get-session", { headers: { cookie } });
+      expect(session.status).toBe(200);
+      expect(((await session.json()) as { user: { id: string } }).user.id).toBe(person!.id);
+    }
   });
 
   it("sends an unlisted email back to the sign-in page, clears the flow's cookies, and starts no session", async () => {

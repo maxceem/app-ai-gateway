@@ -210,11 +210,13 @@ describe("refusal logging", () => {
 
     const response = await tokenExchange(appId);
 
-    expect(response.status).toBeGreaterThanOrEqual(500);
-    const body = (await response.json()) as { error: { code: string } };
-    expect(["internal_error", "service_unavailable"]).toContain(body.error.code);
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
     expect(lines.some((line) => line.message === "gateway_error")).toBe(false);
-    expect(lines.filter((line) => line.level === "error").length).toBeGreaterThan(0);
+    // Its class, and nothing it carries: a JSON parse error quotes its input.
+    expect(lines.filter((line) => line.message === "unhandled_error")).toEqual([
+      expect.objectContaining({ level: "error", path: "/v2/apps/:app/auth/token", method: "POST", error: { class: "SyntaxError" } }),
+    ]);
     expect(output.join("\n")).not.toContain("sk-leaked");
   });
 });
