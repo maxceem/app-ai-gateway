@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { SignInTab } from "@/pages/app-auth";
 import { AppNotices } from "@/components/app-notices";
+import { LeaveGuard } from "@/components/leave-guard";
 import { ErrorsTab } from "@/pages/app-errors";
 import { PresetsTab, RewritesTab } from "@/pages/app-models";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
@@ -356,6 +357,7 @@ function ProvidersTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={dirty} />
       <p className="text-sm text-muted-foreground">
         The app may call only what is allowed here. Leave models empty to allow every model with a price.
       </p>
@@ -536,6 +538,10 @@ function LimitsTab({ app }: { app: App }) {
       : (["install", "apple_account"] as const);
   const user = scopeOf(perUser);
   const whole = scopeOf(perApp);
+  const limitsDirty =
+    JSON.stringify(perUser) !== JSON.stringify(scopeDraft(limits.per_user)) ||
+    JSON.stringify(perApp) !== JSON.stringify(scopeDraft(limits.per_app)) ||
+    budgetScope !== (limits.per_user.spending.scope ?? "");
 
   const submit = async () => {
     if (!user || !whole) return;
@@ -551,6 +557,7 @@ function LimitsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={limitsDirty} />
       <p className="text-sm text-muted-foreground">Leave a field empty for no limit. Budgets are in dollars a month.</p>
       <Card>
         <CardHeader>
@@ -1098,6 +1105,7 @@ function SettingsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={!draftsSaved} />
       {changedElsewhere && (name.trim() !== app.name || !sameJson(text, stored)) ? (
         <Alert>
           <AlertCircle />

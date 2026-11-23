@@ -20,6 +20,7 @@ import { useProviders } from "@/lib/queries";
 import { StaleDraftNotice } from "@/components/stale-draft-notice";
 import { Problem } from "@/components/problem";
 import { usePatchForm } from "@/lib/save-app";
+import { LeaveGuard } from "@/components/leave-guard";
 import type { App, ProviderConnection } from "@/lib/types";
 import { PRESET_SLUG_PATTERN, PresetsConfigSchema, RoutingConfigSchema, type Preset } from "@contracts/app-config";
 import { sameJson } from "@contracts/canonical-json";
@@ -69,6 +70,7 @@ export function RewritesTab({ app }: { app: App }) {
 
   return (
     <Card>
+      <LeaveGuard dirty={form.dirty} />
       <CardHeader>
         <CardTitle className="text-sm">Model rewrites</CardTitle>
         <CardDescription>
@@ -363,6 +365,7 @@ export function PresetsTab({ app }: { app: App }) {
 
   return (
     <div className="space-y-4">
+      <LeaveGuard dirty={form.dirty} />
       {form.stale ? <StaleDraftNotice onDiscard={form.discard} /> : null}
       <p className="text-sm text-muted-foreground">
         The app calls a preset at <code className="text-xs">/v2/apps/{app.id}/presets/&lt;name&gt;</code>. Each try is one charge; a try
