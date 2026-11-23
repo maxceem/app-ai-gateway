@@ -87,6 +87,22 @@ function slowKeyHash(): void {
   });
 }
 
+/**
+ * Makes unlocking a stored provider key take {@link SLOW_MS} on the server's
+ * own clock, which moves only when this moves it. Every step's duration is then
+ * exact: `prepare` takes SLOW_MS and every other step none, so how long the
+ * Durable Object round trips behind `limiter` really take on a busy machine
+ * cannot reach the assertions.
+ */
+function slowDecryptOnServerClock(): void {
+  vi.useFakeTimers({ toFake: ["performance"] });
+  const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+  vi.spyOn(crypto.subtle, "decrypt").mockImplementation(async (...args) => {
+    vi.advanceTimersByTime(SLOW_MS);
+    return decrypt(...args);
+  });
+}
+
 function mockUpstream(): void {
   vi.spyOn(globalThis, "fetch").mockImplementation(
     async () => Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }),
@@ -99,6 +115,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map((ctx) => waitOnExecutionContext(ctx)));
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -106,7 +123,7 @@ describe("server-timing", () => {
   it("names every step of a served proxy request, prepare between auth and limiter", async () => {
     const key = await seedServerApp("timing-proxy");
     mockUpstream();
-    slowDecrypt();
+    slowDecryptOnServerClock();
 
     const response = await proxy("timing-proxy", key);
 

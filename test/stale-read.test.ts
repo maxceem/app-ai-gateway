@@ -260,8 +260,11 @@ describe("a proxied request while D1 stalls", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(
       async () => Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }),
     );
+    // Each stalled read outlasts the budget, so one that gave up at the budget
+    // would show; the app's read and then its key's and providers' make two in
+    // a row, so the request still waits past twice the budget.
     const started = performance.now();
-    const response = await proxy("stale-cold", key, stalling(STALE_READ_BUDGET_MS * 2));
+    const response = await proxy("stale-cold", key, stalling(STALE_READ_BUDGET_MS * 1.25));
     expect(response.status).toBe(200);
     expect(performance.now() - started).toBeGreaterThanOrEqual(STALE_READ_BUDGET_MS * 2);
   });

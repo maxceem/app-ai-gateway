@@ -135,6 +135,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await settle();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -520,6 +521,12 @@ describe("an App Attest application's limits", () => {
   }
 
   it("counts the per-minute limit per install, so one person's two devices each get their own", async () => {
+    // The per-minute window is aligned to the clock's minute, so real time
+    // could cross into the next one between the phone's two requests and let
+    // the second through. Stopped where it is, it cannot. Only `Date` is
+    // faked, at the real time, so timers and the database's clock still agree.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now());
     const { phone, tablet } = await installs("limits-install-rpm", { limits: { rpm: 1 } });
     mockUpstream();
 
