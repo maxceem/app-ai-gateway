@@ -325,6 +325,17 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(moved.body.provider.cloudflareGateway).toMatchObject({ accountId: "acct", gatewayId: "gw" });
   });
 
+  it("refuses prices whose model names collide once trimmed, naming both, on create and on update", async () => {
+    const key = await seedManagementKey();
+    const pricing = { "gpt-x": { per_request: 1 }, " gpt-x ": { per_request: 2 } };
+    const created = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "x", slug: slugFor("openai"), secret: PROVIDER_KEY, pricing });
+    expect(created.status).toBe(400);
+    expect(JSON.stringify(created.body)).toContain('\\"gpt-x\\" and \\" gpt-x \\" name the same model');
+    const plain = await admin(key, "POST", "/v2/admin/providers", { type: "openai", name: "y", slug: slugFor("openai"), secret: PROVIDER_KEY });
+    const updated = await admin(key, "PUT", `/v2/admin/providers/${plain.body.provider.id}`, { revision: 1, pricing });
+    expect(updated.status).toBe(400);
+  });
+
   it("says what key goes with every change of Cloudflare route (S6)", async () => {
     const key = await seedManagementKey();
     const gateway = { accountId: "acct", gatewayId: "gw", token: CF_TOKEN };

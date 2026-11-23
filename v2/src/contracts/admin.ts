@@ -163,6 +163,30 @@ export const ModelPricingSchema = z
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
 /**
+ * A connection's own prices as a request sends them. Model names are trimmed
+ * when saved, so two that differ only by surrounding spaces would quietly
+ * become one, keeping only the last: such a pair is refused instead, naming
+ * both. Prices already saved are never judged by this again.
+ */
+const ProviderPricingInputSchema = z.preprocess((value, context) => {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const seen = new Map<string, string>();
+    for (const name of Object.keys(value)) {
+      const trimmed = name.trim();
+      const earlier = seen.get(trimmed);
+      if (earlier !== undefined) {
+        context.issues.push({
+          code: "custom",
+          input: value,
+          message: `${JSON.stringify(earlier)} and ${JSON.stringify(name)} name the same model once surrounding spaces are removed`,
+        });
+      } else seen.set(trimmed, name);
+    }
+  }
+  return value;
+}, ProviderPricingSchema);
+
+/**
  * The built-in API styles a custom provider's path may name. Each is served
  * as an operation named `custom.<style>`, metered by that style's usage
  * reader at the connection's own rates. One path per style.
@@ -347,7 +371,7 @@ export const ProviderCreateRequestSchema = z
     passthrough: PassthroughListSchema.optional(),
     /** For type `custom` only, and needed there with `baseUrl`: how its key is sent. */
     auth: CustomAuthSchema.optional(),
-    pricing: ProviderPricingSchema.optional(),
+    pricing: ProviderPricingInputSchema.optional(),
   })
   .strict()
   .meta({ id: "ProviderCreateRequest" });
@@ -370,7 +394,7 @@ export const ProviderUpdateRequestSchema = z
     passthrough: PassthroughListSchema.nullable().optional(),
     /** A custom provider's new key header and format. */
     auth: CustomAuthSchema.optional(),
-    pricing: ProviderPricingSchema.nullable().optional(),
+    pricing: ProviderPricingInputSchema.nullable().optional(),
     status: z.enum(["active", "disabled"]).optional(),
   })
   .strict()

@@ -1212,4 +1212,16 @@ describe("a typed key stays with where it was typed for", () => {
       }),
     );
   });
+
+  it("refuses a model written twice in the JSON prices before parsing drops one", async () => {
+    stub();
+    renderAuthenticated(<ProvidersPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for OpenAI main" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /your prices/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as JSON" }));
+    await userEvent.click(screen.getByLabelText(/prices by model/i));
+    await userEvent.paste('{"m": {"per_request": 1}, "m": {"per_request": 2}}');
+    expect(screen.getByText(/"m" is written twice in one object/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /save prices/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

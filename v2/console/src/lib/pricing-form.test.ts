@@ -101,4 +101,19 @@ describe("the prices form", () => {
     expect(priceTextProblem("1e300")).toBe("This price is too large to store.");
     expect(priceTextProblem("-1")).toBe("A price cannot be negative.");
   });
+
+  it("refuses a key written twice in one object, which parsing would quietly reduce to the last", () => {
+    expect(jsonPriceProblem('{"m": {"per_request": 1}, "m": {"per_request": 2}}')).toBe('"m" is written twice in one object; only the last would be kept.');
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "input": 3}}')).toBe('"input" is written twice in one object; only the last would be kept.');
+    // The same name written with an escape is the same key.
+    expect(jsonPriceProblem('{"m": {"per_request": 1}, "\\u006d": {"per_request": 2}}')).toMatch(/"m" is written twice/u);
+    // The same field in two different objects is fine.
+    expect(jsonPriceProblem('{"a": {"per_request": 1}, "b": {"per_request": 2}}')).toBeNull();
+  });
+
+  it("refuses a positive mode factor that would read as 0, and leaves factors free of the dollar precision rule", () => {
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 1e-400}}}}')).toBe("factor 1e-400: this factor is too small: it would be read as 0.");
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0.33333333333333}}}}')).toBeNull();
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0}}}}')).toBeNull();
+  });
 });

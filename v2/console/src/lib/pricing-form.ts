@@ -194,38 +194,68 @@ export function pricingOf(rows: readonly PriceRow[]): StoredPricing | null {
 /** Fields of a price whose numbers are not dollar amounts: a mode's multiplier and a token count. */
 const NOT_AMOUNTS: ReadonlySet<string> = new Set(["factor", "long_context_threshold"]);
 
+/** Whether a number written with a non-zero digit reads as 0 once parsed (it underflowed). */
+function underflows(number: string): boolean {
+  return Number(number) === 0 && /[1-9]/u.test(number.split(/[eE]/u)[0]!);
+}
+
 /**
- * What is wrong with the amounts in prices typed as JSON, judged on each
- * number as it was written, not as a float reads it: `1e-400` is refused, as
- * the form refuses it, though `JSON.parse` reads it as 0. Walks the text once,
- * skipping strings, and judges each number by the field it belongs to.
- * Returns null when every amount is stored exactly as written.
+ * What is wrong with prices typed as JSON that parsing alone would hide,
+ * judged on the text as written:
+ *
+ * - a key written twice in one object (a model, or a field of one price),
+ *   which parsing quietly reduces to its last value;
+ * - an amount a float reads as another figure: `1e-400` is refused, as the
+ *   form refuses it, though `JSON.parse` reads it as 0;
+ * - a positive mode factor so small it reads as 0. Factors and thresholds are
+ *   not dollar amounts, so the dollar precision rule does not apply to them.
+ *
+ * Walks the text once, skipping strings, and judges each number by the field
+ * it belongs to. Returns null when there is nothing to say.
  */
 export function jsonPriceProblem(text: string): string | null {
   let key: string | null = null;
+  // The keys already seen in each object being read, innermost last.
+  const objects: Set<string>[] = [];
   let index = 0;
   while (index < text.length) {
     const char = text[index]!;
+    if (char === "{") {
+      objects.push(new Set());
+      index += 1;
+      continue;
+    }
+    if (char === "}") {
+      objects.pop();
+      index += 1;
+      continue;
+    }
     if (char === '"') {
-      // A string: read it, unescaping only enough to know where it ends.
+      // A string: find where it ends, then read it as JSON reads it, escapes included.
       let end = index + 1;
-      let value = "";
-      while (end < text.length && text[end] !== '"') {
-        if (text[end] === "\\") {
-          value += text[end + 1] ?? "";
-          end += 2;
-        } else value += text[end++];
+      while (end < text.length && text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      let value: string;
+      try {
+        value = JSON.parse(text.slice(index, end + 1)) as string;
+      } catch {
+        return null;
       }
       index = end + 1;
       // A string followed by ':' is a key.
       let after = index;
       while (after < text.length && /\s/u.test(text[after]!)) after += 1;
-      if (text[after] === ":") key = value;
+      if (text[after] === ":") {
+        const seen = objects[objects.length - 1];
+        if (seen?.has(value)) return `${JSON.stringify(value)} is written twice in one object; only the last would be kept.`;
+        seen?.add(value);
+        key = value;
+      }
       continue;
     }
     if (char === "-" || (char >= "0" && char <= "9")) {
       const number = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(text.slice(index))?.[0] ?? char;
       index += number.length;
+      if (key === "factor" && underflows(number)) return `factor ${number}: this factor is too small: it would be read as 0.`;
       if (key !== null && !NOT_AMOUNTS.has(key)) {
         const problem = priceTextProblem(number);
         if (problem !== null) return `${key} ${number}: ${problem}`;
