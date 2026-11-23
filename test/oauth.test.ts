@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { BillingRuntime } from "../src/billing/contract";
 import { maintenanceSweepStatements } from "../src/auth/identity";
@@ -331,6 +331,20 @@ const session = (cookie: string) => ({ cookie, "x-console-request": "1" });
 async function count(sql: string, ...params: unknown[]): Promise<number> {
   return (await env.DB.prepare(sql).bind(...params).first<{ n: number }>())!.n;
 }
+
+/**
+ * The OAuth paths are served by the management bundle, which loads behind a
+ * dynamic `import()` on its first request. The first test here would pay that
+ * load inside its own 5 s, which a busy run (every suite at once) can exceed.
+ * Loading it once up front, with a limit of its own, charges it here instead.
+ */
+const LOAD_MANAGEMENT_TIMEOUT_MS = 60_000;
+
+beforeAll(async () => {
+  // Through the Worker, as a test would: the bundle, and whatever the sign-in
+  // library loads on its first request.
+  await request(runtime(), "/.well-known/oauth-authorization-server");
+}, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 describe("OAuth discovery", () => {
   it("publishes the three documents on the console host, readable from anywhere", async () => {
