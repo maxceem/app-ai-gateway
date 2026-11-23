@@ -22,7 +22,7 @@
  */
 import type { AppPatchOperation } from "../contracts/admin.ts";
 import { applyAppPatch } from "../admin/app-patch.ts";
-import { shortcutInput, shortcutOperations, usedShortcuts, type ShortcutApp } from "./shortcuts.ts";
+import { checkShortcuts, shortcutInput, shortcutOperations, usedShortcuts, type ShortcutApp } from "./shortcuts.ts";
 import { z } from "zod";
 import { CATALOG, type OperationName, type OperationResponse } from "../contracts/catalog.ts";
 import type { CliToolHint } from "../contracts/cli.ts";
@@ -880,6 +880,11 @@ export const MCP_TOOLS: readonly McpTool[] = [
       if (input.operations !== undefined && (!Array.isArray(input.operations) || input.operations.length === 0)) {
         throw new GatewayError(400, "invalid_request", "operations must be a non-empty list of patch operations, or left out; nothing was saved");
       }
+      // A revision, when sent, is a positive whole number; each shortcut sent has a value it takes.
+      if (input.revision !== undefined && !APP_PATCH.shape.revision.safeParse(input.revision).success) {
+        throw new GatewayError(400, "invalid_request", "revision must be the whole number get_app returned; nothing was saved");
+      }
+      checkShortcuts(input);
       const explicit = Array.isArray(input.operations) ? input.operations : [];
       if (explicit.length === 0 && usedShortcuts(input).length === 0) {
         throw new GatewayError(400, "invalid_request", "Name what to change: a shortcut such as name or status, or operations with the revision; nothing was saved");
@@ -901,17 +906,18 @@ export const MCP_TOOLS: readonly McpTool[] = [
       const current = (read as { app?: ShortcutApp & { revision?: number; name?: string; status?: string; config?: unknown } } | undefined)?.app;
       const explicit = Array.isArray(input.operations) ? (input.operations as AppPatchOperation[]) : [];
       if (current !== undefined && explicit.length > 0) {
-        // Judged as the save would judge them, before anything is applied here:
-        // the operations' shape first, then the revision the caller read.
+        // Judged as the save would judge them, before anything is applied here.
         const shaped = APP_PATCH.safeParse({ revision: input.revision, operations: explicit });
         if (!shaped.success) {
           const issue = shaped.error.issues[0];
           const where = issue === undefined || issue.path.length === 0 ? "" : `${issue.path.map(String).join(".")}: `;
           throw new GatewayError(400, "invalid_request", `${where}${issue?.message ?? "The operations are invalid"}; nothing was saved`);
         }
-        if (input.revision !== current.revision) {
-          throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
-        }
+      }
+      // A revision the caller sent is compared with the app as read before any shortcut is expanded, with or
+      // without operations; the save checks it again.
+      if (current !== undefined && input.revision !== undefined && input.revision !== current.revision) {
+        throw new GatewayError(409, "app_revision_conflict", "The app changed since it was read; read it again and retry");
       }
       // Shortcuts apply after the explicit operations, so they are judged against what those produce.
       const base = current === undefined || explicit.length === 0 ? current : (applyAppPatch({ name: current.name, status: current.status, config: current.config }, explicit) as ShortcutApp);

@@ -79,9 +79,17 @@ export function shortcutInput(): Record<string, z.ZodType> {
   return Object.fromEntries(Object.entries(APP_SHORTCUTS).map(([name, shortcut]) => [name, shortcut.schema.optional()]));
 }
 
-/** The shortcuts a call uses: those present with a value. */
+/** The shortcuts a call uses: every one it sends, `null` included; only one left out is skipped. */
 export function usedShortcuts(input: Record<string, unknown>): string[] {
-  return Object.keys(APP_SHORTCUTS).filter((name) => input[name] !== undefined && input[name] !== null);
+  return Object.keys(APP_SHORTCUTS).filter((name) => input[name] !== undefined);
+}
+
+/** Refuses, before anything is read or written, a shortcut whose value is not what it takes (`null` included). */
+export function checkShortcuts(input: Record<string, unknown>): void {
+  for (const name of usedShortcuts(input)) {
+    const parsed = APP_SHORTCUTS[name]!.schema.safeParse(input[name]);
+    if (!parsed.success) throw new GatewayError(400, "invalid_request", `${name}: ${parsed.error.issues[0]?.message ?? "invalid"}; nothing was saved`);
+  }
 }
 
 /** The operations the shortcuts a call uses stand for, in the table's order, judged against the app as read. */

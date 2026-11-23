@@ -30,7 +30,8 @@
  * The client's query is never sent upstream, except Gemini's `alt=sse`,
  * which picks its streaming method (v1).
  */
-import { timedAdmission, timingsOf } from "./timing.ts";
+import { authRefused, startTimings, timedAdmission, timingsOf } from "./timing.ts";
+import type { AppRecord } from "../core/types.ts";
 import { assertAppServes, loadApp } from "../apps/app-records.ts";
 import { PRESET_SLUG_PATTERN, type Preset, type PresetFallback } from "../contracts/app-config.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -276,14 +277,24 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
 
 export async function presetHandler(c: ProxyContext): Promise<Response> {
   const startedAt = Date.now();
+  // `auth` starts here, before the app is loaded, so a refusal for the app itself is timed too (v1).
+  const timings = startTimings(c.req.raw);
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const slug = c.req.param("slug") ?? "";
-  const app = await loadApp(c.env, appId);
-  assertAppServes(c.env, app);
-  // Only a preset the app has is looked up further, as on the proxy.
-  const preset = PRESET_SLUG_PATTERN.test(slug) && Object.hasOwn(app.presets, slug) ? app.presets[slug] : undefined;
-  const first = preset === undefined ? null : await loadConnection(c.env, app.accountId, preset.provider);
+  let app: AppRecord;
+  let preset: AppRecord["presets"][string] | undefined;
+  let first: ConnectionRecord | null;
+  try {
+    app = await loadApp(c.env, appId);
+    assertAppServes(c.env, app);
+    // Only a preset the app has is looked up further, as on the proxy.
+    preset = PRESET_SLUG_PATTERN.test(slug) && Object.hasOwn(app.presets, slug) ? app.presets[slug] : undefined;
+    first = preset === undefined ? null : await loadConnection(c.env, app.accountId, preset.provider);
+  } catch (error) {
+    authRefused(timings);
+    throw error;
+  }
   const firstDescription = first === null ? null : connectionDescription(first);
 
   return serveCaller(

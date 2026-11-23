@@ -16,6 +16,8 @@
  * Only durations are sent: nothing about the caller, the app or the provider.
  */
 export interface ServedTimings {
+  /** When `auth` began: as the request arrived, before its app was loaded. */
+  authStartedAt?: number;
   authMs?: number;
   prepareMs?: number;
   limiterMs?: number;
@@ -26,11 +28,18 @@ export interface ServedTimings {
 /** One request's timings, found again by the error handler. Keyed by the request, so nothing is kept once it is gone. */
 const TIMINGS = new WeakMap<Request, ServedTimings>();
 
-/** Starts timing a served request. */
+/** Starts timing a served request, with `auth`: from loading its app on, as v1. Called again, it answers the same timings. */
 export function startTimings(request: Request): ServedTimings {
-  const timings: ServedTimings = {};
+  const known = TIMINGS.get(request);
+  if (known !== undefined) return known;
+  const timings: ServedTimings = { authStartedAt: performance.now() };
   TIMINGS.set(request, timings);
   return timings;
+}
+
+/** Ends `auth` for a request refused in it, such as one for an app that does not exist or is disabled. */
+export function authRefused(timings: ServedTimings): void {
+  if (timings.authMs === undefined && timings.authStartedAt !== undefined) timings.authMs = performance.now() - timings.authStartedAt;
 }
 
 /** The timings of a served request, or `undefined` for any other request. */

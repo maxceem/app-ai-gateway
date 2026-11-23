@@ -475,6 +475,16 @@ describe("tools", () => {
     expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ status: "active", revision: app.revision });
   });
 
+  it("refuse a shortcut sent with no value it takes, null included, and a revision that is not one, before any write", async () => {
+    const key = await seedManagementKey();
+    const { app } = await populated(key);
+    for (const args of [{ name: null, status: "disabled" }, { status: 5 }, { status: "paused" }, { name: "", status: "disabled" }, { status: "disabled", revision: "one" }]) {
+      const refused = await callTool(key, "patch_app", { app: app.id, ...args });
+      expect(refused.structuredContent.error, JSON.stringify(args)).toBe("invalid_request");
+    }
+    expect((await admin(key, "GET", `/v2/admin/apps/${app.id}`)).body.app).toMatchObject({ status: "active", revision: app.revision });
+  });
+
   it("set a field a shortcut names even when an operation before it replaced its parent without it", async () => {
     const key = await seedManagementKey();
     const created = await admin(key, "POST", "/v2/admin/apps", {

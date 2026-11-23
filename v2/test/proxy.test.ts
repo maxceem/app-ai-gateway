@@ -711,6 +711,22 @@ describe("server-timing (as v1)", () => {
     expect(entries(response).map(([name]) => name)).toEqual(["auth"]);
   });
 
+  it("times auth from the start, so a disabled app's or a missing app's refusal is timed too (as v1)", async () => {
+    const { appId, slug, key } = await setup();
+    await env.DB.prepare("UPDATE app SET status = 'disabled' WHERE id = ?").bind(appId).run();
+    clearCaches();
+    const disabled = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini", messages: [] }));
+    expect(disabled.response.status).toBe(403);
+    expect(entries(disabled.response).map(([name]) => name)).toEqual(["auth"]);
+    const preset = await call(`/v2/apps/${appId}/presets/anything`, chatRequest(key, { messages: [] }));
+    expect(preset.response.status).toBe(403);
+    expect(entries(preset.response).map(([name]) => name)).toEqual(["auth"]);
+    const missing = await call(`/v2/apps/app_missing_${crypto.randomUUID().slice(0, 6)}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini", messages: [] }));
+    expect(missing.response.status).toBe(404);
+    expect(entries(missing.response).map(([name]) => name)).toEqual(["auth"]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("sends nothing on answers that are not served calls", async () => {
     const { response } = await call("/v2/healthz");
     expect(response.headers.get("server-timing")).toBeNull();

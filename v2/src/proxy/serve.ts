@@ -68,7 +68,7 @@ import { chargedAs, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { setting } from "../core/query-budget.ts";
-import { authDone, prepareDone, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
+import { authDone, authRefused, prepareDone, setServerTiming, startTimings, timedAdmission, timingsOf } from "./timing.ts";
 import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, servedServiceMode } from "./meter.ts";
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
@@ -211,9 +211,9 @@ export async function serveCaller(
 ): Promise<Response> {
   const { app, startedAt } = input;
   const readBody = bodyOnce(c.req.raw);
-  // Each step is timed for `server-timing`, whether it serves or refuses (`./timing.ts`).
+  // Each step is timed for `server-timing`, whether it serves or refuses (`./timing.ts`); `auth` began as the app was loaded.
   const timings = startTimings(c.req.raw);
-  const authStartedAt = performance.now();
+  const authStartedAt = timings.authStartedAt ?? performance.now();
   let authenticated: Awaited<ReturnType<typeof authenticateRequest>>;
   try {
     authenticated = await authenticateRequest({
@@ -306,17 +306,27 @@ export async function serveCaller(
 
 export async function proxyHandler(c: ProxyContext): Promise<Response> {
   const startedAt = Date.now();
+  // `auth` starts here, before the app is loaded, so a refusal for the app itself is timed too (v1).
+  const timings = startTimings(c.req.raw);
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const url = new URL(c.req.url);
   const target = proxyTarget(url);
-  const app = await loadApp(c.env, appId);
-  assertAppServes(c.env, app);
-  // Only a slug the app lists is looked up: the caller is not verified yet, so
-  // an unlisted one costs no D1 read and leaves nothing in the cache. It is
-  // refused below, once the caller is known.
-  const routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
-  const connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
+  let app: AppRecord;
+  let routing: AppRecord["routing"]["providers"][string] | undefined;
+  let connection: ConnectionRecord | null;
+  try {
+    app = await loadApp(c.env, appId);
+    assertAppServes(c.env, app);
+    // Only a slug the app lists is looked up: the caller is not verified yet, so
+    // an unlisted one costs no D1 read and leaves nothing in the cache. It is
+    // refused below, once the caller is known.
+    routing = Object.hasOwn(app.routing.providers, target.slug) ? app.routing.providers[target.slug] : undefined;
+    connection = routing === undefined ? null : await loadConnection(c.env, app.accountId, target.slug);
+  } catch (error) {
+    authRefused(timings);
+    throw error;
+  }
   const description = connection === null ? null : connectionDescription(connection);
 
   return serveCaller(
