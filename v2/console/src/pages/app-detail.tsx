@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { appKind } from "@/pages/apps";
 import { SignInTab } from "@/pages/app-auth";
 import { ErrorsTab } from "@/pages/app-errors";
+import { PresetsTab, RewritesTab } from "@/pages/app-models";
 import { CONVERSATION_RETENTION_DAYS } from "@contracts/app-config";
 
 /** The Usage tab carries the chart library, so it loads only when opened. */
@@ -63,6 +64,8 @@ const TABS: Tab[] = [
   { slug: "errors", label: "Errors" },
   { slug: "sign-in", label: "Sign-in" },
   { slug: "providers", label: "Providers" },
+  { slug: "rewrites", label: "Rewrites" },
+  { slug: "presets", label: "Presets" },
   { slug: "limits", label: "Limits" },
   { slug: "users", label: "Users" },
   { slug: "jobs", label: "Jobs" },
@@ -135,6 +138,8 @@ export function AppDetailPage() {
         {active.slug === "errors" ? <ErrorsTab appId={data.id} /> : null}
         {active.slug === "sign-in" ? <SignInTab app={data} /> : null}
         {active.slug === "providers" ? <ProvidersTab app={data} /> : null}
+        {active.slug === "rewrites" ? <RewritesTab app={data} /> : null}
+        {active.slug === "presets" ? <PresetsTab app={data} /> : null}
         {active.slug === "limits" ? <LimitsTab app={data} /> : null}
         {active.slug === "users" ? <UsersTab app={data} /> : null}
         {active.slug === "jobs" ? <JobsTab app={data} /> : null}
