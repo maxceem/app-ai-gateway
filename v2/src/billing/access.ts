@@ -373,15 +373,19 @@ export function billingRpcError(error: unknown): GatewayError {
 }
 
 /**
- * Refuses the call unless the account's plan includes the feature, and
- * answers with the billing access it read. Billing that cannot be read
- * answers 503 rather than guessing, unless the feature's policy allows it
- * (human support).
+ * Turning a feature on needs a plan that includes it. Like any settings write,
+ * billing that cannot be read, or only a plan kept through an outage, answers
+ * 503 rather than guessing (`requireActiveBilling`). Human support sends its
+ * tickets on its own path (`../admin/support.ts`), which does not wait for
+ * billing.
  */
-export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature): Promise<GatewayBillingAccess> {
-  const access = await getBillingAccess(env, accountId);
-  if (planIncludes(access, feature)) return access;
-  requireActiveBilling(access);
+export async function requirePlanFeature(env: Env, accountId: string, feature: PlanFeature): Promise<void> {
+  const access = requireActiveBilling(await getBillingAccess(env, accountId));
+  if (!planIncludes(access, feature)) throw planFeatureRefusal(feature);
+}
+
+/** The refusal of a feature the account's plan leaves out, in the feature's own words and code. */
+export function planFeatureRefusal(feature: PlanFeature): GatewayError {
   const policy = FEATURE_POLICY[feature];
-  throw new GatewayError(403, policy.code, `${policy.name} is not included in this account's plan`, undefined, { data: { feature } });
+  return new GatewayError(403, policy.code, `${policy.name} is not included in this account's plan`, undefined, { data: { feature } });
 }

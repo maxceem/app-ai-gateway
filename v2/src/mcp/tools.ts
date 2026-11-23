@@ -1034,8 +1034,9 @@ export const MCP_TOOLS: readonly McpTool[] = [
     }),
     // It reaches a person outside the gateway, and each call that is not a repeat sends a new email; it removes nothing.
     annotations: { ...writes({ destructive: false, idempotent: false }), openWorldHint: true },
-    // `agw support send` is built into agw, which asks before sending; the built-in command wins over the tool.
-    cli: { command: "support send" },
+    // `agw support send` is built into agw, which shows the message and asks before sending; the built-in
+    // command wins over the tool. An agw from before it has no such step, so it is told to update instead.
+    cli: { command: "support send", requires: ["support-confirmation"] },
     available: (env) => supportInbox(env) !== null,
     next: {
       support_plan_required: "Tell the person that their plan does not include human support, and that an account owner can choose one that does on the Billing page of the console. Do not retry.",

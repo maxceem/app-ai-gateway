@@ -9,7 +9,8 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import type { HelpdeskRuntime, HelpdeskTicketInput, HelpdeskTicketResult } from "../src/helpdesk/contract.ts";
-import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, type SeededHuman } from "./helpers.ts";
+import { BILLING_ACCESS_CACHE_TTL_MS, CONSOLE_BILLING_DEADLINE_MS, getAppTrafficBillingAccess, requirePlanFeature } from "../src/billing/access.ts";
+import { clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, useFakeClock, type SeededHuman } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -20,7 +21,10 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const API = "https://gateway.test";
 const CONSOLE = "https://console.gateway.test";
@@ -83,10 +87,12 @@ async function capabilities(testEnv: Env): Promise<{ supportEmail?: string }> {
   return (await call(testEnv, new Request(`${CONSOLE}/v2/console/capabilities`))).json();
 }
 
-/** Sent as the console sends it, with the session cookie, or as the CLI does, with a key. */
-function send(testEnv: Env, credential: { cookie: string } | { key: string }, body: Record<string, unknown>): Promise<Response> {
+/** Sent as the console sends it, with the session cookie (in the account a tab names), or as the CLI does, with a key. */
+function send(testEnv: Env, credential: { cookie: string; account?: string } | { key: string }, body: Record<string, unknown>): Promise<Response> {
   const auth: Record<string, string> =
-    "cookie" in credential ? { cookie: credential.cookie, "x-console-request": "1" } : { authorization: `Bearer ${credential.key}` };
+    "cookie" in credential
+      ? { cookie: credential.cookie, "x-console-request": "1", ...(credential.account === undefined ? {} : { "x-account-id": credential.account }) }
+      : { authorization: `Bearer ${credential.key}` };
   return call(
     testEnv,
     new Request(`${"cookie" in credential ? CONSOLE : API}/v2/admin/support`, {
@@ -112,7 +118,8 @@ async function listedTools(testEnv: Env): Promise<string[]> {
   return ((await response.json()) as { tools: { name: string }[] }).tools.map((tool) => tool.name);
 }
 
-const MESSAGE = { kind: "bug", message: "Streams stop halfway.", page: "/apps/demo/usage" };
+/** As the console sends it: the page as the browser shows it, below the console's `/v2` base. */
+const MESSAGE = { kind: "bug", message: "Streams stop halfway.", page: "/v2/apps/demo/usage" };
 
 describe("support", () => {
   it("is advertised only where billing, a help desk and an inbox are all configured", async () => {
@@ -137,7 +144,7 @@ describe("support", () => {
       customer: { email: human.email, userId: human.userId },
       account: { tenantId: human.accountId, plan: "Pro" },
       channel: "console",
-      page: `${CONSOLE}/apps/demo/usage`,
+      page: `${CONSOLE}/v2/apps/demo/usage`,
     });
   });
 
@@ -227,13 +234,133 @@ describe("support", () => {
     expect(await (await send(testEnv, human, MESSAGE)).json()).toMatchObject({ reference: "SUP-7F3K2Q", duplicate: true });
   });
 
-  it("asks to try again later when the help desk cannot be reached, and logs nothing the person wrote", async () => {
+  it("asks to try again later when the help desk cannot be reached, and logs nothing the person wrote or their address", async () => {
     const human = await seedHuman();
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const failed = await send(runtime({ helpdesk: "unreachable" }).env, human, MESSAGE);
+    const logged = [vi.spyOn(console, "error").mockImplementation(() => undefined), vi.spyOn(console, "warn").mockImplementation(() => undefined), vi.spyOn(console, "log").mockImplementation(() => undefined)];
+    // The help desk's own error carries both, as an RPC failure may.
+    const failed = await send(
+      runtime({
+        helpdesk: (input) => {
+          throw new Error(`could not open a ticket for ${input.customer.email}: ${input.message}`);
+        },
+      }).env,
+      human,
+      MESSAGE,
+    );
     expect(failed.status).toBe(503);
     expect(await errorCode(failed)).toBe("email_unavailable");
-    expect(JSON.stringify(logged.mock.calls)).not.toContain("Streams stop halfway.");
+    const written = JSON.stringify(logged.map((spy) => spy.mock.calls));
+    expect(written).toContain("support_helpdesk_failed");
+    expect(written).not.toContain("Streams stop halfway.");
+    expect(written).not.toContain(human.email);
+  });
+
+  it("refuses an address its owner has not verified: support replies to it", async () => {
+    const human = await seedHuman();
+    await env.DB.prepare("UPDATE mgmt_user SET email_verified = 0 WHERE id = ?").bind(human.userId).run();
+    const { env: testEnv, tickets } = runtime();
+    const refused = await send(testEnv, human, MESSAGE);
+    expect(refused.status).toBe(403);
+    expect(await errorCode(refused)).toBe("email_unverified");
+    expect(tickets).toHaveLength(0);
+  });
+
+  it("reads the plan fresh within the console's deadline: late or failed sends with the plan unknown, no plan or no support refuses", async () => {
+    const human = await seedHuman();
+    // No plan at all, from a read that answered: refused.
+    const none = runtime({ access: { plan: null, subscription: null } });
+    const refused = await send(none.env, human, MESSAGE);
+    expect(refused.status).toBe(403);
+    expect(await errorCode(refused)).toBe("support_plan_required");
+    expect(none.tickets).toHaveLength(0);
+
+    // An eligible plan is named in the ticket.
+    const eligible = runtime({ access: plan("Growth", false, ["humanSupport"]) });
+    expect((await send(eligible.env, human, MESSAGE)).status).toBe(200);
+    expect(eligible.tickets[0]!.account?.plan).toBe("Growth");
+
+    // A read held past the deadline sends the ticket, the plan unknown.
+    let release!: () => void;
+    const held = runtime();
+    const billing = (held.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
+    const answer = billing.getTenantAccess;
+    billing.getTenantAccess = async () => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return answer();
+    };
+    useFakeClock();
+    const pending = send(held.env, human, MESSAGE);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await vi.advanceTimersByTimeAsync(CONSOLE_BILLING_DEADLINE_MS);
+    expect((await pending).status).toBe(200);
+    expect(held.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
+    vi.useRealTimers();
+    release();
+  });
+
+  it("never names a plan kept through an outage as the account's current one", async () => {
+    const human = await seedHuman();
+    let down = false;
+    const kept = runtime({ access: plan("Pro", false) });
+    const billing = (kept.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
+    const answer = billing.getTenantAccess;
+    billing.getTenantAccess = async () => {
+      if (down) throw new Error("billing is down");
+      return answer();
+    };
+    // App traffic reads the plan, which it keeps for an outage.
+    expect(await getAppTrafficBillingAccess(kept.env, human.accountId, () => undefined)).toMatchObject({ plan: { planName: "Pro" } });
+    down = true;
+    expect((await send(kept.env, human, MESSAGE)).status).toBe(200);
+    expect(kept.tickets[0]!.account?.plan).toBe("unknown (billing unreachable)");
+  });
+
+  it("keeps settings writes strict: a plan kept through an outage never turns conversation storage on", async () => {
+    const human = await seedHuman();
+    let down = false;
+    const kept = runtime({ access: plan("Pro", false, ["conversationStorage"]) });
+    const billing = (kept.env as unknown as { BILLING: { getTenantAccess: () => Promise<Access> } }).BILLING;
+    const answer = billing.getTenantAccess;
+    billing.getTenantAccess = async () => {
+      if (down) throw new Error("billing is down");
+      return answer();
+    };
+    await expect(requirePlanFeature(kept.env, human.accountId, "conversationStorage")).resolves.toBeUndefined();
+    // Past the cache, billing fails: only the plan kept through the outage is left, which a write never trusts.
+    down = true;
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + BILLING_ACCESS_CACHE_TTL_MS + 1_000 });
+    await expect(requirePlanFeature(kept.env, human.accountId, "conversationStorage")).rejects.toMatchObject({ status: 503, code: "billing_unavailable" });
+  });
+
+  it("holds one person to ten messages an hour, whichever of their accounts they write from", async () => {
+    const human = await seedHuman();
+    const other = `acc_support_${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Other', ?, ?, ?)").bind(other, human.userId, now, now),
+      env.DB.prepare("INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'owner', 'active', ?)").bind(
+        `mem_${other}`,
+        other,
+        human.userId,
+        now,
+      ),
+    ]);
+    const { env: testEnv, tickets } = runtime();
+    for (let sent = 0; sent < 10; sent += 1) {
+      const response = await send(testEnv, { cookie: human.cookie, account: sent % 2 === 0 ? human.accountId : other }, { ...MESSAGE, message: `Message ${sent}` });
+      expect(response.status, String(sent)).toBe(200);
+    }
+    const eleventh = await send(testEnv, { cookie: human.cookie, account: other }, { ...MESSAGE, message: "One more" });
+    expect(eleventh.status).toBe(429);
+    expect(await errorCode(eleventh)).toBe("rate_limited");
+    expect(tickets).toHaveLength(10);
+    expect(new Set(tickets.map((ticket) => ticket.account?.tenantId))).toEqual(new Set([human.accountId, other]));
+  });
+
+  it("asks agw for its own confirmation step: an agw without it is told to update", async () => {
+    const response = await call(runtime().env, new Request(`${API}/v2/cli/tools`));
+    const { tools } = (await response.json()) as { tools: { name: string; cli: { command: string; requires?: string[] } }[] };
+    expect(tools.find((tool) => tool.name === "contact_support")?.cli).toEqual({ command: "support send", requires: ["support-confirmation"] });
   });
 
   it("refuses an empty message, a page off the console and malformed context", async () => {

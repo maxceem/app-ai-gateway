@@ -15,7 +15,8 @@
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { SupportMessageRequestSchema } from "../contracts/support.ts";
-import { requirePlanFeature } from "../billing/access.ts";
+import { planFeatureRefusal, planIncludes, readBillingForConsole } from "../billing/access.ts";
+import type { GatewayBillingAccess } from "../contracts/billing.ts";
 import { consoleOrigin, hostedDeployment, setting } from "../auth/settings.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -60,13 +61,26 @@ export async function sendSupportMessage(c: AdminContext): Promise<Response> {
   if (helpdesk === null || supportInbox(c.env) === null) {
     throw new GatewayError(404, "not_found", "This deployment does not offer human support");
   }
-  // An outage is not a statement about the account, and it is when a paying
-  // customer most needs to write in: the feature's policy still sends while
-  // billing cannot be read, and the ticket says the plan is unknown.
-  const access = await requirePlanFeature(c.env, actor.accountId, "humanSupport");
-  const plan = access.state === "billed" ? access.plan : null;
   const email = state.user?.email;
   if (!email) throw new GatewayError(409, "conflict", "This credential's owner has no email address to reply to");
+  // Support replies to this address, and the help desk emails it at once: only an address its owner proved is theirs.
+  if (state.user?.emailVerified !== true) {
+    throw new GatewayError(403, "email_unverified", "Verify your email address before writing to support: support replies to it. Open the link in the verification email, or send a new one from the console.");
+  }
+  // The plan, read fresh with the console's deadline, never from a cache. An
+  // outage is not a statement about the account, and it is when a paying
+  // customer most needs to write in: a read that fails or runs late sends the
+  // ticket with the plan unknown. A read that answers with no plan, or one
+  // that leaves support out, is refused.
+  let access: GatewayBillingAccess | null;
+  try {
+    access = await readBillingForConsole(c.env, actor.accountId);
+  } catch (error) {
+    if (!(error instanceof GatewayError) || error.code !== "billing_unavailable") throw error;
+    access = null;
+  }
+  if (access !== null && !planIncludes(access, "humanSupport")) throw planFeatureRefusal("humanSupport");
+  const plan = access !== null && access.state === "billed" ? access.plan : null;
 
   await enforceEndpointRateLimit(c.env, "support_message", actor.userId);
 
