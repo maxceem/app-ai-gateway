@@ -336,14 +336,22 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(updated.status).toBe(400);
   });
 
-  it("refuses reserved model names in prices, surrounding spaces or not", async () => {
+  it("refuses a __proto__ key anywhere in prices, naming where, and keeps constructor and prototype as model names", async () => {
     const key = await seedManagementKey();
-    for (const name of ["__proto__", " __proto__ ", "constructor", "prototype"]) {
-      const body = JSON.parse(`{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":{${JSON.stringify(name)}:{"per_request":1}}}`);
-      const created = await admin(key, "POST", "/v2/admin/providers", body);
-      expect(created.status).toBe(400);
-      expect(JSON.stringify(created.body)).toContain("is not a model name");
-    }
+    const send = (pricing: string) =>
+      admin(key, "POST", "/v2/admin/providers", JSON.parse(`{"type":"openai","name":"x","slug":"${slugFor("openai")}","secret":"${PROVIDER_KEY}","pricing":${pricing}}`));
+    const top = await send('{" __proto__ ":{"per_request":1}}');
+    expect(top.status).toBe(400);
+    expect(JSON.stringify(top.body)).toContain('cannot be a name in prices');
+    const nested = await send('{"img":{"per_image":0.04,"by":{"quality":{"__proto__":{"per_image":0.08}}}}}');
+    expect(nested.status).toBe(400);
+    expect(JSON.stringify(nested.body)).toContain("img.by.quality.__proto__");
+    // These worked before and keep working: a price list with them can be saved and updated.
+    const created = await send('{"prototype":{"input":1,"output":2},"constructor":{"input":2,"output":4}}');
+    expect(created.status).toBe(201);
+    const updated = await admin(key, "PUT", `/v2/admin/providers/${created.body.provider.id}`, { revision: 1, pricing: { prototype: { input: 3, output: 6 } } });
+    expect(updated.status).toBe(200);
+    expect(updated.body.provider.pricing).toEqual({ prototype: { input: 3, output: 6 } });
   });
 
   it("says what key goes with every change of Cloudflare route (S6)", async () => {

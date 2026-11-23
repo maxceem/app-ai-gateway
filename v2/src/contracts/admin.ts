@@ -162,25 +162,40 @@ export const ModelPricingSchema = z
 
 const ProviderPricingSchema = z.record(z.string().trim().min(1).max(200), ModelPricingSchema);
 
-/** Names that cannot be a key of a prices object without reaching its prototype. */
-export const RESERVED_PRICE_MODELS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+/** The one name that cannot be a key anywhere in prices: as a key it would reach the object's prototype, not be stored. */
+export const RESERVED_PRICE_KEY = "__proto__";
+
+/** Where a `__proto__` key stands in prices, as a dotted path, or null: model names trimmed, nested keys as written. */
+export function reservedPriceKeyPath(value: unknown, path: readonly string[] = []): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  for (const [key, inner] of Object.entries(value)) {
+    const name = path.length === 0 ? key.trim() : key;
+    if (name === RESERVED_PRICE_KEY) return [...path, key].join(".");
+    const found = reservedPriceKeyPath(inner, [...path, key]);
+    if (found !== null) return found;
+  }
+  return null;
+}
 
 /**
  * A connection's own prices as a request sends them. Model names are trimmed
  * when saved, so two that differ only by surrounding spaces would quietly
  * become one, keeping only the last: such a pair is refused instead, naming
- * both. A reserved name (`RESERVED_PRICE_MODELS`) is refused too, before the
- * record is read. Prices already saved are never judged by this again.
+ * both. A `__proto__` key anywhere in them is refused first, naming where it
+ * stands, before the record is read; `constructor` and `prototype` stay
+ * ordinary model names, as they always were. Prices already saved are never
+ * judged by this again.
  */
 const ProviderPricingInputSchema = z.preprocess((value, context) => {
+  const reserved = reservedPriceKeyPath(value);
+  if (reserved !== null) {
+    context.issues.push({ code: "custom", input: value, message: `${reserved}: "__proto__" cannot be a name in prices` });
+    return value;
+  }
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const seen = new Map<string, string>();
     for (const name of Object.keys(value)) {
       const trimmed = name.trim();
-      if (RESERVED_PRICE_MODELS.has(trimmed)) {
-        context.issues.push({ code: "custom", input: value, message: `${JSON.stringify(name)} is not a model name` });
-        continue;
-      }
       const earlier = seen.get(trimmed);
       if (earlier !== undefined) {
         context.issues.push({

@@ -74,10 +74,15 @@ describe("the prices form", () => {
     expect(rowProblems(zero, [zero]).unit).toBeUndefined();
   });
 
-  it("refuses model names that cannot be a key of the prices, and builds the prices without a prototype path", () => {
-    for (const model of ["__proto__", "constructor", "prototype"]) {
+  it("refuses __proto__ as a model name, keeps constructor and prototype, and builds the prices without a prototype path", () => {
+    for (const model of ["__proto__", " __proto__ "]) {
       const row = { ...emptyRow(), model, unitField: "per_request", unitAmount: "1" };
       expect(rowProblems(row, [row]).model).toBe("This is not a model name.");
+    }
+    for (const model of ["constructor", "prototype"]) {
+      const row = { ...emptyRow(), model, unitField: "per_request", unitAmount: "1" };
+      expect(rowProblems(row, [row]).model).toBeUndefined();
+      expect(pricingOf([row])).toEqual({ [model]: { per_request: 1 } });
     }
     const built = pricingOf([{ ...emptyRow(), model: "m", unitField: "per_request", unitAmount: "1" }]);
     expect(Object.getPrototypeOf(built)).toBe(Object.prototype);
@@ -117,13 +122,11 @@ describe("the prices form", () => {
     expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"flex": {"factor": 0}}}}')).toBeNull();
   });
 
-  it("refuses reserved model names in JSON prices, surrounding spaces or not, as the form does", () => {
-    for (const name of ["__proto__", " __proto__ ", "constructor", "prototype"]) {
-      expect(jsonPriceProblem(`{${JSON.stringify(name)}: {"per_request": 1}}`)).toBe(`${JSON.stringify(name)} is not a model name.`);
-      const row = { ...emptyRow(), model: name, unitField: "per_request", unitAmount: "1" };
-      expect(rowProblems(row, [row]).model).toBe("This is not a model name.");
-    }
-    // Only a model name is judged: a field of that name deeper in is not one.
+  it("refuses a __proto__ key anywhere in JSON prices, as the gateway does, and keeps constructor and prototype", () => {
+    expect(jsonPriceProblem('{" __proto__ ": {"per_request": 1}}')).toBe('" __proto__ " cannot be a name in prices.');
+    expect(jsonPriceProblem('{"img": {"per_image": 0.04, "by": {"quality": {"__proto__": {"per_image": 0.08}}}}}')).toBe('"__proto__" cannot be a name in prices.');
+    expect(jsonPriceProblem('{"m": {"input": 1, "output": 2, "modes": {"__proto__": {"factor": 0.5}}}}')).toBe('"__proto__" cannot be a name in prices.');
+    expect(jsonPriceProblem('{"constructor": {"per_request": 1}, "prototype": {"per_request": 2}}')).toBeNull();
     expect(jsonPriceProblem('{"m": {"per_request": 1, "by": {"constructor": {"x": {"per_request": 1}}}}}')).toBeNull();
   });
 });

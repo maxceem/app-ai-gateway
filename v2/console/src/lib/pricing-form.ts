@@ -1,4 +1,4 @@
-import { RESERVED_PRICE_MODELS } from "@contracts/admin";
+import { RESERVED_PRICE_KEY } from "@contracts/admin";
 import { priceTextProblem } from "@contracts/price-amount";
 
 /**
@@ -140,15 +140,15 @@ function amountProblem(text: string): string | null {
   return priceTextProblem(text);
 }
 
-/** Model names that cannot be a key of the prices object: the gateway's own list. */
-const RESERVED_MODELS = RESERVED_PRICE_MODELS;
+/** The one model name the prices cannot hold: the gateway's own rule. */
+const RESERVED_MODEL = RESERVED_PRICE_KEY;
 
 /** What is wrong with a row, field by field, in words. */
 export function rowProblems(row: PriceRow, rows: readonly PriceRow[]): Record<string, string> {
   const problems: Record<string, string> = {};
   const model = row.model.trim();
   if (model === "") problems.model = "Name the model.";
-  else if (RESERVED_MODELS.has(model)) problems.model = "This is not a model name.";
+  else if (model === RESERVED_MODEL) problems.model = "This is not a model name.";
   else if (rows.some((other) => other !== row && other.model.trim() === model)) problems.model = "This model is listed twice.";
   for (const { field } of TOKEN_FIELDS) {
     const problem = amountProblem(row.tokens[field]);
@@ -247,8 +247,8 @@ export function jsonPriceProblem(text: string): string | null {
       while (after < text.length && /\s/u.test(text[after]!)) after += 1;
       if (text[after] === ":") {
         const seen = objects[objects.length - 1];
-        // A model name is a key of the outermost object.
-        if (objects.length === 1 && RESERVED_MODELS.has(value.trim())) return `${JSON.stringify(value)} is not a model name.`;
+        // `__proto__` cannot be a name anywhere in prices; a model name, in the outermost object, is judged trimmed.
+        if ((objects.length === 1 ? value.trim() : value) === RESERVED_MODEL) return `${JSON.stringify(value)} cannot be a name in prices.`;
         if (seen?.has(value)) return `${JSON.stringify(value)} is written twice in one object; only the last would be kept.`;
         seen?.add(value);
         key = value;
