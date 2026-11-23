@@ -303,7 +303,21 @@ describe("Google's redirect callback", () => {
   });
 });
 
+/**
+ * A fixed time ten seconds into an hour, so every flood-limit window these
+ * tests fill (an hour, ten minutes, a minute) starts with the test and cannot
+ * end in the middle of it. Only `Date` is faked; it reaches the limiter's
+ * Durable Object, which runs in this isolate (`flood-limiter.test.ts` relies
+ * on the same).
+ */
+function freezeClock(): void {
+  const HOUR = 3_600_000;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Math.floor(Date.now() / HOUR) * HOUR + HOUR + 10_000);
+}
+
 describe("flood limits on the OAuth endpoints", () => {
+  afterEach(() => vi.useRealTimers());
   function startDevice(address: string): Promise<Response> {
     return call(env, OAUTH_PATHS.deviceAuthorization, {
       base: CONSOLE,
@@ -328,6 +342,7 @@ describe("flood limits on the OAuth endpoints", () => {
   });
 
   it("counts codes an address asked for, even ones declined at once, and slows it down past the hourly limit", async () => {
+    freezeClock();
     const human = await seedHuman();
     const address = "203.0.113.22";
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -358,6 +373,7 @@ describe("flood limits on the OAuth endpoints", () => {
   });
 
   it("answers too many authorization requests from one address with an error page", async () => {
+    freezeClock();
     const address = "198.51.100.23";
     const authorize = () =>
       call(env, `${OAUTH_PATHS.authorize}?client_id=${CLI_CLIENT_ID}&response_type=code`, { base: CONSOLE, address });
@@ -371,6 +387,7 @@ describe("flood limits on the OAuth endpoints", () => {
   });
 
   it("limits how many sign-in codes one address may look up", async () => {
+    freezeClock();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const human = await seedHuman();
     const address = "192.0.2.24";

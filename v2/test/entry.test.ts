@@ -24,12 +24,27 @@ interface Line {
   [field: string]: unknown;
 }
 
+/**
+ * One console argument as text, the whole of it: an error with its name,
+ * message and stack, so a check on this output also catches a raw
+ * `console.error(error)`, not only lines written through `log`.
+ */
+function rendered(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 /** Every console call as text, and the structured lines among them. */
 function captureLogs(): { lines: Line[]; output: string[] } {
   const lines: Line[] = [];
   const output: string[] = [];
   const collect = (...values: unknown[]) => {
-    output.push(...values.map((value) => (typeof value === "string" ? value : JSON.stringify(value) ?? String(value))));
+    output.push(...values.map(rendered));
     if (typeof values[0] !== "string") return;
     try {
       lines.push(JSON.parse(values[0]) as Line);
