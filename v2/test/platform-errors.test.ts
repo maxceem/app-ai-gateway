@@ -124,6 +124,21 @@ describe("error facts", () => {
     expect(errorFacts(trap)).toEqual({ class: "unreadable" });
   });
 
+  it("reads an error's name once, so a getter cannot pass the check and then say something else", () => {
+    let reads = 0;
+    const shifty = new Error("x");
+    Object.defineProperty(shifty, "name", {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? "TypeError" : SECRET;
+      },
+    });
+    const facts = errorFacts(shifty);
+    expect(facts.class).toBe("TypeError");
+    expect(JSON.stringify(facts)).not.toContain(SECRET);
+    expect(reads).toBe(1);
+  });
+
   it("says only what the gateway itself spells", () => {
     expect(errorFacts(new DrizzleQueryError("select 1", [SECRET], stubError("Network connection lost.", { retryable: true }))))
       .toEqual({ class: expect.any(String), platform: "platform_unavailable" });

@@ -218,6 +218,74 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
   });
 });
 
+/** Google's token endpoint, stubbed: an exchange answers with an ID token for `email`. */
+function stubGoogleExchange(email: string, subject: string) {
+  const encode = (value: unknown) => btoa(JSON.stringify(value)).replaceAll("=", "");
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({
+      access_token: "test-google-access",
+      token_type: "Bearer",
+      expires_in: 3600,
+      id_token: [encode({ alg: "RS256" }), encode({ sub: subject, email, email_verified: true, name: "Google User" }), "test-signature"].join("."),
+    }),
+  );
+}
+
+/** Starts Google's redirect flow and comes back to the callback, as the browser would. */
+async function googleRedirect(environment: Env, email: string, subject: string): Promise<Response> {
+  const started = await authPost(environment, "sign-in/social", { provider: "google", callbackURL: `${API}/v2/apps`, errorCallbackURL: "/v2/login" });
+  expect(started.status, await started.clone().text()).toBe(200);
+  const state = new URL(((await started.clone().json()) as { url: string }).url).searchParams.get("state")!;
+  const cookie = started.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+  stubGoogleExchange(email, subject);
+  return call(environment, `/v2/auth/callback/google?code=mock-code&state=${encodeURIComponent(state)}`, {
+    headers: { cookie, "sec-fetch-mode": "navigate", accept: "text/html,application/xhtml+xml" },
+    address: "198.51.100.9",
+  });
+}
+
+const startsSession = (response: Response) => response.headers.getSetCookie().some((cookie) => /session_token=[^;]+/u.test(cookie) && !cookie.includes("Max-Age=0"));
+
+describe("Google's redirect callback", () => {
+  it("signs a listed email in and goes on to where the sign-in began", async () => {
+    const email = unique("redirect-listed");
+    const callback = await googleRedirect(withGoogle({ ALLOWED_REGISTRATION_EMAILS: email }), email, `sub-${crypto.randomUUID()}`);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe(`${API}/v2/apps`);
+    expect(startsSession(callback)).toBe(true);
+    expect((await signInsOf(email)).users).toBe(1);
+  });
+
+  it("sends an unlisted email back to the sign-in page, clears the flow's cookies, and starts no session", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const email = unique("redirect-unlisted");
+    const callback = await googleRedirect(withGoogle({ ALLOWED_REGISTRATION_EMAILS: "someone-else@example.test" }), email, `sub-${crypto.randomUUID()}`);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/v2/login?error=registration_disabled");
+    expect(callback.headers.getSetCookie().some((value) => value.includes("Max-Age=0"))).toBe(true);
+    expect(startsSession(callback)).toBe(false);
+    expect((await signInsOf(email)).users).toBe(0);
+  });
+
+  it("refuses to sign a Google identity into someone's password sign-in, and starts no session", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const human = await seedHuman(unique("redirect-victim"));
+    const sessionsBefore = await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user_session WHERE user_id = ?").bind(human.userId).first<{ n: number }>();
+
+    const callback = await googleRedirect(withGoogle({ ALLOWED_REGISTRATION_EMAILS: "*" }), human.email, `sub-${crypto.randomUUID()}`);
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location") ?? "").toContain("error=");
+    expect(callback.headers.get("location") ?? "").not.toContain("/v2/apps");
+    expect(startsSession(callback)).toBe(false);
+    const linked = await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user_account WHERE user_id = ? AND provider_id = 'google'").bind(human.userId).first<{ n: number }>();
+    expect(linked?.n).toBe(0);
+    const sessionsAfter = await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user_session WHERE user_id = ?").bind(human.userId).first<{ n: number }>();
+    expect(sessionsAfter?.n).toBe(sessionsBefore?.n);
+  });
+});
+
 describe("flood limits on the OAuth endpoints", () => {
   function startDevice(address: string): Promise<Response> {
     return call(env, OAUTH_PATHS.deviceAuthorization, {
@@ -229,17 +297,16 @@ describe("flood limits on the OAuth endpoints", () => {
     });
   }
 
-  it("lets one address keep only so many CLI sign-in codes waiting", async () => {
+  it("lets one address keep at most ten CLI sign-in codes waiting, and only that address", async () => {
     const address = `203.0.113.${Math.floor(Math.random() * 200) + 20}`;
-    let refused: Response | undefined;
-    for (let attempt = 0; attempt < 21 && refused === undefined; attempt += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
       const started = await startDevice(address);
-      if (started.status === 429) refused = started;
-      else expect(started.status).toBe(200);
+      expect(started.status, `attempt ${attempt}`).toBe(200);
     }
-    expect(refused?.status).toBe(429);
-    expect(refused?.headers.get("cache-control")).toBe("no-store");
-    await expect(refused!.json()).resolves.toMatchObject({ error: "slow_down" });
+    const refused = await startDevice(address);
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("cache-control")).toBe("no-store");
+    await expect(refused.json()).resolves.toMatchObject({ error: "slow_down" });
     expect((await startDevice("192.0.2.77")).status).toBe(200);
   });
 

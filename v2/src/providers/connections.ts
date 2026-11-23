@@ -239,6 +239,18 @@ function openedProviderKey(env: Env, connection: ConnectionRecord, blob: string)
  */
 export async function connectionCredentials(env: Env, connection: ConnectionRecord): Promise<UpstreamCredentials> {
   const gateway = connection.cloudflareGateway;
+  // Saving never allows both. A row that has them anyway is refused before any
+  // key is opened: its key is sealed for one destination (`keyOrigin`, the
+  // base URL) while its requests would go to the other (Cloudflare).
+  if (connection.baseUrl !== null && gateway !== null) {
+    log("error", "provider_connection_unusable", {
+      account: connection.accountId,
+      connection: connection.id,
+      providerType: connection.type,
+      reason: "base_url_and_cloudflare_gateway",
+    });
+    throw new GatewayError(502, "provider_unavailable", "The provider connection cannot be used as stored");
+  }
   if (connection.secretBlob === null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
   }

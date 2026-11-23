@@ -19,6 +19,7 @@ import { Hono, type Context } from "hono";
 import { CLIENT_CATALOG, honoPath, type ClientOperationName, type ClientOperationResponse } from "./contracts/client-catalog.ts";
 import type { ErrorResponse } from "./contracts/operation.ts";
 import { storedAppVersion } from "./core/app-version.ts";
+import { loadedAppId } from "./core/loaded-app.ts";
 import { errorFacts } from "./core/error-facts.ts";
 import { GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
@@ -164,18 +165,15 @@ function errorBody(error: GatewayError): ErrorResponse {
 
 /**
  * What a refusal's log line says about the request beyond its route: the app
- * id from the path, when the route has one, and the caller's app version when
- * it is shaped like one (`storedAppVersion`), as v1 logged them. Never a body,
- * a header value other than the version, or a credential.
+ * the handler actually loaded (`./core/loaded-app.ts`), never the path's own
+ * segment, which may name nothing registered, and the caller's app version
+ * when it is shaped like one (`storedAppVersion`), as v1 logged them. Never a
+ * body, a header value other than the version, or a credential.
  */
 function requestFacts(c: Context<Env2>): { app?: string; appVersion?: string } {
   const facts: { app?: string; appVersion?: string } = {};
-  try {
-    const app = c.req.param("app");
-    if (typeof app === "string" && app.length > 0 && app.length <= 128) facts.app = app;
-  } catch {
-    // A route without parameters; nothing to add.
-  }
+  const app = loadedAppId(c.req.raw);
+  if (app !== undefined) facts.app = app;
   const version = storedAppVersion(c.req.header("x-app-version"));
   if (version !== null) facts.appVersion = version;
   return facts;

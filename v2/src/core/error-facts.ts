@@ -46,7 +46,9 @@ export function errorFacts(error: unknown): ErrorFacts {
 
 function facts(error: unknown): ErrorFacts {
   if (!(error instanceof Error)) return { class: "not_an_error" };
-  const name = typeof error.name === "string" && KNOWN_CLASSES.has(error.name) ? error.name : "other";
+  // Read once: a getter could answer the check with a listed name and the copy with anything.
+  const named: unknown = error.name;
+  const name = typeof named === "string" && KNOWN_CLASSES.has(named) ? named : "other";
   const facts: ErrorFacts = { class: name };
   if (error instanceof GatewayError) facts.code = error.code;
   const platform = platformFailure(error);

@@ -29,7 +29,7 @@
  *   result becomes the gateway's own link, and any other is a provider error.
  */
 import { prepareDone, providerAnswered, timingsOf } from "../proxy/timing.ts";
-import { assertAppServes, loadApp } from "../apps/app-records.ts";
+import { assertAppServes, loadRequestApp } from "../apps/app-records.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
@@ -74,7 +74,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
     const appId = c.req.param("app");
     const jobId = c.req.param("job");
     if (!appId || !jobId) throw new GatewayError(400, "invalid_request", "App id and job id are required");
-    const app = await loadApp(c.env, appId);
+    const app = await loadRequestApp(c, appId);
     assertAppServes(c.env, app);
     // The signature is checked before the caller, at no D1 cost, so a made-up
     // id loads nothing. Its answer waits until the caller is known.

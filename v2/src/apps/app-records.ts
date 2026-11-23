@@ -3,6 +3,7 @@
  * or failing, the last known record is served (and `known_record_served` is
  * logged), as in v1.
  */
+import { noteLoadedApp } from "../core/loaded-app.ts";
 import { and, eq, sql } from "drizzle-orm";
 import { ConfigError, parseServedAppConfig } from "../contracts/app-config.ts";
 import { accountPendingSql, assertAccountServes, emailVerificationRequired } from "../core/account-standing.ts";
@@ -32,6 +33,17 @@ let invalidations = 0;
 
 /** How long a read that replaces an expired pending record may take before the request is told to retry. */
 export const PENDING_REFRESH_DEADLINE_MS = 5_000;
+
+/**
+ * {@link loadApp} for a request's handler: the record, noted against the
+ * request so a refusal's log line can name the app it was about
+ * (`../core/loaded-app.ts`).
+ */
+export async function loadRequestApp(c: { env: Env; req: { raw: Request } }, appId: string): Promise<AppRecord> {
+  const record = await loadApp(c.env, appId);
+  noteLoadedApp(c.req.raw, record.id);
+  return record;
+}
 
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
   const cached = appCache.get(appId);

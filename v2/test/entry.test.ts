@@ -12,7 +12,7 @@ import * as entry from "../src/index.ts";
 import { CATALOG, type OperationName } from "../src/contracts/catalog.ts";
 import { CLIENT_CATALOG } from "../src/contracts/client-catalog.ts";
 import type { OperationSpec } from "../src/contracts/operation.ts";
-import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedApp } from "./helpers.ts";
+import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedApp, seedManagementKey } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 /** What the entry answers for a path nothing is mounted at. */
@@ -74,12 +74,14 @@ const CONSOLE = "https://console.gateway.test";
  * stand-in. The console's page steps are only served on the console's own
  * origin, from its own page, so they are asked for there.
  */
-function requestFor(spec: Pick<OperationSpec, "method" | "path">): Request {
+function requestFor(spec: Pick<OperationSpec, "method" | "path">, managementKey: string): Request {
   const path = spec.path.replace(/\{(\w+)\}/gu, "catalog-mount-check");
   const body = spec.method === "GET" || spec.method === "DELETE" ? undefined : "{}";
   const consoleStep = path.startsWith("/v2/console/") && path !== "/v2/console/capabilities";
   const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
   if (consoleStep) headers.origin = CONSOLE;
+  // Past the credential check, so a missing handler cannot hide behind a 401.
+  if (path.startsWith("/v2/admin/") || path.startsWith("/v2/cli/")) headers.authorization = `Bearer ${managementKey}`;
   return new Request(`${consoleStep ? CONSOLE : ORIGIN}${path}`, {
     method: spec.method,
     headers,
@@ -115,12 +117,17 @@ describe("the operation catalogs", () => {
 
   it("serve every operation they document", async () => {
     captureLogs();
+    const key = await seedManagementKey();
     const missing: string[] = [];
+    let unauthenticated = 0;
     for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
-      const response = await exports.default.fetch(requestFor(spec));
+      const response = await exports.default.fetch(requestFor(spec, key));
+      if (response.status === 401 && (spec.path.startsWith("/v2/admin/") || spec.path.startsWith("/v2/cli/"))) unauthenticated += 1;
       if (await unserved(response)) missing.push(`${name} ${spec.method} ${spec.path}`);
     }
     expect(missing).toEqual([]);
+    // The key got every management call past the credential check.
+    expect(unauthenticated).toBe(0);
   });
 
   it("give each operation a route of its own", () => {
@@ -147,10 +154,10 @@ function tokenExchange(appId: string, headers: Record<string, string> = {}): Pro
 }
 
 describe("refusal logging", () => {
-  it("logs a refusal once, at warn, with the route, the app and the app version, never the request", async () => {
+  it("logs a refusal once, at warn, with the route and the app version, never the request or an unregistered path segment", async () => {
     const { lines, output } = captureLogs();
 
-    const response = await tokenExchange("never-registered", { "x-app-version": "4.2.0" });
+    const response = await tokenExchange("never-registered-segment", { "x-app-version": "4.2.0" });
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "app_not_found" } });
@@ -162,12 +169,26 @@ describe("refusal logging", () => {
         status: 404,
         method: "POST",
         path: "/v2/apps/:app/auth/token",
-        app: "never-registered",
         appVersion: "4.2.0",
       }),
     ]);
+    // The segment names no registered app: it is the caller's own text.
+    expect(refusals[0]).not.toHaveProperty("app");
+    expect(output.join("\n")).not.toContain("never-registered-segment");
     expect(output.join("\n")).not.toContain("planted-issuer-token");
     expect(lines.some((line) => line.level === "error")).toBe(false);
+  });
+
+  it("names the app a refusal was about once the handler loaded it", async () => {
+    const appId = await seedApp({ type: "api_key", end_user: { source: "none" } });
+    const { lines } = captureLogs();
+
+    const response = await tokenExchange(appId);
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    const line = lines.find((entry) => entry.message === "gateway_error");
+    expect(line).toMatchObject({ app: appId });
   });
 
   it("leaves out an app version that is not shaped like one", async () => {
@@ -176,7 +197,7 @@ describe("refusal logging", () => {
     await tokenExchange("never-registered-version", { "x-app-version": `release-${"x".repeat(100)}` });
 
     const line = lines.find((entry) => entry.message === "gateway_error");
-    expect(line).toMatchObject({ app: "never-registered-version" });
+    expect(line).toMatchObject({ code: "app_not_found" });
     expect(line).not.toHaveProperty("appVersion");
   });
 

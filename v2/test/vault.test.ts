@@ -130,6 +130,10 @@ describe("key vault configuration", () => {
       { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "https://kms.example.test" },
       { setting: "SECRET_VAULT_KMS_TOKEN", problem: "missing" },
     ],
+    [
+      { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "http://planted-kms-host.example.test", SECRET_VAULT_KMS_TOKEN: "planted-token" },
+      { setting: "SECRET_VAULT_KMS_URL", problem: "invalid" },
+    ],
     [{ SECRET_VAULT_MODE: "local" }, { setting: "SECRET_VAULT_LOCAL_KEK_V<n>", problem: "missing", kekVersion: 1 }],
     [
       { SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: "not-base64" },
