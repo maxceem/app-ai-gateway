@@ -1129,12 +1129,6 @@ function planApp(app: V1App, connections: ReadonlyMap<string, MovedConnection>, 
       const route = defaultRoute(app, slug, {}, connection, usage, report);
       if (route !== null) routes.set(slug, route);
     }
-    // Only the routes really kept: one left out has its own line.
-    report.push({
-      kind: "changed",
-      subject,
-      what: `v1 let it reach every connection of its account. v2 names each one: it now allows ${routes.size === 0 ? "no connection" : list(routes.keys())}, each as v1's defaults reached it. A connection added later is not allowed until you allow it.`,
-    });
     if (leftOut.size > 0) {
       report.push({ kind: "left_out", subject, what: `It reached ${list(leftOut)} in v1, which ${leftOut.size === 1 ? "was" : "were"} not moved: see each connection's line. Adding a connection back does not allow it for the app: allow it again.` });
     }
@@ -1155,12 +1149,21 @@ function planApp(app: V1App, connections: ReadonlyMap<string, MovedConnection>, 
   }
   for (const [source, target] of respelled) {
     // Every route that could carry the trimmed name would now rewrite it, which v1 never did.
-    const carriers = [...routes].filter(([, route]) => route.models === undefined || route.models.includes(source) || route.models.includes(source.trim()));
+    // A route with only passthrough paths so far never reads a model name (v1's passthrough skips models and rewrites).
+    const carriers = [...routes].filter(([, route]) => route.operations.length > 0 && (route.models === undefined || route.models.includes(source) || route.models.includes(source.trim())));
     for (const [slug] of carriers) routes.delete(slug);
     report.push({
       kind: "left_out",
       subject,
       what: `Its rewrite of ${JSON.stringify(source)} to ${JSON.stringify(target)} was not moved: v1 matched and sent the names exactly as written, and v2 trims them, which would change what it rewrites.${carriers.length > 0 ? ` The routes that could carry it were left out with it: ${list(carriers.map(([slug]) => slug))}.` : ""}`,
+    });
+  }
+  if (routing.providers?.mode === "all") {
+    // Written last, so it names only the routes really kept: one left out has its own line.
+    report.push({
+      kind: "changed",
+      subject,
+      what: `v1 let it reach every connection of its account. v2 names each one: it now allows ${routes.size === 0 ? "no connection" : list(routes.keys())}, each as v1's defaults reached it. A connection added later is not allowed until you allow it.`,
     });
   }
   return { app, v1, routes, rewrites };

@@ -217,6 +217,10 @@ before(async () => {
     // Two passthrough sets on one connection, one app each: a tie.
     app("tie-p16", "org_a", v1App(headerUser, { "openai-proxy": { allowed_paths: [{ path: "v1/assistants", methods: ["GET"] }], allowed_models: [] } })),
     app("tie-q17", "org_a", v1App(headerUser, { "openai-proxy": { allowed_paths: [{ path: "v1/vector_stores", methods: ["GET"] }], allowed_models: [] } })),
+    // A padded rewrite beside a passthrough-only route, which never reads model names (Sol round 5, item 1).
+    app("padded-t20", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {})), routing: { providers: { mode: "selected", selected: { "openai-proxy": { allowed_paths: [{ path: "v1/assistants", methods: ["GET"] }], allowed_models: [] } } }, model_rewrites: { " fast ": "gpt-6.2-sol" } } })),
+    // An all-mode app with a padded rewrite: the routes it hits are dropped, and the summary names only the rest (Sol round 5, item 2).
+    app("all-u21", "org_a", JSON.stringify({ ...JSON.parse(v1App(attest, "all")), routing: { providers: { mode: "all" }, model_rewrites: { " fast ": "gpt-6.2-sol" } } }), { auth_type: "apple_app_attest" }),
     // A rewrite carried by Vercel and by a direct connection.
     app("mixed-j10", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {})), routing: { providers: { mode: "selected", selected: { openai: { allowed_paths: [], allowed_models: [] }, "claude-vercel": { allowed_paths: [], allowed_models: ["fast"] } } }, model_rewrites: { fast: "claude-fable-5-2" } } })),
     insert("app_api_key", { id: "ak1", app_id: "chat-a1", name: "server", key_hash: "akh1", key_prefix: "agw_live_ab", status: "active", created_at: "2026-03-01 08:00:00", last_used_at: "2026-11-20 12:00:00" }),
@@ -830,3 +834,17 @@ async function interruptLoad(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   assert.equal(await exited, 130, signal);
   assert.deepEqual(readdirSync(temporary), [], `the copy is deleted on ${signal}`);
 }
+
+test("a padded rewrite never drops a passthrough-only route, which reads no model name (Sol round 5, item 1)", () => {
+  said("app padded-t20", /rewrite of " fast " to "gpt-6\.2-sol" was not moved: v1 matched and sent the names exactly as written, and v2 trims them, which would change what it rewrites\.$/u, "left_out");
+  // The passthrough-only route stays, with the set the connection lists.
+  assert.deepEqual(config("padded-t20").routing.providers["openai-proxy"], { operations: ["passthrough"] });
+});
+
+test("the all-mode summary names only the routes left after a padded rewrite drops some (Sol round 5, item 2)", () => {
+  const dropped = said("app all-u21", /rewrite of " fast " to "gpt-6\.2-sol" was not moved: .*The routes that could carry it were left out with it: (.+)\.$/u, "left_out");
+  assert.ok(dropped.what.includes("openai-proxy"));
+  const summary = said("app all-u21", /v1 let it reach every connection of its account\. v2 names each one: it now allows (.+), each/u, "changed");
+  assert.match(summary.what, /it now allows no connection,/u);
+  assert.deepEqual(config("all-u21").routing.providers, {});
+});
