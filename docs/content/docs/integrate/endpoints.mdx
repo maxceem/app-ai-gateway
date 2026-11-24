@@ -87,7 +87,9 @@ an iOS app that signs every request, the query is part of what is signed, so
 add it before you sign.
 
 A fallback is tried only when the attempt before it got no answer, a `429` or a
-`5xx`, so a stream that has started is never switched to another provider. All
+`5xx`, so a stream that has started is never switched to another provider. One
+more case: if you turn off the preset's first connection, its requests go
+straight to the fallbacks, which may be on another provider. All
 attempts share one time limit for the provider's response headers: a fallback gets
 what is left of it. See [Limits on one request](/integrate/proxy#limits-on-one-request).
 

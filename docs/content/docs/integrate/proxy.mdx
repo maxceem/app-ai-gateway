@@ -159,6 +159,9 @@ The gateway never follows a redirect from the provider.
 
 ## Where a user stands
 
-An app that names its users can call `GET /v2/apps/{app}/me` with the same
-headers, `X-App-Version` aside. See
+An app that names its users can call `GET /v2/apps/{app}/me`. Send the app key
+or gateway token in `Authorization`: `/me` does not read a provider's key
+header, so an SDK's `x-api-key` gets `401 auth_required`. Keep the end-user
+header or `X-AppAttest-Proof` where the app needs them. `X-App-Version` is not
+needed. See
 [What a user can see about themselves](/how-it-works/limits#what-a-user-can-see-about-themselves).

@@ -27,6 +27,9 @@ on with the provider's headers, and may have none.
 A provider's own error is not in this format. It is passed to your app as the
 provider sent it, with the provider's status. A provider's error may have an
 `error.code` too, so that field alone does not say where an error came from.
+One exception: a job status or cancel answer whose body stalls keeps the
+provider's status, but carries only the job ID and the gateway's links, with
+`X-AGW-Status-Trimmed: stalled`.
 Keep the HTTP status, and the provider's request ID when there is one. The
 app's **Errors** and **Usage** tabs show what happened.
 
