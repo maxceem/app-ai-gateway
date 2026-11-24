@@ -61,12 +61,13 @@ JSON body, with what proves the app itself:
 
 - **A server app** sends its app key in `api_key`, to
   `POST /v2/apps/{app}/auth/token`.
-- **An iOS app** first asks `POST /v2/apps/{app}/auth/challenge` for a
-  challenge. To register its App Attest key, it sends `key_id`, `attestation` and
-  the challenge to `POST /v2/apps/{app}/auth/register`, which answers the
-  `user_id`. To get a gateway token, then and on every later sign-in, it sends
-  `key_id`, an `assertion` and a fresh challenge to
-  `POST /v2/apps/{app}/auth/token`.
+- **An iOS app** takes three steps:
+  1. It asks `POST /v2/apps/{app}/auth/challenge` for a challenge.
+  2. To register its App Attest key, it sends `key_id`, `attestation` and the
+     challenge to `POST /v2/apps/{app}/auth/register`, which answers the
+     `user_id`.
+  3. To get a gateway token, then and on every later sign-in, it sends `key_id`,
+     an `assertion` and a fresh challenge to `POST /v2/apps/{app}/auth/token`.
 
 `/auth/token` answers the gateway token as `access_token`, and the app sends it
 with its calls.
@@ -124,7 +125,7 @@ first of these headers that has a value:
 A preset uses its first connection's key header in step 2. `/me` has no
 connection, so it skips step 2.
 
-It does not try the next one if the first holds something else, so
+The gateway does not try the next header if the first holds something else, so
 `token_header` works only when the headers before it are empty. With a provider
 SDK, it is usually simpler to give the SDK the gateway token as its key: the SDK
 then sends it in a header the gateway reads. The gateway removes these headers

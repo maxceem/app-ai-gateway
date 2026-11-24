@@ -20,10 +20,14 @@ sent must have a price, or be served by a provider that reports each request's
 cost itself, or saving is refused.
 
 A rewrite applies on every connection, to the model a call through the provider
-proxy selects: in the body or a form field, in the query, in the path (as on
-Gemini and `fal.run`), or the provider's default when the request names none
-(as on Deepgram). It does not
-apply to:
+proxy selects, wherever it is chosen:
+
+- in the body, or a form field;
+- in the query;
+- in the path, as on Gemini and `fal.run`;
+- by the provider's default when the request names none, as on Deepgram.
+
+It does not apply to:
 
 - operations whose model is fixed;
 - jobs, such as `fal.queue`, which run the model they name;

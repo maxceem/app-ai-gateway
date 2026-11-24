@@ -97,6 +97,12 @@ client = OpenAI(
     api_key=os.environ["APP_AI_GATEWAY_KEY"],
     base_url="https://api.appaigateway.com/v2/apps/example-app-a1b2c3/proxy/openai/v1",
 )
+
+answer = client.chat.completions.create(
+    model="gpt-5.4-mini",
+    messages=[{"role": "user", "content": "Say hello."}],
+)
+print(answer.choices[0].message.content)
 ```
 
 ## 5. See it in the console
