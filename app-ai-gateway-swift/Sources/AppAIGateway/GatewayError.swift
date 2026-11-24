@@ -185,19 +185,31 @@ public struct GatewayError: Error, Sendable, LocalizedError {
     /// ``GatewayErrorCode/appRateLimited`` refusal it is the only statement of
     /// when the window reopens.
     public let retryAfter: TimeInterval?
+    /// Whether the gateway itself refused the request. `false` for a
+    /// provider's own error, passed through the gateway as the provider sent
+    /// it: its ``code`` is then ``GatewayErrorCode/unknown``, and its body is
+    /// in ``providerBody``.
+    public let isFromGateway: Bool
+    /// A provider's own error body, as the provider sent it; `nil` for the
+    /// gateway's own errors.
+    public let providerBody: Data?
 
     public init(
         code: GatewayErrorCode,
         message: String,
         statusCode: Int,
         data: GatewayErrorData = [:],
-        retryAfter: TimeInterval? = nil
+        retryAfter: TimeInterval? = nil,
+        isFromGateway: Bool = true,
+        providerBody: Data? = nil
     ) {
         self.code = code
         self.message = message
         self.statusCode = statusCode
         self.data = data
         self.retryAfter = retryAfter
+        self.isFromGateway = isFromGateway
+        self.providerBody = providerBody
     }
 
     public var errorDescription: String? { message }
@@ -262,8 +274,25 @@ public struct GatewayError: Error, Sendable, LocalizedError {
     /// its ``data`` — arrives in the caller's own `URLSession` result. This is
     /// how to read one. Returns `nil` for a successful response, which is not a
     /// rejection to read.
+    ///
+    /// Only an answer the gateway marks as its own, in `X-AGW-Error`, is read
+    /// as a gateway error. Any other is a provider's own, which may have an
+    /// `error.code` of its own: its code is ``GatewayErrorCode/unknown``,
+    /// ``isFromGateway`` is `false`, and its body is kept as it came in
+    /// ``providerBody``.
     public init?(response: HTTPURLResponse, body: Data) {
         guard !(200..<300).contains(response.statusCode) else { return nil }
+        guard response.value(forHTTPHeaderField: AppAIGatewayClient.errorCodeHeaderField) != nil else {
+            self.init(
+                code: .unknown,
+                message: "The provider answered \(response.statusCode)",
+                statusCode: response.statusCode,
+                retryAfter: Self.retryAfter(from: response),
+                isFromGateway: false,
+                providerBody: body
+            )
+            return
+        }
         let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: body)
         self.init(
             code: envelope.flatMap { GatewayErrorCode(rawValue: $0.error.code) } ?? .unknown,

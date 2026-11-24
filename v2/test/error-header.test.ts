@@ -6,8 +6,10 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import management from "../src/management/app.ts";
+import { GatewayError } from "../src/core/errors.ts";
 import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -40,5 +42,33 @@ describe("the gateway's own error code header", () => {
     if (code !== null) expect(named).toBe(code);
     // Only a gateway error body has a code; the header says the same, or is absent.
     expect(response.headers.get("x-agw-error")).toBe(named);
+  });
+});
+
+describe("the management module's not-found answer", () => {
+  it("is thrown on as the gateway's own not_found, for the entry module to format", async () => {
+    let thrown: unknown;
+    try {
+      await management.request("https://gateway.test/v2/console-nothing-here", {}, env);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GatewayError);
+    expect(thrown).toMatchObject({ status: 404, code: "not_found" });
+  });
+
+  it("is logged at info through the entry module, not as a warning", async () => {
+    const info = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const response = await call("/v2/cli/nowhere");
+      expect(response.headers.get("x-agw-error")).toBe("not_found");
+      const warned = warn.mock.calls.map((args) => String(args[0])).filter((line) => line.includes("gateway_error"));
+      expect(warned).toEqual([]);
+      expect(info.mock.calls.some((args) => String(args[0]).includes("gateway_error"))).toBe(true);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
   });
 });

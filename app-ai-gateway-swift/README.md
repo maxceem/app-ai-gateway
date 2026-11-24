@@ -33,6 +33,8 @@ let (data, response) = try await gateway.withAuthorizedRequest(
     contentType: "application/json"
 ) { try await URLSession.shared.data(for: $0) }
 if let error = GatewayError(response: response as! HTTPURLResponse, body: data) {
+    // `error.isFromGateway` tells the gateway's own refusal, with its `code`,
+    // from a provider's error, kept as it came in `error.providerBody`.
     throw error
 }
 ```
@@ -119,11 +121,30 @@ because the gateway has recorded it already.
 ### One client per signed-in session
 
 Make a client when a user signs in, and end it with `invalidate()` when they
-sign out or another user signs in; then make a new one. An ended client builds
-no request and gets no token: every call throws `GatewayClientInvalidated`. A
-request it already sent comes back with its own answer, and is never sent
-again with anyone's credentials. Install mode (`.appAttestInstall`) and API-key
-apps without sign-in need only one client.
+sign out or another user signs in; then make a new one:
+
+```swift
+// At sign-in.
+let gateway = AppAIGatewayClient(
+    appID: "example-app-a1b2c3",
+    baseURL: URL(string: "https://api.appaigateway.com")!,
+    authMode: .appAttest(issuerTokenProvider: { forceRefresh in
+        try await Auth.auth().currentUser!.getIDToken(forcingRefresh: forceRefresh)
+    })
+)
+
+// At sign-out, or before another user signs in.
+await gateway.invalidate()
+```
+
+Call `invalidate()` before your sign-in library switches users, not when it
+only refreshes the same user's ID token. Without it, the client keeps the
+gateway token it holds, and goes on sending requests as the previous user for
+up to an hour, the token's lifetime. An ended client builds no request and
+gets no token: every call throws `GatewayClientInvalidated`. A request it
+already sent comes back with its own answer, and is never sent again with
+anyone's credentials. Install mode (`.appAttestInstall`) and API-key apps
+without sign-in need only one client.
 
 On an app whose users sign in, each user on an install has a key of their own:
 the gateway ties a key to the user who registered it, and refuses a token for
@@ -182,10 +203,23 @@ a signed request's URL breaks its proof.
   one key per signed-in user, `signedInUserID:`, `invalidate()`, and the
   `attest_failed` recovery above.
 - Make one client per signed-in session, and call `invalidate()` on the old
-  one when the user changes. A 1.x app that kept one client across sign-ins
-  must change this.
+  one before the user changes. A 1.x app that kept one client across sign-ins
+  must change this: otherwise the old client goes on sending requests as the
+  previous user for up to an hour. See
+  [One client per signed-in session](#one-client-per-signed-in-session).
 - The helpers act only on refusals marked with `X-AGW-Error`, so a provider's
   own `401` is no longer sent again.
+- `GatewayError(response:body:)` reads only an answer marked with
+  `X-AGW-Error` as the gateway's. A provider's error is now `.unknown`, with
+  `isFromGateway == false` and its body in `providerBody`, where 1.x read its
+  `error.code` as if the gateway had sent it.
+- For a job's links, turn off your transport's redirects with
+  `GatewayRedirectBlocker`, and let `withAuthorizedRequest(gatewayLink:)`
+  follow them with a proof for each.
+- A custom `GatewayCredentialStoring` sees new names in `for:`: the app's id,
+  or on an app with signed-in users the app's id, `#` and a user's mark. Store
+  each name apart. Removing a key with `nil` must throw when the removal
+  fails, so a key meant to be gone is never read back.
 - `GatewayErrorCode` follows the gateway's v2 codes. Added:
   `presetNotFound`, `jobNotFound`, `pricingNotConfigured`,
   `maxOutputTokensExceeded`, `providerNotConfigured`, `providerDisabled`,
@@ -198,8 +232,10 @@ a signed request's URL breaks its proof.
   (`appBudgetExhausted`) or plan allowance (`billingRequestQuotaExceeded`),
   although they arrive as a `429`: waiting a little does not bring them back.
 - `ProviderSlug` has a constant for every provider type the gateway serves.
-- A key kept by 1.x is used again. If the gateway does not know it, the client
-  registers a new one by itself.
+- A key kept by 1.x is used again, for one user only on an app with signed-in
+  users. If the gateway does not know it, the client registers a new one by
+  itself. If a new key is refused too, the client makes no more until a signed
+  request succeeds.
 
 ### Upgrading to 1.4
 

@@ -56,8 +56,9 @@ async function submittedEmail(request: Request): Promise<string | null> {
   return named.trim().toLowerCase() || null;
 }
 
-function registrationDisabled() {
-  return { error: { code: "registration_disabled", message: "This email address is not allowed to sign up on this deployment" } };
+/** Thrown, so the entry module formats it as every other error. */
+function registrationDisabled(): GatewayError {
+  return new GatewayError(403, "registration_disabled", "This email address is not allowed to sign up on this deployment");
 }
 
 /** A top-level page load, such as Google's callback, rather than a script call. */
@@ -139,7 +140,7 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   const signUp = post && c.req.path === PASSWORD_SIGN_UP_PATH;
   if (signUp) {
     await enforceEndpointRateLimit(c.env, "sign_up_address", clientAddress(request));
-    if (!registrationAllowed(c.env, await submittedEmail(request))) return c.json(registrationDisabled(), 403);
+    if (!registrationAllowed(c.env, await submittedEmail(request))) throw registrationDisabled();
     // A password sign-in here would wait for a link this deployment cannot send
     // or that could not open: refuse it until the email settings are complete,
     // rather than make an account that can never serve. Google's sign-ins
@@ -162,7 +163,8 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
   const response = post && c.req.path === SOCIAL_SIGN_IN_PATH ? await relaySocialSignIn(c.env, c.req.url, handled) : handled;
   if (denied || (await isDisabledSignup(response))) {
     // Google's callback is a page load: a JSON error would strand the person on it.
-    return isTopLevelNavigation(request) ? registrationDisabledRedirect(response) : c.json(registrationDisabled(), 403);
+    if (isTopLevelNavigation(request)) return registrationDisabledRedirect(response);
+    throw registrationDisabled();
   }
   const origin = consoleOrigin(c.env);
   if (signUp && response.ok && origin !== null && emailVerificationRequired(c.env)) {

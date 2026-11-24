@@ -204,7 +204,8 @@ app.onError((error, c: Context<Env2>) => {
   if (gateway !== null) {
     if (gateway.status < 500 || NOT_OUR_FAULT.has(gateway.code)) {
       // Every refusal is logged once, without the message: it may echo a request value.
-      log("warn", "gateway_error", {
+      // A path that serves nothing is ordinary traffic (scanners, typos), not a warning.
+      log(gateway.code === "not_found" ? "info" : "warn", "gateway_error", {
         path: c.req.routePath,
         method: c.req.method,
         status: gateway.status,

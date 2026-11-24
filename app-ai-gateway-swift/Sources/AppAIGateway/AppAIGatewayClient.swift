@@ -153,6 +153,13 @@ public actor AppAIGatewayClient {
     /// The last replacement that finished, so a refusal of the same key that
     /// arrives later reuses it instead of registering another.
     private var finishedReplacement: (refused: String, replacement: String)?
+    /// Set once a replacement key was itself refused: no more keys are made
+    /// until a signed request succeeds, so a gateway that refuses every key
+    /// does not cost an attestation with Apple on each request.
+    private var replacementHeld = false
+    /// Whether a signed request has succeeded since the last replacement: a
+    /// replacement that has worked may be replaced when it is refused later.
+    private var replacementProven = false
 
     /// A refusal the gateway timed, and the instant its window closes.
     ///
@@ -300,7 +307,12 @@ public actor AppAIGatewayClient {
     private func refreshGatewayAccessToken() async throws -> AccessToken {
         try ensureLive()
         try heldRateLimit()
-        if let tokenExchangeTask { return try await tokenExchangeTask.value }
+        if let tokenExchangeTask {
+            let token = try await tokenExchangeTask.value
+            // Ended while it waited: the token may be the next user's.
+            try ensureLive()
+            return token
+        }
         let generation = tokenGeneration
         let task = Task {
             let token = try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
@@ -315,7 +327,9 @@ public actor AppAIGatewayClient {
             // A discard has already cleared it, and may have started another.
             if tokenGeneration == generation { tokenExchangeTask = nil }
         }
-        return try await task.value
+        let token = try await task.value
+        try ensureLive()
+        return token
     }
 
     /// `provider` is a connection's slug, not a provider type. See ``ProviderSlug``.
@@ -439,14 +453,18 @@ public actor AppAIGatewayClient {
     /// same scheme, host and port, after the base URL's own path.
     func isLinkToThisApp(_ url: URL) -> Bool {
         let link = URLComponents(url: url, resolvingAgainstBaseURL: true)
-        let base = URLComponents(url: appURL(""), resolvingAgainstBaseURL: true)
+        let base = URLComponents(url: baseURL, resolvingAgainstBaseURL: true)
         guard let link, let base,
               link.scheme?.lowercased() == base.scheme?.lowercased(),
               link.host?.lowercased() == base.host?.lowercased(),
               link.port == base.port,
               link.user == nil, link.password == nil
         else { return false }
-        let prefix = base.percentEncodedPath.hasSuffix("/") ? base.percentEncodedPath : base.percentEncodedPath + "/"
+        // Built as text: how `URL.appending(path:)` treats a trailing `/`
+        // differs between Foundation releases, and so between iOS versions.
+        var basePath = base.percentEncodedPath
+        while basePath.hasSuffix("/") { basePath.removeLast() }
+        let prefix = "\(basePath)/v2/apps/\(appID)/"
         let path = Self.whatwgPath(link.percentEncodedPath)
         return path.hasPrefix(prefix) && path.count > prefix.count
     }
@@ -633,6 +651,11 @@ public actor AppAIGatewayClient {
     ) async throws -> (Body, URLResponse) {
         let first = try await build()
         let answer = try await send(first.request)
+        noteSignedSuccess(first.request, answer.1)
+        // An answer from another URL is a redirect the transport followed,
+        // its next hop sent with this request's proof: a refusal there is
+        // not one a new token or key can fix.
+        guard Self.sameTarget(first.request, answer.1) else { return answer }
         switch Self.gatewayRefusal(answer.1) {
         case "auth_required" where Self.status(answer.1) == 401,
              "assertion_required" where Self.status(answer.1) == 401:
@@ -645,14 +668,40 @@ public actor AppAIGatewayClient {
             }
             let second = try await build()
             let again = try await send(second.request)
-            guard Self.gatewayRefusal(again.1) == "attest_failed", !invalidated,
+            noteSignedSuccess(second.request, again.1)
+            guard Self.sameTarget(second.request, again.1),
+                  Self.gatewayRefusal(again.1) == "attest_failed", !invalidated,
                   let refused = second.token?.keyID
             else { return again }
-            try await recoverFromRefusedKey(refused)
-            return try await send(try await build().request)
+            do {
+                try await recoverFromRefusedKey(refused)
+            } catch is ReplacementHeld {
+                return again
+            }
+            let third = try await build()
+            let last = try await send(third.request)
+            noteSignedSuccess(third.request, last.1)
+            return last
         default:
             return answer
         }
+    }
+
+    /// Whether `response` answers `request`'s own URL, not one a transport
+    /// redirected it to.
+    private static func sameTarget(_ request: URLRequest, _ response: URLResponse) -> Bool {
+        guard let answered = response.url, let asked = request.url else { return true }
+        let path = { (url: URL) in URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath ?? url.path }
+        return path(answered) == path(asked) && answered.host?.lowercased() == asked.host?.lowercased()
+    }
+
+    /// A signed request that succeeded lifts the brake on key replacement.
+    private func noteSignedSuccess(_ request: URLRequest, _ response: URLResponse) {
+        guard request.value(forHTTPHeaderField: Self.proofHeaderField) != nil,
+              (200..<300).contains(Self.status(response))
+        else { return }
+        replacementHeld = false
+        replacementProven = true
     }
 
     /// The code in `X-AGW-Error`: present only where the gateway itself
@@ -761,6 +810,8 @@ public actor AppAIGatewayClient {
             return (request, nil)
         }
         let token = try await currentAccessToken()
+        // Ended while the token was fetched: build nothing with it.
+        try ensureLive()
         // The app verifies App Attest on the token exchange, an API key app,
         // or a gateway older than `verify_on`: the assertion was checked when
         // the token was minted, and the token alone is the request's
@@ -771,12 +822,18 @@ public actor AppAIGatewayClient {
         }
         do {
             return (try await signed(request, with: token), token)
-        } catch is LocalSigningFailure {
+        } catch let failure as LocalSigningFailure {
             // The key the token is bound to cannot sign on this device any more —
             // the app was reinstalled or restored, and its Secure Enclave key
             // went with the old install. Register a replacement, exchange it for
             // a token bound to it, and sign once more; a second failure is real.
-            if let refused = token.keyID { try await recoverFromRefusedKey(refused) }
+            if let refused = token.keyID {
+                do {
+                    try await recoverFromRefusedKey(refused)
+                } catch is ReplacementHeld {
+                    throw failure.underlying
+                }
+            }
             let replacement = try await currentAccessToken()
             // The replacement's answer decides, should the app have changed
             // its setting in between.
@@ -791,6 +848,10 @@ public actor AppAIGatewayClient {
             }
         }
     }
+
+    /// A replacement key was itself refused, and no other is made until a
+    /// signed request succeeds.
+    private struct ReplacementHeld: Error {}
 
     /// `generateAssertion` failing on the device, kept apart from every other
     /// failure so only it triggers a key replacement.
@@ -1026,6 +1087,8 @@ public actor AppAIGatewayClient {
         // this install has a key of their own, and the gateway refuses a token
         // for one user signed by another's key.
         let issuerToken = try await reportedIssuerToken(forceRefresh: forceIssuerRefresh)
+        // Ended while the token was fetched: it may be the next user's.
+        try ensureLive()
         let slot = keySlot(issuerToken: issuerToken)
         var keyID = try storedKeyID(slot: slot)
         if keyID == nil {
@@ -1051,7 +1114,12 @@ public actor AppAIGatewayClient {
             } catch let error as GatewayError where error.code == .attestFailed {
                 // The gateway does not accept this key: it does not know it,
                 // or it belongs to another user. A new one is registered.
-                let replacement = try await replaceKey(refused: again.keyID, issuerToken: issuerToken)
+                let replacement: String
+                do {
+                    replacement = try await replaceKey(refused: again.keyID, issuerToken: issuerToken)
+                } catch is ReplacementHeld {
+                    throw error
+                }
                 let retry = try await sign(with: replacement, appTransaction: appTransaction)
                 do {
                     let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry))
@@ -1121,6 +1189,7 @@ public actor AppAIGatewayClient {
 
     /// Keeps a key the gateway accepted in its user's place.
     private func keep(_ keyID: String, slot: String) throws {
+        try ensureLive()
         guard slot != appID, try credentialStore.appAttestKeyID(for: slot) != keyID else { return }
         try credentialStore.setAppAttestKeyID(keyID, for: slot)
     }
@@ -1136,8 +1205,11 @@ public actor AppAIGatewayClient {
     private func replaceKey(refused: String, issuerToken: String?) async throws -> String {
         if let done = finishedReplacement, done.refused == refused { return done.replacement }
         if let running = keyReplacement, running.refused == refused { return try await running.task.value }
+        if finishedReplacement?.replacement == refused, !replacementProven { replacementHeld = true }
+        if replacementHeld { throw ReplacementHeld() }
         try ensureLive()
         try heldRateLimit()
+        replacementProven = false
         let task = Task { try await self.registerKey(issuerToken: issuerToken) }
         keyReplacement = (refused, task)
         defer { if keyReplacement?.refused == refused { keyReplacement = nil } }
@@ -1204,7 +1276,7 @@ public actor AppAIGatewayClient {
                 return signed
             } catch let replacementError {
                 reportFailure(challenge: issued.challenge, step: .generateAssertion, error: error)
-                throw replacementError
+                throw replacementError is ReplacementHeld ? error : replacementError
             }
         }
     }
@@ -1294,6 +1366,9 @@ public actor AppAIGatewayClient {
             reportFailure(challenge: challenge, step: step, error: error)
             throw error
         }
+        // Ended while this key was registered: the token it was registered
+        // with may be the next user's, so it is kept for no one.
+        try ensureLive()
         try credentialStore.setAppAttestKeyID(keyID, for: keySlot(issuerToken: issuerToken))
         return keyID
     }
