@@ -143,7 +143,8 @@ A request may name other models in `providerOptions.gateway.models`, for Vercel
 to try when the first cannot serve. Each goes through the same
 [models and price check](/applications/provider-access#models) as the request's
 own model, before the request is sent. The request is priced at the model that
-served it. On a [preset](/applications/custom-endpoints), only the
+served it. If Vercel's answer names no model, or one outside the request's
+list, the request's own model is priced instead, marked as an estimate. On a [preset](/applications/custom-endpoints), only the
 preset's own model may be named there.
 
 ### Choosing which providers serve

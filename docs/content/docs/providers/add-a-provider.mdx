@@ -78,7 +78,7 @@ Nothing is stored.
 | The provider did not answer in time, so the key is not proven. You can still save it. | No answer within 4 seconds. |
 | The provider answered …, which proves nothing either way. You can still save it. | Any other status, `403`, `404` and `429` included. |
 
-Only the second answer suggests the key is wrong. The others prove nothing, so
+Only the second answer suggests the key is wrong. The last three prove nothing, so
 add the key if you know it is right.
 
 The same through the API, with the fields the connection would have:
@@ -195,13 +195,13 @@ missing. See [When a connection is missing](/applications/provider-access#when-a
 ## Changes are checked against your apps
 
 - **What is checked:** a change to your prices, your listed paths or the base
-  URL, and adding a connection with a slug apps already name. The gateway looks
-  at the calls your apps can still make.
-- **What is refused:** a save that would leave one of those calls with no
-  price, with `400 pricing_not_configured`, naming the app and the model. That
-  includes a model an app lists by name, a preset's own model and a preset's
-  [fallback](/applications/custom-endpoints#fallbacks), which would otherwise
-  drop out of its chain without a word.
+  URL, and adding a connection with a slug apps already name. The gateway checks
+  the affected calls your active apps can still make.
+- **What is refused:** a save after which the gateway can't price one of those
+  calls fully, with `400 pricing_not_configured`, naming the app and the model.
+  That includes a model an app lists by name, a preset's own model and a
+  preset's [fallback](/applications/custom-endpoints#fallbacks), which would
+  otherwise drop out of its chain without a word.
 - **What still saves:** removing a price or a path that leaves the call no
   longer allowed, such as a model's price on an app with no models list. Those
   requests are then refused when made.

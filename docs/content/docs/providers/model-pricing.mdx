@@ -5,8 +5,9 @@ description: Where the gateway's prices come from, how to add your own, and whic
 
 The gateway counts what each request costs, so your apps' budgets and usage
 stay right. To count it, the model needs a price, or the provider must report
-the cost itself. A request for a model with neither is refused with
-`400 pricing_not_configured` before it reaches the provider. The exception: a
+the cost itself. An ordinary model call for a model with neither is refused
+with `400 pricing_not_configured` before it reaches the provider. On fal, whose
+paths name the model, it is `403 path_not_allowed` instead. The exception: a
 model the app lists by name, or a preset's primary model, keeps being served if
 its price later goes away. See [Models](/applications/provider-access#models)
 for the rules.
@@ -131,9 +132,8 @@ Saving checks every price:
   price on a text-only provider, is refused with `400 invalid_request`.
 - On a provider that runs [jobs](/applications/jobs), such as fal, each model
   takes exactly one unit rate, because a job settles at the rate it started with.
-- When you change or remove prices, the gateway checks the calls your apps can
-  still make. If one would be left with no price, the save is refused with
-  `400 pricing_not_configured`. See
+- The gateway checks the affected calls your active apps can still make. If it
+  can't price one fully, the save is refused with `400 pricing_not_configured`. See
   [Changes are checked against your apps](/providers/add-a-provider#changes-are-checked-against-your-apps).
 
 Removing a connection removes your prices on it. Charges already recorded keep

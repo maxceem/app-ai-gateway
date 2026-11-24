@@ -79,7 +79,7 @@ what is wrong.
 | A public domain name, never an IP address | `https://127.0.0.1/`, `https://[::1]/` |
 | A dot in the name, and none at the end | `https://vllm/`, `https://host./` |
 | No local-only ending | `.local`, `.localhost`, `.internal`, `.lan`, `.corp`, `.home`, `.test`, `.example` and similar |
-| No empty, `.` or `..` segment, or encoded `/`, in the path | `https://host/a//b/` |
+| No empty segment or encoded `/` in the path | `https://host/a//b/`, `https://host/a%2Fb/` |
 | At most 200 characters | |
 | Not Cloudflare AI Gateway's host | Use the connection's own [Cloudflare setting](/providers/gateways). |
 | Not another built-in provider's host | `https://api.anthropic.com/` on an OpenAI connection. Add it as that provider, or as a custom provider. |

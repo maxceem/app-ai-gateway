@@ -136,10 +136,13 @@ price the request. See [Service modes](/providers/model-pricing#service-modes).
 - A body is at most 20 MiB. A larger one is refused with
   `413 payload_too_large`.
 - The provider has 120 seconds to send its response headers, or the request is
-  answered with `504 provider_error`. Once they arrive, there is no time limit.
-  Deepgram has 20 minutes. Self-hosted gateways can change the 120 seconds.
-  Checking on a [job](/applications/jobs) has its own limit of 30 seconds, and
-  answers `502 provider_error` when it runs out.
+  answered with `504 provider_error`. On an ordinary call, there is no time
+  limit once they arrive. Deepgram has 20 minutes. Self-hosted gateways can
+  change the 120 seconds.
+- [Jobs](/applications/jobs) have their own limits. A job submission the
+  provider accepted has 30 seconds to send its body with the job ID, and a job
+  check waits 30 seconds for the provider's response headers. Either answers
+  `502 provider_error` when it runs out.
 - **Most output tokens**, if the app sets it, refuses a request that asks for
   more. See [Most output tokens](/applications/provider-access#most-output-tokens).
 - A request that asks the provider to run in the background is refused. See
