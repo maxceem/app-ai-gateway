@@ -18,6 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
@@ -26,7 +27,7 @@ const skip = base === "" || consoleUrl === "" || managementKey === "" ? "V2_BASE
 const consoleOrigin = consoleUrl === "" ? "" : new URL(consoleUrl).origin;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -36,7 +37,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
 
 /** The approval page's own call: on the console's host, from its origin, with nobody signed in. */
 async function page(path: string, body: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, consoleOrigin), {
+  const response = await namedFetch(new URL(path, consoleOrigin), {
     method: "POST",
     headers: { origin: consoleOrigin, "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -136,7 +137,7 @@ test("an app is created once from a reservation, and its key is never in an answ
   assert.equal(other.body.error.code, "operation_mismatch");
 
   // A management key never reveals a key: that is a person's, on the console's page.
-  const revealed = await fetch(new URL(`/v2/admin/operations/${reserved.body.id}/reveal`, consoleOrigin), {
+  const revealed = await namedFetch(new URL(`/v2/admin/operations/${reserved.body.id}/reveal`, consoleOrigin), {
     method: "POST",
     headers: { authorization: `Bearer ${managementKey}`, origin: consoleOrigin },
   });
@@ -146,7 +147,7 @@ test("an app is created once from a reservation, and its key is never in an answ
 
 test("the approval and reveal pages load on the console's host", { skip }, async () => {
   for (const path of ["/v2/approve/smoke", "/v2/reveal/smoke"]) {
-    const response = await fetch(new URL(path, consoleOrigin), { headers: { accept: "text/html,application/xhtml+xml" } });
+    const response = await namedFetch(new URL(path, consoleOrigin), { headers: { accept: "text/html,application/xhtml+xml" } });
     assert.equal(response.status, 200, path);
     assert.equal(response.headers.get("content-security-policy"), "frame-ancestors 'none'");
   }

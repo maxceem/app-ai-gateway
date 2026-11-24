@@ -15,6 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -25,7 +26,7 @@ const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEM
 const LARGE = 6 * 1024 * 1024;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -63,7 +64,7 @@ after(async () => {
 });
 
 async function call(path: string, body: BodyInit, user: string, contentType?: string): Promise<number> {
-  const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/${path}`, base), {
+  const response = await namedFetch(new URL(`/v2/apps/${appId}/proxy/${slug}/${path}`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "x-end-user-id": user, ...(contentType ? { "content-type": contentType } : {}) },
     body,

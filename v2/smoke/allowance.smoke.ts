@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_ALLOWANCE_MANAGEMENT_KEY ?? "";
@@ -19,7 +20,7 @@ const skip =
 const PLAN_LIMIT = 3;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -58,7 +59,7 @@ after(async () => {
 test("the plan allowance refuses once it is used up, with the period in the refusal", { skip }, async () => {
   let refused: { status: number; retryAfter: string | null; body: any } | null = null;
   for (let call = 0; call <= PLAN_LIMIT && refused === null; call += 1) {
-    const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
+    const response = await namedFetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
       method: "POST",
       headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json" },
       body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] }),

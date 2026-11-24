@@ -18,6 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -25,7 +26,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -74,7 +75,7 @@ function headers(user: string): Record<string, string> {
 }
 
 async function submit(user: string, body: Record<string, unknown>, model = "fal-ai/flux/dev"): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${falSlug}/queue/${model}`, base), {
+  const response = await namedFetch(new URL(`/v2/apps/${appId}/proxy/${falSlug}/queue/${model}`, base), {
     method: "POST",
     headers: { ...headers(user), "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -83,7 +84,7 @@ async function submit(user: string, body: Record<string, unknown>, model = "fal-
 }
 
 async function get(url: string, user: string): Promise<{ status: number; body: any }> {
-  const response = await fetch(url, { headers: headers(user) });
+  const response = await namedFetch(url, { headers: headers(user) });
   return { status: response.status, body: await response.json() };
 }
 
@@ -158,7 +159,7 @@ test("a job cancelled through the gateway while queued costs nothing once fal co
   assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
   await usageReaches(user, 1, 25_000_000);
   // The cancel is free: fal's own answer, and no charge.
-  const cancelled = await fetch(submitted.body.cancel_url, { method: "PUT", headers: headers(user) });
+  const cancelled = await namedFetch(submitted.body.cancel_url, { method: "PUT", headers: headers(user) });
   assert.equal(cancelled.status, 202);
   assert.equal(((await cancelled.json()) as { status?: string }).status, "CANCELLATION_REQUESTED");
   assert.equal(cancelled.headers.get("cache-control"), "no-store");

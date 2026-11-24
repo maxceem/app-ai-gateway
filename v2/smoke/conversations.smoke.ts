@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, before, test } from "node:test";
 import { gunzipSync } from "node:zlib";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
@@ -41,7 +42,7 @@ const PARTS = 6;
 const CALLS = 3;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -50,7 +51,7 @@ async function admin(method: string, path: string, body?: unknown): Promise<{ st
 }
 
 async function download(name: string): Promise<Response> {
-  return fetch(new URL(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent(name)}`, base), {
+  return namedFetch(new URL(`/v2/admin/apps/${appId}/conversations/file?name=${encodeURIComponent(name)}`, base), {
     headers: { authorization: `Bearer ${managementKey}` },
   });
 }
@@ -92,7 +93,7 @@ after(async () => {
 });
 
 function chat(headers: Record<string, string>): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
+  return namedFetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `conv-${run}`, ...headers },
     body: JSON.stringify({
@@ -109,7 +110,7 @@ function chat(headers: Record<string, string>): Promise<Response> {
 }
 
 test("the console's capabilities say this deployment stores conversations", { skip: consoleUrl === "" ? "V2_CONSOLE_URL is needed" : false }, async () => {
-  const response = await fetch(new URL("/v2/console/capabilities", consoleUrl));
+  const response = await namedFetch(new URL("/v2/console/capabilities", consoleUrl));
   assert.equal(response.status, 200);
   assert.equal(((await response.json()) as { conversationStorage?: boolean }).conversationStorage, true);
 });

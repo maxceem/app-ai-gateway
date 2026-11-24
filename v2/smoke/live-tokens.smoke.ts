@@ -19,6 +19,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -26,7 +27,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -74,7 +75,7 @@ after(async () => {
 });
 
 async function mint(target: { slug: string; appId: string; key: string }, user: string, body: string): Promise<Response> {
-  return fetch(new URL(`/v2/apps/${target.appId}/proxy/${target.slug}/${TOKEN_PATH}`, base), {
+  return namedFetch(new URL(`/v2/apps/${target.appId}/proxy/${target.slug}/${TOKEN_PATH}`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${target.key}`, "x-end-user-id": user, "content-type": "application/json" },
     body,

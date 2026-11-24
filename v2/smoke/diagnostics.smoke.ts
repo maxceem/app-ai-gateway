@@ -14,6 +14,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -21,7 +22,7 @@ const mockUrl = process.env.V2_MOCK_URL ?? "";
 const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEMENT_KEY, V2_MOCK_URL and V2_BASE_URL are needed" : false;
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -69,7 +70,7 @@ async function eventually<T>(read: () => Promise<T>, check: (value: T) => boolea
 
 test("a refused request and a refused sign-in are read back, in the summary and through the tools", { skip }, async () => {
   // A model the app does not allow: refused before any provider is reached.
-  const refused = await fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
+  const refused = await namedFetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": "smoke-diag-user" },
     body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Hi" }] }),
@@ -78,7 +79,7 @@ test("a refused request and a refused sign-in are read back, in the summary and 
   assert.equal(((await refused.json()) as any).error.code, "model_not_allowed");
 
   // A sign-in this app cannot take: an app-key app with no issuer refuses a token exchange.
-  const signIn = await fetch(new URL(`/v2/apps/${appId}/auth/token`, base), {
+  const signIn = await namedFetch(new URL(`/v2/apps/${appId}/auth/token`, base), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ api_key: appKey, issuer_token: "not-a-token" }),

@@ -20,6 +20,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const managementKey = process.env.V2_MANAGEMENT_KEY ?? "";
@@ -28,7 +29,7 @@ const skip = managementKey === "" || mockUrl === "" || base === "" ? "V2_MANAGEM
 const skipCloudflare = skip !== false ? skip : process.env.V2_MOCK_CLOUDFLARE === "1" ? false : "V2_MOCK_CLOUDFLARE=1 is needed";
 
 async function admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-  const response = await fetch(new URL(path, base), {
+  const response = await namedFetch(new URL(path, base), {
     method,
     headers: { authorization: `Bearer ${managementKey}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -83,7 +84,7 @@ after(async () => {
 });
 
 async function call(slug: string, body: Record<string, unknown>, user: string): Promise<Response> {
-  const response = await fetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
+  const response = await namedFetch(new URL(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, base), {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": user },
     body: JSON.stringify(body),

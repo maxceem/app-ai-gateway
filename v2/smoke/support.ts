@@ -89,15 +89,24 @@ export const SMOKE_CLIENT = "agw-smoke";
 export const USER_AGENT = `${SMOKE_CLIENT}/${release.version}`;
 
 /**
+ * `fetch`, with the checks' own `user-agent` unless the request names another.
+ * For the checks not converted to {@link send} yet, so every request they
+ * make is labelled `smoke` too.
+ */
+export function namedFetch(input: string | URL, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
+  return fetch(input, { ...init, headers });
+}
+
+/**
  * A request to `path` on `base`, given up after `REQUEST_TIMEOUT_MS`. A
  * request that cannot be made fails with fixed text: Node's own error can
  * quote the URL or a header, and either can hold a key or a token.
  */
 export async function send(path: string, base: string, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers);
-  if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
   try {
-    return await fetch(new URL(path, base), { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...init, headers });
+    return await namedFetch(new URL(path, base), { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...init });
   } catch {
     stop("a request could not be sent");
   }
