@@ -102,13 +102,15 @@ fixes them, so do not ask the user to sign in again.
 ## Handling errors well
 
 - Retry with backoff `provider_error`, `service_unavailable`,
-  `internal_error`, and a `429` that carries `Retry-After`, waiting at least
-  that long. The exception is a [job](/applications/jobs) submission: never
+  `internal_error`, and the rate-limit `429`s: `app_rate_limited`,
+  `rate_limited` and a provider's own `429`. Wait at least `Retry-After` when
+  the answer has it. The exception is a [job](/applications/jobs) submission: never
   resend one on its own after a `5xx`, because the provider may already have
   accepted the job, and charged for it.
 - Do not retry `provider_not_configured` or `provider_disabled`: they need a
-  change in the console. A budget or account refusal needs the action in its
-  row too.
+  change in the console. Do not retry `app_budget_exhausted` either: its
+  `Retry-After` runs to the start of next month. An account refusal needs the
+  action in its row too.
 - Do not send a request again on your own after an answer started, or after
   your app's connection to the gateway was lost. The provider may already have
   done the work, and charged for it.

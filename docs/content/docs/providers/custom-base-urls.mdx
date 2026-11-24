@@ -79,7 +79,7 @@ what is wrong.
 | A public domain name, never an IP address | `https://127.0.0.1/`, `https://[::1]/` |
 | A dot in the name, and none at the end | `https://vllm/`, `https://host./` |
 | No local-only ending | `.local`, `.localhost`, `.internal`, `.lan`, `.corp`, `.home`, `.test`, `.example` and similar |
-| No empty segment or encoded `/` in the path | `https://host/a//b/`, `https://host/a%2Fb/` |
+| No empty segment, encoded `/`, or encoded `.` or `..` in the path; plain `.` and `..` are resolved | `https://host/a//b/`, `https://host/a%2Fb/`, `https://host/%2e%2e/` |
 | At most 200 characters | |
 | Not Cloudflare AI Gateway's host | Use the connection's own [Cloudflare setting](/providers/gateways). |
 | Not another built-in provider's host | `https://api.anthropic.com/` on an OpenAI connection. Add it as that provider, or as a custom provider. |
@@ -232,7 +232,9 @@ POST chat/completions openai-chat
   Without one, the path is not priced, and budgets do not limit it.
 - A path that could match requests of one of the provider's operations, or of
   another API-style path, is refused: it would take them without counting them.
-  Allow that operation on the app instead.
+  Allow that operation on the app instead. A custom provider whose base URL is
+  a built-in provider's host cannot list that provider's own endpoints as plain
+  paths, or with another API style than theirs.
 - The same pattern listed twice is refused. Otherwise plain paths may overlap,
   and the more specific one wins: `GET v1/files/search` serves that request,
   at its own price, ahead of `GET v1/files/{file_id}`.
