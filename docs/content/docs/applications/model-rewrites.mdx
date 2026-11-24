@@ -3,29 +3,31 @@ title: Model rewrites
 description: Point a model name an app sends at the model the provider should receive.
 ---
 
-The **Model rewrites** page maps a model name the client sends to the model
-the provider receives. The rewrite is applied after the allowlist check, so
-the target does not need to be in the
-[allowed models](/applications/provider-access#models-this-provider-serves), and usage
-records the rewritten model.
+An app's **Rewrites** tab maps a model name the app sends to the model the
+provider receives. The app's **Models** list is checked against the name the
+app sends, so the target need not be in it. The price, and the usage record, are
+the target's.
 
-A rewrite is how you move an app to a newer model without a release: the app
-keeps asking for `gpt-5.6-terra` and you point that name at `gpt-5.6-sol`. For a
-bigger change, such as a different provider or fixed parameters, use a
-[custom endpoint](/applications/custom-endpoints).
+A rewrite is how you move an app to a newer model without an app release: the
+app keeps asking for `gpt-5.4-mini`, and you point that name at a newer model.
+For a bigger change, such as another provider or fixed settings, use a
+[preset](/applications/custom-endpoints).
 
-Rewrite targets must be covered by the built-in price list or one of your
-providers' pricing rules. A listed target can be saved before its provider
-exists. A request still needs a price, or upstream cost reporting, on the
-provider it actually calls.
+A rewrite is one step only: its target is never rewritten again. It applies to
+every call the app sends through the provider proxy. Presets name their models
+themselves and are not rewritten.
 
-## In the configuration
+Click **Save rewrites** to save. The target must have a price, or saving is
+refused.
+
+## In the settings
 
 ```json
 "routing": {
-  "model_rewrites": { "gpt-5.6-terra": "gpt-5.6-sol" }
+  "model_rewrites": { "gpt-5.4-mini": "gpt-5.4-nano" }
 }
 ```
 
-`model_rewrites` maps the model name a client sends to the one the provider
-receives. Both sides are the provider's own model names.
+`model_rewrites` maps the model name an app sends to the one the provider
+receives. Both are the provider's own model names. Leave it out for no
+rewrites.
