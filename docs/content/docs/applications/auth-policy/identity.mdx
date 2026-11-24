@@ -1,84 +1,84 @@
 ---
 title: Application identity
-description: How an app proves it is your app, with App Attest for iOS or API keys for a server.
+description: How an app proves it is your app, with App Attest for iOS or app keys for a server.
 ---
 
-The **Auth policy** page has three levels, and **Application identity** is the
-first. It answers one question: is this request coming from my app? An iOS
-application answers with Apple App Attest. A server answers with an API key.
+The first question about every request is whether it comes from your app. An
+iOS app answers with Apple App Attest, set on the app's **Sign-in** tab. A
+server app answers with an app key, made on the app's **Keys** tab.
 
-The level shows its state at a glance: **Verified with App Attest**, **Team
-or bundle id missing**, **Verified with API keys**, or **No active API key**.
+## iOS apps
 
-## iOS applications
+Only builds signed with your team and bundle ID can get a gateway token for this
+app.
 
-Only builds signed with your team and bundle ID can call AI providers through
-this app.
+- **Apple Team ID**: ten letters and digits, in your Apple developer account
+  under Membership details.
+- **Bundle ID**: such as `com.example.app`, on your target's Signing &
+  Capabilities tab in Xcode.
 
-- **Apple Team ID**: found in your Apple Developer account under Membership
-  details.
-- **Bundle ID**: on your target's Signing & Capabilities tab in Xcode.
+Apple ties an App Attest key to one install of one app on one device, and the
+attestation carries a hash of your team ID and bundle ID. The gateway checks
+that hash and keeps the key's public half. From then on it accepts assertions
+signed by that key. The key never leaves the Secure Enclave.
 
-Apple binds an App Attest key to one install of one app on one device, and
-the attestation carries a hash of your team ID and bundle ID. The gateway
-checks that hash, stores the key's public half, and from then on accepts
-assertions signed by that key: one at each token exchange and, unless the app
-verifies App Attest on the token exchange only, one on every request. The key
-never leaves the Secure Enclave.
+When the gateway asks for an assertion depends on **Check App Attest on**:
 
-Keys are per install. A signed-in user who uses your app on a phone and a
-tablet holds two keys, and a user who reinstalls the app gets a new one;
-registering a key never replaces another. Each install is counted on its own
-by the [per-install limits](/applications/limits); the monthly budget is, by
-default, measured across all installs of one Apple Account.
+- **Every request**, the default: one when the app gets a gateway token, and a
+  fresh one with every request.
+- **Token exchange**: one when the app gets a gateway token, only.
 
-### iOS app environment
+Keys are per install. A user who uses your app on a phone and a tablet holds
+two keys, and a user who reinstalls the app gets a new one. A new key never
+replaces another. Each install has its own request limits; the monthly budget
+is, by default, counted across all installs of one Apple Account. See
+[Limits](/applications/limits).
 
-Apple runs App Attest in two environments and stamps which one into every
+### Accepted builds
+
+Apple runs App Attest in two environments, and marks which one in every
 attestation. An app accepts one or both, and at least one must stay on.
 
-- **Production**: builds signed for TestFlight and the App Store. On by
-  default.
-- **Development**: builds run from Xcode, which attest in Apple's development
-  environment. Off unless you turn it on.
+- **Production**: App Store and TestFlight builds. On by default.
+- **Development**: builds run from Xcode. Off unless you turn it on.
 
-A development-signed build is debuggable and runs on any device carrying your
-team's provisioning profile, which is why Development is off by default and
-why the console warns when you turn it on. Put the opt-in on a development
-bundle ID, never on the one you ship.
+A development-signed build can be debugged, and runs on any device with your
+team's provisioning profile. That is why Development is off by default. Turn it
+on for a development bundle ID, never the one you ship.
 
-Removing an environment also stops the keys it already admitted: on their
-next request when the app verifies every request, otherwise at their next
-token exchange, within the hour. The refusal is `403 attest_failed`, and the
-app registers a fresh key in an environment the app still accepts.
+Turning an environment off also stops the keys it already let in, once the
+gateway sees the new setting. In normal operation that is within a minute; see
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+Then:
 
-Two things no setting changes. App Attest is unavailable in the Simulator,
-because it needs the Secure Enclave. And a development build can be made to
-attest in production instead by setting the
+- with **Every request**, their next request is refused, because each request
+  carries an assertion;
+- with **Token exchange**, a gateway token they already hold keeps working until
+  it ends, at most an hour later, because requests carry no assertion. Their
+  next try to get a token is refused.
+
+They are refused with `403 attest_failed`, and the app registers a new key in
+an environment it still accepts.
+
+Two things no setting changes. App Attest does not work in the Simulator,
+because it needs the Secure Enclave. And a development build can attest in
+production instead, if you set the
 `com.apple.developer.devicecheck.appattest-environment` entitlement to
-`production`, which is the better answer when a development build only needs
-to reach a production-only app.
+`production`. That is the better answer when a development build only needs to
+reach an app that accepts production builds.
 
-### Verify App Attest on
+### Check App Attest on
 
-When the gateway checks the install's App Attest assertion.
-
-- **Every request**: each request carries a fresh App Attest assertion, so a
-  gateway token copied off the network is useless without the device.
-  Requires the AppAIGateway Swift package 1.4 or later. The default for new
-  apps.
-- **Token exchange**: the assertion is checked once per hourly token, and
+- **Every request**: each request carries a fresh assertion, so a gateway token
+  copied off the network is useless without the device. A request without one
+  is refused with `401 assertion_required`.
+- **Token exchange**: the assertion is checked once for each hourly token, and
   requests carry only the token.
 
-Apps created before this setting was added were set to **Token exchange**, so
-their existing installs keep working. Switch to **Every request** once your
-clients are on the Swift package 1.4 or later: from then on a request without
-a proof is refused with `401 assertion_required`, which is what every build
-on an older package receives. Neither setting changes how limits, budgets and
-usage are counted. See
-[When App Attest is verified](/how-it-works/identity#when-app-attest-is-verified).
+Neither setting changes how limits, budgets and usage are counted. See
+[When App Attest is checked](/how-it-works/identity#when-app-attest-is-checked).
 
-### In the configuration
+### In the settings
 
 ```json
 "authentication": {
@@ -93,52 +93,52 @@ usage are counted. See
 }
 ```
 
-`environments` may be omitted, which means `["production"]`. `verify_on` is
-`every_request` or `token_exchange`, and may be omitted, which means
-`every_request`. `end_user` is
-required on an iOS app and is covered under
+`environments` may be left out, which means `["production"]`. `verify_on` is
+`every_request` or `token_exchange`, and may be left out, which means
+`every_request`. `end_user` is required, and is covered under
 [User authentication](/applications/auth-policy/user-authentication).
 
-## Server applications
+## Server apps
 
-A server application proves itself with one of its API keys. The card lists
-every key with its **Name**, **Prefix**, **Last used** and **Status**.
+A server app proves itself with one of its app keys. The **Keys** tab lists each
+key with its **Name**, the start of the **Key**, when it was **Created**, when it
+was **Last used**, and its **Status**.
 
-**New key** asks for a **Key name** so you can tell keys apart, then shows
-the key once in a dialog titled **Copy your new key now**. The gateway stores
-only a hash, so there is no way to see the key again. Store it in your
-backend's secret manager.
+**New key** asks for a name, so you can tell keys apart, then shows the key once
+in a dialog titled **Copy your app key now**. The gateway keeps only a hash, so
+there is no way to see the key again. Keep it in your server's secret manager.
 
-**Revoke** stops a key within a minute. Create the replacement first, move
-your backend to it, then revoke the old one, and rotation costs no downtime.
+**Revoke key** stops a key. Make the new key first, move your server to it, then
+revoke the old one, and the change costs no downtime. Once revoked:
 
-Once revocation has propagated, bare-key requests using those keys fail with
-`401 auth_required`. Gateway tokens issued from a revoked key also stop
-working within a minute. The app's pages show a notice when no active key remains.
+- a call sent with the key itself is refused with `401 auth_required`;
+- trading the key for a gateway token is refused with `403 auth_required`;
+- gateway tokens already made with it stop working.
+
+In normal operation this reaches every request within a minute. See
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
 ### How the key is sent
 
-Without signed-in users, your backend sends the key as the bearer credential
-on every request:
+With no signed-in users, your server sends the key with every call:
 
 ```http
 Authorization: Bearer agw_…
 ```
 
-With signed-in users, the key is exchanged together with the user's sign-in
-token for a gateway token instead, and bare keys are refused on requests. See
-[Server applications](/integrate/server).
+With signed-in users, your server trades the key and the user's sign-in token
+for a gateway token instead. See [Server applications](/integrate/server).
 
-### In the configuration
+### In the settings
 
 ```json
 "authentication": { "type": "api_key", "end_user": { "source": "none" } }
 ```
 
 `end_user` is required here too. `none` means the app has no end users; the
-other sources are covered under
+other choices are covered under
 [User authentication](/applications/auth-policy/user-authentication).
 
-Keys are not part of the configuration. `POST /v1/admin/apps/{app}/keys`
-creates one and returns `key` once; `POST /v1/admin/apps/{app}/keys/{key}/revoke`
+Keys are not part of the settings. `POST /v2/admin/apps/{app}/keys` makes one
+and answers its `key` once. `POST /v2/admin/apps/{app}/keys/{key}/revoke`
 revokes it.

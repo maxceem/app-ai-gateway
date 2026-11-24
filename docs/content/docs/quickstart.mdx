@@ -1,83 +1,90 @@
 ---
 title: Quickstart
-description: Add a provider key, create an app, and send your first AI request in a few minutes, from a server with curl or from an iOS app.
+description: Add a provider key, create an app, allow the provider, and send your first AI request in a few minutes.
 ---
 
 This page takes you from an empty console to a working request. It uses a
-server application, because that is the shortest path: one key, one curl
-command. The last section shows the same thing for an iOS app.
+server app, because that is the shortest path: one key, one curl command. The
+section on iOS apps, at the end, says where they stand.
 
-Sign up at [console.appaigateway.com](https://console.appaigateway.com). The sidebar
-shows the same three steps as this guide until your first request goes through.
+Sign up at [console.appaigateway.com/v2/signup](https://console.appaigateway.com/v2/signup).
+If the console asks you to verify your email address, open the link in the email
+it sent. Until you do, your apps' requests are refused.
 
 <Callout title="Self-hosting">
-  Open your own console and replace `https://api.appaigateway.com` in the
-  examples with your gateway's API address. If you have not deployed yet,
-  follow [Self-hosting](/self-hosting/deploy-to-cloudflare) first.
+  Open your own console, and replace `https://api.appaigateway.com` in the
+  examples with your gateway's API address.
 </Callout>
 
-Prefer a terminal or coding agent? Follow the [CLI guide](/automation/cli) or
-[Use with AI agents](/automation/agents). Sign in to your existing account
-before creating resources so they appear in the same console.
+Prefer a terminal or a coding agent? Follow the [CLI guide](/automation/cli) or
+[Use with AI agents](/automation/agents).
 
 ## 1. Add a provider key
 
 Open **Providers** and click **Add provider**.
 
-- **Name** is how the provider is listed, for example `Prod OpenAI`.
 - **Provider** is the service the key belongs to. This guide uses OpenAI.
-- **Authentication** stays on **API key**. Paste the key you got from the
-  provider.
+- **Name** is how you tell your connections apart, for example `Prod OpenAI`.
+- **Slug** is the short name your apps use in their URLs. Leave it empty to use
+  the provider's own name, here `openai`.
+- **API key** is the key you got from the provider.
 
-Click **Test provider** if you want the gateway to confirm the key works, then
-**Add provider**. The key is encrypted on arrival and never shown again. The
-list shows only its last characters so you can tell keys apart.
+Click **Test key** if you want the gateway to try the key first, then
+**Add provider**. The key is encrypted on arrival and never shown again.
 
-The first provider of each type gets a short name, its **slug**, that your app
-uses in URLs. The first OpenAI key is `openai`, the first Anthropic key is
-`anthropic`, and so on. See [Add a provider key](/providers/add-a-provider) for
-several keys of one type.
+The first connection of each provider can take the provider's own name as its
+slug. A second OpenAI key needs a slug of its own, such as `openai-dev`. See
+[Add a provider key](/providers/add-a-provider).
 
 ## 2. Create an app
 
-Open **Apps** and click **New app**.
+Open **Apps** and click **New app**. A short form asks one thing at a time.
 
-1. **Application name**: anything you like. The gateway builds the app's ID
-   from it, for example `example-app-a1b2c3`.
-2. **Application type**: choose **Server**.
-3. **User authentication**: choose **No user identity** for now. You can turn
-   on per-user identity later on the app's **Auth policy** page.
+1. **Name**: anything you like. The gateway builds the app's ID from it, for
+   example `example-app-a1b2c3`.
+2. **Where do calls come from?**: choose **Server**.
+3. **Who may call**: choose **No end users** for now. You can change it later
+   on the app's **Sign-in** tab.
 4. Click **Create app**.
 
-A dialog titled **Your application is ready** shows the app's API key. It is
-shown once, so copy it now and keep it somewhere safe. The dialog also shows
-the **Base URL** your app will call:
+A dialog titled **Copy your app key now** shows the app's key. It is shown only
+this once: the gateway keeps only a hash of it. Copy it and keep it somewhere
+safe. You can make more keys later on the app's **Keys** tab.
 
-```text
-https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/{provider}/{provider_path}
-```
+## 3. Allow the provider
 
-`{provider}` is the provider
-slug from step 1, and `{provider_path}` is the provider's own API path.
+A new app may call nothing yet. You choose what it may call.
 
-## 3. Send a request
+Open the app's **Providers** tab and tick your `openai` connection.
 
-Put the key in an environment variable and call OpenAI's Responses API through
-the gateway. Replace the app ID with yours.
+- **Operations** are the kinds of request the app may send. Ticking the
+  connection ticks its first operation, `openai.chat` (OpenAI's Chat
+  Completions), which this guide uses. Others, such as `openai.responses`, can
+  be added later.
+- **Models** limits the app to the models you list. Leave it empty to allow
+  every model that has a price.
+
+Click **Save providers**. The app's **Overview** tab now shows it is ready to
+serve.
+
+## 4. Send a request
+
+The **Overview** tab's **First requests** section has example requests for
+this app, ready to copy. Or put the key in an environment variable and call
+OpenAI's Chat Completions API through the gateway. Replace the app ID with yours.
 
 ```sh
 export APP_AI_GATEWAY_KEY="agw_…"
 
-curl --fail-with-body https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/openai/v1/responses \
+curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/proxy/openai/v1/chat/completions \
   -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.6-sol","input":"Say hello."}'
+  -d '{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Say hello."}]}'
 ```
 
-The response is OpenAI's own, unchanged. Everything after `/proxy/openai/` is
-the path OpenAI documents, and the body is the body OpenAI documents. The
-gateway added your provider key on the way out and recorded the request on the
-way back.
+The answer is OpenAI's own, unchanged. Everything after `/proxy/openai/` is the
+path OpenAI documents, and the body is the body OpenAI documents. The gateway
+added your provider key on the way out and recorded the call on the way back.
 
 If you use an SDK instead of curl, point it at the gateway and keep everything
 else:
@@ -88,74 +95,55 @@ from openai import OpenAI
 
 client = OpenAI(
     api_key=os.environ["APP_AI_GATEWAY_KEY"],
-    base_url="https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/openai/v1",
+    base_url="https://api.appaigateway.com/v2/apps/example-app-a1b2c3/proxy/openai/v1",
 )
+
+answer = client.chat.completions.create(
+    model="gpt-5.4-mini",
+    messages=[{"role": "user", "content": "Say hello."}],
+)
+print(answer.choices[0].message.content)
 ```
 
-## 4. See it in the console
+## 5. See it in the console
 
-Open the app and go to **Usage**. The request is in **Recent events** with its
-model, tokens, cost and latency, and the chart above it shows the day's spend.
-The **Apps** page now shows month-to-date spend and requests across all your
-apps.
+Open the app's **Usage** tab. The call is in **Recent charges** with its model,
+tokens and cost, and **Daily usage by provider** shows the day's spend. The
+**Apps** page shows this month's spend across all your apps.
 
 ## If something failed
 
-| Response | What it means |
+| Answer | What it means |
 | --- | --- |
-| `502 provider_not_configured` | No provider has the slug in the URL. Check the Providers page. |
-| `400 pricing_not_configured` | The model is not in the price list. Add a price under the provider's **Pricing** action, or use a listed model. |
-| `401 auth_required` | The key is missing or wrong, or the app was created as an iOS app. |
-| `403 path_not_allowed` or `model_not_allowed` | The app's **Provider access** restricts paths or models. New apps allow inference endpoints and priced models. |
+| `403 email_unverified` | Your account's email address is not verified yet. Open the link in the verification email, or send a new one from the console. |
+| `401 auth_required` | The key is missing or wrong. |
+| `502 provider_not_configured` | The app does not allow a connection with the slug in the URL. Tick it on the app's **Providers** tab. |
+| `403 path_not_allowed` | The app does not allow this operation, or the path is not one the gateway knows for this provider. |
+| `403 model_not_allowed` | The model is not in the app's **Models** list. |
+| `400 pricing_not_configured` | The model has no price, so the gateway cannot count its cost. Use a model on the price list, or add a price for it. |
+| An error in OpenAI's own format | The request reached OpenAI, and OpenAI refused it. If it says the key is invalid, check the provider key you added in step 1. |
 
 The full list is in [Errors and limits](/integrate/errors).
 
-## The same for an iOS app
+## iOS apps
 
-An iOS app has no key to ship. Instead the app proves it is a real install of
-your app with Apple App Attest, and the gateway gives it a short-lived token.
+An iOS app has no key to ship. It proves it is a real install of your app with
+Apple App Attest, and the gateway gives it a short-lived token. To create one,
+choose **iOS app** in step 2 and enter your **Apple Team ID** and **Bundle ID**.
 
-1. **New app**, type **iOS application**. Enter your **Apple Team ID** and
-   **Bundle ID** from your Apple Developer account and Xcode.
-2. **User authentication**: choose **Unauthenticated users** to start. Each
-   install then counts as one user, with the default limits of 100 requests a
-   minute and 10,000 a day.
-3. Add the AppAIGateway Swift package to your project and send a request:
-
-```swift
-import AppAIGateway
-
-let gateway = AppAIGatewayClient(
-    appID: "example-app-a1b2c3",
-    baseURL: URL(string: "https://api.appaigateway.com")!,
-    authMode: .appAttestInstall
-)
-
-let (data, _) = try await gateway.withAuthorizedRequest(
-    provider: .openai,
-    providerPath: "v1/responses",
-    body: Data(#"{"model":"gpt-5.6-sol","input":"Say hello."}"#.utf8),
-    contentType: "application/json"
-) { try await URLSession.shared.data(for: $0) }
-print(String(decoding: data, as: UTF8.self))
-```
-
-App Attest needs a real device. It is not available in the Simulator. The
-**Apps** page generates this snippet for your own app once it exists, and
-[iOS with the Swift package](/integrate/ios) covers sign-in, token refresh and
-error handling.
-
-To see a complete app first, [run the demo app on your iPhone](/demo-ios-app): it
-chats, generates images and transcribes voice notes through a gateway app of
-your own.
+Today you can create and set up an iOS app here, and the gateway serves App
+Attest sign-in for it. The Swift package that does that sign-in for you is coming
+with the v2 SDK; until then, the iOS integration guide and the demo app still
+describe the earlier version.
 
 ## Next steps
 
-- [Limits](/applications/limits) to cap what a user and an app may spend.
+- [Limits](/applications/limits) to cap what each user and the whole app may
+  spend.
 - [User authentication](/applications/auth-policy/user-authentication) to tie
-  requests to signed-in users from Firebase, Supabase, Auth0, Clerk or your own
+  calls to users who sign in with Firebase, Supabase, Auth0, Clerk or your own
   issuer.
-- [Custom endpoints](/applications/custom-endpoints) to keep the model and parameters
+- [Presets](/applications/custom-endpoints) to keep the model and its settings
   on the gateway, so you can change them without an app release.
 - [Automation and agents](/automation/agents) to hand the setup to a script or
   an AI agent.

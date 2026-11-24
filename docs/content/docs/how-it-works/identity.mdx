@@ -1,154 +1,132 @@
 ---
 title: Identity and entitlement
-description: The three questions the gateway asks about a request, and which combinations an app can be configured for.
+description: The three questions the gateway asks about a request, and which combinations an app can be set up for.
 ---
 
-Every request answers up to three questions, and each app's **Auth policy**
-page is organised around them.
+Every request answers up to three questions. Each app's **Sign-in** tab is
+organised around them.
 
 | Question | Answered by | Set under |
 | --- | --- | --- |
-| Is this my app? | Apple App Attest, or an application API key | **Application identity** |
-| Which user is it acting for? | A sign-in token, the app install itself, or a header from your backend | **User authentication** |
-| Has that user paid? | A claim in the sign-in token | **Subscription check** |
+| Is this my app? | Apple App Attest, or an app key | The app's kind, and for an iOS app its Team ID and Bundle ID |
+| Which user is it acting for? | A sign-in token, the app install itself, or a header from your server | **Who may call** |
+| Has that user paid? | A claim in the sign-in token | **Paid users only** |
 
 The first question always has an answer. The second and third are optional,
 and the third needs the second.
 
-## Application identity
+## Is this my app?
 
-An **iOS application** proves itself with Apple App Attest. The device holds a
-key in the Secure Enclave, Apple attests that the key belongs to a genuine
-install of your app, and the gateway checks that attestation against your
-Team ID and Bundle ID. The app then exchanges an assertion for a gateway
-token that lasts one hour and, by default, signs every request it sends with
-that same key. There is no shared application API key to embed in the app.
+An **iOS app** proves itself with Apple App Attest. The device holds a key in
+the Secure Enclave. Apple confirms that the key belongs to a genuine install of
+your app, and the gateway checks that against your Team ID and Bundle ID. The
+app then trades an App Attest assertion for a gateway token that lasts one
+hour. By default it also signs every request with the same key. There is no
+shared key to build into the app. The Swift package that does all this for an
+iOS app is coming with the v2 SDK.
 
-A **server** application proves itself with an API key, a long-lived
-`agw_…` secret. Without signed-in users it sends that key on every request;
-with signed-in users it exchanges the key and the user's JWT for a gateway
-token. The key belongs in a secret manager, never in a client.
+A **server** app proves itself with an app key, a long-lived `agw_…` secret.
+With no signed-in users it sends that key with every call. With signed-in users
+it trades the key and the user's sign-in token for a gateway token. The key
+belongs in a secret manager, never in a client.
 
-The AppAIGateway Swift package does the App Attest exchange for you. See
-[iOS with the Swift package](/integrate/ios).
+## Which user is it?
 
-## User authentication
+Knowing the user is what makes per-user limits, per-user usage and blocking
+possible. An iOS app's users are either people who sign in with your identity
+provider, or each install of the app. A server app's users are people who sign
+in, users your server names in a header, or nobody at all. Each choice, and what
+it needs, is on [User authentication](/applications/auth-policy/user-authentication).
 
-Identifying users is what makes per-user limits, per-user usage and blocking
-possible. An app can identify them in one of these ways.
+A user named by a sign-in token is the strongest choice: the gateway checks the
+token's signature, issuer and audience before it trusts the user ID inside. An
+install as the user works with no sign-in, but a person can get around a block
+or a per-install budget by reinstalling the app. A user your server names is
+taken on trust, so it belongs only on a server you control.
 
-| Choice in the console | App type | Who the user is |
-| --- | --- | --- |
-| **Signed-in users only** | iOS and server | The subject of a sign-in token from your identity provider, verified by the gateway |
-| **Unauthenticated users** | iOS | The app install. The App Attest key is the identity |
-| **Your backend sends the user id** | Server | Whatever your backend puts in a header you choose, taken on trust |
-| **No user identity** | Server | Nobody. Requests are not linked to a user and per-user limits do not apply |
-
-**Signed-in users only** is the strongest choice. Your app sends the ID token
-it already has from Firebase, Supabase, Auth0, Clerk, Sign in with Apple or
-your own issuer, and the gateway verifies the signature, the issuer and the
-audience against your configuration before it trusts the user ID inside.
-
-**Unauthenticated users** is the quick start for an iOS app with no sign-in.
-Each install counts as one user, so per-install limits and blocks work. The
-identity does not survive reinstalling the app, so a determined user can shed
-a block by starting over. A budget measured per Apple Account, the default,
-does survive it; see [Limits and blocking](/how-it-works/limits#whose-month-an-ios-budget-is).
-
-**Your backend sends the user id** belongs on a server you control. The
-gateway takes the value as given, so it is never appropriate for a client an
-end user runs.
-
-Details and the settings for each identity provider are on
-[User authentication](/applications/auth-policy/user-authentication).
-
-## Subscription check
+## Has the user paid?
 
 With signed-in users, the gateway can also require that the sign-in token
-carries a claim saying the user has paid. The gateway never talks to the App
-Store itself. Something else, typically RevenueCat's Firebase function kit or
-your own backend, writes the entitlement into the user's token, and the
-gateway checks for it on every token exchange.
+carries claims saying the user has paid. The gateway never talks to the App
+Store itself. Something else, such as RevenueCat or your own server, writes the
+entitlement into the user's token, and the gateway checks for it each time a
+gateway token is issued.
 
-Because the claim is written after the purchase, there is a short window
-where a paying user holds a token without it yet. The gateway reports that as
-a distinct outcome so your app waits instead of asking the user to sign in
-again. See [Subscription check](/applications/auth-policy/subscription-check).
+Because the claim is written after the purchase, there is a short time when a
+paying user holds a token without it. The gateway reports that with its own
+error code, `issuer_claims_missing`, so your app can wait instead of asking the
+user to sign in again. See [Subscription check](/applications/auth-policy/subscription-check).
 
 ## What the gateway token is
 
 An iOS app, or a server app with signed-in users, does not send its user's
-sign-in token on every request. It exchanges its proof and that token once at
-the app's token endpoint and receives a **gateway token**, valid for one hour,
-that stands for both. Requests carry that token and an `X-App-Version` header.
-The Swift package refreshes it before it expires.
+sign-in token with every request. It trades its proof and that token once, at
+`/v2/apps/{app}/auth/token`, for a **gateway token** that lasts one hour and
+stands for both.
 
-A server app with no signed-in users skips the exchange and sends its API key
+Provider proxy and preset requests with a gateway token also carry an
+`X-App-Version` header: the app's own version, such as `1.4.2` or `1.4.2 (45)`.
+Such a request without it is refused with `400 invalid_request`; `/me` does not
+need it. The gateway records it on every charge, so the app's **Usage** tab can
+show whether a problem belongs to one release. Only a value shaped like a version
+is saved.
+
+A server app with no signed-in users skips the trade and sends its app key
 directly.
 
-### When App Attest is verified
+### When App Attest is checked
 
-Each iOS app has a **Verify App Attest on** setting, `verify_on` in its
-configuration, with two values.
+Each iOS app has a **Check App Attest on** setting, `verify_on` in its settings,
+with two values.
 
 | Value | What the gateway checks |
 | --- | --- |
-| **Every request** (`every_request`, the default) | The assertion at each token exchange, and a fresh assertion on every request |
-| **Token exchange** (`token_exchange`) | The assertion at each token exchange only; requests carry the gateway token alone |
+| **Every request** (`every_request`, the default) | The assertion when a gateway token is issued, and a fresh assertion on every request |
+| **Token exchange** (`token_exchange`) | The assertion when a gateway token is issued, only; requests carry the gateway token alone |
 
-Either way the gateway token names the install it was issued to, and its
-Apple Account when the app sent its App Store transaction, so limits, budgets
-and usage are counted the same way in both modes.
-
-Apps created before this setting was added were set to **Token exchange**,
-so installs already shipped keep working. A new app, or a configuration that
-leaves the field out, verifies every request.
+Either way the gateway token names the install it was issued to, and its Apple
+Account when the app sent its App Store transaction. So limits, budgets and
+usage are counted the same way in both modes.
 
 ### Every request
 
-With **Every request**, an iOS app's gateway token is bound to the App Attest
-key of the install it was issued to, and is not enough on its own. Every
-request sent with it also carries an `X-AppAttest-Proof` header: an App Attest
-assertion that the key signed over that one request. The proof covers:
+With **Every request**, an iOS app's gateway token is tied to the App Attest key
+of the install it was issued to, and is not enough on its own. Every request
+sent with it also carries an `X-AppAttest-Proof` header: an App Attest assertion
+that the key signed over that one request. The proof covers:
 
-- your app's ID, the HTTP method, and the URL path and query exactly as sent;
+- your app's ID, the HTTP method, and the request's path and query;
 - a hash of the request body;
 - a hash of the gateway token itself;
-- the device's timestamp and a random value.
+- the device's time and a random value.
 
-The gateway checks the signature against the install's registered key, and
-the assertion's counter against every counter that install has already used,
-so each proof is accepted once. The timestamp is part of what is signed, but
-the gateway does not compare it with its own clock: a device whose clock is
-wrong is not refused, and the counter is what stops a replay.
+The gateway checks the signature against the install's key. Each assertion
+carries a counter, and each counter is accepted once, within a window of the
+install's 64 most recent ones. So a proof copied off the network cannot be used
+again. The device's time is part of what is signed, but the gateway does not
+compare it with its own clock: a device whose clock is wrong is not refused.
 
-What someone who copies a gateway token off the network, with an HTTPS
-inspector for example, can do with it: nothing. Without the device's key they
-cannot sign a new request, a proof they copied alongside it covers only the
-request it came with, and that request has already been served. A request
-without a proof is refused with `401 assertion_required`.
-
-The Swift package 1.4 or later signs every request for you. See
-[Per-request proof](/integrate/ios#per-request-proof).
+Someone who copies a gateway token off the network can do nothing with it.
+Without the device's key they cannot sign a new request, and a proof copied
+with it covers only a request that was already served. A request without a
+proof is refused with `401 assertion_required`.
 
 ### Token exchange
 
-With **Token exchange**, the assertion is checked once per hourly token, and
-requests carry only the token. A token copied off the network works from
-anywhere until it expires, at most an hour. Choose it when the builds in use
-are on a Swift package older than 1.4; switch to **Every request** once they
-have been updated.
+With **Token exchange**, the assertion is checked once for each hourly token,
+and requests carry only the token. A token copied off the network works from
+anywhere until it ends, at most an hour later.
 
 ## Combinations
 
-| App type | User authentication | Subscription check |
+| App kind | Who may call | Paid users only |
 | --- | --- | --- |
-| iOS | Signed-in users | Available |
-| iOS | Unauthenticated users | Not available, there is no token to check |
-| Server | Signed-in users | Available |
-| Server | Backend sends the user id | Not available |
-| Server | No user identity | Not available |
+| iOS | Signed-in users only | Available |
+| iOS | Anyone with the app | Not available: there is no sign-in token to check |
+| Server | Signed-in users only | Available |
+| Server | Your server sends the user id | Not available |
+| Server | No end users | Not available |
 
 Two pairings do not exist. An iOS app cannot name its own user in a header,
-because the device is the party being limited. A server app cannot use the
-app-install identity, because it has no attested key.
+because the device is the one being limited. A server app cannot use the app
+install as its user, because it has no attested key.

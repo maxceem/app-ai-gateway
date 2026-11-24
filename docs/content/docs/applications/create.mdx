@@ -1,127 +1,80 @@
 ---
 title: Create an application
-description: Walk through the New app wizard for an iOS app or a server, and what it creates.
+description: Walk through creating an iOS app or a server app, and what it creates.
 ---
 
-Open **Apps** and click **New app**. The wizard asks only what it needs for the
-type of app you pick. You can edit its policy later on the app's own pages.
-Its ID is permanent, and the settings pages do not change its application type.
+Open **Apps** and click **New app**. The **Create an app** form asks one thing at
+a time, and only what the kind of app you pick needs. Afterwards you can change
+the app's name on its **Settings** tab. The **Sign-in** tab changes the sign-in
+settings for the app's current kind; it has no choice of kind. The app's ID is
+permanent.
 
-## 1. Basics
+## 1. Name and kind
 
-- **Application name**: how the app is listed. The gateway builds the app's
-  permanent ID from it, for example `Calorie Tracker` becomes
-  `calorie-tracker-k3f9x1`. See
-  [Apps and providers](/how-it-works/apps-and-providers#the-app-id-is-permanent).
-- **Application type**:
-  - **iOS application**: calls AI providers straight from the app. The app
-    proves itself with Apple App Attest.
-  - **Server**: a backend you run, using a private API key.
+- **Name**: how the app is listed. The gateway builds the app's permanent ID from
+  it: `Calorie Tracker` becomes something like `calorie-tracker-k3f9x1`. See
+  [The app ID is permanent](/how-it-works/apps-and-providers#the-app-id-is-permanent).
+- **Where do calls come from?**: **iOS app** for calls straight from the app,
+  proved with App Attest; **Server** for calls from your own server, with an app
+  key it keeps secret.
 
-## 2. Application identity (iOS only)
+## 2. How the app proves itself (iOS only)
 
-Only builds signed with your team and bundle ID can call the gateway through
-this app.
+Your **Apple Team ID**, your **Bundle ID**, and which builds to accept. See
+[Application identity](/applications/auth-policy/identity#ios-apps).
 
-- **Apple Team ID**: in your Apple Developer account under Membership details.
-- **Bundle ID**: in Xcode, on your target's Signing & Capabilities tab.
-- **iOS app environment**: **Production** covers TestFlight and App Store
-  builds. **Development** covers builds run from Xcode. Keep Development on a
-  development bundle ID rather than the one you ship. See
-  [Application identity](/applications/auth-policy/identity).
+## 3. Who may call
 
-## 3. User authentication
-
-Whether requests are tied to a user, and how the gateway knows who that is.
-
-For an iOS app:
-
-- **Signed-in users only**: users sign in through your identity provider, and
-  the gateway verifies it.
-- **Unauthenticated users**: anyone with your app can call. Each installation
-  counts as one user.
-
-For a server:
-
-- **Signed-in users only**: your backend forwards each user's sign-in token,
-  and the gateway verifies it.
-- **Your backend sends the user id**: in the `x-end-user-id` header on every
-  request. Choosing it shows a **Header name** field, where you can name a
-  different header.
-- **No user identity**: requests are not linked to any user.
-
-If you do not have your identity provider's details yet, the step offers to
-continue without them so you can set this up later.
+Whether calls belong to a user, and how the gateway knows who that is. See
+[User authentication](/applications/auth-policy/user-authentication#the-choices).
 
 ## 4. Identity provider (signed-in users only)
 
-Pick where your users sign in. The preset fills in the verification settings
-from one or two values you already have.
+Where your users sign in, from one or two values you already have. See
+[Signed-in users only](/applications/auth-policy/user-authentication#signed-in-users-only).
 
-| Preset | You enter |
-| --- | --- |
-| **Firebase Authentication** | Firebase project id |
-| **Supabase Auth** | Project ref |
-| **Auth0** | Auth0 domain, API identifier |
-| **Clerk** | Frontend API host, Audience |
-| **Custom issuer** | JWKS URL, Issuer (iss), Audience (aud) |
+## 5. Paid users only (signed-in users only)
 
-Each preset has a note about what its provider needs. See
-[User authentication](/applications/auth-policy/user-authentication).
-
-## 5. Subscription check (signed-in users only)
-
-Whether the user must have paid before they can call AI providers through
-this app.
-
-- **Any signed-in user**: signing in is enough. Nothing about payment is
-  checked.
-- **Paid users only**: the sign-in token must carry a claim that says the
-  user has paid. Then choose which claim:
-  - **RevenueCat entitlement**: enter the entitlement identifier, for example
-    `pro`. Several, comma separated, admit a user carrying any one of them.
-  - **Custom claim**: one or more rows of **Path**, **Match** and **Value**,
-    edited the same way as on the app's own Subscription check page.
-
-See [Subscription check](/applications/auth-policy/subscription-check).
+Whether a user must have paid. See
+[Subscription check](/applications/auth-policy/subscription-check).
 
 ## What is created
 
-Click **Create app**. The new app allows every provider you have, has no
-model rewrites and no custom endpoints, and is active.
+Click **Create app**. The new app is on, and has:
 
-- An **iOS application** starts with per-user limits of 100 requests per
-  minute and 10,000 per day, and no spending budget.
-- A **server** application starts with no limits at all.
+- no providers yet: it may call nothing until you allow a connection on its
+  **Providers** tab;
+- no limits, no model rewrites and no presets.
 
-A server application also gets its first API key, shown once in a dialog
-titled **Your application is ready**, together with the base URL your backend
-will call. Copy the key before closing the dialog. More keys can be created
-later on the app's **Auth policy** page.
+A server app also gets its first app key, shown once in a dialog titled **Copy
+your app key now**. Copy it before you close the dialog: the gateway keeps only
+a hash of it. You can make more keys later on the app's **Keys** tab.
 
-Then you land on **Provider access**, where you can narrow which providers,
-inference paths and models the app may use, or explicitly allow another
-provider path. The defaults are ready for inference, so that step is optional.
+Then you land on the app's **Overview** tab. Its **Ready to serve** section
+says what is still missing, and **First requests** has example requests once a
+provider is allowed. See [Provider access](/applications/provider-access).
 
 ## Through the API
 
-`POST /v1/admin/apps` creates the same thing. The body carries `name`,
-`config` and an optional `status`, never an `id`. The response returns the
-app with its assigned `app.id`, and `api_key.key` for a server application.
+`POST /v2/admin/apps` creates the same thing. The body has `name`, `config` and
+an optional `status`, never an `id`. The answer has the app, with the ID the
+gateway gave it in `app.id`, and for a server app its first key in
+`api_key.key`.
 
-A server app with no user identity:
+A server app with no end users, allowed to call OpenAI's Responses API through
+the `openai` connection:
 
 ```json
 {
   "name": "Search service",
   "config": {
     "authentication": { "type": "api_key", "end_user": { "source": "none" } },
-    "routing": { "providers": { "mode": "all" }, "model_rewrites": {} }
+    "routing": { "providers": { "openai": { "operations": ["openai.responses"] } } }
   }
 }
 ```
 
-An iOS app with signed-in users from Firebase and the default limits:
+An iOS app with users who sign in with Firebase:
 
 ```json
 {
@@ -142,15 +95,15 @@ An iOS app with signed-in users from Firebase and the default limits:
           "provider": "firebase"
         }
       }
-    },
-    "routing": { "providers": { "mode": "all" }, "model_rewrites": {} },
-    "limits": {
-      "per_user": { "requests": { "per_minute": 100, "per_day": 10000 }, "spending": { "monthly_usd": null } },
-      "per_app": { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": null } }
     }
   }
 }
 ```
 
-Every key is described in the
-[application configuration reference](/automation/agent-manual#application-configuration-reference).
+The configuration has five parts: `authentication`, `routing`, `limits`,
+`presets` and `conversations`. Each is described on its own page in this
+section: [Sign-in](/applications/auth-policy/identity),
+[Provider access](/applications/provider-access),
+[Model rewrites](/applications/model-rewrites), [Limits](/applications/limits),
+[Presets](/applications/custom-endpoints) and
+[Conversation history](/applications/conversations).

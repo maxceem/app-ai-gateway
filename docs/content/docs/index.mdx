@@ -4,57 +4,57 @@ description: Give your apps access to AI providers without shipping provider key
 ---
 
 App AI Gateway sits between your apps and the AI providers they use. Your app
-calls the gateway, and the gateway calls OpenAI, Anthropic, Gemini, xAI or
-whichever provider you added. Your provider keys stay on the gateway, every
-request is checked before it goes out, and provider attempts are recorded so you
-can see where the money went.
+calls the gateway, and the gateway calls OpenAI, Anthropic, Gemini or whichever
+provider you added. Your provider keys stay on the gateway. Every request is
+checked before it goes out. Every provider call is recorded with its cost, so
+you can see where the money went.
 
 ![Your iOS app calls App AI Gateway, which holds the provider keys, applies per-user limits, records usage and cost, and forwards the request to the provider.](/overview.png)
 
-It is built for iOS apps first: the app talks to the gateway directly, and the
+It is built for iOS apps first. The app talks to the gateway directly, and the
 gateway checks that the request comes from a real install of your app, from a
 signed-in user, and, where you require it, from a user who has paid. Server
-applications are supported too, with a private API key, so all your apps can be
-watched from one console.
+applications are supported too, with a secret app key, so you can watch all your
+apps from one console.
 
 ## What you get
 
-- **Provider keys stay off devices.** Keys are encrypted the moment you add
-  them and are never shown again. Your app never holds one.
+- **Provider keys stay off devices.** A key is encrypted the moment you add it
+  and is never shown again. Your app never holds one.
 - **One gateway for all your apps.** Add an app in the console instead of
   building a backend for each one.
 - **Requests are checked before they reach a provider.** Apple App Attest,
   sign-in tokens from Firebase, Supabase, Auth0, Clerk or your own issuer, and
-  a paid-entitlement check.
-- **Limits you set.** Requests per minute and per day and a monthly budget, per
-  user and per app.
+  a paid-user check.
+- **Each app calls only what you allow.** You choose the providers, operations
+  and models each app may use.
+- **Limits you set.** Requests per minute and per day, and a monthly budget, for
+  each user and for the whole app.
 - **Provider-native requests.** The gateway forwards the provider's own request
-  and response formats, streaming included. Standard SDKs work by changing the
-  base URL.
-- **Usage in one place.** Spend, tokens, errors and latency by app, model,
-  provider, user, endpoint and app version. Block a user who is running up your
-  bill.
+  and response formats, streaming included. Standard SDKs work once you change
+  the base URL.
+- **Usage in one place.** Spend, tokens and errors for each app, model,
+  provider and user. Block a user who is running up your bill.
 
 ## Get started
 
-Sign up at [console.appaigateway.com](https://console.appaigateway.com), bring
-a provider key, and follow the [Quickstart](/quickstart). Your apps call
-`https://api.appaigateway.com`; there is nothing to deploy.
+Sign up at [console.appaigateway.com/v2/signup](https://console.appaigateway.com/v2/signup),
+bring a provider key, and follow the [Quickstart](/quickstart). Your apps call
+`https://api.appaigateway.com`. There is nothing to deploy.
 
 The guides describe the same apps, providers and APIs wherever your gateway
-runs. Examples use the hosted addresses by default.
+runs. Examples use the hosted addresses.
 
 <Callout title="Self-hosting">
   Use your own console and API addresses in these examples. If both share one
-  address, use it for both. The [self-hosting guides](/self-hosting/deploy-to-cloudflare)
-  cover deployment, configuration and updates on your Cloudflare account.
+  address, use it for both.
 </Callout>
 
 ## Where to start
 
 <Cards>
   <Card title="Quickstart" href="/quickstart" description="Add a provider key, create an app, and send a request in a few minutes." />
-  <Card title="Integrate your app" href="/integrate/ios" description="Call the gateway from iOS with the Swift package, or from a server with an API key." />
-  <Card title="Applications" href="/applications/create" description="Everything an app's policy can say: identity, providers, limits, endpoints." />
-  <Card title="Automation and agents" href="/automation/agents" description="Let a script, CI job or AI agent manage your apps through the API." />
+  <Card title="How it works" href="/how-it-works/apps-and-providers" description="Apps, providers, and what happens to a request." />
+  <Card title="Applications" href="/applications/create" description="Everything an app's settings can say: sign-in, providers, limits, presets." />
+  <Card title="Automation and agents" href="/automation/agents" description="Let a script, CI job or AI agent manage your apps." />
 </Cards>

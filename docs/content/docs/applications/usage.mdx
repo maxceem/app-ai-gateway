@@ -1,103 +1,114 @@
 ---
-title: Usage and events
-description: Spend, tokens and provider attempts over time, with detailed usage events.
+title: Usage and charges
+description: Spend, tokens and provider attempts over time, with every charge in detail.
 ---
 
-The **Usage** page shows what the app has done. The **Apps** list summarises
-the same numbers for the month.
+An app's **Usage** tab shows what the app has done. The **Apps** page sums the
+same figures for the month across all your apps.
+
+Every provider attempt is recorded as one **charge**: its model, tokens, cost and
+outcome. A fallback chain records one charge per attempt. What a charge costs is
+explained under [Where a cost comes from](#where-a-cost-comes-from).
 
 ## Daily usage by provider
 
-A stacked daily chart for the last 7, 30 or 90 days, by **Cost**, **Requests**
-or **Tokens**, one colour per provider.
+A daily chart over the last 7, 30 or 90 days, by **Cost**, **Charges** or
+**Tokens**, with one colour per provider.
 
 ## Breakdown
 
-A table over the same range, grouped by one dimension:
+A table over the same days, grouped one way:
 
-| Dimension | Answers |
+| Grouped | Answers |
 | --- | --- |
 | **By model** | Which models cost what |
-| **By model author** | Spend on Google's, OpenAI's or Anthropic's models, on any route |
-| **By provider** | Which provider type served the traffic |
-| **By gateway** | Traffic through Cloudflare or Vercel AI Gateway versus direct |
-| **By credential source** | Your own key versus a gateway's key |
-| **By user** | Who spent what. On an iOS app, offered when its budget is measured per user |
-| **By install** | Which install spent what: one copy of an iOS app on one device. Offered on iOS apps unless their budget is measured per user |
-| **By status** | Served requests and provider errors |
-| **By cost source** | Whether cost was computed locally, estimated, reported by the provider, or unresolved |
-| **By service mode** | The [service mode](/providers/model-pricing#service-tiers-and-regions) that served each request, such as flex, priority or a region, and what it cost. Requests recorded before modes were recorded count as standard |
-| **By route** | Provider slug and path |
-| **By endpoint** | Each custom endpoint |
+| **By provider** | Which provider served the traffic |
+| **By connection** | Which of your provider connections, for two keys of one provider |
+| **By user** | Who spent what |
+| **By install** | Which install spent what: one copy of an iOS app on one device |
+| **By status** | Calls the provider served, and those that failed |
+| **By price source** | Where each cost came from (see below) |
+| **By measurement** | How the gateway measured the usage |
+| **By operation** | Which kinds of request, such as `openai.responses` |
+| **By preset** | Each [preset](/applications/custom-endpoints) |
+| **By unit** | Tokens, images, seconds of audio and other units |
 | **By app version** | The `X-App-Version` header, so you can see whether a problem is one release |
 
-Columns are **Requests**, **Total input**, **Cached input**, **Cache write**,
-**Output** and **Cost**. **Total input** counts every prompt token, including
-those read from or written to the provider's prompt cache, so the two cache
-columns are shares of it.
+The columns are **Charges**, **Total input**, **Cached input**, **Cache write**,
+**Output** and **Cost**. **Total input** counts every prompt token, including those
+read from or written to the provider's prompt cache, so the two cache columns are
+parts of it.
 
-Model, provider and status breakdowns reach back over the whole history. The
-other dimensions come from the raw event log, which is kept for a bounded
-period; totals are never lost.
+How far back each grouping reaches:
 
-## Recent events
+- **By model**, **By provider**, **By connection**, **By status** and **By unit**
+  come from day totals, kept 400 days. They cover the whole range you choose.
+- The other groupings are read from the charges themselves, which are kept 90
+  days, and over at most 31 days at a time. With a longer range chosen, they show
+  its last 31 days, and the table says so.
+- Month totals are never lost.
 
-Every provider attempt, newest first, with **When**, **User · key** (on an
-iOS app, **User · install**, naming the install beside the user), **Model**,
-**Route**, **Tokens**, **Cost**, **Latency** and **Status**. The route shows
-the endpoint slug where one was used, the gateway it went through, and for
-OpenRouter the provider that actually served it.
+## Recent charges
 
-Filter by status:
+Every charge, newest first, with **When**, **User** (on an iOS app,
+**User / install**), **Model**, **Operation**, **Tokens**, **Latency** and
+**Cost**. Filter by status:
 
 | Status | Meaning |
 | --- | --- |
-| `ok` | Served by the provider |
-| `provider_error` | The provider refused or failed the request |
+| `ok` | The provider answered with success |
+| `provider_error` | The provider answered with an error |
+| `timeout` | The provider did not answer in time |
+| `network_error` | The connection to the provider failed |
+| `client_aborted` | The app went away before the answer ended |
 
-Requests stopped before contacting a provider appear as samples in
-[Auth & Errors](/applications/auth-events). They do not add usage requests,
-tokens or cost. Provider errors still appear here because the provider was
-contacted; a fallback request can have more than one provider attempt.
+A request the gateway refused before calling a provider has no charge. Those
+show as samples on the app's **Errors** tab. See [Auth events](/applications/auth-events).
 
 ## Where a cost comes from
 
-Each event records how its cost was arrived at.
+- A call that fails before the provider answers usually costs nothing.
+- A stream cut part-way can still be charged using the figures the gateway has.
+  If it has no usage measure or reported cost, the cost stays unknown, though the
+  provider may still charge for it.
+- The gateway tries for about three days to price recorded usage that had no
+  price yet. If no suitable price appears, the charge stays unpriced.
 
-- **computed**: priced locally from the price list or the provider's custom
-  pricing. This is the normal case.
-- **estimated**: priced locally, but for a service mode the price list has no
-  price for on that model, such as flex or priority, or for a mode value the
-  request sent that the gateway does not know. Repricing keeps it estimated. The request was served and billed at an estimate
-  (see [Service tiers and regions](/providers/model-pricing#service-tiers-and-regions)),
-  shown with **≈** in the event list. Add a price for the mode under the
-  provider's custom model pricing to bill it exactly.
-- **reported**: the provider said what the request cost, and that figure is
-  used. xAI and OpenRouter do this.
-- **unresolved**: the provider answered successfully but reported no usage
-  the gateway could read, so the request consumed no budget. Shown as
-  **unresolved** rather than `$0.00`.
-- No source, on a [passthrough path](/applications/provider-access#passthrough-paths)
-  the provider reported no cost for. The gateway reads no model there, so it
-  has nothing to price. Its model, tokens and cost show as a dash, since
-  nothing was reported. Tokens or a cost the provider does report still show.
+Each charge records its **price source**.
 
-The usual cause of an unresolved event is a client that disconnected from a
-stream before the final chunk carrying the usage arrived. The generation stops
-when the client disconnects, but what was generated up to then is unmetered.
-A sustained count of unresolved events on one app or user is worth a look, and
-per-user rate limits bound how much can go unmetered. See
-[Model pricing](/providers/model-pricing).
+- `list_rate`: priced from the price list. The usual case.
+- `customer_rate`: priced from your own price for the model on that connection.
+  See [Model pricing](/providers/model-pricing).
+- `provider_usd`: the provider said what the call cost, and that figure is used.
+  OpenRouter does this, for example.
+- `unresolved`: the gateway could not price the charge when it was made: it had
+  no price that could bill the usage, or no usage to price. One with usage is
+  priced on a later retry, if a suitable price appears while retries are still
+  running. That adds a correction and keeps the original row, so
+  `GET /v2/admin/apps/{app}/charges?price_source=unresolved` can still show
+  charges whose cost was counted later.
+- `not_priced`: a [passthrough](/applications/provider-access#passthrough) call
+  with no price. The gateway reads no model there, so it has nothing to price.
+
+Each charge also records how its usage was **measured**, shown as **By
+measurement**:
+
+- `complete`: nothing is missing. The usage was reported or measured in full, or
+  there was none to measure.
+- `partial`: the usage may be incomplete, for example because a stream ended
+  early.
+- `estimated`: the gateway had no usable usage report. It estimated the usage,
+  or could not. A job's charge starts this way.
+- `pending`: it waits for a later lookup.
 
 ## Through the API
 
-- `GET /v1/admin/apps/{app}/usage?month=YYYY-MM` for totals.
-- `GET /v1/admin/apps/{app}/usage/timeseries?from=&to=` for the daily chart.
-- `GET /v1/admin/apps/{app}/usage/breakdown?by=model&from=&to=` where `by` is
-  one of `model`, `model_author`, `provider`, `provider_slug`,
-  `provider_gateway`, `credential_source`, `user`, `install`, `status`,
-  `cost_source`, `route`, `endpoint`, `app_version`.
-- `GET /v1/admin/apps/{app}/events?limit=&status=&user=&install=&model=&before_id=`
-  for the event list, paged by `next_before_id`. Each event carries
-  `install_id`, the install's App Attest key id on an iOS app and `null` on a
-  server app.
+- `GET /v2/admin/apps/{app}/usage` for the month's totals.
+- `GET /v2/admin/apps/{app}/usage/timeseries` for the daily chart.
+- `GET /v2/admin/apps/{app}/usage/breakdown?by=model` where `by` is one of
+  `model`, `provider`, `connection`, `status`, `unit`, `user`, `install`,
+  `operation`, `preset`, `price_source`, `measured` and `app_version`.
+- `GET /v2/admin/apps/{app}/charges` for the charges, filtered by `status`,
+  `provider`, `connection`, `model`, `user`, `install`, `operation`,
+  `price_source` and more, and paged with `before`.
+- `GET /v2/admin/usage` for the month across all your apps.

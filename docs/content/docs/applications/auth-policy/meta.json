@@ -1,4 +1,4 @@
 {
-  "title": "Auth policy",
+  "title": "Sign-in",
   "pages": ["identity", "user-authentication", "subscription-check"]
 }

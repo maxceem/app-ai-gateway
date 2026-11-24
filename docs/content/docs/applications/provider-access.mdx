@@ -1,208 +1,150 @@
 ---
 title: Provider access
-description: Choose which providers, paths and models an app may use, and cap its output tokens.
+description: Choose which provider connections, operations and models an app may use, and cap its output tokens.
 ---
 
-The **Provider access** page decides which of your providers an app may call,
-and what it may ask each of them for. A new app may use every provider you
-have, its inference endpoints and every priced model. Narrow it here or explicitly
-allow another provider path.
+An app's **Providers** tab decides which of your provider connections the app
+may call, and what it may ask each one for. A new app may call nothing until
+you allow a connection here.
 
-The page opens with one field, **Providers this app can call**, then lists
-your providers, each with its name, the URL segment clients use,
-`/proxy/<slug>/…`, and what the app may ask it for in one line, such as
-"All inference endpoints · all models · no output cap":
+The tab lists your connections, each with its name, its slug (the
+`/proxy/<slug>/…` part of the URL) and its provider. Tick a connection to allow
+it, then set what it allows. Click **Save providers** to save. A connection you
+add later stays off for this app until you tick it here.
 
-- **All providers**: every provider you have is allowed, and a provider you
-  add later is available to this app automatically. Every row is marked
-  allowed; a disabled provider carries a **disabled** mark and serves nothing
-  until it is enabled again.
-- **Selected providers**: the app may use only the providers whose switch is
-  on. A provider you add later stays off until you turn it on here.
+## Operations
 
-Choosing **Selected providers** starts with every provider switched on, so nothing
-changes for the app until you turn one off. An enabled row opens with the
-chevron at its end to reveal the three settings below, and its line changes
-to say what you set, such as "1 endpoint · 1 model · up to 4,096 output tokens".
+An **operation** is one kind of request a provider serves, such as
+`openai.responses` (OpenAI's Responses API), `openai.chat` (Chat Completions),
+`anthropic.messages` or `gemini.generate.v1beta` (Gemini's `generateContent`).
+Each connection lists the operations its provider has. Tick the ones the app
+may use; at least one is required.
 
-## Endpoints this provider serves
+The gateway knows each operation's paths. A request on a path the gateway does
+not know for this provider, or on an operation the app does not allow, is
+refused with `403 path_not_allowed`.
 
-**All inference endpoints** allows every endpoint that runs a model and
-answers in the same response:
+Operations marked **live sessions, coming later** cannot be served yet. To start
+a live session today, see [Passthrough](#passthrough) below.
 
-- Responses, Chat Completions, Anthropic Messages, Gemini `generateContent`,
-  and transcription, on every provider.
-- Each provider's own image generation, embedding, speech and legacy
-  completion endpoints, listed below.
+A request that asks the provider to run in the background, with
+`"background": true` or xAI's `"deferred": true`, is refused with
+`400 invalid_request`. Its result and cost arrive only on a later poll, which
+the gateway cannot serve.
 
-Nothing else is allowed by default: files, batches, fine-tuning, model lists,
-moderation, token counting and agent sessions stay blocked. So do video
-generation and other jobs whose result arrives on a later poll, because the
-gateway forwards only POST requests and cannot fetch or bill that result. A
-model still needs a price, or a provider that reports its own cost, before
-any request reaches it.
+To see every provider's operations, run `agw provider types`, or ask an agent
+to call the `list_provider_types` tool.
 
-| Provider | Endpoints beyond the default APIs |
-| --- | --- |
-| OpenAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/audio/speech` |
-| xAI | `v1/images/generations`, `v1/images/edits`, `v1/embeddings`, `v1/completions` |
-| Gemini | `v1beta/models/{model}:embedContent`, `v1/models/{model}:embedContent` |
-| Perplexity | `v1/agent`, `router/v1/chat/completions`, `router/v1/responses`, `router/v1/messages`, `v1/embeddings`, `v1/contextualizedembeddings` |
-| DeepSeek | `responses`, `beta/completions`, `anthropic/v1/messages` |
-| Groq | `openai/v1/audio/speech` |
-| Mistral | `v1/embeddings`, `v1/fim/completions`, `v1/audio/speech` |
-| Together AI | `v1/completions`, `v1/images/generations`, `v1/audio/speech`, `v1/embeddings` |
-| Fireworks AI | `inference/v1/completions`, `inference/v1/messages`, `inference/v1/responses`, `inference/v1/embeddings` |
-| Cerebras | `v1/completions` |
-| Moonshot AI | `anthropic/v1/messages` |
-| ByteDance | `responses`, `images/generations`, `embeddings/multimodal` |
-| Anthropic, Hugging Face, Baseten, OpenRouter | None |
+### Passthrough
 
-The console lists these under the field, too. **Max output tokens** applies
-to the text endpoints among them, such as completions and the Anthropic-format
-APIs, as it does to the default APIs. Image, embedding and speech endpoints are
-never capped, because they have no output tokens to cap.
-A provider routed through a gateway that publishes its own URL space, such as
-Vercel, serves only the APIs that gateway carries.
+A connection can list **passthrough** paths: paths of the provider the gateway
+has no operation for, such as OpenAI's `v1/files`, each with its method. An app
+reaches them only if it allows the `passthrough` operation on that connection.
+The gateway forwards such a request as it was sent:
 
-Choose **Selected endpoints** to allow only the ones you list, which is also
-how you opt into any other provider operation. A list replaces the defaults, so
-list every path the app calls. The list starts with one empty row; removing
-the last row is the same as choosing all again.
-
-A request that asks the provider to run detached, with `"background": true`
-or xAI's `"deferred": true`, is refused with `400 invalid_request` on every
-endpoint. Its result and cost arrive only on a later poll, which the gateway
-cannot serve.
-
-An endpoint is named by its path: the provider's own API path without a leading slash, for example
-`v1/responses` or `v1/messages`. Paths are matched exactly, except that
-`{model}` in a path matches one segment, which is how Gemini's
-`v1beta/models/{model}:generateContent` names its model in the URL.
-
-A model API row has two optional settings:
-
-- **Fixed model** is the model a request on this path is priced and judged
-  as when it names none itself. It is never injected into the request.
-- **Output cap style** tells the gateway which body field carries the output
-  limit for this path when it applies **Max output tokens**. Leave it on
-  **auto** unless the route needs an exception. The styles are `responses`,
-  `chat_completions`, `gemini_native`, `anthropic` and `none`.
-
-A request for a path not in the list answers `403 path_not_allowed`.
-
-### Passthrough paths
-
-A listed path that is neither one of the APIs above nor one of the provider's
-own inference endpoints is a **passthrough** path, for example OpenAI's
-`v1/files`, `v1/batches` or `v1/realtime/client_secrets`. In the console such
-a row takes methods instead of a fixed model, under a note that it is a
-non-standard path. The gateway forwards such a request without reading it:
-
-- Your app's authentication, the endpoint list and its per-user and app
-  request limits still apply, and a user or app over its spending limit is
-  still refused.
-- No model is read or checked, so **Selected models** and model rewrites do
-  not apply, and the body is sent exactly as the client sent it.
-- It is not priced. If the provider reports what the request cost in its
-  answer, as xAI does, that cost is recorded and counts like any other.
-  Otherwise usage shows the call with no model and no cost.
+- The app's sign-in, and its request limits, still apply.
+- No model is read or checked, so the models list and model rewrites do not
+  apply.
+- The body is sent as the app sent it, unless the connection sets fixed fields
+  on that path. Then the gateway reads the JSON body and writes those fields
+  over the app's values.
+- It is priced only if the path has a flat price per request. Without one, the
+  call costs nothing in usage, and budgets do not stop it.
 - It is never kept in [conversation history](/applications/conversations).
 
-A passthrough path takes `POST` only. The same provider path often reads or
-deletes data under another method: `GET v1/files` lists every file in the
-provider account, including other users' uploads. To allow more, list the
-methods on the row, for example
-`{ "path": "v1/files", "methods": ["POST", "GET"] }`. The methods are `POST`,
-`GET`, `PUT`, `PATCH` and `DELETE`. A request with another method answers
-`403 path_not_allowed`.
+Some passthrough paths make a short-lived token for a live session, such as
+OpenAI's `v1/realtime/client_secrets`:
 
-## Models this provider serves
+- There is no operation to tick for them: the connection lists the path, and the
+  app allows `passthrough`.
+- The gateway checks the request that makes the token, and counts it against the
+  app's request limits, like any passthrough call.
+- It prices that request only if the path has a flat price. Without one, the
+  request is recorded as `not_priced`, and the app's budgets do not apply to it.
+- The live session itself then runs between your app and the provider directly,
+  so what it spends is outside the app's budgets and usage.
 
-**All models** allows every model that has a price. Choose **Selected models**
-and add model names to allow only those; removing the last one is the same as
-choosing all again. [Model rewrites](/applications/model-rewrites) are applied
-after this check, so the client name is what you list here. A request for
-another model answers `403 model_not_allowed`.
+To set one up:
 
-Model names are the provider's own, on every route: `gemini-2.5-flash`, never
-`google/gemini-2.5-flash`. OpenRouter is the exception, where the model name
-includes its author prefix, as OpenRouter itself names it.
+1. On the **Providers** page, open the connection's actions and choose
+   **Passthrough paths**.
+2. Add one line per path, method first, such as `POST v1/realtime/client_secrets`.
+   A price, such as `$0.002`, may follow. The first time, tick **I understand,
+   and want these paths passed through**; **Save paths** stays off until you do.
+   Click **Save paths**.
+3. On the app's **Providers** tab, tick the connection if it is not allowed yet,
+   so its operations show. Ticking it ticks its first operation: untick any
+   operation you did not mean to allow.
+4. Tick the `passthrough` operation, and click **Save providers**.
 
-## Max output tokens
+## Models
 
-Empty means unrestricted. When set, a request that asks for more output than
-this is refused with `403 max_output_tokens_exceeded`, and a request that does
-not name an output limit gets this value injected. Transcription routes ignore
-the cap.
+**Models** lists the models the app may use, separated by commas. Leave it empty
+to allow every model that has a price. [Model rewrites](/applications/model-rewrites)
+are applied after this check, so list the name the app sends. A request for
+another model is refused with `403 model_not_allowed`.
 
-## Embeddings
+Model names are the provider's own, exactly as the provider spells them:
+`gemini-3.5-flash` on Gemini, never `google/gemini-3.5-flash`. Where the
+provider's own names carry a prefix, keep it. That covers aggregators such as
+OpenRouter (`openai/gpt-5.4-mini`) and Vercel AI Gateway, and providers whose own
+model IDs have one, such as Together AI and fal.
 
-Embedding endpoints are among the default inference endpoints. An embedding
-has no output to cap, so the gateway injects no limit into a request to
-`v1/embeddings` (or Fireworks' `inference/v1/embeddings`) or to Gemini's
-`embedContent`, even when you list the path yourself. Any other embedding path
-you list needs `"clamp": "none"`, or the injected limit makes the provider
-refuse it.
+A model needs a price, or the request is refused with
+`400 pricing_not_configured`. The price can come from the price list or from your
+own price on the connection, and must be in a unit the operation can bill: a
+price in another unit is refused the same way. A provider that reports each
+request's cost itself, such as OpenRouter for chat, needs no price.
 
-```json
-"openai": {
-  "allowed_paths": ["v1/responses", "v1/embeddings"],
-  "allowed_models": []
-},
-"gemini": {
-  "allowed_paths": [
-    "v1beta/models/{model}:generateContent",
-    "v1beta/models/{model}:embedContent"
-  ],
-  "allowed_models": []
-},
-"perplexity": {
-  "allowed_paths": ["chat/completions", { "path": "v1/contextualizedembeddings", "clamp": "none" }],
-  "allowed_models": []
-}
-```
+Exceptions:
 
-Gemini Embedding 2 bills images, audio and video at their own rates, above the
-text rate. `embedContent` reports what each request contained, so call it there:
-a response that does not say, such as one from the OpenAI-compatible endpoint, is
-billed entirely at the video rate.
+- A few operations take only priced models in their path, such as fal's
+  `fal.run` and `fal.queue`. There, when the model sent has no price, the
+  request is refused with `403 path_not_allowed` instead, even if you listed it
+  in **Models**. On `fal.run`, a rewrite to a priced model works if the requested
+  name passes the app's model list. `fal.queue` checks prices but does not apply
+  rewrites.
+- On other operations, a model you allowed whose price later disappears is still
+  served, and its charge is recorded as `unresolved`. If a suitable price
+  appears while the gateway is still retrying, about three days, it adds a
+  correction and keeps the original row. So the charges API filtered by
+  `price_source=unresolved` can still show charges whose cost was counted later.
 
-## When a provider is missing
+See [Model pricing](/providers/model-pricing).
 
-An app may name a provider you have since deleted or never added. The app's
-pages show a banner naming the missing providers, requests to that slug
-answer `502 provider_not_configured` (or `502 provider_disabled` for a
-paused one), and every other provider keeps working. Under **Selected
-providers** the
-row for a missing slug is marked **deleted** and says no provider has it any
-more, and you can turn it off or recreate the provider.
+## Most output tokens
 
-## In the configuration
+Optional. When set, a request that asks for more output than this is refused
+with `403 max_output_tokens_exceeded`, and a request that names no output limit
+gets this value written in. It applies only to operations whose output is
+counted in tokens; an image, an embedding or speech has none to cap.
+
+## When a connection is missing
+
+An app may name a connection you have since deleted. The app's **Overview** tab
+shows it under **Ready to serve**. Requests to that slug are refused with
+`502 provider_not_configured`, or `502 provider_disabled` for a connection you
+turned off, and every other connection keeps working.
+
+## In the settings
 
 ```json
 "routing": {
   "providers": {
-    "mode": "selected",
-    "selected": {
-      "openai": {
-        "allowed_paths": [
-          "v1/responses",
-          { "path": "v1/audio/transcriptions", "fixed_model": "gpt-4o-mini-transcribe", "clamp": "none" }
-        ],
-        "allowed_models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-4o-mini-transcribe"],
-        "max_output_tokens": 4096
-      },
-      "anthropic": { "allowed_paths": [], "allowed_models": [] }
-    }
-  },
-  "model_rewrites": {}
+    "openai": {
+      "operations": ["openai.responses", "openai.transcription"],
+      "models": ["gpt-5.4-mini", "gpt-transcribe"],
+      "max_output_tokens": 4096
+    },
+    "anthropic": { "operations": ["anthropic.messages"] }
+  }
 }
 ```
 
-`mode` is `all` or `selected`. With `selected`, the keys of `selected` are
-provider slugs, and a slug not listed is not allowed. An entry with empty
-lists allows the default inference endpoints and every priced model of that
-provider. A non-empty `allowed_paths` replaces that default. When you create an
-app, every slug you name must exist; when you update one, only slugs the update
-introduces are checked, so removing a provider never blocks unrelated edits.
+The keys of `providers` are connection slugs; a slug not listed is not allowed.
+`operations` names at least one operation. `models` may be left out, which
+allows every priced model. `max_output_tokens` may be left out.
+
+A connection, operation or model you add is checked when you save. One that does
+not exist, or a model with no price, is refused then, rather than when a
+request arrives.

@@ -3,49 +3,45 @@ title: Users
 description: See who is using the app, what each user has spent, and block a user who is running up your bill.
 ---
 
-The **Users** page lists every user the app has identified, with their
-requests, tokens and cost for the selected month. On an iOS app with
-**Unauthenticated users** the page is called **Installs**, because there
-every user is one install and its ID is the install's App Attest key ID.
+An app's **Users** tab lists every user the app has named, with their
+**Status**, this month's **Requests** and **Cost**, and when they were **Last
+seen**. **Requests** counts charges: a call that tried a fallback counts once for
+each attempt. On an iOS app with **Anyone with the app**, every user is one
+install, and the user ID is the install's App Attest key.
 
-A row appears once a client completes its first token exchange, or, for a
-server that names users in a header, its first request.
+A user appears at the first of these:
 
-## The list
+- an iOS install registers its App Attest key, before any gateway token;
+- the app gets a gateway token for the user;
+- a signed-in user is refused for a missing entitlement claim, so their wait can
+  be measured;
+- for a server that names users in a header, a call of theirs is recorded, or a
+  request of theirs is refused and sampled.
 
-- **User**: the user ID, from the sign-in token, the App Attest key, or your
-  backend's header. A blocked user carries a `blocked` badge.
-- **Installs**, on an iOS app with signed-in users: how many installs the
-  user holds, one per device and one more for each reinstall.
-- **Attestation**, elsewhere: `registered` for an App Attest install,
-  `issuer token` for a user verified by sign-in token, or `server attributed`
-  for a header-named user.
-- **Last seen**, **Requests**, **Tokens**, **Cost** for the selected month.
-
-Search by user ID, filter by **All users**, **Active** or **Blocked**, and
-change the month with the picker. Pages hold 25 users.
+Search with **Search by user id**. **Next** moves to the next page.
 
 ## Blocking
 
-**Block** refuses every request from the user, on every install they hold. New token exchanges are
-refused immediately with `403 auth_required`, and a gateway token the user
-already holds stops working within ten seconds. **Unblock** restores them the
-same way.
+**Block** refuses the user's provider calls, on every install they hold, and
+refuses them a new gateway token. Both are refused with `403 auth_required`.
+`GET /v2/apps/{app}/me` still answers them, and says they are blocked, so your
+app can tell them. **Unblock** lets them back in.
 
-A block is not a limit. Limits reset; a block stays until you lift it.
+In normal operation a block, or an unblock, reaches every request within ten
+seconds. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
-A user identified only by an app install can shed a block by reinstalling
-the app, because that creates a new install identity. Users identified by a
-sign-in token cannot.
+A block stays until you lift it. A user named only by an app install can get
+around a block by reinstalling the app, because that makes a new install. A user
+named by a sign-in token cannot.
 
-Users your backend names in a header are listed from their usage and cannot
-be blocked here, because the gateway never authenticates them. Stop them in
-your backend instead.
+Users your server names in a header are listed from their usage, and cannot be
+blocked here: the gateway never checks who they are. Stop them in your server
+instead.
 
 ## Through the API
 
-- `GET /v1/admin/apps/{app}/users` with optional `month`, `status`, `query`,
-  `limit` and `offset`. Each user carries `installs`, the number of App Attest
-  keys they hold, which is `0` on a server app.
-- `GET /v1/admin/apps/{app}/users/{user}`.
-- `POST /v1/admin/apps/{app}/users/{user}/block` and `…/unblock`.
+- `GET /v2/admin/apps/{app}/users`, with optional `month` (`YYYY-MM`), `query`
+  (part of a user ID), `status` (`active` or `blocked`), `limit` (1 to 200) and
+  `offset`.
+- `GET /v2/admin/apps/{app}/users/{user}` for one user.
+- `POST /v2/admin/apps/{app}/users/{user}/block` and `…/unblock`.

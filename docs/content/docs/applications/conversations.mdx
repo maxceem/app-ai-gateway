@@ -1,13 +1,15 @@
 ---
 title: Conversation history
-description: Keep a copy of what an app's users send and what the model answers, so you can see how your AI feature is really used and improve it. Off by default, kept for as long as you choose, with the media you choose.
+description: Keep a copy of what an app's users send and what the model answers, so you can see how your AI feature is really used and improve it. Off until you turn it on, kept as long as you choose, with the media you choose.
 ---
 
-Usage shows what an app's requests cost. It cannot show whether the model
-understood the person: for that you need what was said and what came back.
-With **Conversation history** on, the gateway keeps a copy of every model call
-an app makes and the response it got, and you can download them to review,
-analyse, or turn into test cases.
+Usage shows what an app's calls cost. It cannot show whether the model
+understood the person: for that you need what was said and what came back. With
+conversation history on, the gateway keeps a copy of every call an app makes and
+the answer the app got back. You can download them to review, study, or turn into
+test cases. When a preset falls back, the failed answers it set aside are not
+kept: those attempts show as charges on the app's **Usage** tab, and among the
+failed provider requests on its **Errors** tab.
 
 It is off for every app until you turn it on.
 
@@ -15,41 +17,57 @@ It is off for every app until you turn it on.
 
 - **Text and JSON**, as the provider received it and as it answered: messages,
   instructions, tool definitions, tool calls and their results, errors.
-- **Attachments**, once each per day, beside the conversations: images, audio
-  (a recording sent for transcription, audio inside a request, a spoken reply)
-  and other files, such as a PDF or a plain-text document. A record names each as
-  `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` where its data was. A spoken
-  reply streamed in pieces keeps its pieces in the record as they came.
+- **Attachments**: images, audio (a recording sent for transcription, audio in a
+  request, a spoken reply) and other files, such as a PDF or a text document.
+  Each is kept as its own file beside the conversations, once per day however
+  often it is sent. The record names it as
+  `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` in the place its data was.
+  Two kinds stay inside the record, if you keep that kind: the pieces of a
+  streamed recording, and the text of an Anthropic custom-content document
+  (`source.type` `content`). A plain-text document (`source.type` `text`) is
+  kept as a `.txt` file like other files.
 
-Each kind of attachment can be left out: `keep.images`, `keep.audio` and
-`keep.files`, all on unless you turn one off. Media left out is recorded as
-`agw-omitted:<type>;<bytes>`, its media type and size; the type is just `audio`
-for audio whose format the body does not say. An uploaded file keeps its
-name. The conversation itself, its messages, instructions and tool calls, is
-always kept.
+Each kind of attachment can be left out: **Images**, **Audio** and **Files**, all
+kept unless you turn one off. Media left out is recorded as
+`agw-omitted:<type>;<bytes>`: its type and size. The conversation itself, its
+messages, instructions and tool calls, is always kept.
 
-Anything over 8 MB, or a single string over 256 KB, is recorded by its size
-instead.
+Some things are recorded by their size instead of their content:
 
-Only model calls are stored: the
-[inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
-and every custom endpoint. A
-[passthrough path](/applications/provider-access#passthrough-paths), such as
-files, batches, a job whose result arrives on a later poll, or OpenAI's
-`v1/realtime/client_secrets`, which answers with a live key, is never stored.
-Its usage is still recorded.
+- a body over 8 MB;
+- a single text inside a body that is longer than 262,144 characters;
+- bodies that would make the record larger than 1,500,000 bytes. The largest
+  are left out first, until the record fits, and the rest of the call is kept.
 
-Each record also carries the request's `event_id` (the same as its usage
-event), the time, the user id, the install, the app version, the route, the
-model, the status and the latency.
+Only calls are stored: requests to an app's allowed operations, and presets.
+These are never stored, though their usage is still recorded:
+
+- a [passthrough](/applications/provider-access#passthrough) call, including one
+  that makes a live-session token;
+- a job, such as a fal request.
+
+A live session itself is never stored, and is not in usage: only the request
+that made its token is recorded.
+
+A body is not kept if it holds the exact text of a credential the call used: the
+provider key, a Cloudflare AI Gateway token, or the app's own credential (its app
+key or gateway token). That body is replaced whole by `{"omitted":"credential"}`,
+in the request or the answer, even if the provider's answer only repeats the key.
+A record field that holds one, such as the user ID, has its value dropped. The
+gateway does not look for other secrets your users may have typed.
 
 ## Turn it on
 
-In the app's **Settings**, switch on **Conversation history**, choose which
-media to keep and how many days to keep everything, 180 unless you change it,
-at most 400. Save. Requests sent from then on are stored; nothing earlier is.
+On a self-hosted gateway, storage must be set up first; where it is not, the
+switch says so and stays off.
 
-Through the API, it is the `conversations` block of the app's configuration:
+On the app's **Settings** tab, under **Conversation history**, switch on **Store
+conversations**. Choose which media to **Keep**, and how many days to keep
+everything: **Keep for (days)**, 180 unless you change it, at most 400. Click
+**Save conversation history**. Calls sent from then on are stored; nothing earlier
+is.
+
+Through the API, it is the `conversations` part of the app's settings:
 
 ```json
 "conversations": {
@@ -59,28 +77,26 @@ Through the API, it is the `conversations` block of the app's configuration:
 }
 ```
 
-Storing conversations means keeping what your users wrote. Say so in your
-app's privacy policy, and in its App Store privacy details.
+Storing conversations means keeping what your users wrote. Say so in your app's
+privacy policy, and in its App Store privacy details.
 
-## Group requests and let users opt out
+## Group calls and let users opt out
 
-Two request headers, both optional, both consumed by the gateway and never
-sent to the provider:
+Two request headers, both optional, both removed by the gateway before the
+provider:
 
 | Header | Meaning |
 | --- | --- |
-| `X-Client-Trace-Id` | Your own id for one unit of work, such as one chat message that took several model rounds. Recorded on the usage event and on the stored conversation, so you can group them and join them with your app's own data. 1-128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`. |
-| `X-Conversation-Storage: off` | Leaves this request out of storage, for a user who opted out. |
+| `X-Client-Trace-Id` | Your own ID for one piece of work, such as one chat message that took several model calls. Recorded on the charge and on the stored conversation, so you can group them and join them with your app's own data. |
+| `X-Conversation-Storage: off` | Leaves this call out of storage, for a user who said no. |
 
-Any other value of either answers `400 invalid_request`.
-
-The **Usage** API filters by trace id: `GET /v1/admin/apps/{app}/events?trace=<id>`.
+The charges list filters by trace ID:
+`GET /v2/admin/apps/{app}/charges?trace=<id>`.
 
 ## Download them
 
-Conversations are stored in batches: gzipped [JSON Lines](https://jsonlines.org)
-files, one record per line, written every few minutes under the UTC day they
-started on.
+Conversations are stored in batches of gzipped [JSON Lines](https://jsonlines.org):
+one record per line, under the UTC day the call started.
 
 With the CLI:
 
@@ -88,25 +104,27 @@ With the CLI:
 agw app conversations my-app --from 2026-08-01 --to 2026-10-31 --output ./conversations --media
 ```
 
-It writes `./conversations/<day>/<batch>.jsonl.gz`, and with `--media` the
-media the records name, under `./conversations/<day>/media/`. Run it again to fetch
-only what is new.
+It writes the batches under `./conversations/<day>/`, and with `--media` the
+media the records name, under `./conversations/<day>/media/`. Run it again to
+fetch only what is new.
 
 Through the API:
 
-- `GET /v1/admin/apps/{app}/conversations?from=YYYY-MM-DD&to=YYYY-MM-DD` lists
+- `GET /v2/admin/apps/{app}/conversations?from=YYYY-MM-DD&to=YYYY-MM-DD` lists
   the batches, a page at a time; pass `next_cursor` back as `cursor`.
-- `GET /v1/admin/apps/{app}/conversations/file?name=<name>` downloads one batch,
-  or an image by the name a record gives it.
-
-Both need an admin of the account.
+- `GET /v2/admin/apps/{app}/conversations/file?name=<name>` downloads one batch,
+  or one piece of media. For media, take the name a record gives it and leave out
+  the `agw-media:` at its start: `name=2026-08-01/media/<sha256>.png`. With the
+  `agw-media:` left in, the request is refused with `400 invalid_request`.
 
 ## How long they are kept
 
-Nightly maintenance deletes every stored day older than the app's retention,
-with its images. Deleting the app deletes its stored
-conversations the night after.
+Once a day, stored days older than the app's retention are deleted, with their
+media.
 
-A request can be missing in rare cases, such as one served while the gateway is
-being redeployed. Storage is a record for review, not part of serving or
-billing the request.
+Deleting an app makes its stored conversations unavailable at once, and they are
+deleted later. Download any you want to keep before you delete the app.
+
+A call can be missing in rare cases. Storage is a record for later reading, not
+part of serving or counting the call, so a call is never refused or slowed for
+it.
