@@ -1,35 +1,46 @@
 ---
 title: App settings
-description: Rename an app, turn it off so it refuses every request without losing anything, or delete it, in the console or through the API.
+description: Rename an app, turn it off so it refuses every request without losing anything, edit its whole configuration, or delete it.
 ---
 
-The app's **Settings** page holds the few things that are not policy.
+An app's **Settings** tab holds what is not on the other tabs.
 
-## Name and ID
+## Name and status
 
-**Name** can be changed at any time. **Application id** cannot: it was fixed
-when the app was created and is part of every URL your clients call. Use
-**Copy** to grab it.
+**Name** can be changed at any time with **Rename**. The app's ID cannot: it was
+fixed when the app was created, and it is part of every URL your app calls.
 
-## App enabled
+**Turn off** makes the app refuse every request with `403 app_disabled`. Nothing
+is deleted, and **Turn on** brings it back as it was. Use it to stop a
+misbehaving release or a runaway client while you look into it.
 
-Turned off, the app refuses every request with `403 app_disabled`. Nothing is
-deleted, and turning it back on restores it as it was. Use it to stop a
-misbehaving release or a runaway client while you investigate.
+## Configuration
+
+The app's whole configuration, as JSON: the same document the other tabs edit.
+**Check** asks the gateway whether it would accept it, without saving.
+**Save configuration** saves it. If someone else saved the app since you started
+editing, the tab says so and keeps your edits, so you can decide.
+
+Every setting is described in the
+[app settings reference](/automation/agent-manual#application-configuration-reference).
+
+## Conversation history
+
+Whether the gateway keeps a copy of this app's calls, and for how long. See
+[Conversation history](/applications/conversations).
 
 ## Delete this app
 
-Clients of the app stop working within a minute as cached configuration and
-credentials expire. Registered users, application keys, App Attest keys and
-authentication diagnostics are removed. Usage history is retained in account
-totals. The confirmation asks you to type the app ID.
+**Delete app** asks you to type the app's ID. Then every call the app makes is
+refused, and its keys stop working, within a minute. Its usage history is kept
+in your account's totals. The app's ID is never given to another app.
 
 ## Through the API
 
-- `PUT /v1/admin/apps/{app}` with the full body updates the name, the
-  configuration and the status. Include the `revision` from your latest read
-  and preserve `status` (`active` or `disabled`); omitting status enables the app.
-- `PATCH /v1/admin/apps/{app}` changes only the settings you name, with the
-  same checks. See the [API guide](/automation/api) for its operations.
-- `DELETE /v1/admin/apps/{app}?confirm={app}` deletes the app. The query value
-  must repeat the app ID.
+- `PUT /v2/admin/apps/{app}` with the whole body updates the name, the
+  configuration and the status. Include the `revision` from your latest read, so
+  a change someone else made since is not overwritten.
+- `PATCH /v2/admin/apps/{app}` changes only the settings you name, with the same
+  checks. See the [API guide](/automation/api).
+- `DELETE /v2/admin/apps/{app}?confirm={app}` deletes the app. `confirm` must
+  repeat the app's ID.
