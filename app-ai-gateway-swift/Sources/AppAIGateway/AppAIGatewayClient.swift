@@ -7,12 +7,12 @@ import UIKit
 public typealias IssuerTokenProvider = @Sendable (_ forceRefresh: Bool) async throws -> String
 public typealias IssuerRejectionRecovery = @Sendable () async throws -> Void
 
-/// The second path segment of a proxy URL: `/v1/apps/{app}/proxy/{slug}/…`.
+/// The provider part of a proxy URL: `/v2/apps/{app}/proxy/{slug}/…`.
 ///
-/// A slug names one *provider instance* configured by the organization, not a
-/// provider type. The first instance of each type takes its type name as the
-/// default slug, which is what the well-known constants below spell; extra
-/// instances carry a slug of their own, e.g. `.custom("openai-dev")`.
+/// A slug names one *provider connection* in your account, not a provider
+/// type. The first connection of each type usually takes its type name as its
+/// slug, which is what the constants below spell; another connection has a
+/// slug of its own, e.g. `.custom("openai-dev")`.
 public struct ProviderSlug: RawRepresentable, Hashable, Sendable,
     ExpressibleByStringLiteral, CustomStringConvertible {
     public let rawValue: String
@@ -25,16 +25,31 @@ public struct ProviderSlug: RawRepresentable, Hashable, Sendable,
         self.rawValue = value
     }
 
-    /// Any slug the organization configured, including extra instances of a type.
+    /// Any slug a connection in your account has, including a custom provider's.
     public static func custom(_ slug: String) -> ProviderSlug {
         ProviderSlug(rawValue: slug)
     }
 
     public static let openai: ProviderSlug = "openai"
     public static let anthropic: ProviderSlug = "anthropic"
-    public static let xai: ProviderSlug = "xai"
     public static let gemini: ProviderSlug = "gemini"
+    public static let xai: ProviderSlug = "xai"
     public static let perplexity: ProviderSlug = "perplexity"
+    public static let deepseek: ProviderSlug = "deepseek"
+    public static let groq: ProviderSlug = "groq"
+    public static let mistral: ProviderSlug = "mistral"
+    public static let together: ProviderSlug = "together"
+    public static let fireworks: ProviderSlug = "fireworks"
+    public static let cerebras: ProviderSlug = "cerebras"
+    public static let moonshot: ProviderSlug = "moonshot"
+    public static let bytedance: ProviderSlug = "bytedance"
+    public static let baseten: ProviderSlug = "baseten"
+    public static let huggingface: ProviderSlug = "huggingface"
+    public static let openrouter: ProviderSlug = "openrouter"
+    public static let vercel: ProviderSlug = "vercel"
+    public static let elevenlabs: ProviderSlug = "elevenlabs"
+    public static let deepgram: ProviderSlug = "deepgram"
+    public static let fal: ProviderSlug = "fal"
 
     public var description: String { rawValue }
 }
@@ -288,11 +303,14 @@ public actor AppAIGatewayClient {
         return try await task.value
     }
 
-    /// `provider` is a provider instance slug, not a provider type. See ``ProviderSlug``.
+    /// `provider` is a connection's slug, not a provider type. See ``ProviderSlug``.
     public func proxyURL(provider: String, providerPath: String) -> URL {
-        baseURL
-            .appending(path: "v1/apps/\(appID)/proxy/\(provider)")
-            .appending(path: providerPath)
+        appURL("proxy/\(provider)").appending(path: providerPath)
+    }
+
+    /// `/v2/apps/{app}/<path>` under the gateway's base URL.
+    private func appURL(_ path: String) -> URL {
+        baseURL.appending(path: "v2/apps/\(appID)/\(path)")
     }
 
     public func proxyURL(provider: ProviderSlug, providerPath: String) -> URL {
@@ -345,41 +363,79 @@ public actor AppAIGatewayClient {
         )
     }
 
-    /// A server-configured endpoint. The provider, model, and any baked
-    /// parameters live in the gateway's endpoint row, so the caller sends only
-    /// the request body its slug expects, and the query its format documents:
-    /// `alt=sse` streams a `gemini_native` endpoint, as Gemini's own API does.
-    public func endpointURL(slug: String, query: [URLQueryItem] = []) -> URL {
-        let url = baseURL.appending(path: "v1/apps/\(appID)/endpoints/\(slug)")
+    /// A preset, `/v2/apps/{app}/presets/{name}`. The connection, model and
+    /// any fixed parameters are set on the app, so the caller sends only the
+    /// body the preset's format expects, and the query that format documents:
+    /// `alt=sse` streams a preset in Gemini's format, as Gemini's own API does.
+    public func presetURL(name: String, query: [URLQueryItem] = []) -> URL {
+        let url = appURL("presets/\(name)")
         return query.isEmpty ? url : url.appending(queryItems: query)
     }
 
-    /// A request to a custom endpoint, ready to send. Signed over its body and
-    /// URL exactly as the provider form is, where the app verifies App Attest
-    /// on every request: pass the body and the query here, and change neither
+    /// A request to a preset, ready to send. Signed over its body and URL
+    /// exactly as the provider form is, where the app verifies App Attest on
+    /// every request: pass the body and the query here, and change neither
     /// afterwards.
     public func authorizedRequest(
-        endpointSlug: String,
+        preset: String,
         query: [URLQueryItem] = [],
         method: String = "POST",
         body: Data? = nil,
         contentType: String? = nil
     ) async throws -> URLRequest {
         try await authorizedRequest(
-            url: endpointURL(slug: endpointSlug, query: query),
+            url: presetURL(name: preset, query: query),
             method: method,
             body: body,
             contentType: contentType
         )
     }
 
+    /// A request to a link the gateway answered with, such as a job's status,
+    /// result or cancel link, ready to send and signed like any other.
+    ///
+    /// Only a link to this app on this gateway is accepted, so the gateway
+    /// token is never sent anywhere else: any other URL throws
+    /// ``GatewayErrorCode/invalidRequest`` without a request.
+    public func authorizedRequest(
+        gatewayLink: URL,
+        method: String = "GET",
+        body: Data? = nil,
+        contentType: String? = nil
+    ) async throws -> URLRequest {
+        guard isLinkToThisApp(gatewayLink) else {
+            throw GatewayError(
+                code: .invalidRequest,
+                message: "The link is not to this app on this gateway",
+                statusCode: 0
+            )
+        }
+        return try await authorizedRequest(url: gatewayLink, method: method, body: body, contentType: contentType)
+    }
+
+    /// Whether `url` is under `/v2/apps/{app}/` on this client's gateway: the
+    /// same scheme, host and port, after the base URL's own path.
+    func isLinkToThisApp(_ url: URL) -> Bool {
+        let link = URLComponents(url: url, resolvingAgainstBaseURL: true)
+        let base = URLComponents(url: appURL(""), resolvingAgainstBaseURL: true)
+        guard let link, let base,
+              link.scheme?.lowercased() == base.scheme?.lowercased(),
+              link.host?.lowercased() == base.host?.lowercased(),
+              link.port == base.port,
+              link.user == nil, link.password == nil
+        else { return false }
+        let prefix = base.percentEncodedPath.hasSuffix("/") ? base.percentEncodedPath : base.percentEncodedPath + "/"
+        let path = Self.whatwgPath(link.percentEncodedPath)
+        return path.hasPrefix(prefix) && path.count > prefix.count
+    }
+
     /// The gateway's own `/me` route for this app: where the calling install
     /// or user stands against the limits the app sets.
     public func currentUserURL() -> URL {
-        baseURL.appending(path: "v1/apps/\(appID)/me")
+        appURL("me")
     }
 
-    /// A `GET /v1/apps/{app}/me` request, ready to send: the limits that apply
+    /// A `GET /v2/apps/{app}/me` request, ready to send: the limits that apply
     /// to the caller, its requests today, the month's spend against its
     /// budget, and whether it is blocked. Signed like every other gateway
     /// request where the app verifies App Attest on every request, with the
@@ -468,10 +524,10 @@ public actor AppAIGatewayClient {
         )
     }
 
-    /// Sends a request to a custom endpoint, rebuilt and sent once more on a
-    /// `401`. See the `provider: String` form.
+    /// Sends a request to a preset, rebuilt and sent once more on a `401`.
+    /// See the `provider: String` form.
     public func withAuthorizedRequest<Body: Sendable>(
-        endpointSlug: String,
+        preset: String,
         query: [URLQueryItem] = [],
         method: String = "POST",
         body: Data? = nil,
@@ -480,8 +536,28 @@ public actor AppAIGatewayClient {
     ) async throws -> (Body, URLResponse) {
         try await retryingOnce(send: send) {
             try await self.authorizedRequest(
-                endpointSlug: endpointSlug,
+                preset: preset,
                 query: query,
+                method: method,
+                body: body,
+                contentType: contentType
+            )
+        }
+    }
+
+    /// Sends a request to a link the gateway answered with, such as a job's
+    /// status link, rebuilt and sent once more on a `401`. See
+    /// `authorizedRequest(gatewayLink:)` and the `provider: String` form.
+    public func withAuthorizedRequest<Body: Sendable>(
+        gatewayLink: URL,
+        method: String = "GET",
+        body: Data? = nil,
+        contentType: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Body, URLResponse)
+    ) async throws -> (Body, URLResponse) {
+        try await retryingOnce(send: send) {
+            try await self.authorizedRequest(
+                gatewayLink: gatewayLink,
                 method: method,
                 body: body,
                 contentType: contentType
@@ -499,22 +575,48 @@ public actor AppAIGatewayClient {
         }
     }
 
-    /// The one retry every `with…Request` form shares: on a `401`, discard the
-    /// token and send a request built afresh, never the one already sent.
-    /// Any `401` counts, the body unread, so one a provider returned through
-    /// the proxy — a provider key the provider rejected, say — is retried too,
-    /// at the cost of one extra token exchange and one repeated provider call.
+    /// The retries every `with…Request` form shares, each with a request built
+    /// afresh, never the one already sent.
+    ///
+    /// - On a `401`, discard the token and send once more. Any `401` counts,
+    ///   the body unread, so one a provider returned through the proxy — a
+    ///   provider key the provider rejected, say — is retried too, at the cost
+    ///   of one extra token exchange and one repeated provider call.
+    /// - On a `403 attest_failed` for a signed request, read only where the
+    ///   body is `Data`: send once more with a fresh proof. If that is refused
+    ///   the same way, register a new key, get a token for it, and send a
+    ///   third time. A stream's body cannot be read here without spending it,
+    ///   so a streamed `403` is returned as it is.
     private func retryingOnce<Body: Sendable>(
         send: @Sendable (URLRequest) async throws -> (Body, URLResponse),
         build: () async throws -> URLRequest
     ) async throws -> (Body, URLResponse) {
-        let first = try await send(try await build())
-        guard let http = first.1 as? HTTPURLResponse, http.statusCode == 401 else {
+        let request = try await build()
+        let first = try await send(request)
+        guard let http = first.1 as? HTTPURLResponse else { return first }
+        if http.statusCode == 401 {
+            discardAccessToken()
+            return try await send(try await build())
+        }
+        guard Self.isAttestRefusal(first), request.value(forHTTPHeaderField: Self.proofHeaderField) != nil else {
             return first
         }
+        let second = try await send(try await build())
+        guard Self.isAttestRefusal(second) else { return second }
+        _ = try await registerKey(issuerToken: try await optionalIssuerToken(forceRefresh: false))
         discardAccessToken()
         return try await send(try await build())
     }
+
+    /// `403 attest_failed`, read from a body this client can read: `Data`.
+    private static func isAttestRefusal<Body>(_ result: (Body, URLResponse)) -> Bool {
+        guard let http = result.1 as? HTTPURLResponse, http.statusCode == 403,
+              let data = result.0 as? Data
+        else { return false }
+        return GatewayError(response: http, body: data)?.code == .attestFailed
+    }
+
+    static let proofHeaderField = "X-AppAttest-Proof"
 
     /// Forgets the gateway token this client holds, so the next request runs
     /// the exchange again. For an app that sent a request itself and was
@@ -585,7 +687,7 @@ public actor AppAIGatewayClient {
             // the app was reinstalled or restored, and its Secure Enclave key
             // went with the old install. Register a replacement, exchange it for
             // a token bound to it, and sign once more; a second failure is real.
-            _ = try await replaceKey(forceIssuerRefresh: false)
+            _ = try await registerKey(issuerToken: try await optionalIssuerToken(forceRefresh: false))
             discardAccessToken()
             let replacement = try await refreshGatewayAccessToken()
             // The replacement's answer decides, should the app have changed
@@ -635,7 +737,7 @@ public actor AppAIGatewayClient {
         }
         request.setValue(
             Self.proofHeader(timestamp: timestamp, nonce: nonce, assertion: assertion),
-            forHTTPHeaderField: "X-AppAttest-Proof"
+            forHTTPHeaderField: Self.proofHeaderField
         )
         return request
     }
@@ -832,40 +934,98 @@ public actor AppAIGatewayClient {
             throw GatewayError(code: .attestFailed, message: "App Attest is unavailable on this device", statusCode: 0)
         }
         let appTransaction = await appTransactionProvider.jwsRepresentation()
-        var keyID = try credentialStore.appAttestKeyID(for: appID)
+        // The user comes first: on an app with signed-in users, each user on
+        // this install has a key of their own, and the gateway refuses a token
+        // for one user signed by another's key.
+        let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
+        let slot = keySlot(issuerToken: issuerToken)
+        var keyID = try storedKeyID(slot: slot)
         if keyID == nil {
-            keyID = try await registerKey(forceIssuerRefresh: forceIssuerRefresh)
+            keyID = try await registerKey(issuerToken: issuerToken)
         }
         guard let keyID else {
             throw GatewayError(code: .attestFailed, message: "App Attest key registration failed", statusCode: 0)
         }
-        let signed = try await signedAssertion(
-            for: keyID,
-            appTransaction: appTransaction,
-            forceIssuerRefresh: forceIssuerRefresh
-        )
-        let issuerToken: String?
+        let signed = try await signedAssertion(for: keyID, appTransaction: appTransaction, issuerToken: issuerToken)
         do {
-            issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
-        } catch {
-            reportFailure(challenge: signed.challenge, step: .issuerToken, error: error)
-            throw error
-        }
-        do {
-            return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed)), signed.keyID)
+            let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
+            try keep(signed.keyID, slot: slot)
+            return (response, signed.keyID)
         } catch let error as GatewayError where error.code == .attestFailed {
-            // The gateway holds a key this device is no longer signing with.
-            let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
-            let retry = try await sign(with: replacement, appTransaction: appTransaction)
+            // First once more with the same key and a fresh challenge: a
+            // refusal can pass, and a new key costs an attestation with Apple
+            // and starts a new request count for the install.
+            let again = try await sign(with: signed.keyID, appTransaction: appTransaction)
             do {
-                return (try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry)), retry.keyID)
+                let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, again))
+                try keep(again.keyID, slot: slot)
+                return (response, again.keyID)
+            } catch let error as GatewayError where error.code == .attestFailed {
+                // The gateway does not accept this key: it does not know it,
+                // or it belongs to another user. A new one is registered.
+                let replacement = try await registerKey(issuerToken: issuerToken)
+                let retry = try await sign(with: replacement, appTransaction: appTransaction)
+                do {
+                    let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry))
+                    try keep(retry.keyID, slot: slot)
+                    return (response, retry.keyID)
+                } catch {
+                    reportFailure(challenge: retry.challenge, step: .token, error: error)
+                    throw error
+                }
             } catch {
-                reportFailure(challenge: retry.challenge, step: .token, error: error)
+                reportFailure(challenge: again.challenge, step: .token, error: error)
                 throw error
             }
         } catch {
             reportFailure(challenge: signed.challenge, step: .token, error: error)
             throw error
+        }
+    }
+
+    /// Where the install's key is kept: one place per app, and on an app with
+    /// signed-in users one place per user, named by a hash of the sign-in
+    /// token's `iss` and `sub`. A token that is not a JWT naming both, such as
+    /// one of an app's own format, uses the app's one place.
+    func keySlot(issuerToken: String?) -> String {
+        guard let issuerToken, let user = Self.issuerUser(issuerToken) else { return appID }
+        return "\(appID)#\(user)"
+    }
+
+    /// A short, stable name for the user an issuer token is about: the
+    /// unpadded base64url SHA-256 of `iss` and `sub`, read from the JWT's
+    /// payload without checking its signature. Only this device's key store
+    /// uses it; the gateway checks the token itself.
+    static func issuerUser(_ token: String) -> String? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let payload = try? base64URLData(String(parts[1])),
+              let claims = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let issuer = claims["iss"] as? String, !issuer.isEmpty,
+              let subject = claims["sub"] as? String, !subject.isEmpty
+        else { return nil }
+        return Data("\(issuer)\n\(subject)".utf8).sha256.base64URLEncodedString()
+    }
+
+    /// The key kept for `slot`. A user's own place empty, the app's one place
+    /// is read instead, once: a key an earlier release kept there, before
+    /// keys were kept per user, is tried for the user who signs in first.
+    private func storedKeyID(slot: String) throws -> String? {
+        if let keyID = try credentialStore.appAttestKeyID(for: slot) { return keyID }
+        guard slot != appID else { return nil }
+        return try credentialStore.appAttestKeyID(for: appID)
+    }
+
+    /// Keeps a key the gateway accepted in its user's place, and clears the
+    /// app's one place: a key an earlier release kept there is tried once, for
+    /// whoever signs in first, and is then either theirs or replaced.
+    private func keep(_ keyID: String, slot: String) throws {
+        guard slot != appID else { return }
+        if try credentialStore.appAttestKeyID(for: slot) != keyID {
+            try credentialStore.setAppAttestKeyID(keyID, for: slot)
+        }
+        if try credentialStore.appAttestKeyID(for: appID) != nil {
+            try credentialStore.setAppAttestKeyID(nil, for: appID)
         }
     }
 
@@ -898,7 +1058,7 @@ public actor AppAIGatewayClient {
     private func signedAssertion(
         for keyID: String,
         appTransaction: String?,
-        forceIssuerRefresh: Bool
+        issuerToken: String?
     ) async throws -> SignedAssertion {
         let issued = try await challengeResponse()
         let bound = Self.boundAppTransaction(appTransaction, to: issued)
@@ -921,7 +1081,7 @@ public actor AppAIGatewayClient {
             // whether the device got past it: the replacement's own failure,
             // if it has one, is reported or recorded under its own challenge.
             do {
-                let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
+                let replacement = try await registerKey(issuerToken: issuerToken)
                 let signed = try await sign(with: replacement, appTransaction: appTransaction)
                 reportFailure(challenge: issued.challenge, step: .generateAssertion, error: error, recovered: true)
                 return signed
@@ -963,22 +1123,6 @@ public actor AppAIGatewayClient {
         issued.accepts_app_transaction == true ? appTransaction : nil
     }
 
-    /// Registers a replacement, and lets `registerKey` store it once the
-    /// gateway has accepted it.
-    ///
-    /// The old id is deliberately *not* cleared first. Clearing up front is only
-    /// free when the registration that follows succeeds; when it fails — and a
-    /// rate-limited one above all — it leaves nothing stored at all, and every
-    /// later call then starts from no key and attests a brand-new one with
-    /// Apple. Keeping the old id until a new one replaces it costs at most one
-    /// refused attempt on the next call, and saves the one case where the id was
-    /// never the problem: `generateAssertion` can fail for a reason that has
-    /// nothing to do with the key, and a device that threw its working key away
-    /// for one of those can never get it back.
-    private func replaceKey(forceIssuerRefresh: Bool) async throws -> String {
-        try await registerKey(forceIssuerRefresh: forceIssuerRefresh)
-    }
-
     /// Omits `issuer_token` entirely in install mode. The gateway refuses one
     /// there rather than ignoring it, because a client presenting a token
     /// believes it is authenticating a person.
@@ -997,7 +1141,20 @@ public actor AppAIGatewayClient {
         return body
     }
 
-    private func registerKey(forceIssuerRefresh: Bool) async throws -> String {
+    /// Generates a key, has Apple attest it, registers it with the gateway
+    /// for the user `issuerToken` names, if any, and keeps it in that user's
+    /// place once the gateway has accepted it.
+    ///
+    /// The old id is deliberately *not* cleared first. Clearing up front is only
+    /// free when the registration that follows succeeds; when it fails — and a
+    /// rate-limited one above all — it leaves nothing stored at all, and every
+    /// later call then starts from no key and attests a brand-new one with
+    /// Apple. Keeping the old id until a new one replaces it costs at most one
+    /// refused attempt on the next call, and saves the one case where the id was
+    /// never the problem: `generateAssertion` can fail for a reason that has
+    /// nothing to do with the key, and a device that threw its working key away
+    /// for one of those can never get it back.
+    private func registerKey(issuerToken: String?) async throws -> String {
         let keyID = try await attestProvider.generateKey()
         let challenge = try await challenge()
         // Every step from here until the gateway answers can fail on the
@@ -1007,8 +1164,6 @@ public actor AppAIGatewayClient {
         do {
             let challengeData = try Self.base64URLData(challenge)
             let attestation = try await attestProvider.attestKey(keyID, clientDataHash: challengeData.sha256)
-            step = .issuerToken
-            let issuerToken = try await optionalIssuerToken(forceRefresh: forceIssuerRefresh)
             struct RegisterResponse: Decodable { let user_id: String }
             var body = [
                 "key_id": keyID,
@@ -1022,7 +1177,7 @@ public actor AppAIGatewayClient {
             reportFailure(challenge: challenge, step: step, error: error)
             throw error
         }
-        try credentialStore.setAppAttestKeyID(keyID, for: appID)
+        try credentialStore.setAppAttestKeyID(keyID, for: keySlot(issuerToken: issuerToken))
         return keyID
     }
 
@@ -1048,7 +1203,7 @@ public actor AppAIGatewayClient {
         guard Self.isReportable(error) else { return }
         let report = Self.failureReport(challenge: challenge, step: step, error: error, recovered: recovered)
         guard let body = try? JSONSerialization.data(withJSONObject: report) else { return }
-        var request = URLRequest(url: baseURL.appending(path: "v1/apps/\(appID)/auth/failure"))
+        var request = URLRequest(url: appURL("auth/failure"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Self.identifyClient(&request)
@@ -1138,7 +1293,7 @@ public actor AppAIGatewayClient {
     }
 
     private func postJSON<Response: Decodable>(path: String, body: [String: String]) async throws -> Response {
-        var request = URLRequest(url: baseURL.appending(path: "v1/apps/\(appID)/\(path)"))
+        var request = URLRequest(url: appURL(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Self.identifyClient(&request)
@@ -1156,7 +1311,7 @@ public actor AppAIGatewayClient {
                 retryAfter: GatewayError.retryAfter(from: http)
             )
             // Every request this method sends is one of the three
-            // authentication endpoints the gateway counts, so this is the one
+            // authentication routes the gateway counts, so this is the one
             // place a timed refusal can be caught for all of them. Any `429`
             // that names a wait is honoured, whatever its code: the gateway has
             // said when to come back, and a client that calls sooner is only

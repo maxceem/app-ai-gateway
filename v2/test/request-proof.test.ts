@@ -4,14 +4,15 @@
  *
  * Ported from v1's `request-proof.test.ts`. The basic proof on `/me`, its
  * replay and a v1-path proof are in `auth-routes.test.ts`; a replay's
- * rejection event is in `proxy.test.ts`. The Swift package's URL fixtures
- * come with the v2 SDK at step 8.
+ * rejection event is in `proxy.test.ts`. The URL cases are shared with the
+ * Swift package's own tests, which sign the same bytes.
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { base64url, parseProof, PROOF_HEADER, requestClientData } from "../src/client-auth/request-proof.ts";
+import urlGolden from "../../app-ai-gateway-swift/Tests/AppAIGatewayTests/Fixtures/request-proof-urls-v2.json";
 import { sealSecret } from "../src/vault/secrets.ts";
 import {
   ACCOUNT_ID,
@@ -59,6 +60,22 @@ describe("the client data a device signs", () => {
       appId: "a", method: "GET", pathAndQuery: "/", body: new Uint8Array(), token: "t", timestamp: "1", nonce: NONCE,
     });
     expect(text.split("\n")[4]).toBe("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+  });
+
+  it.each(urlGolden.cases)("reads $name the way the Swift package signs it", async (fixture) => {
+    const url = new URL(`https://gateway.test${fixture.path}${fixture.query === null ? "" : `?${fixture.query}`}`);
+    expect(`${url.pathname}${url.search}`).toBe(fixture.pathAndQuery);
+    expect(fixture.pathAndQuery.startsWith("/v2/apps/")).toBe(true);
+    const { fixed } = urlGolden;
+    expect(await requestClientData({
+      appId: fixed.appId,
+      method: fixed.method,
+      pathAndQuery: `${url.pathname}${url.search}`,
+      body: new TextEncoder().encode(fixed.body),
+      token: fixed.token,
+      timestamp: fixed.timestamp,
+      nonce: fixed.nonce,
+    })).toBe(fixture.clientData);
   });
 
   it("parses only the v1 shape", () => {
