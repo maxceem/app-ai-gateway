@@ -84,6 +84,9 @@ describe("the Worker entry module", () => {
 /** The console's own origin in the test deployment (`vitest.config.ts`). */
 const CONSOLE = "https://console.gateway.test";
 
+/** How long the catalog check may take: see the test. */
+const CATALOG_TIMEOUT_MS = 30_000;
+
 /**
  * A request for one documented operation, its path parameters filled with a
  * stand-in. The console's page steps are only served on the console's own
@@ -130,12 +133,16 @@ describe("the operation catalogs", () => {
   // The management code loads lazily; loading it once here keeps that cost out of the test.
   beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
-  it("serve every operation they document", async () => {
+  // One real request per documented operation (79 of them), one after another: about 1.5 s alone, several
+  // times that on a loaded machine, so the default 5 s is not a fair limit for it.
+  it("serve every operation they document", { timeout: CATALOG_TIMEOUT_MS }, async ({ signal }) => {
     captureLogs();
     const key = await seedManagementKey();
     const missing: string[] = [];
     let unauthenticated = 0;
     for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
+      // Stopped the moment the test ends: a timed-out run must not go on logging into the next test's capture.
+      if (signal.aborted) return;
       const response = await exports.default.fetch(requestFor(spec, key));
       if (response.status === 401 && (spec.path.startsWith("/v2/admin/") || spec.path.startsWith("/v2/cli/"))) unauthenticated += 1;
       if (await unserved(response)) missing.push(`${name} ${spec.method} ${spec.path}`);

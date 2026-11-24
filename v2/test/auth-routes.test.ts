@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
 import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
@@ -20,6 +20,9 @@ import {
 } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
+
+/** How long loading the App Attest code may take, before the register tests. */
+const LOAD_ATTEST_TIMEOUT_MS = 60_000;
 
 /** Sends a request through the Worker and waits for its background work, such as auth events. */
 async function call(path: string, init: RequestInit & { address?: string } = {}): Promise<Response> {
@@ -144,6 +147,10 @@ describe("POST /v2/apps/{app}/auth/failure", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/register", () => {
+  // The Worker loads App Attest's certificate code (pkijs, asn1js, cbor-x) on the first registration: about a
+  // second alone, several on a loaded machine. Loaded here, once, so that cost is outside the test it would time out.
+  beforeAll(() => import("../src/client-auth/app-attest.ts"), LOAD_ATTEST_TIMEOUT_MS);
+
   it("refuses a forged attestation, spends the challenge, and records the refusal", async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);
