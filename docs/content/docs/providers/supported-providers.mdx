@@ -1,268 +1,171 @@
 ---
 title: Supported providers
-description: The sixteen provider types, the native path each one expects, and which gateways can carry them.
+description: Every provider you can add, the operations and paths each one serves, and what to know before you add a key.
 ---
 
-Every provider you add has a **type**. The type fixes the upstream API, the
-authentication header the gateway sends, and the price list the model is
-looked up in. The path after the slug is always the provider's own, verbatim,
-without a leading slash:
+Every connection has a provider. The provider fixes the host, the header the
+key is sent in, the operations an app can allow, and the prices it is looked up
+in. The path after the slug is always the provider's own path, without a
+leading slash:
 
 ```text
-/v1/apps/{app}/proxy/{slug}/{provider-path}
+/v2/apps/{app}/proxy/{provider}/{provider_path}
 ```
-
-The OpenAI-compatible providers disagree about their prefix more than about
-anything else, so the exact chat-completions path is listed for each.
 
 ## All provider types
 
-| Type | Service | Chat completions path | Through a gateway | Notes |
+The **Provider** picker in the console lists these by name. The **Type** is
+what the API and the app's settings use.
+
+| Provider | Type | Main operations and paths | Through Cloudflare | Test key calls |
 | --- | --- | --- | --- | --- |
-| `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/audio/transcriptions`, image generation. |
-| `anthropic` | Anthropic | `v1/messages` | Cloudflare, Vercel | Anthropic Messages, not chat completions. |
-| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel | Also `v1/responses`, `v1/stt`, image generation. Reports its own cost. |
-| `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare, Vercel | Native API at `v1beta/models/{model}:generateContent`. |
-| `perplexity` | Perplexity | `chat/completions` | Cloudflare, Vercel | Sonar models. No test call. |
-| `deepseek` | DeepSeek | `chat/completions` | Vercel | No `v1/` in the base URL. |
-| `moonshot` | Moonshot AI (Kimi) | `v1/chat/completions` | Vercel | International `api.moonshot.ai` host. |
-| `groq` | Groq | `openai/v1/chat/completions` | Direct only | OpenAI API namespaced under `openai/`. |
-| `mistral` | Mistral | `v1/chat/completions` | Direct only | |
-| `together` | Together AI | `v1/chat/completions` | Direct only | Models are namespaced, for example `openai/gpt-oss-120b`. |
-| `fireworks` | Fireworks AI | `inference/v1/chat/completions` | Direct only | No price list; price your models. No test call. |
-| `cerebras` | Cerebras | `v1/chat/completions` | Direct only | |
-| `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | Direct only | No price list; pin the upstream in the model ID. No test call. |
-| `baseten` | Baseten Model APIs | `v1/chat/completions` | Direct only | |
-| `bytedance` | BytePlus ModelArk | `chat/completions` | Direct only | Version segment is already in the base URL. No test call. |
-| `openrouter` | OpenRouter | `v1/chat/completions` | Direct only | The only path it accepts. Reports its own cost. |
+| OpenAI | `openai` | `openai.responses` `v1/responses`, `openai.chat` `v1/chat/completions`, `openai.transcription` `v1/audio/transcriptions`, `openai.images` `v1/images/generations`, `openai.images.edits` `v1/images/edits`, `openai.embeddings` `v1/embeddings`, `openai.speech` `v1/audio/speech` | Yes | `GET v1/models` |
+| Anthropic | `anthropic` | `anthropic.messages` `v1/messages` | Yes | `GET v1/models` |
+| xAI | `xai` | `xai.responses` `v1/responses`, `xai.chat` `v1/chat/completions`, `xai.completions` `v1/completions`, `xai.messages` `v1/messages`, `xai.transcription` `v1/stt`, `xai.images` `v1/images/generations`, `xai.images.edits` `v1/images/edits`, `xai.embeddings` `v1/embeddings` | Yes | `GET v1/models` |
+| Gemini | `gemini` | `gemini.generate.v1beta` `v1beta/models/{model}:generateContent`, `gemini.stream.v1beta` `v1beta/models/{model}:streamGenerateContent`, `gemini.embed.v1beta` `v1beta/models/{model}:embedContent`, `gemini.chat` `v1beta/openai/chat/completions`, and the same under `v1/` and `v1alpha/` | Yes | `GET v1beta/models` |
+| Perplexity | `perplexity` | `perplexity.chat` `chat/completions`, `perplexity.agent` `v1/agent`, `perplexity.responses` `v1/responses`, `perplexity.embeddings` `v1/embeddings` | Yes | None |
+| DeepSeek | `deepseek` | `deepseek.chat` `chat/completions`, `deepseek.completions` `beta/completions`, `deepseek.messages` `anthropic/v1/messages` | No | `GET models` |
+| Groq | `groq` | `groq.chat` `openai/v1/chat/completions`, `groq.responses` `openai/v1/responses`, `groq.speech` `openai/v1/audio/speech`, `groq.transcription.openai` `openai/v1/audio/transcriptions` | No | `GET openai/v1/models` |
+| Mistral | `mistral` | `mistral.chat` `v1/chat/completions`, `mistral.fim` `v1/fim/completions`, `mistral.embeddings` `v1/embeddings`, `mistral.speech` `v1/audio/speech` | No | `GET v1/models` |
+| Together AI | `together` | `together.chat` `v1/chat/completions`, `together.completions` `v1/completions`, `together.images` `v1/images/generations`, `together.speech` `v1/audio/speech`, `together.embeddings` `v1/embeddings` | No | `GET v1/models` |
+| Fireworks AI | `fireworks` | `fireworks.chat` `inference/v1/chat/completions`, `fireworks.messages` `inference/v1/messages`, `fireworks.responses` `inference/v1/responses`, `fireworks.embeddings` `inference/v1/embeddings` | No | None |
+| Cerebras | `cerebras` | `cerebras.chat` `v1/chat/completions`, `cerebras.completions` `v1/completions` | No | `GET v1/models` |
+| Moonshot AI | `moonshot` | `moonshot.chat` `v1/chat/completions`, `moonshot.messages` `anthropic/v1/messages` | No | `GET v1/models` |
+| Hugging Face | `huggingface` | `huggingface.chat` `v1/chat/completions` | No | None |
+| Baseten | `baseten` | `baseten.chat` `v1/chat/completions` | No | `GET v1/models` |
+| ByteDance Ark | `bytedance` | `bytedance.chat` `chat/completions`, `bytedance.responses` `responses`, `bytedance.images` `images/generations`, `bytedance.embeddings` `embeddings/multimodal` | No | None |
+| OpenRouter | `openrouter` | `openrouter.chat` `v1/chat/completions` | No | `GET v1/key` |
+| Vercel AI Gateway | `vercel` | `vercel.chat` `v1/chat/completions`, `vercel.responses` `v1/responses`, `vercel.messages` `v1/messages` | No | `GET v1/credits` |
+| ElevenLabs | `elevenlabs` | `elevenlabs.tts` `v1/text-to-speech/{voice_id}`, with its `stream` and `with-timestamps` forms, and `elevenlabs.stt` `v1/speech-to-text` | No | `GET v1/models` |
+| Deepgram | `deepgram` | `deepgram.listen` `v1/listen` | No | `GET v1/models` |
+| fal | `fal` | `fal.run` `run/{model}`, `fal.queue` `queue/{model}` | No | None |
+| Custom provider | `custom` | The paths you list. See [Custom providers](/providers/custom-base-urls#custom-providers). | No | None |
 
-The console shows these labels in the **Provider** picker: OpenAI, Anthropic,
-xAI, Gemini, Perplexity, DeepSeek, Groq, Mistral, Together AI, Fireworks AI,
-Cerebras, Moonshot AI, Hugging Face, Baseten, ByteDance Ark, OpenRouter.
+For every provider's full list of operations, run `agw provider types`, or call
+`GET /v2/admin/provider-types`.
 
-"Direct only" is the default, not a limitation of the type. A provider type is
-offered on a gateway once that pairing has been verified against the gateway's
-live catalog, because a provider slug or model namespace guessed from
-documentation is a guess about a URL and about which keys the gateway holds.
-Connect these types with their own API key.
+**Test key** is explained in [Add a provider key](/providers/add-a-provider#test-key).
+A provider with no test call has no free call that proves a key: its list of
+models is public, needs an ID the key does not carry, or does not exist.
 
-The paths in the table are for providers that call the provider's own API. A
-provider routed through a gateway uses the gateway's paths instead. See
-[Gateways](/providers/gateways#paths-on-each-route).
+**Through Cloudflare** says whether the connection can go through your
+Cloudflare AI Gateway. See [Cloudflare and Vercel AI Gateway](/providers/gateways).
+
+### Paths kept from the earlier gateway
+
+Every provider also accepts the paths the earlier version of the gateway
+accepted for all providers, so apps built for it keep working. They are Chat
+Completions, Responses, Messages and transcription at the common layouts, such
+as `v1/chat/completions`, `chat/completions` and `v1/messages`. Each is an
+operation of its own, named after its kind, such as `anthropic.chat` or
+`deepseek.messages.v1`, so an app allows it like any other.
+
+Use the provider's own paths from the table in new code. A path the provider
+itself does not serve is sent to it anyway, and the provider answers it with
+its own error.
 
 ## Using an SDK
 
-For the OpenAI SDK, set the base URL to
-`https://api.appaigateway.com/v1/apps/YOUR-APP/proxy/openai/v1`. The SDK then appends
-standard paths such as `responses` or `chat/completions`. The same works for
-any OpenAI-compatible provider: point the base URL at that provider's slug and
-its prefix, for example `/proxy/groq/openai/v1`. Request bodies and responses
-keep the provider's native format. See [Calling the proxy](/integrate/proxy).
+Point the SDK's base URL at the connection, up to the provider's version
+prefix, and give it your app key or gateway token where it expects the
+provider's key. The SDK adds its own paths.
 
-## Caveats by provider
-
-A few types carry caveats worth knowing before you add a key.
-
-**ByteDance** is the international BytePlus ModelArk endpoint in
-`ap-southeast-1`, and `/api/v3` is already part of the base URL, so the path is
-`chat/completions` with no version segment of your own. Keys and model catalogs
-are region-isolated, and models must be activated in your ModelArk console
-before they answer. The China Volcengine edition is a separate service and is
-not reachable here. For another region, set a
-[custom base URL](/providers/custom-base-urls).
-
-**Moonshot** is the international `api.moonshot.ai` host. A key issued on the
-China platform will not work.
-
-**Fireworks** names models per account (`accounts/{account}/models/{id}`), so
-no shipped price list could be right for your account. Price the models you use
-under the provider's **Pricing** action. See
-[Model pricing](/providers/model-pricing).
-
-**Hugging Face** routes each request to whichever upstream it picks, and the
-same model costs up to ten times more on one upstream than another. Pin the
-upstream in the model ID (`author/model:provider`) and price that ID, or the
-recorded cost is a guess.
-
-**Gemini** has two APIs. The OpenAI-compatible one lives at
-`v1beta/openai/chat/completions`; the native one at
-`v1beta/models/{model}:generateContent`. Both work on a direct or
-Cloudflare-routed Gemini provider. Only the OpenAI-compatible one works through
-Vercel.
-
-**Groq** namespaces its OpenAI API under `openai/`, **DeepSeek** and
-**ByteDance** have no prefix at all, and **Fireworks** separates its inference
-plane from its control plane. Copy the path from the table rather than
-assuming `v1/`.
-
-**xAI** and **OpenRouter** report what each request cost, and the gateway
-records that figure rather than a locally computed one. Each has a section of
-its own below: [xAI](#xai) and [OpenRouter](#openrouter).
-
-## What Test provider calls
-
-**Test provider** in the Add provider dialog, and
-`POST /v1/admin/providers/test` behind it, run the cheapest authenticated call
-the provider offers. A provider is missing from this table only when it has no
-call that can prove a key. That is deliberate: a test against a URL that
-answers 200 regardless of the credential would report every key as good.
-
-| Provider | Test call |
+| SDK | Base URL |
 | --- | --- |
-| OpenAI | `GET v1/models` |
-| xAI | `GET v1/models` |
-| Anthropic | `GET v1/models` |
-| Gemini | `GET v1beta/models` |
-| DeepSeek | `GET models` |
-| Groq | `GET openai/v1/models` |
-| Mistral | `GET v1/models` |
-| Together AI | `GET v1/models` |
-| Cerebras | `GET v1/models` |
-| Moonshot AI | `GET v1/models` |
-| Baseten | `GET v1/models` |
-| OpenRouter | `GET v1/key`, its key-status call. Its model list is public and would pass any key. |
-| Perplexity | None. Accepted unchecked. |
-| Fireworks AI | None. Its model list needs an account ID the key does not carry. |
-| Hugging Face | None. Its model list answers 200 to any token. |
-| ByteDance | None. ModelArk publishes no list-models call. |
+| OpenAI | `https://api.appaigateway.com/v2/apps/{app}/proxy/openai/v1` |
+| Anthropic | `https://api.appaigateway.com/v2/apps/{app}/proxy/anthropic` |
+| Groq, through the OpenAI SDK | `https://api.appaigateway.com/v2/apps/{app}/proxy/groq/openai/v1` |
+| DeepSeek, through the OpenAI SDK | `https://api.appaigateway.com/v2/apps/{app}/proxy/deepseek` |
 
-The verdicts are explained in
-[Add a provider key](/providers/add-a-provider#test-provider).
+Request bodies and answers keep the provider's own format. See
+[Calling the provider proxy](/integrate/proxy).
 
-## Image generation
+## Before you add a key
 
-Image endpoints are among an app's
-[default inference endpoints](/applications/provider-access#endpoints-this-provider-serves),
-so an app that lists no paths can call them. Whether an image model proxies
-depends on how its provider charges for it:
+**Paths differ.** Groq puts its OpenAI-style API under `openai/`. DeepSeek and
+ByteDance Ark have no version prefix. Fireworks AI serves inference under
+`inference/v1/`. Copy the path from the table rather than assuming `v1/`.
 
-| Provider | Image models | How the gateway bills them |
-| --- | --- | --- |
-| OpenAI | `gpt-image-*` on `v1/images/generations` and `v1/images/edits` | From the price list, per token. Prompt text, input images and generated images each bill at their own rate. |
-| Gemini | Gemini image models (Nano Banana) on `v1beta/models/{model}:generateContent` | From the price list, per token. Generated image tokens bill at the image rate. |
-| xAI | `grok-imagine-image` and its siblings on `v1/images/generations` and `v1/images/edits` | From the cost xAI reports. See [xAI](#xai). |
-| ByteDance | Seedream 5.0 flash, 5.0 lite, 4.5 and 4.0 on `images/generations` | From the price list, per image: each model's price times the `usage.generated_images` the response reports. |
-| Together AI, ByteDance (Seedream 5.0 pro) and others | Billed by size, quality or steps, or at an estimated price | Not supported: refused with `pricing_not_configured`. |
+**Gemini** has two APIs. Its own `generateContent` names the model in the path.
+Its OpenAI-style API is at `v1beta/openai/chat/completions`. Both work directly
+and through Cloudflare AI Gateway.
 
-If you list an app's endpoints yourself, include the image paths, with
-`"clamp": "none"`. A list replaces the defaults. For OpenAI, for example:
+**ByteDance Ark** is BytePlus ModelArk in the `ap-southeast` region, with its
+version already in the host's address. Keys and models are kept apart by region,
+and a model must be turned on in your ModelArk console before it answers. For
+another region, set a [base URL](/providers/custom-base-urls).
 
-```json
-"openai": {
-  "allowed_paths": [
-    "v1/responses",
-    { "path": "v1/images/generations", "clamp": "none" },
-    { "path": "v1/images/edits", "clamp": "none" }
-  ],
-  "allowed_models": ["gpt-image-2"]
-}
-```
+**Moonshot AI** uses the international host, `api.moonshot.ai`. For a key from
+the China platform, set the base URL to `https://api.moonshot.cn/`.
 
-Call Gemini image models on the native `generateContent` path. Its responses
-say how many output tokens were images. The OpenAI-compatible endpoint does
-not, so there every output token, text included, bills at the image rate.
+**Regional hosts.** xAI's `us.api.x.ai`, Mistral's `api.eu.mistral.ai` and
+`api.us.mistral.ai`, and Together AI's `us-api.together.ai` cost more than the
+global host. Set one as the connection's base URL, and its requests are billed
+at that region's price. See [Service modes](/providers/model-pricing#service-modes).
 
-Image generation inside another model's request is not covered: OpenAI's
-Responses API `image_generation` tool and Mistral's `image_generation` tool. In
-both, the usage counts only the calling model's tokens, so the recorded cost
-leaves out the generated images. To meter images, call the image endpoint
-directly.
+**Fireworks AI and Hugging Face** have no price list here. Fireworks names
+models per account, and Hugging Face prices one model differently on each
+service it routes to. Add [your own prices](/providers/model-pricing#your-prices)
+for the models you use. On Hugging Face, name the service in the model ID
+(`author/model:service`) and price that ID, so the price matches what you pay.
 
-## xAI
+**OpenRouter** serves Chat Completions only, because only those answers report
+what OpenRouter charged. Its model IDs carry the model's maker, such as
+`openai/gpt-5.4-mini`, and that is the name to allow and send. Each request is
+billed at the cost OpenRouter reports, so its models need no price. When a
+request runs on your own upstream key through OpenRouter, the cost is
+OpenRouter's fee plus the upstream cost it reports: both came out of your
+accounts.
 
-**Cost is reported, not computed.** xAI's Chat Completions, Responses and
-image generation answers carry `usage.cost_in_usd_ticks`, what xAI actually
-billed for that request after any discount. The gateway records it as the
-event's cost with `cost_source: "reported"`, ahead of any listed price. So on
-those APIs an xAI model proxies with **no local price**, which is what makes
-image models such as `grok-imagine-image` work at all: xAI bills images per
-image and reports no token counts for them. Streaming works the same way; the
-figure arrives in the final chunk.
+**xAI** reports what each Chat Completions, Responses, legacy completions and
+image request cost, and that figure is what is billed. Its Messages API,
+embeddings and `v1/stt` are billed from prices, like any other provider.
 
-Two exceptions bill on local prices, like any other provider type:
+**ElevenLabs.** Text to speech names the voice in the path and the model in
+the body's `model_id`, with `eleven_multilingual_v2` when it names none. It is
+billed by the characters of the request's `text`. Speech to text is an upload,
+billed at the cost ElevenLabs reports, or else by the audio's length.
 
-- **xAI's Anthropic Messages API and `v1/stt`.** xAI does not document a cost
-  on them, so a model used there needs a price in the price list or under the
-  provider's **Pricing** action.
-- **The Vercel route.** Vercel answers through its own APIs rather than passing
-  xAI's answer back, so the reported figure does not survive it. A Cloudflare
-  AI Gateway route passes it through unchanged.
+**Deepgram.** `v1/listen` takes the audio as the request body, or JSON with a
+`url`. The model and every option are query parameters, such as
+`?model=nova-3&language=multi`. With no model, Deepgram uses `base-general`,
+which has no price in the list, so it is served only with your own price.
+Options Deepgram charges extra for, such as redaction, are billed on top. A
+request may take up to 20 minutes before Deepgram answers.
 
-If a reporting API ever answers without a cost, a local price for the model is
-used if there is one (`computed`), and otherwise the event is marked
-[unresolved](/providers/model-pricing#where-a-cost-comes-from).
+**fal.** `run/{model}` is a call that answers when it is done.
+`queue/{model}` submits a job your app checks on later: see
+[Jobs](/applications/jobs). The model ID is part of the path, such as
+`run/fal-ai/flux/dev`, and only priced models match it. A model without a price
+is refused with `403 path_not_allowed`.
 
-xAI's image endpoints are among an app's default inference endpoints. An app
-that lists its endpoints itself includes them with `"clamp": "none"`, because
-an image has no output tokens to cap. Video generation is not a default: xAI
-returns a job ID, and its result and cost arrive on a later poll the gateway
-cannot serve.
+**Vercel AI Gateway** serves many providers' models through one key. See
+[Vercel AI Gateway](/providers/gateways#vercel-ai-gateway).
 
-```json
-"xai": {
-  "allowed_paths": [
-    "v1/chat/completions",
-    "v1/responses",
-    { "path": "v1/images/generations", "clamp": "none" }
-  ],
-  "allowed_models": []
-}
-```
+**Live sessions.** OpenAI's `openai.realtime` is listed but not served yet. To
+start a live session today, list the provider's token path for passthrough:
+OpenAI's and xAI's `v1/realtime/client_secrets`, Gemini's `v1beta/auth_tokens`,
+or ElevenLabs' conversation token paths. The gateway fills in safe settings for
+these, such as a short expiry. See
+[Passthrough](/applications/provider-access#passthrough).
 
-## OpenRouter
+## Images
 
-OpenRouter is treated as a provider type, not as a gateway. It is the
-counterparty that charges you, and its catalog includes models with no direct
-provider at all. Two things follow.
+Image models work through the image operations in the table, as long as the
+model has a price the gateway can bill:
 
-**Its slugs are the model IDs.** `google/gemini-3.6-flash` and
-`meta-llama/llama-4-maverick` are the model IDs here. They are what you send,
-what an app's allowed models and fixed models match, and what a usage event
-records. They are not translated: an OpenRouter provider and a direct Gemini
-provider name the same model differently, so moving an app between them means
-renaming the model. The leading namespace is also where the model's author
-comes from, so usage groups by **Google** or **Meta** the same way it does on a
-direct route.
+- OpenAI's GPT Image and Gemini's image models are billed per token, with
+  images at their own rate. Call Gemini image models on `generateContent`: its
+  answer says which tokens were images.
+- ByteDance's Seedream models are billed per image, by the images the answer
+  counts.
+- xAI's image models are billed at the cost xAI reports.
 
-**Cost is reported, not computed.** Every OpenRouter chat-completions response
-carries `usage.cost`, what OpenRouter actually charged for that request. The
-gateway records it as the event's cost with `cost_source: "reported"`. So
-OpenRouter models proxy with **no local price**: the pricing rule is satisfied
-by the route reporting its own cost, which is why no OpenRouter section ships
-in the price list. Streaming works the same way; the figure arrives in the final
-chunk.
+Other image models, such as Together AI's, are not in the price list. You can
+serve one with [your own price](/providers/model-pricing#your-prices), such as
+a price per image. The [Prices](/providers/model-pricing#the-price-list) page
+shows which image models are listed.
 
-If a response ever comes back without a cost, the event is not recorded at
-zero. A custom price for that model is used if you have entered one
-(`computed`), and otherwise the event is marked
-[unresolved](/providers/model-pricing#where-a-cost-comes-from).
-
-**Bring your own key: two figures, both yours.** When a request runs on your
-own upstream provider key, OpenRouter's `usage.cost` is only its own fee (5% of
-what the request would have cost on OpenRouter), while the provider charges
-your key directly for the inference and OpenRouter reports that separately as
-`usage.cost_details.upstream_inference_cost`. The two are disjoint, so the
-gateway records their **sum**: both numbers left your accounts.
-
-<Callout type="warn" title="Aborted streams are not reconciled">
-  The cost arrives in the final chunk of a stream, so a client that disconnects
-  before it leaves the request unresolved at $0 in your usage, even though
-  OpenRouter charged for the tokens generated up to the disconnect. Watch the
-  unresolved count on OpenRouter providers, and set
-  [per-user limits](/applications/limits) on the apps that route through them.
-  Those bound how much can go unmeasured before you notice.
-</Callout>
-
-OpenRouter providers accept **chat completions only**, at
-`v1/chat/completions`. OpenRouter does serve other APIs, but only its
-chat-completions response reports a cost, and a request the gateway could not
-account for is refused with `403 api_style_not_supported` rather than served
-for free.
-
-One request-shaping detail, invisible to your client's SDK: the gateway asks
-OpenRouter, with a header, to name the endpoint it routed to. Your request body
-is forwarded byte for byte. That answer is stored as `served_provider` (shown
-as **Served by** in the app's usage view), along with `served_model`, and
-`credential_source: "byok"` when the response says the inference was paid for
-with your own upstream key. All three are absent when OpenRouter does not say.
-See [Usage](/applications/usage).
+Image generation inside another model's request, such as the Responses API's
+`image_generation` tool, is billed only for the calling model's tokens. To
+count images, call the image operation directly.

@@ -1,220 +1,224 @@
 ---
 title: Add a provider key
-description: Store a provider key once in the console, test it, and manage it over time.
+description: Add a provider key once as a connection, test it, and change, turn off or remove it later.
 ---
 
-You bring your own provider keys. You add each one on the **Providers** page,
-the gateway encrypts it on arrival, and nothing ever shows it again. The list
-displays only the last four characters, so you can tell two keys apart. A
-provider you add is shared by every app you have.
+You bring your own provider keys. Each key you add is a **provider
+connection**: the key, the provider it belongs to, and a slug your apps use in
+their URLs. Every app you have can use a connection, once you allow it on the
+app's [Providers tab](/applications/provider-access).
 
-## Add a provider
+The gateway encrypts a key when it arrives and never shows it again. The
+**Providers** page shows only its last characters, so you can tell two keys
+apart.
 
-Open **Providers** and click **Add provider**. The dialog asks for the fields
-in the order you decide them.
+## Add a connection
+
+Open **Providers** and click **Add provider**. The dialog, **Add a provider**,
+asks for:
 
 | Field | What to enter |
 | --- | --- |
-| **Name** | How this provider is named in the list, for example `Prod OpenAI`. |
 | **Provider** | The service the key belongs to. See [Supported providers](/providers/supported-providers). |
-| **Authentication** | **API key** to call the provider directly, or **Use gateway** to route through a Cloudflare or Vercel AI Gateway you connected under [Gateways](/providers/gateways). |
-| **API key** | The key from the provider. Shown only with **API key**. |
-| **Base URL (optional)** | Leave empty to use the provider's own API. Fill it to point this provider at an endpoint you control. See [Custom base URLs](/providers/custom-base-urls). |
-| **Gateway** | Which connected gateway carries the traffic. Shown only with **Use gateway**. The provider's own key lives in that gateway, so this row carries no secret. |
-| **Slug** | Appears only when the default slug is already taken. See [Slugs](#slugs). |
+| **Name** | How you tell connections apart, for example `Prod OpenAI`. Up to 100 characters. |
+| **Slug** | The name your apps use in their URLs. Leave it empty to use the provider's own name, such as `openai`. See [Slugs](#slugs). |
+| **Send through Cloudflare AI Gateway** | Shown for providers Cloudflare can carry. See [Cloudflare and Vercel AI Gateway](/providers/gateways). |
+| **Base URL (optional)** | Leave it empty to use the provider's own host. Fill it to send requests to another host, such as a self-hosted server or a regional host. Hidden while Cloudflare is on. See [Custom base URLs](/providers/custom-base-urls). |
+| **Base URL**, **Key header**, **Key format** | For a **Custom provider** only. See [Custom providers](/providers/custom-base-urls#custom-providers). |
+| **API key** | The key from the provider. |
 
-Click **Test provider** if you want the gateway to check the key, then
-**Add provider**. Saving does not call the provider. The key is stored exactly
-as you paste it, so a provider outage or a key that is not live yet never stops
-you from saving.
+Click **Test key** if you want the gateway to try the key first. Then click
+**Add provider**. Saving never calls the provider, so a provider outage, or a
+key that is not live yet, does not stop you from saving.
 
-The API equivalent:
+A key is at least 8 characters, with no quotes, backslashes or control
+characters. The **API key** field empties itself when you change where requests
+go, such as the provider, the base URL or the Cloudflare IDs. A key is only
+ever sent to the place you typed it for.
 
-```json
-POST /v1/admin/providers
-{ "type": "openai", "name": "Prod OpenAI", "secret": "sk-..." }
+The same through the API:
+
+```http
+POST /v2/admin/providers
+Content-Type: application/json
+
+{ "type": "openai", "name": "Prod OpenAI", "secret": "sk-…" }
 ```
 
-Add `"slug": "openai-dev"` for a custom slug, `"baseUrl"` for a custom
-endpoint, or `"providerGatewayId"` instead of `"secret"` to route through a
-gateway. Exactly one of `secret` and `providerGatewayId` must be present. The
-response carries `secretHint`, never the key. The full contract is in the
-[API reference](/api).
+The body takes:
 
-## Test provider
+- `type` and `name`, which are required;
+- `slug`, which defaults to `type`;
+- `secret`, the provider's key, required unless the connection goes through
+  Cloudflare AI Gateway;
+- `baseUrl` or `cloudflareGateway`, to change where requests go;
+- `pricing`, your own [prices](/providers/model-pricing#your-prices);
+- `passthrough`, [listed paths](/providers/custom-base-urls#listing-paths);
+- `servingProviders`, for [Vercel AI Gateway](/providers/gateways#vercel-ai-gateway) only;
+- `auth`, for a [custom provider](/providers/custom-base-urls#custom-providers) only.
 
-**Test provider** runs the cheapest authenticated call the provider offers,
-such as its list-models endpoint, and nothing else. Nothing is stored. The
-answer is one of three verdicts:
+The answer is the connection, with `secretHint`, the key's last characters.
+It never holds the key. `GET /v2/admin/provider-types` lists every `type`
+with its operations.
 
-| Verdict | What it says | Meaning |
-| --- | --- | --- |
-| Works | "Works. The provider accepted this credential." | The provider answered the test call with this key. |
-| Failed | "OpenAI answered with HTTP 401, so this key could not be used." | The provider refused the key with HTTP 401 or 403. |
-| Unconfirmed | "There is no test call for Perplexity, so nothing was checked." or "OpenAI did not answer in time, so nothing is proven either way." | Nothing was proven, in either direction. Add the key if you know it is right. |
+## Test key
 
-Other non-success statuses, including 404, 429 and 5xx, are unconfirmed: they
-do not establish whether the key is valid. Not every provider has a test
-call. The per-provider list is in
-[Supported providers](/providers/supported-providers#what-test-provider-calls).
+**Test key** sends the provider one free request that needs a valid key, such
+as listing its models, and nothing else. It goes to the same host your apps'
+requests would use, through Cloudflare AI Gateway too if you turned it on.
+Nothing is stored.
 
-When the provider is routed through a gateway, the test goes through that
-gateway. A refusal then reads "The gateway answered with HTTP 401. Check that
-it holds a stored key for OpenAI."
+| Answer | Meaning |
+| --- | --- |
+| The provider accepted this key. | The test call worked. |
+| The provider refused this key. Check it, unless it is restricted so it cannot list models. | The provider answered `401`. Usually the key is wrong. A key restricted so it cannot list models can get the same answer. |
+| This provider has no free call to test a key with. You can still save it. | Nothing was sent. See [what each test calls](/providers/supported-providers#all-provider-types). |
+| The provider did not answer in time, so the key is not proven. You can still save it. | No answer within 4 seconds. |
+| The provider answered …, which proves nothing either way. You can still save it. | Any other status, `403`, `404` and `429` included. |
 
-The API equivalent is a dry run of the create call with the same `type` and
-`secret` (or `providerGatewayId`, or `baseUrl`):
+Only the second answer suggests the key is wrong. The others prove nothing, so
+add the key if you know it is right.
 
-```json
-POST /v1/admin/providers/test
-{ "type": "openai", "secret": "sk-..." }
+The same through the API, with the fields the connection would have:
+
+```http
+POST /v2/admin/providers/test
+Content-Type: application/json
+
+{ "type": "openai", "secret": "sk-…" }
 ```
 
-A working key answers `{ "validated": true }`. A refused key answers
-`400 provider_key_invalid`. An inconclusive test answers
-`{ "validated": false, "reason": "no_probe" | "unreachable" | "unexpected_status" }`
-with the upstream `status` where there was one.
+It takes `type`, `secret`, `baseUrl`, `cloudflareGateway` and `auth`, and
+answers `validated`. When that is `false`, `reason` is `rejected`, `no_probe`,
+`unreachable` or `unexpected_status`, with the provider's `status` for the last
+two.
 
 ## Slugs
 
-A slug is the URL segment your apps use to name this provider:
+The slug is the `{provider}` part of your apps' URLs:
 
 ```text
-/v1/apps/{app}/proxy/{slug}/{provider-path}
+/v2/apps/{app}/proxy/{provider}/{provider_path}
 ```
 
-It is `^[a-z0-9][a-z0-9-]{0,62}$` and defaults to the provider type. The
-first OpenAI key is reachable at `/proxy/openai/...` with nothing to configure,
-the first Anthropic key at `/proxy/anthropic/...`, and so on for every type in
-[Supported providers](/providers/supported-providers).
+It is 1 to 63 characters: lowercase letters, digits and `-`, starting with a
+letter or a digit. Each slug is used once in your account.
 
-A slug equal to a provider type name is reserved for that type, so
-`/proxy/anthropic/...` can never resolve to an OpenAI key. The provider type,
-and with it the upstream URL, the auth header and the price list, comes from
-the provider the slug resolves to, never from the URL itself.
+You can add as many connections of one provider as you like: a second OpenAI
+key for development, one through Cloudflare AI Gateway, one at your own host.
+Each slug is used once, so only one of them can be `openai`. Give each other one
+a slug of its own:
 
-### Several keys of one type
-
-You can add as many providers of one type as you like: a second OpenAI key for
-development, one routed through a gateway, one pointed at your own endpoint.
-Only the first gets the default slug. When you pick a type whose default slug
-is already in use, the dialog shows a **Slug** field with the hint "Another
-instance already uses `openai`, so this one needs its own `/proxy/<slug>/...`
-segment." Enter something like `openai-dev`.
-
-| Provider | Slug | Your app calls |
+| Connection | Slug | Your app calls |
 | --- | --- | --- |
-| OpenAI, first key | `openai` | `POST /v1/apps/my-app/proxy/openai/v1/responses` |
-| OpenAI, second key for dev | `openai-dev` | `POST /v1/apps/my-app/proxy/openai-dev/v1/responses` |
-| OpenAI through Cloudflare AI Gateway | `openai-cf` | `POST /v1/apps/my-app/proxy/openai-cf/v1/chat/completions` |
-| Anthropic, only key | `anthropic` | `POST /v1/apps/my-app/proxy/anthropic/v1/messages` |
+| OpenAI, first key | `openai` | `/v2/apps/my-app/proxy/openai/v1/responses` |
+| OpenAI, development key | `openai-dev` | `/v2/apps/my-app/proxy/openai-dev/v1/responses` |
+| OpenAI through Cloudflare | `openai-cf` | `/v2/apps/my-app/proxy/openai-cf/v1/responses` |
 
-Through the API, creating a second provider without a `slug` answers
-`409 slug_taken`. A provider holds its slug for as long as it exists, disabled
-or not. Only deleting it frees the slug.
+A slug already in use is refused with `409 conflict`. A connection keeps its
+slug while it exists, turned off or not. Removing it frees the slug.
 
-An app's [provider access](/applications/provider-access) and its
-[custom endpoints](/applications/custom-endpoints) name providers by slug. That is how
-one app can be limited to `openai-cf` while another uses `openai`.
+The provider, and with it the host, the key header and the prices, always comes
+from the connection the slug names, never from the URL.
 
-## The Providers list
+## The Providers page
 
-Each row shows the **Name**, the **Provider** type, the **Slug**, and under
-**Auth** how it authenticates: `API key: ...ab12` for a direct key (its last
-four characters), plus `Base URL` when one is set, or `Gateway: <name>` for a
-routed provider. A paused provider carries a `disabled` badge.
+Each row shows the **Name**, the **Provider**, the **Slug**, the **Key** (its
+last characters, and "via Cloudflare AI Gateway" where that is on), the
+**Status** (**On** or **Off**) and when it was **Updated**.
 
-The row's actions menu offers **Pricing**, **Update key**, **Disable
-provider** (or **Enable provider**), and **Delete provider**.
+The row's actions:
 
-## Update key
+- **Rename**: changes the name only. Apps keep calling the same slug.
+- **Replace key**: see [Replace a key](#replace-a-key).
+- **Passthrough paths**, or **Paths** on a custom provider: see
+  [Listing paths](/providers/custom-base-urls#listing-paths).
+- **Your prices**: see [Model pricing](/providers/model-pricing#your-prices).
+- **Host**: where requests go. See [Custom base URLs](/providers/custom-base-urls).
+- **Cloudflare AI Gateway**: see [Cloudflare and Vercel AI Gateway](/providers/gateways).
+- **Turn off** or **Turn on**.
+- **Remove**.
 
-**Update key** replaces the key in place. The dialog says it plainly: "The new
-credential replaces the old one in place. Custom pricing is kept, and requests
-pick it up within a minute." Paste the **New API key** and click **Update
-key**. The provider keeps its slug and its custom prices, so nothing in any app
-changes. Prefer this over delete-and-recreate for exactly that reason.
+## Replace a key
 
-The same dialog has a **Base URL** field. Changing the origin needs the key,
-because the stored key is never sent to a new origin. See
-[Custom base URLs](/providers/custom-base-urls#changing-the-origin).
+**Replace key** puts a new key in place of the old one. Apps using the
+connection switch to the new key within a minute. The slug, the name and
+your prices stay, so nothing in any app changes. Prefer it to removing the
+connection and adding it again.
 
-A gateway-routed provider has no key of its own, so **Update key** is greyed
-out there. Rotate the shared token once with **Update token** on the
-[Gateways](/providers/gateways#update-token) page and every provider behind
-that gateway follows.
+Paste the **New API key**, click **Test key** if you like, then **Replace key**.
+On a connection through Cloudflare AI Gateway there is no **Test key** here.
 
-```json
-PUT /v1/admin/providers/{id}
-{ "secret": "sk-new...", "revision": 7 }
+```http
+PUT /v2/admin/providers/{id}
+Content-Type: application/json
+
+{ "secret": "sk-new…", "revision": 7 }
 ```
 
-Use the `revision` returned by the provider list. If another edit wins first,
-the API returns `409 conflict`; read the provider again before retrying.
+Every change through `PUT` sends the `revision` from your last read of the
+connection. If someone else saved it since, the change is refused with
+`409 conflict`; read it again and retry. The console shows this as **This
+connection changed since you opened it**, with a **Reload** button.
 
-On a gateway-routed provider this answers `409 provider_gateway_managed` and
-points you at the gateway's rotate endpoint.
+## Turn off or remove
 
-## Disable or delete
+**Turn off** pauses a connection. The key, the slug and your prices all stay.
+Requests to its slug are refused with `502 provider_disabled`. **Turn on** puts
+it straight back.
 
-These are two different intentions.
+```http
+PUT /v2/admin/providers/{id}
+Content-Type: application/json
 
-**Disable provider** is a reversible pause. The confirm dialog says "Requests
-to `openai` start failing within a minute" and lists the apps whose
-configuration names that slug. The key, the custom pricing and the slug all
-stay. Requests to the slug answer `502 provider_disabled`. **Enable provider**
-puts it straight back without reclaiming the slug, because nothing could have
-taken the slug in the meantime.
-
-**Delete provider** is permanent. The confirm dialog says "Apps using OpenAI
-start failing within a minute, and any custom pricing on this provider is
-deleted with it. This cannot be undone. Update the key instead if you only
-want to replace it, or disable the provider to pause it and keep the key."
-Deleting takes the encrypted key and the custom prices with it and frees the
-slug for reuse. Requests to the slug then answer `502 provider_not_configured`.
-
-An app's configuration may keep naming a disabled or deleted slug. Its proxy
-policy page shows the row with a `disabled` or `deleted` badge, and a named
-endpoint whose primary provider is disabled can use its fallbacks. Deleting
-that primary provider instead makes the endpoint fail with
-`provider_not_configured`; update the endpoint before deleting its provider.
-
-```json
-PUT /v1/admin/providers/{id}
 { "status": "disabled", "revision": 7 }
 ```
 
-```text
-DELETE /v1/admin/providers/{id}
+**Remove** deletes the connection, its key and your prices on it. Apps that
+name the slug stop reaching the provider within a minute. Their settings keep
+the slug, so adding a connection with the same slug brings them back. Until then, requests to the slug are refused with
+`502 provider_not_configured`.
+
+```http
+DELETE /v2/admin/providers/{id}
 ```
 
-## When an app names a provider you have not added
+An app's **Overview** tab shows a connection it names that is turned off or
+missing. See [When a connection is missing](/applications/provider-access#when-a-connection-is-missing).
 
-An app can allow a provider before you have a key for it. The app's pages then
-show a banner titled **No credential for OpenAI**: "This app allows a provider
-you have not configured, so those requests fail with
-`provider_not_configured`." The link in the banner takes you to **Providers**.
+## Changes are checked against your apps
 
-| Response | Meaning |
+A save that would leave one of your apps' requests with nothing to bill it by
+is refused with `400 pricing_not_configured`, naming the app and the model. This
+covers a change to your prices, your listed paths or the base URL, and adding a
+connection with a slug apps already name. Only requests the change newly makes
+possible, or whose price it changes, are checked.
+
+Removing a price or a path that an app's proxy requests used still saves. A
+preset fallback that would lose its price is refused instead: it would
+otherwise drop out of the preset's chain without a word.
+
+## Errors your apps may get
+
+| Answer | Meaning |
 | --- | --- |
-| `502 provider_not_configured` | No provider has this slug. Add one. |
-| `502 provider_disabled` | A provider with this slug exists but is paused. Enable it. |
-| `502 provider_unavailable` | The stored key could not be decrypted, or the gateway it routes through is gone. |
+| `502 provider_not_configured` | The app does not allow a connection with this slug, or no connection has it. |
+| `502 provider_disabled` | The connection is turned off. Turn it on. |
+| `502 provider_unavailable` | The connection cannot be used as stored, for example its key could not be opened. |
 
-The full list of proxy errors is in [Errors and limits](/integrate/errors).
+All the codes are in [Errors and limits](/integrate/errors).
 
-## Propagation
+Each change on this page reaches every request within a minute in normal
+operation. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
-Every change on this page takes effect within a minute: a new key, a rotated
-key, a disable, a delete. The gateway caches resolved providers for up to sixty
-seconds, which is the same window as an app configuration change.
+## How keys are kept safe
 
-## How keys are protected
-
-- Every key is encrypted at rest before it is stored, and each one is bound to
-  its own row, so a value lifted from one row cannot be replayed in another.
-- No response body from any endpoint contains a submitted key. The console
-  clears its form the moment a create or update call settles.
-- Your apps never see a key either. The gateway adds it on the way out, and
-  any provider key a client sends is stripped. See
-  [Apps and providers](/how-it-works/apps-and-providers).
+- Each key is encrypted before it is stored, tied to its connection and to the
+  place it is sent. A key never goes to a new host unless you type it again for
+  that host.
+- No answer from the gateway contains a key.
+- Your apps never see a key. The gateway adds it on the way to the provider,
+  and never forwards a key header an app sends. See
+  [Calling the provider proxy](/integrate/proxy#what-reaches-the-provider).
+- A coding agent never needs your key. It can open a page where you type the
+  key into the console yourself.

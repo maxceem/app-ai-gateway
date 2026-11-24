@@ -1,187 +1,249 @@
 ---
 title: Custom base URLs
-description: Point a provider at an endpoint you control instead of the provider's own API.
+description: Send a connection's requests to another host, add a provider the gateway does not know, and list paths to pass through.
 ---
 
-A provider that authenticates with its own **API key** can carry an optional
-**Base URL** that replaces the provider type's own origin. Nothing else
-changes: the path after the slug, the query string, the credential header, the
-model rules and the pricing rule are exactly what they would have been.
+A connection sends its requests to the provider's own host unless you give it a
+**base URL**. This page covers:
 
-## The Base URL field
+- a base URL on a built-in provider, such as a self-hosted server or Azure
+  OpenAI;
+- a **custom provider**, for a service the gateway does not know;
+- **listing paths**, on either kind of connection.
 
-In the **Add provider** dialog, with **Authentication** set to **API key**,
-fill in **Base URL (optional)**. Leave it empty to use the provider's own API.
-The field takes an absolute `https://` URL, and the path you append after the
-slug is joined onto it:
+## A base URL on a built-in provider
+
+Set it in **Base URL (optional)** when you add the connection, or later with
+the connection's **Host** action. Leave it empty to use the provider's own host.
+**Host** is not offered on a connection through Cloudflare AI Gateway, or on a
+custom provider, whose base URL is part of what it is.
+
+Everything else stays the provider's: the operations, the paths, the header the
+key is sent in, and the prices. The path your app sends after the slug is
+joined onto the base URL:
 
 ```text
-Base URL:   https://my-vllm.example.com/
-Your app:   POST /v1/apps/my-app/proxy/vllm/v1/chat/completions
-Reaches:    https://my-vllm.example.com/v1/chat/completions
+Base URL:   https://llm.example.com/
+Your app:   POST /v2/apps/my-app/proxy/vllm/v1/chat/completions
+Sent to:    https://llm.example.com/v1/chat/completions
 ```
 
-Click **Test provider** to run the provider type's test call at the new origin
-before saving. A custom endpoint that does not implement the provider's
-list-models call answers 404, which reports as unconfirmed rather than as a
-refusal.
+Do not put `v1/` in both. **Test key** calls the provider's test path at the
+base URL too. A server that does not have that path answers `404`, which proves
+nothing either way.
 
-The API equivalent:
+```http
+POST /v2/admin/providers
+Content-Type: application/json
 
-```json
-POST /v1/admin/providers
 {
   "type": "openai",
   "name": "Self-hosted Llama",
   "slug": "vllm",
-  "secret": "...",
-  "baseUrl": "https://my-vllm.example.com/"
+  "secret": "…",
+  "baseUrl": "https://llm.example.com/"
 }
 ```
 
-The field is not available with **Use gateway**. A gateway owns the upstream
-origin, and the API refuses `baseUrl` together with `providerGatewayId` on
-both create and update.
+A connection goes either to a base URL or through Cloudflare AI Gateway, not
+both, so the field is hidden while **Send through Cloudflare AI Gateway** is on.
 
-The base URL and client path are joined literally. Do not put `v1/` in both.
-For an OpenAI-compatible server, the layout above also makes **Test provider**
-call `/v1/models` and lets custom endpoints use their standard `v1/` paths.
-The gateway's default inference policy matches the client path, before this
-join; a custom base URL does not change that policy.
+### What it is for
 
-## What it enables
-
-Any server that speaks a supported provider's API unchanged becomes usable
-without a code change in your apps.
-
-- **Self-hosted inference.** vLLM, SGLang, Ollama behind TLS, llama.cpp's
-  server. Pick `openai` as the type and use the origin as the base; keep
-  `v1/` in the client path.
-- **A second region of a supported provider.** BytePlus ModelArk's `eu-west`
-  host, for instance, whose keys and catalogs are region-isolated. Pick
-  `bytedance` as the type and enter that region's base URL.
-- **A regional host priced apart.** xAI's `https://us.api.x.ai/`, Mistral's
-  `https://api.eu.mistral.ai/`
-  and `https://api.us.mistral.ai/`, and Together's `https://us-api.together.ai/`
-  cost more than the global host. Requests through such a provider are billed
-  in that region; see
-  [Service tiers and regions](/providers/model-pricing#service-tiers-and-regions).
+- **A server you run** that speaks a provider's API, such as vLLM, SGLang or
+  llama.cpp's server. Choose OpenAI as the provider.
+- **A provider's regional host**, such as xAI's `https://us.api.x.ai/`. Its
+  requests are billed at that region's price. See
+  [Service modes](/providers/model-pricing#service-modes).
+- **Another region of ByteDance Ark**, whose keys work in one region only.
 - **A proxy of your own** in front of a provider, as long as it speaks that
-  provider's API unchanged.
-- **Azure OpenAI**, with the caveats [below](#azure-openai).
+  provider's API as it is.
+- **Azure OpenAI**, described [below](#azure-openai).
 
-The console shows the origin under **Auth** in the Providers list, beside the
-key's last characters, so it is never a surprise which service a key is being
-sent to.
+A model your own server runs is not in the price list. Add
+[your own price](/providers/model-pricing#your-prices) for it, or requests for
+it are refused with `400 pricing_not_configured`. `$0` is a valid price for a
+model that costs you nothing per request.
 
-## What the URL must look like
+### What the URL must be
 
-The URL is checked and rewritten into a canonical form before it is stored.
-Each rule refuses with a message naming what is wrong.
+The gateway checks a new or changed base URL when you save it. Each refusal says
+what is wrong.
 
-| Rule | Rejected examples |
+| Rule | Refused, for example |
 | --- | --- |
-| `https` only | `http://...`, `ftp://...` |
-| No credentials in the URL | `https://user:pass@host/` |
-| No query string and no fragment | `https://host/?api-version=...`, `https://host/#x` |
-| Default port only (443, explicit or implicit) | `https://host:8443/` |
-| A public DNS name, never an IP address in any form | `https://127.0.0.1/`, `https://0x7f000001/`, `https://[::1]/` |
-| At least two labels, valid DNS labels, no trailing dot | `https://vllm/`, `https://host./`, `https://a..b.example.com/` |
-| No reserved local suffix | `.local`, `.localhost`, `.internal`, `.home.arpa`, `.lan`, `.corp`, `.test`, `.example` |
+| `https` only | `http://…` |
+| No user name or password, query string or fragment | `https://user:pass@host/`, `https://host/?x=1` |
+| No port other than 443 | `https://host:8443/` |
+| A public domain name, never an IP address | `https://127.0.0.1/`, `https://[::1]/` |
+| At least two labels, no trailing dot | `https://vllm/`, `https://host./` |
+| No local-only ending | `.local`, `.localhost`, `.internal`, `.lan`, `.corp`, `.home`, `.test`, `.example` and similar |
+| No empty, `.` or `..` segment, or encoded `/`, in the path | `https://host/a//b/` |
 | At most 200 characters | |
+| Not Cloudflare AI Gateway's host | Use the connection's own [Cloudflare setting](/providers/gateways). |
+| Not another built-in provider's host | `https://api.anthropic.com/` on an OpenAI connection. Add it as that provider, or as a custom provider. |
+| On the provider's own host, its plain address only | `https://api.x.ai/v1/` on an xAI connection |
 
-What is stored is the canonical form: lower-cased host (punycoded if you typed
-Unicode), no redundant `:443`, dot segments resolved, and exactly one trailing
-slash. `https://My-VLLM.Example.com/v1` is stored as
-`https://my-vllm.example.com/v1/`.
+The URL is saved in one form: a lowercase host and one slash at the end. So
+`https://LLM.Example.com/v1` is saved as `https://llm.example.com/v1/`.
 
-Upstream **redirects are never followed** on any proxied request. A `3xx` from
-your endpoint is passed back to the client as is, so a redirect cannot move the
-destination after the URL was checked.
+The gateway never follows a redirect from the provider, so a redirect cannot
+send a request, or its key, anywhere else.
 
-## Changing the origin
+### Changing the host
 
-To move an existing provider to a different origin, open **Update key** on its
-row. The dialog has a **Base URL** field next to **New API key**, with the
-hint "Changing the origin needs the key above, because the stored key is never
-sent to a new origin. Leave empty to use the provider's own API."
+Open the connection's **Host** action. The dialog, **Host**, says where the
+connection's requests go.
 
-That rule is the point. The stored key is write-only: it is never decrypted to
-be sent somewhere it has not been sent before, so pointing a provider at a new
-host cannot become a way to read its key back out. Paste the key again, set the
-new **Base URL**, and click **Update key**. Emptying the field returns the
-provider to the provider type's own API.
+- **A new base URL** needs the key again: the **API key** field appears, and
+  **Save** stays off until you fill it. A stored key is never sent to a host it
+  was not given for.
+- **Back to the provider's own host**, by emptying the field, either tick
+  **Send the current key to …**, which names the provider's hosts, or type a
+  replacement key.
 
-Through the API, a new `baseUrl` needs `secret` in the same request, and the
-update is refused with `400 invalid_request` without it. Clearing needs nothing
-else:
+The same through the API. A new `baseUrl` needs `secret` in the same request,
+or it is refused with `400 invalid_request`. `null` goes back to the provider's
+own host and keeps the key:
 
-```json
-PUT /v1/admin/providers/{id}
-{ "secret": "sk-...", "baseUrl": "https://eu.example.com/v1/", "revision": 7 }
+```http
+PUT /v2/admin/providers/{id}
+Content-Type: application/json
+
+{ "baseUrl": "https://eu.llm.example.com/", "secret": "…", "revision": 7 }
 ```
 
-```json
-PUT /v1/admin/providers/{id}
-{ "baseUrl": null, "revision": 7 }
-```
+To find out first whether the key works at the new host, send the same `type`,
+`secret` and `baseUrl` to `POST /v2/admin/providers/test`.
 
-Send the same `type`, `secret` and `baseUrl` to `POST /v1/admin/providers/test`
-first to find out whether the key works at the new origin.
-
-## Security note
-
-<Callout type="warn" title="Pointing a provider at an origin hands that origin the key">
-  The base URL is set only by you, through the console or a
-  [management key](/automation/api). No app and no end user can influence it;
-  it is read from the stored provider, never from a request. Treat entering an
-  origin as equivalent to giving that origin the provider's API key, because
-  that is what every request does.
+<Callout type="warn" title="A base URL receives the key">
+  Every request to a connection with a base URL carries its key to that host.
+  Only you can set it, from the console or the management API. No app and no
+  end user can change it. The gateway refuses addresses that are plainly local,
+  but it cannot see where a public name points. So enter only a host you trust.
 </Callout>
 
-The checks above stop the direct expression of a mistake: a local address, a
-typo, a copied internal name. They cannot stop a public hostname from resolving
-to a private address, because the gateway does not resolve names itself and
-cannot see or pin the address a request connects to. The real control is that
-only you can write this field.
+### Azure OpenAI
 
-## Custom endpoints still need prices
-
-A model served from your own endpoint is almost certainly not in the shipped
-price list, so it is refused with `400 pricing_not_configured` until you enter a
-price for it under the provider's **Pricing** action. Entering the price is
-what allows the model. There is no "unmetered because it is mine" path.
-
-For a model you host yourself and pay no per-token price for, `$0` is
-enterable. Enter it deliberately, because it also removes that traffic from
-every [spending limit](/applications/limits). See
-[Model pricing](/providers/model-pricing).
-
-## Azure OpenAI
-
-Use provider type `openai`. Microsoft's SDK examples include `/openai/v1/`
-in the [SDK base URL](https://learn.microsoft.com/en-us/azure/developer/ai/how-to/switching-endpoints).
-For this gateway, put `/openai/` in the provider's **Base URL** and keep `v1/`
-in the client path:
+Choose OpenAI as the provider, and put `/openai/` in the base URL:
 
 ```text
-Base URL: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/
-Client path: v1/chat/completions
-Upstream: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/chat/completions
+Base URL:   https://YOUR-RESOURCE.openai.azure.com/openai/
+Your app:   POST …/proxy/azure/v1/chat/completions
+Sent to:    https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions
 ```
 
-Azure's v1 API accepts the resource key as `Authorization: Bearer`, which is
-what the gateway sends for the `openai` type. The gateway's credential probe
-also appends `v1/models`. Two things to know:
+Azure's `v1` API takes the resource key as `Authorization: Bearer`, which is how
+the gateway sends an OpenAI key.
 
-- **The older, dated Azure surface is not supported.** It authenticates with an
-  `api-key` header and needs an `?api-version=` query on the base, neither of
-  which the gateway adds. The URL check refuses a base URL carrying a query
-  string for that reason. Use the v1 base URL above.
-- **Microsoft Entra ID tokens are not supported.** They are short-lived and
-  need refreshing, and a provider stores one static secret. Use a resource
-  key.
+- The older Azure API, which needs an `api-version` query and an `api-key`
+  header, does not work: a base URL cannot hold a query.
+- Microsoft Entra ID tokens do not work. They expire quickly, and a connection
+  holds one fixed key.
+- The `model` your app sends is your deployment's name. Deployment names are not
+  in the price list, so add your own price for each one.
 
-The `model` field in your requests is your **deployment name**, not the
-upstream model name, and deployment names are not in the shipped price list. Price
-them on that provider as described above.
+## Custom providers
+
+A custom provider is a service the gateway does not know, at a base URL you
+give. It serves only the paths you list.
+
+In **Add provider**, choose **Custom provider** and fill in:
+
+| Field | What to enter |
+| --- | --- |
+| **Base URL** | Its `https` address, such as `https://llm.example.com/v1/`. The [rules above](#what-the-url-must-be) apply, apart from the last two. |
+| **Key header** | The header the key is sent in. `authorization` by default. |
+| **Key format** | The header's value, with `{key}` where the key goes. `Bearer {key}` by default. |
+| **API key** | The service's key. |
+
+The dialog then explains what listed paths give up (see
+[Listing paths](#listing-paths)). Tick **I understand, and want to add this
+provider**; **Add provider** stays off until you do.
+
+The key header cannot be one that HTTP itself or the gateway uses, such as
+`host`, `content-type`, `cookie`, `user-agent`, `x-end-user-id` or
+`x-app-version`, or one starting with `cf-`, `x-agw-` or `sec-`. **Test key** sends
+nothing for a custom provider, because no call is known to be free there. A
+custom provider cannot go through Cloudflare AI Gateway.
+
+Through the API, a custom provider needs `type: "custom"`, `baseUrl` and
+`auth`:
+
+```json
+{
+  "type": "custom",
+  "name": "Our model server",
+  "slug": "ours",
+  "secret": "…",
+  "baseUrl": "https://llm.example.com/v1/",
+  "auth": { "header": "authorization", "format": "Bearer {key}" },
+  "passthrough": [{ "method": "POST", "path": "chat/completions", "style": "openai-chat" }]
+}
+```
+
+### Paths with an API style
+
+A path you list on a custom provider may name an API style. The gateway then
+serves it like a built-in provider's operation of that style: it reads the
+model, checks it against the app's models list, measures the usage, and bills
+it at your prices for the connection. Add a price for each model, or requests
+are refused with `400 pricing_not_configured`.
+
+| Style | API |
+| --- | --- |
+| `openai-chat` | Chat Completions |
+| `openai-completions` | Legacy completions |
+| `openai-responses` | Responses |
+| `anthropic-messages` | Anthropic Messages |
+| `openai-embeddings` | Embeddings |
+| `openai-images` | Image generation |
+| `openai-transcription` | Speech to text |
+| `openai-speech` | Text to speech |
+
+Each style is an operation named `custom.<style>`, such as `custom.openai-chat`,
+which an app allows on its **Providers** tab. List one path per style; each is a
+`POST`. A path with no style is passed through, as on a built-in provider.
+
+## Listing paths
+
+On a built-in provider, **Passthrough paths** lists paths the gateway has no
+operation for, such as OpenAI's `v1/files`. On a custom provider, **Paths**
+lists every path it serves. The app reaches them as described under
+[Passthrough](/applications/provider-access#passthrough).
+
+Write one path per line: the method, the path, then a price or, on a custom
+provider, an API style:
+
+```text
+GET v1/files/{file_id} $0.001
+POST v1/files
+POST chat/completions openai-chat
+```
+
+- The method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.
+- `{name}` stands for one segment, such as an ID, and two never stand next to
+  each other. On a built-in provider it comes after the API version and an
+  endpoint's name, as in `v1/files/{file_id}`. On a custom provider it comes
+  after two fixed segments.
+- A price, such as `$0.002`, is charged for each answer the provider accepts.
+  Without one, the path is not priced, and budgets do not limit it.
+- A path that one of the provider's own operations already serves is refused:
+  allow that operation on the app instead.
+- Two paths that could match the same request are refused.
+- A connection lists up to 100 paths.
+
+The first time you list paths on a built-in provider, the dialog shows what
+passing paths through gives up, and asks you to tick **I understand, and want
+these paths passed through**. **Save paths** stays off until you do:
+
+- a path without a price is not priced, so budgets do not limit it, though
+  request limits still apply;
+- IDs the provider returns, such as file IDs, are not tied to the app, so
+  another app with the same provider key could read them. Give such paths a
+  connection, and a provider key, of their own.
+
+For some paths the provider knows, such as the token paths for live sessions,
+the gateway suggests **safe defaults**: request fields it sets over what the app
+sends, such as a 60-second expiry. They are set when you save, and you can
+change or remove each one. Through the API they are `set_fields` on the path.
