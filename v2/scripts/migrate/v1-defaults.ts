@@ -1,7 +1,7 @@
 /**
  * What a v1 app reached on a connection when its policy listed no paths, or
  * when it allowed every connection (`mode: "all"`). Copied from v1, which is
- * frozen: `DEFAULT_PROXY_API_STYLES` and `VERCEL_API_STYLES` in
+ * frozen (read out of v1 with its own code): `DEFAULT_PROXY_API_STYLES` and `VERCEL_API_STYLES` in
  * `src/shared/capabilities.ts`, and each type's `apiStyles` and
  * `inferencePaths` in `src/shared/providers.ts`.
  *
@@ -59,4 +59,66 @@ export const V2_CAPS_OF_CLAMP: Readonly<Record<string, readonly string[]>> = {
   gemini_native: ["gemini"],
   anthropic: ["anthropic"],
   none: [],
+};
+
+/** Where v1 sent a direct row with no base URL (each type's `directBaseUrl`). */
+export const V1_DIRECT_BASE_URL: Readonly<Record<string, string>> = {
+  openai: "https://api.openai.com/",
+  anthropic: "https://api.anthropic.com/",
+  xai: "https://api.x.ai/",
+  gemini: "https://generativelanguage.googleapis.com/",
+  perplexity: "https://api.perplexity.ai/",
+  deepseek: "https://api.deepseek.com/",
+  groq: "https://api.groq.com/",
+  mistral: "https://api.mistral.ai/",
+  together: "https://api.together.ai/",
+  fireworks: "https://api.fireworks.ai/",
+  cerebras: "https://api.cerebras.ai/",
+  moonshot: "https://api.moonshot.ai/",
+  huggingface: "https://router.huggingface.co/",
+  baseten: "https://inference.baseten.co/",
+  bytedance: "https://ark.ap-southeast.bytepluses.com/api/v3/",
+  openrouter: "https://openrouter.ai/api/",
+};
+
+/** v1's Cloudflare AI Gateway routes (`CF_AIG_ROUTES`): the provider's name there, and a path prefix it already implies. */
+export const V1_CLOUDFLARE_ROUTES: Readonly<Record<string, { readonly slug: string; readonly stripPathPrefix?: string }>> = {
+  openai: { slug: "openai", stripPathPrefix: "v1/" },
+  anthropic: { slug: "anthropic" },
+  xai: { slug: "grok" },
+  gemini: { slug: "google-ai-studio" },
+  perplexity: { slug: "perplexity-ai" },
+};
+
+/** Where v1 sent Cloudflare AI Gateway traffic (`CF_AI_GATEWAY_BASE_URL`), and Vercel AI Gateway traffic. */
+export const V1_CLOUDFLARE_BASE = "https://gateway.ai.cloudflare.com/v1";
+export const V1_VERCEL_BASE = "https://ai-gateway.vercel.sh/";
+
+/** The path a v1 endpoint (preset) posted to on a direct row, per type and endpoint style (`endpointProviderPath`). */
+export const V1_ENDPOINT_PATHS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  openai: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions", image_generation: "v1/images/generations", embeddings: "v1/embeddings" },
+  anthropic: { anthropic_messages: "v1/messages" },
+  xai: { responses: "v1/responses", audio_transcription: "v1/stt", image_generation: "v1/images/generations" },
+  gemini: { gemini_native: "v1beta/models/{model}:generateContent", gemini_embedding: "v1beta/models/{model}:embedContent" },
+  perplexity: { chat_completions: "chat/completions" },
+  deepseek: { chat_completions: "chat/completions" },
+  groq: { chat_completions: "openai/v1/chat/completions", audio_transcription: "openai/v1/audio/transcriptions" },
+  mistral: { chat_completions: "v1/chat/completions" },
+  together: { chat_completions: "v1/chat/completions" },
+  fireworks: { chat_completions: "inference/v1/chat/completions" },
+  cerebras: { chat_completions: "v1/chat/completions" },
+  moonshot: { chat_completions: "v1/chat/completions" },
+  huggingface: { chat_completions: "v1/chat/completions" },
+  baseten: { chat_completions: "v1/chat/completions" },
+  bytedance: { chat_completions: "chat/completions", image_generation: "images/generations" },
+  openrouter: { chat_completions: "v1/chat/completions" },
+};
+
+/** The path a v1 endpoint posted to through Vercel AI Gateway, which publishes one path per style (`API_STYLE_PATHS`). */
+export const V1_STYLE_PATHS: Readonly<Record<string, string>> = {
+  responses: "v1/responses",
+  chat_completions: "v1/chat/completions",
+  anthropic_messages: "v1/messages",
+  gemini_native: "v1beta/models/{model}:generateContent",
+  audio_transcription: "v1/audio/transcriptions",
 };

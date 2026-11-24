@@ -19,12 +19,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { connectionCredentials, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
 import { secretVault } from "../src/vault/index.ts";
-import { secretContext } from "../src/vault/secrets.ts";
 import { VAULT_SERVICE } from "../src/vault/types.ts";
 import { checkAgainstV2, insertStatements, readFirst, reportMarkdown } from "./migrate/output.ts";
 import { budgetNano, migrateSettings, SecretDoesNotOpen, TABLE_ORDER, v1TimeMs, type MigrationResult, type Row, type V2Rows } from "./migrate/settings.ts";
-import { loadV1Export, openV1Export, readV1Settings, StatementSplitter } from "./migrate/v1-rows.ts";
+import { loadV1Export, openV1Export, readV1Settings, REQUIRED_TABLES, StatementSplitter } from "./migrate/v1-rows.ts";
 import { vaultResealer } from "./migrate/vault.ts";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -129,6 +129,10 @@ before(async () => {
     await provider("p_cfbase", "claude", "anthropic", `${CF_BASE}/acc/gw/anthropic`, KEY.cfBase),
     await provider("p_cfnotoken", "openai-cf", "openai", `${CF_BASE}/acc/elsewhere/openai`, KEY.cfBase),
     await provider("p_cfworkers", "workers", "openai", `${CF_BASE}/acc/gw/workers-ai`, KEY.cfBase),
+    await provider("p_cfopenai", "openai-cfbase", "openai", `${CF_BASE}/acc/gw/openai/`, KEY.cfBase),
+    await provider("p_cfquery", "claude-query", "anthropic", `${CF_BASE}/acc/gw/anthropic?x=1`, KEY.cfBase),
+    await provider("p_eu_plain", "openai-eu-plain", "openai", "https://eu.api.openai.com/", KEY.regional),
+    await provider("p_openrouter", "router", "openrouter", "https://openrouter.ai/api/v1/", KEY.regional),
     await provider("p_other", "wrong-host", "openai", "https://api.anthropic.com/v1", KEY.other),
     await provider("p_eu", "openai-eu", "openai", "https://eu.api.openai.com/v1/", KEY.regional),
     await provider("p_mistral_eu", "mistral-eu", "mistral", "https://api.eu.mistral.ai/v1/", KEY.regional),
@@ -180,7 +184,7 @@ before(async () => {
       }, {
         limits: { per_user: { requests: { per_minute: 10, per_day: null }, spending: { monthly_usd: 12.5, scope: "user" } }, per_app: { requests: { per_minute: null, per_day: 1000 }, spending: { monthly_usd: 0.0000000001 } } },
         endpoints: {
-          summary: { provider: "openai", model: "gpt-6.2-sol", kind: "text", api_style: "chat_completions", params: { temperature: 0 }, max_output_tokens: 300, fallback: [{ provider: "gemini", model: "gemini-4-neon" }, { provider: "claude-vercel", model: "claude-fable-5-2" }] },
+          summary: { provider: "openai", model: "gpt-6.2-sol", kind: "text", api_style: "responses", params: { temperature: 0 }, max_output_tokens: 300, fallback: [{ provider: "gemini", model: "gemini-4-neon" }, { provider: "claude-vercel", model: "claude-fable-5-2" }] },
           ask: { provider: "claude-vercel", model: "claude-fable-5-2", kind: "text", api_style: "anthropic_messages" },
           listen: { provider: "groq", model: "whisper-large-v3", kind: "transcription", api_style: "audio_transcription" },
         },
@@ -193,10 +197,12 @@ before(async () => {
     app("broken-d4", "org_a", "{not json"),
     app("tmp-e5", "org_tmp", v1App(headerUser, "all")),
     // Exact Gemini paths name their model: with no model list, and with one that holds more.
-    app("gem-g7", "org_a", v1App(headerUser, { gem: { allowed_paths: ["v1beta/models/gemini-2.5-flash:generateContent", "v1beta/openai/chat/completions"], allowed_models: [] } })),
+    app("gem-g7", "org_a", v1App(headerUser, { gem: { allowed_paths: ["v1beta/models/gemini-2.5-flash:generateContent", "v1beta/openai/chat/completions", "v1beta/models/gemini-{model}:streamGenerateContent"], allowed_models: [] } })),
     app("gem-h8", "org_a", v1App(headerUser, { gem: { allowed_paths: ["v1beta/models/gemini-2.5-flash:generateContent"], allowed_models: ["gemini-2.5-flash", "gemini-4-neon"] } })),
     // Only Vercel carries its rewrite.
     app("vercel-i9", "org_a", v1App(headerUser, { "claude-vercel": { allowed_paths: [], allowed_models: ["fast", "claude-fable-5-2"] } }, { routing: { providers: { mode: "selected", selected: { "claude-vercel": { allowed_paths: [], allowed_models: ["fast", "claude-fable-5-2"] } } }, model_rewrites: { fast: "claude-fable-5-2" } } })),
+    // A rewrite carried by Vercel and by a direct connection.
+    app("mixed-j10", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {})), routing: { providers: { mode: "selected", selected: { openai: { allowed_paths: [], allowed_models: [] }, "claude-vercel": { allowed_paths: [], allowed_models: ["fast"] } } }, model_rewrites: { fast: "claude-fable-5-2" } } })),
     insert("app_api_key", { id: "ak1", app_id: "chat-a1", name: "server", key_hash: "akh1", key_prefix: "agw_live_ab", status: "active", created_at: "2026-03-01 08:00:00", last_used_at: "2026-11-20 12:00:00" }),
     insert("app_api_key", { id: "ak2", app_id: "tmp-e5", name: "server", key_hash: "akh2", key_prefix: "agw_live_cd", status: "active", created_at: "2026-03-01 08:00:00" }),
     insert("app_attest_key", { app_id: "ios-c3", key_id: "kid1", public_key: "pk1", environment: "production", user_id: null, created_at: "2026-03-01 08:00:00", last_seen_at: "2026-11-01 08:00:00" }),
@@ -222,7 +228,20 @@ const said = (subject: string, pattern: RegExp, kind?: string) => {
   return found;
 };
 const config = (id: string) => JSON.parse(row("app", id)!.config_json as string);
-const openV2 = (blob: string, context: Parameters<typeof secretContext>) => secretVault(V2_VAULT).decryptSecret(blob, secretContext(...context));
+/** A moved connection's credentials, opened the way the Worker opens them for a live request (Sol 1). */
+const credentials = (id: string) => {
+  const moved = row("provider_connection", id)!;
+  const record = {
+    id: moved.id,
+    accountId: moved.account_id,
+    type: moved.type,
+    slug: moved.slug,
+    baseUrl: moved.base_url,
+    secretBlob: moved.secret_blob,
+    cloudflareGateway: readCloudflareGateway(moved.cloudflare_gateway_json),
+  } as unknown as ConnectionRecord;
+  return connectionCredentials(V2_VAULT as unknown as Env, record);
+};
 
 // ---------------------------------------------------------------- accounts and people
 
@@ -259,14 +278,14 @@ test("an account v1 refused for an unverified owner is named, since v2 serves it
 
 // ---------------------------------------------------------------- keys and destinations
 
-test("a provider key is sealed again for v2 and opens under the v2 connection's context", async () => {
+test("a provider key is sealed again for v2, and opens as the Worker opens it for a live request (Sol 1)", async () => {
   const direct = row("provider_connection", "p_direct")!;
   assert.equal(direct.type, "openai");
-  assert.equal(await openV2(direct.secret_blob as string, ["providerKey", ["org_a", "p_direct", "openai", ""]]), KEY.direct);
+  assert.deepEqual(await credentials("p_direct"), { providerKey: KEY.direct, cloudflareToken: null });
   assert.match(direct.secret_blob as string, /9/u, "sealed under v2's current key");
-  const proxy = row("provider_connection", "p_proxy")!;
-  assert.equal(proxy.base_url, "https://llm-proxy.example.com/openai/");
-  assert.equal(await openV2(proxy.secret_blob as string, ["providerKey", ["org_a", "p_proxy", "openai", "https://llm-proxy.example.com/openai/"]]), KEY.proxy);
+  assert.equal(row("provider_connection", "p_proxy")!.base_url, "https://llm-proxy.example.com/openai/");
+  assert.deepEqual(await credentials("p_proxy"), { providerKey: KEY.proxy, cloudflareToken: null });
+  assert.deepEqual(await credentials("p_gem"), { providerKey: KEY.gemini, cloudflareToken: null });
   assert.equal(direct.created_at, v1TimeMs("2026-02-01 10:00:00"));
   assert.equal(direct.revision, 1);
 });
@@ -281,28 +300,44 @@ test("own prices move as nano-dollar rates; one v2 refuses, or two that land on 
   assert.ok(readFirst(said("connection claude-vercel", /prices for "claude-x", "claude-x " all name "anthropic\/claude-x" in v2, so none of them was kept/u, "changed")));
 });
 
-test("a Cloudflare AI Gateway base URL keeps going through that gateway, with the account's token for it (Sol 3, Fable 1)", async () => {
+test("a Cloudflare AI Gateway base URL keeps going through that gateway, with the account's token for it (Sol 1, 3, Fable 1)", async () => {
   const claude = row("provider_connection", "p_cfbase")!;
   assert.equal(claude.base_url, null);
-  assert.equal(await openV2(claude.secret_blob as string, ["providerKey", ["org_a", "p_cfbase", "anthropic", ""]]), KEY.cfBase);
   const setting = JSON.parse(claude.cloudflare_gateway_json as string);
   assert.deepEqual([setting.account_id, setting.gateway_id], ["acc", "gw"]);
-  assert.equal(await openV2(setting.token_blob, ["cloudflareGatewayToken", ["org_a", "p_cfbase"]]), CF_TOKEN_2);
+  // The key is sealed for the gateway's address, which the Worker opens it for: a live request gets it.
+  assert.deepEqual(await credentials("p_cfbase"), { providerKey: KEY.cfBase, cloudflareToken: CF_TOKEN_2 });
   said("connection claude", /now goes through the same gateway with the connection's own Cloudflare AI Gateway setting/u, "changed");
 });
 
-test("a Cloudflare base URL with no token for its gateway, or for another provider's endpoint, is left out, never sent direct", () => {
+test("a Cloudflare base URL with no token for its gateway, another provider's endpoint, or a query, is left out, never sent direct (Fable 6, Gemini Neon 4)", () => {
   assert.equal(row("provider_connection", "p_cfnotoken"), undefined);
   said("connection openai-cf", /the account holds none for that gateway\. Add the connection again with its Cloudflare AI Gateway setting and a token/u, "left_out");
   assert.equal(row("provider_connection", "p_cfworkers"), undefined);
   said("connection workers", /Cloudflare AI Gateway's workers-ai endpoint, not the openai one/u, "left_out");
+  assert.equal(row("provider_connection", "p_cfquery"), undefined);
+  said("connection claude-query", /with a port, a query, a fragment or credentials/u, "left_out");
 });
 
-test("a regional base URL keeps its host: the plain address of the same host, or left out (Sol 3, Gemini Neon 2)", () => {
-  assert.equal(row("provider_connection", "p_eu")!.base_url, "https://eu.api.openai.com/");
-  assert.equal(row("provider_connection", "p_mistral_eu")!.base_url, "https://api.eu.mistral.ai/");
-  assert.equal(row("provider_connection", "p_moonshot_cn")!.base_url, "https://api.moonshot.cn/");
-  said("connection openai-eu", /is now https:\/\/eu\.api\.openai\.com\/, the plain address of the same host/u, "changed");
+test("a Cloudflare base URL keeps only the requests whose whole URL stays the same (Sol 4)", async () => {
+  // v1 joined /openai/ and v1/chat/completions; v2's Cloudflare setting drops v1/. Only the bare paths reach the same URL.
+  const ios = config("ios-c3").routing.providers["openai-cfbase"];
+  assert.ok(ios.operations.includes("openai.chat.bare") && !ios.operations.includes("openai.chat"));
+  said("app ios-c3", /On openai-cfbase, v2 would send these to another URL than v1 did.*openai\.chat \(v1: https:\/\/gateway\.ai\.cloudflare\.com\/v1\/acc\/gw\/openai\/v1\/chat\/completions, v2: https:\/\/gateway\.ai\.cloudflare\.com\/v1\/acc\/gw\/openai\/chat\/completions\)/u, "left_out");
+  assert.deepEqual(await credentials("p_cfopenai"), { providerKey: KEY.cfBase, cloudflareToken: CF_TOKEN_2 });
+});
+
+test("a regional base URL keeps its host and its URLs, or the connection is left out (Sol 4, Gemini Neon 2, 3)", () => {
+  // v1 joined …/v1/ and the request's path; v2 takes only the host's plain address, so no request keeps its URL.
+  for (const [id, slug, host] of [["p_eu", "openai-eu", "eu\\.api\\.openai\\.com"], ["p_mistral_eu", "mistral-eu", "api\\.eu\\.mistral\\.ai"], ["p_moonshot_cn", "moonshot-cn", "api\\.moonshot\\.cn"]] as const) {
+    assert.equal(row("provider_connection", id), undefined, id);
+    said(`connection ${slug}`, new RegExp(`v2 would send none of its requests to the URL v1 sent them to \\(for example https://${host}/v1/`, "u"), "left_out");
+  }
+  // The same for a provider whose own address has a path: the retry is its plain address, and the URLs are compared.
+  assert.equal(row("provider_connection", "p_openrouter"), undefined);
+  said("connection router", /v2 would send none of its requests to the URL v1 sent them to/u, "left_out");
+  // A regional base URL v1 held as v2 does moves as it is.
+  assert.equal(row("provider_connection", "p_eu_plain")!.base_url, "https://eu.api.openai.com/");
   // A custom port, or plain http, is never turned into another address.
   assert.equal(row("provider_connection", "p_port"), undefined);
   said("connection openai-port", /port 8443 is not allowed/u, "left_out");
@@ -325,11 +360,11 @@ test("a gateway token never moves across accounts (Sol 2)", () => {
   said("connection borrowed", /names provider gateway g_b of another account \(org_b\)/u, "left_out");
 });
 
-test("a vault outage stops the run; only a blob that does not open leaves its row out (Fable 3)", async () => {
+test("a vault outage stops the run, naming the row; only a blob that does not open leaves its row out (Fable 3, 4)", async () => {
   const v1 = readV1Settings(loadV1Export(exportSql));
   await assert.rejects(
     migrateSettings(v1, { now: NOW, reseal: async () => { throw new Error("cf-kms could not be reached"); } }),
-    /cf-kms could not be reached/u,
+    /connection openai \(p_direct\) of account org_a, its key: cf-kms could not be reached/u,
   );
   const partial = await migrateSettings(v1, { now: NOW, reseal: async () => { throw new SecretDoesNotOpen("decrypt failed"); } });
   assert.equal(partial.rows.provider_connection.length, 0);
@@ -339,22 +374,22 @@ test("a vault outage stops the run; only a blob that does not open leaves its ro
   await assert.rejects(missing(blob, { kind: "providerGatewayToken", identity: ["o", "g"] }, { kind: "cloudflareGatewayToken", identity: ["o", "c"] }), /v1's vault could not open a secret/u);
 });
 
-test("a Cloudflare AI Gateway row becomes the connection's own setting, with the token sealed to it", async () => {
+test("a Cloudflare AI Gateway row becomes the connection's own setting, with the token a live request opens", async () => {
   const edge = row("provider_connection", "p_cf")!;
   assert.equal(edge.secret_blob, null);
   const setting = JSON.parse(edge.cloudflare_gateway_json as string);
   assert.equal(setting.account_id, "abc123");
   assert.equal(setting.gateway_id, "my-gateway");
   assert.equal(setting.token_hint, "cf-…5555");
-  assert.equal(await openV2(setting.token_blob, ["cloudflareGatewayToken", ["org_a", "p_cf"]]), CF_TOKEN);
+  assert.deepEqual(await credentials("p_cf"), { providerKey: null, cloudflareToken: CF_TOKEN });
+  // v1 and v2 send its requests to the same Cloudflare URLs: they all move.
+  assert.ok(config("ios-c3").routing.providers["openai-edge"].operations.includes("openai.chat"));
 });
 
-// ---------------------------------------------------------------- Vercel AI Gateway
-
-test("a row through Vercel AI Gateway becomes a Vercel connection, with v1's prefix put before every name (Sol 4)", async () => {
+test("a row through Vercel AI Gateway becomes a Vercel connection, with v1's prefix put before every name (Sol 1, 4)", async () => {
   const vercel = row("provider_connection", "p_vercel")!;
   assert.equal(vercel.type, "vercel");
-  assert.equal(await openV2(vercel.secret_blob as string, ["providerKey", ["org_a", "p_vercel", "vercel", ""]]), VERCEL_TOKEN);
+  assert.deepEqual(await credentials("p_vercel"), { providerKey: VERCEL_TOKEN, cloudflareToken: null });
   assert.equal(vercel.serving_providers_json, JSON.stringify(["bedrock"]));
   assert.ok(readFirst(said("connection claude-vercel", /put anthropic\/ before every model name/u, "changed")));
   assert.deepEqual(config("chat-a1").routing.providers["claude-vercel"], { operations: ["vercel.messages"], models: ["anthropic/claude-fable-5-2"] });
@@ -365,17 +400,20 @@ test("a row through Vercel AI Gateway becomes a Vercel connection, with v1's pre
   said("connection groq-vercel", /v1 could not send a Groq row through Vercel AI Gateway/u, "left_out");
 });
 
+test("a Vercel route with no model list is left out: v1's prefix kept it to one namespace (Sol 2)", () => {
+  assert.equal(config("ios-c3").routing.providers["claude-vercel"], undefined);
+  said("app ios-c3", /On claude-vercel, the app had no model list\. v1 put anthropic\/ before every model/u, "left_out");
+});
+
 test("a rewrite only Vercel carries names the full model; a listed name the app rewrites stays as sent (Sol 4)", () => {
   const vercel = config("vercel-i9");
   assert.deepEqual(vercel.routing.model_rewrites, { fast: "anthropic/claude-fable-5-2" });
   assert.deepEqual(vercel.routing.providers["claude-vercel"].models, ["fast", "anthropic/claude-fable-5-2"]);
   said("app vercel-i9", /rewrite of fast to claude-fable-5-2 now names anthropic\/claude-fable-5-2/u, "changed");
-  // Carried by Vercel and by direct connections: one app-wide rewrite cannot name both, and the report says where it now fails.
-  assert.deepEqual(config("ios-c3").routing.model_rewrites, { fast: "gpt-6.2-sol" });
-  assert.ok(readFirst(said("app ios-c3", /rewrite of fast to gpt-6\.2-sol is carried by Vercel AI Gateway \(claude-vercel\).*Vercel now refuses it/u, "changed")));
+  // Carried by Vercel and by a direct connection: one app-wide rewrite cannot name both, and the report says where it now fails.
+  assert.deepEqual(config("mixed-j10").routing.model_rewrites, { fast: "claude-fable-5-2" });
+  assert.ok(readFirst(said("app mixed-j10", /rewrite of fast to claude-fable-5-2 is carried by Vercel AI Gateway \(claude-vercel\).*Vercel now refuses it/u, "changed")));
 });
-
-// ---------------------------------------------------------------- routing
 
 test("allowed paths become operations, or passthrough paths judged by the console's rules", () => {
   const openai = config("chat-a1").routing.providers.openai;
@@ -417,6 +455,11 @@ test("an exact path's model becomes the model list, and every difference from v1
   assert.ok(readFirst(said("app gem-h8", /v1 let gemini\.generate\.v1beta take only gemini-2\.5-flash.*gemini-4-neon too/u, "check")));
 });
 
+test("a {model} that covers only part of the model name is left out (Sol 3)", () => {
+  said("app gem-g7", /the path v1beta\/models\/gemini-\{model\}:streamGenerateContent was not moved: its \{model\} covers only part of the model name/u, "left_out");
+  assert.ok(!config("gem-g7").routing.providers.gem.operations.includes("gemini.stream.v1beta"));
+});
+
 test("an empty path list reaches v1's defaults only, never a live session; lost styles and called paths are named (Fable 1, Sol 5)", () => {
   const proxy = config("chat-a1").routing.providers["openai-proxy"];
   assert.ok(proxy.operations.includes("openai.chat") && proxy.operations.includes("openai.images") && proxy.operations.includes("openai.speech"));
@@ -430,12 +473,12 @@ test("an empty path list reaches v1's defaults only, never a live session; lost 
 
 test("all-mode reaches each moved connection as v1's defaults did, and names the ones left out (Fable 1, 2)", () => {
   const ios = config("ios-c3");
-  assert.deepEqual(Object.keys(ios.routing.providers).sort(), ["claude", "claude-vercel", "gem", "groq", "openai", "openai-edge", "openai-eu", "openai-proxy", "mistral-eu", "moonshot-cn"].sort());
+  assert.deepEqual(Object.keys(ios.routing.providers).sort(), ["claude", "gem", "groq", "openai", "openai-cfbase", "openai-edge", "openai-eu-plain", "openai-proxy"]);
   assert.ok(!ios.routing.providers.openai.operations.includes("openai.realtime"));
   said("app ios-c3", /v1 let it reach every connection of its account/u, "changed");
   said("app ios-c3", /It reached .*wrong-host.* in v1, which were not moved/u, "left_out");
   // On the provider's own host, or through Cloudflare, another provider's API style never answered in v1: nothing to report.
-  for (const slug of ["claude", "openai-eu", "mistral-eu", "moonshot-cn"]) assert.ok(!lines("app ios-c3").some((line) => line.what.startsWith(`On ${slug}, v1 sent`)), slug);
+  for (const slug of ["claude", "openai-eu-plain"]) assert.ok(!lines("app ios-c3").some((line) => line.what.startsWith(`On ${slug}, v1 sent`)), slug);
   said("app ios-c3", /On openai-proxy, v1 sent gemini_native requests/u, "left_out");
   assert.equal(row("app", "ios-c3")!.status, "disabled");
 });
@@ -449,18 +492,19 @@ test("an app's access to a connection left out is named on the app, which adding
 
 // ---------------------------------------------------------------- presets, limits, keys
 
-test("endpoints become presets; a Groq transcription goes to Groq's own path; a fallback to a connection not moved is dropped (Gemini Neon 3)", () => {
+test("endpoints become presets on the operation that posts where v1 did; a fallback to a connection not moved is dropped (Sol, Gemini Neon 3)", () => {
   const presets = config("chat-a1").presets;
   assert.deepEqual(presets.summary, {
     provider: "openai",
-    operation: "openai.chat",
+    operation: "openai.responses",
     model: "gpt-6.2-sol",
     params: { temperature: 0 },
     max_output_tokens: 300,
-    fallback: [{ provider: "claude-vercel", operation: "vercel.chat", model: "anthropic/claude-fable-5-2" }],
+    fallback: [{ provider: "claude-vercel", operation: "vercel.responses", model: "anthropic/claude-fable-5-2" }],
   });
+  // v1 posted Groq transcriptions to openai/v1/audio/transcriptions: the operation that does too, named explicitly.
   assert.equal(presets.listen.operation, "groq.transcription.openai");
-  said("app chat-a1", /summary's fallback to gemini \(gemini-4-neon\) was dropped/u, "changed");
+  assert.ok(readFirst(said("app chat-a1", /summary's fallback to gemini \(gemini-4-neon\) was dropped/u, "changed")));
 });
 
 test("budgets become nano-dollars, one above zero staying above zero; default scope and conversations are not written (Sol 7)", () => {
@@ -473,8 +517,9 @@ test("budgets become nano-dollars, one above zero staying above zero; default sc
   assert.equal(config("ios-c3").limits.per_user.spending.scope, undefined);
 });
 
-test("users v1 blocked are counted on their app (Fable 4)", () => {
-  said("app chat-a1", /v1 blocked 2 users: they are not blocked in v2 until the history half/u, "check");
+test("users v1 blocked, and accounts v1 refused, are read before applying (Fable 3, 4)", () => {
+  assert.ok(readFirst(said("app chat-a1", /v1 blocked 2 users: they are not blocked in v2 until the history half/u, "check")));
+  assert.ok(readFirst(said("accounts", /v1 refused while email verification was on/u, "check")));
 });
 
 test("app keys and App Attest keys move with their times; an unknown environment is reported", () => {
@@ -539,12 +584,14 @@ test("the script reads an export and writes three files only its user can read, 
   const out = join(folder, "out");
   spawnSync("mkdir", [out]);
   writeFileSync(join(out, "report.md"), "old", { mode: 0o644 });
+  const temporary = mkdtempSync(join(tmpdir(), "agw-migrate-tmp-"));
   const run = spawnSync(
     process.execPath,
     ["--experimental-strip-types", join(V2_DIR, "scripts", "migrate-settings.ts"), "--from", "export.sql", "--out", "out", "--v1-vault", "v1.vars", "--v2-vault", "v2.vars", "--now", NOW.toISOString()],
-    { cwd: folder, encoding: "utf8", env: { ...process.env, INIT_CWD: folder } },
+    { cwd: folder, encoding: "utf8", env: { ...process.env, INIT_CWD: folder, TMPDIR: temporary } },
   );
   assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(readdirSync(temporary), [], "the copy of the export is deleted");
   for (const name of ["settings.sql", "report.md", "report.json"]) assert.equal(statSync(join(out, name)).mode & 0o777, 0o600, name);
   assert.deepEqual(readdirSync(out).sort(), ["report.json", "report.md", "settings.sql"], "no temporary file is left");
   const written = readFileSync(join(out, "settings.sql"), "utf8");
@@ -601,4 +648,55 @@ test("an export is read a piece at a time: a statement cut anywhere, even inside
   opened.close();
   writeFileSync(join(folder, "cut.sql"), "CREATE TABLE t (a text); INSERT INTO t VALUES ('half");
   await assert.rejects(openV1Export(join(folder, "cut.sql")), /cut short/u);
+});
+
+test("a run that stops deletes its copy of the export, and a missing core table stops it (Fable 2, Sol 6, 7)", () => {
+  const folder = mkdtempSync(join(tmpdir(), "agw-migrate-"));
+  const vars = (env: Record<string, string>) => Object.entries(env).map(([name, value]) => `${name}=${value}`).join("\n");
+  writeFileSync(join(folder, "v1.vars"), vars(V1_VAULT), { mode: 0o600 });
+  writeFileSync(join(folder, "v2.vars"), vars(V2_VAULT), { mode: 0o600 });
+  // An export cut before its provider tables: whole statements, but not a whole v1.
+  writeFileSync(join(folder, "export.sql"), exportSql.replace(/CREATE TABLE `provider`[\s\S]*$/u, ""));
+  const temporary = mkdtempSync(join(tmpdir(), "agw-migrate-tmp-"));
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", join(V2_DIR, "scripts", "migrate-settings.ts"), "--from", "export.sql", "--out", "out", "--v1-vault", "v1.vars", "--v2-vault", "v2.vars"],
+    { cwd: folder, encoding: "utf8", env: { ...process.env, INIT_CWD: folder, TMPDIR: temporary } },
+  );
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Nothing was written: the export has no .*provider.* table/u);
+  assert.deepEqual(readdirSync(temporary), [], "the copy of the export, with its plain-text tokens, is deleted");
+  assert.deepEqual(readdirSync(folder).sort(), ["export.sql", "v1.vars", "v2.vars"], "nothing was written");
+  assert.ok(REQUIRED_TABLES.includes("provider"));
+});
+
+test("a real wrangler export of v1's schema loads whole with a trigger at any batch edge (Fable 1, Sol 5, Gemini Neon)", () => {
+  // `fixtures/v1-schema.sql`: `wrangler d1 export --no-data` of v1's migrations, triggers last.
+  const schema = readFileSync(join(V2_DIR, "scripts", "migrate", "fixtures", "v1-schema.sql"), "utf8");
+  const firstTrigger = schema.indexOf("CREATE TRIGGER");
+  const before = new StatementSplitter().push(schema.slice(0, firstTrigger)).length;
+  for (const shift of [-2, -1, 0, 1, 2]) {
+    // Padding rows, so the first trigger is the 499th, 500th or 501st statement: one batch ends inside it, or at it.
+    const padding = Array.from({ length: 499 + shift - before - 1 }, (_, n) => `INSERT INTO "mgmt_verification" ("id","identifier","value","expires_at","created_at","updated_at") VALUES('v${n}','x','y',1,1,1);`).join("\n");
+    const db = loadV1Export(`${schema.slice(0, firstTrigger)}${padding}\n${schema.slice(firstTrigger)}`);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger'").get() as { n: number }).n, 7, `shift ${shift}`);
+  }
+});
+
+test("the splitter keeps a trigger whole, and reads bracket names and comments with ; inside (Sol 5)", () => {
+  const text = "CREATE TABLE [odd;name] (a text); /* -- a; b */ CREATE TRIGGER t AFTER INSERT ON [odd;name] BEGIN UPDATE [odd;name] SET a = CASE WHEN 1 THEN ';' END; SELECT 1; END; INSERT INTO [odd;name] VALUES ('x');";
+  for (const size of [1, 2, 4, 9, 1000]) {
+    const splitter = new StatementSplitter();
+    const statements: string[] = [];
+    for (let at = 0; at < text.length; at += size) statements.push(...splitter.push(text.slice(at, at + size)));
+    assert.equal(statements.length, 3, `pieces of ${size}`);
+    assert.match(statements[1]!, /^ \/\* -- a; b \*\/ CREATE TRIGGER[\s\S]*SELECT 1; END;$/u);
+  }
+  const db = loadV1Export(text);
+  assert.equal((db.prepare("SELECT a FROM [odd;name]").get() as { a: string }).a, ";");
+});
+
+test("the header says what the export holds in plain text (Fable 5)", () => {
+  const header = readFileSync(join(V2_DIR, "scripts", "migrate-settings.ts"), "utf8");
+  assert.match(header, /console session\s+\*\s+tokens and Google's sign-in tokens are in plain text/u);
 });

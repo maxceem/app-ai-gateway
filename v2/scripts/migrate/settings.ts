@@ -23,6 +23,10 @@
  *   people sign in once more.
  * - A provider key, or a gateway token, is opened with v1's vault and sealed
  *   again with v2's, in memory only (`Resealer`).
+ * - Whenever v2 cannot express exactly what v1 allowed, or cannot send to
+ *   exactly the same URL (`addresses`), that route, path, preset or
+ *   connection is left out and reported. Nothing is approximated: the owner
+ *   adds it back by hand after reading the report.
  * - Traffic and keys keep their destination. A base URL v2 cannot hold as it
  *   is, a Cloudflare AI Gateway URL with no Cloudflare token to go with it,
  *   or a gateway token of another account leaves the connection out, and the
@@ -49,13 +53,27 @@
 import { AppConfigSchema, ConversationsConfigSchema, conversationsAreDefault, type AppConfig } from "../../src/contracts/app-config.ts";
 import { ModelPricingSchema } from "../../src/contracts/admin.ts";
 import { checkCloudflareIds, checkDestination, checkedBaseUrl, passthroughJson, ratesFromPricing, type ListingSubject } from "../../src/admin/providers.ts";
+import { keyOrigin, type ConnectionRecord } from "../../src/providers/connections.ts";
 import { declaredHostNames, hostMatches, knownHostOwner } from "../../src/providers/custom.ts";
 import { BUILT_IN_PROVIDERS, builtInProvider } from "../../src/providers/index.ts";
 import { ProviderMatcher } from "../../src/providers/matcher.ts";
-import type { ApiStyle, HttpMethod, ProviderDescription } from "../../src/providers/operation.ts";
+import type { ApiStyle, HttpMethod, OperationDescription, ProviderDescription } from "../../src/providers/operation.ts";
 import { PASSTHROUGH } from "../../src/providers/passthrough.ts";
-import { presetOperation } from "../../src/providers/presets.ts";
-import { V1_DEFAULT_STYLES, V1_TYPE_DEFAULTS, V1_VERCEL_STYLES, V2_CAPS_OF_CLAMP, V2_STYLE_OF } from "./v1-defaults.ts";
+import { presetOperationProblem } from "../../src/providers/presets.ts";
+import { upstreamUrl } from "../../src/providers/route.ts";
+import {
+  V1_CLOUDFLARE_BASE,
+  V1_CLOUDFLARE_ROUTES,
+  V1_DEFAULT_STYLES,
+  V1_DIRECT_BASE_URL,
+  V1_ENDPOINT_PATHS,
+  V1_STYLE_PATHS,
+  V1_TYPE_DEFAULTS,
+  V1_VERCEL_BASE,
+  V1_VERCEL_STYLES,
+  V2_CAPS_OF_CLAMP,
+  V2_STYLE_OF,
+} from "./v1-defaults.ts";
 import type { V1App, V1Gateway, V1Provider, V1Settings } from "./v1-rows.ts";
 
 /** One line of the report. */
@@ -199,6 +217,46 @@ function samplePath(path: string): string {
   return path.replaceAll("{model}", "sample");
 }
 
+// ---------------------------------------------------------------- where requests go
+
+/**
+ * Where v1 sent a row's requests: to its base URL or its type's own address,
+ * through Cloudflare AI Gateway, or through Vercel AI Gateway.
+ */
+type V1Destination =
+  | { readonly kind: "direct"; readonly base: string }
+  | { readonly kind: "cloudflare"; readonly accountId: string; readonly gatewayId: string; readonly slug: string; readonly stripPathPrefix?: string }
+  | { readonly kind: "vercel" };
+
+/** The URL v1 sent a request for `path` to, built as v1's route adapters built it. */
+function v1Url(destination: V1Destination, path: string): string {
+  switch (destination.kind) {
+    case "direct":
+      return `${destination.base}${path}`;
+    case "cloudflare": {
+      const prefix = destination.stripPathPrefix;
+      const adapted = prefix !== undefined && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+      return [V1_CLOUDFLARE_BASE, encodeURIComponent(destination.accountId), encodeURIComponent(destination.gatewayId), destination.slug, adapted].join("/");
+    }
+    case "vercel":
+      return `${V1_VERCEL_BASE}${path}`;
+  }
+}
+
+/** v1's stored base URL ends in `/` (v1's origin guard): one stored otherwise is read the way v1 joined it. */
+function v1Base(raw: string): string {
+  return raw.endsWith("/") ? raw : `${raw}/`;
+}
+
+/** A `{name}` or `{name...}` part filled with a value a request could send: a fixed list's first entry, the model where given, else `sample`. */
+function filledPath(operation: OperationDescription, model = "sample"): string {
+  return operation.match.path.replace(/\{([^}.]+)(\.\.\.)?\}/gu, (_whole, name: string, multi: string | undefined) => {
+    const list = operation.multiSegment?.[name];
+    if (multi !== undefined && Array.isArray(list) && list.length > 0) return list[0]!;
+    return operation.model.in === "path" && operation.model.part === name ? model : "sample";
+  });
+}
+
 // ---------------------------------------------------------------- connections
 
 interface MovedConnection {
@@ -212,10 +270,32 @@ interface MovedConnection {
   readonly modelPrefix: string | null;
   /** v1's row had a base URL of its own on another host than the provider's: v1 sent every API style there, and it may have answered. */
   readonly hadBaseUrl: boolean;
+  /** Where v1 sent this row's requests. */
+  readonly v1: V1Destination;
+  /** What v2's address rules read of the connection (`upstreamUrl`). */
+  readonly record: ConnectionRecord;
+  readonly matcher: ProviderMatcher;
   readonly subject: ListingSubject & { readonly kind: "builtIn" };
   /** Paths apps listed in v1, accepted for this connection, with the apps that listed each. */
   readonly listed: { readonly asked: { method: HttpMethod; path: string }; readonly apps: Set<string> }[];
   readonly row: Row;
+}
+
+/** The URL v2 sends a request to, or null when it sends none (`upstreamUrl` refuses). */
+function v2Url(connection: MovedConnection, hostKey: string, path: string, passthrough: boolean): string | null {
+  try {
+    // As the Worker sends it (`sendAttempt` in `src/proxy/serve.ts`): the matcher's path without its leading `/`.
+    return upstreamUrl(connection.record, connection.description, { hostKey, path: path.replace(/^\//u, ""), query: "", passthrough });
+  } catch {
+    return null;
+  }
+}
+
+/** Where a request for `path` goes in v1 and in v2, and the operation v2 serves it with, if any. */
+function addresses(connection: MovedConnection, path: string, method: HttpMethod = "POST"): { readonly v1: string; readonly v2: string | null; readonly operation: OperationDescription | null; readonly parts: Readonly<Record<string, string>> } {
+  const matched = connection.matcher.match(method, path);
+  if (matched.kind !== "operation") return { v1: v1Url(connection.v1, path), v2: null, operation: null, parts: {} };
+  return { v1: v1Url(connection.v1, path), v2: v2Url(connection, matched.upstream.host, matched.upstream.path, false), operation: matched.operation, parts: matched.parts };
 }
 
 /** A model name as v1 put it on the wire, which v2 sends as the app names it: v1's rule exactly, the prefix always added. */
@@ -241,8 +321,15 @@ function accepted(description: ProviderDescription, baseUrl: string): string | n
   }
 }
 
+/** A URL with nothing but scheme, host and path: https, no port, user, query or fragment. */
+function plainHttps(url: URL): boolean {
+  return url.protocol === "https:" && url.port === "" && url.username === "" && url.password === "" && url.search === "" && url.hash === "";
+}
+
 /**
- * Where a v1 base URL leaves a connection. The destination never changes:
+ * Where a v1 base URL leaves a connection. The host never changes, and each
+ * route later keeps only the requests whose whole URL stays the same
+ * (`addresses`):
  * - on Cloudflare AI Gateway, the same gateway through the connection's
  *   Cloudflare setting, when the account holds that gateway's token;
  * - elsewhere, the URL as it is, or, on the provider's own declared host,
@@ -257,33 +344,42 @@ function placeBaseUrl(description: ProviderDescription, raw: string, cloudflare:
     return { kind: "problem", what: `its base URL ${raw} is not a URL` };
   }
   if (url.hostname.toLowerCase() === CLOUDFLARE_HOST) {
+    if (!plainHttps(url)) return { kind: "problem", what: `its base URL ${raw} goes to Cloudflare AI Gateway with a port, a query, a fragment or credentials, or without https, which v2's Cloudflare setting cannot carry` };
     const [version, accountId, gatewayId, slug, ...rest] = url.pathname.split("/").filter((piece) => piece !== "");
     const own = description.cloudflareGateway?.slug;
     if (own === undefined) return { kind: "problem", what: `its base URL ${raw} goes through Cloudflare AI Gateway, which v2 does not offer for ${description.label}` };
     if (version !== "v1" || accountId === undefined || gatewayId === undefined || slug !== own || rest.length > 0) {
       return {
         kind: "problem",
-        what: `its base URL ${raw} goes to Cloudflare AI Gateway's ${slug ?? "unnamed"} endpoint${rest.length > 0 ? ` with more path after it` : ""}, not the ${own} one v2's Cloudflare setting reaches for ${description.label}`,
+        what: `its base URL ${raw} goes to Cloudflare AI Gateway's ${slug ?? "unnamed"} endpoint${rest.length > 0 ? " with more path after it" : ""}, not the ${own} one v2's Cloudflare setting reaches for ${description.label}`,
       };
     }
-    const match = cloudflare.find((one) => one.ids.accountId === accountId && one.ids.gatewayId === gatewayId);
+    const ids = { accountId: decodeURIComponent(accountId), gatewayId: decodeURIComponent(gatewayId) };
+    try {
+      checkCloudflareIds(ids, null);
+      checkDestination(description, null, ids);
+    } catch (error) {
+      return { kind: "problem", what: `v2 does not take the Cloudflare AI Gateway its base URL ${raw} names (${reason(error)})` };
+    }
+    const match = cloudflare.find((one) => one.ids.accountId === ids.accountId && one.ids.gatewayId === ids.gatewayId);
     if (match === undefined) {
       return {
         kind: "problem",
-        what: `its base URL ${raw} goes through Cloudflare AI Gateway ${gatewayId}. v2 goes through Cloudflare only with a Cloudflare token, and the account holds none for that gateway. Add the connection again with its Cloudflare AI Gateway setting and a token`,
+        what: `its base URL ${raw} goes through Cloudflare AI Gateway ${ids.gatewayId}. v2 goes through Cloudflare only with a Cloudflare token, and the account holds none for that gateway. Add the connection again with its Cloudflare AI Gateway setting and a token`,
       };
     }
-    return { kind: "cloudflare", gateway: match.gateway, ids: match.ids };
+    return { kind: "cloudflare", gateway: match.gateway, ids };
   }
   const refused = accepted(description, raw);
   if (refused === null) return { kind: "keep", baseUrl: checkedBaseUrl(raw) };
-  // On the provider's own declared host, v2 takes only the plain address of that same host.
+  // On the provider's own declared host, v2 takes only that host's plain address (`baseUrlProblem`).
   const host = url.hostname.toLowerCase();
-  const declared = declaredHostNames(description).some((name) => hostMatches(name, host));
-  if (declared && url.protocol === "https:" && url.port === "" && url.pathname !== "/") {
-    const origin = `${url.origin}/`;
-    if (accepted(description, origin) === null) {
-      return { kind: "keep", baseUrl: checkedBaseUrl(origin), note: `Its base URL ${raw} is now ${origin}, the plain address of the same host, which v2 takes in its place (${refused}).` };
+  if (declaredHostNames(description).some((name) => hostMatches(name, host)) && plainHttps(url)) {
+    const declared = Object.values(description.hosts).find((entry) => entry.split("/")[0]!.toLowerCase() === host);
+    const plain = declared !== undefined ? `/${declared.slice(declared.split("/")[0]!.length + 1)}`.replace(/\/?$/u, "/") : "/";
+    const address = `${url.origin}${plain}`;
+    if (address !== raw && accepted(description, address) === null) {
+      return { kind: "keep", baseUrl: checkedBaseUrl(address), note: `Its base URL ${raw} is now ${address}, the plain address of the same host, which v2 takes in its place (${refused}). Only requests whose whole URL stays the same are allowed: see each app's line.` };
     }
   }
   const owner = knownHostOwner(raw);
@@ -378,7 +474,8 @@ async function moveConnection(
     try {
       return await options.reseal(blob, from, to);
     } catch (error) {
-      if (!(error instanceof SecretDoesNotOpen)) throw error;
+      // Anything but a blob that does not open stops the run: say which row it stopped on.
+      if (!(error instanceof SecretDoesNotOpen)) throw new Error(`${subject}, ${from.kind === "providerKey" ? "its key" : `gateway ${from.identity[1]}'s token`}: ${(error as Error).message}`, { cause: error });
       leaveOut(`its ${from.kind === "providerKey" ? "key" : "gateway token"} does not open with v1's vault (${error.message})`);
       return null;
     }
@@ -393,6 +490,7 @@ async function moveConnection(
   let ids: { accountId: string; gatewayId: string } | null = null;
   let cloudflareJson: string | null = null;
   let servingProviders: string | null = null;
+  let v1: V1Destination = { kind: "direct", base: V1_DIRECT_BASE_URL[provider.type] ?? "" };
   const sealToken = async (gateway: V1Gateway): Promise<string | null> => {
     const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "cloudflareGatewayToken", identity: [provider.organization_id, provider.id] });
     return blob === null ? null : JSON.stringify({ account_id: ids!.accountId, gateway_id: ids!.gatewayId, token_blob: blob, token_hint: hint(gateway.secret_hint) });
@@ -405,6 +503,8 @@ async function moveConnection(
     if (gateway.organization_id !== provider.organization_id) return leaveOut(`it names provider gateway ${gateway.id} of another account (${gateway.organization_id}), which v1 could not open for it either`);
     if (gateway.status !== "active") return leaveOut(`it went through a revoked provider gateway (${gateway.name})`);
     if (gateway.type === "cf_aig") {
+      const v1Route = V1_CLOUDFLARE_ROUTES[provider.type];
+      if (v1Route === undefined) return leaveOut(`v1 could not send ${a(v1Description.label)} row through Cloudflare AI Gateway, so it served nothing`);
       if (v1Description.cloudflareGateway === undefined) return leaveOut(`it went through Cloudflare AI Gateway, which v2 does not offer for ${v1Description.label}`);
       ids = cloudflareIds(gateway);
       if (ids === null) return leaveOut(`its Cloudflare AI Gateway ${gateway.name} names no account and gateway ids`);
@@ -414,6 +514,7 @@ async function moveConnection(
       } catch (error) {
         return leaveOut(`v2 does not take its Cloudflare AI Gateway ${gateway.name} (${reason(error)})`);
       }
+      v1 = { kind: "cloudflare", ...ids, ...v1Route };
       cloudflareJson = await sealToken(gateway);
       if (cloudflareJson === null) return null;
       report.push({
@@ -428,7 +529,8 @@ async function moveConnection(
       if (vercel === null) return leaveOut("v2 has no Vercel AI Gateway type");
       description = vercel;
       typeChanged = true;
-      const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "providerKey", identity: [provider.organization_id, provider.id, "vercel", ""] });
+      v1 = { kind: "vercel" };
+      const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "providerKey", identity: [provider.organization_id, provider.id, "vercel", keyOrigin({ baseUrl: null, cloudflareGateway: null })] });
       if (blob === null) return null;
       secretBlob = blob;
       secretHint = hint(gateway.secret_hint);
@@ -436,7 +538,7 @@ async function moveConnection(
       report.push({
         kind: "changed",
         subject,
-        what: `It was ${a(v1Description.label)} connection through Vercel AI Gateway (${gateway.name}). It is now a Vercel AI Gateway connection, with a copy of the gateway's token as its key, and its apps' operations are Vercel's of the same API style. v1 put ${modelPrefix} before every model name on the way out. v2 sends the model name as the app sends it, so an installed app that sends names without ${modelPrefix} is refused until it sends ${modelPrefix}<model>. The connection's prices, its apps' model lists and rewrite targets, and its presets now use the full names.`,
+        what: `It was ${a(v1Description.label)} connection through Vercel AI Gateway (${gateway.name}). It is now a Vercel AI Gateway connection, with a copy of the gateway's token as its key. v1 put ${modelPrefix} before every model name on the way out. v2 sends the model name as the app sends it, so an installed app that sends names without ${modelPrefix} is refused until it sends ${modelPrefix}<model>. The connection's prices, its apps' model lists and rewrite targets, and its presets now use the full names. An app route with no model list is left out: v1's prefix kept it to ${modelPrefix} models, a limit v2 cannot hold.`,
         first: true,
       });
     } else {
@@ -444,6 +546,7 @@ async function moveConnection(
     }
   } else {
     if (provider.base_url !== null && provider.base_url !== "") {
+      v1 = { kind: "direct", base: v1Base(provider.base_url) };
       const placed = placeBaseUrl(v1Description, provider.base_url, cloudflare);
       if (placed.kind === "problem") return leaveOut(placed.what);
       if (placed.kind === "keep") {
@@ -456,15 +559,16 @@ async function moveConnection(
         report.push({
           kind: "changed",
           subject,
-          what: `Its base URL went through Cloudflare AI Gateway ${placed.ids.gatewayId}. It now goes through the same gateway with the connection's own Cloudflare AI Gateway setting: the same key, and a copy of the token of the account's gateway ${placed.gateway.name}.`,
+          what: `Its base URL went through Cloudflare AI Gateway ${placed.ids.gatewayId}. It now goes through the same gateway with the connection's own Cloudflare AI Gateway setting: the same key, and a copy of the token of the account's gateway ${placed.gateway.name}. Only requests whose whole URL stays the same are allowed: see each app's line.`,
         });
       }
     }
     if (provider.secret_blob === null) return leaveOut("it holds no key");
+    // Sealed for the address the Worker opens it for (`keyOrigin`): its base URL, or its Cloudflare gateway's.
     const blob = await reseal(
       provider.secret_blob,
       { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, provider.base_url ?? ""] },
-      { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, baseUrl ?? ""] },
+      { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, keyOrigin({ baseUrl, cloudflareGateway: ids })] },
     );
     if (blob === null) return null;
     secretBlob = blob;
@@ -474,7 +578,7 @@ async function moveConnection(
     }
   }
 
-  return {
+  const connection: MovedConnection = {
     id: provider.id,
     accountId: provider.organization_id,
     slug: provider.slug,
@@ -483,6 +587,9 @@ async function moveConnection(
     modelPrefix,
     // A base URL on another host than the provider's own, and not Cloudflare's: a proxy that may have answered any API style.
     hadBaseUrl: baseUrl !== null && knownHostOwner(baseUrl)?.type !== description.type,
+    v1,
+    record: { baseUrl, cloudflareGateway: ids === null ? null : { ...ids, tokenBlob: "", tokenHint: null } } as unknown as ConnectionRecord,
+    matcher: new ProviderMatcher(description),
     subject: { kind: "builtIn", description, cloudflareGateway: ids, baseUrl },
     listed: [],
     row: {
@@ -505,6 +612,15 @@ async function moveConnection(
       serving_providers_json: servingProviders,
     },
   };
+  // A base URL v2 holds in another form, or a Cloudflare base URL: if no request would reach the same URL, nothing of it moved.
+  if (baseUrl !== provider.base_url && provider.base_url !== null && provider.provider_gateway_id === null) {
+    const compared = [...defaultReach(connection).operations].map((name) => addresses(connection, filledPath(description.operations.find((one) => one.name === name)!)));
+    if (!compared.some((where) => where.v2 !== null && where.v2 === where.v1)) {
+      const example = compared[0];
+      return leaveOut(`v2 would send none of its requests to the URL v1 sent them to${example === undefined ? "" : ` (for example ${example.v1} in v1, ${example.v2 ?? "nowhere"} in v2)`}`);
+    }
+  }
+  return connection;
 }
 
 // ---------------------------------------------------------------- app routing
@@ -529,13 +645,6 @@ interface Route {
 /** Matchers for every built-in type, to tell another provider's API from a plain passthrough path. */
 const MATCHERS = new Map(Object.values(BUILT_IN_PROVIDERS).map((description) => [description.type, new ProviderMatcher(description)]));
 
-/** The operation of `to` that speaks the same API style as `name` on `from`, for a connection whose type changed. */
-function sameStyleOperation(from: ProviderDescription, to: ProviderDescription, name: string): string | null {
-  const style = from.operations.find((operation) => operation.name === name)?.style;
-  if (style === undefined) return null;
-  return to.operations.find((operation) => operation.style === style)?.name ?? null;
-}
-
 /** Tries to list `asked` on the connection, by the console's own save rules. Returns why not, or null when it is listed. */
 function listPath(connection: MovedConnection, appId: string, asked: { method: HttpMethod; path: string }, report: ReportLine[]): string | null {
   const key = `${asked.method} ${asked.path}`;
@@ -544,6 +653,10 @@ function listPath(connection: MovedConnection, appId: string, asked: { method: H
     existing.apps.add(appId);
     return null;
   }
+  // A listed path goes to the connection's own address, as v1 sent it, or it is not listed.
+  const v1 = v1Url(connection.v1, asked.path);
+  const v2 = v2Url(connection, "main", asked.path, true);
+  if (v2 !== v1) return `v1 sent it to ${v1}, and v2 would send it ${v2 === null ? "nowhere" : `to ${v2}`}`;
   try {
     passthroughJson(connection.subject, [...connection.listed.map((one) => one.asked), asked], []);
   } catch (error) {
@@ -590,16 +703,40 @@ function defaultReach(connection: MovedConnection): { operations: Set<string>; l
   return { operations, lostStyles, lostPaths, sessions };
 }
 
+/** A route on a Vercel connection with no model list: v1's prefix kept it to one namespace, which v2 cannot hold. */
+function vercelWithoutModels(app: V1App, slug: string, connection: MovedConnection, policy: V1Policy, report: ReportLine[]): boolean {
+  if (connection.modelPrefix === null || (policy.allowed_models ?? []).some((model) => model.trim() !== "")) return false;
+  report.push({
+    kind: "left_out",
+    subject: `app ${app.id}`,
+    what: `On ${slug}, the app had no model list. v1 put ${connection.modelPrefix} before every model, which kept it to ${connection.modelPrefix} models; v2 cannot hold that limit, so the route was not moved. Allow ${slug} again with the models the app uses.`,
+  });
+  return true;
+}
+
 /** The route of an app that listed no paths on `slug` (or allowed every connection), and the report of what it no longer reaches. */
 function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: MovedConnection, usage: readonly string[], report: ReportLine[]): Route | null {
   const subject = `app ${app.id}`;
+  if (vercelWithoutModels(app, slug, connection, policy, report)) return null;
   const reach = defaultReach(connection);
+  // Only what still goes to the URL v1 sent it to.
+  const moved = new Set<string>();
+  const elsewhere: string[] = [];
+  for (const name of reach.operations) {
+    const operation = connection.description.operations.find((one) => one.name === name)!;
+    const where = addresses(connection, filledPath(operation));
+    if (where.v2 !== null && where.v2 === where.v1) moved.add(name);
+    else elsewhere.push(`${name} (v1: ${where.v1}, v2: ${where.v2 ?? "none"})`);
+  }
   const label = (connection.v1Description ?? connection.description).label;
   report.push({
     kind: "changed",
     subject,
-    what: `On ${slug}, v1 allowed its default API styles and ${label}'s own endpoints. v2 names each: it now allows those ${reach.operations.size} operations, and no passthrough path.${reach.sessions.length > 0 ? ` As in v1, not ${list(reach.sessions)}, which an app reached only by listing it.` : ""}`,
+    what: `On ${slug}, v1 allowed its default API styles and ${label}'s own endpoints. v2 names each: it now allows those ${moved.size} operations, and no passthrough path.${reach.sessions.length > 0 ? ` As in v1, not ${list(reach.sessions)}, which an app reached only by listing it.` : ""}`,
   });
+  if (elsewhere.length > 0) {
+    report.push({ kind: "left_out", subject, what: `On ${slug}, v2 would send these to another URL than v1 did, so they are not allowed: ${list(elsewhere)}.` });
+  }
   // v1 sent every style to the row's base URL; on the provider's own host, another provider's style never answered.
   if (connection.hadBaseUrl && reach.lostStyles.length > 0) {
     report.push({ kind: "left_out", subject, what: `On ${slug}, v1 sent ${list(reach.lostStyles)} requests to the connection's base URL. v2 serves no such API on ${a(connection.description.label)} connection, so they are refused with path_not_allowed.` });
@@ -607,25 +744,24 @@ function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: Mo
   if (reach.lostPaths.length > 0) {
     report.push({ kind: "left_out", subject, what: `On ${slug}, v2 does not serve ${list(reach.lostPaths.map((path) => `POST ${path}`))}, which v1 allowed by default. Requests to them are refused.` });
   }
-  // What the app really called, by v1's usage: anything v2 no longer serves for it.
-  const matcher = MATCHERS.get(connection.description.type)!;
+  // What the app really called, by v1's usage: anything v2 no longer serves for it at the same URL.
   const lost = usage.flatMap((route) => {
     if (!route.startsWith(`${slug}/`)) return [];
     const path = route.slice(slug.length + 1);
-    const matched = matcher.match("POST", path);
-    return matched.kind === "operation" && reach.operations.has(matched.operation.name) ? [] : [path];
+    const where = addresses(connection, path);
+    return where.operation !== null && moved.has(where.operation.name) && where.v2 === where.v1 ? [] : [path];
   });
   if (lost.length > 0) {
-    report.push({ kind: "left_out", subject, what: `On ${slug}, v1's usage shows the app called ${list(lost)}, which v2 does not serve for it. Those calls are refused.` });
+    report.push({ kind: "left_out", subject, what: `On ${slug}, v1's usage shows the app called ${list(lost)}, which v2 does not serve for it at the same URL. Those calls are refused.` });
   }
-  if (reach.operations.size === 0) {
+  if (moved.size === 0) {
     report.push({ kind: "left_out", subject, what: `On ${slug}, nothing v1 allowed can be served in v2, so the app no longer reaches ${slug}.` });
     return null;
   }
   const models = [...new Set((policy.allowed_models ?? []).map((model) => model.trim()).filter((model) => model !== ""))];
   return {
     connection,
-    operations: [...reach.operations],
+    operations: [...moved],
     ...(models.length > 0 ? { models } : {}),
     ...(policy.max_output_tokens !== undefined ? { max_output_tokens: policy.max_output_tokens } : {}),
   };
@@ -634,31 +770,37 @@ function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: Mo
 /** One v1 provider policy with listed paths as a route, or null when nothing in it can be served. */
 function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: MovedConnection, report: ReportLine[]): Route | null {
   const subject = `app ${app.id}`;
-  const v1Description = connection.v1Description ?? connection.description;
-  const ownMatcher = MATCHERS.get(v1Description.type)!;
+  if (vercelWithoutModels(app, slug, connection, policy, report)) return null;
+  const v1Type = (connection.v1Description ?? connection.description).type;
   const operations = new Set<string>();
   /** Operations a listed path named the model of, with those models. */
   const pinned = new Map<string, Set<string>>();
   /** Operations a listed path left open to any model. */
   const open = new Set<string>();
+  const notMoved = (what: string) => report.push({ kind: "left_out", subject, what: `On ${slug}, ${what}. Requests to it are refused with path_not_allowed.` });
   for (const entry of policy.allowed_paths ?? []) {
     const path = plainPath(typeof entry === "string" ? entry : entry.path);
     const methods: readonly HttpMethod[] = (typeof entry === "string" ? undefined : entry.methods) ?? ["POST"];
     if (LITERAL_PART.test(path)) {
-      report.push({
-        kind: "left_out",
-        subject,
-        what: `On ${slug}, the path ${path} was not moved: v1 matched its ${path.match(LITERAL_PART)![0]} as that literal text, never as an id, and v2 would read it as any id. List the exact path again if the app needs it.`,
-      });
+      notMoved(`the path ${path} was not moved: v1 matched its ${path.match(LITERAL_PART)![0]} as that literal text, never as an id, and v2 would read it as any id. List the exact path again if the app needs it`);
       continue;
     }
-    const matched = ownMatcher.match("POST", samplePath(path));
-    if (matched.kind === "operation") {
-      const operation = matched.operation;
+    const where = addresses(connection, samplePath(path));
+    if (where.operation !== null) {
+      const operation = where.operation;
+      // A `{model}` part must be the whole model segment: `gemini-{model}` let v1 match only part of it.
+      if (path.includes("{model}") && !(operation.model.in === "path" && where.parts[operation.model.part] === "sample")) {
+        notMoved(`the path ${path} was not moved: its {model} covers only part of the model name, a limit v2 cannot hold`);
+        continue;
+      }
+      if (where.v2 !== where.v1) {
+        notMoved(`the path ${path} was not moved: v1 sent it to ${where.v1}, and v2 would send it ${where.v2 === null ? "nowhere" : `to ${where.v2}`}`);
+        continue;
+      }
       operations.add(operation.name);
       // An exact path names its model, as v1 matched it: that model only.
       if (operation.model.in === "path" && !path.includes("{model}")) {
-        const model = matched.parts[operation.model.part];
+        const model = where.parts[operation.model.part];
         if (model !== undefined) pinned.set(operation.name, new Set([...(pinned.get(operation.name) ?? []), model]));
       } else {
         open.add(operation.name);
@@ -685,33 +827,26 @@ function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: Mov
       continue;
     }
     // Another provider's API on this connection: v2 serves each type's own operations only (plan 9.1).
-    const other = [...MATCHERS].find(([type, matcher]) => type !== v1Description.type && matcher.match("POST", samplePath(path)).kind === "operation");
+    const other = [...MATCHERS].find(([type, matcher]) => type !== v1Type && type !== connection.description.type && matcher.match("POST", samplePath(path)).kind === "operation");
     if (other !== undefined) {
-      report.push({
-        kind: "left_out",
-        subject,
-        what: `On ${slug}, the path ${path} was not moved: it is ${BUILT_IN_PROVIDERS[other[0]]!.label}'s API, which v2 does not serve on ${a(v1Description.label)} connection. Requests to it are refused with path_not_allowed.`,
-      });
+      notMoved(`the path ${path} was not moved: it is ${BUILT_IN_PROVIDERS[other[0]]!.label}'s API, which v2 does not serve on ${a(connection.description.label)} connection`);
+      continue;
+    }
+    if (connection.v1Description !== null) {
+      notMoved(`the path ${path} was not moved: ${connection.description.label} serves no such operation, and v2 lists no passthrough path through it`);
       continue;
     }
     for (const method of methods) {
       const line = `${method} ${path}`;
       const problem = listPath(connection, app.id, { method, path }, report);
       if (problem !== null) {
-        report.push({ kind: "left_out", subject, what: `On ${slug}, the passthrough path ${line} was not moved: ${problem}. Requests to it are refused with path_not_allowed.` });
+        notMoved(`the passthrough path ${line} was not moved: ${problem}`);
         continue;
       }
       operations.add(PASSTHROUGH);
     }
   }
-  // A connection whose type changed (Vercel AI Gateway): the same API styles on the new type.
-  const rename = (name: string): string | null => {
-    if (name === PASSTHROUGH || connection.v1Description === null) return name;
-    const counterpart = sameStyleOperation(connection.v1Description, connection.description, name);
-    if (counterpart === null) report.push({ kind: "left_out", subject, what: `On ${slug}, the operation ${name} has no counterpart on ${connection.description.label}, and was not moved.` });
-    return counterpart;
-  };
-  const unique = [...new Set([...operations].flatMap((name) => rename(name) ?? []))];
+  const unique = [...operations];
   if (unique.length === 0) {
     report.push({ kind: "left_out", subject, what: `On ${slug}, nothing v1 allowed can be served in v2, so the app no longer reaches ${slug}.` });
     return null;
@@ -760,6 +895,28 @@ interface V1Endpoint {
   fallback?: { provider: string; model: string }[];
 }
 
+/**
+ * The operation a preset target uses: one of the connection's preset
+ * operations of the style whose URL, for this model, is the one v1's endpoint
+ * posted to. Named explicitly, so a later change of v2's default never moves
+ * it. A reason instead when there is none.
+ */
+function presetTarget(connections: ReadonlyMap<string, MovedConnection>, provider: string, v1Style: string, style: ApiStyle, model: string): { connection: MovedConnection; operation: string; model: string } | string {
+  const connection = connections.get(provider);
+  if (connection === undefined) return `the connection ${provider} was not moved`;
+  const wire = wireModel(connection, model);
+  const v1Type = (connection.v1Description ?? connection.description).type;
+  const v1Path = connection.v1.kind === "vercel" ? V1_STYLE_PATHS[v1Style] : V1_ENDPOINT_PATHS[v1Type]?.[v1Style];
+  if (v1Path === undefined) return `v1 had no ${v1Style} endpoint path for ${a(connection.description.label)} connection`;
+  const v1 = v1Url(connection.v1, v1Path.replace("{model}", encodeURIComponent(wire)));
+  for (const operation of connection.description.operations) {
+    if (operation.style !== style || presetOperationProblem(connection.description, operation) !== null) continue;
+    const where = addresses(connection, filledPath(operation, encodeURIComponent(wire)));
+    if (where.operation?.name === operation.name && where.v2 === v1) return { connection, operation: operation.name, model: wire };
+  }
+  return `no ${style} operation of ${connection.description.label} posts to ${v1}, where v1 sent it`;
+}
+
 function presetsFor(app: V1App, endpoints: Record<string, V1Endpoint>, connections: ReadonlyMap<string, MovedConnection>, report: ReportLine[]): NonNullable<AppConfig["presets"]> {
   const subject = `app ${app.id}`;
   const presets: NonNullable<AppConfig["presets"]> = {};
@@ -769,30 +926,23 @@ function presetsFor(app: V1App, endpoints: Record<string, V1Endpoint>, connectio
       report.push({ kind: "left_out", subject, what: `The endpoint ${slug} speaks ${endpoint.api_style}, which v2 presets do not, and was not moved. Calls to it are refused with preset_not_found.` });
       continue;
     }
-    const target = (provider: string): { connection: MovedConnection; operation: string } | string => {
-      const connection = connections.get(provider);
-      if (connection === undefined) return `the connection ${provider} was not moved`;
-      const operation = presetOperation(connection.description, style, undefined);
-      if (operation === null) return `${connection.description.label} has no ${style} operation a preset can use`;
-      return { connection, operation: operation.name };
-    };
-    const main = target(endpoint.provider);
+    const main = presetTarget(connections, endpoint.provider, endpoint.api_style, style, endpoint.model);
     if (typeof main === "string") {
       report.push({ kind: "left_out", subject, what: `The endpoint ${slug} was not moved: ${main}. Calls to it are refused with preset_not_found.` });
       continue;
     }
     const fallback = (endpoint.fallback ?? []).flatMap((one) => {
-      const found = target(one.provider);
+      const found = presetTarget(connections, one.provider, endpoint.api_style, style, one.model);
       if (typeof found === "string") {
-        report.push({ kind: "changed", subject, what: `The endpoint ${slug}'s fallback to ${one.provider} (${one.model}) was dropped: ${found}.` });
+        report.push({ kind: "changed", subject, what: `The endpoint ${slug}'s fallback to ${one.provider} (${one.model}) was dropped: ${found}.`, first: true });
         return [];
       }
-      return [{ provider: one.provider, operation: found.operation, model: wireModel(found.connection, one.model) }];
+      return [{ provider: one.provider, operation: found.operation, model: found.model }];
     });
     presets[slug] = {
       provider: endpoint.provider,
       operation: main.operation,
-      model: wireModel(main.connection, endpoint.model),
+      model: main.model,
       ...(endpoint.params !== undefined && Object.keys(endpoint.params).length > 0 ? { params: endpoint.params } : {}),
       ...(endpoint.max_output_tokens !== undefined ? { max_output_tokens: endpoint.max_output_tokens } : {}),
       ...(fallback.length > 0 ? { fallback } : {}),
@@ -1061,6 +1211,7 @@ export async function migrateSettings(v1: V1Settings, options: MigrationOptions)
     report.push({
       kind: "check",
       subject: "accounts",
+      first: true,
       what: `${count(unverified.length, "account", "accounts")} v1 refused while email verification was on, because no owner had a verified address: ${list(unverified.sort())}. v2 has no activation step and does not mark imported accounts, so ${unverified.length === 1 ? "it serves" : "they serve"} in v2.`,
     });
   }
@@ -1091,7 +1242,7 @@ export async function migrateSettings(v1: V1Settings, options: MigrationOptions)
     apps.set(app.id, { accountId: app.organization_id, config });
     const blocked = v1.blockedUsers[app.id] ?? 0;
     if (blocked > 0) {
-      report.push({ kind: "check", subject: `app ${app.id}`, what: `v1 blocked ${count(blocked, "user", "users")}: ${blocked === 1 ? "it is" : "they are"} not blocked in v2 until the history half of the migration runs, which brings v1's user records over.` });
+      report.push({ kind: "check", subject: `app ${app.id}`, first: true, what: `v1 blocked ${count(blocked, "user", "users")}: ${blocked === 1 ? "it is" : "they are"} not blocked in v2 until the history half of the migration runs, which brings v1's user records over.` });
     }
     const createdAt = v1TimeMs(app.created_at) ?? now;
     rows.app.push({

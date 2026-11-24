@@ -29,10 +29,13 @@
  *
  *      node scripts/wrangler.mjs --profile <name> d1 export DB --remote --output v1-export.sql
  *
- *    The export holds every live secret v1 has, sealed: provider keys,
- *    password hashes, key hashes. Keep it, the vault files and `--out` in a
- *    folder only you can read, and delete all of them once the import is
- *    done.
+ *    The export holds every secret v1 has. Provider keys and gateway tokens
+ *    are sealed, and passwords and keys are hashes, but console session
+ *    tokens and Google's sign-in tokens are in plain text. Keep it, the
+ *    vault files and `--out` in a folder only you can read, and delete all of
+ *    them once the import is done. While it runs, the script keeps a copy of
+ *    the export in a private temporary folder, and deletes it when it ends,
+ *    stops, or is interrupted.
  * 2. Write the two vault files, each with `SECRET_VAULT_MODE` and that mode's
  *    names, copied from the deployment's own secrets:
  *    - `local`: `SECRET_VAULT_LOCAL_KEK_V1`, every other
@@ -121,6 +124,14 @@ try {
 } catch (error) {
   stop(`The v1 export does not load: ${(error as Error).message}`);
 }
+// The copy holds the export's secrets: it goes whatever ends the run, an interrupt included.
+const { close } = exported;
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    close();
+    process.exit(130);
+  });
+}
 let result;
 let statements;
 let judged;
@@ -129,10 +140,10 @@ try {
   statements = insertStatements(result.rows);
   judged = await checkAgainstV2(result, statements, join(V2_DIR, "migrations"));
 } catch (error) {
+  close();
   stop(`Nothing was written: ${(error as Error).message}`);
-} finally {
-  exported.close();
 }
+close();
 const report = [...result.report, ...judged];
 
 /** Writes `text` to a new file only this user can read, then renames it over `name`, so no reader ever sees a part, or a wider mode. */

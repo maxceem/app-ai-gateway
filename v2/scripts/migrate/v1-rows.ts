@@ -179,13 +179,39 @@ function tableExists(db: DatabaseSync, name: string): boolean {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
 
+/**
+ * The v1 tables a whole export always has. One missing means the export is
+ * cut short or of something else: the run stops rather than read it as empty.
+ */
+export const REQUIRED_TABLES = [
+  "mgmt_user",
+  "mgmt_user_account",
+  "mgmt_organization",
+  "mgmt_organization_user",
+  "mgmt_organization_invitation",
+  "mgmt_api_key",
+  "app",
+  "app_api_key",
+  "app_attest_key",
+  "app_user",
+  "provider",
+  "provider_gateway",
+  "account_activation",
+  "app_usage_event",
+] as const;
+
+/** Tables read only for the ids of deleted apps: an export of a v1 that never had them is still whole. */
+export const OPTIONAL_TABLES = ["app_usage_rollup", "app_rejection_event", "app_auth_event"] as const;
+
 function rows<T>(db: DatabaseSync, table: string, sql = `SELECT * FROM ${table}`): T[] {
   if (!tableExists(db, table)) return [];
   return db.prepare(sql).all() as T[];
 }
 
-/** Reads every settings row from a v1 database. */
+/** Reads every settings row from a v1 database. Throws when a required table is missing. */
 export function readV1Settings(db: DatabaseSync): V1Settings {
+  const missing = REQUIRED_TABLES.filter((table) => !tableExists(db, table));
+  if (missing.length > 0) throw new Error(`the export has no ${missing.join(", ")} table${missing.length === 1 ? "" : "s"}: it is not a whole v1 export`);
   const historyAppIds = new Set<string>();
   for (const table of HISTORY_TABLES) {
     if (!tableExists(db, table)) continue;
@@ -221,18 +247,26 @@ export function readV1Settings(db: DatabaseSync): V1Settings {
 }
 
 /**
- * Splits SQL text into whole statements, a piece at a time: a `;` ends a
- * statement only outside a quoted string or name (`'…'`, `"…"`, `` `…` ``,
- * where a doubled quote stays inside) and outside a comment (`-- …` to the end
- * of the line, `/* … *\/`). Comments stay in the statement, which SQLite
- * skips.
+ * Splits SQL text into whole statements, a piece at a time, with one scanner.
+ * A `;` ends a statement only:
+ * - outside a quoted string or name (`'…'`, `"…"`, `` `…` ``, `[…]`; a
+ *   doubled quote stays inside);
+ * - outside a comment (`-- …` to the end of the line, `/* … *\/`);
+ * - and, in a `CREATE TRIGGER`, only after the `END` that closes its `BEGIN`
+ *   (a `CASE … END` inside counts as a pair of its own).
+ * Comments stay in the statement, which SQLite skips. node:sqlite has no
+ * statement-completeness check to lean on.
  */
 export class StatementSplitter {
   private pending = "";
-  /** What the scan is inside: a quote character, `--`, `/*`, or nothing. */
+  /** What the scan is inside: a closing quote character, `--`, `/*`, or nothing. */
   private inside: string | null = null;
   /** Where scanning resumes in `pending`. */
   private scanned = 0;
+  /** The current statement's first words, upper-cased, up to four. */
+  private head: string[] = [];
+  /** Inside a trigger: how many `BEGIN` and `CASE` are open. */
+  private depth = 0;
 
   /** The statements `chunk` completes. */
   push(chunk: string): string[] {
@@ -240,12 +274,14 @@ export class StatementSplitter {
     const done: string[] = [];
     let start = 0;
     let at = this.scanned;
-    for (; at < this.pending.length; at += 1) {
+    scan: for (; at < this.pending.length; at += 1) {
       const char = this.pending[at]!;
       const next = this.pending[at + 1];
       if (this.inside === "--") {
         if (char === "\n") this.inside = null;
-      } else if (this.inside === "/*") {
+        continue;
+      }
+      if (this.inside === "/*") {
         if (char === "*") {
           if (next === undefined) break;
           if (next === "/") {
@@ -253,19 +289,35 @@ export class StatementSplitter {
             at += 1;
           }
         }
-      } else if (this.inside !== null) {
+        continue;
+      }
+      if (this.inside !== null) {
         if (char === this.inside) this.inside = null;
-      } else if (char === "'" || char === '"' || char === "`") {
+        continue;
+      }
+      if (char === "'" || char === '"' || char === "`") {
         this.inside = char;
+      } else if (char === "[") {
+        this.inside = "]";
       } else if (char === "-" || char === "/") {
         // A comment opener may be cut between two pieces: wait for the next.
         if (next === undefined) break;
         if (char === "-" && next === "-") this.inside = "--";
         else if (char === "/" && next === "*") this.inside = "/*";
         if (this.inside !== null) at += 1;
+      } else if (/[A-Za-z_]/u.test(char)) {
+        let stop = at;
+        while (stop < this.pending.length && /[A-Za-z0-9_$]/u.test(this.pending[stop]!)) stop += 1;
+        // A word may be cut between two pieces: read it whole next time.
+        if (stop === this.pending.length) break scan;
+        this.word(this.pending.slice(at, stop).toUpperCase());
+        at = stop - 1;
       } else if (char === ";") {
+        if (this.inTrigger() && this.depth > 0) continue;
         done.push(this.pending.slice(start, at + 1));
         start = at + 1;
+        this.head = [];
+        this.depth = 0;
       }
     }
     this.pending = this.pending.slice(start);
@@ -276,6 +328,18 @@ export class StatementSplitter {
   /** What is left once the text has ended: nothing but blanks and comments in a whole export. */
   rest(): string {
     return this.pending.replace(/--[^\n]*(\n|$)/gu, "").replace(/\/\*[\s\S]*?\*\//gu, "").trim();
+  }
+
+  private inTrigger(): boolean {
+    const [first, second, third] = this.head;
+    return first === "CREATE" && (second === "TRIGGER" || ((second === "TEMP" || second === "TEMPORARY") && third === "TRIGGER"));
+  }
+
+  private word(word: string): void {
+    if (this.head.length < 4) this.head.push(word);
+    if (!this.inTrigger()) return;
+    if (word === "BEGIN" || word === "CASE") this.depth += 1;
+    else if (word === "END" && this.depth > 0) this.depth -= 1;
   }
 }
 
