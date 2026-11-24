@@ -1,25 +1,34 @@
 import AppAIGateway
 import Foundation
 
-/// Sends the demo's requests through App AI Gateway.
+/// Sends the demo's requests through App AI Gateway's `/v2` routes.
 ///
-/// Keep one `AppAIGatewayClient` for the app's lifetime: it holds the gateway
-/// token, refreshes it, and, on an app that verifies App Attest on every
-/// request, signs each one with the device's App Attest key.
+/// One `AppAIGatewayClient` per gateway setup: it holds the gateway token,
+/// refreshes it, and, on an app that verifies App Attest on every request,
+/// signs each one with the device's App Attest key. The demo has no sign-in,
+/// so `AppSettings` keeps one client until the gateway URL, app ID or key
+/// change, then makes a new one for the next request. An app whose users sign in makes one
+/// client per signed-in session, and ends the old one with `invalidate()`
+/// before it switches users.
 struct GatewayBackend: AIBackend {
     let client: AppAIGatewayClient
     /// The slug each provider type is connected under, e.g. `"openai"`.
     let slugs: [String: String]
 
-    init(baseURL: URL, appID: String, apiKey: String?, slugs: [String: String]) {
-        client = AppAIGatewayClient(
+    init(client: AppAIGatewayClient, slugs: [String: String]) {
+        self.client = client
+        self.slugs = slugs
+    }
+
+    /// A client for one gateway and app.
+    static func makeClient(baseURL: URL, appID: String, apiKey: String?) -> AppAIGatewayClient {
+        AppAIGatewayClient(
             appID: appID,
             baseURL: baseURL,
             // App Attest proves the request comes from your app on a real
             // device. An API key works in the simulator, for testing.
             authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall
         )
-        self.slugs = slugs
     }
 
     /// POSTs `body` to the model's provider and returns the response body.
@@ -65,12 +74,13 @@ struct GatewayBackend: AIBackend {
         slugs[model.provider] ?? model.provider
     }
 
-    /// Throws the refusal in a failed response: the gateway's own, with a code
-    /// such as `model_not_allowed`, or the provider's, passed through as it was.
+    /// Throws the refusal in a failed response: the gateway's own, marked in
+    /// `X-AGW-Error` and with a code such as `model_not_allowed`, or the
+    /// provider's, passed through as it was.
     private func check(_ response: HTTPURLResponse, body: Data) throws {
         guard let error = GatewayError(response: response, body: body) else { return }
-        if error.code != .unknown { throw error }
-        throw ProviderError(status: response.statusCode, body: body)
+        if error.isFromGateway { throw error }
+        throw ProviderError(status: response.statusCode, body: error.providerBody ?? body)
     }
 }
 

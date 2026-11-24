@@ -8,6 +8,8 @@ import Foundation
 ///     -Sidebar YES         open the sidebar
 ///     -Show settings       open Settings
 ///     -Kind image -Send "A red bicycle"   send a prompt on a new screen
+///     -Kind transcription -Send YES -RecordingFile /path/voice.m4a
+///                                         transcribe that file on a new screen
 ///
 /// and that point the app at a gateway, saved like changes made in Settings:
 ///
@@ -60,7 +62,9 @@ enum LaunchOptions {
         switch nav.kind {
         case .chat: nav.itemID = runner.sendChat(prompt, image: nil, in: nav.itemID, model: model)
         case .image: nav.itemID = runner.generateImage(prompt, aspect: .square, in: nav.itemID, model: model)
-        case .transcription: break
+        case .transcription:
+            guard let url = recordingFile, let data = try? Data(contentsOf: url) else { return }
+            nav.itemID = runner.transcribe(Recording(data: data, duration: 0), in: nav.itemID, model: model)
         }
     }
 }

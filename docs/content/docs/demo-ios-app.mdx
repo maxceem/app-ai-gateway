@@ -1,16 +1,24 @@
 ---
 title: Run the demo app on your iPhone
-description: Build the open-source demo app and run it on your iPhone through your own gateway app, with chat, images and voice notes from one OpenAI key and no sign-up.
+description: Build the open-source demo app and run it on your iPhone through your own gateway app, with chat, images and voice notes from one OpenAI key.
 ---
 
 The demo app is a small SwiftUI app that chats, generates images and turns
 voice notes into text through App AI Gateway, from a real iPhone with App
-Attest, the way your own app would. Its source is in
-[`examples/ios`](https://github.com/maxceem/app-ai-gateway/tree/main/examples/ios).
+Attest, the way your own app would. It uses the Swift package 2.0. Its source
+is in [`examples/ios`](https://github.com/maxceem/app-ai-gateway/tree/main/examples/ios).
+
+<Callout title="Release">
+  The demo and the Swift package 2.0 are published with this version of the
+  gateway, and so is `agw` 2. Until then, the repository's `main` branch still
+  has the earlier demo. To try this one now, use the `v2` branch, and run the
+  CLI from it: in step 4, clone with `--branch v2`, then run `pnpm install` in
+  the repository's root, and write `pnpm v2:cli:dev` wherever this guide
+  writes `agw`.
+</Callout>
 
 This guide takes about ten minutes: a gateway app from the command line, then
-the demo built onto your phone. You do not need to sign up first. The CLI
-starts a temporary account, and you can claim it at the end to keep it.
+the demo built onto your phone.
 
 The steps work the same for a person at a terminal and for an AI agent. Where
 they differ, both ways are given. Agents should also read
@@ -29,36 +37,34 @@ they differ, both ways are given. Agents should also read
   prints it as `OU=`.
 - An OpenAI API key. OpenAI serves all three things the demo does, so a
   single key lets you try chat, images and transcription.
+- An account on the gateway. Sign up at
+  [console.appaigateway.com/v2/signup](https://console.appaigateway.com/v2/signup)
+  if you have none.
 - Node.js 22.19 or later, for the CLI.
 
-## 1. Install the CLI
+## 1. Install the CLI and sign in
 
 ```sh
-npm install -g @maxceem/agw
-agw deployment status
+npm install -g @maxceem/agw@2
+agw account login
 ```
 
-If you already have an account, run `agw account login` now so the app
-lands in it. Otherwise the next step starts a new temporary one.
+`agw account login` opens the console, where you approve the sign-in with
+**Manage**. Over SSH it prints a link and a code instead. See
+[CLI](/automation/cli#sign-in).
 
 ## 2. Add your OpenAI key
 
 At a terminal, enter the key in a hidden prompt:
 
 ```sh
-agw provider add --type openai --name "OpenAI" --key-prompt
+agw provider add --type openai --name "OpenAI"
 ```
 
-An agent hands this step to you instead, so the key never passes through it:
+Or add it yourself on the console's **Providers** page. An agent asks you to do
+one of the two, so the key never passes through it.
 
-```sh
-agw provider add --type openai --name "OpenAI" --browser --no-open --json
-```
-
-Open the URL it returns, check the provider shown, and paste the key there.
-The agent then finishes with `agw operation wait <id> --json`.
-
-`agw provider list` shows the provider with the slug `openai`.
+`agw provider list` shows the connection with the slug `openai`.
 
 ## 3. Create the app for the demo
 
@@ -69,12 +75,15 @@ create an iOS app with it and your Team ID:
 agw app add --type ios --name "Gateway Demo" \
   --team-id ABCDE12345 \
   --bundle-id com.yourname.GatewayDemo \
-  --attest-environments development
+  --attest-environments development \
+  --providers openai=openai.chat+openai.images+openai.transcription
 ```
 
 The output names the app's ID, such as `gateway-demo-a1b2c3d4e5f6`; with
 `--json` it is `result.app.id`. The app accepts App Attest from development
-builds, which is what Xcode installs, and can reach every provider you add.
+builds, which is what Xcode installs. A new app may call nothing until you
+allow a connection, so `--providers` allows the three OpenAI operations the
+demo uses. See [Provider access](/applications/provider-access).
 
 ## 4. Get the code
 
@@ -126,11 +135,13 @@ Each feature starts on an OpenAI model:
 
 The model menu at the top switches models. The first request takes a moment
 longer, while the phone registers its App Attest key with the gateway. See
-what each request did with `agw usage show --app APP_ID`, or on the app's
-**Usage** page in the console.
+what each request did with `agw app charge list APP_ID`, one line per
+attempt, or on the app's **Usage** tab in the console. `agw usage show --app
+APP_ID` gives the month's totals.
 
-To try another provider, add its key as in step 2, then turn it on in the
-app's **Settings → Providers**.
+To try another provider, add its key as in step 2, allow it on the app's
+**Providers** tab in the console, then turn it on in the demo's
+**Settings → Providers**.
 
 ## If something fails
 
@@ -139,25 +150,22 @@ app's **Settings → Providers**.
 | `No Accounts`, or a profile that "doesn't include the App Attest capability" | Sign in to Xcode under **Settings → Accounts**, then build again. |
 | The launch says the device is locked | Unlock the iPhone and run the launch command again. |
 | `attest_failed` in the app | The Team ID or bundle ID of the build differs from step 3. Build with the same values. |
-| `provider_not_configured` | The provider is turned on in the app but not added in step 2. Add it, or turn it off in **Settings → Providers**. |
-| `model_not_allowed` or `path_not_allowed` | The app's provider access was narrowed. `agw app show APP_ID` shows what it allows. |
+| `provider_not_configured` | The provider is turned on in the demo, but the app does not allow it, or it was not added in step 2. Allow it on the app's **Providers** tab, or turn it off in the demo's **Settings → Providers**. |
+| `path_not_allowed` | The app does not allow that operation, such as `openai.images`. Allow it on the app's **Providers** tab. |
+| `model_not_allowed` | The app's model list leaves the model out. `agw app show APP_ID` shows what it allows. |
+| `email_unverified` | Open the link in your account's verification email. |
 
 The full list of codes is in [Errors and limits](/integrate/errors).
-
-## Keep the account
-
-A temporary account expires unless you claim it. `agw account status`
-shows when. To keep it, run `agw account claim`, open the URL in your browser,
-and create your sign-in there. The demo app keeps working throughout.
 
 ## Notes for AI agents
 
 - Before you start, ask the person for their Team ID (or read it with the
   certificate command above), a bundle ID they own, and which iPhone to use.
 - Never ask for a provider key in the conversation or put it in a command.
-  Use the browser handoff in step 2 and wait for the person to finish it.
-- Some steps are the person's alone: signing in to Xcode, turning on Developer
-  Mode, unlocking the phone, and claiming the account. Ask for each when you
-  reach it.
-- Run `agw account status --json` before step 2. If an account is already
-  connected and the person wanted a new one, stop and ask.
+  Ask the person to add it in step 2, and find it afterwards with
+  `agw provider list`. See the [agent manual](/automation/agent-manual).
+- Some steps are the person's alone: creating the account, approving the CLI
+  sign-in, signing in to Xcode, turning on Developer Mode and unlocking the
+  phone. Ask for each when you reach it.
+- Run `agw account status --json` before step 2, and check it is the account
+  the person means.

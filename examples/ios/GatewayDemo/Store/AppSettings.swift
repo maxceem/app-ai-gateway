@@ -1,3 +1,4 @@
+import AppAIGateway
 import Foundation
 import Observation
 
@@ -87,26 +88,46 @@ final class AppSettings {
 
     // MARK: Backend
 
-    private var gateway: (values: Values, apiKey: String, backend: GatewayBackend)?
+    /// What the gateway client is built from: where it sends, and how it
+    /// proves who is calling. Slugs, models and turning a provider on change
+    /// none of it, so the client and its token and App Attest key stay.
+    private struct ClientSetup: Equatable {
+        var baseURL: String
+        var appID: String
+        var apiKey: String?
+    }
 
-    /// The backend requests go to. The gateway one is kept while the settings
-    /// stay the same, so its client keeps its token between requests.
+    /// The client in use, and the setup it was built from.
+    private var gateway: (setup: ClientSetup, client: AppAIGatewayClient)?
+
+    /// The backend a request goes to: the cached client, with the slugs as
+    /// they are now. The client is kept while what it is built from stays the
+    /// same, so it keeps its token between requests. When that changes, the
+    /// next request gets a new client; a request already out keeps the backend
+    /// it started with, retries included, and the old client goes away once
+    /// nothing holds it.
     func backend() throws -> any AIBackend {
         if values.simulated { return SimulatedBackend() }
-        if let gateway, gateway.values == values, gateway.apiKey == apiKey { return gateway.backend }
-        guard let url = URL(string: values.baseURL), url.scheme != nil, !values.appID.isEmpty else {
+        let setup = ClientSetup(baseURL: values.baseURL, appID: values.appID, apiKey: values.useAPIKey ? apiKey : nil)
+        if let gateway, gateway.setup == setup { return GatewayBackend(client: gateway.client, slugs: slugs) }
+        guard let url = URL(string: setup.baseURL), url.scheme != nil, !setup.appID.isEmpty else {
             throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
         }
-        if values.useAPIKey, apiKey.isEmpty {
+        if setup.apiKey?.isEmpty == true {
             throw ProviderError(status: 0, message: "Add your API key in Settings.")
         }
-        let backend = GatewayBackend(
-            baseURL: url,
-            appID: values.appID,
-            apiKey: values.useAPIKey ? apiKey : nil,
-            slugs: slugs
-        )
-        gateway = (values, apiKey, backend)
-        return backend
+        // A slug change reuses the existing client; a change of gateway, app
+        // or key makes a new one. Each client manages its own App Attest key,
+        // so a slug change must never make a second one for the same install.
+        // (A different app ID has its own Keychain slot.)
+        //
+        // The demo has no sign-in, so no user's identity can pass from one
+        // client to the next, and the old client is not ended. An app whose
+        // users sign in must `await client.invalidate()` before it switches
+        // users, and make a new client for the new user: see "One client per
+        // signed-in session" in the Swift SDK's README.
+        let client = GatewayBackend.makeClient(baseURL: url, appID: setup.appID, apiKey: setup.apiKey)
+        gateway = (setup, client)
+        return GatewayBackend(client: client, slugs: slugs)
     }
 }

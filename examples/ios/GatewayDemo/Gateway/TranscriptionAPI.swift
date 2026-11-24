@@ -8,6 +8,8 @@ extension GatewayBackend {
         }
         var form = MultipartForm()
         form.append("model", model.model)
+        // The diarizing model needs a chunking strategy for a recording over 30 seconds.
+        if model.model.hasSuffix("-diarize") { form.append("chunking_strategy", "auto") }
         form.append("file", fileName: fileName, contentType: "audio/mp4", data: audio)
 
         // Leave `response_format` at its JSON default: a plain-text answer

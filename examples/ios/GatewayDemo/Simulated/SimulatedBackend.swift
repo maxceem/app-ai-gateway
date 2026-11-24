@@ -4,7 +4,7 @@ import SwiftUI
 struct SimulatedBackend: AIBackend {
     func chat(_ turns: [ChatTurn], model: ModelChoice) -> AsyncThrowingStream<String, Error> {
         let reply = """
-        This is a **simulated** answer from `\(model.model)`. Turn off *Simulated responses* \
+        This is a **simulated** answer from `\(model.model)`. Turn off *Simulate responses* \
         in Settings and the same message goes to your gateway at \
         `/proxy/\(model.provider)/\(ProviderPaths.chat(model.provider))`, which checks the app, \
         applies its limits, and streams the provider's answer back unchanged.
