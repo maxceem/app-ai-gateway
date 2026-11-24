@@ -8,7 +8,7 @@ stay right. To count it, the model needs a price, or the provider must report
 the cost itself. A request for a model with neither:
 
 - is refused with `400 pricing_not_configured` on an ordinary model call,
-  before it reaches the provider;
+  before it reaches the provider, unless one of the rules below applies;
 - is refused with `403 path_not_allowed` on fal, whose paths name the model,
   even when the app lists the model by name;
 - on other providers, is still served when the model is one the app lists by

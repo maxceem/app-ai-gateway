@@ -75,7 +75,7 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `model_not_allowed` | 403 | The model is not in the app's models list | Use an allowed model |
 | `pricing_not_configured` | 400 | The model has no price the operation can charge | Use a priced model, or add a price. See [Model pricing](/providers/model-pricing) |
 | `preset_not_found` | 404 | The app has no preset with this name | Check the name |
-| `job_not_found` | 404 | No job with this ID belongs to this app and user, or its connection was removed | Use the links the gateway answered with |
+| `job_not_found` | 404 | No job with this ID belongs to this app and user, or its connection was removed or now sends requests somewhere else | Use the links the gateway answered with, and check the connection |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
 | `app_disabled` | 403 | The app is turned off on its **Settings** tab | Nothing on the device fixes it |
 | `not_found` | 404 | Nothing is served at this path or method | Check the URL |
@@ -87,7 +87,7 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `provider_not_configured` | 502 | The app does not allow a connection with this slug, or none exists | Allow or add the connection |
 | `provider_disabled` | 502 | The connection is turned off | Turn it on |
 | `provider_unavailable` | 502 | The connection cannot be used as stored, for example its key could not be opened | Check the connection in the console |
-| `provider_error` | 502 | The connection to the provider failed, or a job check got no response headers within 30 seconds | Try again with backoff |
+| `provider_error` | 502 | The connection to the provider failed, or a job check got no response headers within 30 seconds | Try again with backoff, unless it was a job submission |
 | `provider_error` | 502 | A job submission the provider accepted gave no usable job ID, for example because its body took over 30 seconds | Do not resend it. See below |
 | `provider_error` | 504 | On a proxy or preset request, the provider sent no response headers before the time limit. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
 
