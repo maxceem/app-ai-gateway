@@ -278,6 +278,60 @@ describe("management analytics", () => {
     }
   });
 
+  it("records a CLI tool only by its registered name, never the name a request sent", async () => {
+    const { points, dataset, send } = recording();
+    for (const name of ["list_apps", "alice@example.com", "not_a_tool"]) {
+      await send(`/v2/cli/tools/${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: { authorization: "Bearer agw_mgmt_revoked-or-unknown", "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+    }
+    expect(points.map((point) => [point.operation, point.tool, point.code])).toEqual([
+      ["callCliTool", "list_apps", "auth_required"],
+      ["callCliTool", null, "auth_required"],
+      ["callCliTool", null, "auth_required"],
+    ]);
+    expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toMatch(/alice|not_a_tool/u);
+  });
+
+  it("records the field and issue a validation refusal names, through a CLI tool call too", async () => {
+    const { points, dataset, send } = recording();
+    const owner = await account();
+    const response = await send("/v2/cli/tools/validate_app", {
+      method: "POST",
+      headers: { ...key(owner.key), "content-type": "application/json", "user-agent": "agw/1.4.0" },
+      body: JSON.stringify({ config: { name: 42, config: { secret_marker: "do-not-record" } } }),
+    });
+    expect(response.status).toBe(400);
+    expect(points).toEqual([expect.objectContaining({
+      channel: "cli",
+      operation: "callCliTool",
+      tool: "validate_app",
+      code: "invalid_request",
+      field: "name",
+      issue: "invalid_type",
+    })]);
+    expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("do-not-record");
+  });
+
+  it("counts a call to an MCP tool the deployment does not offer once, with no tool name", async () => {
+    const { points, dataset, send } = recording();
+    const owner = await account();
+    const response = await send("/v2/mcp", toolCall("alice@example.com", {}, key(owner.key)));
+    expect(response.status).toBe(200);
+    expect(points).toEqual([expect.objectContaining({
+      account: owner.accountId,
+      channel: "mcp",
+      operation: null,
+      tool: null,
+      outcome: "refused",
+      code: "tool_not_found",
+      client: "claude-code",
+    })]);
+    expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("alice");
+  });
+
   it("records an unknown admin path as refused", async () => {
     const { points, send } = recording();
     const owner = await account();

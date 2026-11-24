@@ -23,7 +23,6 @@ import {
   managementDataset,
   recordManagementCall,
   refusalOf,
-  token,
   type CallEnding,
   type ManagementChannel,
   type ManagementCredential,
@@ -45,14 +44,15 @@ export const managementAnalytics: MiddlewareHandler<AnalyticsEnv> = async (c, ne
   try {
     await next();
   } catch (error) {
-    record(c, started, refusalOf(gatewayErrorOf(error)));
+    await record(c, started, refusalOf(gatewayErrorOf(error)));
     throw error;
   }
-  record(c, started, endingOf(c.res.status));
+  await record(c, started, endingOf(c.res.status));
 };
 
-function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): void {
+async function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): Promise<void> {
   const operation = catalogOperation(c.req.method, c.req.path);
+  const tool = operation === "callCliTool" ? await registeredTool(c.req.path) : null;
   const actor = c.get("actor");
   const credential = actor?.credentialType ?? presentedCredential(c);
   const userAgent = c.req.header("user-agent");
@@ -62,8 +62,7 @@ function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): 
     credential,
     identity: actor === undefined ? null : "human",
     operation,
-    // The tool a CLI tool call names, by the name its path carries; `token` drops anything else.
-    tool: operation === "callCliTool" ? token(decodeSegment(c.req.path.split("/").pop())) : null,
+    tool,
     kind: null,
     outcome: ending.outcome,
     status: ending.status,
@@ -78,12 +77,20 @@ function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): 
   });
 }
 
-function decodeSegment(segment: string | undefined): string | undefined {
+/**
+ * The tool a CLI tool call names, as the tool table spells it, or null for a
+ * name that is not a tool: never the path's own text, which the caller chose.
+ * The table is loaded only here, for a CLI tool call, as the call itself does.
+ */
+async function registeredTool(path: string): Promise<string | null> {
+  let name: string;
   try {
-    return segment === undefined ? undefined : decodeURIComponent(segment);
+    name = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
   } catch {
-    return undefined;
+    return null;
   }
+  const { MCP_TOOLS } = await import("../mcp/tools.ts");
+  return MCP_TOOLS.find((tool) => tool.name === name)?.name ?? null;
 }
 
 interface CatalogRoute {
