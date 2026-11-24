@@ -3,17 +3,15 @@
  * described line by line. Plain functions with no Worker code (`./app-snippet.ts`
  * builds the requests), so a test can run the commands in a real shell.
  *
- * A credential never becomes a process argument, and is never printed:
+ * The commands take the form provider docs use: the key in a header, read
+ * from an environment variable (`-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"`).
+ * How a person keeps their own key on the machine that runs the command is
+ * theirs to decide (owner decision). An issuer app's example first exchanges
+ * the key and the user's token, both from environment variables, for a
+ * gateway token, kept in a shell variable for the request after it.
  *
- * - the command reads it from an environment variable and hands it to curl
- *   on stdin as a config line (`printf … | curl --config -`); `printf` is
- *   built into the shell, so the value never shows in the list of processes;
- * - it all runs in a subshell with tracing off (`( set +x …)`), so a shell
- *   run with `set -x` never prints a value;
- * - `--disable`, curl's first argument, stops it reading a `.curlrc`, which
- *   could turn on a trace that writes every header;
- * - a gateway token from an issuer exchange is kept in a variable of that
- *   subshell, used for the request after it, and never printed.
+ * Every value the app's settings control (a URL, a model, a header) is one
+ * single-quoted shell word, so none of it runs as shell code.
  */
 
 /** One request, without any credential. */
@@ -54,11 +52,6 @@ export function shellWord(text: string): string {
   return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
-/** A printf that writes one curl config line, each `%s` filled from a variable, piped into curl with no `.curlrc`. */
-function configPipe(line: string, variables: readonly string[]): string {
-  return `printf ${shellWord(`${line}\\n`)} ${variables.map((name) => `"$${name}"`).join(" ")} | curl --disable`;
-}
-
 /** The request's own curl arguments after its URL: headers, body, form and file. */
 function requestArguments(request: SnippetRequest): string[] {
   const lines: string[] = [];
@@ -73,29 +66,26 @@ function requestArguments(request: SnippetRequest): string[] {
 }
 
 /**
- * The request as a curl command in an untraced subshell; the credential goes
- * in through stdin. With `exchange`, the subshell first exchanges for a
- * gateway token, keeps it in a variable, says only that it did, and sends the
- * request with it.
+ * The request as a curl command, the credential in a header from its
+ * environment variable. The header's name and scheme are the gateway's own
+ * constants, so the double quotes, which let the variable expand, hold
+ * nothing else. With `exchange`, a command before it exchanges for a gateway
+ * token and keeps it in a variable, which the request then sends.
  */
 export function curlCommand(request: SnippetRequest, credential: SnippetCredential, exchange?: TokenExchange): string {
   const send = [
-    `${configPipe(`header = "${credential.header}: ${credential.scheme} %s"`, [credential.variable])} --config - ${shellWord(request.url)}`,
+    `curl ${shellWord(request.url)}`,
+    `-H "${credential.header}: ${credential.scheme} $${credential.variable}"`,
     ...requestArguments(request),
-  ];
-  if (exchange === undefined) return `( set +x; ${send.join(" \\\n  ")} )`;
+  ].join(" \\\n  ");
+  if (exchange === undefined) return send;
   const token = [
-    `${configPipe('data = {"api_key":"%s","issuer_token":"%s"}', [exchange.keyVariable, exchange.tokenVariable])} --silent --show-error --fail --config - ${shellWord(exchange.url)}`,
+    `curl --silent --show-error --fail ${shellWord(exchange.url)}`,
     `-H 'Content-Type: application/json'`,
+    `-d "{\\"api_key\\":\\"$${exchange.keyVariable}\\",\\"issuer_token\\":\\"$${exchange.tokenVariable}\\"}"`,
     `| sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p'`,
-  ].join(" ");
-  return [
-    "( set +x",
-    `  ${exchange.into}="$(${token})"`,
-    `  [ -n "$${exchange.into}" ] || { echo "The token exchange failed." >&2; exit 1; }`,
-    `  echo "Exchanged the user's token for a gateway token." >&2`,
-    `  ${send.join(" \\\n    ")} )`,
-  ].join("\n");
+  ].join(" \\\n    ");
+  return `${exchange.into}="$(${token})"\n${send}`;
 }
 
 /**

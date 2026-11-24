@@ -130,15 +130,16 @@ describe("first requests for an app", () => {
     });
     expect(chat!.text).toBe(
       [
-        `( set +x; printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_KEY" | curl --disable --config - '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
+        `curl '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions'`,
+        `-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"`,
         `-H 'x-end-user-id: user-123'`,
         `-H 'Content-Type: application/json'`,
-        `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`,
+        `-d '{"model":"${chatModel}","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}'`,
       ].join(" \\\n  "),
     );
     // A form, by the proxy's rule: the model as a text field, the file apart.
     expect(transcription).toMatchObject({ form: { model: SAMPLE_MODELS["openai.transcription"] }, file: { field: "file", name: "audio.mp3" } });
-    expect(transcription!.text).toContain(`--form-string 'model=${SAMPLE_MODELS["openai.transcription"]}' \\\n  -F 'file=@audio.mp3' )`);
+    expect(transcription!.text).toContain(`--form-string 'model=${SAMPLE_MODELS["openai.transcription"]}' \\\n  -F 'file=@audio.mp3'`);
     expect(notes).toContainEqual(expect.stringContaining("Set APP_AI_GATEWAY_KEY to one of this app's keys"));
     expect(notes).toContainEqual(`${slug}: openai.speech and openai.realtime have no example here. Send them as the provider's own API reference describes, to ${ORIGIN}/v2/apps/${appId}/proxy/${slug}/.`);
     expect(JSON.stringify(examples)).not.toContain(PROVIDER_KEY);
@@ -162,7 +163,7 @@ describe("first requests for an app", () => {
     const caveat = "Uses this app's configured model gpt-5.4-pro: it works if gpt-5.4-pro supports this endpoint.";
     expect(example).toMatchObject({ model: "gpt-5.4-pro", caveat });
     // Plain text beside the command, repeated in the notes; never part of what runs.
-    expect(example!.text.startsWith("( set +x; printf")).toBe(true);
+    expect(example!.text.startsWith("curl '")).toBe(true);
     expect(own.notes).toContainEqual(`${slug}: openai.chat: ${caveat}`);
   });
 
@@ -206,7 +207,7 @@ describe("first requests for an app", () => {
     const [example] = quoted.examples;
     expect(example!.model).toBe(hostile);
     // The single quote is closed, escaped and reopened: the $(...) stays inside quotes.
-    expect(example!.text).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}' )`);
+    expect(example!.text).toContain(`-d '{"model":"it'\\''s $(touch pwned)","messages":[{"role":"user","content":"Hello!"}],"max_completion_tokens":256}'`);
   });
 
   it("asks for a small output of its own, never the route's whole cap: a DeepSeek route capped at 500000 sends 256", async () => {
@@ -492,7 +493,7 @@ describe("first requests for an app", () => {
     expect(notes[0]).toMatch(/App Attest, which curl cannot do.*Swift SDK/u);
   });
 
-  it("exchanges for a gateway token inside each example where users sign in with an issuer, never printing it", async () => {
+  it("exchanges for a gateway token in each example where users sign in with an issuer, and sends the request with it", async () => {
     const key = await seedManagementKey();
     const slug = await provider(key);
     const issuer = { jwks_url: "https://issuer.example.com/jwks", issuer: ["https://issuer.example.com"], audience: ["snippet"], user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 3600 };
@@ -501,13 +502,14 @@ describe("first requests for an app", () => {
       routing: { providers: { [slug]: { operations: ["openai.chat"], models: ["gpt-4o-mini"] } } },
     });
     const curl = examples[0]!.text as string;
-    expect(curl.split("\n").slice(0, 4)).toEqual([
-      "( set +x",
-      `  APP_AI_GATEWAY_TOKEN="$(printf 'data = {"api_key":"%s","issuer_token":"%s"}\\n' "$APP_AI_GATEWAY_KEY" "$ISSUER_TOKEN" | curl --disable --silent --show-error --fail --config - '${ORIGIN}/v2/apps/${appId}/auth/token' -H 'Content-Type: application/json' | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')"`,
-      `  [ -n "$APP_AI_GATEWAY_TOKEN" ] || { echo "The token exchange failed." >&2; exit 1; }`,
-      `  echo "Exchanged the user's token for a gateway token." >&2`,
+    expect(curl.split("\n").slice(0, 6)).toEqual([
+      `APP_AI_GATEWAY_TOKEN="$(curl --silent --show-error --fail '${ORIGIN}/v2/apps/${appId}/auth/token' \\`,
+      `    -H 'Content-Type: application/json' \\`,
+      `    -d "{\\"api_key\\":\\"$APP_AI_GATEWAY_KEY\\",\\"issuer_token\\":\\"$ISSUER_TOKEN\\"}" \\`,
+      `    | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')"`,
+      `curl '${ORIGIN}/v2/apps/${appId}/proxy/${slug}/v1/chat/completions' \\`,
+      `  -H "Authorization: Bearer $APP_AI_GATEWAY_TOKEN" \\`,
     ]);
-    expect(curl).toContain(`printf 'header = "Authorization: Bearer %s"\\n' "$APP_AI_GATEWAY_TOKEN" | curl --disable --config - `);
     expect(notes[0]).not.toContain("curl");
   });
 

@@ -520,7 +520,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "get_app_snippet",
     title: "Get first requests for an app",
     description:
-      "Returns example requests the app can send today, built by the gateway from its routes and presets: one per API style each provider route serves, and one per preset, each with its URL, headers, model and body or upload, and a model serving admits. An app called with an app key gets each as a curl command that reads the key from $APP_AI_GATEWAY_KEY and gives it to curl on stdin; no key is ever in the answer or in a command's arguments. An iOS app gets each request described in full: it signs them with App Attest through the Swift SDK. Use it to show someone how to make an app's first call.",
+      "Returns example requests the app can send today, built by the gateway from its routes and presets: one per API style each provider route serves, and one per preset, each with its URL, headers, model and body or upload, and a model serving admits. An app called with an app key gets each as a curl command that sends the key in a header, read from $APP_AI_GATEWAY_KEY; no key is ever in the answer. An iOS app gets each request described in full: it signs them with App Attest through the Swift SDK. Use it to show someone how to make an app's first call.",
     operation: "getAppSnippet",
     cli: {
       command: "app snippet",

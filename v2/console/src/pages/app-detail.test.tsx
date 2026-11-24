@@ -355,7 +355,7 @@ describe("AppDetailPage", () => {
   });
 
   it("shows the first requests the gateway builds for the app, each ready to copy, with its notes", async () => {
-    const curl = "printf 'header = \"Authorization: Bearer %s\"\\n' \"$APP_AI_GATEWAY_KEY\" | curl --config - 'https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions'";
+    const curl = "curl 'https://gateway.test/v2/apps/my-app/proxy/openai/v1/chat/completions' \\\n  -H \"Authorization: Bearer $APP_AI_GATEWAY_KEY\"";
     const described = 'POST https://gateway.test/v2/apps/my-app/presets/support\nContent-Type: application/json\n(The Swift SDK adds the gateway token and the App Attest proof.)\n\n{\n  "messages": []\n}';
     stub({
       ...CHECK,
