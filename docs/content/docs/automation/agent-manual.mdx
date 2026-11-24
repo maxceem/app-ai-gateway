@@ -265,11 +265,12 @@ The errors apps get on their requests are in [Errors and limits](/integrate/erro
 
 1. `GET /v2/admin/providers`. Note each connection's `type` and `slug`.
 2. If one is missing, ask the person to add its key themselves, on the
-   console's **Providers** page or with `agw` on their own machine. Or open the
-   step with `POST /v2/admin/provider-handoffs` (see "Providers"), give the
-   person the link it answers, and poll `GET /v2/admin/operations/{id}`. That
-   link is the console approval page the handoff returns for the person, so you
-   may pass it on.
+   console's **Providers** page or with `agw` on their own machine. Or, with a
+   **Manage** credential, open the step with `POST /v2/admin/provider-handoffs`
+   (see "Providers"). It answers `url`, the console approval page: give it to
+   the person. It also answers `id`: poll
+   `GET /v2/admin/operations/{id}` until `state` is `completed`, and stop at
+   `expired`.
 3. Compose the app from the reference below.
 4. `POST /v2/admin/app-drafts/validate` with it. Fix every refusal.
 5. Create it through a reserved create ("Retrying creation safely"). Do not use
@@ -300,8 +301,8 @@ person, in the console:
   stored keys, which the person chooses in the console;
 - leaving Cloudflare needs the provider key.
 
-Removing a base URL needs no secret, so you may do it: the stored key goes back
-to the provider's own address.
+For a built-in provider, removing a base URL needs no secret, so you may do it:
+the stored key goes back to the provider's own address.
 
 The first connection of a type usually takes the type as its slug, such as
 `openai`. Another one of the same type needs its own slug.
