@@ -1,21 +1,19 @@
 ---
 title: Limits and blocking
-description: The limits you set on your app's users, how they are counted, and how to block a user.
+description: How the limits you set on your app's users are counted, and how blocking differs from a limit.
 ---
 
-An app's **Limits** tab sets what each of its callers, and the app as a whole,
-may do. There are two scopes, each with the same three fields.
+An app can limit each of its callers and the whole app: requests per minute,
+requests per day, and a monthly budget in dollars. This page explains how those
+limits are counted. The fields themselves, and how to set them, are on
+[Limits](/applications/limits).
 
-| Field | Each caller | The whole app |
-| --- | --- | --- |
-| **Requests per minute** | Each install (iOS) or each user (server), separately | All callers together |
-| **Requests per day** | Each install or each user, separately | All callers together |
-| **Monthly budget ($)** | Each Apple Account by default (iOS), or each install or signed-in user if you choose; each user (server) | All callers together |
+## Who a caller is
 
-An install is one copy of your app on one device. Reinstalling the app starts a
-new one, and one person on a phone and a tablet is two. Counting iOS request
-limits per install means each device a person uses has its own minute and its
-own day.
+On a server app, each caller is one user. On an iOS app, request limits count
+each **install**: one copy of your app on one device. Reinstalling the app
+starts a new install, and one person on a phone and a tablet is two. So each
+device a person uses has its own minute and its own day.
 
 ## Whose month an iOS budget is
 
@@ -47,8 +45,6 @@ A server app always counts its budget per user.
 
 ## Refusals
 
-Leave a field empty for no limit.
-
 A request over a request limit is refused with `429 app_rate_limited`. A request
 over a budget is refused with `429 app_budget_exhausted`. Both say whose limit
 it was in `data.scope`:
@@ -58,8 +54,9 @@ it was in `data.scope`:
 - `user`: a server app's limits, or a budget counted per signed-in user;
 - `app`: the whole app's limits.
 
-Both carry a `Retry-After` header. For a budget it is the time left until the
-month ends.
+Both carry a `Retry-After` header with the seconds to wait. For a request limit
+it is the time until the window starts again. For a budget it is the time until
+the month ends, because a budget only resets then.
 
 Each caller's limits are checked before the whole app's, so one heavy caller
 cannot use up the shared allowance before their own limit stops them.
@@ -70,43 +67,46 @@ cannot use up the shared allowance before their own limit stops them.
   allowance at the end of one minute and again at the start of the next, so a
   burst of up to twice the per-minute value is possible across the change of
   minute. Days change at midnight UTC.
-- **Budgets settle after the answer.** A call's cost is known only when its
-  answer is complete, and the limit reads the month's spend at most every ten
-  seconds. So a budget stops calls within about ten seconds of the one that
-  crossed it. One very expensive call, or a burst inside those seconds, can go
-  over.
+- **Budgets are checked against spend already recorded.** A call's cost is known
+  only when its answer is complete. In normal operation the limit reads the
+  month's spend again every ten seconds. So a budget can be overrun: by a burst
+  of calls inside those seconds, by one very expensive call, when recording
+  usage is slow, or when the check runs out of time and the call is served
+  rather than refused.
 - **Budgets use UTC calendar months.** Turning on a budget part-way through a
   month counts what the month has already spent. Every call adds to its
   install's, its user's and, when known, its Apple Account's month alike. So
   changing whose month an iOS budget counts, mid-month, counts the month so far
   too.
-- **A budget of zero stops everything.** It refuses every call that costs money
-  for that scope. Leave the field empty for no limit instead. A request limit
+- **A budget of zero refuses every call that costs money**, whenever the month's
+  total can be read. Leave the field empty for no limit instead. A request limit
   of zero is refused when you save, as a likely typo.
-- **Changes take up to a minute** to reach every request.
+- **Changes reach every request within a minute** in normal operation. See
+  [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
 Per-caller limits need an app that names its users. An app with **No end users**
 has nobody to apply them to, so it can set only the whole app's limits. An iOS
 app always names its installs.
 
-## Blocking a user
+## Blocking is not a limit
 
-Blocking is not a limit. On the app's **Users** tab, **Block** refuses every
-request from that user, on every install, with `403 auth_required`. It reaches
-every request within ten seconds. **Unblock** lets them back in the same way.
-
-A user your server names in a header cannot be blocked on the gateway: your
-server decides who that is, so block them there.
+A limit resets; a block stays until you lift it. Blocking a user refuses their
+provider calls and their sign-ins, on every install. See
+[Blocking](/applications/users#blocking).
 
 ## What a user can see about themselves
 
 An app that names its users can call `GET /v2/apps/{app}/me`, signed in the same
-way as its other requests. It answers the limits that apply, today's requests,
-what is left of the daily limit, the month's spend, and whether the user is
-blocked. On an iOS app the request counts are the install's, and `install_id`
-names it. `budget_scope` says whose month the spend is: `apple_account`,
-`install` or `user`. It is `install` for an install that sent no transaction
-the gateway could check, even when the app counts per Apple Account.
+way as its other requests. It answers even for a blocked user, and says whether
+they are blocked. It also answers the limits that apply and the month's spend.
+Where the app sets any per-user limit it answers today's requests too, and what
+is left of the daily limit if there is one. Without a per-user limit, requests
+are not counted, so today's count is `null`.
+
+On an iOS app the request counts are the install's, and `install_id` names it.
+`budget_scope` says whose month the spend is: `apple_account`, `install` or
+`user`. It is `install` for an install that sent no transaction the gateway
+could check, even when the app counts per Apple Account.
 
 It is meant for showing a user where they stand before they reach a limit. See
 [Errors and limits from the client side](/integrate/errors).
