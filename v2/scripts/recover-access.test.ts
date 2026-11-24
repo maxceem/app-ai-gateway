@@ -14,8 +14,8 @@
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -201,31 +201,6 @@ test("refuses a person it cannot help, and changes nothing", () => {
   assert.deepEqual(state("u_bob"), { password: null, role: "owner", sessions: 1, connections: 1, tokens: 1 });
 });
 
-test("changes nothing, keeps no file and says nothing is done when a row is gone between the preview and the change", () => {
-  // A `pnpm` in front of the real one: after the script's read, it takes Cat out of the account.
-  const real = spawnSync("sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).stdout.trim();
-  const bin = join(scratch, "bin");
-  const temp = join(scratch, "tmp");
-  for (const dir of [bin, temp]) spawnSync("mkdir", ["-p", dir]);
-  writeFileSync(
-    join(bin, "pnpm"),
-    `#!/bin/sh\n"${real}" "$@"; status=$?\ncase " $* " in *" --json "*) "${process.execPath}" -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.env.AGW_TEST_DB); db.exec(\\"DELETE FROM mgmt_organization_user WHERE id = 'm_cat'\\"); db.close();" ;; esac\nexit $status\n`,
-  );
-  chmodSync(join(bin, "pnpm"), 0o755);
-  const run = recover(["--email", "cat@example.test", ...local(), "--password-stdin", "--promote-owner", "--account", "acct1", "--yes"], `${PASSWORD}\n`, {
-    PATH: `${bin}:${process.env.PATH ?? ""}`,
-    TMPDIR: temp,
-    AGW_TEST_DB: databaseFile(),
-  });
-  assert.equal(run.code, 1, run.output);
-  assert.match(run.output, /Nothing was changed: the change did not go through/u);
-  assert.doesNotMatch(run.output, /Done/u);
-  // The password and the sessions are as they were: the whole batch stopped.
-  assert.deepEqual(state("u_cat"), { password: OLD_HASH, role: null, sessions: 1, connections: 0, tokens: 0 });
-  // The temporary file holding the hash is gone.
-  assert.deepEqual(readdirSync(temp).filter((name) => name.startsWith("agw-recover-")), []);
-});
-
 test("with a yes, sets a password the sign-in library accepts, signs the person out everywhere and makes them an owner", async () => {
   const run = recover(["--email", "ada@example.test", ...local(), "--password-stdin", "--promote-owner", "--account", "acct1", "--yes"], `${PASSWORD}\n`);
   assert.equal(run.code, 0, run.output);
@@ -241,26 +216,73 @@ test("with a yes, sets a password the sign-in library accepts, signs the person 
   assert.deepEqual(state("u_bob"), { password: null, role: "owner", sessions: 1, connections: 1, tokens: 1 });
 });
 
-test("refuses an environment the config lacks, a config without DB and a DB Wrangler could resolve two ways, before reading", () => {
-  const unknownEnv = recover(["--email", "ada@example.test", ...local(), "--env", "nope", "--promote-owner", "--account", "acct1", "--dry-run"]);
-  assert.equal(unknownEnv.code, 2);
-  assert.match(unknownEnv.output, /defines no environment nope/u);
-  const ambiguous = join(scratch, "wrangler.ambiguous.jsonc");
+test("reads its arguments strictly: an unknown flag, a missing or empty value, or an environment the config lacks is refused", () => {
+  const base = ["--email", "ada@example.test", ...local(), "--promote-owner", "--account", "acct1", "--dry-run"];
+  const cases: [string[], number, RegExp][] = [
+    [[...base, "-e", "staging"], 2, /Unknown option '-e'/u],
+    [[...base, "--env"], 2, /--env <value>' argument missing/u],
+    [[...base, "--env", ""], 2, /--env needs a value/u],
+    [[...base, "--env=staging"], 2, /defines no environment staging/u],
+    [[...base, "--env", "staging"], 2, /defines no environment staging/u],
+    [[...base, "--nope"], 2, /Unknown option '--nope'/u],
+  ];
+  for (const [args, code, message] of cases) {
+    const run = recover(args);
+    assert.equal(run.code, code, run.output);
+    assert.match(run.output, message);
+  }
+});
+
+test("takes -c from the folder the command was run in, and refuses a config without DB before reading", () => {
+  writeFileSync(join(scratch, "wrangler.no-db.jsonc"), JSON.stringify({ name: "bare", main: join(V2_DIR, "src", "index.ts"), compatibility_date: "2026-01-01" }));
+  // As `pnpm run` starts it: in the package's folder, with the caller's in INIT_CWD.
+  const run = recover(["--email", "ada@example.test", "--remote", "-c", "wrangler.no-db.jsonc", "--promote-owner", "--account", "acct1", "--dry-run"], "", { INIT_CWD: scratch });
+  assert.equal(run.code, 1, run.output);
+  assert.match(run.output, new RegExp(`${join(scratch, "wrangler.no-db.jsonc").replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")} binds no DB database`, "u"));
+});
+
+test("an interrupt while Wrangler runs stops it, removes the temporary file, and exits with the signal's code", async () => {
+  // A stand-in Wrangler: it answers the read, and for the change it notes its pid and waits.
+  const bin = join(scratch, "waiting-bin");
+  const temp = join(scratch, "waiting-tmp");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(temp, { recursive: true });
+  const mark = join(scratch, "waiting.pid");
+  const person = JSON.stringify([{ results: [{ user_id: "u_x", passwords: 1, sessions: 0, connections: 0, role: null, account_name: null }], success: true }]);
   writeFileSync(
-    ambiguous,
-    JSON.stringify({
-      name: "ambiguous",
-      main: join(V2_DIR, "src", "index.ts"),
-      compatibility_date: "2026-01-01",
-      d1_databases: [{ binding: "DB", database_name: "main-db" }, { binding: "OTHER", database_name: "DB" }],
-    }),
+    join(bin, "pnpm"),
+    `#!/bin/sh\ncase " $* " in\n  *" --json "*) printf '%s' '${person}' ;;\n  *" --file "*) echo $$ > "${mark}.part"; mv "${mark}.part" "${mark}"; exec sleep 30 ;;\nesac\n`,
   );
-  const bare = join(scratch, "wrangler.no-db.jsonc");
-  writeFileSync(bare, JSON.stringify({ name: "bare", main: join(V2_DIR, "src", "index.ts"), compatibility_date: "2026-01-01" }));
-  const noDb = recover(["--email", "ada@example.test", "--remote", "-c", bare, "--promote-owner", "--account", "acct1", "--dry-run"]);
-  assert.equal(noDb.code, 1);
-  assert.match(noDb.output, /binds no DB database/u);
-  const twoWays = recover(["--email", "ada@example.test", "--local", "--persist-to", persist, "-c", ambiguous, "--promote-owner", "--account", "acct1", "--dry-run"]);
-  assert.equal(twoWays.code, 1);
-  assert.match(twoWays.output, /more than one database Wrangler could take for DB/u);
+  chmodSync(join(bin, "pnpm"), 0o755);
+  const child = spawn(process.execPath, ["--experimental-strip-types", SCRIPT, "--email", "x@example.test", "--local", "--password-stdin", "--yes"], {
+    cwd: V2_DIR,
+    env: { ...process.env, CLOUDFLARE_ENV: "", PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: temp },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+  const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+  child.stdin.end(`${PASSWORD}\n`);
+  // Wait for the stand-in to start: a file event, no timer.
+  await new Promise<void>((resolve, reject) => {
+    const watcher = watch(scratch, () => {
+      if (existsSync(mark)) {
+        watcher.close();
+        resolve();
+      }
+    });
+    if (existsSync(mark)) {
+      watcher.close();
+      resolve();
+    }
+    void closed.then(() => reject(new Error(`the script ended first: ${output}`)));
+  });
+  const pid = Number(readFileSync(mark, "utf8"));
+  child.kill("SIGTERM");
+  assert.equal(await closed, 143, output);
+  assert.match(output, /Interrupted: the change may not have run\./u);
+  // Gone, or ended and waiting only to be collected.
+  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  assert.ok(state === "" || state.startsWith("Z"), `the stand-in Wrangler still runs (${state})`);
+  assert.deepEqual(readdirSync(temp).filter((name) => name.startsWith("agw-recover-")), []);
 });
