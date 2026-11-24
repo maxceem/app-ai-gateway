@@ -3,7 +3,7 @@
 //
 //   node --experimental-strip-types examples/ios/scripts/generate-catalog.ts
 //
-// The catalog lists the models the gateway can price per provider type. It
+// The catalog lists the models the v2 gateway can price per provider type. It
 // does not know which providers your account has connected, or which models an
 // app allows: the demo's settings choose the providers, and the gateway refuses
 // a model the app does not allow with `403 model_not_allowed`.
@@ -11,16 +11,22 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROVIDER_TYPES, providerDescriptor } from "../../../src/shared/providers.ts";
+import { BUILT_IN_PROVIDERS } from "../../../v2/src/providers/index.ts";
+import { providerTypes } from "../../../v2/src/providers/provider-types.ts";
 
 type Price = Record<string, unknown> & { kind?: string; retirement_date?: string };
+type PriceFile = Record<string, Record<string, Price>>;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "../../..");
-const prices = JSON.parse(readFileSync(join(root, "src/usage/models.json"), "utf8")) as Record<
-  string,
-  Record<string, Price>
->;
+const pricing = join(here, "../../../v2/src/pricing");
+const read = (name: string) => JSON.parse(readFileSync(join(pricing, name), "utf8")) as PriceFile;
+// v2 prices with v1's file plus its own overlay, where v1's entry wins
+// (`v2/src/pricing/price-file.ts`).
+const prices: PriceFile = read("models.json");
+for (const [provider, entries] of Object.entries(read("models.v2.json"))) {
+  const target = (prices[provider] ??= {});
+  for (const [model, entry] of Object.entries(entries)) if (!Object.hasOwn(target, model)) target[model] = entry;
+}
 const today = new Date().toISOString().slice(0, 10);
 
 /** What the demo does with a model, from the kind the catalog gives it. */
@@ -34,8 +40,15 @@ function kind(price: Price): "chat" | "transcription" | "image" | undefined {
   }
 }
 
-const providers = PROVIDER_TYPES.map((type) => {
-  const entry = { type, label: providerDescriptor(type).label, chat: [] as string[], transcription: [] as string[], image: [] as string[] };
+// The demo chats with every provider it lists, so only the ones that serve a
+// chat API style are listed, in the gateway's own order.
+const order = Object.keys(BUILT_IN_PROVIDERS);
+const chatting = providerTypes()
+  .filter((provider) => !provider.custom && provider.styles.some((style) => style === "openai-chat" || style === "anthropic-messages"))
+  .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
+
+const providers = chatting.map(({ type, label }) => {
+  const entry = { type, label, chat: [] as string[], transcription: [] as string[], image: [] as string[] };
   for (const [id, price] of Object.entries(prices[type] ?? {})) {
     if (price.retirement_date && price.retirement_date <= today) continue;
     const k = kind(price);

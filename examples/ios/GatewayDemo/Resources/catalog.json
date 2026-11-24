@@ -4,6 +4,19 @@
       "type": "openai",
       "label": "OpenAI",
       "chat": [
+        "gpt-6.2-astra-law",
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+        "gpt-5-search-api",
+        "chat-latest",
+        "gpt-rosalind-research",
+        "gpt-6-astra-law",
+        "gpt-6-cyber",
+        "gpt-rosalind-discovery",
+        "gpt-6-rosalind",
+        "gpt-6.1-terra",
+        "gpt-5.5-cyber",
+        "gpt-5.6-cyber",
         "gpt-4o",
         "gpt-6-sol",
         "gpt-5.5-pro",
@@ -33,24 +46,28 @@
         "gpt-4o-mini"
       ],
       "transcription": [
+        "gpt-4o-transcribe-diarize",
         "gpt-transcribe",
         "gpt-4o-mini-transcribe",
         "gpt-4o-transcribe",
         "whisper-1"
       ],
       "image": [
+        "gpt-image-2.6-flare",
+        "gpt-image-2.6-sunburst",
         "gpt-image-2.5-sunburst",
         "gpt-image-2.5-flare",
         "gpt-image-2",
         "gpt-image-1.5",
-        "gpt-image-1-mini",
-        "gpt-image-1"
+        "gpt-image-1-mini"
       ]
     },
     {
       "type": "anthropic",
       "label": "Anthropic",
       "chat": [
+        "claude-mythos-5-2",
+        "claude-fable-5-2",
         "claude-mythos-5-1",
         "claude-sonnet-5-5",
         "claude-opus-5-5",
@@ -88,12 +105,18 @@
       "transcription": [
         "grok-transcribe"
       ],
-      "image": []
+      "image": [
+        "grok-imagine-image",
+        "grok-imagine-image-2.0"
+      ]
     },
     {
       "type": "gemini",
       "label": "Gemini",
       "chat": [
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-carbon",
         "gemini-4-argon",
         "gemini-3.7-flash",
         "gemini-3.1-flash-lite",
@@ -120,10 +143,33 @@
       "type": "perplexity",
       "label": "Perplexity",
       "chat": [
-        "sonar",
-        "sonar-pro",
-        "sonar-reasoning-pro",
-        "sonar-deep-research"
+        "google/gemini-3.6-flash",
+        "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash",
+        "openai/gpt-6.2-astra",
+        "openai/gpt-6.2-sol",
+        "perplexity/sonar",
+        "perplexity/nemotron-3.5-super-120b-a12b",
+        "perplexity/kimi-k3",
+        "perplexity/deepseek-v4-pro-0813",
+        "perplexity/glm-5.3-flash",
+        "perplexity/glm-5.3",
+        "xai/grok-4.5",
+        "xai/grok-4.6",
+        "xai/grok-4.7",
+        "google/gemini-4-hydrogen",
+        "openai/gpt-5.5",
+        "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-6-luna",
+        "openai/gpt-6-sol",
+        "openai/gpt-6-astra",
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-haiku-5-5",
+        "anthropic/claude-sonnet-5-5",
+        "anthropic/claude-opus-5-5",
+        "anthropic/claude-fable-5-2"
       ],
       "transcription": [],
       "image": []
@@ -132,6 +178,8 @@
       "type": "deepseek",
       "label": "DeepSeek",
       "chat": [
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
         "deepseek-v4-flash",
         "deepseek-v4-pro"
       ],
@@ -142,6 +190,9 @@
       "type": "groq",
       "label": "Groq",
       "chat": [
+        "openai/gpt-oss-safeguard-20b",
+        "meta-llama/llama-prompt-guard-2-86m",
+        "meta-llama/llama-prompt-guard-2-22m",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
         "qwen/qwen3.8-27b"
@@ -156,21 +207,54 @@
       "type": "mistral",
       "label": "Mistral",
       "chat": [
+        "zai-glm-latest",
+        "zai-glm-5",
+        "ministral-14b-latest",
+        "ministral-8b-latest",
+        "ministral-3b-latest",
+        "codestral-latest",
+        "mistral-small-2603",
+        "mistral-large-4-0",
+        "mistral-large-4",
+        "codestral-2508",
+        "ministral-3b-2512",
+        "ministral-8b-2512",
+        "ministral-14b-2512",
+        "zai-glm-5-3",
+        "deepseek-v4-1-flash-1017",
+        "zai-glm-5-3-flash",
         "mistral-medium-latest",
         "mistral-large-latest",
         "mistral-small-latest"
       ],
-      "transcription": [],
+      "transcription": [
+        "voxtral-mini-transcribe-latest",
+        "voxtral-mini-transcribe-3",
+        "voxtral-small-transcribe-latest",
+        "voxtral-small-transcribe-3",
+        "voxtral-small-transcribe-3-0",
+        "voxtral-mini-transcribe-3-0"
+      ],
       "image": []
     },
     {
       "type": "together",
       "label": "Together AI",
       "chat": [
+        "tencent/Hy4",
+        "Qwen/Qwen4-Max",
+        "zai-org/GLM-5.2",
+        "Qwen/Qwen3.7-Max",
+        "meta-models/Muse-Glimmer-30B",
+        "thinkingmachines/Inkling-2-Small",
+        "elorian-labs/glimpse-1.0",
+        "ricursive-ai/Ripple-65B-Preview",
+        "moonshotai/Kimi-K3.1-Pro",
+        "MiniMaxAI/MiniMax-M3.1-Flash",
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
         "reflection/Beam-1.0-501B-A23B",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
         "meta-models/Muse-Spark-Open-816B-A42B",
-        "thinkingmachines/Inkling",
         "Qwen/Qwen3.8-Flash",
         "Qwen/Qwen3.7-Plus",
         "deepseek-ai/DeepSeek-V4.1-Flash",
@@ -178,14 +262,16 @@
         "zai-org/GLM-5.3",
         "Qwen/Qwen3.5-9B",
         "Qwen/Qwen3.6-Plus",
-        "Qwen/Qwen3.8-2.4T-A95B",
-        "MiniMaxAI/MiniMax-M3",
         "moonshotai/Kimi-K3",
         "deepseek-ai/DeepSeek-V4-Pro-0813",
-        "openai/gpt-oss-120b",
-        "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+        "openai/gpt-oss-120b"
       ],
-      "transcription": [],
+      "transcription": [
+        "openai/whisper-large-v3",
+        "nvidia/parakeet-tdt-0.6b-v3",
+        "nvidia/nemotron-3.5-asr-streaming-0.6b",
+        "nvidia/nemotron-3-asr-streaming-0.6b"
+      ],
       "image": []
     },
     {
@@ -209,6 +295,8 @@
       "type": "moonshot",
       "label": "Moonshot AI",
       "chat": [
+        "kimi-k3.1-pro-highspeed",
+        "kimi-k3.1-pro",
         "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.7-code-highspeed",
@@ -228,6 +316,20 @@
       "type": "baseten",
       "label": "Baseten",
       "chat": [
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B",
+        "meta-models/muse-spark-open",
+        "moonshotai/Kimi-K3.1-Pro",
+        "zai-org/GLM-5.3-Flash",
+        "zai-org/GLM-5.3-Fast",
+        "zai-org/GLM-5.2-Fast",
+        "zai-org/GLM-5.2",
+        "deepseek-ai/DeepSeek-V4.1-Flash-Fast",
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast",
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "reflection/Beam-1.0",
         "moonshotai/Kimi-K3",
         "deepseek-ai/DeepSeek-V4-Pro-0813",
         "zai-org/GLM-5.3",
@@ -240,13 +342,25 @@
       "type": "bytedance",
       "label": "ByteDance Ark",
       "chat": [
+        "glm-5-2-260617",
+        "glm-5-3-flash-260828",
+        "deepseek-v4-flash-260425",
+        "deepseek-v4-pro-260425",
+        "deepseek-v4-flash-ga-260731",
+        "deepseek-v4-1-flash-260910",
+        "deepseek-v4-1-flash-261017",
+        "deepseek-v4-1-flash-economy-261017",
+        "seed-2-0-code-preview-260328",
+        "dola-seed-2-1-turbo",
         "seed-2-0-pro-260328",
         "seed-2-0-lite-260428",
+        "seed-2-0-mini-260428",
         "deepseek-v4-pro-ga-260813",
         "gpt-oss-120b-250805"
       ],
       "transcription": [],
       "image": [
+        "seededit-3-0-i2i-250628",
         "dola-seedream-5-0-flash-260915",
         "seedream-5-0-lite-260128",
         "seedream-4-5-251128",
@@ -256,6 +370,13 @@
     {
       "type": "openrouter",
       "label": "OpenRouter",
+      "chat": [],
+      "transcription": [],
+      "image": []
+    },
+    {
+      "type": "vercel",
+      "label": "Vercel AI Gateway",
       "chat": [],
       "transcription": [],
       "image": []

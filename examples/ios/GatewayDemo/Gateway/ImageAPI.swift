@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Generates one image: OpenAI-style `images/generations` for OpenAI, xAI and
 /// ByteDance, and Gemini's native `generateContent` for Gemini.
@@ -27,9 +28,18 @@ extension GatewayBackend {
         guard let image = try JSONDecoder().decode(Generated.self, from: data).data.first else {
             throw ProviderError(status: 200, message: "The provider returned no image.")
         }
-        if let base64 = image.b64_json, let decoded = Data(base64Encoded: base64) { return decoded }
-        if let url = image.url { return try await URLSession.shared.data(from: url).0 }
+        if let base64 = image.b64_json, let decoded = Data(base64Encoded: base64) { return try drawable(decoded) }
+        if let url = image.url { return try drawable(try await URLSession.shared.data(from: url).0) }
         throw ProviderError(status: 200, message: "The provider returned no image.")
+    }
+
+    /// The image, if it is one the app can show; otherwise an error, so the
+    /// screen says so instead of waiting on an image that never appears.
+    private func drawable(_ data: Data) throws -> Data {
+        guard UIImage(data: data) != nil else {
+            throw ProviderError(status: 200, message: "The provider returned an image this app cannot show.")
+        }
+        return data
     }
 
     private func geminiImage(prompt: String, aspect: ImageAspect, model: ModelChoice, path: String) async throws -> Data {
@@ -54,7 +64,7 @@ extension GatewayBackend {
         }
         let parts = try JSONDecoder().decode(Response.self, from: data).candidates?.first?.content?.parts ?? []
         if let base64 = parts.compactMap(\.inlineData).first?.data, let image = Data(base64Encoded: base64) {
-            return image
+            return try drawable(image)
         }
         // A model that declines to draw explains why in text.
         throw ProviderError(status: 200, message: parts.compactMap(\.text).first ?? "The provider returned no image.")

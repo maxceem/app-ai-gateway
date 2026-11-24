@@ -1,11 +1,14 @@
 import AppAIGateway
 import Foundation
 
-/// Sends the demo's requests through App AI Gateway.
+/// Sends the demo's requests through App AI Gateway's `/v2` routes.
 ///
-/// Keep one `AppAIGatewayClient` for the app's lifetime: it holds the gateway
-/// token, refreshes it, and, on an app that verifies App Attest on every
-/// request, signs each one with the device's App Attest key.
+/// One `AppAIGatewayClient` per gateway setup: it holds the gateway token,
+/// refreshes it, and, on an app that verifies App Attest on every request,
+/// signs each one with the device's App Attest key. The demo has no sign-in,
+/// so one client lasts until the settings change; `AppSettings` then ends it
+/// with `invalidate()` and makes a new one. An app whose users sign in makes
+/// one client per signed-in session the same way.
 struct GatewayBackend: AIBackend {
     let client: AppAIGatewayClient
     /// The slug each provider type is connected under, e.g. `"openai"`.
@@ -65,12 +68,13 @@ struct GatewayBackend: AIBackend {
         slugs[model.provider] ?? model.provider
     }
 
-    /// Throws the refusal in a failed response: the gateway's own, with a code
-    /// such as `model_not_allowed`, or the provider's, passed through as it was.
+    /// Throws the refusal in a failed response: the gateway's own, marked in
+    /// `X-AGW-Error` and with a code such as `model_not_allowed`, or the
+    /// provider's, passed through as it was.
     private func check(_ response: HTTPURLResponse, body: Data) throws {
         guard let error = GatewayError(response: response, body: body) else { return }
-        if error.code != .unknown { throw error }
-        throw ProviderError(status: response.statusCode, body: body)
+        if error.isFromGateway { throw error }
+        throw ProviderError(status: response.statusCode, body: error.providerBody ?? body)
     }
 }
 

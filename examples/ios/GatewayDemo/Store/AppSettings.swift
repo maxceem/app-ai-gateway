@@ -90,10 +90,16 @@ final class AppSettings {
     private var gateway: (values: Values, apiKey: String, backend: GatewayBackend)?
 
     /// The backend requests go to. The gateway one is kept while the settings
-    /// stay the same, so its client keeps its token between requests.
+    /// stay the same, so its client keeps its token between requests. When
+    /// they change, the old client is ended before a new one is made, so no
+    /// request of the old setup is sent again under the new one.
     func backend() throws -> any AIBackend {
-        if values.simulated { return SimulatedBackend() }
+        if values.simulated {
+            endGateway()
+            return SimulatedBackend()
+        }
         if let gateway, gateway.values == values, gateway.apiKey == apiKey { return gateway.backend }
+        endGateway()
         guard let url = URL(string: values.baseURL), url.scheme != nil, !values.appID.isEmpty else {
             throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
         }
@@ -108,5 +114,11 @@ final class AppSettings {
         )
         gateway = (values, apiKey, backend)
         return backend
+    }
+
+    private func endGateway() {
+        guard let old = gateway?.backend.client else { return }
+        gateway = nil
+        Task { await old.invalidate() }
     }
 }

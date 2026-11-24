@@ -1,6 +1,6 @@
 /// Where each provider type serves each capability.
 ///
-/// Requests go to `/v1/apps/{app}/proxy/{slug}/{path}`, and the path is the
+/// Requests go to `/v2/apps/{app}/proxy/{slug}/{path}`, and the path is the
 /// provider's own, passed through verbatim, so the prefixes differ:
 /// DeepSeek has no `v1/`, Groq namespaces its OpenAI API under `openai/`.
 enum ProviderPaths {
