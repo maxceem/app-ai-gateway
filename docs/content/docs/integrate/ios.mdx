@@ -1,425 +1,207 @@
 ---
-title: iOS with the Swift package
-description: Add the AppAIGateway package, pick an auth mode, and send provider requests from your app with no key on the device.
+title: iOS apps
+description: Sign an iOS app in with App Attest and call the gateway with no key on the device, over plain HTTP.
 ---
 
-The AppAIGateway Swift package does the part of the integration that is easy
-to get wrong: App Attest registration, the token exchange, token refresh,
-signing each request with App Attest when your app verifies every request,
-and the headers every request needs. You keep sending provider requests with
-`URLSession` or any HTTP client. The package builds and signs the request,
-and decides when to build it again; your code sends it.
+An iOS app has no key to ship. It proves it is a real install of your app with
+Apple's App Attest, trades that proof for a **gateway token** that lasts an
+hour, and sends the token with its requests. How this works, and what it
+protects against, is explained in
+[Identity and entitlement](/how-it-works/identity).
 
-Requirements: iOS 16 or later, a real device for App Attest, and an app in
-the console of type **iOS application** with your Team ID and Bundle ID.
-
-## Add the package
-
-In Xcode, choose **File → Add Package Dependencies** and enter:
-
-```text
-https://github.com/maxceem/app-ai-gateway-swift
-```
-
-Or in `Package.swift`:
-
-```swift
-.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.9.0")
-```
-
-Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
-package is developed in the `app-ai-gateway-swift` directory of the
-[main repository](https://github.com/maxceem/app-ai-gateway), which is where
-to report issues.
-
-## Create the client
-
-```swift
-import AppAIGateway
-
-let gateway = AppAIGatewayClient(
-    appID: "example-app-a1b2c3",
-    baseURL: URL(string: "https://api.appaigateway.com")!,
-    authMode: .appAttestInstall
-)
-```
-
-`appID` is the app's ID from the console. `baseURL` is
-`https://api.appaigateway.com` for the hosted service.
-
-<Callout title="Self-hosting">
-  Set `baseURL` to your own gateway's API origin, without `/v1` or an app path.
-  The package appends those paths itself.
+<Callout title="The Swift package">
+  The Swift package that does all of this for you is coming with the v2 SDK.
+  Until then, this page describes the HTTP calls an app makes, and everything
+  on it works today. The earlier Swift package and the demo app work with the
+  earlier version of the gateway only.
 </Callout>
 
-Keep one client per
-app for the life of the process; it caches the gateway token and refreshes it
-in the background.
+## Before you start
 
-## Choose the auth mode
+- An app in the console of kind **iOS app**, with your **Apple Team ID** and
+  **Bundle ID**. Its **Sign-in** tab sets which builds are accepted and when
+  App Attest is checked. See [Application identity](/applications/auth-policy/identity#ios-apps).
+- A real device. App Attest does not run in the simulator.
+- If your users sign in, the app's **Who may call** set to
+  **Signed-in users only**, and your identity provider's ID token on hand. See
+  [User authentication](/applications/auth-policy/user-authentication).
 
-The mode must match the app's **User authentication** setting in the console.
+The examples use `https://api.appaigateway.com`. A self-hosted gateway uses its
+own API address.
 
-| Console setting | Auth mode |
-| --- | --- |
-| **Unauthenticated users** | `.appAttestInstall` |
-| **Signed-in users only** | `.appAttest(issuerTokenProvider:)` |
+## 1. Get a challenge
 
-### Unauthenticated users
-
-```swift
-authMode: .appAttestInstall
+```http
+POST /v2/apps/{app}/auth/challenge
 ```
 
-App Attest alone. The install is the user. No sign-in is involved and no ID
-token is sent.
-
-### Signed-in users
-
-Give the client a closure that returns the user's current ID token from your
-identity provider. The `forceRefresh` flag is set when the gateway rejected
-the previous token, so pass it through to your provider's refresh call.
-
-```swift
-import FirebaseAuth
-
-authMode: .appAttest(issuerTokenProvider: { forceRefresh in
-    guard let user = Auth.auth().currentUser else { throw NotSignedIn() }
-    return try await user.getIDToken(forcingRefresh: forceRefresh)
-})
+```json
+{ "challenge": "q3J0…", "expires_in": 300, "accepts_app_transaction": true }
 ```
 
-Return the JWT whose issuer and audience match your gateway configuration:
-Firebase's ID token, Supabase's session access token, Clerk's configured JWT,
-or your own. With the Auth0 preset, return an access token issued for your API
-identifier, as described in [Auth0's token guide](https://auth0.com/docs/secure/tokens/access-tokens/get-access-tokens).
-The closure is named `issuerTokenProvider` regardless of the token type.
+A challenge is base64url text, valid for five minutes, and can be used once.
+Get a new one for each step below that needs one.
 
-## Send a request
+## 2. Register the install's key
 
-`withAuthorizedRequest` builds a `URLRequest` with the URL, the body, the
-`Authorization` header, `X-App-Version` and the request's App Attest proof
-set, and hands it to your closure to send. Pass the body to it, and send the
-request your closure receives.
+Do this once per install, and again if the gateway no longer knows the key.
 
-```swift
-let (data, response) = try await gateway.withAuthorizedRequest(
-    provider: .openai,
-    providerPath: "v1/responses",
-    body: try JSONEncoder().encode([
-        "model": "gpt-5.6-sol",
-        "input": "Summarise today's meals in one sentence."
-    ]),
-    contentType: "application/json"
-) { try await URLSession.shared.data(for: $0) }
+1. Create a key with `DCAppAttestService.generateKey()`, and keep its `keyId`.
+2. Decode the challenge from base64url, and take the SHA-256 of those bytes.
+3. Call `attestKey(keyId, clientDataHash:)` with that hash.
+4. Send:
 
-if let error = GatewayError(response: response as! HTTPURLResponse, body: data) {
-    throw error
-}
+```http
+POST /v2/apps/{app}/auth/register
+Content-Type: application/json
+
+{ "key_id": "<keyId>", "attestation": "<attestation, base64>", "challenge": "<challenge>" }
 ```
 
-The package never performs the request itself, so any session, configuration
-or networking library works in the closure. If the gateway answers `401`, the
-client discards its token, builds the request again with a fresh token and,
-when your app verifies every request, a fresh proof, and calls your closure
-once more. That recovers from an expired gateway token or one that names no
-install (`401 auth_required`), and from an app switched to **Every request**
-after the token was cached (`401 assertion_required`). Any `401` is retried
-without its body being read, so one a provider returned through the proxy,
-such as for a rejected provider key, costs one extra exchange and one
-repeated provider call. An error your closure throws, and every other status,
-`403 attest_failed` and `429` included, come back to you untouched.
+The answer is `{ "user_id": "…" }`: the install's key ID, or, on an app with
+signed-in users, the user's ID. An app with signed-in users also sends
+`issuer_token`, the user's ID token. On an app without them, `issuer_token` is
+refused.
 
-`provider` is a provider slug. The constants `.openai`, `.anthropic`, `.xai`,
-`.gemini` and `.perplexity` spell the default slug of each type; use
-`.custom("openai-dev")` for any other. `providerPath` is the provider's own
-API path with no leading slash.
+## 3. Get a gateway token
 
-Headers the provider needs, such as `anthropic-version` for Anthropic, can be
-added to the request inside the closure; the proof does not cover them. See
-[Calling the provider proxy](/integrate/proxy) for the paths and headers of
-each provider.
+Get a fresh challenge, then sign this exact text with the install's key, using
+`generateAssertion(keyId, clientDataHash:)` and the SHA-256 of the text:
 
-To stream, send with `URLSession.bytes(for:)`. It returns once the response
-headers arrive, before the body, so the status is known while the stream is
-still unread. Read the provider's stream as documented by the provider:
-
-```swift
-let (bytes, response) = try await gateway.withAuthorizedRequest(
-    provider: .anthropic,
-    providerPath: "v1/messages",
-    body: Data(#"{"model":"claude-sonnet-5","max_tokens":512,"stream":true,"messages":[{"role":"user","content":"Plan tomorrow's meals."}]}"#.utf8),
-    contentType: "application/json"
-) { request in
-    var request = request
-    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-    return try await URLSession.shared.bytes(for: request)
-}
-
-let http = response as! HTTPURLResponse
-guard (200..<300).contains(http.statusCode) else {
-    let body = try await bytes.reduce(into: Data()) { $0.append($1) }
-    throw GatewayError(response: http, body: body)!
-}
-for try await line in bytes.lines {
-    print(line)
-}
+```json
+{"app":"<app id>","challenge":"<challenge>","key_id":"<keyId>"}
 ```
 
-A [custom endpoint](/integrate/endpoints) is the same call with a slug:
+The keys are in this order, with no spaces. Then send:
 
-```swift
-let (data, response) = try await gateway.withAuthorizedRequest(
-    endpointSlug: "chat",
-    body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
-    contentType: "application/json"
-) { try await URLSession.shared.data(for: $0) }
+```http
+POST /v2/apps/{app}/auth/token
+Content-Type: application/json
+
+{ "key_id": "<keyId>", "assertion": "<assertion, base64>", "challenge": "<challenge>" }
 ```
 
-`authorizedRequest` takes the same arguments without the closure and returns
-the request alone, for an app that wants to drive the retry itself; see
-**Recovery** under [What the client does for you](#what-the-client-does-for-you).
-
-## Show the user where they stand
-
-`withCurrentUserRequest` sends a `GET /v1/apps/{app}/me`, which answers
-the limits that apply to the caller, its requests today, the month's spend
-against its budget, and whether it is blocked. On an iOS app the request
-counts are the install's and `install_id` names it; `budget_scope` says
-whether the spend is the Apple Account's, the install's or the user's. It
-retries a `401` the same way; `currentUserRequest()` builds the request alone.
-
-```swift
-let (data, _) = try await gateway.withCurrentUserRequest { try await URLSession.shared.data(for: $0) }
+```json
+{ "access_token": "…", "expires_in": 3600, "verify_on": "every_request" }
 ```
 
-Build it with the client rather than from a URL of your own: when your app
-verifies App Attest on every request, it must be signed like any other
-gateway request, so one without a proof is refused with
-`401 assertion_required`, and changing a signed request's URL afterwards
-breaks its proof. The response is described under
-[Calling the provider proxy](/integrate/proxy#reading-your-own-limits).
+An app with signed-in users also sends `issuer_token`, as in step 2.
 
-## Budgets per Apple Account
+`verify_on` says whether the requests you send with this token must be signed:
+`every_request` means yes, `token_exchange` means the token is enough.
 
-From 1.7, the package sends the app's App Store transaction (StoreKit's
-`AppTransaction`, which Apple signs) with each token exchange, bound into
-the exchange's App Attest assertion. The gateway checks Apple's signature,
-your bundle ID and that the transaction comes from the App Store or Apple's
-sandbox, then reads its app transaction ID: the same for one Apple Account
-on every device and after every reinstall. That is what lets your app
-measure its monthly budget per Apple Account, the default for new apps; see
-[Limits and blocking](/how-it-works/limits#whose-month-an-ios-budget-is).
+### Budgets per Apple Account
 
-There is nothing to configure and nothing to call. The package reads only
-what StoreKit already holds and never asks the user to sign in to the App
-Store. When no transaction arrives within a few seconds, as on a simulator
-or offline, the exchange goes ahead without one. The gateway counts such an
-install on its own, as it does an install that sent a transaction it cannot
-verify, such as one signed by an Xcode StoreKit configuration, and one on a
-build with an earlier package. None of them is refused. Ship 1.7 or later
-before you rely on per-account budgets.
+An app can count its monthly budget per Apple Account rather than per install.
+See [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
+For that, when the challenge answered `accepts_app_transaction: true`, also
+send StoreKit's `AppTransaction` as its signed JWS text, in `app_transaction`,
+and sign it with the rest. Add a fourth key to the signed text, the unpadded
+base64url SHA-256 of the JWS:
 
-The gateway keeps neither the transaction nor the ID itself, only a hash of
-the ID combined with your app and the environment, so it never matches
-across apps. That hash is still an identifier linked to the person's Apple
-Account, so take it into account when you fill in your app's privacy
-details in App Store Connect.
+```json
+{"app":"<app id>","challenge":"<challenge>","key_id":"<keyId>","app_transaction":"<hash>"}
+```
 
-## Per-request proof
+Without a transaction, or with one the gateway cannot check, such as one from
+an Xcode StoreKit setup, the install is counted on its own. It is never
+refused for that.
 
-Each iOS app's **Verify App Attest on** setting, `verify_on`, decides whether
-requests are signed:
+## 4. Sign each request
 
-- **Every request** (`every_request`, the default for new apps): every
-  request the app sends through the gateway is signed. Alongside the gateway
-  token it carries an `X-AppAttest-Proof` header: an assertion the install's
-  App Attest key made over that one request. A gateway token copied off the
-  network is worthless without the device's key, and a proof is accepted
-  once. Needs the package 1.4 or later.
-- **Token exchange** (`token_exchange`): the assertion is checked once per
-  hourly token, and requests carry only the token.
+Send the gateway token, and your app's version, with every request to the
+provider proxy, presets and jobs:
 
-The token exchange answers with the app's `verify_on`, and the package signs
-requests only when it is `every_request`; a gateway that does not send it is
-treated as `token_exchange`. Build every request through the package either
-way, and switching the setting needs no change in your app.
+```http
+Authorization: Bearer <access_token>
+X-App-Version: 1.4.2
+```
 
-Apps created before this setting was added were set to **Token exchange**, so
-builds already in your users' hands, on a package before 1.4, keep working. Switch to
-**Every request** on the app's **Auth policy** page once every build in use is
-on 1.4 or later: from then on a request without a proof is refused with
-`401 assertion_required`. A 1.4 client still holding a token from before the
-switch is refused that way too, until it discards the token and rebuilds the
-request, which `withAuthorizedRequest` does on its own; see **Recovery** under
-[What the client does for you](#what-the-client-does-for-you).
+When `verify_on` is `every_request`, also send `X-AppAttest-Proof` with each
+request, including `GET /v2/apps/{app}/me`:
 
-With **Every request**, the client data the key signs is the SHA-256 of these
-lines joined by a newline, with no trailing newline:
+```text
+X-AppAttest-Proof: v1.<unix seconds>.<nonce>.<assertion>
+```
+
+- `<nonce>` is 16 random bytes, base64url without padding.
+- `<assertion>` is `generateAssertion` over the SHA-256 of the text below, in
+  base64url without padding.
+
+The signed text is these lines joined by a newline, with no newline at the end:
 
 ```text
 appaigateway-request-v1
 <app id>
-<HTTP method, upper case>
-<URL path and query exactly as sent>
-<base64url SHA-256 of the body; an absent body hashes as empty>
+<HTTP method, in capitals>
+<the URL's path and query, exactly as sent>
+<base64url SHA-256 of the body; no body hashes as empty>
 <base64url SHA-256 of the gateway token>
-<unix seconds>
-<16 random bytes, base64url>
+<unix seconds, as in the header>
+<nonce, as in the header>
 ```
 
-and the header is `v1.<unix seconds>.<random value>.<assertion, base64url>`.
-The timestamp is signed, but the gateway does not compare it with its own
-clock; the assertion counter is what stops a proof being used twice.
+All base64url values here have no padding.
 
-The package computes all of it. What that asks of your code:
+- **Build the whole request first**, body and query included, then sign it,
+  and send it unchanged. Other headers may be added after.
+- **Keep paths plain ASCII.** The gateway reads the path as a standard URL
+  parser does. A path with spaces, quotes or other characters a parser
+  rewrites is signed over text the gateway does not see.
+- **One proof per request.** Each assertion's counter is accepted once, so a
+  retry is a new request with a new proof.
+- The device's time is signed, but not compared with the gateway's clock, so a
+  wrong clock is not refused.
 
-- **Set the body before it is signed.** Pass it as `body:`. Changing
-  `httpBody` or the URL of the request it built invalidates the
-  proof, and the request is refused with `403 attest_failed`. Other headers
-  may be added.
-- **Keep provider paths plain ASCII.** The proof covers the path and query
-  as the gateway reads them, which is how a standard (WHATWG) URL parser
-  reads the URL that arrives. The package rewrites the URL it returns into
-  that form before signing it: `.` and `..` segments resolved, and spaces,
-  quotes, `'` in a query, `^` in a path and any non-ASCII character
-  percent-encoded, with escapes already present left as they are. A plain
-  ASCII path never needs rewriting, so the URL you passed in is the one sent.
-- **One request per proof.** Build a new request for every send, retries
-  included; `withAuthorizedRequest` does so for the one it makes. Replaying a
-  request the gateway has already accepted is refused as a replayed
-  assertion.
-- **Version 1.4 or later.** Earlier versions of the package send no proof,
-  so an app that verifies every request refuses their requests with
-  `401 assertion_required`. Moving to 1.4 means passing the body to
-  `authorizedRequest` instead of assigning it afterwards; nothing else in
-  your code changes.
+## 5. Keep the token fresh
 
-An app whose API-key mode builds server requests sends no proof: API keys
-prove themselves.
+The token lasts an hour. Get a new one, with steps 1 and 3, before it ends.
 
-## What the client does for you
+- On `401 auth_required`, get a new token and send the request again, once.
+- On `401 assertion_required`, the app was switched to sign every request after
+  this token was issued. Get a new token, which now says `every_request`, and
+  sign the request.
+- On `403 attest_failed`, build and sign the request again, and send it once.
+  If it happens again, register a new key with step 2.
 
-- **App Attest registration.** On first use it generates a key in the Secure
-  Enclave, asks the gateway for a challenge, attests the key with Apple, and
-  registers it. The key ID is stored in the Keychain under the service
-  `dev.aigateway.credentials`, so later launches skip this step.
-- **Token exchange.** It obtains a gateway token valid for one hour by
-  signing a fresh challenge with the key, with the ID token alongside when
-  the mode has one and, from 1.7, the app's App Store transaction; see
-  [Budgets per Apple Account](#budgets-per-apple-account). Concurrent
-  callers share one exchange.
-- **Refresh.** It refreshes the token in a background task well before it
-  expires, so a request rarely waits for an exchange. From 1.8 it starts
-  fifteen minutes early, never makes a request wait while the current token
-  is still accepted, and when a refresh fails it keeps using the current token
-  and tries again about once a minute. A short outage of the gateway's token
-  endpoints then goes unnoticed by your app.
-- **Request signing.** When the app verifies App Attest on every request, it
-  signs every request it builds, `/me` included, with the key the gateway
-  token is bound to; see [Per-request proof](#per-request-proof).
-- **Recovery.** After a reinstall the Keychain may still name a key that no
-  longer exists in the Secure Enclave. The client detects the local signing
-  failure, registers a new key, exchanges it for a token bound to the new key
-  and signs once more, whether that happens at the token exchange or while
-  signing a request. It also replaces the key once when the gateway answers
-  `attest_failed` at the token exchange. When a request sent through
-  `withAuthorizedRequest` is refused with `401`, `auth_required` or
-  `assertion_required`, it discards the token and builds and sends the
-  request once more. The next exchange answers the app's current
-  `verify_on`.
-  `assertion_required` on a request built by the package and sent with its
-  headers intact means the app was switched to **Every request** after its
-  cached token was issued under **Token exchange**; the rebuilt request is
-  signed. A request assembled from `gatewayAccessToken()` by hand gets it
-  whenever the app is on **Every request**. If you send requests built with
-  `authorizedRequest` instead, a `401` is yours to handle: call
-  `discardAccessToken()` and build the request again, once. A
-  `403 attest_failed` on a request is returned to you, never retried: a key
-  the gateway does not know, an environment it no longer accepts, a malformed
-  proof and a request changed after signing all answer it. Calling
-  `discardAccessToken()` and building the request again helps when the key
-  was lost, because the fresh exchange re-registers it, and not when the
-  environment is no longer accepted or the request was changed after
-  signing.
-- **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
-  with a `429`, the client remembers how long the wait is and refuses the next
-  call itself until it passes, rather than asking Apple for a new key on every
-  attempt. The error it raises carries the time still left in `retryAfter`. A
-  token it already holds keeps working throughout.
-- **ID token retries.** On `issuer_token_rejected` it asks your provider for
-  a refreshed token once and retries. On `issuer_claims_missing` it first
-  runs your recovery hook, described below, then retries with a refreshed
-  token.
-- **App version.** `X-App-Version` is set from `CFBundleShortVersionString`,
-  which is what the console's **By app version** breakdown groups by.
-- **Package version.** Releases after 1.7.0 also send `X-Client-SDK`, such
-  as `app-ai-gateway-swift/1.8.0`, on every request. The gateway records it
-  on each token exchange and key registration, as `client_sdk` in the
-  [auth events API](/applications/auth-events#through-the-api), so you can
-  see which package release your installs run. It never reaches the provider.
-- **Failure reports.** From 1.9, when a sign-in step fails on the device
-  after the gateway handed out a challenge, the package tells the gateway
-  which step failed, with the error's domain and code and never its text.
-  App Attest failing on an App Review device is the usual case. It is sent in
-  the background, so your app still gets the error at once. You see it under
-  [challenges nothing used](/applications/auth-events#challenges-nothing-used).
+Every code is in [Errors and limits](/integrate/errors).
 
-## Handling a missing entitlement
+## Report a failure on the device
 
-With a [subscription check](/applications/auth-policy/subscription-check),
-a user who has just paid may hold a token that does not carry the
-entitlement yet. The gateway answers `issuer_claims_missing`, and the client
-runs the `issuerRejectionRecovery` closure before retrying. Use it to sync
-the purchase, for example by asking RevenueCat to refresh, so the refreshed
-token carries the claim:
+When a step after the challenge fails on the device, the app can say why, so
+the app's **Errors** tab shows it:
 
-```swift
-let gateway = AppAIGatewayClient(
-    appID: "example-app-a1b2c3",
-    baseURL: URL(string: "https://api.appaigateway.com")!,
-    authMode: .appAttest(issuerTokenProvider: { forceRefresh in
-        try await Auth.auth().currentUser!.getIDToken(forcingRefresh: forceRefresh)
-    }),
-    issuerRejectionRecovery: {
-        _ = try await Purchases.shared.syncPurchases()
-    }
-)
+```http
+POST /v2/apps/{app}/auth/failure
+Content-Type: application/json
+
+{
+  "challenge": "<challenge>",
+  "step": "attest_key",
+  "error": { "domain": "com.apple.devicecheck.error", "code": 2 }
+}
 ```
 
-The hook runs only for `issuer_claims_missing`, never for
-`issuer_token_rejected`, so an expired token does not trigger a store round
-trip.
+- `step` is `attest_key`, `generate_assertion`, `issuer_token`, `register` or
+  `token`.
+- `underlying_error`, with the same shape as `error`, is optional.
+- `recovered: true` says the app recovered by itself, such as by registering a
+  new key.
 
-## Reading errors
+The challenge must be one this app was given and has not used. The report uses
+it up, so one challenge carries one report. The answer says `recorded: true`
+or `false`.
 
-Every refusal is a JSON body with a code, and `GatewayError(response:body:)`
-reads it. The useful properties:
+## Show the user where they stand
 
-- `code`: a `GatewayErrorCode` such as `.appRateLimited`, or `.unknown` for a
-  code this version of the package does not know.
-- `retryAfter`: seconds until a rate limit or budget window reopens.
-- `limitScope`: `"install"`, `"apple_account"`, `"user"` or `"app"` for an
-  app limit, so you can tell "slow this caller down" from "the whole app is
-  busy". An iOS app's request limits count per install, one copy of the app
-  on one device; `"apple_account"` is a budget spent across all of one Apple
-  Account's installs.
-- `isRetryable`: whether the same request could succeed later without a
-  change.
+`GET /v2/apps/{app}/me`, signed like any other request, answers the user's
+limits, today's requests, the month's spend and whether they are blocked. See
+[What a user can see about themselves](/how-it-works/limits#what-a-user-can-see-about-themselves).
 
-`.rateLimited` is the gateway protecting its own authentication endpoints, so
-it carries no `limitScope` — it is not one of the limits you set on your app.
-The client has already started waiting that window out, so show "try again in
-`retryAfter` seconds" and leave the user signed in.
+## Sending requests
 
-The full code list and what each one means for your app is on
-[Errors and limits](/integrate/errors).
+Once signed in, an iOS app calls the gateway like any other app:
 
-## Server-side use of the package
-
-The package also builds requests for server applications, with
-`.apiKey(key:)` for an app with no user identity or
-`.apiKey(key:issuerTokenProvider:)` for one with signed-in users, and
-`endUserId` for an app whose backend names the user. That is useful for a
-macOS or server-side Swift process. Never use `.apiKey` inside an iOS app:
-an API key shipped in an app can be extracted.
+- [Calling the provider proxy](/integrate/proxy)
+- [Calling presets](/integrate/endpoints)
+- [Jobs](/applications/jobs)
