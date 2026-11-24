@@ -16,7 +16,8 @@ A connection sends its requests to the provider's own host unless you give it a
 Set it in **Base URL (optional)** when you add the connection, or later with
 the connection's **Host** action. Leave it empty to use the provider's own host.
 **Host** is not offered on a connection through Cloudflare AI Gateway, or on a
-custom provider, whose base URL is part of what it is.
+custom provider. To change a custom provider's base URL, send `baseUrl` with
+its key through `PUT /v2/admin/providers/{id}`.
 
 Everything else stays the provider's: the operations, the paths, the header the
 key is sent in, and the prices. The path your app sends after the slug is
@@ -53,7 +54,7 @@ both, so the field is hidden while **Send through Cloudflare AI Gateway** is on.
 - **A server you run** that speaks a provider's API, such as vLLM, SGLang or
   llama.cpp's server. Choose OpenAI as the provider.
 - **A provider's regional host**, such as xAI's `https://us.api.x.ai/`. Its
-  requests are billed at that region's price. See
+  requests are priced at that region's price. See
   [Service modes](/providers/model-pricing#service-modes).
 - **Another region of ByteDance Ark**, whose keys work in one region only.
 - **A proxy of your own** in front of a provider, as long as it speaks that
@@ -76,7 +77,7 @@ what is wrong.
 | No user name or password, query string or fragment | `https://user:pass@host/`, `https://host/?x=1` |
 | No port other than 443 | `https://host:8443/` |
 | A public domain name, never an IP address | `https://127.0.0.1/`, `https://[::1]/` |
-| At least two labels, no trailing dot | `https://vllm/`, `https://host./` |
+| A dot in the name, and none at the end | `https://vllm/`, `https://host./` |
 | No local-only ending | `.local`, `.localhost`, `.internal`, `.lan`, `.corp`, `.home`, `.test`, `.example` and similar |
 | No empty, `.` or `..` segment, or encoded `/`, in the path | `https://host/a//b/` |
 | At most 200 characters | |
@@ -96,8 +97,8 @@ Open the connection's **Host** action. The dialog, **Host**, says where the
 connection's requests go.
 
 - **A new base URL** needs the key again: the **API key** field appears, and
-  **Save** stays off until you fill it. A stored key is never sent to a host it
-  was not given for.
+  **Save** stays off until you fill it. A stored key is never sent to a new host
+  it was not given for.
 - **Back to the provider's own host**, by emptying the field, either tick
   **Send the current key to …**, which names the provider's hosts, or type a
   replacement key.
@@ -186,7 +187,7 @@ Through the API, a custom provider needs `type: "custom"`, `baseUrl` and
 
 A path you list on a custom provider may name an API style. The gateway then
 serves it like a built-in provider's operation of that style: it reads the
-model, checks it against the app's models list, measures the usage, and bills
+model, checks it against the app's models list, measures the usage, and prices
 it at your prices for the connection. Add a price for each model, or requests
 are refused with `400 pricing_not_configured`.
 
@@ -223,15 +224,18 @@ POST chat/completions openai-chat
 
 - The method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.
 - `{name}` stands for one segment, such as an ID, and two never stand next to
-  each other. It comes after the API version, when the path has one, and at
-  least one fixed segment, the endpoint's name. So OpenAI's
+  each other. It comes after any API prefix the gateway knows, such as `v1` or
+  DeepSeek's `beta`, and at least one fixed segment, the endpoint's name. So OpenAI's
   `v1/files/{file_id}` can be listed, and so can `predictions/{id}` on a custom
   provider whose base URL ends in `/v1/`. `v1/{id}` cannot.
 - A price, such as `$0.002`, is charged for each answer the provider accepts.
   Without one, the path is not priced, and budgets do not limit it.
-- A path that one of the provider's own operations already serves is refused:
-  allow that operation on the app instead.
-- Two paths that could match the same request are refused.
+- A path that could match requests of one of the provider's operations, or of
+  another API-style path, is refused: it would take them without counting them.
+  Allow that operation on the app instead.
+- The same pattern listed twice is refused. Otherwise plain paths may overlap,
+  and the more specific one wins: `GET v1/files/search` serves that request,
+  at its own price, ahead of `GET v1/files/{file_id}`.
 - A connection lists up to 100 paths.
 
 The first time you list paths on a built-in provider, the dialog shows what

@@ -25,6 +25,9 @@ Limits, usage and errors work the same way.
 
 ## The body
 
+A preset may have [fallbacks](/applications/custom-endpoints#fallbacks): other
+connections and models tried in turn. Each one tried is an **attempt**.
+
 Send a body in the format of the preset's operation, as its provider documents
 it. Leave out `model`: the gateway sets the preset's model for each attempt,
 in the body, the form, or Gemini's path. A model you send is replaced.
@@ -85,7 +88,7 @@ add it before you sign.
 
 A fallback is tried only when the attempt before it got no answer, a `429` or a
 `5xx`, so a stream that has started is never switched to another provider. All
-attempts share one time limit for the provider's first byte: a fallback gets
+attempts share one time limit for the provider's response headers: a fallback gets
 what is left of it. See [Limits on one request](/integrate/proxy#limits-on-one-request).
 
 ## Errors
@@ -98,7 +101,9 @@ what is left of it. See [Limits on one request](/integrate/proxy#limits-on-one-r
 | `502 provider_disabled` | The preset's connection is turned off and it has no fallback left. |
 | `502 provider_unavailable` | The preset's first connection cannot serve its operation, or its key cannot be opened. |
 
-When every attempt fails, your app gets the last provider's own error. When no
-provider answered, it gets `provider_error`: `502` when the connection failed,
-or `504` when the time limit ran out. The gateway's errors, and how to handle
+When every attempt fails, your app gets the result of the last attempt actually
+sent: that provider's own error, `502 provider_error` if the connection failed,
+or `504 provider_error` if the time limit ran out. A fallback that is skipped,
+for example because its key cannot be opened, leaves the earlier result in
+place. The gateway's errors, and how to handle
 them, are in [Errors and limits](/integrate/errors).

@@ -7,10 +7,9 @@ The gateway counts what each request costs, so your apps' budgets and usage
 stay right. To count it, the model needs a price, or the provider must report
 the cost itself. A request for a model with neither is refused with
 `400 pricing_not_configured` before it reaches the provider. The exception: a
-model the app lists by name, or a preset's own model, keeps being served if its
-price later goes away. See [Models](/applications/provider-access#models)
-for the rules, and [Where a cost comes from](/applications/usage#where-a-cost-comes-from)
-for how such requests are charged.
+model the app lists by name, or a preset's primary model, keeps being served if
+its price later goes away. See [Models](/applications/provider-access#models)
+for the rules.
 
 A price comes from one of three places, in this order:
 
@@ -45,23 +44,23 @@ long prompts shows both.
 
 ### What an entry holds
 
-The file is keyed by provider, then model ID. The fields you are most likely to
+The file is grouped by provider, then model ID. The fields you are most likely to
 read:
 
 | Field | Meaning |
 | --- | --- |
 | `kind` | What the model does, such as `text`, `image`, `speech` or `transcription`. |
 | `input`, `output` | Dollars per million input and output tokens. |
-| `cached_input`, `cache_write` | Input read from, or written to, the provider's prompt cache. Without them, these tokens bill at `input`. |
-| `long_context_threshold`, `long_*` | A prompt longer than the threshold bills all its tokens at the `long_` prices. |
-| `per_minute`, `per_hour`, `per_image`, `per_million_characters`, … | Prices in other units, for models billed that way. |
+| `cached_input`, `cache_write` | Input read from, or written to, the provider's prompt cache. Without them, these tokens are priced at `input`. |
+| `long_context_threshold`, `long_*` | A prompt longer than the threshold has all its tokens priced at the `long_` prices. |
+| `per_minute`, `per_hour`, `per_image`, `per_million_characters`, … | Prices in other units, for models priced that way. |
 | `modes` | Prices in other [service modes](#service-modes). |
 | `retirement_date` | The day the provider stops serving the model. |
 | `unlisted_since` | The day the provider's price page stopped listing the model. |
 | `price_changes` | Price changes the provider has announced, each with the day it starts. |
 
 A price is never removed. A model the provider stops listing keeps its last
-price, marked `unlisted_since`, so an app that still uses it keeps being billed
+price, marked `unlisted_since`, so an app that still uses it keeps being charged
 correctly. When an app uses a model that is retiring or no longer listed, its
 pages show a notice titled **A model this app uses is leaving our price list**.
 
@@ -99,9 +98,9 @@ including ones the form does not show; fields the form does not show are kept
 as they are.
 
 Your price replaces the list's price for that model on that connection. It does
-not borrow any of the list's rates: a rate you leave out bills as it would on
-an entry without it. So if the provider gives a cache discount, enter it, or
-cached tokens bill at the full input price.
+not borrow any of the list's rates, except its service mode factors (see below):
+a rate you leave out is priced as it would be on an entry without it. So if the provider gives a cache discount, enter it, or
+cached tokens are priced at the full input price.
 
 The same through the API. `pricing` replaces all your prices on the connection,
 and `null` removes them. For a model on an OpenAI connection:
@@ -128,13 +127,13 @@ fal connection instead: `{ "fal-ai/some-model": { "per_request": 0.02 } }`.
 
 Saving checks every price:
 
-- A price none of the connection's operations could bill, such as a per-image
+- A price none of the connection's operations could charge, such as a per-image
   price on a text-only provider, is refused with `400 invalid_request`.
 - On a provider that runs [jobs](/applications/jobs), such as fal, each model
   takes exactly one unit rate, because a job settles at the rate it started with.
-- A change can be refused with `400 pricing_not_configured` when it would leave
-  a request your apps can newly send with no price. Removing a price a proxy
-  request used still saves. See
+- When you change or remove prices, the gateway checks the calls your apps can
+  still make. If one would be left with no price, the save is refused with
+  `400 pricing_not_configured`. See
   [Changes are checked against your apps](/providers/add-a-provider#changes-are-checked-against-your-apps).
 
 Removing a connection removes your prices on it. Charges already recorded keep
@@ -148,7 +147,7 @@ any budget. Enter it on purpose.
 
 ## Providers that report their own cost
 
-Some answers say what the provider charged, and that figure is billed as it is.
+Some answers say what the provider charged, and that figure is charged as it is.
 Those models need no price.
 
 | Provider | Answers that report a cost |
@@ -157,11 +156,11 @@ Those models need no price.
 | OpenRouter | Chat Completions, the only operation it has |
 | ElevenLabs | Speech to text |
 
-Their other operations, such as xAI's Messages API, are billed from prices.
+Their other operations, such as xAI's Messages API, use prices.
 
 A reported cost comes through a direct connection and through Cloudflare AI
 Gateway. It does not come through Vercel AI Gateway, which answers in its own
-words.
+format.
 
 If an answer that should report a cost comes without one, your price or the
 list's is used if there is one. Otherwise the charge is marked `unresolved`.
@@ -182,15 +181,15 @@ of the standard price:
 "modes": { "flex": { "factor": 0.5 }, "fast": { "factor": 2 } }
 ```
 
-A request is billed in the mode that served it. That is the mode the provider's
+A request is priced in the mode that served it. That is the mode the provider's
 answer names, where it names one, or else the mode the request asked for, in the
 provider's own field, such as OpenAI's `service_tier` or Anthropic's `speed`. A
 connection whose base URL is a regional host, such as `https://us.api.x.ai/`,
-bills in that region.
+is priced in that region.
 
 A request is never refused because its mode has no price. It is served and
-billed at the closest known price, never below the standard price, and marked
+priced at the closest known price, never below the standard price, and marked
 as an estimate: `price_is_estimate` on the charge, and **≈** before its cost in
-the console. To bill it exactly, add that mode to your price. A
+the console. To price it exactly, add that mode to your price. A
 [preset](/applications/custom-endpoints) that sets a mode with no price is
 refused when you save it.

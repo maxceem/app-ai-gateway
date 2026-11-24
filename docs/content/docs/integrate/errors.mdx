@@ -56,7 +56,7 @@ app.
 | `app_rate_limited` | 429 | A request limit on the app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. `install` or `user`: slow this caller down. `app`: the whole app is busy |
 | `app_budget_exhausted` | 429 | A monthly budget on the app is spent. `data.scope` is `apple_account`, `install`, `user` or `app` | Wait for next month, or raise the budget |
 | `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Ask for less |
-| `payload_too_large` | 413 | The body is over 20 MB | Send less |
+| `payload_too_large` | 413 | The body is too large: over 20 MiB on a proxy or preset request, or over 256 KiB on a sign-in call | Send less |
 
 See [Limits and blocking](/how-it-works/limits) for how they are counted.
 
@@ -66,7 +66,7 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | --- | --- | --- | --- |
 | `path_not_allowed` | 403 | The app does not allow this operation, or the gateway does not know this path for the provider | Use an allowed path, or allow the operation on the app's **Providers** tab |
 | `model_not_allowed` | 403 | The model is not in the app's models list | Use an allowed model |
-| `pricing_not_configured` | 400 | The model has no price the operation can bill | Use a priced model, or add a price. See [Model pricing](/providers/model-pricing) |
+| `pricing_not_configured` | 400 | The model has no price the operation can charge | Use a priced model, or add a price. See [Model pricing](/providers/model-pricing) |
 | `preset_not_found` | 404 | The app has no preset with this name | Check the name |
 | `job_not_found` | 404 | No job with this ID belongs to this app and user | Use the links the gateway answered with |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
@@ -80,8 +80,8 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `provider_not_configured` | 502 | The app does not allow a connection with this slug, or none exists | Allow or add the connection |
 | `provider_disabled` | 502 | The connection is turned off | Turn it on |
 | `provider_unavailable` | 502 | The connection cannot be used as stored, for example its key could not be opened | Check the connection in the console |
-| `provider_error` | 502 | The connection to the provider failed | Try again with backoff, unless it was a job submission |
-| `provider_error` | 504 | The provider sent nothing before the time limit ran out. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
+| `provider_error` | 502 | The connection to the provider failed, a job check got no answer within 30 seconds, or the provider accepted a job but sent no job ID | Try again with backoff, unless it was a job submission |
+| `provider_error` | 504 | On a proxy or preset request, the provider sent no response headers before the time limit. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
 
 ## The gateway itself
 
@@ -101,15 +101,17 @@ fixes them, so do not ask the user to sign in again.
 
 ## Handling errors well
 
-- Retry a `429` or a `5xx` with backoff, and wait at least `Retry-After` when
-  the answer has it. A budget or account refusal needs the action in its row
-  instead.
-- Do not send a [job](/applications/jobs) submission again after it timed out
-  or lost its connection. The provider may have accepted the job, and charged
-  for it. The gateway does not send it again either.
-- Do not send a request again on your own after an answer started, or after a
-  lost connection. The provider may already have done the work, and charged
-  for it.
+- Retry with backoff `provider_error`, `service_unavailable`,
+  `internal_error`, and a `429` that carries `Retry-After`, waiting at least
+  that long. The exception is a [job](/applications/jobs) submission: never
+  resend one on its own after a `5xx`, because the provider may already have
+  accepted the job, and charged for it.
+- Do not retry `provider_not_configured` or `provider_disabled`: they need a
+  change in the console. A budget or account refusal needs the action in its
+  row too.
+- Do not send a request again on your own after an answer started, or after
+  your app's connection to the gateway was lost. The provider may already have
+  done the work, and charged for it.
 - On `app_rate_limited` with the scope `install` or `user`, slow that caller
   down. With the scope `app`, show a "busy, try again shortly" state.
 - On `issuer_claims_missing`, keep the user signed in, and check again gently.

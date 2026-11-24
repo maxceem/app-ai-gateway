@@ -78,7 +78,7 @@ read the stream yourself, do not assume `choices[0]` exists.
 
 ## Transcription
 
-A transcription is billed by the tokens or the length of audio its answer
+A transcription is charged by the tokens or the length of audio its answer
 reports. A plain-text answer reports neither. So on OpenAI, Groq and Together
 AI:
 
@@ -104,7 +104,7 @@ app:
 A header among these whose name has a word such as `key`, `token`, `secret`,
 `auth` or `session` is still dropped, except `idempotency-key`. Every other
 header is dropped. So a provider never sees your user's cookies, a provider
-key your app sent, or a header that would bill another account, such as
+key your app sent, or a header that would charge another account, such as
 OpenAI's account and project headers.
 
 Two more kinds go through where they apply:
@@ -129,16 +129,17 @@ Some providers serve a request faster, cheaper or in a chosen region for
 another price, chosen by a field in the body, such as OpenAI's `service_tier`,
 Anthropic's `speed` and `inference_geo`, or Gemini's `service_tier`. Send it in
 the provider's own format. The gateway sends it on as it is, and reads it to
-bill the request. See [Service modes](/providers/model-pricing#service-modes).
+price the request. See [Service modes](/providers/model-pricing#service-modes).
 
 ## Limits on one request
 
-- A body is at most 20 MB. A larger one is refused with
+- A body is at most 20 MiB. A larger one is refused with
   `413 payload_too_large`.
-- The provider has 120 seconds to send its first byte, or the request is
-  answered with `504 provider_error`. Once it starts answering, there is no
-  time limit. Deepgram has 20 minutes. Self-hosted gateways can change the
-  120 seconds.
+- The provider has 120 seconds to send its response headers, or the request is
+  answered with `504 provider_error`. Once they arrive, there is no time limit.
+  Deepgram has 20 minutes. Self-hosted gateways can change the 120 seconds.
+  Checking on a [job](/applications/jobs) has its own limit of 30 seconds, and
+  answers `502 provider_error` when it runs out.
 - **Most output tokens**, if the app sets it, refuses a request that asks for
   more. See [Most output tokens](/applications/provider-access#most-output-tokens).
 - A request that asks the provider to run in the background is refused. See

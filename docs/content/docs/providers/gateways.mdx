@@ -41,7 +41,7 @@ The same fields appear, plus:
 
 - **Use the keys stored in Cloudflare, and remove this connection's key.**
 - When the connection has a base URL, **Remove the base URL …**. You must tick
-  it, because a connection goes either to a base URL or through Cloudflare.
+  it: a connection goes either to a base URL or through Cloudflare, not both.
 - Once it is on, **Stop using Cloudflare AI Gateway**.
 
 A key goes only where it was given. So turning Cloudflare on, or moving to
@@ -70,9 +70,8 @@ Content-Type: application/json
 - `token` may be left out to keep the stored one, for the same account and
   gateway.
 - `cloudflareGateway: null` stops, and needs `secret` in the same request.
-- A connection with a base URL keeps it unless you send `baseUrl: null` in the
-  same request. Send it when you turn Cloudflare on there, or the request is
-  refused: a connection cannot have both. The console's box does this for you.
+- If the connection has a base URL, also send `baseUrl: null`, or the request
+  is refused.
 
 ### What changes on the way
 
@@ -88,16 +87,16 @@ The gateway adds:
 - `cf-aig-authorization`, your Cloudflare token;
 - `cf-aig-metadata`, the app's ID and, when known, the user's ID, so Cloudflare's
   logs show who made each request;
-- the provider's key in the provider's own header, when the connection keeps
-  one.
+- the provider's key, when the connection keeps one, in the header Cloudflare's
+  endpoint for that API expects. That is usually the provider's own header;
+  Cloudflare's Anthropic Chat Completions path takes it as `Bearer` instead.
 
 An app may send Cloudflare's own controls, which are passed on:
 `cf-aig-cache-ttl`, `cf-aig-skip-cache`, `cf-aig-max-attempts`,
 `cf-aig-backoff` and `cf-aig-retry-delay`. No other `cf-aig-` header is.
 
 Because Cloudflare passes the provider's answer back unchanged, prices and
-reported costs work as on a direct connection. **Replace key** has no
-**Test key** on such a connection.
+reported costs work as on a direct connection.
 
 ## Vercel AI Gateway
 
@@ -105,7 +104,7 @@ Add it like any provider: choose **Vercel AI Gateway** and paste a Vercel AI
 Gateway API key. **Test key** calls Vercel's `v1/credits`, which needs a real
 key.
 
-It has three operations, whatever model you call:
+Its three main paths, whatever model you call:
 
 | Operation | Path |
 | --- | --- |
@@ -118,8 +117,8 @@ It has three operations, whatever model you call:
 A model is named as Vercel names it, with its maker first, such as
 `openai/gpt-5.4-mini`. Use that name in the app's models list and in requests.
 
-Vercel answers in its own words, so no provider's reported cost comes through.
-Each request is billed from the price list, under the provider its maker names:
+Vercel answers in its own format, so no provider's reported cost comes through.
+Each request is priced from the price list, under the provider its maker names:
 
 | Maker in the model name | Priced as |
 | --- | --- |
@@ -136,14 +135,15 @@ model of any other maker needs [your own price](/providers/model-pricing#your-pr
 on the connection, under its full name.
 
 Vercel's own tier fields, such as `providerOptions.gateway.serviceTier`, are
-read to bill the request in the right [service mode](/providers/model-pricing#service-modes).
+read to price the request in the right [service mode](/providers/model-pricing#service-modes).
 
 ### Vercel's fallback models
 
 A request may name other models in `providerOptions.gateway.models`, for Vercel
-to try when the first cannot serve. Each must pass the app's models list and
-have a price, or the request is refused before it is sent. It is billed at the
-model that served it. On a [preset](/applications/custom-endpoints), only the
+to try when the first cannot serve. Each goes through the same
+[models and price check](/applications/provider-access#models) as the request's
+own model, before the request is sent. The request is priced at the model that
+served it. On a [preset](/applications/custom-endpoints), only the
 preset's own model may be named there.
 
 ### Choosing which providers serve

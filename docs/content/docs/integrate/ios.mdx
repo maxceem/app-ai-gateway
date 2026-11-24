@@ -57,7 +57,8 @@ Do this once per install, and again if the gateway no longer knows the key.
 1. Create a key with `DCAppAttestService.generateKey()`, and keep its `keyId`.
 2. Decode the challenge from base64url, and take the SHA-256 of those bytes.
 3. Call `attestKey(keyId, clientDataHash:)` with that hash.
-4. Send:
+4. Send the request below. On an app with signed-in users, add `issuer_token`,
+   the user's ID token. On an app without them, `issuer_token` is refused.
 
 ```http
 POST /v2/apps/{app}/auth/register
@@ -67,9 +68,7 @@ Content-Type: application/json
 ```
 
 The answer is `{ "user_id": "…" }`: the install's key ID, or, on an app with
-signed-in users, the user's ID. An app with signed-in users also sends
-`issuer_token`, the user's ID token. On an app without them, `issuer_token` is
-refused.
+signed-in users, the user's ID.
 
 ## 3. Get a gateway token
 
@@ -80,7 +79,8 @@ Get a fresh challenge, then sign this exact text with the install's key, using
 {"app":"<app id>","challenge":"<challenge>","key_id":"<keyId>"}
 ```
 
-The keys are in this order, with no spaces. Then send:
+The keys are in this order, with no spaces. Then send the request below, with
+`issuer_token` added on an app with signed-in users, as in step 2:
 
 ```http
 POST /v2/apps/{app}/auth/token
@@ -93,16 +93,16 @@ Content-Type: application/json
 { "access_token": "…", "expires_in": 3600, "verify_on": "every_request" }
 ```
 
-An app with signed-in users also sends `issuer_token`, as in step 2.
-
 `verify_on` says whether the requests you send with this token must be signed:
 `every_request` means yes, `token_exchange` means the token is enough.
 
 ### Budgets per Apple Account
 
-An app can count its monthly budget per Apple Account rather than per install.
-See [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
-For that, when the challenge answered `accepts_app_transaction: true`, also
+By default, an iOS app's budget is counted per Apple Account. That works only
+if the app sends its App Store transaction. Without it, each install is counted
+on its own. See [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
+
+When the challenge answered `accepts_app_transaction: true`, also
 send StoreKit's `AppTransaction` as its signed JWS text, in `app_transaction`,
 and sign it with the rest. Add a fourth key to the signed text, the unpadded
 base64url SHA-256 of the JWS:
@@ -111,9 +111,9 @@ base64url SHA-256 of the JWS:
 {"app":"<app id>","challenge":"<challenge>","key_id":"<keyId>","app_transaction":"<hash>"}
 ```
 
-Without a transaction, the install is counted on its own. So is one whose
-transaction Apple's signature check does not pass, such as one from an Xcode
-StoreKit setup: the exchange is not refused for that. The request itself must
+An install whose transaction does not pass Apple's signature check, such as one
+from an Xcode StoreKit setup, is counted on its own too: the exchange is not
+refused for that. The request itself must
 still be well formed: an empty `app_transaction`, one over 16,384 characters,
 or a hash in the signed text that does not match it is refused.
 
@@ -145,13 +145,15 @@ appaigateway-request-v1
 <app id>
 <HTTP method, in capitals>
 <the URL's path and query, exactly as sent>
-<base64url SHA-256 of the body; no body hashes as empty>
+<base64url SHA-256 of the body; with no body, the SHA-256 of zero bytes>
 <base64url SHA-256 of the gateway token>
 <unix seconds, as in the header>
 <nonce, as in the header>
 ```
 
-All base64url values here have no padding.
+All base64url values here have no padding. The path and query look like
+`/v2/apps/my-app/proxy/openai/v1/responses`, with `?` and the query after it
+when there is one.
 
 - **Build the whole request first**, body and query included, then sign it,
   and send it unchanged. Other headers may be added after.
@@ -168,9 +170,10 @@ All base64url values here have no padding.
 The token lasts an hour. Get a new one, with steps 1 and 3, before it ends.
 
 - On `401 auth_required`, get a new token and send the request again, once.
-- On `401 assertion_required`, the app was switched to sign every request after
-  this token was issued. Get a new token, which now says `every_request`, and
-  sign the request.
+- On `401 assertion_required`, the app's current settings need a proof and the
+  request had none. Sign it and send it again, once. If your app chose not to
+  sign because of the token's `verify_on`, get a new token: it now says
+  `every_request`.
 - On `403 attest_failed`, build and sign the request again, and send it once.
   If it happens again, register a new key with step 2.
 

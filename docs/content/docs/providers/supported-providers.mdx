@@ -17,28 +17,28 @@ leading slash:
 The **Provider** picker in the console lists these by name. The **Type** is
 what the API and the app's settings use.
 
-| Provider | Type | Main operations and paths | Through Cloudflare | Test key calls |
+| Provider | Type | Main paths (operations) | Through Cloudflare | Test key calls |
 | --- | --- | --- | --- | --- |
-| OpenAI | `openai` | `openai.responses` `v1/responses`, `openai.chat` `v1/chat/completions`, `openai.transcription` `v1/audio/transcriptions`, `openai.images` `v1/images/generations`, `openai.images.edits` `v1/images/edits`, `openai.embeddings` `v1/embeddings`, `openai.speech` `v1/audio/speech` | Yes | `GET v1/models` |
-| Anthropic | `anthropic` | `anthropic.messages` `v1/messages` | Yes | `GET v1/models` |
-| xAI | `xai` | `xai.responses` `v1/responses`, `xai.chat` `v1/chat/completions`, `xai.completions` `v1/completions`, `xai.messages` `v1/messages`, `xai.transcription` `v1/stt`, `xai.images` `v1/images/generations`, `xai.images.edits` `v1/images/edits`, `xai.embeddings` `v1/embeddings` | Yes | `GET v1/models` |
-| Gemini | `gemini` | `gemini.generate.v1beta` `v1beta/models/{model}:generateContent` and `gemini.stream.v1beta` `v1beta/models/{model}:streamGenerateContent`, also under `v1/` and `v1alpha/`; `gemini.embed.v1beta` `v1beta/models/{model}:embedContent`, also under `v1/`; `gemini.chat` `v1beta/openai/chat/completions` | Yes | `GET v1beta/models` |
-| Perplexity | `perplexity` | `perplexity.chat` `chat/completions`, `perplexity.agent` `v1/agent`, `perplexity.responses` `v1/responses`, `perplexity.embeddings` `v1/embeddings` | Yes | None |
-| DeepSeek | `deepseek` | `deepseek.chat` `chat/completions`, `deepseek.completions` `beta/completions`, `deepseek.messages` `anthropic/v1/messages` | No | `GET models` |
-| Groq | `groq` | `groq.chat` `openai/v1/chat/completions`, `groq.responses` `openai/v1/responses`, `groq.speech` `openai/v1/audio/speech`, `groq.transcription.openai` `openai/v1/audio/transcriptions` | No | `GET openai/v1/models` |
-| Mistral | `mistral` | `mistral.chat` `v1/chat/completions`, `mistral.fim` `v1/fim/completions`, `mistral.embeddings` `v1/embeddings`, `mistral.speech` `v1/audio/speech` | No | `GET v1/models` |
-| Together AI | `together` | `together.chat` `v1/chat/completions`, `together.completions` `v1/completions`, `together.images` `v1/images/generations`, `together.speech` `v1/audio/speech`, `together.embeddings` `v1/embeddings` | No | `GET v1/models` |
-| Fireworks AI | `fireworks` | `fireworks.chat` `inference/v1/chat/completions`, `fireworks.messages` `inference/v1/messages`, `fireworks.responses` `inference/v1/responses`, `fireworks.embeddings` `inference/v1/embeddings` | No | None |
-| Cerebras | `cerebras` | `cerebras.chat` `v1/chat/completions`, `cerebras.completions` `v1/completions` | No | `GET v1/models` |
-| Moonshot AI | `moonshot` | `moonshot.chat` `v1/chat/completions`, `moonshot.messages` `anthropic/v1/messages` | No | `GET v1/models` |
-| Hugging Face | `huggingface` | `huggingface.chat` `v1/chat/completions` | No | None |
-| Baseten | `baseten` | `baseten.chat` `v1/chat/completions` | No | `GET v1/models` |
-| ByteDance Ark | `bytedance` | `bytedance.chat` `chat/completions`, `bytedance.responses` `responses`, `bytedance.images` `images/generations`, `bytedance.embeddings` `embeddings/multimodal` | No | None |
-| OpenRouter | `openrouter` | `openrouter.chat` `v1/chat/completions` | No | `GET v1/key` |
-| Vercel AI Gateway | `vercel` | `vercel.chat` `v1/chat/completions`, `vercel.responses` `v1/responses`, `vercel.messages` `v1/messages` | No | `GET v1/credits` |
-| ElevenLabs | `elevenlabs` | `elevenlabs.tts` `v1/text-to-speech/{voice_id}`, with its `stream` and `with-timestamps` forms, and `elevenlabs.stt` `v1/speech-to-text` | No | `GET v1/models` |
-| Deepgram | `deepgram` | `deepgram.listen` `v1/listen` | No | `GET v1/models` |
-| fal | `fal` | `fal.run` `run/{model}`, `fal.queue` `queue/{model}` | No | None |
+| OpenAI | `openai` | `v1/responses` (`openai.responses`), `v1/chat/completions` (`openai.chat`), `v1/audio/transcriptions` (`openai.transcription`), `v1/images/generations` (`openai.images`), `v1/images/edits` (`openai.images.edits`), `v1/embeddings` (`openai.embeddings`), `v1/audio/speech` (`openai.speech`) | Yes | `GET v1/models` |
+| Anthropic | `anthropic` | `v1/messages` (`anthropic.messages`) | Yes | `GET v1/models` |
+| xAI | `xai` | `v1/responses` (`xai.responses`), `v1/chat/completions` (`xai.chat`), `v1/completions` (`xai.completions`), `v1/messages` (`xai.messages`), `v1/stt` (`xai.transcription`), `v1/images/generations` (`xai.images`), `v1/images/edits` (`xai.images.edits`), `v1/embeddings` (`xai.embeddings`) | Yes | `GET v1/models` |
+| Gemini | `gemini` | `v1beta/models/{model}:generateContent` (`gemini.generate.v1beta`) and `v1beta/models/{model}:streamGenerateContent` (`gemini.stream.v1beta`), also under `v1/` and `v1alpha/`; `v1beta/models/{model}:embedContent` (`gemini.embed.v1beta`), also under `v1/`; `v1beta/openai/chat/completions` (`gemini.chat`) | Yes | `GET v1beta/models` |
+| Perplexity | `perplexity` | `chat/completions` (`perplexity.chat`), `v1/agent` (`perplexity.agent`), `v1/responses` (`perplexity.responses`), `v1/embeddings` (`perplexity.embeddings`) | Yes | None |
+| DeepSeek | `deepseek` | `chat/completions` (`deepseek.chat`), `beta/completions` (`deepseek.completions`), `anthropic/v1/messages` (`deepseek.messages`) | No | `GET models` |
+| Groq | `groq` | `openai/v1/chat/completions` (`groq.chat`), `openai/v1/responses` (`groq.responses`), `openai/v1/audio/speech` (`groq.speech`), `openai/v1/audio/transcriptions` (`groq.transcription.openai`) | No | `GET openai/v1/models` |
+| Mistral | `mistral` | `v1/chat/completions` (`mistral.chat`), `v1/fim/completions` (`mistral.fim`), `v1/embeddings` (`mistral.embeddings`), `v1/audio/speech` (`mistral.speech`) | No | `GET v1/models` |
+| Together AI | `together` | `v1/chat/completions` (`together.chat`), `v1/completions` (`together.completions`), `v1/images/generations` (`together.images`), `v1/audio/speech` (`together.speech`), `v1/embeddings` (`together.embeddings`) | No | `GET v1/models` |
+| Fireworks AI | `fireworks` | `inference/v1/chat/completions` (`fireworks.chat`), `inference/v1/messages` (`fireworks.messages`), `inference/v1/responses` (`fireworks.responses`), `inference/v1/embeddings` (`fireworks.embeddings`) | No | None |
+| Cerebras | `cerebras` | `v1/chat/completions` (`cerebras.chat`), `v1/completions` (`cerebras.completions`) | No | `GET v1/models` |
+| Moonshot AI | `moonshot` | `v1/chat/completions` (`moonshot.chat`), `anthropic/v1/messages` (`moonshot.messages`) | No | `GET v1/models` |
+| Hugging Face | `huggingface` | `v1/chat/completions` (`huggingface.chat`) | No | None |
+| Baseten | `baseten` | `v1/chat/completions` (`baseten.chat`) | No | `GET v1/models` |
+| ByteDance Ark | `bytedance` | `chat/completions` (`bytedance.chat`), `responses` (`bytedance.responses`), `images/generations` (`bytedance.images`), `embeddings/multimodal` (`bytedance.embeddings`) | No | None |
+| OpenRouter | `openrouter` | `v1/chat/completions` (`openrouter.chat`) | No | `GET v1/key` |
+| Vercel AI Gateway | `vercel` | `v1/chat/completions` (`vercel.chat`), `v1/responses` (`vercel.responses`), `v1/messages` (`vercel.messages`) | No | `GET v1/credits` |
+| ElevenLabs | `elevenlabs` | `v1/text-to-speech/{voice_id}` (`elevenlabs.tts`), with its `stream` and `with-timestamps` forms, and `v1/speech-to-text` (`elevenlabs.stt`) | No | `GET v1/models` |
+| Deepgram | `deepgram` | `v1/listen` (`deepgram.listen`) | No | `GET v1/models` |
+| fal | `fal` | `run/{model}` (`fal.run`), `queue/{model}` (`fal.queue`) | No | None |
 | Custom provider | `custom` | The paths you list. See [Custom providers](/providers/custom-base-urls#custom-providers). | No | None |
 
 For every provider's full list of operations, run `agw provider types`, or call
@@ -103,7 +103,7 @@ the China platform, set the base URL to `https://api.moonshot.cn/`.
 
 **Regional hosts.** xAI's `us.api.x.ai`, Mistral's `api.eu.mistral.ai` and
 `api.us.mistral.ai`, and Together AI's `us-api.together.ai` cost more than the
-global host. Set one as the connection's base URL, and its requests are billed
+global host. Set one as the connection's base URL, and its requests are priced
 at that region's price. See [Service modes](/providers/model-pricing#service-modes).
 
 **Fireworks AI and Hugging Face** have no price list here. Fireworks names
@@ -115,25 +115,25 @@ for the models you use. On Hugging Face, name the service in the model ID
 **OpenRouter** serves Chat Completions only, because only those answers report
 what OpenRouter charged. Its model IDs carry the model's maker, such as
 `openai/gpt-5.4-mini`, and that is the name to allow and send. Each request is
-billed at the cost OpenRouter reports, so its models need no price. When a
-request runs on your own upstream key through OpenRouter, the cost is
-OpenRouter's fee plus the upstream cost it reports: both came out of your
+charged at the cost OpenRouter reports, so its models need no price. When a
+request runs on your own provider key added in OpenRouter, the cost is
+OpenRouter's fee plus the provider's cost it reports: both came out of your
 accounts.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
-image request cost, and that figure is what is billed. Its Messages API,
-embeddings and `v1/stt` are billed from prices, like any other provider.
+image request cost, and that figure is what is charged. Its Messages API,
+embeddings and `v1/stt` use prices, like any other provider.
 
 **ElevenLabs.** Text to speech names the voice in the path and the model in
 the body's `model_id`, with `eleven_multilingual_v2` when it names none. It is
-billed by the characters of the request's `text`. Speech to text is an upload,
-billed at the cost ElevenLabs reports, or else by the audio's length.
+charged by the characters of the request's `text`. Speech to text is an upload,
+charged at the cost ElevenLabs reports, or else by the audio's length.
 
 **Deepgram.** `v1/listen` takes the audio as the request body, or JSON with a
 `url`. The model and every option are query parameters, such as
 `?model=nova-3&language=multi`. With no model, Deepgram uses `base-general`,
 which has no price in the list, so it is served only with your own price.
-Options Deepgram charges extra for, such as redaction, are billed on top. A
+Options Deepgram charges extra for, such as redaction, are charged on top. A
 request may take up to 20 minutes before Deepgram answers.
 
 **fal.** `run/{model}` is a call that answers when it is done.
@@ -155,14 +155,14 @@ these, such as a short expiry. See
 ## Images
 
 Image models work through the image operations in the table, as long as the
-model has a price the gateway can bill:
+model has a price the gateway can charge:
 
-- OpenAI's GPT Image and Gemini's image models are billed per token, with
+- OpenAI's GPT Image and Gemini's image models are priced per token, with
   images at their own rate. Call Gemini image models on `generateContent`: its
   answer says which tokens were images.
-- ByteDance's Seedream models are billed per image, by the images the answer
+- ByteDance's Seedream models are priced per image, by the images the answer
   counts.
-- xAI's image models are billed at the cost xAI reports.
+- xAI's image models are charged at the cost xAI reports.
 
 Other image models, such as Together AI's, are not in the price list. You can
 serve one with [your own price](/providers/model-pricing#your-prices), such as
@@ -170,5 +170,5 @@ a price per image. The [Prices](/providers/model-pricing#the-price-list) page
 shows which image models are listed.
 
 Image generation inside another model's request, such as the Responses API's
-`image_generation` tool, is billed only for the calling model's tokens. To
+`image_generation` tool, is charged only for the calling model's tokens. To
 count images, call the image operation directly.

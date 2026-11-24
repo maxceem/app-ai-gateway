@@ -213,8 +213,8 @@ export function ProvidersPage() {
         description={
           <p>
             Apps that name <span className="font-medium text-foreground">{removing?.slug}</span> stop reaching
-            this provider within a minute. Their settings keep the name, so adding a connection with the same slug brings
-            them back.
+            this provider, usually within a minute. Their settings keep the name, so a new connection with the same
+            slug serves their new requests.
           </p>
         }
         confirmLabel="Remove"
@@ -919,7 +919,7 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         htmlFor="listed-paths"
         hint={
           custom
-            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} stands for an id, after the API version and at least one fixed part, such as predictions/{id}."
+            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} stands for an id, after any API prefix and at least one fixed part, such as predictions/{id}."
             : "Method and path, then a price such as $0.002 if you want one. {name} stands for an id, after the API version and an endpoint's name, such as v1/files/{file_id}."
         }
       >
@@ -992,7 +992,7 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
         if (!open) onClose();
       }}
       title="Replace the key"
-      description={provider ? `Apps using ${provider.slug} switch to the new key within a minute.` : undefined}
+      description={provider ? `Apps using ${provider.slug} switch to the new key, usually within a minute.` : undefined}
       submitLabel="Replace key"
       pending={update.isPending}
       disabled={opened.conflict || opened.reloading || !secret}

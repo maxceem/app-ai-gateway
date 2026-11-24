@@ -34,7 +34,8 @@ key that is not live yet, does not stop you from saving.
 A key is at least 8 characters, with no quotes, backslashes or control
 characters. The **API key** field empties itself when you change where requests
 go, such as the provider, the base URL or the Cloudflare IDs. A key is only
-ever sent to the place you typed it for.
+ever sent to the place you typed it for, or back to the provider's own host when
+you ask for that.
 
 The same through the API:
 
@@ -103,12 +104,12 @@ The slug is the `{provider}` part of your apps' URLs:
 ```
 
 It is 1 to 63 characters: lowercase letters, digits and `-`, starting with a
-letter or a digit. Each slug is used once in your account.
+letter or a digit.
 
 You can add as many connections of one provider as you like: a second OpenAI
 key for development, one through Cloudflare AI Gateway, one at your own host.
-Each slug is used once, so only one of them can be `openai`. Give each other one
-a slug of its own:
+Each slug is used once in your account, so only one of them can be `openai`.
+Give each other one a slug of its own:
 
 | Connection | Slug | Your app calls |
 | --- | --- | --- |
@@ -143,7 +144,9 @@ The row's actions:
 ## Replace a key
 
 **Replace key** puts a new key in place of the old one. Apps using the
-connection switch to the new key within a minute. The slug, the name and
+connection usually switch to the new key within a minute. See
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+The slug, the name and
 your prices stay, so nothing in any app changes. Prefer it to removing the
 connection and adding it again.
 
@@ -157,16 +160,16 @@ Content-Type: application/json
 { "secret": "sk-new…", "revision": 7 }
 ```
 
-Every change through `PUT` sends the `revision` from your last read of the
-connection. If someone else saved it since, the change is refused with
+Every change through `PUT` sends the connection's `revision`, which every
+answer about a connection carries. Send the one from your last read. If someone else saved it since, the change is refused with
 `409 conflict`; read it again and retry. The console shows this as **This
 connection changed since you opened it**, with a **Reload** button.
 
 ## Turn off or remove
 
 **Turn off** pauses a connection. The key, the slug and your prices all stay.
-Requests to its slug are refused with `502 provider_disabled`. **Turn on** puts
-it straight back.
+Requests to its slug are refused with `502 provider_disabled`. **Turn on** brings
+it back, usually within a minute.
 
 ```http
 PUT /v2/admin/providers/{id}
@@ -176,9 +179,11 @@ Content-Type: application/json
 ```
 
 **Remove** deletes the connection, its key and your prices on it. Apps that
-name the slug stop reaching the provider within a minute. Their settings keep
-the slug, so adding a connection with the same slug brings them back. Until then, requests to the slug are refused with
-`502 provider_not_configured`.
+name the slug usually stop reaching the provider within a minute, and are
+refused with `502 provider_not_configured`. Their settings keep the slug, so a
+new connection with the same slug serves their new requests. Jobs started on
+the removed connection stay with it: checking on them answers
+`404 job_not_found`.
 
 ```http
 DELETE /v2/admin/providers/{id}
@@ -189,15 +194,17 @@ missing. See [When a connection is missing](/applications/provider-access#when-a
 
 ## Changes are checked against your apps
 
-A save that would leave one of your apps' requests with nothing to bill it by
-is refused with `400 pricing_not_configured`, naming the app and the model. This
-covers a change to your prices, your listed paths or the base URL, and adding a
-connection with a slug apps already name. Only requests the change newly makes
-possible, or whose price it changes, are checked.
-
-Removing a price or a path that an app's proxy requests used still saves. A
-preset fallback that would lose its price is refused instead: it would
-otherwise drop out of the preset's chain without a word.
+- **What is checked:** a change to your prices, your listed paths or the base
+  URL, and adding a connection with a slug apps already name. The gateway looks
+  at the calls your apps can still make.
+- **What is refused:** a save that would leave one of those calls with no
+  price, with `400 pricing_not_configured`, naming the app and the model. That
+  includes a model an app lists by name, a preset's own model and a preset's
+  [fallback](/applications/custom-endpoints#fallbacks), which would otherwise
+  drop out of its chain without a word.
+- **What still saves:** removing a price or a path that leaves the call no
+  longer allowed, such as a model's price on an app with no models list. Those
+  requests are then refused when made.
 
 ## Errors your apps may get
 
@@ -209,14 +216,12 @@ otherwise drop out of the preset's chain without a word.
 
 The gateway's errors, and how to handle them, are in [Errors and limits](/integrate/errors).
 
-Each change on this page reaches every request within a minute in normal
-operation. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
-
 ## How keys are kept safe
 
 - Each key is encrypted before it is stored, tied to its connection and to the
   place it is sent. A key never goes to a new host unless you type it again for
-  that host.
+  that host. The one exception is going back to the provider's own host, when
+  you ask for it.
 - No answer from the gateway contains a key.
 - Your apps never see a key. The gateway adds it on the way to the provider,
   and never forwards a key header an app sends. See

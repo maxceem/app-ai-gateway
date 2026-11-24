@@ -25,7 +25,8 @@ https://api.appaigateway.com/v2/apps/{app}/proxy/{provider}/{provider_path}
 
 ## With no signed-in users
 
-Send the key with every request:
+If the app's **Who may call** is **No end users**, send the key with every
+request:
 
 ```sh
 curl https://api.appaigateway.com/v2/apps/search-service-k3f9x1/proxy/openai/v1/responses \
@@ -114,17 +115,9 @@ group charges by it.
 
 ## Presets
 
-A [preset](/integrate/endpoints) checks who is calling exactly as the proxy
-does. This example is for a server app with no signed-in users. If your server
-sends the user ID, add the end-user header. With signed-in users, send the
-gateway token and `X-App-Version` instead of the key.
-
-```sh
-curl https://api.appaigateway.com/v2/apps/search-service-k3f9x1/presets/chat \
-  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"input":"Say hello."}'
-```
+A [preset](/integrate/endpoints) takes the same headers as the proxy, for each
+of these setups. See [Calling presets](/integrate/endpoints) for the list and
+examples.
 
 ## What to watch
 
@@ -133,7 +126,8 @@ curl https://api.appaigateway.com/v2/apps/search-service-k3f9x1/presets/chat \
   slowing down one user does not help. See
   [Refusals](/how-it-works/limits#refusals).
 - `502 provider_not_configured` means the app does not allow the connection in
-  the URL. Tick it on the app's **Providers** tab.
+  the URL, or no connection has that slug. Tick it on the app's **Providers**
+  tab, or add the connection.
 - `400 pricing_not_configured` means the model has no price. See
   [Model pricing](/providers/model-pricing).
 
