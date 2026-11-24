@@ -40,7 +40,8 @@ the account, the person, their role and the grant.
 - \`list_providers\`, \`get_provider\`: the account's provider connections, as metadata.
 - \`list_apps\`, \`get_app\`: the apps, and one app's whole stored document.
 - \`validate_app\`: whether an app document would be accepted, without saving it.
-- \`check_app\`: whether an app can serve requests, without sending one.
+- \`check_app\`: the status of each connection an app's routes and presets name, without sending a request.
+- \`get_app_snippet\`: example requests for an app's routes and presets, with no credential in them.
 - \`list_app_keys\`: an app-key app's keys, as metadata.
 - \`list_app_users\`, \`get_app_user\`: an app's end users and their usage.
 - \`get_usage\`: a month's usage, for one app or the whole account.

@@ -193,11 +193,15 @@ output adds a notice saying which side to update.
 
 ## Where agw keeps things
 
-The sign-in, and pending browser steps, are in a private folder:
-`~/.local/state/agw/v2` (or `$XDG_STATE_HOME/agw/v2`), and
-`%LOCALAPPDATA%\agw\v2` on Windows. App keys `agw` writes without
-`--key-output` go to its `app-keys` folder. Keep the folder after an
-interrupted command, so `agw` can pick up what was pending.
+`agw` keeps its files in a private folder: `~/.local/state/agw/v2` (or
+`$XDG_STATE_HOME/agw/v2`), and `%LOCALAPPDATA%\agw\v2` on Windows. It holds:
+
+- `connection.json`: the gateway and the sign-in;
+- `handoffs/`: a browser step's link, saved only when no browser opened;
+- `app-keys/`: the app keys `agw` writes without `--key-output`.
+
+A pending browser step is not kept there: `agw operation wait <id>` takes its
+ID, so keep the ID the command answered.
 
 ## Compatibility
 

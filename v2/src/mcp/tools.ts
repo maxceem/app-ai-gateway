@@ -563,11 +563,8 @@ export const MCP_TOOLS: readonly McpTool[] = [
       "Checks an app without sending any request: checks its stored configuration, and lists every provider connection its routes and presets name, with each connection's status. ready means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: confirm with a real request, or get_app_snippet. It does not try App Attest, sign-in or the provider keys, and says so in limitations.",
     operation: "checkApp",
     cli: { command: "app check", args: ["app"], view: { rows: "providers", columns: ["slug=Provider", "status", "id"], notes: ["limitations"] } },
-    summary: (result) => {
-      const active = result.providers.filter((provider) => provider.status === "active").length;
-      const standing = `${result.status}, and ${active} of ${plural(result.providers.length, "provider connection")} it names ${active === 1 ? "is" : "are"} active`;
-      return `App ${result.app_id} is ${result.ready ? "" : "not "}ready: it is ${standing}. No request was sent.`;
-    },
+    summary: (result) =>
+      `App ${result.app_id} is ${result.status} and ${result.ready ? "ready" : "not ready"}: ready depends on whether its routes and presets can reach a connection, not on how many are active. See each connection's status. No request was sent.`,
   }),
   tool({
     name: "list_app_keys",
