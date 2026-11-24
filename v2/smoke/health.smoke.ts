@@ -24,3 +24,15 @@ test("a path v2 does not declare is a JSON 404", async () => {
   const body = (await response.json()) as { error?: { code?: string } };
   assert.equal(body.error?.code, "not_found");
 });
+
+// Added in step 8a: the gateway names its own error's code in `X-AGW-Error`,
+// so a client can tell it from a provider's without reading the body.
+test("the gateway names its own error's code in X-AGW-Error", async () => {
+  const missing = await fetch(new URL("/v2/nothing/served/here", base));
+  await missing.arrayBuffer();
+  assert.equal(missing.headers.get("x-agw-error"), "not_found");
+  const unsigned = await fetch(new URL("/v2/apps/no-such-app-smoke/me", base));
+  const body = (await unsigned.json()) as { error?: { code?: string } };
+  assert.ok(unsigned.status >= 400);
+  assert.equal(unsigned.headers.get("x-agw-error"), body.error?.code);
+});

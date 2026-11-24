@@ -41,7 +41,10 @@ export const OAUTH_PATHS = {
 /** The largest form body the token, revocation or device endpoint reads. Real ones are a few hundred bytes. */
 const MAX_FORM_BYTES = 16 * 1024;
 
-const NOT_FOUND = { error: { code: "not_found", message: "Nothing is served at this path." } };
+/** Thrown, so the entry module formats it as every other error. */
+function notFound(): GatewayError {
+  return new GatewayError(404, "not_found", "Nothing is served at this path.");
+}
 
 /**
  * The OAuth service, or null anywhere but the console's own origin (scheme,
@@ -63,7 +66,7 @@ const DISCOVERY_HEADERS = { "Access-Control-Allow-Origin": "*", "Cache-Control":
 function discovery(read: (oauth: CfAuthOAuth) => unknown) {
   return async (c: OAuthContext) => {
     const oauth = await oauthFor(c);
-    if (oauth === null) return c.json(NOT_FOUND, 404);
+    if (oauth === null) throw notFound();
     if (c.req.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -95,7 +98,7 @@ for (const { resourcePath, path } of OAUTH_PATHS.protectedResourceMetadata) {
 function withOrigin(handler: (c: OAuthContext, oauth: CfAuthOAuth) => Promise<Response>) {
   return async (c: OAuthContext) => {
     const oauth = await oauthFor(c);
-    if (oauth === null) return c.json(NOT_FOUND, 404);
+    if (oauth === null) throw notFound();
     const origin = c.req.header("origin") ?? "";
     let cors: Record<string, string> | null = null;
     if (origin !== "" && origin !== consoleOrigin(c.env)) {

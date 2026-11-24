@@ -129,3 +129,12 @@ export class GatewayError extends Error {
     });
   }
 }
+
+/**
+ * Names the code of an error the gateway answers itself, so a client can
+ * tell it from a provider's own without reading the body: an app that
+ * streams its answers would spend the body reading it. Never on a provider's
+ * answer, which keeps its own headers and has any of this name removed
+ * (`clientResponseHeaders`).
+ */
+export const ERROR_CODE_HEADER = "x-agw-error";

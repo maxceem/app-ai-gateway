@@ -30,7 +30,6 @@ type McpEnv = { Bindings: Env; Variables: { identity: Promise<CfAuth> } };
 
 export const MCP_PATH = "/v2/mcp";
 
-const NOT_FOUND = { error: { code: "not_found", message: "Nothing is served at this path." } };
 
 /**
  * What a listed browser origin is told. `Mcp-Method` and `Mcp-Name` are
@@ -47,6 +46,11 @@ function corsHeaders(origin: string): Record<string, string> {
   };
 }
 
+/** Thrown, so the entry module formats it as every other error. */
+function notFound(): GatewayError {
+  return new GatewayError(404, "not_found", "Nothing is served at this path.");
+}
+
 const app = new Hono<McpEnv>();
 
 app.all(MCP_PATH, async (c) => {
@@ -59,7 +63,7 @@ app.all(MCP_PATH, async (c) => {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const consoleAt = configured ?? own;
-  if (own !== consoleAt) return c.json(NOT_FOUND, 404);
+  if (own !== consoleAt) throw notFound();
   // An origin is judged exactly: absent (not a browser), the console's own,
   // or one `MCP_ALLOWED_ORIGINS` lists. Anything else, `null` included, is refused.
   const origin = c.req.header("origin") ?? "";
@@ -124,7 +128,9 @@ function recordGateRefusal(c: Context<McpEnv>, ending: CallEnding, started: numb
   });
 }
 
-app.notFound((c) => c.json(NOT_FOUND, 404));
+app.notFound(() => {
+  throw notFound();
+});
 
 /** A cf-auth refusal becomes the gateway's own error; the entry module formats it. */
 app.onError((error) => {

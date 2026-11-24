@@ -732,3 +732,40 @@ describe("server-timing (as v1)", () => {
     expect(response.headers.get("server-timing")).toBeNull();
   });
 });
+
+describe("the gateway's own error code header", () => {
+  it("names the code of every error the gateway answers itself, and never one on a provider's answer", async () => {
+    const { appId, slug, key } = await setup();
+    // A refusal before any provider call.
+    const refused = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest("wrong-key", { model: "gpt-4o-mini", messages: [] }));
+    expect(refused.response.status).toBe(401);
+    expect(refused.response.headers.get("x-agw-error")).toBe("auth_required");
+    expect(((await refused.response.json()) as { error: { code: string } }).error.code).toBe("auth_required");
+    // Nothing served at a path.
+    // (The management module's errors: `error-header.test.ts`.)
+    for (const [path, code] of [["/v2/nowhere", "not_found"]] as const) {
+      const missing = await call(path);
+      const body = (await missing.response.json()) as { error: { code: string } };
+      expect(body.error.code, path).toBe(code);
+      expect(missing.response.headers.get("x-agw-error"), path).toBe(code);
+    }
+    // A provider's own error, even one naming the header, passes through without it.
+    fetchSpy.mockResolvedValue(
+      Response.json({ error: { code: "attest_failed" } }, { status: 403, headers: { "x-agw-error": "attest_failed" } }),
+    );
+    const passed = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini", messages: [] }));
+    expect(passed.response.status).toBe(403);
+    expect(passed.response.headers.get("x-agw-error")).toBeNull();
+    await passed.response.text();
+    await waitOnExecutionContext(passed.ctx);
+  });
+
+  it("names the code when the provider cannot be reached, which the gateway answers itself", async () => {
+    const { appId, slug, key } = await setup();
+    fetchSpy.mockRejectedValue(new TypeError("Network connection lost."));
+    const { response, ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini", messages: [] }));
+    expect(response.status).toBe(502);
+    expect(response.headers.get("x-agw-error")).toBe("provider_error");
+    await waitOnExecutionContext(ctx);
+  });
+});

@@ -31,69 +31,72 @@ public enum GatewayErrorCode: String, Codable, Sendable {
     /// identifies no end users. Retrying cannot help; the configuration has to
     /// change.
     case authMethodNotSupported = "auth_method_not_supported"
-    /// The organization that owns this app has no active subscription or trial.
-    /// Nothing the app or its user can retry into success — someone with access
-    /// to the organization's billing has to act — so this is the one refusal
-    /// worth surfacing as an account problem rather than a transient one.
+    /// No plan is available for the account this app belongs to. Nothing the
+    /// app or its user can retry into success: the account's owner has to act.
     case billingPaymentRequired = "billing_payment_required"
-    /// The gateway could not reach its billing service, so it never learned
-    /// whether the organization is entitled and refused rather than guess.
-    /// Carries no verdict on the subscription: the request is worth sending
-    /// again, and ``GatewayError/isRetryable`` says so.
-    case billingUnavailable = "billing_unavailable"
-    /// The account has not been claimed by a person, and its free access has
-    /// ended. The account owner must claim it; retrying or replacing
-    /// application credentials cannot help.
-    case unclaimedAccessExpired = "unclaimed_access_expired"
-    /// The unclaimed account passed its recovery deadline and cannot be used.
-    case accountExpired = "account_expired"
-    /// The deployment verifies email addresses, and the owner of the account
-    /// this app belongs to has not verified theirs yet. The account owner has
-    /// to open the link in their verification email; retrying or replacing
-    /// application credentials cannot help.
+    /// The account owner has not verified their email address yet. Retrying
+    /// or replacing app credentials cannot help: the owner opens the link in
+    /// their verification email, and requests are served from then on.
     case emailUnverified = "email_unverified"
-    /// The organization used up the current scheduled request allowance its plan
-    /// grants. Shared by every application, credential and user the organization
-    /// owns, so another client's traffic can exhaust it, and nothing the app
-    /// configured caused it.
+    /// The account's plan allowance of requests for the current period is
+    /// used up. Shared by every app and user in the account, so another
+    /// app's traffic can use it up.
     ///
     /// Read ``GatewayError/monthlyRequestQuota`` for the allowance, what has
-    /// been spent, and the instant the next allowance period begins.
+    /// been used, and when the next period begins.
     case billingRequestQuotaExceeded = "billing_request_quota_exceeded"
-    /// A per-minute or per-day request limit this application's operator set on
-    /// its own users refused the call.
+    /// A per-minute or per-day request limit set on the app refused the call.
     ///
-    /// Nothing to do with the plan allowance above: the operator chose this, and
-    /// it is checked first, so a request refused here spent none of the
-    /// organization's allowance. ``GatewayError/limitScope`` says whether the
-    /// limit was on this install, this user, or the whole application, and
-    /// ``GatewayError/retryAfter`` says how long the window has left.
+    /// Nothing to do with the plan allowance above, and checked first, so a
+    /// request refused here used none of it. ``GatewayError/limitScope`` says
+    /// whether the limit was on this install, this user, or the whole app,
+    /// and ``GatewayError/retryAfter`` says how long the window has left.
     case appRateLimited = "app_rate_limited"
-    /// A monthly spending budget this application's operator set is exhausted.
-    /// Same ownership and same ``GatewayError/limitScope`` as ``appRateLimited``.
+    /// A monthly spending budget set on the app is used up. Same
+    /// ``GatewayError/limitScope`` as ``appRateLimited``.
     ///
-    /// Spend settles after a response completes, so this refuses the request
+    /// Spend is recorded after a response completes, so this refuses requests
     /// after the one that crossed the budget, never the one that crossed it.
     case appBudgetExhausted = "app_budget_exhausted"
-    /// The gateway protecting its own `challenge`, `register` and `token`
-    /// endpoints against a flood, counted per application and network address.
+    /// The gateway protecting its own `challenge`, `register`, `token` and
+    /// `failure` routes against a flood, counted per app and network address.
     ///
-    /// Nothing the application configured causes this and nothing it sets can
-    /// lift it, which is what separates it from ``appRateLimited``: there is no
-    /// scope to read, so ``GatewayError/limitScope`` stays `nil`.
+    /// Nothing the app sets causes this or lifts it, which is what separates it
+    /// from ``appRateLimited``: ``GatewayError/limitScope`` stays `nil`.
     /// ``GatewayError/retryAfter`` says how much of the window is left, and the
     /// client waits that out by itself — a call made during it is refused
     /// without reaching the network.
     case rateLimited = "rate_limited"
+    /// The request asks for more output than the app allows.
+    case maxOutputTokensExceeded = "max_output_tokens_exceeded"
     case modelNotAllowed = "model_not_allowed"
     case pathNotAllowed = "path_not_allowed"
     case payloadTooLarge = "payload_too_large"
     case providerError = "provider_error"
     case invalidRequest = "invalid_request"
-    case endpointNotFound = "endpoint_not_found"
+    /// The model has no price the operation can charge.
+    case pricingNotConfigured = "pricing_not_configured"
+    /// The app has no preset with this name.
+    case presetNotFound = "preset_not_found"
+    /// No job with this id belongs to this app and user, or its connection
+    /// was removed or now sends requests somewhere else.
+    case jobNotFound = "job_not_found"
+    /// The app does not allow a connection with this slug, or none exists.
+    case providerNotConfigured = "provider_not_configured"
+    /// The connection is turned off.
+    case providerDisabled = "provider_disabled"
+    /// The connection cannot be used as stored.
+    case providerUnavailable = "provider_unavailable"
     case appNotFound = "app_not_found"
     case appDisabled = "app_disabled"
+    /// Nothing is served at this path or method.
+    case notFound = "not_found"
+    /// The platform the gateway runs on failed or was overloaded. Nothing is
+    /// known to be wrong with the request.
+    case serviceUnavailable = "service_unavailable"
     case internalError = "internal_error"
+    /// A code this release does not know. ``GatewayError/message`` still says
+    /// what happened.
     case unknown
 }
 
@@ -151,14 +154,14 @@ public enum GatewayErrorValue: Sendable, Equatable, Decodable {
 /// gateway sent them. Empty for the rejections whose code says everything.
 public typealias GatewayErrorData = [String: GatewayErrorValue]
 
-/// The organization's monthly request allowance, as it stood when a request was
+/// The account's plan allowance of requests, as it stood when a request was
 /// refused by it.
 public struct MonthlyRequestQuota: Sendable, Equatable {
-    /// Requests the plan allows in one UTC calendar month, organization-wide.
+    /// Requests the plan allows in one period, across the whole account.
     public let limit: Int
-    /// Requests already spent that month when this one was refused.
+    /// Requests already used in the period when this one was refused.
     public let used: Int
-    /// The first instant of the next UTC month, when a whole allowance returns.
+    /// When the next period begins, and a whole allowance returns.
     public let resetAt: Date
 
     public init(limit: Int, used: Int, resetAt: Date) {
@@ -182,39 +185,58 @@ public struct GatewayError: Error, Sendable, LocalizedError {
     /// ``GatewayErrorCode/appRateLimited`` refusal it is the only statement of
     /// when the window reopens.
     public let retryAfter: TimeInterval?
+    /// Whether the gateway itself refused the request. `false` for a
+    /// provider's own error, passed through the gateway as the provider sent
+    /// it: its ``code`` is then ``GatewayErrorCode/unknown``, and its body is
+    /// in ``providerBody``.
+    public let isFromGateway: Bool
+    /// A provider's own error body, as the provider sent it; `nil` for the
+    /// gateway's own errors.
+    public let providerBody: Data?
 
     public init(
         code: GatewayErrorCode,
         message: String,
         statusCode: Int,
         data: GatewayErrorData = [:],
-        retryAfter: TimeInterval? = nil
+        retryAfter: TimeInterval? = nil,
+        isFromGateway: Bool = true,
+        providerBody: Data? = nil
     ) {
         self.code = code
         self.message = message
         self.statusCode = statusCode
         self.data = data
         self.retryAfter = retryAfter
+        self.isFromGateway = isFromGateway
+        self.providerBody = providerBody
     }
 
     public var errorDescription: String? { message }
 
     /// Whether trying the same request again later could succeed on its own.
     ///
-    /// True for failures on the gateway's side of the call — it could not verify
-    /// the issuer, it could not reach billing, or the upstream was briefly
-    /// unavailable — and false for anything the caller has to change first.
-    /// Nothing in the client retries on this automatically; it exists so an app
-    /// can tell "wait" from "fix it".
+    /// True for failures on the gateway's side of the call — it could not
+    /// verify the issuer, or the provider or the platform was briefly
+    /// unavailable — and for a `429`. False for anything that has to change
+    /// first, including a connection that is missing, turned off or unusable,
+    /// which arrives as a `502` too. Nothing in the client retries on this
+    /// automatically; it exists so an app can tell "wait" from "fix it".
     ///
-    /// ``GatewayErrorCode/billingUnavailable`` in particular is not
-    /// ``GatewayErrorCode/billingPaymentRequired``: it arrives as a `5xx` and means the
-    /// subscription was never read, so an app must not show an upsell for it.
+    /// Never send a job submission again on its own after a `5xx`: the
+    /// provider may already have accepted it, and a second one is a second job.
     ///
-    /// An exhausted monthly allowance is retryable in the same sense, but the
-    /// wait is a calendar one: ``monthlyRequestQuota`` says exactly when.
+    /// A spent budget or plan allowance is not retryable: it comes back only
+    /// in the next period, or when its limit is raised. ``retryAfter`` and
+    /// ``monthlyRequestQuota`` say when the next period begins.
     public var isRetryable: Bool {
-        code == .issuerVerificationUnavailable || statusCode == 429 || (500..<600).contains(statusCode)
+        switch code {
+        case .providerNotConfigured, .providerDisabled, .providerUnavailable,
+             .appBudgetExhausted, .billingRequestQuotaExceeded:
+            return false
+        default:
+            return code == .issuerVerificationUnavailable || statusCode == 429 || (500..<600).contains(statusCode)
+        }
     }
 
     /// Which of the application's own limits refused the call: `"install"` for
@@ -247,16 +269,36 @@ public struct GatewayError: Error, Sendable, LocalizedError {
 
     /// Reads a gateway rejection out of a response the caller sent itself.
     ///
-    /// ``AppAIGatewayClient`` signs proxy and endpoint requests but does not send
+    /// ``AppAIGatewayClient`` signs proxy and preset requests but does not send
     /// them, so a refusal on those routes — a quota rejection above all, with
     /// its ``data`` — arrives in the caller's own `URLSession` result. This is
     /// how to read one. Returns `nil` for a successful response, which is not a
     /// rejection to read.
+    ///
+    /// Only an answer the gateway marks as its own, in `X-AGW-Error`, is read
+    /// as a gateway error. Any other is a provider's own, which may have an
+    /// `error.code` of its own: its code is ``GatewayErrorCode/unknown``,
+    /// ``isFromGateway`` is `false`, and its body is kept as it came in
+    /// ``providerBody``.
     public init?(response: HTTPURLResponse, body: Data) {
         guard !(200..<300).contains(response.statusCode) else { return nil }
+        guard response.value(forHTTPHeaderField: AppAIGatewayClient.errorCodeHeaderField) != nil else {
+            self.init(
+                code: .unknown,
+                message: "The provider answered \(response.statusCode)",
+                statusCode: response.statusCode,
+                retryAfter: Self.retryAfter(from: response),
+                isFromGateway: false,
+                providerBody: body
+            )
+            return
+        }
         let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: body)
+        // A body that could not be read, such as one left in a stream, still
+        // has its code in the header.
+        let headerCode = response.value(forHTTPHeaderField: AppAIGatewayClient.errorCodeHeaderField) ?? ""
         self.init(
-            code: envelope.flatMap { GatewayErrorCode(rawValue: $0.error.code) } ?? .unknown,
+            code: GatewayErrorCode(rawValue: envelope?.error.code ?? headerCode) ?? .unknown,
             message: envelope?.error.message ?? "Gateway request failed",
             statusCode: response.statusCode,
             data: envelope?.error.data ?? [:],

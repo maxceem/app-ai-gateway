@@ -10,6 +10,7 @@
  * would be wrong after the body is streamed again, a provider cookie, and
  * which OpenAI organization and project the key belongs to.
  */
+import { ERROR_CODE_HEADER } from "../core/errors.ts";
 
 const FORWARDED_EXACT: ReadonlySet<string> = new Set([
   "content-type",
@@ -97,6 +98,8 @@ const STRIPPED_RESPONSE_HEADERS: readonly string[] = [
   "set-cookie",
   "openai-organization",
   "openai-project",
+  // The gateway's own error code: a provider's answer never carries one.
+  ERROR_CODE_HEADER,
 ];
 
 /** The provider's headers an app may see. */
