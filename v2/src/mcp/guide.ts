@@ -36,6 +36,7 @@ the account, the person, their role and the grant.
 
 - \`get_account\`: who you are and the account you act in.
 - \`list_models\`: the priced models an app may allow.
+- \`list_provider_types\`: every provider type a connection can be added for, and its operations.
 - \`list_providers\`, \`get_provider\`: the account's provider connections, as metadata.
 - \`list_apps\`, \`get_app\`: the apps, and one app's whole stored document.
 - \`validate_app\`: whether an app document would be accepted, without saving it.

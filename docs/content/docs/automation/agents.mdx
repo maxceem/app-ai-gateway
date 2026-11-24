@@ -35,8 +35,9 @@ Read https://docs.appaigateway.com/agents.md, then use agw for this task.
 Check which gateway and account agw is signed in to first. If it is not signed
 in, run agw account login and give me the link and code to approve.
 Read the existing providers and apps, use --json --no-input, and validate
-changes before saving them. For a provider key, start a browser step and tell
-me which file holds its link; I will open it and type the key myself. Never print secrets. Keep app keys in private files.
+changes before saving them. If a provider is missing, tell me which one and
+stop: I will add its key myself, then you carry on. Never print secrets. Keep
+app keys in private files.
 Finish with app check and app snippet. Do not send AI requests unless I ask.
 Report the app ID, the URLs my app calls, the changes, and what is left to do.
 Task: set up an iOS app for Team ID ABCDE12345 and Bundle ID com.example.app.
@@ -63,17 +64,18 @@ sees your password or your console session.
 
 ## Provider keys
 
-For a missing provider, the agent starts a browser step:
+When a provider is missing, add its key yourself, then let the agent carry on:
 
-```sh
-agw provider add --type openai --browser --no-open --json --no-input
-```
+- on the console's **Providers** page, with **Add provider**; or
+- on your own machine, with `agw provider add --type openai`, which asks for the
+  key in a hidden prompt, or reads it from stdin with `--key-stdin`.
 
-`agw` saves the step's link in a file only you can read, and says where. Open
-the link in your browser, check the provider and where its key will be sent,
-type the key and approve. The agent waits with `agw operation wait <id>` and gets
-only the result, never the key. Over MCP, `add_provider` works the same way,
-with `get_operation`.
+The agent then finds the new connection with `agw provider list`.
+
+When the agent runs on your own machine, it can also start a browser step,
+`agw provider add --type openai --browser`, which opens the console here for you
+to type the key. Over MCP, `add_provider` answers a console link for you to
+open, and the agent waits with `get_operation`.
 
 Do not paste provider keys into the conversation. A hidden terminal prompt keeps
 a key off the screen, but not away from an agent that controls the terminal.

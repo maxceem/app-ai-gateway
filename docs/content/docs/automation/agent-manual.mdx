@@ -49,11 +49,11 @@ A saved sign-in is not proof of the right account: compare the account
 
 1. Read `agw provider list --json` and `agw app list --json`. Reuse the IDs and
    slugs they answer. Look at an app with `agw app show <app> --json`.
-2. For a missing provider, run
-   `agw provider add --type <type> --browser --no-open --json --no-input`.
-   `agw` never prints the step's link: it saves it in a file only the person can
-   read, and names the file. Tell the person to open that link, then wait with
-   `agw operation wait <id> --json`. Never ask for a key in the chat.
+2. For a missing provider, tell the person which one, and ask them to add its
+   key themselves: on the console's **Providers** page, or with
+   `agw provider add --type <type>` on their own machine, which asks for the key
+   in a hidden prompt. Then check `agw provider list` and carry on. Never ask
+   for a key in the chat, and never read or pass on a browser step's link file.
 3. Read the command's `--help`, then make the change. For an iOS app, use the
    person's Team ID and Bundle ID. For a server app, keep its key in the private
    file `agw` names, or a new path given with `--key-output`.
@@ -193,8 +193,9 @@ The errors apps get on their requests are in [Errors and limits](/integrate/erro
 ## Workflow for setting up an app
 
 1. `GET /v2/admin/providers`. Note each connection's `type` and `slug`.
-2. If one is missing, start a browser step (CLI or MCP) so the person types the
-   key in their own browser.
+2. If one is missing, ask the person to add its key themselves, on the
+   console's **Providers** page or with `agw` on their own machine. Over MCP,
+   `add_provider` answers a console link to give them.
 3. Compose the app from the reference below.
 4. `POST /v2/admin/app-drafts/validate` with it. Fix every refusal.
 5. Create it through a reserved create ("Retrying creation safely"), or
@@ -493,6 +494,6 @@ Refusals: `operation_mismatch` when the handle was reserved for other
 arguments, `operation_expired` when it lapsed, and `operation_not_found` for a
 handle this gateway never gave out.
 
-A provider connection is created through the person's browser step
-(`POST /v2/admin/provider-handoffs`), which is safe to wait on with the same
-operation route.
+A provider connection is added by the person, with its key, so it needs no
+reserved create. Over MCP or the API, `POST /v2/admin/provider-handoffs` opens
+that step for them, and the same operation route says when it is done.
