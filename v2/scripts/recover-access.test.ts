@@ -262,93 +262,158 @@ test("with a yes, sets a password the sign-in library accepts, signs the person 
 });
 
 /** A stand-in of D1's query API on this machine, answering `answer` and recording every call. */
-async function d1Stand(answer: (call: { sql: string; params?: string[] }) => { status: number; body: unknown }) {
-  const calls: { url: string; authorization: string | undefined; body: { sql: string; params?: string[] } }[] = [];
+async function d1Stand(answer: (call: { sql: string; params: string[] }) => { status: number; body: unknown }) {
+  const calls: { url: string; authorization: string | undefined; body: { sql: string; params: string[] } }[] = [];
   const server = createServer((request: IncomingMessage, response) => {
     let text = "";
     request.on("data", (chunk: Buffer) => (text += chunk.toString()));
     request.on("end", () => {
-      const body = JSON.parse(text) as { sql: string; params?: string[] };
+      const body = JSON.parse(text) as { sql: string; params: string[] };
       calls.push({ url: request.url!, authorization: request.headers.authorization, body });
       const { status, body: reply } = answer(body);
       response.writeHead(status, { "content-type": "application/json" });
-      response.end(JSON.stringify(reply));
+      response.end(typeof reply === "string" ? reply : JSON.stringify(reply));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { calls, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/client/v4`, close: () => server.close() };
+  return { calls, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/client/v4/`, close: () => server.close() };
 }
 
-test("remotely, uses exactly the database the config and --env name, through D1's query API, all in one batch", async () => {
+/** D1's answer to one statement that ran. */
+const ran = (results: Record<string, unknown>[] = []) => ({ status: 200, body: { success: true, errors: [], result: [{ success: true, results, meta: {} }] } });
+
+test("remotely, uses exactly the database the config and --env name, one statement at a time, in an order safe to stop and repeat", async () => {
   // A stand-in config: the Worker, its account, and a DB database per environment.
   const config = join(scratch, "wrangler.stand-in.jsonc");
+  const worker = { main: join(V2_DIR, "src", "index.ts"), compatibility_date: "2026-01-01" };
   writeFileSync(
     config,
     JSON.stringify({
       name: "stand-in-worker",
-      main: join(V2_DIR, "src", "index.ts"),
-      compatibility_date: "2026-01-01",
+      ...worker,
       account_id: "acc-123",
       d1_databases: [{ binding: "DB", database_name: "prod-db", database_id: "db-prod" }],
       env: { staging: { name: "stand-in-staging", d1_databases: [{ binding: "DB", database_name: "staging-db", database_id: "db-staging" }] } },
     }),
   );
   const noDb = join(scratch, "wrangler.no-db.jsonc");
-  writeFileSync(noDb, JSON.stringify({ name: "bare", main: join(V2_DIR, "src", "index.ts"), compatibility_date: "2026-01-01" }));
+  writeFileSync(noDb, JSON.stringify({ name: "bare", ...worker }));
 
-  let writes = 0;
-  const stand = await d1Stand((call) =>
-    call.sql.startsWith("SELECT u.id")
-      ? { status: 200, body: { success: true, result: [{ results: [{ user_id: "u_remote", passwords: 1, sessions: 3, connections: 2, role: "member", account_name: "Remote Co" }] }] } }
-      : (writes += 1) === 1
-        ? { status: 400, body: { success: false, errors: [{ message: "malformed JSON" }] } }
-        : { status: 200, body: { success: true, result: [] } },
-  );
+  /** How the stand-in answers each kind of statement in the current case. */
+  let mode: "ok" | "gone" | "refuse-password" | "lose-sessions" | "empty" = "ok";
+  const stand = await d1Stand((call) => {
+    if (call.sql.startsWith("SELECT u.id")) {
+      return ran([{ user_id: "u_remote", passwords: 1, sessions: 3, connections: 2, role: "member", account_name: "Remote Co" }]);
+    }
+    if (call.sql.includes("AS still_there")) return ran([{ still_there: mode === "gone" && call.sql.includes("mgmt_organization_user") ? 0 : 1 }]);
+    if (mode === "refuse-password" && call.sql.includes("SET password")) {
+      // D1's own error text can quote what it was sent: it must never be printed.
+      return { status: 400, body: { success: false, errors: [{ code: 7500, message: `SQLITE_ERROR near ${JSON.stringify(call.params)}` }], result: [] } };
+    }
+    if (mode === "lose-sessions" && call.sql.includes("mgmt_user_session")) return { status: 502, body: "<html>bad gateway</html>" };
+    if (mode === "empty") return { status: 200, body: { success: true, errors: [], result: [] } };
+    return ran();
+  });
+  const api = ["--test-api-base", stand.base];
+  const env = { CLOUDFLARE_API_TOKEN: API_TOKEN };
+  const ask = ["--email", "dee@example.test", "--remote", "-c", config, ...api, "--password-stdin", "--promote-owner", "--account", "acct9"];
+  const changes = () => stand.calls.filter((call) => /^(UPDATE|DELETE)/u.test(call.body.sql));
   try {
-    const env = { CLOUDFLARE_API_BASE_URL: stand.base, CLOUDFLARE_API_TOKEN: API_TOKEN };
-    const ask = ["--email", "dee@example.test", "--remote", "-c", config, "--password-stdin", "--promote-owner", "--account", "acct9"];
-
-    const missing = await recoverAsync(["--email", "dee@example.test", "--remote", "-c", noDb, "--promote-owner", "--account", "a", "--dry-run"], "", env);
-    assert.equal(missing.code, 1);
-    assert.match(missing.output, /binds no DB database/u);
-    const tokenless = await recoverAsync([...ask, "--dry-run"], `${PASSWORD}\n`, { CLOUDFLARE_API_BASE_URL: stand.base, CLOUDFLARE_API_TOKEN: "" });
-    assert.equal(tokenless.code, 1);
-    assert.match(tokenless.output, /needs CLOUDFLARE_API_TOKEN/u);
+    // Refused before any call: no DB binding, no token, an environment the config lacks, an API pointed elsewhere.
+    const refusals: [string[], Record<string, string>, RegExp][] = [
+      [["--email", "dee@example.test", "--remote", "-c", noDb, ...api, "--promote-owner", "--account", "a", "--dry-run"], env, /binds no DB database/u],
+      [[...ask, "--dry-run"], { CLOUDFLARE_API_TOKEN: "" }, /needs CLOUDFLARE_API_TOKEN/u],
+      [[...ask, "--env", "nope", "--dry-run"], env, /defines no environment nope/u],
+      [[...ask, "--dry-run"], { ...env, CLOUDFLARE_API_BASE_URL: stand.base }, /CLOUDFLARE_API_BASE_URL is set/u],
+      [["--email", "dee@example.test", "--remote", "-c", config, "--test-api-base", "https://api.example.com/", "--promote-owner", "--account", "a"], env, /stand-in on this machine only/u],
+    ];
+    for (const [args, extra, message] of refusals) {
+      const run = await recoverAsync(args, `${PASSWORD}\n`, extra);
+      assert.notEqual(run.code, 0, run.output);
+      assert.match(run.output, message);
+    }
     assert.equal(stand.calls.length, 0);
 
     // The environment named: its own Worker and database, in the preview and in the call.
     const dry = await recoverAsync([...ask, "--env", "staging", "--dry-run"], `${PASSWORD}\n`, { ...env, CLOUDFLARE_ENV: "staging" });
     assert.equal(dry.code, 0, dry.output);
     assert.match(dry.output, /On the remote DB database staging-db \(db-staging\) of the Worker stand-in-staging /u);
-    assert.match(dry.output, /2 connections/u);
+    assert.match(dry.output, /3 sessions and 2 connections/u);
     assert.equal(stand.calls.length, 1);
     assert.equal(stand.calls[0]!.url, "/client/v4/accounts/acc-123/d1/database/db-staging/query");
     assert.equal(stand.calls[0]!.authorization, `Bearer ${API_TOKEN}`);
-    // The read binds its values.
     assert.deepEqual(stand.calls[0]!.body.params, ["dee@example.test", "acct9"]);
 
-    // A batch D1 refuses (a row gone since the preview): nothing is done, and it says so.
-    const refused = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
-    assert.equal(refused.code, 1);
-    assert.match(refused.output, /Nothing was changed: the change did not go through \(malformed JSON\)/u);
-    assert.doesNotMatch(refused.output, /Done/u);
+    // A row gone since the preview: nothing is changed.
+    mode = "gone";
+    const gone = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
+    assert.equal(gone.code, 1);
+    assert.match(gone.output, /Nothing was changed: the membership is gone since the preview\./u);
+    assert.equal(changes().length, 0);
 
+    // Everything: the checks, then each change on its own, sign-outs first and the password last.
+    mode = "ok";
+    stand.calls.length = 0;
     const done = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
     assert.equal(done.code, 0, done.output);
     assert.match(done.output, /Done\./u);
-    const batch = stand.calls.at(-1)!;
-    assert.equal(batch.url, "/client/v4/accounts/acc-123/d1/database/db-prod/query");
-    // One call: the checks first, then every change, so it is all or nothing.
-    const statements = batch.body.sql.split("\n");
-    assert.match(statements[0]!, /^SELECT json\(CASE WHEN EXISTS \(SELECT 1 FROM mgmt_user_account/u);
-    assert.match(statements[1]!, /^SELECT json\(CASE WHEN EXISTS \(SELECT 1 FROM mgmt_organization_user/u);
-    assert.ok(statements.slice(2).every((statement) => /^(UPDATE|DELETE)/u.test(statement)), batch.body.sql);
-    assert.match(batch.body.sql, /DELETE FROM mgmt_user_session/u);
-    assert.match(batch.body.sql, /DELETE FROM mgmt_oauth_token/u);
-    for (const output of [dry.output, refused.output, done.output]) {
+    assert.deepEqual(
+      stand.calls.map((call) => call.body.sql.split(" ").slice(0, 3).join(" ")),
+      ["SELECT u.id AS", "SELECT EXISTS (SELECT", "SELECT EXISTS (SELECT", "UPDATE mgmt_api_key SET", "DELETE FROM mgmt_oauth_token", "DELETE FROM mgmt_user_session", "UPDATE mgmt_organization_user SET", "UPDATE mgmt_user_account SET"],
+    );
+    for (const call of stand.calls) assert.equal(call.url, "/client/v4/accounts/acc-123/d1/database/db-prod/query");
+    // The hash is a bound value, never part of the SQL.
+    const passwordCall = stand.calls.at(-1)!;
+    const hash = passwordCall.body.params[1]!;
+    assert.match(hash, /^[0-9a-f]{32}:[0-9a-f]{128}$/u);
+    assert.ok(!passwordCall.body.sql.includes(hash));
+    assert.equal(await verifyPassword({ hash, password: PASSWORD }), true);
+
+    // The password refused, last: the sign-outs stand, the rerun completes it, and nothing of D1's text is printed.
+    mode = "refuse-password";
+    stand.calls.length = 0;
+    const refused = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
+    assert.equal(refused.code, 1);
+    assert.match(refused.output, /Stopped at "set the new password" \(D1 refused it \(HTTP 400, code 7500\)\)\. Done before it: revoke the CLI\/MCP connections, delete the CLI\/MCP connections' tokens, delete the browser sessions, make them an owner\. Run the same command again to complete it\./u);
+    assert.ok(!refused.output.includes(stand.calls.at(-1)!.body.params[1]!), "the hash was printed");
+    assert.doesNotMatch(refused.output, /SQLITE_ERROR|Done\. Sign in/u);
+
+    // An answer lost after sending: its outcome is unknown, and a rerun completes it.
+    mode = "lose-sessions";
+    const lost = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
+    assert.equal(lost.code, 1);
+    assert.match(lost.output, /The outcome of "delete the browser sessions" is unknown \(an unreadable answer came back \(HTTP 502\)\)\. Done before it: revoke the CLI\/MCP connections, delete the CLI\/MCP connections' tokens\. Run the same command again/u);
+
+    // An answer without a result for the statement is no proof it ran.
+    mode = "empty";
+    const empty = await recoverAsync([...ask, "--yes"], `${PASSWORD}\n`, env);
+    assert.equal(empty.code, 1);
+    assert.match(empty.output, /did not confirm it ran/u);
+    assert.doesNotMatch(empty.output, /Done\. Sign in/u);
+
+    for (const output of [dry.output, gone.output, done.output, refused.output, lost.output, empty.output]) {
       assert.ok(!output.includes(PASSWORD) && !output.includes(API_TOKEN), "a secret was printed");
     }
   } finally {
     stand.close();
   }
+});
+
+test("locally, refuses an environment the config lacks and a DB Wrangler could resolve two ways, before reading", () => {
+  const unknownEnv = recover(["--email", "ada@example.test", ...local(), "--env", "nope", "--promote-owner", "--account", "acct1", "--dry-run"]);
+  assert.equal(unknownEnv.code, 2);
+  assert.match(unknownEnv.output, /defines no environment nope/u);
+  const ambiguous = join(scratch, "wrangler.ambiguous.jsonc");
+  writeFileSync(
+    ambiguous,
+    JSON.stringify({
+      name: "ambiguous",
+      main: join(V2_DIR, "src", "index.ts"),
+      compatibility_date: "2026-01-01",
+      d1_databases: [{ binding: "DB", database_name: "main-db" }, { binding: "OTHER", database_name: "DB" }],
+    }),
+  );
+  const twoWays = recover(["--email", "ada@example.test", "--local", "--persist-to", persist, "-c", ambiguous, "--promote-owner", "--account", "acct1", "--dry-run"]);
+  assert.equal(twoWays.code, 1);
+  assert.match(twoWays.output, /more than one database Wrangler could take for DB/u);
 });
