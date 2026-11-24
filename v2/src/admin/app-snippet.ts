@@ -312,9 +312,9 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const examples: Example[] = [];
   /**
    * Adds an example. Every value from the app's settings reaches the command
-   * only single-quoted (`shellWord`); a value with a
-   * control or invisible character gets no command at all, only a note. A
-   * caveat is plain text beside the command, never part of it.
+   * only single-quoted (`shellWord`); a value with a control or invisible
+   * character gets no command at all, only a note. A caveat is plain text
+   * beside the command, never part of it.
    */
   const add = (example: Pick<Example, "provider" | "preset" | "operation" | "style" | "model" | "caveat">, built: SnippetRequest) => {
     const who = example.preset === undefined ? `${example.provider}: ${example.operation}` : `The preset ${example.preset}`;
