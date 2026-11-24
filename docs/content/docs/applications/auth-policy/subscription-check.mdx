@@ -3,79 +3,69 @@ title: Subscription check
 description: Require that a signed-in user has paid before they can call AI providers through the app.
 ---
 
-**Subscription check** is the third level of the **Auth policy** page. It
-requires the user's sign-in token to carry a claim that says they have paid.
-It is available only with **Signed-in users only**, because it needs a token
-to inspect. The state line says **Paid users only**, **Any signed-in user**,
-**Paid check not finished**, or **Needs signed-in users**.
+**Paid users only**, on the app's **Sign-in** tab, requires the user's sign-in
+token to carry claims saying they have paid. It is available only with
+**Signed-in users only**, because it needs a token to look at.
 
 ## How it works
 
-The gateway never talks to the App Store. It checks a claim inside the
-verified ID token, and something else has to put that claim there after the
-purchase:
+The gateway never talks to the App Store. It checks claims inside the checked
+sign-in token, and something else has to put them there after the purchase:
 
-- **RevenueCat** with its Firebase function kit writes the user's active
+- **RevenueCat**, with its Firebase function kit, writes the user's active
   entitlements into their Firebase token as `revenueCatEntitlements`.
-- **Your own backend** can set any custom claim on your identity provider
-  after it confirms a purchase.
+- **Your own server** can set any custom claim on your identity provider after
+  it confirms a purchase.
 
 ### RevenueCat's Firebase function kit
 
 The kit is a Cloud Function that runs in your Firebase project. RevenueCat
-sends it every purchase event, and it writes the user's active entitlements
-into the `revenueCatEntitlements` claim. To set it up:
+sends it every purchase event, and it writes the user's active entitlements into
+the `revenueCatEntitlements` claim. To set it up:
 
 1. Install the kit with the Firebase CLI, following RevenueCat's
    [Firebase function kit guide](https://www.revenuecat.com/docs/integrations/third-party-integrations/firebase-function-kit).
-2. Set `SET_CUSTOM_CLAIMS` to `ENABLED`. It is off by default, and without
-   it the token never carries the claim, so every paying user is refused.
+2. Set `SET_CUSTOM_CLAIMS` to `ENABLED`. It is off by default, and without it
+   the token never carries the claim, so every paying user is refused.
 3. Paste the deployed function's URL into the **Webhook URL** field of the
    Firebase integration in the RevenueCat dashboard.
-4. Make a sandbox purchase and check that the user's token carries the
+4. Make a sandbox purchase, and check that the user's token carries the
    entitlement.
 
-RevenueCat used to do this with a Firebase Extension. Google is retiring
-Firebase Extensions, so if you still use it, move to the kit with RevenueCat's
-[migration guide](https://www.revenuecat.com/docs/integrations/third-party-integrations/firebase-extension-migration).
-The kit writes the same claim, so you change nothing in the gateway.
-
-On every token exchange the gateway verifies the token as usual and then
-checks the required claims. A token without them is refused with
+Each time a gateway token is issued, the gateway checks the sign-in token as
+usual, then checks the required claims. A token without them is refused with
 `403 issuer_claims_missing`.
 
 ## Choices
 
-- **Any signed-in user**: signing in is enough. Nothing about payment is
-  checked.
-- **Paid users only**: the sign-in token must carry a claim that says the
-  user has paid. Then choose which claim:
-  - **RevenueCat entitlement**: enter the **Entitlement identifier** from
-    RevenueCat's Product catalog, the identifier rather than the display
-    name. Several, comma separated, admit a user carrying any one of them.
-  - **Custom claim**: one or more rows of **Path**, **Match** and **Value**.
-    Paths are dot paths into the token. **contains** matches arrays and
-    space-delimited scopes; **equals** compares exactly.
+- **Any signed-in user**: signing in is enough. Payment is not checked.
+- **Paid users only**: the sign-in token must carry the claims listed below.
+  - **Add RevenueCat entitlement** adds the claim RevenueCat's function kit
+    writes. Enter the entitlement's identifier from RevenueCat's Product
+    catalog, not its display name. Several values admit a user who has any one
+    of them.
+  - A claim of your own is a row with a path into the token and what it must
+    hold: **contains** matches a value in a list, or a word in a
+    space-separated scope; an exact match compares the claim to one text,
+    number or `true`/`false`.
 
-## The propagation gap
+## The waiting time
 
-The claim is written after the purchase, by a webhook or a backend job, and
-the app may refresh its token before that has happened. During that window a
-paying user holds a perfectly valid token that lacks the claim.
+The claim is written after the purchase, by a webhook or a server job, and the
+app may refresh its token before that has happened. For that time, a paying
+user holds a valid token without the claim.
 
-This is why the refusal has its own code. `issuer_claims_missing` means "the
-user is real, the entitlement has not arrived yet, wait and try again". Treating
-it as a sign-in failure would send the user round a loop they cannot escape.
-The Swift package exposes a hook that runs only on this code, so you can
-trigger a purchase sync there. See [iOS with the Swift package](/integrate/ios).
+This is why the refusal has its own code. `issuer_claims_missing` means the user
+is real and the entitlement has not arrived yet, so wait and try again. Treating
+it as a failed sign-in would send the user round a loop they cannot get out of.
 
-The gateway measures the gap. The app's [Auth & Errors](/applications/auth-events)
-page shows how long activation usually takes and how many users are waiting
-on a claim right now.
+The gateway measures the wait. The app's **Errors** tab shows how long users
+usually waited for the claim, and how many are waiting right now. See
+[Auth events](/applications/auth-events).
 
-## In the configuration
+## In the settings
 
-The check is the `required_claims` list on the issuer block. A RevenueCat
+The check is the `required_claims` list in the issuer settings. A RevenueCat
 entitlement named `pro`:
 
 ```json
@@ -85,7 +75,7 @@ entitlement named `pro`:
 "entitlement": "revenuecat"
 ```
 
-A custom claim requiring a scope:
+A claim of your own, requiring a scope:
 
 ```json
 "required_claims": [
@@ -93,6 +83,7 @@ A custom claim requiring a scope:
 ]
 ```
 
-Each requirement has a `path` and either `contains` (a string or a list of
-alternatives) or `equals` (a string, number or boolean). All requirements
-must pass. `entitlement` is bookkeeping for the console and may be omitted.
+Each requirement has a `path` and exactly one of `contains` (a text or a list of
+texts, any one of which may match) or `equals` (a text, a number or a boolean).
+Every requirement must pass. `entitlement` only helps the console reopen the same
+choice, and may be left out.
