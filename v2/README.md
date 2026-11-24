@@ -75,14 +75,22 @@ Inside `v2/`:
   secret `.dev.vars.example` lists that has none yet. Values already there are kept; only names are
   printed. Back up `SECRET_VAULT_LOCAL_KEK_V1`.
 - `pnpm run secrets:upload -- -c <wrangler config>`: upload the values set in `.dev.vars` to the
-  Worker that config names (`wrangler secret bulk`, values on stdin). Empty values are left out.
-- `pnpm run recover-access -- --email <email> (--local | --remote -c <wrangler config>)
+  Worker that config names (`wrangler secret bulk`, values on stdin, its logs always sanitized).
+  Empty values are left out.
+- `pnpm run recover-access -- --email <email> (--local | --remote -c <wrangler config>) [--env <name>]
   [--password-stdin] [--promote-owner --account <id>] [--dry-run] [--yes]`: let a person back in
-  with a new password, and make them an owner of an account they belong to. It reads the database
-  first and shows what it will change; `--dry-run` stops there. It asks before changing anything
-  (`--yes` answers for a run without a terminal). The password comes from a hidden prompt or a pipe,
-  never an argument, and is never printed. A new password also signs the person out everywhere (v1 left
-  their sessions); making someone an owner does not.
+  with a new password, and make them an owner of an account they belong to.
+  - It uses the `DB` database the config (and `--env`) resolve to, and names it. With
+    `CLOUDFLARE_ENV` set in the shell, it stops unless `--env` names the environment.
+  - `--remote` calls D1's query API with `CLOUDFLARE_API_TOKEN` from the environment, for the
+    account in the config (or `CLOUDFLARE_ACCOUNT_ID`).
+  - It reads the database first and shows what it will change; `--dry-run` stops there. It asks
+    before changing anything (`--yes` answers for a run without a terminal).
+  - The changes run as one batch that first checks the rows are still there: all or nothing.
+  - The password comes from a hidden prompt or a pipe, never an argument, and is never printed:
+    8 to 128 characters.
+  - A new password also signs the person out of all browser sessions and CLI/MCP connections (v1
+    left them); making someone an owner does not.
 
 ## Secrets
 
