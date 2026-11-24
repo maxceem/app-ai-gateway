@@ -152,7 +152,7 @@ In **Add provider**, choose **Custom provider** and fill in:
 
 | Field | What to enter |
 | --- | --- |
-| **Base URL** | Its `https` address, such as `https://llm.example.com/v1/`. The [rules above](#what-the-url-must-be) apply, apart from the last two. |
+| **Base URL** | Its `https` address, such as `https://llm.example.com/v1/`. The [rules above](#what-the-url-must-be) apply, Cloudflare AI Gateway's host included. The two rules about built-in providers' hosts do not. |
 | **Key header** | The header the key is sent in. `authorization` by default. |
 | **Key format** | The header's value, with `{key}` where the key goes. `Bearer {key}` by default. |
 | **API key** | The service's key. |
@@ -223,9 +223,10 @@ POST chat/completions openai-chat
 
 - The method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.
 - `{name}` stands for one segment, such as an ID, and two never stand next to
-  each other. On a built-in provider it comes after the API version and an
-  endpoint's name, as in `v1/files/{file_id}`. On a custom provider it comes
-  after two fixed segments.
+  each other. It comes after the API version, when the path has one, and at
+  least one fixed segment, the endpoint's name. So OpenAI's
+  `v1/files/{file_id}` can be listed, and so can `predictions/{id}` on a custom
+  provider whose base URL ends in `/v1/`. `v1/{id}` cannot.
 - A price, such as `$0.002`, is charged for each answer the provider accepts.
   Without one, the path is not priced, and budgets do not limit it.
 - A path that one of the provider's own operations already serves is refused:

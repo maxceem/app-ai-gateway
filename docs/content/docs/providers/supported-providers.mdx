@@ -22,7 +22,7 @@ what the API and the app's settings use.
 | OpenAI | `openai` | `openai.responses` `v1/responses`, `openai.chat` `v1/chat/completions`, `openai.transcription` `v1/audio/transcriptions`, `openai.images` `v1/images/generations`, `openai.images.edits` `v1/images/edits`, `openai.embeddings` `v1/embeddings`, `openai.speech` `v1/audio/speech` | Yes | `GET v1/models` |
 | Anthropic | `anthropic` | `anthropic.messages` `v1/messages` | Yes | `GET v1/models` |
 | xAI | `xai` | `xai.responses` `v1/responses`, `xai.chat` `v1/chat/completions`, `xai.completions` `v1/completions`, `xai.messages` `v1/messages`, `xai.transcription` `v1/stt`, `xai.images` `v1/images/generations`, `xai.images.edits` `v1/images/edits`, `xai.embeddings` `v1/embeddings` | Yes | `GET v1/models` |
-| Gemini | `gemini` | `gemini.generate.v1beta` `v1beta/models/{model}:generateContent`, `gemini.stream.v1beta` `v1beta/models/{model}:streamGenerateContent`, `gemini.embed.v1beta` `v1beta/models/{model}:embedContent`, `gemini.chat` `v1beta/openai/chat/completions`, and the same under `v1/` and `v1alpha/` | Yes | `GET v1beta/models` |
+| Gemini | `gemini` | `gemini.generate.v1beta` `v1beta/models/{model}:generateContent` and `gemini.stream.v1beta` `v1beta/models/{model}:streamGenerateContent`, also under `v1/` and `v1alpha/`; `gemini.embed.v1beta` `v1beta/models/{model}:embedContent`, also under `v1/`; `gemini.chat` `v1beta/openai/chat/completions` | Yes | `GET v1beta/models` |
 | Perplexity | `perplexity` | `perplexity.chat` `chat/completions`, `perplexity.agent` `v1/agent`, `perplexity.responses` `v1/responses`, `perplexity.embeddings` `v1/embeddings` | Yes | None |
 | DeepSeek | `deepseek` | `deepseek.chat` `chat/completions`, `deepseek.completions` `beta/completions`, `deepseek.messages` `anthropic/v1/messages` | No | `GET models` |
 | Groq | `groq` | `groq.chat` `openai/v1/chat/completions`, `groq.responses` `openai/v1/responses`, `groq.speech` `openai/v1/audio/speech`, `groq.transcription.openai` `openai/v1/audio/transcriptions` | No | `GET openai/v1/models` |
@@ -53,12 +53,15 @@ Cloudflare AI Gateway. See [Cloudflare and Vercel AI Gateway](/providers/gateway
 
 ### Paths kept from the earlier gateway
 
-Every provider also accepts the paths the earlier version of the gateway
-accepted for all providers, so apps built for it keep working. They are Chat
+Most providers also accept paths the earlier version of the gateway accepted
+for every provider, so apps built for it keep working. They are Chat
 Completions, Responses, Messages and transcription at the common layouts, such
-as `v1/chat/completions`, `chat/completions` and `v1/messages`. Each is an
-operation of its own, named after its kind, such as `anthropic.chat` or
-`deepseek.messages.v1`, so an app allows it like any other.
+as `v1/chat/completions`, `chat/completions` and `v1/messages`. Which of them a
+provider has varies: OpenRouter has the Chat Completions ones only, Vercel AI
+Gateway has no transcription, and ElevenLabs, Deepgram and fal have none.
+Each is an operation of its own, named after its kind, such as
+`anthropic.chat` or `deepseek.messages.v1`, so an app allows it like any other.
+`agw provider types` lists each provider's operations.
 
 Use the provider's own paths from the table in new code. A path the provider
 itself does not serve is sent to it anyway, and the provider answers it with

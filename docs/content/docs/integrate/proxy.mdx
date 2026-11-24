@@ -105,7 +105,7 @@ A header among these whose name has a word such as `key`, `token`, `secret`,
 `auth` or `session` is still dropped, except `idempotency-key`. Every other
 header is dropped. So a provider never sees your user's cookies, a provider
 key your app sent, or a header that would bill another account, such as
-`openai-organization`.
+OpenAI's account and project headers.
 
 Two more kinds go through where they apply:
 
@@ -115,7 +115,7 @@ Two more kinds go through where they apply:
   [What changes on the way](/providers/gateways#what-changes-on-the-way).
 
 On the way back, the provider's headers pass through, except `set-cookie`,
-`openai-organization`, `openai-project`, the header the key was sent in, and
+OpenAI's account and project headers, the header the key was sent in, and
 the length and encoding headers that no longer fit once the body is streamed
 again. `x-request-id` is kept, because provider support asks for it.
 

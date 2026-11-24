@@ -70,12 +70,20 @@ Content-Type: application/json
 - `token` may be left out to keep the stored one, for the same account and
   gateway.
 - `cloudflareGateway: null` stops, and needs `secret` in the same request.
+- A connection with a base URL keeps it unless you send `baseUrl: null` in the
+  same request. Send it when you turn Cloudflare on there, or the request is
+  refused: a connection cannot have both. The console's box does this for you.
 
 ### What changes on the way
 
 Your apps call the same URLs, with the provider's own paths, as on a direct
 connection. The gateway sends each request to
-`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/{provider}/…`, with:
+`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/` and Cloudflare's
+own name for the provider: `openai`, `anthropic`, `grok` for xAI,
+`google-ai-studio` for Gemini, or `perplexity-ai`. Cloudflare's OpenAI route
+leaves out the leading `v1/`, so an app's `v1/responses` on OpenAI is sent to
+`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/openai/responses`.
+The gateway adds:
 
 - `cf-aig-authorization`, your Cloudflare token;
 - `cf-aig-metadata`, the app's ID and, when known, the user's ID, so Cloudflare's

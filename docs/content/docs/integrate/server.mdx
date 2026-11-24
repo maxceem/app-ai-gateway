@@ -114,7 +114,10 @@ group charges by it.
 
 ## Presets
 
-A [preset](/integrate/endpoints) takes the same headers:
+A [preset](/integrate/endpoints) checks who is calling exactly as the proxy
+does. This example is for a server app with no signed-in users. If your server
+sends the user ID, add the end-user header. With signed-in users, send the
+gateway token and `X-App-Version` instead of the key.
 
 ```sh
 curl https://api.appaigateway.com/v2/apps/search-service-k3f9x1/presets/chat \
@@ -134,4 +137,4 @@ curl https://api.appaigateway.com/v2/apps/search-service-k3f9x1/presets/chat \
 - `400 pricing_not_configured` means the model has no price. See
   [Model pricing](/providers/model-pricing).
 
-All the codes are in [Errors and limits](/integrate/errors).
+The gateway's errors, and how to handle them, are in [Errors and limits](/integrate/errors).

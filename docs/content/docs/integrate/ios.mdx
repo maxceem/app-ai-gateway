@@ -22,6 +22,14 @@ protects against, is explained in
   **Bundle ID**. Its **Sign-in** tab sets which builds are accepted and when
   App Attest is checked. See [Application identity](/applications/auth-policy/identity#ios-apps).
 - A real device. App Attest does not run in the simulator.
+- The **App Attest** capability on your app's target in Xcode. It adds the
+  `com.apple.developer.devicecheck.appattest-environment` entitlement.
+- A build whose App Attest environment the app accepts. The gateway accepts
+  production attestations by default, and registration checks the
+  attestation's environment. A build run from Xcode attests in development
+  unless that entitlement is set to `production`, so either set it, or turn on
+  **Development** for a development bundle ID. See
+  [Accepted builds](/applications/auth-policy/identity#accepted-builds).
 - If your users sign in, the app's **Who may call** set to
   **Signed-in users only**, and your identity provider's ID token on hand. See
   [User authentication](/applications/auth-policy/user-authentication).
@@ -103,9 +111,11 @@ base64url SHA-256 of the JWS:
 {"app":"<app id>","challenge":"<challenge>","key_id":"<keyId>","app_transaction":"<hash>"}
 ```
 
-Without a transaction, or with one the gateway cannot check, such as one from
-an Xcode StoreKit setup, the install is counted on its own. It is never
-refused for that.
+Without a transaction, the install is counted on its own. So is one whose
+transaction Apple's signature check does not pass, such as one from an Xcode
+StoreKit setup: the exchange is not refused for that. The request itself must
+still be well formed: an empty `app_transaction`, one over 16,384 characters,
+or a hash in the signed text that does not match it is refused.
 
 ## 4. Sign each request
 
@@ -164,7 +174,7 @@ The token lasts an hour. Get a new one, with steps 1 and 3, before it ends.
 - On `403 attest_failed`, build and sign the request again, and send it once.
   If it happens again, register a new key with step 2.
 
-Every code is in [Errors and limits](/integrate/errors).
+The gateway's errors, and how to handle them, are in [Errors and limits](/integrate/errors).
 
 ## Report a failure on the device
 

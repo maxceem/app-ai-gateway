@@ -10,10 +10,18 @@ and model are set on the gateway:
 POST https://api.appaigateway.com/v2/apps/{app}/presets/{name}
 ```
 
-Only `POST` is served. The headers are the same as on the
-[provider proxy](/integrate/proxy#headers-your-app-sends): an app key, or a
-gateway token with `X-App-Version`, and `X-AppAttest-Proof` where the app
-checks App Attest on every request. Limits, usage and errors work the same way.
+Only `POST` is served. A preset checks who is calling exactly as the
+[provider proxy](/integrate/proxy#headers-your-app-sends) does, so it takes the
+same headers:
+
+- an app key, on a server app with no signed-in users;
+- an app key and the end-user header you named, `X-End-User-ID` by default, on
+  a server app that sends the user ID;
+- a gateway token with `X-App-Version` on an iOS app or a server app with
+  signed-in users, plus `X-AppAttest-Proof` where the app checks App Attest on
+  every request.
+
+Limits, usage and errors work the same way.
 
 ## The body
 
@@ -44,6 +52,9 @@ in the body, the form, or Gemini's path. A model you send is replaced.
 - Your URL's query is not sent to the provider, except `alt=sse` on Gemini,
   below.
 
+The examples use an app key, for a server app with no signed-in users. For
+the other setups, change the headers as listed above.
+
 ```sh
 curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/presets/chat \
   -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
@@ -73,7 +84,9 @@ an iOS app that signs every request, the query is part of what is signed, so
 add it before you sign.
 
 A fallback is tried only when the attempt before it got no answer, a `429` or a
-`5xx`, so a stream that has started is never switched to another provider.
+`5xx`, so a stream that has started is never switched to another provider. All
+attempts share one time limit for the provider's first byte: a fallback gets
+what is left of it. See [Limits on one request](/integrate/proxy#limits-on-one-request).
 
 ## Errors
 
@@ -85,6 +98,7 @@ A fallback is tried only when the attempt before it got no answer, a `429` or a
 | `502 provider_disabled` | The preset's connection is turned off and it has no fallback left. |
 | `502 provider_unavailable` | The preset's first connection cannot serve its operation, or its key cannot be opened. |
 
-When every attempt fails, your app gets the last provider's own error, or
-`502 provider_error` when no provider answered. The full list is in
-[Errors and limits](/integrate/errors).
+When every attempt fails, your app gets the last provider's own error. When no
+provider answered, it gets `provider_error`: `502` when the connection failed,
+or `504` when the time limit ran out. The gateway's errors, and how to handle
+them, are in [Errors and limits](/integrate/errors).

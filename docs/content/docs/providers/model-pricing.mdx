@@ -6,9 +6,11 @@ description: Where the gateway's prices come from, how to add your own, and whic
 The gateway counts what each request costs, so your apps' budgets and usage
 stay right. To count it, the model needs a price, or the provider must report
 the cost itself. A request for a model with neither is refused with
-`400 pricing_not_configured` before it reaches the provider. See
-[Models](/applications/provider-access#models) for how that check works on an
-app.
+`400 pricing_not_configured` before it reaches the provider. The exception: a
+model the app lists by name, or a preset's own model, keeps being served if its
+price later goes away. See [Models](/applications/provider-access#models)
+for the rules, and [Where a cost comes from](/applications/usage#where-a-cost-comes-from)
+for how such requests are charged.
 
 A price comes from one of three places, in this order:
 
@@ -102,20 +104,20 @@ an entry without it. So if the provider gives a cache discount, enter it, or
 cached tokens bill at the full input price.
 
 The same through the API. `pricing` replaces all your prices on the connection,
-and `null` removes them:
+and `null` removes them. For a model on an OpenAI connection:
 
 ```http
 PUT /v2/admin/providers/{id}
 Content-Type: application/json
 
 {
-  "pricing": {
-    "my-model": { "input": 1.25, "output": 10, "cached_input": 0.125 },
-    "fal-ai/some-model": { "per_request": 0.02 }
-  },
+  "pricing": { "my-model": { "input": 1.25, "output": 10, "cached_input": 0.125 } },
   "revision": 7
 }
 ```
+
+Each price must suit the connection's operations, so a price per job goes on a
+fal connection instead: `{ "fal-ai/some-model": { "per_request": 0.02 } }`.
 
 `pricing` takes the same rate names as the price list. Two more fields:
 
@@ -130,8 +132,9 @@ Saving checks every price:
   price on a text-only provider, is refused with `400 invalid_request`.
 - On a provider that runs [jobs](/applications/jobs), such as fal, each model
   takes exactly one unit rate, because a job settles at the rate it started with.
-- A change that would leave one of your apps' requests with no price is refused
-  with `400 pricing_not_configured`. See
+- A change can be refused with `400 pricing_not_configured` when it would leave
+  a request your apps can newly send with no price. Removing a price a proxy
+  request used still saves. See
   [Changes are checked against your apps](/providers/add-a-provider#changes-are-checked-against-your-apps).
 
 Removing a connection removes your prices on it. Charges already recorded keep

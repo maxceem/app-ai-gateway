@@ -1,6 +1,6 @@
 ---
 title: Errors and limits
-description: The error format, every code your app can get, and how to handle limits and failures.
+description: The error format, the gateway's errors, and how to handle limits and failures.
 ---
 
 Every refusal from the gateway is JSON with one `error` object:
@@ -20,8 +20,9 @@ Every refusal from the gateway is JSON with one `error` object:
 - `data` is there only for codes that need more, such as which limit was
   reached.
 
-Every `429`, and `503 service_unavailable`, carries a `Retry-After` header with
-the seconds to wait.
+Every `429` the gateway itself sends, and `503 service_unavailable`, carries a
+`Retry-After` header with the seconds to wait. A provider's own `429` is passed
+on with the provider's headers, and may have none.
 
 A provider's own error is not in this format. It is passed to your app as the
 provider sent it, with the provider's status. A provider's error may have an
@@ -79,8 +80,8 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `provider_not_configured` | 502 | The app does not allow a connection with this slug, or none exists | Allow or add the connection |
 | `provider_disabled` | 502 | The connection is turned off | Turn it on |
 | `provider_unavailable` | 502 | The connection cannot be used as stored, for example its key could not be opened | Check the connection in the console |
-| `provider_error` | 502 | The provider could not be reached | Try again with backoff |
-| `provider_error` | 504 | The provider sent nothing within 120 seconds | Try again with backoff |
+| `provider_error` | 502 | The connection to the provider failed | Try again with backoff, unless it was a job submission |
+| `provider_error` | 504 | The provider sent nothing before the time limit ran out. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
 
 ## The gateway itself
 
@@ -100,8 +101,12 @@ fixes them, so do not ask the user to sign in again.
 
 ## Handling errors well
 
-- Retry a `429` or a `5xx` with backoff, and wait at least `Retry-After`. A
-  budget or account refusal needs the action in its row instead.
+- Retry a `429` or a `5xx` with backoff, and wait at least `Retry-After` when
+  the answer has it. A budget or account refusal needs the action in its row
+  instead.
+- Do not send a [job](/applications/jobs) submission again after it timed out
+  or lost its connection. The provider may have accepted the job, and charged
+  for it. The gateway does not send it again either.
 - Do not send a request again on your own after an answer started, or after a
   lost connection. The provider may already have done the work, and charged
   for it.

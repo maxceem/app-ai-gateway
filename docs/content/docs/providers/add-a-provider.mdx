@@ -57,7 +57,8 @@ The body takes:
 - `servingProviders`, for [Vercel AI Gateway](/providers/gateways#vercel-ai-gateway) only;
 - `auth`, for a [custom provider](/providers/custom-base-urls#custom-providers) only.
 
-The answer is the connection, with `secretHint`, the key's last characters.
+The answer is `{ "provider": { … } }`: the connection, with `secretHint`, the
+key's last characters.
 It never holds the key. `GET /v2/admin/provider-types` lists every `type`
 with its operations.
 
@@ -90,8 +91,8 @@ Content-Type: application/json
 
 It takes `type`, `secret`, `baseUrl`, `cloudflareGateway` and `auth`, and
 answers `validated`. When that is `false`, `reason` is `rejected`, `no_probe`,
-`unreachable` or `unexpected_status`, with the provider's `status` for the last
-two.
+`unreachable` or `unexpected_status`. `rejected` and `unexpected_status` also
+carry the provider's `status`.
 
 ## Slugs
 
@@ -206,7 +207,7 @@ otherwise drop out of the preset's chain without a word.
 | `502 provider_disabled` | The connection is turned off. Turn it on. |
 | `502 provider_unavailable` | The connection cannot be used as stored, for example its key could not be opened. |
 
-All the codes are in [Errors and limits](/integrate/errors).
+The gateway's errors, and how to handle them, are in [Errors and limits](/integrate/errors).
 
 Each change on this page reaches every request within a minute in normal
 operation. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
