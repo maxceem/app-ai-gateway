@@ -52,8 +52,7 @@ Get a new one for each step below that needs one.
 
 ## 2. Register the install's key
 
-- **Without sign-in:** one key per install. Keep it, and generate and register
-  a new one only if the gateway has lost the old one.
+- **Without sign-in:** one key per install. Keep it.
 - **With signed-in users:** one key per user on this install. Reuse the current
   user's registered key. Call `generateKey()` and register a new key only when
   that user has none on this install: Apple attests a key only once, so another
@@ -61,9 +60,8 @@ Get a new one for each step below that needs one.
   key is refused with `403 attest_failed`.
 
 A new key starts a new request count for the install, so do not make one
-without need. If token requests or signed requests keep failing with
-`403 attest_failed` after a retry, follow [step 5](#5-keep-the-token-fresh):
-sign once more, then register a new key.
+without need. The one exception to both rules: on `403 attest_failed`, follow
+the recovery in [step 5](#5-keep-the-token-fresh), which may replace the key.
 
 1. Create a key with `DCAppAttestService.generateKey()`, and keep its `keyId`.
 2. Decode the challenge from base64url, and take the SHA-256 of those bytes.
@@ -185,8 +183,13 @@ The token lasts an hour. Get a new one, with steps 1 and 3, before it ends.
   request had none. Sign it and send it again, once. If your app chose not to
   sign because of the token's `verify_on`, get a new token: it now says
   `every_request`.
-- On `403 attest_failed`, build and sign the request again, and send it once.
-  If it happens again, register a new key with step 2.
+- On `403 attest_failed`, from a token request or a signed request:
+  1. Retry once: a token request with a fresh challenge, because each challenge
+     is used up; a signed request with a fresh proof.
+  2. If it fails again, register a new key with step 2, and get a new token
+     for it with step 3. Signed requests are checked against the key the token
+     was issued for.
+  3. Then send the request again, signed with the new key.
 
 The gateway's errors, and how to handle them, are in [Errors and limits](/integrate/errors).
 
