@@ -1,146 +1,114 @@
 ---
-title: Auth and errors
-description: Token exchange success, failures by cause, and how long paid entitlements take to arrive.
+title: Auth events and errors
+description: Sign-in success, failures by cause, refused requests, and how long paid entitlements take to arrive.
 ---
 
-The **Auth & Errors** page shows how the app's clients are getting on with
-authentication, and which requests failed and why.
+An app's **Errors** tab shows how the app's clients are getting on with signing
+in, and which requests the gateway refused and why.
 
-When a sign-in failed on Apple's own network, the page opens with a notice.
-App Review tests apps from that network, so a build in review most likely
-could not use the app's AI features. Apple's network is AS714 (Apple Inc.).
+When a sign-in failed on Apple's own network, the tab opens with a notice. App
+Review tests apps from that network, so a build in review most likely could not
+use the app's AI features. Apple's network is AS714 (Apple Inc.).
 
 ## The numbers
 
-- **Exchange success**: the share of token exchanges that succeeded, with the
-  number of attempts.
-- **Claim delay p50** and **p95**: how long users wait between their first
+- **Exchange success**: the share of gateway-token exchanges that succeeded,
+  with the number of tries.
+- **Claim delay p50** and **p95**: how long users waited between their first
   refusal for a missing entitlement claim and the exchange that finally
-  succeeds. Only apps with a [subscription check](/applications/auth-policy/subscription-check)
-  have this.
+  succeeded. Only apps with a
+  [subscription check](/applications/auth-policy/subscription-check) have this.
 - **Pending activations**: users waiting on a claim right now.
 
 ## Failures by cause
 
-Refused authentication attempts, provider errors, and sampled requests stopped
-before a provider call, busiest first,
-with **Outcome**, **Reason**, **Count**, **Days affected** and **Last seen**
-over the chosen range. This is the first place to look when a release starts
-failing.
+Refused sign-ins and sampled refused requests, busiest first, over the chosen
+days. This is the first place to look when a release starts failing.
 
-Requests stopped by the app's limits are sampled once per authenticated
-identity per minute across the deployment, regardless of route or reason.
-Requests stopped by the app's settings are sampled the same way, but once per
-reason, so a burst of rate limits cannot hide them. Their counts are labeled
-**samples** and are not exact request totals. Authentication failures and
-provider errors are recorded as individual events.
+Requests refused by the app's limits are sampled, once per caller per minute.
+Requests refused by the app's settings are sampled the same way, but once per
+reason, so a burst of rate limits cannot hide them. Their counts are samples,
+not exact totals. Sign-in failures are recorded one by one.
 
 ## Recent refusal samples
 
-The list shows the time, user or API key, reason, scope, attempted route and
-model, app version, and admission latency. The attempted route describes what
-would have been called; the gateway stopped the request before contacting it.
-Filter by reason, scope, or user, then page through older samples. An older
-sample may have an unknown scope when its original record did not preserve it.
-
-Reasons:
+Requests the gateway refused before calling a provider, newest first, with the
+time, the user or key, the reason, its scope, the route and model the request
+asked for, and the app version. Filter by **Refusal reason**, then page through
+older samples.
 
 | Reason | Meaning |
 | --- | --- |
-| `blocked_app_rate` | The app's per-minute or per-day request limit |
-| `blocked_app_budget` | The app's monthly spending budget |
-| `blocked_billing` | The monthly request allowance shared by all your apps |
-| `blocked_user` | An end user you blocked |
+| `blocked_user` | A user you blocked |
+| `blocked_app_rate` | One of the app's request limits |
+| `blocked_app_budget` | One of the app's monthly budgets |
+| `blocked_billing` | The monthly allowance shared by all your apps |
 | `blocked_replay` | A reused App Attest proof |
-| `path_not_allowed` | A provider path the app does not allow. **Route** names it, such as `openai/v1/audio/transcriptions`: allow it under the app's providers |
-| `model_not_allowed` | A model the app does not allow. **Model** names it |
-| `provider_not_configured` | A provider the app uses that has no key |
-| `provider_disabled` | A provider that is turned off |
-| `pricing_not_configured` | A model with no price, so its cost cannot be counted. **Model** names it |
+| `path_not_allowed` | An operation or path the app does not allow. The route names it |
+| `model_not_allowed` | A model the app does not allow. The model names it |
+| `provider_not_configured` | A connection the app does not allow, or that does not exist |
+| `provider_disabled` | A connection you turned off |
+| `pricing_not_configured` | A model with no price, so its cost cannot be counted |
 | `max_output_tokens_exceeded` | A request asking for more output than the app allows |
-| `api_style_not_supported` | A request format the provider does not take |
+| `preset_not_found` | A preset the app does not have |
 | `payload_too_large` | A request body over the size limit |
-| `endpoint_not_found` | A custom endpoint the app does not have |
 
-Every reason from `path_not_allowed` down is the error code the app itself
-received. These are recorded only for a caller that proved who it is: a
-request refused before that, such as one with no valid token, is never
-recorded here. Their **Scope** is `app`. On an App Attest app that verifies
-every request, the body is read while the request's proof is checked, so a
-body over the size limit is refused before that and is not recorded as
-`payload_too_large`.
+From `path_not_allowed` down, each reason is the error code the app itself got.
+They are recorded only for a caller that proved who it is: a request refused
+before that, such as one with no valid key, is never recorded here.
 
 ## Recent attempts
 
-Every token exchange and key registration, and every App Attest challenge
-that nothing used, newest first: **When**, **User**, **Call**
-(`token_exchange`, `register` or `challenge`, with the auth method),
-**Outcome**, **Reason**, **App version**, **Network**, **Latency**, and
-**Claim delay** where the exchange ended a wait.
+Every gateway-token exchange and key registration, and every App Attest
+challenge nothing used, newest first, with when, who, which call, the outcome,
+the reason, the app version, the network and the time it took.
 
-**Network** is the network the attempt came from, such as
+The network is the one the attempt came from, such as
 `Verizon Business (AS701)`. It is a network, never an address. Attempts from
 Apple's network are marked **probably App Review**.
 
 ### Challenges nothing used
 
 An App Attest app signs in with two calls: it asks for a challenge, then
-registers its key or exchanges a token with it. Every challenge is meant for
-exactly one of those. When the second call never comes, the sign-in stopped
-on the device: App Attest failed there, the network went away, or the app
-was closed. The gateway records that as a `challenge` event:
+registers its key or trades it for a gateway token. Every challenge is meant for
+exactly one of those. When the second call never comes, the sign-in stopped on
+the device: App Attest failed there, the network went away, or the app was
+closed. The gateway records that as a `challenge` event:
 
-- If the app says what failed, the event is recorded right away. The Swift
-  package 1.9 and later does this. **Reason** reads
-  `<step>:<error domain>:<error code>`, followed by `>` and the error inside
-  it where there is one. For example,
-  `attest_key:com.apple.devicecheck.error:3>NSURLErrorDomain:-1001` means
-  App Attest failed because a request to Apple timed out. **Latency** is
-  how long the device spent between getting the challenge and reporting.
-- Otherwise, the event is recorded when the challenge expires, within about
-  an hour. **Reason** is `challenge_unused`. This also covers apps that do
-  not use the Swift package.
-
-A registration or exchange the gateway refused is recorded once, as itself,
-and never again as a challenge nothing used. The exception is a call refused
-before the gateway looked at it, such as one over the rate limit: it is not
-recorded, so its challenge shows as `abandoned`.
+- If the app says what failed, at `POST /v2/apps/{app}/auth/failure`, the event
+  is recorded at once, with the outcome `client_failed`, or `client_recovered`
+  for a failure the app got past by itself.
+- Otherwise the event is recorded when the challenge expires, with the outcome
+  `abandoned`.
 
 Outcomes:
 
 | Outcome | Meaning |
 | --- | --- |
 | `ok` | The exchange succeeded |
-| `issuer_token_rejected` | The sign-in token did not verify |
-| `issuer_claims_missing` | The token verified but a required entitlement claim is not there yet. Amber, because it is a wait, not a failure |
-| `issuer_verification_unavailable` | The identity provider's key set could not be fetched. Amber, transient |
-| `service_unavailable` | The infrastructure the gateway runs on failed, or the exchange took longer than 10 seconds. **Reason** is `platform_unavailable`, `platform_overloaded` or `deadline_exceeded`. Amber, transient: worth retrying |
+| `issuer_token_rejected` | The sign-in token did not pass |
+| `issuer_claims_missing` | The token passed, but a required entitlement claim is not there yet. A wait, not a failure |
+| `issuer_verification_unavailable` | The identity provider's key set could not be fetched. Passing |
+| `service_unavailable` | The platform the gateway runs on failed, or the exchange took longer than 10 seconds. Worth trying again |
 | `internal_error` | Something failed inside the gateway itself |
-| `attest_failed` | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted |
+| `attest_failed` | The App Attest attestation or assertion did not pass, or the key's environment is no longer accepted |
+| `assertion_required` | A request without the per-request App Attest proof the app requires |
+| `auth_method_not_supported` | A way of signing in the app does not use |
 | `auth_required` | No usable credential, or a blocked user |
+| `app_disabled` | The app is turned off |
+| `invalid_request` | A malformed sign-in request |
+| `payload_too_large` | A sign-in request over the size limit |
 | `abandoned` | A challenge expired and nothing used it. The app never said why |
 | `client_failed` | The app reported a step that failed on the device after it got a challenge |
-| `client_recovered` | The app reported a failure it got past by itself, such as a key lost when the app was reinstalled. Amber: worth seeing, not a failed sign-in |
+| `client_recovered` | The app reported a failure it got past by itself, such as a key lost when the app was reinstalled |
 
-The **Reason** column carries the granular cause. It is recorded here and
-never sent to the client, so a client sees only the outcome code and what to
-do about it.
+The reason column carries the detailed cause. It is recorded here and never sent
+to the client, so a client sees only the outcome code and what to do about it.
 
 ## Through the API
 
-- `GET /v1/admin/apps/{app}/auth-events/summary?days=30`
-- `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&event=&before_id=`
-- `GET /v1/admin/apps/{app}/rejection-events?limit=&reason=&scope=&user=&from=&to=&before_id=`
-
-Each attempt the API lists also carries `client_sdk`: the client package and
-version the attempt named, such as `app-ai-gateway-swift/1.8.0`, or `null`
-when it named none. It also carries `network_asn` and `network_name`, the
-network the attempt came from, or `null` when that is unknown.
-
-The summary lists `failing_networks`: the networks failed attempts came from,
-busiest first, with a count and when each was last seen.
-
-An app reports a failure on the device with
-`POST /v1/apps/{app}/auth/failure`. The Swift package sends it for you.
+- `GET /v2/admin/apps/{app}/auth-events/summary`
+- `GET /v2/admin/apps/{app}/auth-events`, filtered by `event` and `outcome`
+- `GET /v2/admin/apps/{app}/rejection-events`, filtered by `reason` and `scope`
 
 Auth events and refusal samples are kept for 90 days.
