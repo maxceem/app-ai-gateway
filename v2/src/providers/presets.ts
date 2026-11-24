@@ -58,21 +58,35 @@ export function presetOperationProblem(description: ProviderDescription, operati
 
 /**
  * The operation a preset target uses on a connection of this type: the named
- * one, or the first declared one of `style`. Null when there is none that
- * can serve a preset, or the named one speaks another style.
+ * one, or the provider's own one of `style`. Null when there is none that can
+ * serve a preset, or the named one speaks another style.
+ *
+ * With no name, the provider's documented operations come first. Then the
+ * paths v1 served by their shape alone (`v1Layout`): first those under the
+ * first path segment all its documented operations share, as Groq's
+ * `openai/v1/...`, so a Groq transcription goes to
+ * `openai/v1/audio/transcriptions`, not to `v1/audio/transcriptions`, which
+ * Groq does not serve; then the rest, in declared order.
  */
 export function presetOperation(
   description: ProviderDescription,
   style: ApiStyle,
   name: string | undefined,
 ): OperationDescription | null {
-  const candidates =
-    name === undefined
-      ? description.operations.filter((operation) => operation.style === style)
-      : description.operations.filter((operation) => operation.name === name);
-  return (
-    candidates.find((operation) => operation.style === style && presetOperationProblem(description, operation) === null) ?? null
-  );
+  const usable = (operation: OperationDescription) => operation.style === style && presetOperationProblem(description, operation) === null;
+  if (name !== undefined) return description.operations.find((operation) => operation.name === name && usable(operation)) ?? null;
+  const documented = description.operations.filter((operation) => operation.v1Layout !== true);
+  const home = sharedFirstSegment(documented.map((operation) => operation.match.path));
+  const rank = (operation: OperationDescription) => (operation.v1Layout !== true ? 0 : home !== null && operation.match.path.startsWith(`${home}/`) ? 1 : 2);
+  const candidates = description.operations.filter(usable);
+  return [...candidates].sort((left, right) => rank(left) - rank(right))[0] ?? null;
+}
+
+/** The first path segment every path shares, or null when they share none (or there are none). */
+function sharedFirstSegment(paths: readonly string[]): string | null {
+  const firsts = new Set(paths.map((path) => path.split("/")[0]));
+  const [only] = firsts;
+  return firsts.size === 1 && only !== undefined && only !== "" ? only : null;
 }
 
 /** A preset as its shape is judged: what the contract's preset holds. */

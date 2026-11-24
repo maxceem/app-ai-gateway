@@ -9,6 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { deepMerge, targetAttempt } from "../src/proxy/presets.ts";
+import { presetOperation } from "../src/providers/presets.ts";
 import { requestFacts } from "../src/proxy/request-fields.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { openai } from "../src/providers/openai.ts";
@@ -225,6 +226,15 @@ describe("model rewrites on the proxy", () => {
 });
 
 describe("presets", () => {
+  it("defaults a target with no operation to the provider's own path, before the paths v1 served by their shape", () => {
+    // Groq documents only openai/v1/...: v1/audio/transcriptions is a 404 there.
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", undefined)?.name).toBe("groq.transcription.openai");
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-chat", undefined)?.name).toBe("groq.chat");
+    // A provider's own operation always comes first, and a named one is used as named.
+    expect(presetOperation(BUILT_IN_PROVIDERS.openai!, "openai-transcription", undefined)?.name).toBe("openai.transcription");
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", "groq.transcription")?.name).toBe("groq.transcription");
+  });
+
   it("bills a target with the same request facts as a direct call: options billed on top, answered keys, switch keys", () => {
     // No built-in preset reaches an operation with these yet, so a test operation stands in.
     const chatOperation = openai.operations.find((one) => one.name === "openai.chat")!;

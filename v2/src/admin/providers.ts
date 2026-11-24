@@ -356,7 +356,7 @@ function checkedFields(
 }
 
 /** What a connection's listed paths are judged against: a built-in provider, or a custom one's base URL and key header. */
-type ListingSubject =
+export type ListingSubject =
   | { readonly kind: "builtIn"; readonly description: ProviderDescription; readonly cloudflareGateway: object | null; readonly baseUrl: string | null }
   | { readonly kind: "custom"; readonly baseUrl: string; readonly auth: ProviderAuth };
 
@@ -390,7 +390,7 @@ interface CheckedListing {
  *   It is then one of the provider's operations, so no plain listing may
  *   overlap it, nor another style's path.
  */
-function passthroughJson(
+export function passthroughJson(
   subject: ListingSubject,
   asked: readonly z.output<typeof PassthroughPathSchema>[],
   before: readonly PassthroughPath[],

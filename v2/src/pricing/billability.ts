@@ -133,8 +133,12 @@ export function priceSources(
 
 /** A connection's stored rates cannot be read: a decision that needs them cannot be made. A `SyntaxError`, as the parse that failed. */
 export class UnreadableRates extends SyntaxError {
-  constructor(readonly connectionType: string) {
+  readonly connectionType: string;
+
+  // A plain field, not a parameter property, so Node loads this with type stripping alone.
+  constructor(connectionType: string) {
     super(`The ${connectionType} connection's rates cannot be read`);
+    this.connectionType = connectionType;
     this.name = "UnreadableRates";
   }
 }

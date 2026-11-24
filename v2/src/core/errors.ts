@@ -98,19 +98,21 @@ export interface GatewayErrorDetails {
 }
 
 export class GatewayError extends Error {
+  readonly status: number;
+  readonly code: ErrorCode;
+  readonly headers?: HeadersInit;
   readonly reason?: GatewayErrorReason;
   readonly userId?: string;
   readonly data?: GatewayErrorData;
   readonly field?: { name: string; issue: string };
 
-  constructor(
-    readonly status: number,
-    readonly code: ErrorCode,
-    message: string,
-    readonly headers?: HeadersInit,
-    details: GatewayErrorDetails = {},
-  ) {
+  // Fields assigned by hand rather than as parameter properties, so Node can
+  // load this module with type stripping alone (the operator scripts do).
+  constructor(status: number, code: ErrorCode, message: string, headers?: HeadersInit, details: GatewayErrorDetails = {}) {
     super(message, details.cause === undefined ? undefined : { cause: details.cause });
+    this.status = status;
+    this.code = code;
+    this.headers = headers;
     this.name = "GatewayError";
     this.reason = details.reason;
     this.userId = details.userId;

@@ -246,7 +246,7 @@ export function withV1Paths(
     if (names.has(name)) name = `${name}.${path.startsWith("v1/") ? "v1" : "bare"}`;
     names.add(name);
     paths.add(path);
-    all.push(BUILDERS[style](name, path, style === "transcription" ? undefined : options[style]));
+    all.push({ ...BUILDERS[style](name, path, style === "transcription" ? undefined : options[style]), v1Layout: true });
   }
   return all;
 }
