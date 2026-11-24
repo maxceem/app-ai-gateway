@@ -1,56 +1,32 @@
 ---
 title: Limits
-description: Cap how many requests and how much spend each install, each Apple Account, each user and the whole app may have.
+description: Set how many requests and how much spend each install, each Apple Account, each user and the whole app may have.
 ---
 
 An app's **Limits** tab sets the limits you place on the app's own callers, and
 on the app as a whole. Leave a field empty for no limit. Click **Save limits** to
-save. A change takes up to a minute to reach every request.
+save. How the limits are counted, and the refusals they give, are on
+[Limits and blocking](/how-it-works/limits).
 
 ## For each of the app's users
 
 - **Requests per minute**: per install on an iOS app, per user on a server app.
 - **Requests per day**: the same.
-- **Monthly budget ($)**: dollars a month, per Apple Account on an iOS app
-  unless you choose otherwise, per user on a server app.
-- **Whose month the budget counts** (iOS apps only):
-  - **Each Apple Account**, the default, adds up every install of one Apple
-    Account: on all of that person's devices, and across reinstalls. It needs no
-    sign-in. An install whose app sent no App Store transaction the gateway could
-    check is counted on its own.
-  - **Each install** counts each install alone, so reinstalling starts a fresh
-    budget.
-  - **Each signed-in user** adds up every install of one signed-in person. It is
-    available only when the app uses **Signed-in users only**.
+- **Monthly budget ($)**: dollars a month, such as `25` or `0.50`.
+- **Whose month the budget counts** (iOS apps only): **Each Apple Account**,
+  the default; **Each install**; or **Each signed-in user**, which needs
+  **Signed-in users only**. See
+  [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
 
-  See [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
-
-A request limit refuses with `429 app_rate_limited`. A spent budget refuses with
-`429 app_budget_exhausted`. Both carry a `Retry-After` header and a `data.scope`:
-`install` for an iOS app's request limits or a budget counted per install,
-`apple_account` for a budget counted per Apple Account, and `user` for a server
-app's limits or a budget counted per signed-in user.
-
-The budget settles from finished calls, so it stops a call within about ten
-seconds of the one that crossed it. Spend is recorded per install, per user and
-per Apple Account alike, so changing whose month the budget counts, part-way
-through a month, counts what the month has already spent.
-
-These limits need an app that names its callers. An app with **No end users**
-says it can only be limited as a whole: turn on users on its **Sign-in** tab
-first.
+These limits need an app that names its callers. On an app with **No end users**
+the card says the app can only be limited as a whole. To limit each user, first
+choose who may call on the app's **Sign-in** tab.
 
 ## For the whole app
 
-Shared by all installs, users and keys of the app. The same three fields, with
-`data.scope` `app` on refusals. An `app` refusal stops everybody's traffic, so an
-app that backs off one user will not clear it.
-
-A budget of `0` stops every call that costs money for that scope. A request limit
-of `0` is refused when you save, as a likely typo.
-
-See [Limits and blocking](/how-it-works/limits) for how windows and months are
-counted.
+The same three fields, shared by all installs, users and keys of the app. A
+refusal from them stops everybody's traffic, so an app that backs off one user
+will not clear it.
 
 ## In the settings
 
@@ -70,10 +46,12 @@ counted.
 - Budgets are in **nano-dollars**: one dollar is `1000000000`. The console shows
   and takes dollars; the settings store whole nano-dollars, so a budget never
   rounds.
-- The block may be left out: then the app has no limits. Every field may be
-  `null`, which means no limit for that field alone.
+- The block may be left out: then the app has no limits.
+- `per_minute`, `per_day` and `monthly_nano` may each be `null`, which means no
+  limit for that field alone. A request limit must be a whole number above `0`.
+  A budget may be `0`, which refuses every call that costs money.
 - `per_user` limits on an app with no end users are refused when you save. A
-  block of `null`s is accepted.
+  `per_user` block of `null`s is accepted.
 - The key is `per_user` on every kind of app. `spending.scope` is
   `apple_account`, `install` or `user`. Left out, it is `apple_account` on an iOS
   app and `user` on a server app. `user` on an iOS app needs signed-in users, and

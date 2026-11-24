@@ -32,15 +32,21 @@ Whether the gateway keeps a copy of this app's calls, and for how long. See
 ## Delete this app
 
 **Delete app** asks you to type the app's ID. Then every call the app makes is
-refused, and its keys stop working, within a minute. Its usage history is kept
-in your account's totals. The app's ID is never given to another app.
+refused, and its keys stop working. In normal operation that reaches every
+request within a minute; see
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+
+Its usage history is kept in your account's totals. Its stored conversations
+become unavailable at once, and are deleted later, so download any you want to
+keep first. The app's ID is never given to another app.
 
 ## Through the API
 
 - `PUT /v2/admin/apps/{app}` with the whole body updates the name, the
   configuration and the status. Include the `revision` from your latest read, so
   a change someone else made since is not overwritten.
-- `PATCH /v2/admin/apps/{app}` changes only the settings you name, with the same
-  checks. See the [API guide](/automation/api).
+- `PATCH /v2/admin/apps/{app}` changes only the settings you name: its body is a
+  list of `operations`, with the `revision` from your latest read. The same
+  checks apply. See the [API guide](/automation/api).
 - `DELETE /v2/admin/apps/{app}?confirm={app}` deletes the app. `confirm` must
   repeat the app's ID.

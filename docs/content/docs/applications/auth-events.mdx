@@ -6,19 +6,16 @@ description: Sign-in success, failures by cause, refused requests, and how long 
 An app's **Errors** tab shows how the app's clients are getting on with signing
 in, and which requests the gateway refused and why.
 
-When a sign-in failed on Apple's own network, the tab opens with a notice. App
-Review tests apps from that network, so a build in review most likely could not
-use the app's AI features. Apple's network is AS714 (Apple Inc.).
-
 ## The numbers
 
 - **Exchange success**: the share of gateway-token exchanges that succeeded,
   with the number of tries.
 - **Claim delay p50** and **p95**: how long users waited between their first
-  refusal for a missing entitlement claim and the exchange that finally
-  succeeded. Only apps with a
+  refusal for a missing entitlement claim and the exchange, or key
+  registration, that finally succeeded. Only apps with a
   [subscription check](/applications/auth-policy/subscription-check) have this.
-- **Pending activations**: users waiting on a claim right now.
+- **Pending activations**: users waiting on a claim right now, counting waits
+  that began in the last 90 days.
 
 ## Failures by cause
 
@@ -33,22 +30,22 @@ not exact totals. Sign-in failures are recorded one by one.
 ## Recent refusal samples
 
 Requests the gateway refused before calling a provider, newest first, with the
-time, the user or key, the reason, its scope, the route and model the request
-asked for, and the app version. Filter by **Refusal reason**, then page through
-older samples.
+time, the user or key, the reason, its scope, the operation and model the request
+asked for, and the app version. The operation is shown only where the gateway
+recognised the path; a model it does not know shows as `unrecognized`. Filter by
+**Refusal reason**, then page through older samples.
 
 | Reason | Meaning |
 | --- | --- |
 | `blocked_user` | A user you blocked |
 | `blocked_app_rate` | One of the app's request limits |
 | `blocked_app_budget` | One of the app's monthly budgets |
-| `blocked_billing` | The monthly allowance shared by all your apps |
 | `blocked_replay` | A reused App Attest proof |
-| `path_not_allowed` | An operation or path the app does not allow. The route names it |
-| `model_not_allowed` | A model the app does not allow. The model names it |
+| `path_not_allowed` | An operation or path the app does not allow |
+| `model_not_allowed` | A model the app does not allow |
 | `provider_not_configured` | A connection the app does not allow, or that does not exist |
 | `provider_disabled` | A connection you turned off |
-| `pricing_not_configured` | A model with no price, so its cost cannot be counted |
+| `pricing_not_configured` | A model whose cost cannot be counted |
 | `max_output_tokens_exceeded` | A request asking for more output than the app allows |
 | `preset_not_found` | A preset the app does not have |
 | `payload_too_large` | A request body over the size limit |
@@ -60,36 +57,25 @@ before that, such as one with no valid key, is never recorded here.
 ## Recent attempts
 
 Every gateway-token exchange and key registration, and every App Attest
-challenge nothing used, newest first, with when, who, which call, the outcome,
+challenge left unused, newest first, with when, who, which call, the outcome,
 the reason, the app version, the network and the time it took.
 
 The network is the one the attempt came from, such as
 `Verizon Business (AS701)`. It is a network, never an address. Attempts from
-Apple's network are marked **probably App Review**.
+Apple's own network, AS714 (Apple Inc.), are marked **probably App Review**. When
+a sign-in failed there, the tab opens with a notice: App Review tests apps from
+that network, so a build in review most likely could not use the app's AI
+features.
 
-### Challenges nothing used
-
-An App Attest app signs in with two calls: it asks for a challenge, then
-registers its key or trades it for a gateway token. Every challenge is meant for
-exactly one of those. When the second call never comes, the sign-in stopped on
-the device: App Attest failed there, the network went away, or the app was
-closed. The gateway records that as a `challenge` event:
-
-- If the app says what failed, at `POST /v2/apps/{app}/auth/failure`, the event
-  is recorded at once, with the outcome `client_failed`, or `client_recovered`
-  for a failure the app got past by itself.
-- Otherwise the event is recorded when the challenge expires, with the outcome
-  `abandoned`.
-
-Outcomes:
+### Outcomes
 
 | Outcome | Meaning |
 | --- | --- |
 | `ok` | The exchange succeeded |
 | `issuer_token_rejected` | The sign-in token did not pass |
 | `issuer_claims_missing` | The token passed, but a required entitlement claim is not there yet. A wait, not a failure |
-| `issuer_verification_unavailable` | The identity provider's key set could not be fetched. Passing |
-| `service_unavailable` | The platform the gateway runs on failed, or the exchange took longer than 10 seconds. Worth trying again |
+| `issuer_verification_unavailable` | The identity provider's key set could not be fetched or read. Temporary. Try again |
+| `service_unavailable` | The platform the gateway runs on failed, or the exchange took longer than 10 seconds. Temporary. Try again |
 | `internal_error` | Something failed inside the gateway itself |
 | `attest_failed` | The App Attest attestation or assertion did not pass, or the key's environment is no longer accepted |
 | `assertion_required` | A request without the per-request App Attest proof the app requires |
@@ -98,12 +84,26 @@ Outcomes:
 | `app_disabled` | The app is turned off |
 | `invalid_request` | A malformed sign-in request |
 | `payload_too_large` | A sign-in request over the size limit |
-| `abandoned` | A challenge expired and nothing used it. The app never said why |
+| `abandoned` | An unused challenge, and the app never said why |
 | `client_failed` | The app reported a step that failed on the device after it got a challenge |
 | `client_recovered` | The app reported a failure it got past by itself, such as a key lost when the app was reinstalled |
 
 The reason column carries the detailed cause. It is recorded here and never sent
 to the client, so a client sees only the outcome code and what to do about it.
+
+### Unused challenges
+
+An App Attest app signs in with two calls: it asks for a challenge, then
+registers its key or trades it for a gateway token. Every challenge is meant for
+exactly one of those. When the second call never comes, the sign-in stopped on
+the device: App Attest failed there, the network went away, or the app was
+closed. The gateway records that as a `challenge` event:
+
+- If the app says what failed, at `POST /v2/apps/{app}/auth/failure`, the event
+  is recorded at once, as `client_failed`, or `client_recovered` for a failure
+  the app got past by itself.
+- Otherwise it is recorded as `abandoned` after the challenge expires, when the
+  gateway's hourly clean-up next runs.
 
 ## Through the API
 

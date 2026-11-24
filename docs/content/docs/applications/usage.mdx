@@ -39,9 +39,14 @@ The columns are **Charges**, **Total input**, **Cached input**, **Cache write**,
 read from or written to the provider's prompt cache, so the two cache columns are
 parts of it.
 
-Model, provider, connection, status and unit reach back 400 days. The other
-groupings are read from the charges themselves, which are kept 90 days, over at
-most 31 days at a time. Month totals are never lost.
+How far back each grouping reaches:
+
+- **By model**, **By provider**, **By connection**, **By status** and **By unit**
+  come from day totals, kept 400 days. They cover the whole range you choose.
+- The other groupings are read from the charges themselves, which are kept 90
+  days, and over at most 31 days at a time. With a longer range chosen, they show
+  its last 31 days, and the table says so.
+- Month totals are never lost.
 
 ## Recent charges
 
@@ -70,14 +75,16 @@ Each charge records its **price source**.
 - `provider_usd`: the provider said what the call cost, and that figure is used.
   OpenRouter does this, for example.
 - `unresolved`: the model had no price when the call was made. The usage is kept,
-  and the charge is priced later, once a price exists.
+  and the gateway tries to price the charge again for about three days, as soon
+  as a price exists. After that it stays unpriced.
 - `not_priced`: a [passthrough](/applications/provider-access#passthrough) call
   with no price. The gateway reads no model there, so it has nothing to price.
 
 Each charge also records how its usage was **measured**: `complete` when the
 provider reported all of it, `partial` when some was missed or worked out by the
-gateway, and `estimated` when there was no usage report and the gateway worked it
-out from the request or the time. A stream the app stopped before the last part,
+gateway, `estimated` when there was no usage report and the gateway worked it
+out from the request or the time, and `pending` while it waits for a later
+lookup, such as a job's result or a provider's own cost figure. A stream the app stopped before the last part,
 which carries the usage, is the usual cause of a partial or estimated charge.
 
 ## Through the API

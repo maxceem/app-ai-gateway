@@ -15,26 +15,39 @@ It is off for every app until you turn it on.
 
 - **Text and JSON**, as the provider received it and as it answered: messages,
   instructions, tool definitions, tool calls and their results, errors.
-- **Attachments**, once each per day, beside the conversations: images, audio (a
-  recording sent for transcription, audio in a request, a spoken reply) and other
-  files, such as a PDF or a text document. A record names each one as
-  `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>`, where its data was.
+- **Attachments**: images, audio (a recording sent for transcription, audio in a
+  request, a spoken reply) and other files, such as a PDF or a text document.
+  Each is kept as its own file beside the conversations, once per day however
+  often it is sent. The record names it as
+  `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` in the place its data was.
 
 Each kind of attachment can be left out: **Images**, **Audio** and **Files**, all
 kept unless you turn one off. Media left out is recorded as
 `agw-omitted:<type>;<bytes>`: its type and size. The conversation itself, its
 messages, instructions and tool calls, is always kept.
 
-A body over 8 MB, or a single text over 256 KB, is recorded by its size instead.
+Some things are recorded by their size instead of their content:
 
-Only calls are stored: requests to an app's allowed operations, and presets. A
-[passthrough](/applications/provider-access#passthrough) call, a job and a live
-session are never stored. Their usage is still recorded.
+- a body over 8 MB;
+- a single text inside a body that is longer than 262,144 characters;
+- bodies that would make the record larger than 1,500,000 bytes. The largest
+  are left out first, until the record fits, and the rest of the call is kept.
 
-A key the gateway sent to the provider is never kept, even if the provider's
-answer repeats it.
+Only calls are stored: requests to an app's allowed operations, and presets.
+These are never stored, though their usage is still recorded:
+
+- a [passthrough](/applications/provider-access#passthrough) call;
+- a job, such as a fal request;
+- a live session, and the request that makes its token.
+
+The gateway removes the exact text of any key it sent to the provider, wherever
+it appears, even if the provider's answer repeats it. It does not look for other
+secrets your users may have typed.
 
 ## Turn it on
+
+Storage needs a deployment set up to keep it; where it is not, the switch says
+so and stays off.
 
 On the app's **Settings** tab, under **Conversation history**, switch on **Store
 conversations**. Choose which media to **Keep**, and how many days to keep
@@ -94,6 +107,9 @@ Through the API:
 
 Once a day, stored days older than the app's retention are deleted, with their
 media.
+
+Deleting an app makes its stored conversations unavailable at once, and they are
+deleted later. Download any you want to keep before you delete the app.
 
 A call can be missing in rare cases. Storage is a record for later reading, not
 part of serving or counting the call, so a call is never refused or slowed for

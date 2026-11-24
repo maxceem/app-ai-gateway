@@ -5,24 +5,28 @@ description: See who is using the app, what each user has spent, and block a use
 
 An app's **Users** tab lists every user the app has named, with their
 **Status**, this month's **Requests** and **Cost**, and when they were **Last
-seen**. On an iOS app with **Anyone with the app**, every user is one install, and
-the user ID is the install's App Attest key.
+seen**. **Requests** counts charges: a call that tried a fallback counts once for
+each attempt. On an iOS app with **Anyone with the app**, every user is one
+install, and the user ID is the install's App Attest key.
 
 A user appears once the app first gets a gateway token for them, or, for a server
 that names users in a header, once their first call is recorded.
 
-Search by user ID with **Search by user id**. **Next** moves to the next page.
+Search with **Search by user id**. **Next** moves to the next page.
 
 ## Blocking
 
-**Block** refuses every request from the user, on every install they hold, with
-`403 auth_required`. It reaches every request within ten seconds. **Unblock**
-lets them back in the same way.
+**Block** refuses the user's provider calls, on every install they hold, and
+refuses them a new gateway token. Both are refused with `403 auth_required`.
+`GET /v2/apps/{app}/me` still answers them, and says they are blocked, so your
+app can tell them. **Unblock** lets them back in.
 
-A block is not a limit. Limits reset; a block stays until you lift it.
+In normal operation a block, or an unblock, reaches every request within ten
+seconds. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
-A user named only by an app install can shed a block by reinstalling the app,
-because that makes a new install. A user named by a sign-in token cannot.
+A block stays until you lift it. A user named only by an app install can get
+around a block by reinstalling the app, because that makes a new install. A user
+named by a sign-in token cannot.
 
 Users your server names in a header are listed from their usage, and cannot be
 blocked here: the gateway never checks who they are. Stop them in your server
