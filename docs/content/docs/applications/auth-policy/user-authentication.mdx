@@ -97,10 +97,14 @@ Each of these is listed on the app's **Errors** tab. See
   minus its issue time, is longer than this. So a provider set up by mistake to
   issue week-long tokens cannot widen the window.
 - `token_header`, if set, names one more header that calls to the provider
-  proxy, to presets and to `/me` may carry the gateway token in, besides
-  `Authorization`. Use it when the app's own `Authorization` header must carry
-  something else, such as a provider SDK that always sends its own key there.
-  The gateway removes it before the call reaches the provider.
+  proxy, to presets and to `/me` may carry the gateway token in. The gateway
+  takes the gateway token from the first of these headers that has a value:
+  `Authorization`, then the provider's own key header (such as Anthropic's
+  `x-api-key`), then `token_header`. It does not try the next one if the first
+  holds something else, so `token_header` works only when the headers before it
+  are empty. With a provider SDK, it is usually simpler to give the SDK the
+  gateway token as its key: the SDK then sends it in a header the gateway reads.
+  The gateway removes these headers before the call reaches the provider.
 - `provider` only helps the console reopen the same choice; the gateway does
   not use it.
 - `required_claims` is the paid-user check. See

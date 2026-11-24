@@ -103,5 +103,9 @@ The exception keeps your apps' users served when the database behind the
 gateway is slow or down. While it is, the gateway may serve a request with the
 copy of the app's settings, keys and user status it last read, up to fifteen
 minutes old. So a change you make during such a problem can take up to fifteen
-minutes to reach every request. Getting a new gateway token always reads the
-database itself, so a revoked key or a blocked user cannot get one.
+minutes to reach every request.
+
+Two checks always read the database, even then: when a new gateway token is
+issued, the app key and the user's status are read fresh. So a revoked key or a
+blocked user cannot get a new token. The rest of the app's settings, for a new
+token as for any request, follow the times above.

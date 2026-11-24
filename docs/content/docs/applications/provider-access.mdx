@@ -26,10 +26,13 @@ refused with `403 path_not_allowed`.
 
 Operations marked **live sessions, coming later** cannot be served yet.
 
-Some operations make a short-lived token for a live session, such as OpenAI's
-`v1/realtime/client_secrets`. The gateway checks, limits and prices the request
-that makes the token. The live session itself then runs between your app and the
-provider directly, so what it spends is outside the app's budgets and usage.
+Some paths make a short-lived token for a live session, such as OpenAI's
+`v1/realtime/client_secrets`, listed on the connection as a passthrough path. The
+gateway checks the request that makes the token, and counts it against the app's
+request limits. It prices it only if the path has a flat price; without one, the
+request is recorded as `not_priced` and the app's budgets do not apply to it. The
+live session itself then runs between your app and the provider directly, so
+what it spends is outside the app's budgets and usage.
 
 A request that asks the provider to run in the background, with
 `"background": true` or xAI's `"deferred": true`, is refused with
@@ -81,11 +84,13 @@ these:
   chat.
 
 Otherwise the request is refused with `400 pricing_not_configured`, which also
-covers a price in a unit the operation cannot bill. On operations whose path
-names the model, such as Gemini's, an unpriced model is refused with
-`403 path_not_allowed` instead. A model you allowed whose price later disappears
-is still served, and its charge is recorded as `unresolved` until a price
-exists. See [Model pricing](/providers/model-pricing).
+covers a price in a unit the operation cannot bill. A few operations take only
+priced models in their path, such as fal's `fal.run` and `fal.queue`: there an
+unpriced model is refused with `403 path_not_allowed` instead, even if you listed
+it in **Models**.
+
+On other operations, a model you allowed whose price later disappears is still
+served, and its charge is recorded as `unresolved` until a price exists. See [Model pricing](/providers/model-pricing).
 
 ## Most output tokens
 

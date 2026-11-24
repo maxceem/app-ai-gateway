@@ -9,7 +9,8 @@ server app answers with an app key, made on the app's **Keys** tab.
 
 ## iOS apps
 
-Only builds signed with your team and bundle ID can call through this app.
+Only builds signed with your team and bundle ID can get a gateway token for this
+app.
 
 - **Apple Team ID**: ten letters and digits, in your Apple developer account
   under Membership details.
@@ -45,11 +46,16 @@ A development-signed build can be debugged, and runs on any device with your
 team's provisioning profile. That is why Development is off by default. Turn it
 on for a development bundle ID, never the one you ship.
 
-Turning an environment off also stops the keys it already let in:
+Turning an environment off also stops the keys it already let in, once the
+gateway sees the new setting. In normal operation that is within a minute; see
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+Then:
 
-- with **Every request**, on their next request;
-- with **Token exchange**, the next time they get a gateway token, within the
-  hour.
+- with **Every request**, their next request is refused, because each request
+  carries an assertion;
+- with **Token exchange**, a gateway token they already hold keeps working until
+  it ends, at most an hour later, because requests carry no assertion. Their
+  next try to get a token is refused.
 
 They are refused with `403 attest_failed`, and the app registers a new key in
 an environment it still accepts.

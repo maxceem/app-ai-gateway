@@ -9,8 +9,14 @@ seen**. **Requests** counts charges: a call that tried a fallback counts once fo
 each attempt. On an iOS app with **Anyone with the app**, every user is one
 install, and the user ID is the install's App Attest key.
 
-A user appears once the app first gets a gateway token for them, or, for a server
-that names users in a header, once their first call is recorded.
+A user appears at the first of these:
+
+- an iOS install registers its App Attest key, before any gateway token;
+- the app gets a gateway token for the user;
+- a signed-in user is refused for a missing entitlement claim, so their wait can
+  be measured;
+- for a server that names users in a header, a call of theirs is recorded, or a
+  request of theirs is refused and sampled.
 
 Search with **Search by user id**. **Next** moves to the next page.
 
