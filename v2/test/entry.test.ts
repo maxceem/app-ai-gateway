@@ -7,7 +7,7 @@
  * path and the health check are in `worker.test.ts`.
  */
 import { env, exports } from "cloudflare:workers";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as entry from "../src/index.ts";
 import { CATALOG, type OperationName } from "../src/contracts/catalog.ts";
 import { CLIENT_CATALOG } from "../src/contracts/client-catalog.ts";
@@ -137,15 +137,23 @@ describe("the operation catalogs", () => {
   // times that on a loaded machine, so the default 5 s is not a fair limit for it.
   it("serve every operation they document", { timeout: CATALOG_TIMEOUT_MS }, async ({ signal }) => {
     captureLogs();
+    // A timed-out run must not log into the next test's capture: the loop stops at the next request, and the
+    // request already out is waited for before the next test can start.
+    let inFlight: Promise<unknown> = Promise.resolve();
+    onTestFinished(() => inFlight.then(
+      () => undefined,
+      () => undefined,
+    ));
     const key = await seedManagementKey();
     const missing: string[] = [];
     let unauthenticated = 0;
     for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
-      // Stopped the moment the test ends: a timed-out run must not go on logging into the next test's capture.
       if (signal.aborted) return;
-      const response = await exports.default.fetch(requestFor(spec, key));
+      const answered = exports.default.fetch(requestFor(spec, key)).then(async (response) => ({ response, isUnserved: await unserved(response) }));
+      inFlight = answered;
+      const { response, isUnserved } = await answered;
       if (response.status === 401 && (spec.path.startsWith("/v2/admin/") || spec.path.startsWith("/v2/cli/"))) unauthenticated += 1;
-      if (await unserved(response)) missing.push(`${name} ${spec.method} ${spec.path}`);
+      if (isUnserved) missing.push(`${name} ${spec.method} ${spec.path}`);
     }
     expect(missing).toEqual([]);
     // The key got every management call past the credential check.
