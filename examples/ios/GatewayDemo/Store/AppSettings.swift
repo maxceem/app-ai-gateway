@@ -87,19 +87,34 @@ final class AppSettings {
 
     // MARK: Backend
 
-    private var gateway: (values: Values, apiKey: String, backend: GatewayBackend)?
+    /// What the gateway client is built from. Picking a model or turning a
+    /// provider on changes none of it, so the client and its token stay.
+    private struct ClientSetup: Equatable {
+        var baseURL: String
+        var appID: String
+        var apiKey: String?
+        var slugs: [String: String]
+    }
 
-    /// The backend requests go to. The gateway one is kept while the settings
-    /// stay the same, so its client keeps its token between requests. When
-    /// they change, the old client is ended before a new one is made, so no
-    /// request of the old setup is sent again under the new one.
-    func backend() throws -> any AIBackend {
+    private var gateway: (setup: ClientSetup, backend: GatewayBackend)?
+
+    private var clientSetup: ClientSetup {
+        ClientSetup(baseURL: values.baseURL, appID: values.appID, apiKey: values.useAPIKey ? apiKey : nil, slugs: slugs)
+    }
+
+    /// The backend requests go to. The gateway one is kept while what its
+    /// client is built from stays the same, so the client keeps its token
+    /// between requests. When that changes, the old client is ended, and the
+    /// end is awaited, before a new one is made, so no request of the old
+    /// setup is sent again under the new one.
+    func backend() async throws -> any AIBackend {
         if values.simulated {
-            endGateway()
+            await endGateway()
             return SimulatedBackend()
         }
-        if let gateway, gateway.values == values, gateway.apiKey == apiKey { return gateway.backend }
-        endGateway()
+        let setup = clientSetup
+        if let gateway, gateway.setup == setup { return gateway.backend }
+        await endGateway()
         guard let url = URL(string: values.baseURL), url.scheme != nil, !values.appID.isEmpty else {
             throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
         }
@@ -112,13 +127,13 @@ final class AppSettings {
             apiKey: values.useAPIKey ? apiKey : nil,
             slugs: slugs
         )
-        gateway = (values, apiKey, backend)
+        gateway = (setup, backend)
         return backend
     }
 
-    private func endGateway() {
+    private func endGateway() async {
         guard let old = gateway?.backend.client else { return }
         gateway = nil
-        Task { await old.invalidate() }
+        await old.invalidate()
     }
 }

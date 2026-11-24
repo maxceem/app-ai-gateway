@@ -140,7 +140,7 @@ final class RequestRunner {
         tasks[id] = Task {
             var failure: Failure?
             do {
-                try await work(settings.backend())
+                try await work(await settings.backend())
             } catch is CancellationError {
             } catch let error as URLError where error.code == .cancelled {
             } catch {

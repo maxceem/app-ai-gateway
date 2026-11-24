@@ -9,7 +9,7 @@ To run it on your iPhone through a gateway app of your own, follow
 [Run the demo app on your iPhone](https://docs.appaigateway.com/demo-ios-app/).
 
 Or open `GatewayDemo.xcodeproj` in Xcode 26 and run it. It starts with
-**Simulated responses** on, so every screen works without a gateway. To use
+**Simulate responses** on, so every screen works without a gateway. To use
 yours, open **Settings** from the sidebar, turn simulated responses off, and
 fill in your gateway URL and app ID:
 
@@ -22,7 +22,10 @@ fill in your gateway URL and app ID:
 Then turn on the providers you connected, under the slugs you gave them. The
 app must allow each one, with the operations the demo uses, on its
 **Providers** tab: `openai.chat`, `openai.images` and `openai.transcription`
-for OpenAI, and the matching ones for others.
+for OpenAI, and the matching ones for others. Two are not what you might
+guess: Groq's transcription is `groq.transcription.openai`, and Gemini's images
+use `gemini.generate.v1beta`. `agw provider types` lists every provider's
+operations.
 
 The demo has no sign-in, so it keeps one gateway client until its settings
 change, then ends it with `invalidate()` and makes a new one. An app whose
@@ -61,7 +64,8 @@ history, `Simulated/` for the on-device answers.
 generated from the v2 gateway's price file, for the providers that serve a chat
 API, so it names what the gateway can price, not what your app allows: a model
 your app does not allow is refused with `403 model_not_allowed`, and the app
-shows it. Regenerate it after the price file changes:
+shows it. Regenerate it after the price file changes, from the repository root after
+`pnpm install`:
 
 ```sh
 node --experimental-strip-types examples/ios/scripts/generate-catalog.ts
