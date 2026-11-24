@@ -59,7 +59,7 @@ it is the time until the window starts again. For a budget it is the time until
 the month ends, because a budget only resets then.
 
 Each caller's limits are checked before the whole app's, so one heavy caller
-cannot use up the shared allowance before their own limit stops them.
+cannot use up the whole app's limit before their own limit stops them.
 
 ## How they are counted
 
@@ -69,10 +69,11 @@ cannot use up the shared allowance before their own limit stops them.
   minute. Days change at midnight UTC.
 - **Budgets are checked against spend already recorded.** A call's cost is known
   only when its answer is complete. In normal operation the limit reads the
-  month's spend again every ten seconds. So a budget can be overrun: by a burst
-  of calls inside those seconds, by one very expensive call, when recording
-  usage is slow, or when the check runs out of time and the call is served
-  rather than refused.
+  month's spend again every ten seconds. So a budget can be overrun:
+  - by a burst of calls inside those seconds;
+  - by one very expensive call;
+  - when recording usage is slow;
+  - when the check runs out of time, and the call is served rather than refused.
 - **Budgets use UTC calendar months.** Turning on a budget part-way through a
   month counts what the month has already spent. Every call adds to its
   install's, its user's and, when known, its Apple Account's month alike. So

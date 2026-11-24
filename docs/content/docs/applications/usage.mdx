@@ -83,12 +83,17 @@ Each charge records its **price source**.
 - `not_priced`: a [passthrough](/applications/provider-access#passthrough) call
   with no price. The gateway reads no model there, so it has nothing to price.
 
-Each charge also records how its usage was **measured**: `complete` when the
-provider reported all of it, `partial` when some was missed or worked out by the
-gateway, `estimated` when there was no usage report and the gateway worked it
-out from the request or the time, and `pending` while it waits for a later
-lookup, such as a job's result or a provider's own cost figure. A stream the app stopped before the last part,
-which carries the usage, is the usual cause of a partial or estimated charge.
+Each charge also records how its usage was **measured**:
+
+- `complete`: the provider reported all of it.
+- `partial`: some was missed, or worked out by the gateway.
+- `estimated`: there was no usage report, and the gateway worked it out from the
+  request or the time.
+- `pending`: it waits for a later lookup, such as a job's result or a provider's
+  own cost figure.
+
+A stream the app stopped before the last part, which carries the usage, is the
+usual cause of a partial or estimated charge.
 
 ## Through the API
 

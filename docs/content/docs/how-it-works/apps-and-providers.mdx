@@ -105,7 +105,7 @@ copy of the app's settings, keys and user status it last read, up to fifteen
 minutes old. So a change you make during such a problem can take up to fifteen
 minutes to reach every request.
 
-Two checks always read the database, even then: when a new gateway token is
-issued, the app key and the user's status are read fresh. So a revoked key or a
-blocked user cannot get a new token. The rest of the app's settings, for a new
-token as for any request, follow the times above.
+Even then, a new gateway token is issued only after the app key and the user's
+status are read fresh. So a revoked key or a blocked user cannot get a new token.
+The app's other settings may still come from the saved copy, for a new token as
+for any other request.

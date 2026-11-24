@@ -24,7 +24,8 @@ The gateway knows each operation's paths. A request on a path the gateway does
 not know for this provider, or on an operation the app does not allow, is
 refused with `403 path_not_allowed`.
 
-Operations marked **live sessions, coming later** cannot be served yet.
+Operations marked **live sessions, coming later** cannot be served yet. To start
+a live session today, see [Passthrough](#passthrough) below.
 
 A request that asks the provider to run in the background, with
 `"background": true` or xAI's `"deferred": true`, is refused with
@@ -52,14 +53,16 @@ The gateway forwards such a request as it was sent:
 - It is never kept in [conversation history](/applications/conversations).
 
 Some passthrough paths make a short-lived token for a live session, such as
-OpenAI's `v1/realtime/client_secrets`. There is no operation to tick for them:
-the connection lists the path, and the app allows `passthrough`. The gateway
-checks the request that makes the token, and counts it against the app's request
-limits, like any passthrough call. It prices it only if the path has a flat
-price; without one, the request is recorded as `not_priced`, and the app's
-budgets do not apply to it. The live session itself then runs between your app
-and the provider directly, so what it spends is outside the app's budgets and
-usage.
+OpenAI's `v1/realtime/client_secrets`:
+
+- There is no operation to tick for them: the connection lists the path, and the
+  app allows `passthrough`.
+- The gateway checks the request that makes the token, and counts it against the
+  app's request limits, like any passthrough call.
+- It prices that request only if the path has a flat price. Without one, the
+  request is recorded as `not_priced`, and the app's budgets do not apply to it.
+- The live session itself then runs between your app and the provider directly,
+  so what it spends is outside the app's budgets and usage.
 
 See [Custom base URLs](/providers/custom-base-urls) for how a connection lists
 its passthrough paths.
@@ -77,22 +80,21 @@ provider's own names carry a prefix, keep it. That covers aggregators such as
 OpenRouter (`openai/gpt-5.4-mini`) and Vercel AI Gateway, and providers whose own
 model IDs have one, such as Together AI and fal.
 
-A request reaches the provider only if its cost can be counted. That needs one of
-these:
+A model needs a price, or the request is refused with
+`400 pricing_not_configured`. The price can come from the price list or from your
+own price on the connection, and must be in a unit the operation can bill: a
+price in another unit is refused the same way. A provider that reports each
+request's cost itself, such as OpenRouter for chat, needs no price.
 
-- a price for the model, in a unit the operation can bill, from the price list
-  or your own price on the connection;
-- or a provider that reports each request's cost itself, such as OpenRouter for
-  chat.
+Exceptions:
 
-Otherwise the request is refused with `400 pricing_not_configured`, which also
-covers a price in a unit the operation cannot bill. A few operations take only
-priced models in their path, such as fal's `fal.run` and `fal.queue`: there an
-unpriced model is refused with `403 path_not_allowed` instead, even if you listed
-it in **Models**.
+- A few operations take only priced models in their path, such as fal's
+  `fal.run` and `fal.queue`. There an unpriced model is refused with
+  `403 path_not_allowed` instead, even if you listed it in **Models**.
+- On other operations, a model you allowed whose price later disappears is still
+  served, and its charge is recorded as `unresolved` until a price exists.
 
-On other operations, a model you allowed whose price later disappears is still
-served, and its charge is recorded as `unresolved` until a price exists. See [Model pricing](/providers/model-pricing).
+See [Model pricing](/providers/model-pricing).
 
 ## Most output tokens
 
