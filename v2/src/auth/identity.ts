@@ -12,6 +12,7 @@
 import type { AuthState, CfAuth, CfAuthError, CfAuthEvent } from "@maxceem/cf-auth";
 import { accountNotifierFor, type AccountNotifier, type AnalyticsScope } from "../analytics/hook.ts";
 import { mgmtAuthTables } from "../db/schema.ts";
+import { requestIdOf } from "../core/request-id.ts";
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
@@ -254,7 +255,7 @@ export interface IdentityScope extends AnalyticsScope {
 export function identityFor(c: IdentityScope): Promise<CfAuth> {
   const existing = c.get("identity");
   if (existing !== undefined) return existing;
-  const built = createIdentity(c.env, c.req.url, { notifyAccount: accountNotifierFor(c) }, c.req.header("cf-ray") ?? null);
+  const built = createIdentity(c.env, c.req.url, { notifyAccount: accountNotifierFor(c) }, requestIdOf(c.req.header("cf-ray")));
   c.set("identity", built);
   return built;
 }

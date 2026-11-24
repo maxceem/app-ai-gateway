@@ -117,4 +117,15 @@ export class GatewayError extends Error {
     this.data = details.data;
     this.field = details.field;
   }
+
+  /** The same refusal with other headers: every other detail is copied, so none is lost on the way. */
+  withHeaders(headers: HeadersInit): GatewayError {
+    return new GatewayError(this.status, this.code, this.message, headers, {
+      ...(this.reason === undefined ? {} : { reason: this.reason }),
+      ...(this.userId === undefined ? {} : { userId: this.userId }),
+      ...(this.data === undefined ? {} : { data: this.data }),
+      ...(this.field === undefined ? {} : { field: this.field }),
+      ...(this.cause === undefined ? {} : { cause: this.cause }),
+    });
+  }
 }

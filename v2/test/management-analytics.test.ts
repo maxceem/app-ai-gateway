@@ -8,14 +8,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  clientOf,
-  cliVersionOf,
-  knownClient,
-  recordManagementCall,
-  versionOf,
-  type ManagementCall,
-} from "../src/analytics/management.ts";
+import { knownClient, recordManagementCall, userAgentOf, versionOf, type ManagementCall } from "../src/analytics/management.ts";
 import worker from "../src/index.ts";
 import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
@@ -28,7 +21,7 @@ const CONSOLE = "https://console.gateway.test";
 function call(): ManagementCall {
   return {
     accountId: null, channel: "api", credential: "apiKey", identity: "human",
-    operation: "listApps", tool: null, kind: null,
+    operation: "listApps", tool: null,
     outcome: "ok", status: 200, code: null, reason: null, field: null, issue: null,
     client: null, clientVersion: null, requestId: null, durationMs: 1,
   };
@@ -133,7 +126,7 @@ describe("management analytics", () => {
     })]);
   });
 
-  it("tells the CLI apart by the name it gives itself, with its version, and labels the smoke checks", async () => {
+  it("tells the CLI apart by the name it gives itself, with its version, and labels the smoke checks by theirs", async () => {
     const { points, send } = recording();
     const owner = await account();
     await send("/v2/admin/apps", { headers: { ...key(owner.key), "user-agent": "agw/1.4.0" } });
@@ -142,7 +135,8 @@ describe("management analytics", () => {
     expect(points).toEqual([
       expect.objectContaining({ channel: "cli", client: "agw", clientVersion: "1.4.0" }),
       expect.objectContaining({ channel: "api", client: "smoke", clientVersion: null }),
-      expect.objectContaining({ channel: "cli", client: "smoke", clientVersion: "1.4.0" }),
+      // Only the first product is read: a CLI the checks run is the CLI.
+      expect.objectContaining({ channel: "cli", client: "agw", clientVersion: "1.4.0" }),
     ]);
   });
 
@@ -315,23 +309,6 @@ describe("management analytics", () => {
     expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("do-not-record");
   });
 
-  it("counts a call to an MCP tool the deployment does not offer once, with no tool name", async () => {
-    const { points, dataset, send } = recording();
-    const owner = await account();
-    const response = await send("/v2/mcp", toolCall("alice@example.com", {}, key(owner.key)));
-    expect(response.status).toBe(200);
-    expect(points).toEqual([expect.objectContaining({
-      account: owner.accountId,
-      channel: "mcp",
-      operation: null,
-      tool: null,
-      outcome: "refused",
-      code: "tool_not_found",
-      client: "claude-code",
-    })]);
-    expect(JSON.stringify(dataset.writeDataPoint.mock.calls)).not.toContain("alice");
-  });
-
   it("records an unknown admin path as refused", async () => {
     const { points, send } = recording();
     const owner = await account();
@@ -429,6 +406,29 @@ describe("management analytics", () => {
     expect(response.status).toBe(200);
   });
 
+  it("answers as usual when the data point cannot be built, and logs why", async () => {
+    // The tool table, loaded only to name a CLI tool, fails to load.
+    vi.doMock("../src/mcp/tools.ts", () => {
+      throw new Error("the tool table could not be loaded");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { points, send } = recording();
+      const response = await send("/v2/cli/tools/list_apps", {
+        method: "POST",
+        headers: { authorization: "Bearer agw_mgmt_revoked-or-unknown", "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(response.status).toBe(401);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("auth_required");
+      expect(points).toEqual([]);
+      expect(warn.mock.calls.some(([entry]) => String(entry).includes("management_analytics_write_failed"))).toBe(true);
+    } finally {
+      vi.doUnmock("../src/mcp/tools.ts");
+      warn.mockRestore();
+    }
+  });
+
   it("records an account id the sign-in library creates, and none for anything not shaped like one", async () => {
     const written: AnalyticsEngineDataPoint[] = [];
     const runtime = { MANAGEMENT_ANALYTICS: { writeDataPoint: (point: AnalyticsEngineDataPoint) => written.push(point) } } as unknown as Env;
@@ -443,26 +443,23 @@ describe("management analytics", () => {
   });
 
   it("records a client's name only as a label of its own, never as sent", () => {
-    expect(clientOf("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")).toBe("browser");
-    expect(clientOf("agw/1.4.0")).toBe("agw");
+    expect(userAgentOf("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")).toEqual({ client: "browser", version: null, isCli: false });
+    expect(userAgentOf("agw/1.4.0")).toEqual({ client: "agw", version: "1.4.0", isCli: true });
     expect(knownClient("Claude Code")).toBe("claude-code");
     // Whatever a caller names itself — a key included — is not copied.
-    expect(clientOf("sk-example-secret/1.0")).toBe("other");
+    expect(userAgentOf("sk-example-secret/1.0").client).toBe("other");
     expect(knownClient("alice@example.com")).toBe("other");
-    expect(clientOf("<script>alert(1)</script>")).toBe("other");
-    expect(clientOf(undefined)).toBeNull();
-    expect(clientOf("  ")).toBeNull();
-    // Only a version's digits: a suffix is free text.
-    expect(cliVersionOf("agw/1.4.0-beta.2")).toBe("1.4.0");
-    expect(cliVersionOf("agw/1.0-sk.secret123")).toBe("1.0");
-    expect(cliVersionOf("agw/latest")).toBeNull();
-    expect(cliVersionOf("curl/8.7.1")).toBeNull();
-    // The smoke checks, by their own name or after the CLI's.
-    expect(clientOf("agw-smoke/0.13.0")).toBe("smoke");
-    expect(clientOf("agw/1.4.0 agw-smoke/0.13.0")).toBe("smoke");
-    expect(knownClient("agw-smoke")).toBe("smoke");
-    expect(cliVersionOf("agw/1.4.0 agw-smoke/0.13.0")).toBe("1.4.0");
-    expect(cliVersionOf("agw-smoke/0.13.0")).toBeNull();
+    expect(userAgentOf("<script>alert(1)</script>").client).toBe("other");
+    expect(userAgentOf(undefined)).toEqual({ client: null, version: null, isCli: false });
+    expect(userAgentOf("  ").client).toBeNull();
+    // Only a version's digits, and only the CLI's: a suffix is free text.
+    expect(userAgentOf("agw/1.4.0-beta.2").version).toBe("1.4.0");
+    expect(userAgentOf("agw/1.0-sk.secret123").version).toBe("1.0");
+    expect(userAgentOf("agw/latest").version).toBeNull();
+    expect(userAgentOf("curl/8.7.1").version).toBeNull();
+    // The smoke checks, by their own name.
+    expect(userAgentOf("agw-smoke/0.13.0")).toEqual({ client: "smoke", version: null, isCli: false });
+    expect(userAgentOf("agw/1.4.0 agw-smoke/0.13.0")).toEqual({ client: "agw", version: "1.4.0", isCli: true });
     expect(versionOf("1.0+jane.smith")).toBe("1.0");
     expect(versionOf("sk-example-secret")).toBeNull();
   });

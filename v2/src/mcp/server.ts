@@ -8,16 +8,7 @@
  */
 import type { CallToolResult, McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import type { z } from "zod";
-import {
-  clientOf,
-  endingOf,
-  knownClient,
-  managementDataset,
-  recordManagementCall,
-  refusalOf,
-  versionOf,
-  type CallEnding,
-} from "../analytics/management.ts";
+import { endingOf, knownClient, recordManagementCall, refusalOf, userAgentOf, versionOf, type CallEnding } from "../analytics/management.ts";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity.ts";
 import { requestIdOf } from "../core/request-id.ts";
 import { errorFacts } from "../core/error-facts.ts";
@@ -58,14 +49,13 @@ const PUBLIC_DAY = { ttlMs: 86_400_000, cacheScope: "public" } as const;
  */
 export async function serveMcp(request: Request, caller: ToolCaller): Promise<Response> {
   const mcp = await mcpHandler();
-  if (managementDataset(caller.env) !== null) await recordUnknownTool(request, caller);
   return mcp.fetch(request, {
     authInfo: {
       // Never the credential itself: nothing here reads it.
       token: "",
       clientId: caller.actor.credentialId ?? "",
       scopes: [caller.actor.grant],
-      extra: { caller, requestId: request.headers.get("cf-ray"), userAgent: request.headers.get("user-agent") ?? undefined },
+      extra: { caller, requestId: requestIdOf(request.headers.get("cf-ray")), userAgent: request.headers.get("user-agent") ?? undefined },
     },
   });
 }
@@ -229,7 +219,7 @@ function toolClient(envelope: object | undefined, userAgent: string | undefined)
   const declared = info !== null && typeof info === "object" ? (info as Record<string, unknown>) : {};
   const name = typeof declared.name === "string" ? knownClient(declared.name) : null;
   return {
-    name: name ?? clientOf(userAgent),
+    name: name ?? userAgentOf(userAgent).client,
     // A version means something only beside a client this gateway knows.
     version: name !== null && name !== "other" && typeof declared.version === "string" ? versionOf(declared.version) : null,
   };
@@ -245,46 +235,10 @@ function recordToolCall(tool: McpTool, caller: ToolCaller, client: ToolClient, r
     // A dual tool chooses between two operations by its arguments; its name says which.
     operation: tool.operations.length === 1 ? tool.operations[0]! : null,
     tool: tool.name,
-    kind: null,
     ...ending,
     client: client.name,
     clientVersion: client.version,
-    requestId: requestIdOf(requestId),
+    requestId,
     durationMs: Date.now() - started,
-  });
-}
-
-/**
- * A `tools/call` for a tool this deployment does not offer. The SDK refuses
- * it before any tool runs, so no tool records it: it is counted here, once,
- * as `tool_not_found` with no tool, since the name is the caller's text.
- * Read from a copy of the request, only where the dataset is bound.
- */
-async function recordUnknownTool(request: Request, caller: ToolCaller): Promise<void> {
-  let message: unknown;
-  try {
-    message = await request.clone().json();
-  } catch {
-    return;
-  }
-  if (message === null || typeof message !== "object" || Array.isArray(message)) return;
-  const { method, params } = message as { method?: unknown; params?: { name?: unknown; _meta?: object } };
-  if (method !== "tools/call" || params === null || typeof params !== "object") return;
-  const name = params.name;
-  if (typeof name === "string" && toolsFor(caller.env).some((tool) => tool.name === name)) return;
-  const client = toolClient(params._meta, request.headers.get("user-agent") ?? undefined);
-  recordManagementCall(caller.env, {
-    accountId: caller.actor.accountId,
-    channel: "mcp",
-    credential: caller.actor.credentialType,
-    identity: "human",
-    operation: null,
-    tool: null,
-    kind: null,
-    ...refusalOf(new GatewayError(404, "tool_not_found", "No such tool")),
-    client: client.name,
-    clientVersion: client.version,
-    requestId: requestIdOf(request.headers.get("cf-ray")),
-    durationMs: 0,
   });
 }

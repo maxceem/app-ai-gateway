@@ -63,10 +63,8 @@ export interface ManagementCall {
   identity: "human" | "service" | null;
   /** The catalog operation, or null where the call was refused before one was matched. */
   operation: string | null;
-  /** The MCP tool called, on the `mcp` channel. */
+  /** The MCP tool called, or the tool a CLI tool call names. */
   tool: string | null;
-  /** The engine operation kind a CLI operation or an MCP tool opened, such as `app.create`. */
-  kind: string | null;
   outcome: ManagementOutcome;
   status: number;
   /** The refusal's `ErrorCode`, or `internal_error` for a failure that is not one. Null on success. */
@@ -82,10 +80,11 @@ export interface ManagementCall {
   /** The client's version where it names one: the CLI's, or what an MCP client declares. */
   clientVersion: string | null;
   /**
-   * Cloudflare's id for the request, as `requestIdOf` reads it, so the call can
-   * be found in the gateway's log: every refusal and failure is logged with it.
+   * The request's `cf-ray` header as it came. Only Cloudflare's id is written,
+   * as `requestIdOf` reads it, so the call can be found in the gateway's log:
+   * every refusal and failure is logged with it.
    */
-  requestId: string | null;
+  requestId: string | null | undefined;
   durationMs: number;
 }
 
@@ -93,11 +92,11 @@ export interface ManagementCall {
 export type CallEnding = Pick<ManagementCall, "outcome" | "status" | "code" | "reason" | "field" | "issue">;
 
 /**
- * The name the smoke checks in `smoke/` give themselves: the first product of
- * their own requests' `user-agent`, their MCP client's declared name, and a
- * product added after the CLI's own when they run the CLI. Wherever it
- * appears, the call is labelled `smoke`, so a deployment's own checks can be
- * told apart from its accounts' use.
+ * The name the smoke checks in `smoke/` give themselves: their own requests'
+ * `user-agent` and their MCP client's declared name. The call is labelled
+ * `smoke`, so a deployment's own checks can be told apart from its accounts'
+ * use. (v1's CLI also added it after its own product when the checks ran it;
+ * v2's does not, so a CLI run by the checks is labelled `agw`.)
  */
 export const SMOKE_CLIENT = "agw-smoke";
 
@@ -177,7 +176,7 @@ export const KNOWN_CLIENTS: Readonly<Record<string, string>> = {
  * Writes one call's data point, when the deployment binds the dataset.
  *
  * Positions are the dataset's schema. Blobs: 1 channel, 2 operation, 3 tool,
- * 4 kind, 5 outcome, 6 code, 7 reason, 8 field, 9 issue, 10 credential,
+ * 4 kind (v1's, always empty in v2: kept so the positions stay v1's), 5 outcome, 6 code, 7 reason, 8 field, 9 issue, 10 credential,
  * 11 identity, 12 client, 13 client version, 14 request id. Doubles: 1 status, 2 duration in
  * milliseconds. The index is the account, so sampling keeps an account's
  * calls together; a call with none shares the empty index.
@@ -192,7 +191,7 @@ export function recordManagementCall(env: Env, call: ManagementCall): void {
         call.channel,
         token(call.operation),
         token(call.tool),
-        token(call.kind),
+        null,
         call.outcome,
         token(call.code),
         token(call.reason),
@@ -259,34 +258,27 @@ export function knownClient(name: string | undefined): string | null {
   return Object.hasOwn(KNOWN_CLIENTS, normalized) ? KNOWN_CLIENTS[normalized]! : "other";
 }
 
-/**
- * The client a `user-agent` names by its first product token, as
- * {@link knownClient} labels it — or `smoke` where any of its products is
- * {@link SMOKE_CLIENT}, as the CLI's is when the smoke checks run it.
- */
-export function clientOf(userAgent: string | undefined): string | null {
-  const products = userAgent?.trim().split(/\s+/u) ?? [];
-  if (products.some((product) => product.split("/", 1)[0]!.toLowerCase() === SMOKE_CLIENT)) return "smoke";
-  return knownClient(products[0]?.split("/", 1)[0]);
+/** What a `user-agent` says about the client, as labels. */
+export interface UserAgent {
+  /** The first product's name, as {@link knownClient} labels it. */
+  client: string | null;
+  /** The CLI's version, from `agw/<version>`; null for any other client. */
+  version: string | null;
+  /** Whether it is the CLI's: `agw` first, whatever product follows it. */
+  isCli: boolean;
 }
 
-/** Whether a `user-agent` is the CLI's: `agw` first, whatever product follows it. */
-export function isCliAgent(userAgent: string | undefined): boolean {
-  return knownClient(userAgent?.trim().split(/[\s/]/u, 1)[0]) === "agw";
+/** The one reading of a `user-agent`: its first product, never copied. */
+export function userAgentOf(header: string | undefined): UserAgent {
+  const [name, version, ...rest] = header?.trim().split(/\s+/u, 1)[0]?.split("/") ?? [];
+  const client = knownClient(name);
+  const isCli = client === "agw";
+  return { client, version: isCli && rest.length === 0 ? versionOf(version) : null, isCli };
 }
 
 /** The numeric part of a version, `1.4.0` from `1.4.0-beta.2`, or null where the value is not one. */
 export function versionOf(value: string | undefined): string | null {
   return VERSION.exec(value ?? "")?.[1] ?? null;
-}
-
-/**
- * The CLI's version, from its `user-agent`, `agw/<version>` and whatever
- * product follows it, or null for any other client.
- */
-export function cliVersionOf(userAgent: string | undefined): string | null {
-  const [name, version, ...rest] = userAgent?.trim().split(/\s+/u, 1)[0]?.split("/") ?? [];
-  return name === "agw" && rest.length === 0 ? versionOf(version) : null;
 }
 
 /** The value if it is one bounded token, else null. */

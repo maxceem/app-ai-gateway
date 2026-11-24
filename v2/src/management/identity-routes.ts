@@ -14,6 +14,7 @@
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { accountNotifierFor } from "../analytics/hook.ts";
+import { requestIdOf } from "../core/request-id.ts";
 import { createIdentity, IDENTITY_BASE_PATH, oauthRelayOrigin } from "../auth/identity.ts";
 import { consoleReturnPath, personToVerify, sendFirstVerificationEmail } from "../auth/email-verification.ts";
 import { consoleOrigin, registrationAllowed, V2_PATH } from "../auth/settings.ts";
@@ -155,7 +156,7 @@ identityRoutes.all(`${IDENTITY_BASE_PATH}/*`, async (c) => {
     c.env,
     c.req.url,
     { onRegistrationDenied: () => { denied = true; }, notifyAccount: accountNotifierFor(c) },
-    c.req.header("cf-ray") ?? null,
+    requestIdOf(c.req.header("cf-ray")),
   );
   const handled = await identity.handler(request);
   const response = post && c.req.path === SOCIAL_SIGN_IN_PATH ? await relaySocialSignIn(c.env, c.req.url, handled) : handled;

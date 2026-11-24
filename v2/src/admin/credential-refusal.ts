@@ -17,6 +17,7 @@
  * never sent to the caller, whose answer is the same `401 auth_required`
  * whatever it is.
  */
+import type { ManagementCredential } from "../analytics/management.ts";
 import { bearerToken } from "./actor.ts";
 import { CONSOLE_REQUEST_HEADER, IDENTITY_COOKIE_PREFIX, MANAGEMENT_KEY_PREFIX, OAUTH_ACCESS_TOKEN_PREFIX } from "../auth/identity.ts";
 
@@ -55,4 +56,15 @@ export function credentialRefusalReason(
   }
   if (!cookies || !SESSION_COOKIE.test(header("cookie") ?? "")) return "credential_missing";
   return header(CONSOLE_REQUEST_HEADER) === "1" ? "session_expired" : "console_header_missing";
+}
+
+/**
+ * The credential a request presented, for one refused before it resolved
+ * one: a bearer token by its prefix, else the console's session, which the
+ * console's own request header stands for. Nothing of the credential itself.
+ */
+export function presentedCredential(header: (name: string) => string | undefined): ManagementCredential {
+  const bearer = bearerToken(header("authorization"));
+  if (bearer !== undefined) return bearer.startsWith(OAUTH_ACCESS_TOKEN_PREFIX) ? "oauth" : "apiKey";
+  return header(CONSOLE_REQUEST_HEADER) === "1" ? "session" : "none";
 }

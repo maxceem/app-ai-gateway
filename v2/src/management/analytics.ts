@@ -16,22 +16,21 @@
  */
 import type { Context, MiddlewareHandler } from "hono";
 import {
-  clientOf,
-  cliVersionOf,
   endingOf,
-  isCliAgent,
   managementDataset,
   recordManagementCall,
   refusalOf,
+  userAgentOf,
   type CallEnding,
   type ManagementChannel,
   type ManagementCredential,
 } from "../analytics/management.ts";
-import { bearerToken, isPresetCall, type AdminVariables } from "../admin/actor.ts";
-import { credentialRefusalReason } from "../admin/credential-refusal.ts";
-import { CONSOLE_REQUEST_HEADER, gatewayErrorOf, OAUTH_ACCESS_TOKEN_PREFIX } from "../auth/identity.ts";
+import { isPresetCall, type AdminVariables } from "../admin/actor.ts";
+import { credentialRefusalReason, presentedCredential } from "../admin/credential-refusal.ts";
+import { CONSOLE_REQUEST_HEADER, gatewayErrorOf } from "../auth/identity.ts";
 import { CATALOG, type OperationName } from "../contracts/catalog.ts";
-import { requestIdOf } from "../core/request-id.ts";
+import { errorFacts } from "../core/error-facts.ts";
+import { log } from "../core/log.ts";
 
 type AnalyticsEnv = { Bindings: Env; Variables: Partial<AdminVariables> };
 
@@ -50,31 +49,36 @@ export const managementAnalytics: MiddlewareHandler<AnalyticsEnv> = async (c, ne
   await record(c, started, endingOf(c.res.status));
 };
 
+/** Writes the call's data point. Anything that fails here is logged and never changes the call's answer. */
 async function record(c: Context<AnalyticsEnv>, started: number, ending: CallEnding): Promise<void> {
-  const operation = catalogOperation(c.req.method, c.req.path);
-  const tool = operation === "callCliTool" ? await registeredTool(c.req.path) : null;
-  const actor = c.get("actor");
-  const credential = actor?.credentialType ?? presentedCredential(c);
-  const userAgent = c.req.header("user-agent");
-  recordManagementCall(c.env, {
-    accountId: actor?.accountId ?? null,
-    channel: httpChannel(credential, c.req.header(CONSOLE_REQUEST_HEADER) === "1", userAgent),
-    credential,
-    identity: actor === undefined ? null : "human",
-    operation,
-    tool,
-    kind: null,
-    outcome: ending.outcome,
-    status: ending.status,
-    code: ending.code,
-    reason: ending.reason ?? (ending.code === "auth_required" ? credentialRefusalReason((name) => c.req.header(name)) : null),
-    field: ending.field,
-    issue: ending.issue,
-    client: clientOf(userAgent),
-    clientVersion: cliVersionOf(userAgent),
-    requestId: requestIdOf(c.req.header("cf-ray")),
-    durationMs: Date.now() - started,
-  });
+  try {
+    const operation = catalogOperation(c.req.method, c.req.path);
+    const tool = operation === "callCliTool" ? await registeredTool(c.req.path) : null;
+    const actor = c.get("actor");
+    const header = (name: string) => c.req.header(name);
+    const credential = actor?.credentialType ?? presentedCredential(header);
+    const agent = userAgentOf(c.req.header("user-agent"));
+    recordManagementCall(c.env, {
+      accountId: actor?.accountId ?? null,
+      channel: httpChannel(credential, c.req.header(CONSOLE_REQUEST_HEADER) === "1", agent.isCli),
+      credential,
+      identity: actor === undefined ? null : "human",
+      operation,
+      tool,
+      outcome: ending.outcome,
+      status: ending.status,
+      code: ending.code,
+      reason: ending.reason ?? (ending.code === "auth_required" ? credentialRefusalReason(header) : null),
+      field: ending.field,
+      issue: ending.issue,
+      client: agent.client,
+      clientVersion: agent.version,
+      requestId: c.req.header("cf-ray"),
+      durationMs: Date.now() - started,
+    });
+  } catch (error) {
+    log("warn", "management_analytics_write_failed", { error: errorFacts(error) });
+  }
 }
 
 /**
@@ -121,22 +125,11 @@ function catalogOperation(method: string, path: string): OperationName | null {
 }
 
 /**
- * The credential a request presented, for one refused before it resolved
- * one: a bearer token by its prefix, else the console's session, which the
- * console's own request header stands for. Nothing of the credential itself.
- */
-export function presentedCredential(c: { req: { header(name: string): string | undefined } }): ManagementCredential {
-  const bearer = bearerToken(c.req.header("authorization"));
-  if (bearer !== undefined) return bearer.startsWith(OAUTH_ACCESS_TOKEN_PREFIX) ? "oauth" : "apiKey";
-  return c.req.header(CONSOLE_REQUEST_HEADER) === "1" ? "session" : "none";
-}
-
-/**
  * The console for a person's session or the console's own request; the CLI
  * for a client naming itself `agw` first, which only the CLI does; the API for
  * everything else. A label for analytics, never a decision.
  */
-function httpChannel(credential: ManagementCredential, consoleRequest: boolean, userAgent: string | undefined): ManagementChannel {
+function httpChannel(credential: ManagementCredential, consoleRequest: boolean, isCli: boolean): ManagementChannel {
   if (credential === "session" || consoleRequest) return "console";
-  return isCliAgent(userAgent) ? "cli" : "api";
+  return isCli ? "cli" : "api";
 }

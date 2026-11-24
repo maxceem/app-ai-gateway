@@ -93,12 +93,6 @@ export async function callCliTool(
     if (!(error instanceof GatewayError)) throw error;
     const headers = new Headers(error.headers);
     headers.set(TOOLS_REVISION_HEADER, revision);
-    throw new GatewayError(error.status, error.code, error.message, headers, {
-      ...(error.reason === undefined ? {} : { reason: error.reason }),
-      ...(error.data === undefined ? {} : { data: error.data }),
-      // For management analytics: the field and issue a validation refusal names.
-      ...(error.field === undefined ? {} : { field: error.field }),
-      cause: error.cause,
-    });
+    throw error.withHeaders(headers);
   }
 }

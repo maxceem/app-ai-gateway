@@ -15,7 +15,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SMOKE_CLIENT } from "./support.ts";
-import { namedFetch } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
@@ -33,7 +32,7 @@ const ENVELOPE = {
 const mcpUrl = () => new URL("/v2/mcp", consoleUrl);
 
 async function rpc(method: string, params: Record<string, unknown> = {}, name?: string): Promise<{ status: number; message: any }> {
-  const response = await namedFetch(mcpUrl(), {
+  const response = await fetch(mcpUrl(), {
     method: "POST",
     headers: {
       accept: "application/json, text/event-stream",
@@ -50,13 +49,13 @@ async function rpc(method: string, params: Record<string, unknown> = {}, name?: 
 
 test("MCP sign-in is discoverable, and the endpoint asks for a bearer token", { skip: noConsole }, async () => {
   const origin = new URL(consoleUrl).origin;
-  const metadata = await namedFetch(new URL("/.well-known/oauth-protected-resource/v2/mcp", consoleUrl));
+  const metadata = await fetch(new URL("/.well-known/oauth-protected-resource/v2/mcp", consoleUrl));
   assert.equal(metadata.status, 200);
   const document = (await metadata.json()) as Record<string, unknown>;
   assert.equal(document.resource, `${origin}/v2/mcp`);
   assert.deepEqual(document.authorization_servers, [`${origin}/v2`]);
 
-  const refused = await namedFetch(mcpUrl(), {
+  const refused = await fetch(mcpUrl(), {
     method: "POST",
     headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
@@ -68,7 +67,7 @@ test("MCP sign-in is discoverable, and the endpoint asks for a bearer token", { 
 });
 
 test("the MCP endpoint is not served on the API host", { skip: noConsole || base === "" || new URL(base).origin === new URL(consoleUrl).origin ? "needs an API host apart from the console's" : false }, async () => {
-  const response = await namedFetch(new URL("/v2/mcp", base), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const response = await fetch(new URL("/v2/mcp", base), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(response.status, 404);
 });
 
@@ -85,12 +84,12 @@ test("an MCP client lists the tools and reads the account's apps", { skip: noKey
 });
 
 test("the CLI's tool list is public, and a call runs as the caller", { skip: noKey || base === "" ? "V2_BASE_URL, V2_CONSOLE_URL and V2_MANAGEMENT_KEY are needed" : false }, async () => {
-  const listed = await namedFetch(new URL("/v2/cli/tools", base));
+  const listed = await fetch(new URL("/v2/cli/tools", base));
   assert.equal(listed.status, 200);
   const catalog = (await listed.json()) as { revision: string; tools: { name: string; cli: { command: string } }[] };
   assert.equal(catalog.tools.find((tool) => tool.name === "list_apps")?.cli.command, "app list");
 
-  const called = await namedFetch(new URL("/v2/cli/tools/get_account", base), {
+  const called = await fetch(new URL("/v2/cli/tools/get_account", base), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${managementKey}` },
     body: "{}",

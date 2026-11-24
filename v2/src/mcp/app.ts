@@ -17,11 +17,9 @@
  */
 import type { CfAuth } from "@maxceem/cf-auth";
 import { Hono, type Context, type ExecutionContext as HonoExecutionContext } from "hono";
-import { clientOf, endingOf, refusalOf, recordManagementCall, type CallEnding } from "../analytics/management.ts";
-import { credentialRefusalReason } from "../admin/credential-refusal.ts";
+import { endingOf, refusalOf, recordManagementCall, userAgentOf, type CallEnding } from "../analytics/management.ts";
+import { credentialRefusalReason, presentedCredential } from "../admin/credential-refusal.ts";
 import { gatewayErrorOf } from "../auth/identity.ts";
-import { requestIdOf } from "../core/request-id.ts";
-import { presentedCredential } from "../management/analytics.ts";
 import { allowedBrowserOrigins, consoleOrigin, secureOrigin, setting } from "../auth/settings.ts";
 import { GatewayError } from "../core/errors.ts";
 import { authenticateMcp } from "./auth.ts";
@@ -114,15 +112,14 @@ function recordGateRefusal(c: Context<McpEnv>, ending: CallEnding, started: numb
   recordManagementCall(c.env, {
     accountId: null,
     channel: "mcp",
-    credential: presentedCredential(c),
+    credential: presentedCredential((name) => c.req.header(name)),
     identity: null,
     operation: null,
     tool: null,
-    kind: null,
     ...ending,
-    client: clientOf(c.req.header("user-agent")),
+    client: userAgentOf(c.req.header("user-agent")).client,
     clientVersion: null,
-    requestId: requestIdOf(c.req.header("cf-ray")),
+    requestId: c.req.header("cf-ray"),
     durationMs: Date.now() - started,
   });
 }
