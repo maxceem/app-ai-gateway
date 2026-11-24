@@ -10,10 +10,10 @@
  * - It prints the names of the secrets it made, never their values.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, constants, existsSync, fchmodSync, ftruncateSync, openSync, readFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEnv } from "node:util";
+import { parseArgs, parseEnv } from "node:util";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -31,12 +31,20 @@ function refuse(message: string): never {
   process.exit(1);
 }
 
-const at = process.argv.indexOf("--dir");
-const dir = at === -1 ? V2_DIR : process.argv[at + 1];
-if (dir === undefined) {
-  console.error("usage: setup-local-secrets.ts [--dir <folder>]");
+let given: { dir?: string };
+try {
+  given = parseArgs({ // `pnpm run <script> -- …` passes its `--` on.
+    args: process.argv.slice(process.argv[2] === "--" ? 3 : 2), strict: true, allowPositionals: false, options: { dir: { type: "string" } } }).values;
+} catch (error) {
+  console.error(`${(error as Error).message}\nusage: setup-local-secrets.ts [--dir <folder>]`);
   process.exit(2);
 }
+if (given.dir !== undefined && given.dir.trim() === "") {
+  console.error("--dir needs a value");
+  process.exit(2);
+}
+// From the folder the command was run in (`pnpm run` moves to the package's own; `INIT_CWD` keeps the caller's).
+const dir = given.dir === undefined ? V2_DIR : resolve(process.env.INIT_CWD ?? process.cwd(), given.dir);
 
 const example = readFileSync(join(V2_DIR, ".dev.vars.example"), "utf8");
 const path = join(dir, ".dev.vars");
@@ -54,16 +62,15 @@ for (const name of names) {
   if (MAKERS[name] === undefined) continue;
   const found = [...contents.matchAll(definition(name))];
   if (found.length > 1) refuse(`${name} is defined ${found.length} times in .dev.vars; keep one and run again. Nothing changed.`);
+  // A quoted value opens on this line and must close on it, a comment after it allowed.
   const value = found[0]?.[1]?.trim() ?? "";
   const quote = value[0];
-  if ((quote === '"' || quote === "'" || quote === "`") && (value.length < 2 || !value.endsWith(quote))) {
+  if ((quote === '"' || quote === "'" || quote === "`") && value.indexOf(quote, 1) === -1) {
     refuse(`${name} spans several lines in .dev.vars; put it on one line and run again. Nothing changed.`);
   }
 }
 
 const made: string[] = [];
-const unchanged: string[] = [];
-const generated: Record<string, string> = {};
 for (const name of names) {
   const maker = MAKERS[name];
   if (maker === undefined) continue;
@@ -75,26 +82,26 @@ for (const name of names) {
   if (current === undefined) {
     contents = `${contents.trimEnd()}\n${name}=${value}\n`;
   } else {
-    // Defined but empty: that one definition is replaced, never joined by a second.
-    const line = new RegExp(definition(name).source, "mu");
-    if (!line.test(contents)) {
-      unchanged.push(name);
-      continue;
-    }
-    contents = contents.replace(line, `${name}=${value}`);
+    // Defined but empty (and defined once, as checked above): that definition is replaced.
+    contents = contents.replace(new RegExp(definition(name).source, "mu"), `${name}=${value}`);
   }
-  generated[name] = value;
   made.push(name);
 }
 
-// Read back as a dotenv parser reads it: every value made is there exactly, or nothing is written.
-const reread = parseEnv(contents);
-for (const [name, value] of Object.entries(generated)) {
-  if (reread[name] !== value) refuse(`.dev.vars would not read back ${name} as made; nothing changed. Check the file by hand.`);
+// Opened without emptying it, made readable only by this user, and only then written: a mode
+// that cannot be set leaves the file as it was.
+const file = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
+try {
+  try {
+    fchmodSync(file, 0o600);
+  } catch {
+    refuse(".dev.vars could not be made readable only by you; nothing was written.");
+  }
+  ftruncateSync(file, 0);
+  writeSync(file, contents, 0);
+} finally {
+  closeSync(file);
 }
-writeFileSync(path, contents, { mode: 0o600 });
-chmodSync(path, 0o600);
-for (const name of unchanged) console.log(`${name} is defined but empty in a form this script does not rewrite; set it by hand.`);
 if (made.length === 0) {
   console.log(".dev.vars already holds every secret; nothing changed.");
 } else {
