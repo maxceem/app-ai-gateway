@@ -52,11 +52,12 @@ Get a new one for each step below that needs one.
 
 ## 2. Register the install's key
 
-On an app without sign-in, do this once per install, and again if the gateway
-no longer knows the key. On an app with signed-in users, a key belongs to the
-user who registered it: a token request with another user's ID token is refused
-with `403 attest_failed`. Use a key registered for the current user, and
-register a new one when you have none for them.
+- **Without sign-in:** one key per install. Register it once, and again if the
+  gateway no longer knows it.
+- **With signed-in users:** one key per user on the device. When another user
+  signs in, create a new key with `generateKey()` and register it: Apple
+  attests a key only once, so an old key cannot be registered again for them.
+  A token request with the wrong user's key is refused with `403 attest_failed`.
 
 1. Create a key with `DCAppAttestService.generateKey()`, and keep its `keyId`.
 2. Decode the challenge from base64url, and take the SHA-256 of those bytes.
@@ -102,7 +103,7 @@ Content-Type: application/json
 
 ### Budgets per Apple Account
 
-By default, an iOS app's per-user budget is counted per Apple Account. That works only
+By default, an iOS app's per-caller budget is counted per Apple Account. That works only
 if the app sends its App Store transaction. Without it, each install is counted
 on its own. See [Whose month an iOS budget is](/how-it-works/limits#whose-month-an-ios-budget-is).
 

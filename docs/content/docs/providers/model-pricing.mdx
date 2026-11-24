@@ -5,13 +5,17 @@ description: Where the gateway's prices come from, how to add your own, and whic
 
 The gateway counts what each request costs, so your apps' budgets and usage
 stay right. To count it, the model needs a price, or the provider must report
-the cost itself. An ordinary model call for a model with neither is refused
-with `400 pricing_not_configured` before it reaches the provider. On fal, whose
-paths name the model, it is `403 path_not_allowed` instead. The exception: a
-model the app lists by name, or a preset's primary model, keeps being served if
-its price later goes away. That does not hold on fal, where a model needs a
-price even when the app lists it by name. See [Models](/applications/provider-access#models)
-for the rules.
+the cost itself. A request for a model with neither:
+
+- is refused with `400 pricing_not_configured` on an ordinary model call,
+  before it reaches the provider;
+- is refused with `403 path_not_allowed` on fal, whose paths name the model,
+  even when the app lists the model by name;
+- on other providers, is still served when the model is one the app lists by
+  name, or a preset's first target, and its price went away after it was
+  allowed.
+
+See [Models](/applications/provider-access#models) for the rules.
 
 A price comes from one of three places, in this order:
 

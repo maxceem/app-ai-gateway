@@ -27,13 +27,15 @@ on with the provider's headers, and may have none.
 A provider's own error is not in this format. It is passed to your app as the
 provider sent it, with the provider's status. A provider's error may have an
 `error.code` too, so that field alone does not say where an error came from.
-One exception: a job status or cancel answer may be trimmed, keeping the
-provider's status. `X-AGW-Status-Trimmed` then says why: `query` (asked again
-without optional fields such as fal's `logs`), `body` (too large) or `stalled`
-(too slow). A trimmed answer holds only part of the provider's fields; with
-`body` or `stalled`, just the job ID and the gateway's links.
 Keep the HTTP status, and the provider's request ID when there is one. The
 app's **Errors** and **Usage** tabs show what happened.
+
+A job status or cancel answer may be trimmed, and `X-AGW-Status-Trimmed` then
+says why. With `query`, the answer was too large, so the gateway asked again
+without optional query fields such as fal's `logs`, and returns that second
+answer: its own status and body, with job links pointing at the gateway. With
+`body` (too large) or `stalled` (too slow), the answer keeps the status of the
+provider's last answer, but holds only the job ID and the gateway's links.
 
 ## Signing in and calling
 
@@ -73,7 +75,7 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `model_not_allowed` | 403 | The model is not in the app's models list | Use an allowed model |
 | `pricing_not_configured` | 400 | The model has no price the operation can charge | Use a priced model, or add a price. See [Model pricing](/providers/model-pricing) |
 | `preset_not_found` | 404 | The app has no preset with this name | Check the name |
-| `job_not_found` | 404 | No job with this ID belongs to this app and user | Use the links the gateway answered with |
+| `job_not_found` | 404 | No job with this ID belongs to this app and user, or its connection was removed | Use the links the gateway answered with |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
 | `app_disabled` | 403 | The app is turned off on its **Settings** tab | Nothing on the device fixes it |
 | `not_found` | 404 | Nothing is served at this path or method | Check the URL |
@@ -85,7 +87,8 @@ See [Limits and blocking](/how-it-works/limits) for how they are counted.
 | `provider_not_configured` | 502 | The app does not allow a connection with this slug, or none exists | Allow or add the connection |
 | `provider_disabled` | 502 | The connection is turned off | Turn it on |
 | `provider_unavailable` | 502 | The connection cannot be used as stored, for example its key could not be opened | Check the connection in the console |
-| `provider_error` | 502 | The connection to the provider failed, a job check got no response headers within 30 seconds, or an accepted job submission gave no usable job ID, for example because its body took over 30 seconds | Try again with backoff, unless it was a job submission |
+| `provider_error` | 502 | The connection to the provider failed, or a job check got no response headers within 30 seconds | Try again with backoff |
+| `provider_error` | 502 | A job submission the provider accepted gave no usable job ID, for example because its body took over 30 seconds | Do not resend it. See below |
 | `provider_error` | 504 | On a proxy or preset request, the provider sent no response headers before the time limit. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
 
 ## The gateway itself
@@ -109,9 +112,10 @@ fixes them, so do not ask the user to sign in again.
 - Retry with backoff `provider_error`, `service_unavailable`,
   `internal_error`, and the rate-limit `429`s: `app_rate_limited`,
   `rate_limited` and a provider's own `429`. Wait at least `Retry-After` when
-  the answer has it. The exception is a [job](/applications/jobs) submission: never
-  resend one on its own after a `5xx`, because the provider may already have
-  accepted the job, and charged for it.
+  the answer has it.
+- Do not send a [job](/applications/jobs) submission again automatically after
+  a `5xx`: the provider may already have accepted the job, and charged for it.
+  Check your jobs first, or let the user decide.
 - Do not retry `provider_not_configured` or `provider_disabled`: they need a
   change in the console. Do not retry `app_budget_exhausted` either: its
   `Retry-After` runs to the start of next month. An account refusal needs the

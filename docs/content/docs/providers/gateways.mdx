@@ -143,11 +143,10 @@ A request may name other models in `providerOptions.gateway.models`, for Vercel
 to try when the first cannot serve. Each goes through the same
 [models and price check](/applications/provider-access#models) as the request's
 own model, before the request is sent. The request is priced at the model that
-served it. An answer that names the main model uses its normal price. When the
-answer names neither the main model nor one of the fallbacks, the gateway prices
-it at the main model's price, as an estimate. On a
-[preset](/applications/custom-endpoints), only the preset's own model may be
-named there.
+served it. If the request lists fallback models and the answer names neither
+the main model nor a listed fallback, the gateway prices it at the main model's
+price, as an estimate. On a [preset](/applications/custom-endpoints), only the
+target's own model may be named there.
 
 ### Choosing which providers serve
 

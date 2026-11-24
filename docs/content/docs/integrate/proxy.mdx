@@ -120,8 +120,8 @@ the length and encoding headers that no longer fit once the body is streamed
 again. `x-request-id` is kept, because provider support asks for it.
 
 The gateway adds `Server-Timing`, with the time each step took: `auth`,
-`prepare`, `limiter` and `provider_ttfb`, the provider's time to its first
-byte. A step the request never reached is left out.
+`prepare`, `limiter` and `provider_ttfb`, the provider's time to send its
+response headers. A step the request never reached is left out.
 
 ## Service modes
 

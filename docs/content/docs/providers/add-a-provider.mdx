@@ -199,7 +199,7 @@ missing. See [When a connection is missing](/applications/provider-access#when-a
   the affected calls your active apps can still make.
 - **What is refused:** a save after which the gateway can't price one of those
   calls fully, with `400 pricing_not_configured`, naming the app and the model.
-  That includes a model an app lists by name, a preset's own model and a
+  That includes a model an app lists by name, a preset's first target and a
   preset's [fallback](/applications/custom-endpoints#fallbacks), which would
   otherwise drop out of its chain without a word.
 - **What still saves:** removing a price or a path that leaves the call no

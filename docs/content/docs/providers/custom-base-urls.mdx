@@ -79,7 +79,7 @@ what is wrong.
 | A public domain name, never an IP address | `https://127.0.0.1/`, `https://[::1]/` |
 | A dot in the name, and none at the end | `https://vllm/`, `https://host./` |
 | No local-only ending | `.local`, `.localhost`, `.internal`, `.lan`, `.corp`, `.home`, `.test`, `.example` and similar |
-| No empty segment or encoded `/` in the path. Dot segments, plain or percent-encoded, are resolved | `https://host/a//b/`, `https://host/a%2Fb/` |
+| No empty segment or encoded `/` in the path. `.` and `..` parts, encoded or not, are worked out before saving, so `https://host/a/../b/` is saved as `https://host/b/` | `https://host/a//b/`, `https://host/a%2Fb/` |
 | At most 200 characters | |
 | Not Cloudflare AI Gateway's host | Use the connection's own [Cloudflare setting](/providers/gateways). |
 | Not another built-in provider's host | `https://api.anthropic.com/` on an OpenAI connection. Add it as that provider, or as a custom provider. |
@@ -230,14 +230,15 @@ POST chat/completions openai-chat
   provider whose base URL ends in `/v1/`. `v1/{id}` cannot.
 - A price, such as `$0.002`, is charged for each answer the provider accepts.
   Without one, the path is not priced, and budgets do not limit it.
-- A path that could match requests of one of the provider's operations, or of
-  another API-style path, is refused: it would take them without counting them.
-  Allow that operation on the app instead. A custom provider whose base URL is
-  a built-in provider's host cannot list paths that match one of that
-  provider's declared operations as plain paths, or with another API style than
-  theirs. Other paths on that host, such as OpenAI's `GET v1/models`, can be
-  listed.
-- The same pattern listed twice is refused. Otherwise plain paths may overlap,
+- On a built-in provider, a path that could match requests of one of its
+  operations is refused: it would take them without counting them. Allow that
+  operation on the app instead. On a custom provider, a path that could match
+  another API-style path is refused the same way.
+- On a custom provider whose base URL is a built-in provider's host, a path
+  that matches one of that provider's operations cannot be listed with no API
+  style, or with a style other than that operation's. Other paths on that host,
+  such as OpenAI's `GET v1/models`, can be listed.
+- The same pattern listed twice is refused. Otherwise paths with no API style may overlap,
   and the more specific one wins: `GET v1/files/search` serves that request,
   at its own price, ahead of `GET v1/files/{file_id}`.
 - A connection lists up to 100 paths.
