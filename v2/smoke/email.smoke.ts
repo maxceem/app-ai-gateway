@@ -6,7 +6,7 @@
  *   V2_BASE_URL=https://api.example.com \
  *   V2_CONSOLE_URL=https://console.example.com \
  *   V2_MAIL_URL=https://mail-mock.example.workers.dev \
- *   node --experimental-strip-types --test smoke/email.smoke.ts
+ *   node --experimental-strip-types --import ./smoke/user-agent.ts --test smoke/email.smoke.ts
  *
  * Needs a deployment whose `EMAIL` binding is the mail mock
  * (`smoke/mail-mock/`), which sends nothing and keeps mail only for

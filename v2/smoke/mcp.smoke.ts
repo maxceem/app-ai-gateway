@@ -14,7 +14,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SMOKE_CLIENT } from "./support.ts";
+import { SMOKE_CLIENT } from "./user-agent.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const consoleUrl = process.env.V2_CONSOLE_URL ?? "";
