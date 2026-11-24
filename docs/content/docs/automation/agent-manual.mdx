@@ -153,9 +153,10 @@ These apply however you connect: CLI, MCP or API.
    connection on, or adding the missing connection. The check tests no provider
    key, device, sign-in or subscription.
 7. Run `agw app snippet <app> --json` for example requests (see "Applications"
-   for what it leaves out). They, or a real request the person asked for, are
-   how to confirm the app serves. Do not send AI requests unless the person
-   asked.
+   for what it leaves out). The snippet is built from the settings and sends
+   nothing, so it confirms nothing: only a successful app request does. Send
+   one only when the person asked for a test; the snippet is a good starting
+   point for it.
 8. Report as described in "Reporting back". A pending step is pending, never
    done.
 
@@ -590,9 +591,10 @@ reserved create:
    has `state: "created"`. Within 15 minutes of the creation, sending it again
    repeats that answer with `replayed: true`. Later it is refused with
    `already_completed`: keep the operation's `id` from step 1, and read
-   `GET /v2/admin/operations/{id}` for what was created. Before starting a new
-   reservation, check any `notice` the first call answered about an identical
-   request: a new reservation can create a duplicate.
+   `GET /v2/admin/operations/{id}` for what was created. If you reserve again,
+   the new reservation may answer a `notice` naming an identical request:
+   inspect that operation before you send the new `handle`, because sending it
+   can create a duplicate.
 
 A server app's key is never in these answers. While it can still be revealed,
 the answer has `reveal_url`: give it to the person, where an owner or admin

@@ -80,10 +80,12 @@ the account, the person, their role and the grant.
   once. If you lose the second call's answer, send that call again within 15
   minutes: it repeats the answer instead of creating another. After that it is
   refused with \`already_completed\`: read \`get_operation\` with the
-  operation's \`id\` for what was created, and check any \`notice\` about an
-  identical request before reserving again, since a new reservation can create
-  a duplicate. A new key is never in the answer: give the person
-  \`reveal_url\`, where they see it once, signed in to the console.
+  operation's \`id\` for what was created. If you reserve again, inspect the
+  operation named in any \`notice\` the new reservation answers before you
+  send its \`handle\`: sending it can create a duplicate. A new key is never in
+  the answer: when the answer has \`reveal_url\`, give it to the person, who
+  sees the key once, signed in to the console. After the reveal window closes,
+  it is left out.
 
 ## Secrets
 

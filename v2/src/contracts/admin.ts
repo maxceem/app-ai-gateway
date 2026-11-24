@@ -536,7 +536,7 @@ export const AppCheckResponseSchema = z
         description:
           "Every provider connection the app's routing or presets name, presets' fallbacks included. A disabled one is listed as disabled, and one that was deleted as missing, with a null id.",
       }),
-    ready: z.boolean().meta({ description: "`ready` means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: confirm with a real request, or the example requests." }),
+    ready: z.boolean().meta({ description: "`ready` means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: only a successful app request confirms it. The example requests (`getAppSnippet`) are built from the settings and send nothing; they can be the starting point when the person has asked for a test." }),
     limitations: z.array(z.string()).meta({ description: "What this check did not exercise, one sentence each." }),
   })
   .meta({ id: "AppCheckResponse" });

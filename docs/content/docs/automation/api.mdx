@@ -92,8 +92,9 @@ presets name, with its status. `ready` means the app is active and at least one 
 presets use can be reached: one that is active, or, for a preset, a first
 connection turned off with an active fallback. It checks connection status
 only, not that a request will serve. It sends no provider request, so it does not test a key, a device or a
-sign-in. Confirm with a real request, or the example requests from
-`GET /v2/admin/apps/{app}/snippet`.
+sign-in. Only a successful app request confirms the app serves. The example
+requests from `GET /v2/admin/apps/{app}/snippet` are built from the settings
+and send nothing; they can be the starting point for a test.
 
 ## Changing an app
 
