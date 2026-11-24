@@ -8,7 +8,9 @@
  */
 import type { CallToolResult, McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import type { z } from "zod";
+import { endingOf, knownClient, recordManagementCall, refusalOf, userAgentOf, versionOf, type CallEnding } from "../analytics/management.ts";
 import { asGatewayAuthError, isCfAuthError } from "../auth/identity.ts";
+import { requestIdOf } from "../core/request-id.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -53,7 +55,7 @@ export async function serveMcp(request: Request, caller: ToolCaller): Promise<Re
       token: "",
       clientId: caller.actor.credentialId ?? "",
       scopes: [caller.actor.grant],
-      extra: { caller, requestId: request.headers.get("cf-ray") },
+      extra: { caller, requestId: requestIdOf(request.headers.get("cf-ray")), userAgent: request.headers.get("user-agent") ?? undefined },
     },
   });
 }
@@ -72,10 +74,10 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
     .then((sdk) =>
       sdk.createMcpHandler(
         (context) => {
-          const extra = context.authInfo?.extra as { caller?: ToolCaller; requestId?: string | null } | undefined;
+          const extra = context.authInfo?.extra as { caller?: ToolCaller; requestId?: string | null; userAgent?: string } | undefined;
           // `serveMcp` is the only way in, and it always passes one.
           if (!extra?.caller) throw new Error("An MCP server was built without its caller");
-          return mcpServer(sdk, extra.caller, extra.requestId ?? null);
+          return mcpServer(sdk, extra.caller, extra.requestId ?? null, extra.userAgent);
         },
         {
           legacy: "stateless",
@@ -91,7 +93,7 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
       throw error;
     }));
 
-function mcpServer(sdk: Sdk, caller: ToolCaller, requestId: string | null): McpServer {
+function mcpServer(sdk: Sdk, caller: ToolCaller, requestId: string | null, userAgent: string | undefined): McpServer {
   const server = new sdk.McpServer(
     { name: "app-ai-gateway", version: SERVER_VERSION },
     {
@@ -105,7 +107,7 @@ function mcpServer(sdk: Sdk, caller: ToolCaller, requestId: string | null): McpS
     server.registerTool(
       tool.name,
       { title: tool.title, description: tool.description, inputSchema: advertised(tool.input), annotations: tool.annotations },
-      (input) => callTool(tool, input, caller, requestId),
+      (input, ctx) => callTool(tool, input, caller, requestId, toolClient(ctx.mcpReq.envelope, userAgent)),
     );
   }
   server.registerResource(
@@ -145,12 +147,21 @@ function advertised(schema: z.ZodObject): StandardSchemaWithJSON<Record<string, 
  * a gateway error becomes a tool result marked as an error, with its code, its
  * message and what to do next. Only the bearer gate answers with an HTTP status.
  */
-async function callTool(tool: McpTool, input: Record<string, unknown>, caller: ToolCaller, requestId: string | null): Promise<CallToolResult> {
+async function callTool(
+  tool: McpTool,
+  input: Record<string, unknown>,
+  caller: ToolCaller,
+  requestId: string | null,
+  client: ToolClient,
+): Promise<CallToolResult> {
+  const started = Date.now();
   try {
     const { result, summary } = await runTool(tool, input, caller);
+    recordToolCall(tool, caller, client, requestId, started, endingOf(200));
     return { content: [{ type: "text", text: summary }], structuredContent: result as Record<string, unknown> };
   } catch (error) {
     const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : asGatewayError(error) ?? error;
+    recordToolCall(tool, caller, client, requestId, started, refusalOf(refusal));
     if (refusal instanceof GatewayError) return refused(tool, refusal, requestId);
     // Answered and logged with nothing of the failure's message: a database
     // error can quote what the call sent.
@@ -190,4 +201,44 @@ function refused(tool: McpTool, error: GatewayError, requestId: string | null): 
       ...(error.data === undefined ? {} : { data: redactSecrets(error.data) }),
     },
   };
+}
+
+interface ToolClient {
+  name: string | null;
+  version: string | null;
+}
+
+/**
+ * The client's own name and version: what a 2026-07-28 client declares in each
+ * request's envelope, else the name its `user-agent` gives, since a 2025-era
+ * client declared one only in an `initialize` this stateless server never
+ * keeps. Either is labelled by `knownClient`, never copied (v1's).
+ */
+function toolClient(envelope: object | undefined, userAgent: string | undefined): ToolClient {
+  const info = (envelope as Record<string, unknown> | undefined)?.["io.modelcontextprotocol/clientInfo"];
+  const declared = info !== null && typeof info === "object" ? (info as Record<string, unknown>) : {};
+  const name = typeof declared.name === "string" ? knownClient(declared.name) : null;
+  return {
+    name: name ?? userAgentOf(userAgent).client,
+    // A version means something only beside a client this gateway knows.
+    version: name !== null && name !== "other" && typeof declared.version === "string" ? versionOf(declared.version) : null,
+  };
+}
+
+/** One tool call's data point, where the deployment records management calls (`src/analytics/management.ts`). */
+function recordToolCall(tool: McpTool, caller: ToolCaller, client: ToolClient, requestId: string | null, started: number, ending: CallEnding): void {
+  recordManagementCall(caller.env, {
+    accountId: caller.actor.accountId,
+    channel: "mcp",
+    credential: caller.actor.credentialType,
+    identity: "human",
+    // A dual tool chooses between two operations by its arguments; its name says which.
+    operation: tool.operations.length === 1 ? tool.operations[0]! : null,
+    tool: tool.name,
+    ...ending,
+    client: client.name,
+    clientVersion: client.version,
+    requestId,
+    durationMs: Date.now() - started,
+  });
 }

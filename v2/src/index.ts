@@ -35,6 +35,7 @@ import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } fro
 import { lazyRoutes } from "./http/lazy.ts";
 import { vaultStatus } from "./vault/index.ts";
 import { runHourly } from "./maintenance/nightly.ts";
+import { requestIdOf } from "./core/request-id.ts";
 
 export { EndUserLimiter } from "./do/EndUserLimiter.ts";
 export { FloodLimiter } from "./do/FloodLimiter.ts";
@@ -170,8 +171,11 @@ function errorBody(error: GatewayError): ErrorResponse {
  * when it is shaped like one (`storedAppVersion`), as v1 logged them. Never a
  * body, a header value other than the version, or a credential.
  */
-function requestFacts(c: Context<Env2>): { app?: string; appVersion?: string } {
-  const facts: { app?: string; appVersion?: string } = {};
+function requestFacts(c: Context<Env2>): { app?: string; appVersion?: string; ray?: string } {
+  const facts: { app?: string; appVersion?: string; ray?: string } = {};
+  // Cloudflare's id for the request, only when shaped like one: management analytics carries it too.
+  const ray = requestIdOf(c.req.header("cf-ray"));
+  if (ray !== null) facts.ray = ray;
   const app = loadedAppId(c.req.raw);
   if (app !== undefined) facts.app = app;
   const version = storedAppVersion(c.req.header("x-app-version"));

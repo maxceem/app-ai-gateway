@@ -9,8 +9,10 @@
  *
  * This is the only module that imports the library at run time.
  */
-import type { AuthState, CfAuth, CfAuthError } from "@maxceem/cf-auth";
+import type { AuthState, CfAuth, CfAuthError, CfAuthEvent } from "@maxceem/cf-auth";
+import { accountNotifierFor, type AccountNotifier, type AnalyticsScope } from "../analytics/hook.ts";
 import { mgmtAuthTables } from "../db/schema.ts";
+import { requestIdOf } from "../core/request-id.ts";
 import { emailVerificationRequired } from "../core/account-standing.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode } from "../core/errors.ts";
@@ -146,6 +148,12 @@ async function settlePendingMark(db: D1Database, email: string, mark: boolean, v
 export interface IdentityOptions {
   /** Called when a sign-up is refused by the registration rule. */
   readonly onRegistrationDenied?: () => void;
+  /**
+   * Tells the deployment's `ANALYTICS` binding about each new account, after
+   * it is saved; null or absent where nothing is bound. See
+   * `src/analytics/hook.ts` for exactly what that sends.
+   */
+  readonly notifyAccount?: AccountNotifier | null;
 }
 
 /**
@@ -190,6 +198,17 @@ export async function createIdentity(
     // the API: written at most once an hour, after the response.
     memberActivity: true,
     cookies: { prefix: IDENTITY_COOKIE_PREFIX },
+    // cf-auth calls this after the account is saved, and reports a failure to
+    // `onError` rather than undoing anything; the notifier itself only hands
+    // the call to `waitUntil`, so a bound Worker never holds a sign-up up.
+    ...(options.notifyAccount
+      ? {
+          onEvent: (event: CfAuthEvent) => {
+            if (event.type !== "organization.created") return;
+            options.notifyAccount?.({ accountId: event.organizationId, userId: event.userId, kind: "created" });
+          },
+        }
+      : {}),
     onError: (error, { scope }) =>
       log("error", "identity_internal_error", { ray: requestId ?? undefined, scope, error: errorFacts(error) }),
     logger: { log: (level, message, ...args) => reportBetterAuthLog(requestId, level, message, ...args) },
@@ -225,9 +244,9 @@ export async function createIdentity(
 }
 
 /** The part of a request context {@link identityFor} needs. */
-export interface IdentityScope {
+export interface IdentityScope extends AnalyticsScope {
   readonly env: Env;
-  readonly req: { readonly url: string; header(name: string): string | undefined };
+  readonly req: { readonly url: string; header(name: string): string | undefined; readonly raw: Request };
   get(key: "identity"): Promise<CfAuth> | undefined;
   set(key: "identity", value: Promise<CfAuth>): void;
 }
@@ -236,7 +255,7 @@ export interface IdentityScope {
 export function identityFor(c: IdentityScope): Promise<CfAuth> {
   const existing = c.get("identity");
   if (existing !== undefined) return existing;
-  const built = createIdentity(c.env, c.req.url, {}, c.req.header("cf-ray") ?? null);
+  const built = createIdentity(c.env, c.req.url, { notifyAccount: accountNotifierFor(c) }, requestIdOf(c.req.header("cf-ray")));
   c.set("identity", built);
   return built;
 }

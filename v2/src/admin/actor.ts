@@ -121,6 +121,11 @@ export function asCaller(request: Request, caller: PresetCaller): Request {
   return request;
 }
 
+/** Whether a request is one this Worker built for a caller it already authenticated: a tool's operation. */
+export function isPresetCall(request: Request): boolean {
+  return PRESET_CALLERS.has(request);
+}
+
 /** Puts the caller on the context, or refuses with 401. */
 export const adminAuth: MiddlewareHandler<AdminEnv> = async (c, next) => {
   const preset = PRESET_CALLERS.get(c.req.raw);

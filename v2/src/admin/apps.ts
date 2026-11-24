@@ -82,7 +82,7 @@ function invalid(message: string, data?: Record<string, string>): GatewayError {
 }
 
 /** Parses a JSON body with a schema, refusing with the first problem. */
-export async function parseBody<T>(c: Context, schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } } }): Promise<T> {
+export async function parseBody<T>(c: Context, schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string; code?: string }[] } } }): Promise<T> {
   let raw: unknown;
   try {
     raw = await c.req.json();
@@ -93,7 +93,11 @@ export async function parseBody<T>(c: Context, schema: { safeParse(value: unknow
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
   const where = issue === undefined || issue.path.length === 0 ? "" : `${issue.path.map(String).join(".")}: `;
-  throw invalid(`${where}${issue?.message ?? "The request body is invalid"}`);
+  // The field and the issue's code, for management analytics: names this code spells, never a value.
+  const name = issue?.path[0];
+  throw new GatewayError(400, "invalid_request", `${where}${issue?.message ?? "The request body is invalid"}`, undefined, {
+    ...(typeof name === "string" && issue?.code !== undefined ? { field: { name, issue: issue.code } } : {}),
+  });
 }
 
 /**
