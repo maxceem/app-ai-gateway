@@ -1,6 +1,6 @@
 ---
 title: Errors and limits
-description: Common client errors, their response format, and how to handle limits and failures.
+description: The error format, the gateway's errors, and how to handle limits and failures.
 ---
 
 Every refusal from the gateway is JSON with one `error` object:
@@ -9,102 +9,123 @@ Every refusal from the gateway is JSON with one `error` object:
 {
   "error": {
     "code": "app_rate_limited",
-    "message": "Per-user rate limit exceeded",
+    "message": "…",
     "data": { "scope": "user" }
   }
 }
 ```
 
-`code` is stable and is what your client should switch on. `message` is for
-logs. `data` is present only when the code alone is not actionable. Every
-`429` carries a `Retry-After` header in seconds.
+- `code` does not change between releases. Your app should act on it.
+- `message` is for people and logs. It may change.
+- `data` is there only for codes that need more, such as which limit was
+  reached.
 
-A provider's own error is not in this format: it is passed through as the
-provider sent it, with the provider's status code. Provider errors may also contain `error.code`, so that field alone does not
-prove where an error originated. Handle known gateway codes, retain the HTTP
-status and provider request ID when present, and inspect **Usage** and
-**Auth & Errors** to diagnose the source.
+Every `429` the gateway itself sends, and `503 service_unavailable`, carries a
+`Retry-After` header with the seconds to wait. A provider's own `429` is passed
+on with the provider's headers, and may have none.
 
-## Authentication
+A provider's own error is not in this format. It is passed to your app as the
+provider sent it, with the provider's status. A provider's error may have an
+`error.code` too, so that field alone does not say where an error came from.
+Keep the HTTP status, and the provider's request ID when there is one. The
+app's **Errors** and **Usage** tabs show what happened.
 
-| Code | Status | Meaning | What to do |
-| --- | --- | --- | --- |
-| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Refresh an expired gateway token once. On iOS, `withAuthorizedRequest` in the Swift package 1.4.1 or later does this for you on a `401` and returns a `403` as it is; if you send a request built with `authorizedRequest`, call `discardAccessToken()` and build it again, once. If it persists, check the app credential and the user status in the console |
-| `assertion_required` | 401 | A request with an iOS app's gateway token arrived without the `X-AppAttest-Proof` header, on an app whose **Verify App Attest on** is **Every request**. Only that setting answers this code | On the Swift package 1.4 or later, a request built by the package sees this only when the app was switched to **Every request** after the client's token was issued. `withAuthorizedRequest`, in 1.4.1 or later, handles it: it discards the token and sends a rebuilt, signed request once. If you send a request built with `authorizedRequest`, call `discardAccessToken()` and build the request again, once. A request assembled by hand from `gatewayAccessToken()` must be built with the package instead. On an earlier package, update to 1.4 or later, or set **Verify App Attest on** to **Token exchange** while older builds are still in use |
-| `attest_failed` | 403 | An App Attest proof was refused. At the token exchange: the attestation or assertion did not verify. On a request: the `X-AppAttest-Proof` header is malformed, signed by a key that is not registered or whose environment is no longer accepted, signed over a different request, or its assertion counter was already used. The message says which | `withAuthorizedRequest` in the Swift package returns it to you rather than retrying it. Build a new request and send it once. If it persists, call `discardAccessToken()` and build the request again: the fresh exchange re-registers the key when the gateway no longer knows it. That does not help when the key's environment is no longer accepted or the request was changed after signing |
-| `issuer_token_rejected` | 403 | The sign-in token did not verify | Refresh the ID token, retry once, then treat as signed out |
-| `issuer_claims_missing` | 403 | The token verified but the required entitlement claim is not there yet | Wait and retry. Do not sign the user in again. Sync the purchase if you can |
-| `issuer_verification_unavailable` | 503 | The identity provider's keys could not be fetched | Retry with backoff |
-| `auth_method_not_supported` | 404 | The app is not configured for this call, such as a token exchange on an app without user identity | Fix the app's configuration |
-| `invalid_request` | 400 | A malformed body, a missing `X-App-Version`, or a missing end-user header | Fix the request |
-| `rate_limited` | 429 | Too many calls to `challenge`, `register` or `token` for this app from one network address. `data.scope` names the endpoint: `app_auth_challenge`, `app_auth_register` or `app_auth_token` | Wait `Retry-After` seconds. A real app almost never reaches this, so look for a retry loop of your own, or a lot of devices sharing one address |
+A job status or cancel answer may be trimmed, and `X-AGW-Status-Trimmed` then
+says why. With `query`, the answer was too large, so the gateway asked again
+without optional query fields such as fal's `logs`, and returns that second
+answer: its own status and body, with job links pointing at the gateway. With
+`body` (too large) or `stalled` (too slow), the answer keeps the status of the
+provider's last answer, but holds only the job ID and the gateway's links.
 
-`rate_limited` is the gateway protecting these three endpoints itself, and is
-counted per app and per address. It is not one of the limits you set on your
-app below, and nothing in the console changes it.
-
-## Limits
+## Signing in and calling
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. An `install` or `user` scope means slow this caller down; an `app` scope means the whole app is busy |
-| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. `data.scope` is `apple_account`, `install`, `user` or `app`: `apple_account` when an iOS app measures its budget per Apple Account, across that person's installs | Wait for the next month, or raise the budget in the console |
-| `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
-| `billing_unavailable` | 503 | Rare and brief: the account's details were momentarily inconsistent, so the gateway did not serve this call. It is not an outage: while the gateway cannot check the account at all, your app's calls are still served | Retry after `Retry-After`. Not an account problem |
-| `billing_payment_required` | 402 | Account access needs attention in the console | Ask the person managing the gateway account to resolve it; retrying on the device will not help |
-| `payload_too_large` | 413 | The request body is over 20 MB | Send less |
+| `auth_required` | 401 | No app key or gateway token, or one that is wrong, revoked or expired | Get a new gateway token once, and try again. If it happens again, check the app key |
+| `auth_required` | 403 | The user is blocked, or the app key was refused when trading it for a gateway token | Do not retry. See [Blocking](/applications/users#blocking) |
+| `assertion_required` | 401 | A request with an iOS app's gateway token has no `X-AppAttest-Proof`, and the app checks App Attest on every request | Sign the request. If the app was switched to every request after the token was issued, get a new token and sign the request again. See [Sign each request](/integrate/ios#4-sign-each-request) |
+| `attest_failed` | 403 | An App Attest proof was refused: malformed, made by a key the gateway does not know, made over another request, or used already. The message says which | Build and sign a new request, and send it once. If it happens again, register the key again |
+| `issuer_token_rejected` | 403 | The sign-in token did not pass | See [What the app sends](/applications/auth-policy/user-authentication#what-the-app-sends) |
+| `issuer_claims_missing` | 403 | The sign-in token passed, but a paid user's claim is not in it yet | See [Subscription check](/applications/auth-policy/subscription-check) |
+| `issuer_verification_unavailable` | 503 | The identity provider's keys could not be read | Try again later, waiting longer each time |
+| `auth_method_not_supported` | 400, 403 or 404 | The app is not set up for this call, such as App Attest sign-in on a server app, or `/me` on an app with no users | Fix the app's settings or the call |
+| `invalid_request` | 400 | The request is malformed: a bad body, a missing `X-App-Version` or end-user header, or a field the operation does not allow | Fix the request. The message says what is wrong |
+| `rate_limited` | 429 | Too many sign-in calls from one network address. `data.scope` names the route: `app_auth_challenge`, `app_auth_register`, `app_auth_token` or `app_auth_failure` | Wait `Retry-After` seconds. A real app almost never gets this: look for a retry loop |
 
-`app_*` codes come from limits set on the app in the console. `billing_*`
-codes come from the account and are unrelated to those limits.
+`rate_limited` protects the sign-in routes themselves: 60 calls a minute to
+each, per app and network address. It is not one of the limits you set on your
+app.
 
-## Account access
-
-These refusals concern the gateway account, not your app's end-user sign-in:
-
-| Code | Status | What to do |
-| --- | --- | --- |
-| `unclaimed_access_expired` | 403 | The person who started the account must claim it through the CLI or MCP browser handoff. Do not ask the app's end user to sign in again. |
-| `account_expired` | 403 | The account's recovery deadline has passed. Stop automatic retries and ask the person managing the gateway account to investigate. |
-| `email_unverified` | 403 | The gateway account's owner has not verified their email address yet. They open the link in the verification email, or send a new one from the console; requests are served from then on. Do not ask the app's end user to sign in again. |
-
-## Policy
+## Limits you set
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `path_not_allowed` | 403 | The app's proxy policy does not allow this provider or path | Use an allowed path, or allow it in the console |
-| `model_not_allowed` | 403 | The model is not in the app's allowlist | Use an allowed model |
-| `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Lower the output limit in the request |
-| `api_style_not_supported` | 403 | This path does not exist on the route the provider uses, such as Gemini's native API through Vercel | Use a supported path or a direct provider |
-| `pricing_not_configured` | 400 | The model has no price in the price list or the provider's custom pricing | Add a price in the console, or use a listed model |
-| `endpoint_not_found` | 404 | No custom endpoint has this slug | Check the slug |
+| `app_rate_limited` | 429 | A request limit on the app refused the call. `data.scope` is `install`, `user` or `app` | Wait `Retry-After` seconds. `install` or `user`: slow this caller down. `app`: the whole app is busy |
+| `app_budget_exhausted` | 429 | A monthly budget on the app is spent. `data.scope` is `apple_account`, `install`, `user` or `app` | Wait for next month, or raise the budget |
+| `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Ask for less |
+| `payload_too_large` | 413 | The body is too large: over 20 MiB on a proxy or preset request, or over 256 KiB on a sign-in call | Send less |
+
+See [Limits and blocking](/how-it-works/limits) for how they are counted.
+
+## What the app allows
+
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `path_not_allowed` | 403 | The app does not allow this operation, or the gateway does not know this path for the provider | Use an allowed path, or allow the operation on the app's **Providers** tab |
+| `model_not_allowed` | 403 | The model is not in the app's models list | Use an allowed model |
+| `pricing_not_configured` | 400 | The model has no price the operation can charge | Use a priced model, or add a price. See [Model pricing](/providers/model-pricing) |
+| `preset_not_found` | 404 | The app has no preset with this name | Check the name |
+| `job_not_found` | 404 | No job with this ID belongs to this app and user, or its connection was removed or now sends requests somewhere else | Use the links the gateway answered with, and check the connection |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
-| `app_disabled` | 403 | The app is switched off in its settings | Nothing on the device fixes it |
+| `app_disabled` | 403 | The app is turned off on its **Settings** tab | Nothing on the device fixes it |
+| `not_found` | 404 | Nothing is served at this path or method | Check the URL |
 
 ## Providers
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `provider_not_configured` | 502 | No provider has this slug | Add one in the console |
-| `provider_disabled` | 502 | The provider with this slug is paused | Enable it in the console |
-| `provider_unavailable` | 502 | The provider's key could not be read | Check the gateway's health |
-| `provider_error` | 502 or 504 | The provider could not be reached, or sent no response headers before the timeout (120 seconds by default) | Retry with backoff |
-| `service_unavailable` | 503 | The infrastructure the gateway runs on failed or was overloaded, or a sign-in or `/me` call took longer than 10 seconds. Nothing about the request is known to be wrong | Retry after `Retry-After` with backoff |
-| `internal_error` | 500 | Something failed inside the gateway | Retry with backoff |
+| `provider_not_configured` | 502 | The app does not allow a connection with this slug, or none exists | Allow or add the connection |
+| `provider_disabled` | 502 | The connection is turned off | Turn it on |
+| `provider_unavailable` | 502 | The connection cannot be used as stored, for example its key could not be opened | Check the connection in the console |
+| `provider_error` | 502 | The connection to the provider failed, or a job check got no response headers within 30 seconds | Try again with backoff, unless it was a job submission |
+| `provider_error` | 502 | A job submission the provider accepted gave no usable job ID, for example because its body took over 30 seconds | Do not resend it. See below |
+| `provider_error` | 504 | On a proxy or preset request, the provider sent no response headers before the time limit. See [Limits on one request](/integrate/proxy#limits-on-one-request) | Try again with backoff, unless it was a job submission |
 
-## A sensible client policy
+## The gateway itself
 
-- Use bounded backoff for transient `429` and `5xx` errors, respecting
-  `Retry-After`. A budget or account refusal needs the action in its row above.
-  Avoid automatically replaying inference after a partial response or a lost
-  connection: the provider may already have processed and charged for it.
-- On `app_rate_limited` with scope `install` or `user`, back that caller off
-  for `Retry-After` seconds. An iOS app counts request limits per install. With scope `app`, show a "busy, try again shortly"
-  state rather than hammering.
-- On `issuer_claims_missing`, keep the user signed in and poll gently.
-- Send `X-App-Version` on every request, so the console can tell you which
-  release a problem belongs to.
-- Log `code` and `message`, never the request body or the token.
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `service_unavailable` | 503 | The platform the gateway runs on failed or was overloaded, or a sign-in or `/me` call took over 10 seconds. Nothing is known to be wrong with the request | Wait `Retry-After` seconds, then try again |
+| `internal_error` | 500 | Something failed inside the gateway | Try again with backoff |
 
-The Swift package's `GatewayError` exposes `code`, `retryAfter`, `limitScope`
-and `isRetryable` for exactly this. See
-[iOS with the Swift package](/integrate/ios#reading-errors).
+## Your account
+
+These concern your gateway account, not your app's users. Nothing on the device
+fixes them, so do not ask the user to sign in again.
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `email_unverified` | 403 | The account owner has not verified their email address yet. Open the link in the verification email, or send a new one from the console. Requests are served from then on |
+
+## Handling errors well
+
+- Retry with backoff `provider_error`, `service_unavailable`,
+  `internal_error`, and the rate-limit `429`s: `app_rate_limited`,
+  `rate_limited` and a provider's own `429`. Wait at least `Retry-After` when
+  the answer has it.
+- Do not send a [job](/applications/jobs) submission again automatically after
+  a `5xx`: the provider may already have accepted the job, and charged for it.
+  Check your jobs first, or let the user decide.
+- Do not retry `provider_not_configured` or `provider_disabled`: they need a
+  change in the console. Do not retry `app_budget_exhausted` either: its
+  `Retry-After` runs to the start of next month. An account refusal needs the
+  action in its row too.
+- Do not send a request again on your own after an answer started, or after
+  your app's connection to the gateway was lost. The provider may already have
+  done the work, and charged for it.
+- On `app_rate_limited` with the scope `install` or `user`, slow that caller
+  down. With the scope `app`, show a "busy, try again shortly" state.
+- On `issuer_claims_missing`, keep the user signed in, and check again gently.
+- Send `X-App-Version` on every request, so the console can tell which release
+  a problem belongs to.
+- Log `code` and `message`, never the request body, a token or a key.

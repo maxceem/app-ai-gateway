@@ -1,112 +1,111 @@
 ---
-title: Calling custom endpoints
-description: Send a request body to a slug and let the gateway choose the provider, model and parameters.
+title: Calling presets
+description: Send a request to a preset, and let the gateway choose the connection, model and settings.
 ---
 
-A [custom endpoint](/applications/custom-endpoints) is a URL whose provider and
-model are configured on the gateway:
+A [preset](/applications/custom-endpoints) is a URL whose connection, operation
+and model are set on the gateway:
 
 ```text
-POST https://api.appaigateway.com/v1/apps/{app}/endpoints/{slug}
+POST https://api.appaigateway.com/v2/apps/{app}/presets/{name}
 ```
 
-Authentication is identical to the proxy: a gateway token with
-`X-App-Version`, or an API key. Limits, usage and error codes are the same.
-Only `POST` is accepted.
+Only `POST` is served. A preset checks who is calling exactly as the
+[provider proxy](/integrate/proxy#headers-your-app-sends) does, so it takes the
+same headers:
 
-## Request bodies
+- an app key, on a server app with no signed-in users;
+- an app key and the end-user header you named, `X-End-User-ID` by default, on
+  a server app that sends the user ID;
+- a gateway token with `X-App-Version` on an iOS app or a server app with
+  signed-in users, plus `X-AppAttest-Proof` where the app checks App Attest on
+  every request.
 
-Send the body of the endpoint's request format, as the provider documents it.
-You may omit `model`; if you send one, the gateway replaces it with the
-endpoint's model, and for the Gemini formats it puts the model in the URL
-instead. The endpoint's parameters are deep-merged over your body, with the
-endpoint winning on conflicts, and a text endpoint's output cap is applied
-like the proxy's.
+Limits, usage and errors work the same way.
 
-| Request format | Body |
+## The body
+
+A preset may have [fallbacks](/applications/custom-endpoints#fallbacks): other
+connections and models tried in turn. Each one tried is an **attempt**.
+
+Send a body in the format of the preset's operation, as its provider documents
+it. Leave out `model`: the gateway sets the preset's model for each attempt,
+in the body, the form, or Gemini's path. A model you send is replaced.
+
+| Operation's format | Example body |
 | --- | --- |
-| OpenAI Responses | `{"input": "…"}` |
-| OpenAI Chat Completions | `{"messages": [{"role": "user", "content": "…"}]}` |
+| Responses | `{"input": "…"}` |
+| Chat Completions | `{"messages": [{"role": "user", "content": "…"}]}` |
 | Anthropic Messages | `{"max_tokens": 1024, "messages": [{"role": "user", "content": "…"}]}` |
-| Gemini generateContent | `{"contents": [{"parts": [{"text": "…"}]}]}` |
-| OpenAI image generation | `{"prompt": "…"}` |
-| OpenAI embeddings | `{"input": "…"}` |
-| Gemini embedContent | `{"content": {"parts": [{"text": "…"}]}}` |
-| OpenAI audio transcription | A `multipart/form-data` upload with a `file` field |
+| Gemini `generateContent` | `{"contents": [{"parts": [{"text": "…"}]}]}` |
+| Image generation | `{"prompt": "…"}` |
+| Embeddings | `{"input": "…"}` |
+| Transcription | A `multipart/form-data` upload with a `file` field |
+
+- The preset's **Fixed parameters** are merged into a JSON body, nested objects
+  included, and win over your values. An upload gets no fixed parameters.
+- The preset's **Most output tokens** applies as on the proxy.
+- A transcription must be an upload with a `file` field, or it is refused with
+  `400 invalid_request`. Its `response_format` follows the rules on the
+  [proxy](/integrate/proxy#transcription).
+- An image edit may be an upload too. Every other format takes JSON only.
+- On an Anthropic Messages preset, the gateway sends
+  `anthropic-version: 2023-06-01` if your request has no `anthropic-version`
+  header. Yours wins when you send one.
+- Your URL's query is not sent to the provider, except `alt=sse` on Gemini,
+  below.
+
+The examples use an app key, for a server app with no signed-in users. For
+the other setups, change the headers as listed above.
 
 ```sh
-curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/chat \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'X-App-Version: 1.4.2' \
+curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/presets/chat \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"input":"Suggest a 500 kcal lunch."}'
 ```
 
-The response is in the serving provider's format. If a Responses endpoint
-falls back from OpenAI to xAI, you get xAI's Responses-style body. Both follow
-the same shape, but read the usage and any provider-specific fields
-defensively.
-
-An Anthropic Messages endpoint sends `anthropic-version: 2023-06-01` when your
-request has no `anthropic-version` header, and yours when it does.
-
-A Gemini speech model answers with audio only when the request asks for it
-with `"generationConfig": {"responseModalities": ["AUDIO"]}`. Send it from
-your clients or set it in the endpoint's parameters.
-
-## Streaming
-
-Streaming works as on the proxy: set `"stream": true` and read the event
-stream. On a Gemini generateContent endpoint, add `?alt=sse` to the endpoint
-URL instead, as Gemini's own API does; the gateway calls the streaming method
-for you. A fallback happens only if nothing has been streamed yet. A streamed
-Chat Completions endpoint always asks for usage, as on the proxy, so its
-stream ends with a chunk whose `choices` is empty.
-
-From Swift, pass the query to the request helper rather than adding it to the
-URL afterwards: an App Attest proof is signed over the URL, query included.
-This needs the Swift package 1.6.0 or later.
-
-```swift
-let (bytes, response) = try await gateway.withAuthorizedRequest(
-    endpointSlug: "gemini-chat",
-    query: [URLQueryItem(name: "alt", value: "sse")],
-    body: body,
-    contentType: "application/json"
-) { try await URLSession.shared.bytes(for: $0) }
-```
-
-## Transcription endpoints
-
-Send an OpenAI audio-transcription multipart body. `model` may be omitted.
-Leave `response_format` at its default or choose another JSON format: a
-plain-text answer (`text`, `srt` or `vtt`) reports nothing to bill, so it is
-refused with `400 invalid_request`.
-
 ```sh
-curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcribe \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'X-App-Version: 1.4.2' \
+curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/presets/transcribe \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
   -F file=@note.m4a
 ```
 
-## With the Swift package
+## The answer
 
-```swift
-let (data, response) = try await gateway.withAuthorizedRequest(
-    endpointSlug: "chat",
-    body: Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8),
-    contentType: "application/json"
-) { try await URLSession.shared.data(for: $0) }
-```
+The answer is in the format of the provider that served it. When a preset falls
+back from one provider to another, such as from OpenAI's Responses API to
+xAI's, the answer is the second provider's. Both have the same shape, but read
+the usage and any provider-only fields with care.
 
-Pass the body to `withAuthorizedRequest`: when the app verifies App Attest on
-every request, the request is signed over it, as described in
-[Per-request proof](/integrate/ios#per-request-proof).
+## Streaming
+
+Stream as on the proxy: set `"stream": true` and read the event stream. On a
+Gemini `generateContent` preset, add `?alt=sse` to the preset's URL instead, as
+Gemini's own API does: the gateway calls Gemini's streaming method for you. On
+an iOS app that signs every request, the query is part of what is signed, so
+add it before you sign.
+
+A fallback is tried only when the attempt before it got no answer, a `429` or a
+`5xx`, so a stream that has started is never switched to another provider. One
+more case: if you turn off the preset's first connection, its requests go
+straight to the fallbacks, which may be on another provider. All
+attempts share one time limit for the provider's response headers: a fallback gets
+what is left of it. See [Limits on one request](/integrate/proxy#limits-on-one-request).
 
 ## Errors
 
-An unknown slug answers `404 endpoint_not_found`. A method other than `POST`
-answers `404 invalid_request`. When every target in the chain fails, the last
-provider's error is returned, or `502 provider_error` if none could be
-reached.
+| Answer | Meaning |
+| --- | --- |
+| `404 preset_not_found` | The app has no preset with this name. |
+| `404 not_found` | The method was not `POST`. |
+| `502 provider_not_configured` | The preset's first connection was removed, or none of its connections is left to serve it. |
+| `502 provider_disabled` | The preset's connection is turned off and it has no fallback left. |
+| `502 provider_unavailable` | The preset's first connection cannot serve its operation, or its key cannot be opened. |
+
+When every attempt fails, your app gets the result of the last attempt actually
+sent: that provider's own error, `502 provider_error` if the connection failed,
+or `504 provider_error` if the time limit ran out. A fallback that is skipped,
+for example because its key cannot be opened, leaves the earlier result in
+place. The gateway's errors, and how to handle
+them, are in [Errors and limits](/integrate/errors).

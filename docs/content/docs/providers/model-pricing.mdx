@@ -1,413 +1,200 @@
 ---
 title: Model pricing
-description: How the gateway prices each request, how to add prices for models the price list does not know, and why unpriced models are refused.
+description: Where the gateway's prices come from, how to add your own, and which providers report their own cost.
 ---
 
-The gateway records provider attempts and their measured cost in USD. Before
-forwarding, it requires either a local model price or a route that reports its
-own cost, such as xAI or OpenRouter. A successful response without readable usage is
-marked **unresolved**, so recorded spend can differ from your provider's
-invoice. This page covers local prices, reported cost and unresolved usage.
+The gateway counts what each request costs, so your apps' budgets and usage
+stay right. To count it, the model needs a price, or the provider must report
+the cost itself. A request for a model with neither:
+
+- is refused with `400 pricing_not_configured` on an ordinary model call,
+  before it reaches the provider, unless one of the rules below applies;
+- is refused with `403 path_not_allowed` on fal, whose paths name the model,
+  even when the app lists the model by name;
+- on other providers, is still served when the model is one the app lists by
+  name, or a preset's first target, and its price went away after it was
+  allowed.
+
+See [Models](/applications/provider-access#models) for the rules.
+
+A price comes from one of three places, in this order:
+
+1. the cost the provider reports in its answer, where it reports one;
+2. [your own price](#your-prices) for the model on that connection;
+3. the gateway's [price list](#the-price-list).
+
+What each charge was priced from, and what happens when nothing could price it,
+is explained in [Where a cost comes from](/applications/usage#where-a-cost-comes-from).
 
 ## The price list
 
-The gateway ships with a price list: input and output prices per million
-tokens for the common models of each provider type, plus cached-input,
-cache-write and long-context rates where the provider has them, per-minute
-or per-hour rates for transcription models, and per-image rates for a few image
-models. Prices are market data about
-models rather than something you configure, so the price list ships with the
-gateway. The hosted service takes each change to the price list within minutes
-of it being accepted, without waiting for a release. Self-hosted gateways receive
-updates to the price list when you update your deployment. **Settings** shows the day
-the prices last changed, beside the version. Use the provider's **Pricing**
-action to cover a new or changed model before the price list does.
+The gateway comes with a price list: what each model costs, by provider and the
+provider's own model ID. It is market data, not something you set, so it
+changes with the gateway. Self-hosted gateways get changes when you update
+your deployment.
 
-The price list is keyed by provider type and the provider's own model ID:
-`gpt-5.6-sol` under `openai`, `claude-opus-5` under `anthropic`,
-`gemini-2.5-flash` under `gemini`, `grok-4.5` under `xai`. A model priced in
-the price list works on every provider of that type, direct or routed through a
-gateway, because [model IDs stay canonical](/providers/gateways#model-ids-stay-canonical)
-on every route.
+You can read it in three places:
 
-Every entry in the price list also says what the model does: `text`, `image`, `speech`,
-`transcription`, `embedding` or `realtime` (a model served only over a
-realtime connection). A [custom endpoint](/applications/custom-endpoints)
-offers and accepts only models of its own kind. A model you price yourself
-with the **Pricing** action counts as a text model; a listed model you
-re-price keeps its kind.
+- the console's **Prices** page, with a filter;
+- `GET /v2/admin/prices`;
+- the file `/v2/models.json` beside the console, such as
+  [`https://console.appaigateway.com/v2/models.json`](https://console.appaigateway.com/v2/models.json).
+  Any web page may read it.
 
-Each entry also carries what the price list knows about the model's future:
-`retirement_date`, the day the provider stops serving it, and
-`price_changes`, the price changes the provider has announced. Both are
-checked every day against the provider's own pricing and deprecation pages.
-A retired model stays priced, so an app that still names it keeps billing
-exactly. An announced change is not billed early: the entry's own rates are
-the ones billed, and the daily check moves a change into them on its day, so
-it reaches your gateway with the update after that.
+The **Prices** page shows, for each model, its **Provider**, **Kind**,
+**Input** and **Output** prices, **Other rates** and **Notes**. Input and output
+are in dollars per million units: tokens for text models, and the model's own
+unit for the rest. Other rates are per second, minute, hour, image, video,
+request, or the provider's own billed unit. A model with a higher price for
+long prompts shows both.
 
-A model the provider's own price page stops listing, or stops pricing, also
-stays priced: its entry keeps the last rates that page gave and gains
-`unlisted_since`, the day the page dropped it. An app that still names it
-keeps working, and the provider decides whether it still serves the model.
+### What an entry holds
 
-Two provider types ship with no price list at all, because no static list could
-be right for them: **Fireworks AI** names models per account, and
-**Hugging Face** re-prices the same model ID on every upstream its router might
-pick. Their models proxy once you price them, and not before.
-
-### The price list as a file
-
-Every gateway publishes its price list as a static file at `/models.json` beside
-its console: for the hosted service,
-[`https://console.appaigateway.com/models.json`](https://console.appaigateway.com/models.json).
-A separate API host that answers only `/v1/`, as
-[the custom domain guide](/self-hosting/custom-domain#keep-the-api-host-to-the-api)
-sets up, does not serve it.
-It is exactly the price list that deployment bills with, so it changes when the
-gateway is updated, and any web page may read it (it is served with
-`Access-Control-Allow-Origin: *`). The same file is
-[`src/usage/models.json`](https://github.com/maxceem/app-ai-gateway/blob/main/src/usage/models.json)
-in the repository, where its history shows every change and
-[a feed](https://github.com/maxceem/app-ai-gateway/commits/main/src/usage/models.json.atom)
-announces each one. A gateway's `GET /v1/cli/capabilities` names the one it
-runs: `prices.revision` is the commit that last changed the file, and
-`prices.updated` its day. You may use it under the Apache License 2.0 or
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), at your choice.
-
-The file is keyed by provider type, then model ID. Prices are in US dollars
-per million tokens unless the field says otherwise:
+The file is grouped by provider, then model ID. The fields you are most likely to
+read:
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `text`, `image`, `speech`, `transcription`, `embedding` or `realtime`. |
-| `input`, `output` | Price per million input and output tokens. |
-| `cached_input` | Input served from the provider's prompt cache. Absent: billed as `input`. |
-| `cached_input_audio` | Audio input served from the prompt cache, where the provider prices it apart from cached text. Absent: billed as `cached_input`. |
-| `cache_write`, `cache_write_1h`, `cache_write_12h` | Input written to the prompt cache, for the default lifetime, one hour or 12 hours. Absent: billed as `input` (the longer lifetimes as `cache_write`). |
-| `image_input`, `audio_input`, `video_input`, `image_output` | Tokens of that kind, where the provider prices them apart from text. |
-| `long_context_threshold`, `long_*` | A prompt longer than the threshold, in tokens, bills all its tokens at the `long_` rates, where the model has them. |
-| `per_minute`, `per_hour`, `per_image` | Price per minute or hour of audio, or per generated image, for models billed that way. |
-| `author` | Who made the model, where that is not the provider: a Llama model served by Groq is Meta's. |
-| `release_date` | The day (`YYYY-MM-DD`) the provider released the model. Where no source gives that day, it is the day the model was added to the price list; a new model is added within about a day of appearing on the provider's official page. Once set, the daily check never changes it. Nothing is billed from it. |
-| `retirement_date` | The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model. |
-| `unlisted_since` | The day (`YYYY-MM-DD`) the provider's price page stopped listing or pricing the model. Its rates are the last ones that page gave. |
-| `price_changes` | Announced price changes, earliest first. Each has `from`, the day it takes effect (from 00:00 UTC), and only the rates that change then; the others keep their value. |
+| `kind` | What the model does, such as `text`, `image`, `speech` or `transcription`. |
+| `input`, `output` | Dollars per million input and output tokens. |
+| `cached_input`, `cache_write` | Input read from, or written to, the provider's prompt cache. Without them, these tokens are priced at `input`. |
+| `long_context_threshold`, `long_*` | A prompt longer than the threshold has all its tokens priced at the `long_` prices. |
+| `per_minute`, `per_hour`, `per_image`, `per_million_characters`, … | Prices in other units, for models priced that way. |
+| `modes` | Prices in other [service modes](#service-modes). |
+| `retirement_date` | The day the provider stops serving the model. |
+| `unlisted_since` | The day the provider's price page stopped listing the model. |
+| `price_changes` | Price changes the provider has announced, each with the day it starts. |
 
-For example, a model whose price doubles on 1 January:
+A price is never removed. A model the provider stops listing keeps its last
+price, marked `unlisted_since`, so an app that still uses it keeps being charged
+correctly. When an app uses a model that is retiring or no longer listed, its
+pages show a notice titled **A model this app uses is leaving our price list**.
 
-```json
-"gemini-3.8-flash": {
-  "kind": "text",
-  "input": 0.75,
-  "cached_input": 0.075,
-  "output": 3.75,
-  "release_date": "2026-09-02",
-  "price_changes": [
-    { "from": "2027-01-01", "input": 1.5, "cached_input": 0.15, "output": 7.5 }
-  ]
-}
-```
+Some providers have no price list here:
 
-### Prompt cache writes
+- **Fireworks AI** and **Hugging Face**, whose prices differ by account or
+  route: add your own prices.
+- **OpenRouter**, which reports each request's cost.
+- **Vercel AI Gateway**, whose models are priced under their maker. See
+  [Vercel AI Gateway](/providers/gateways#model-names-and-prices).
+- **Custom providers**, which use only your prices.
 
-Some providers charge more for a cache write that is kept longer:
+The prices estimate the provider's bill from the usage it reports. Discounts
+and charges a provider does not report in its usage are not in them. Check the
+provider's own bill when you need the exact amount.
 
-- **Anthropic** charges 2x the input price for a write kept for an hour,
-  against 1.25x for the default five minutes (`cache_write_1h` and
-  `cache_write` in the price list).
-- **OpenAI** charges 2.5x the input price for a write kept for 12 hours,
-  against 1.25x for the default 30 minutes (`cache_write_12h` and
-  `cache_write`). OpenAI offers the 12-hour lifetime through the Responses
-  API.
+## Your prices
 
-Their responses say how many written tokens were kept for each lifetime, and
-the gateway bills each share at its own rate. If a response gives no split,
-every written token bills at the default rate.
+Your prices are for a model the price list does not have, or to replace a
+listed price. They belong to one connection: a model priced only there works
+through that connection alone.
 
-### Image generation models
+Open **Providers**, open the connection's actions, and choose **Your prices**.
+Click **Add a model** for each model and fill in:
 
-The price list covers image models that are priced per token, with separate
-rates for image tokens where the provider charges them differently from text:
-
-- **OpenAI** GPT Image models, such as `gpt-image-2` and
-  `gpt-image-2.5-sunburst`. Prompt text and input images (in an edit) each
-  bill at their own input rate, and generated images at the image output rate.
-- **Gemini** image models, such as `gemini-3-pro-image` and
-  `gemini-nano-banana-2.1`. Generated image tokens bill at the image output
-  rate, and text and thinking at the text rate.
-
-Both providers report how many of a request's tokens were images, and the
-gateway bills each kind at its own rate. If a response does not break its
-tokens down, all of them bill at the model's highest rate, so an image is
-never billed at the cheaper text rate. The same applies when part of a prompt
-was served from cache: the response does not say whether the cached tokens
-were text or images, so the uncached tokens are billed as images first. The
-recorded cost can then be above what the provider charged, but never below.
-
-A model billed a flat price per image is in the price list only when its
-response says how many images it billed. Today that is **BytePlus Seedream**:
-`dola-seedream-5-0-flash-260915`, `seedream-5-0-lite-260128`,
-`seedream-4-5-251128` and `seedream-4-0-250828`. Each one bills its price times
-the images the response counts in `usage.generated_images`, which leaves out
-images that failed or were withheld by moderation, as BytePlus's own bill does.
-If a response does not count its images, the event is marked unresolved
-rather than recorded at $0.
-
-Other image models are not in the price list when their price depends on more
-than a count of images, such as size, quality, steps or a provider's estimate.
-That covers Together AI's image models, Seedream 5.0 pro (two pixel tiers, a
-charge for input images and per-layer tiers) and Gemini 2.5 Flash Image.
-Custom prices are per token, so they cannot bill these models either, and
-the models stay unsupported. The exception is a provider that reports its own
-cost: xAI's image models proxy with no price (see
-[Providers that report their own cost](#providers-that-report-their-own-cost)).
-
-### Treat recorded cost as usage accounting
-
-Listed prices estimate the provider cost from the usage it reports. Discounts,
-serving tiers, tools and other provider-specific charges may not be represented
-by a model's token rates. Check your provider's current pricing and invoice
-when exact charges matter, and use custom prices where appropriate.
-
-`GET /v1/admin/prices` shows the built-in price list this gateway uses; the
-provider's **Pricing** dialog shows your custom overrides. Model names alone do not tell you their relative price, and a
-entry in the price list does not guarantee that your provider account can still use it.
-
-### Service tiers and regions
-
-Some providers sell the same model in more than one **service mode**: a tier
-such as flex (cheaper, may be refused when busy), priority or fast (dearer,
-served first or faster), or a region the request is pinned to. Each model's
-entry lists the modes it is sold in under `modes`, keyed by the mode's name:
-
-```json
-"gpt-6.1-terra": {
-  "input": 1, "cached_input": 0.05, "output": 5,
-  "modes": {
-    "flex": { "factor": 0.5 },
-    "fast": { "factor": 2 },
-    "eu": { "factor": 1.1 }
-  }
-}
-```
-
-- **Names:** a tier (`flex`, `priority`, `fast`, `ultrafast`), a region (`us`,
-  `eu`, `gb`, `ca`, `au`, `jp`, `kr`, `in`, `sg`, `ae`), or a tier in a region
-  (`priority+eu`).
-- **What an entry means:** every rate of the model, cache and long-context
-  rates included, multiplied by `factor` (1 if left out). A rate the entry
-  names replaces its multiplied figure, for a provider that prices one rate
-  apart, such as a flex cache read.
-- **A tier in a region:** the pair's own entry if there is one, otherwise the
-  tier's price times the region's factor. Anthropic fast mode in the US is
-  2 × 1.1. A region's own rates are its standard prices there, so they apply
-  to a standard request in that region only.
-- **A mode a model does not list has no price.** A request for it is still
-  served, and billed at an estimate (below).
-- **A mode is never removed.** When a provider's page stops listing a mode for
-  a model, it keeps its last price and gains `"unlisted_since": "YYYY-MM-DD"`,
-  as a model the page stops listing does, so a request that used it keeps
-  being billed exactly.
-
-A request is billed in the mode that served it. That is the mode the response
-names where the provider reports one (OpenAI, Anthropic, Gemini, xAI, Mistral,
-Groq, Perplexity and BytePlus do), so a priority request a provider served as
-standard bills at standard. Otherwise it is the mode the request asked for.
-The region also comes from the provider's base URL: a provider set to
-`https://us.api.x.ai/` bills its requests in the `us` region. OpenAI's data
-residency hosts are billed as the global host. Each usage event records its mode as `service_mode`.
-
-A request is never refused because its mode has no price: an app may already
-rely on the mode, so it is served, and billed at an estimate on what is
-missing, while the part that is priced keeps its price:
-
-- a tier cheaper than standard (flex) at the standard price;
-- a dearer tier at the dearest tier the model is priced in;
-- a region at the dearest region the model is priced in.
-
-A mode value a request sends that the gateway does not know is billed at the
-standard price. Such events have `cost_source` `estimated`, and the console marks their cost with
-**≈**. To bill one exactly, add a price for the mode to the provider's custom
-pricing. A mode you choose in a custom endpoint's parameters is checked when
-you save it instead: a mode with no price is refused there, as a model with no
-price is. To see which modes the gateway reads in each provider's requests,
-see [Service tiers and regions](/integrate/proxy#service-tiers-and-regions).
-
-## Custom prices
-
-A model the price list does not know, or knows at a stale price, is unblocked by
-adding it to the provider's custom pricing. Custom prices belong to one
-provider: a model priced only there is usable through that provider alone,
-which is why the model pickers in an app's proxy policy are per slug.
-
-Open **Providers**, open the row's actions menu, and choose **Pricing**. The
-dialog is titled **Custom model pricing** and says: "For models the built-in
-price list does not cover, or prices it in a way you disagree with. Requests for
-unpriced models are rejected until a price is set here. Enter $0 for a model
-that is genuinely free."
-
-Click **Add model** for each row and fill in its columns:
-
-| Column | Meaning |
+| Field | Meaning |
 | --- | --- |
-| **Model** | The model ID exactly as your app sends it, for example `gpt-brand-new`. |
-| **Input $/1M** | Price per million input tokens. |
-| **Output $/1M** | Price per million output tokens. |
-| **Cached $/1M** | Optional. Price per million input tokens served from the provider's prompt cache. |
-| **Cache write $/1M** | Optional. Price per million input tokens written to the provider's prompt cache. |
+| **Model** | The model ID exactly as your app sends it. |
+| **Input $/1M**, **Output $/1M** | Dollars per million input and output tokens. Set both, or neither. |
+| **Cached input $/1M** | Optional. Input read from the provider's prompt cache. |
+| **Unit rate $** and **Unit** | Optional. A price in another unit, such as per image, per minute, per request or job, or per million characters. |
 
-Then **Save pricing**. Every row needs a model name and the input and output
-prices, as numbers of zero or more. A cache price left blank bills at the
-input price. A model cannot appear twice. A row left entirely blank is
-dropped, so a spare one does no harm. Custom prices are ordinary data, not
-secrets, so the dialog shows the stored values and anyone who can read the
-console can see them.
+Click **Save prices**. **Edit as JSON** shows every field a price can hold,
+including ones the form does not show; fields the form does not show are kept
+as they are.
 
-Lookup has two levels: the provider's own custom price for the requested
-model first, then the shipped price list. A custom price replaces the price list's
-rates for that model on that provider only. It does not inherit any of them: a
-rate you leave out bills as it would on an entry in the price list without it (a cache
-rate at the input price, a long-context rate at the normal one), never at the
-price list's figure. If the provider gives a cache discount, enter it, or cached
-traffic records at the full input price. If you priced a model yourself
-before the price list covered it, such as a GPT Image model, delete that custom
-price so the price list's full rates apply.
+Your price replaces the list's price for that model on that connection. It does
+not borrow any of the list's rates, except its service mode factors (see below):
+a rate you leave out is priced as it would be on an entry without it. So if the provider gives a cache discount, enter it, or
+cached tokens are priced at the full input price.
 
-The API equivalent sets `pricing` on the provider. It is a full replace, keyed
-by model ID, and `null` clears every custom price:
+The same through the API. `pricing` replaces all your prices on the connection,
+and `null` removes them. For a model on an OpenAI connection:
 
-```json
-PUT /v1/admin/providers/{id}
-{ "pricing": { "gpt-brand-new": { "input": 1.25, "output": 10, "cached_input": 0.125 } }, "revision": 7 }
+```http
+PUT /v2/admin/providers/{id}
+Content-Type: application/json
+
+{
+  "pricing": { "my-model": { "input": 1.25, "output": 10, "cached_input": 0.125 } },
+  "revision": 7
+}
 ```
 
-Through the API, a custom price accepts every per-token rate the price list
-uses, under the same names as in `GET /v1/admin/prices`: `cached_input`,
-`cache_write`, `cache_write_1h`, `cache_write_12h`, the image, audio and video rates, and the
-`long_*` rates. The `long_*` rates also need `long_context_threshold`, the
-prompt size in tokens above which they apply. The dialog shows the cache
-rates and keeps the others as they are when you save.
+Each price must suit the connection's operations, so a price per job goes on a
+fal connection instead: `{ "fal-ai/some-model": { "per_request": 0.02 } }`.
 
-A custom price can also price service modes, with the same `modes` object as
-the price list. Without `modes`, it keeps the price list's mode factors for
-that model, applied to your rates; a rate the price list names apart in a mode
-is not kept, since it was set against the list's own price. With `modes`,
-yours are used as
-written, and `"modes": {}` prices no mode at all:
+`pricing` takes the same rate names as the price list. Two more fields:
 
-```json
-{ "gpt-brand-new": { "input": 1.25, "output": 10, "modes": { "flex": { "factor": 0.5 } } } }
-```
+- `modes`: your prices in other service modes. Without it, the list's mode
+  factors for that model apply to your rates.
+- `by`: rates that depend on a request field, such as an image's size:
+  `{ "size": { "1024x1024": { "per_image": 0.04 } } }`.
 
-The same field is accepted on `POST /v1/admin/providers` when you create the
-provider.
+Saving checks every price:
+
+- A price none of the connection's operations could charge, such as a per-image
+  price on a text-only provider, is refused with `400 invalid_request`.
+- On a provider that runs [jobs](/applications/jobs), such as fal, each model
+  takes exactly one unit rate, because a job settles at the rate it started with.
+- The gateway checks the affected calls your active apps can still make. If it
+  can't price one fully, the save is refused with `400 pricing_not_configured`. See
+  [Changes are checked against your apps](/providers/add-a-provider#changes-are-checked-against-your-apps).
+
+Removing a connection removes your prices on it. Charges already recorded keep
+their cost.
 
 ### Free models
 
-`$0` is a valid price, and it is the right one for a model you host yourself
-and pay no per-token price for. Enter it deliberately: a request priced at
-zero counts toward nothing in any [spending limit](/applications/limits), so a
-free model still records requests and tokens, but contributes no spend.
-Request limits still apply. The dialog refuses an empty price field
-for that reason; zero has to be a typed answer.
-
-## Unpriced models are refused
-
-A request for a model that neither the provider's custom pricing nor the
-price list knows is refused before it reaches the provider:
-
-```json
-{
-  "error": {
-    "code": "pricing_not_configured",
-    "message": "..."
-  }
-}
-```
-
-The status is `400`, and the message names where to fix it. Entering the price
-is what allows the model on a locally priced route. This applies to
-custom base URLs too: a model served from your own endpoint is almost
-certainly not in the price list and needs a price on that provider. See
-[Custom base URLs](/providers/custom-base-urls#custom-endpoints-still-need-prices).
+`$0` is a valid price, for a model you run yourself and pay nothing per request
+for. Its requests still count toward request limits, but add nothing to
+any budget. Enter it on purpose.
 
 ## Providers that report their own cost
 
-Two provider types report what they charged instead of relying on a local
-price:
+Some answers say what the provider charged, and that figure is charged as it is.
+Those models need no price.
 
-- [xAI](/providers/supported-providers#xai), on its Chat Completions,
-  Responses and image generation answers.
-- [OpenRouter](/providers/supported-providers#openrouter), on its
-  chat-completions answers, the only API it serves here.
-
-The gateway records that figure, so on those APIs their models proxy with
-**no local price**; the rule is "priced locally **or** reported upstream". A
-report counts only where the answer reaches the gateway as the provider wrote
-it: directly, or through Cloudflare AI Gateway. Through Vercel, an xAI model
-bills on its local price like any other.
-
-The **Pricing** dialog says which of a provider's APIs need a price. For an
-OpenRouter provider: "OpenRouter reports the cost of every request, so its
-models proxy with no price here; a price entered here is only used if a
-response ever comes back without one." For an xAI provider, it names the APIs
-xAI reports on and says that its other APIs still need a price. A custom price on such a provider is honoured as
-the fallback for a response that arrives without a cost.
-
-## Where a cost comes from
-
-Every usage event records how its cost was arrived at, in `cost_source`:
-
-| `cost_source` | Meaning |
+| Provider | Answers that report a cost |
 | --- | --- |
-| `reported` | The provider said what the request cost, and that figure is the recorded one. xAI and OpenRouter report one. |
-| `computed` | Priced locally, from the provider's custom pricing or the shipped price list. |
-| `estimated` | Priced locally, at an estimate: the service mode has no price for the model, or the request named a mode the gateway does not know. |
-| `unresolved` | Neither source could answer on a successful response. |
+| xAI | Chat Completions, Responses, legacy completions, and images |
+| OpenRouter | Chat Completions, the only operation it has |
+| ElevenLabs | Speech to text |
 
-Reported cost wins because it is what you were charged. Local pricing is the
-default and the fallback: if a cost-reporting route ever answers without a
-cost, a local price for that model is used and the event is `computed`.
+Their other operations, such as xAI's Messages API, use prices.
 
-An event is `unresolved` when the provider answered successfully but the
-gateway could not measure the spend. That happens when a provider reports
-usage in a shape the gateway does not know, when a cost-reporting route answers
-without a cost and the model has no local price, when a price was removed
-while a request was already in flight, or when a client aborts a streamed
-response before the final chunk that carries the usage. Such an event is shown
-as **unresolved** rather than `$0.00` in the app's event list and can be
-counted with the **By cost source** breakdown. Its cost is zero because nothing
-was measurable, not because nothing was spent. See
-[Usage](/applications/usage) for the breakdowns and what a rising unresolved
-count means.
+A reported cost comes through a direct connection and through Cloudflare AI
+Gateway. It does not come through Vercel AI Gateway, which answers in its own
+format.
 
-<Callout type="warn" title="Deleting a provider deletes its custom prices">
-  Custom prices live on the provider. **Update key** keeps them; **Delete
-  provider** discards them along with the key. Usage events outlive the
-  provider, so past traffic whose serving provider was deleted can only be
-  repriced if the built-in price list covers it. Recreating the same slug creates a new provider;
-  its custom prices do not reconnect to the deleted provider's events.
-</Callout>
+If an answer that should report a cost comes without one, your price or the
+list's is used if there is one. Otherwise the charge is marked `unresolved`.
 
-## Repricing stored usage
+## Service modes
 
-If a price was wrong for a while, `POST /v1/admin/apps/{app}/usage/reprice`
-recomputes the stored cost for one provider type, model and month. Each event
-is priced through the provider that served it, falling back to the price list, so
-two providers of one type can reprice the same model differently. Run it with
-`"apply": false` first: the preview reports `matched_events` (what would be
-rewritten), `unpriced_events` (events whose serving provider was deleted and
-which no listed price covers) and `unmetered_events` (events with no readable
-usage, which are rewritten to zero but keep their `unresolved` marker). With
-`"apply": true` the call is strict: if any matched event cannot be priced, it
-answers `400 invalid_request` and writes nothing, so a month is never left
-half-repriced. Events with a `reported` cost are never touched, since a local
-price would replace a fact with an estimate. A repriced event's `cost_source`
-becomes `computed` when readable usage was available, except an `estimated`
-event, which stays `estimated`.
+Some providers sell a model in more than one **service mode**:
 
-Repricing covers retained raw events only, with at most 10,000 matching events
-per call, and requires token pricing. It does not reprice compacted history,
-time-based transcription charges or per-image charges. See the [API reference](/api) for the request
-shape.
+- a tier, such as `flex` (cheaper, may wait), `priority` or `fast` (dearer,
+  served first);
+- a region the request is kept in, such as `us` or `eu`;
+- or both, such as `priority+eu`.
+
+A model's entry lists the modes it is sold in under `modes`, usually as a factor
+of the standard price:
+
+```json
+"modes": { "flex": { "factor": 0.5 }, "fast": { "factor": 2 } }
+```
+
+A request is priced in the mode that served it. That is the mode the provider's
+answer names, where it names one, or else the mode the request asked for, in the
+provider's own field, such as OpenAI's `service_tier` or Anthropic's `speed`. A
+connection whose base URL is a regional host, such as `https://us.api.x.ai/`,
+is priced in that region.
+
+A request is never refused because its mode has no price. It is served and
+priced at the closest known price, never below the standard price, and marked
+as an estimate: `price_is_estimate` on the charge, and **≈** before its cost in
+the console. To price it exactly, add that mode to your price. A
+[preset](/applications/custom-endpoints) that sets a mode with no price is
+refused when you save it.

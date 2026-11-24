@@ -1069,7 +1069,7 @@ function KeysTab({ app }: { app: App }) {
           if (!open) setRevoking(null);
         }}
         title="Revoke app key"
-        description={<p>Calls with this key are refused at once. This cannot be undone.</p>}
+        description={<p>Calls with this key are refused, usually within a minute. This cannot be undone.</p>}
         confirmLabel="Revoke key"
         destructive
         pending={revoke.isPending}

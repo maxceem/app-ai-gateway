@@ -30,7 +30,8 @@ When the gateway asks for an assertion depends on **Check App Attest on**:
 
 Keys are per install. A user who uses your app on a phone and a tablet holds
 two keys, and a user who reinstalls the app gets a new one. A new key never
-replaces another. Each install has its own request limits; the monthly budget
+replaces another. On an app with signed-in users, a key also belongs to the
+user who registered it. See [iOS apps](/integrate/ios#2-register-the-installs-key). Each install has its own request limits; the monthly budget
 is, by default, counted across all installs of one Apple Account. See
 [Limits](/applications/limits).
 
