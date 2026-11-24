@@ -13,12 +13,14 @@ app keeps asking for `gpt-5.4-mini`, and you point that name at a newer model.
 For a bigger change, such as another provider or fixed settings, use a
 [preset](/applications/custom-endpoints).
 
-A rewrite is one step only: its target is never rewritten again. It applies to
-every call the app sends through the provider proxy. Presets name their models
-themselves and are not rewritten.
+To add one, click **Add rewrite**. Enter the model the app asks for in the first
+box and the model to send in the second. Click **Save rewrites** to save. The
+model sent must have a price, or saving is refused.
 
-Click **Save rewrites** to save. The target must have a price, or saving is
-refused.
+A rewrite applies to every call the app sends through the provider proxy, on
+every connection, whenever the request names that model. It is one step only:
+its target is never rewritten again. Presets name their models themselves and are
+not rewritten.
 
 ## In the settings
 

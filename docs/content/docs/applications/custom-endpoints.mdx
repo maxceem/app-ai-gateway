@@ -3,11 +3,11 @@ title: Presets
 description: Keep the provider connection, model, settings and fallbacks on the gateway behind a stable name, so you can change them without an app release.
 ---
 
-A preset is a URL of your own whose connection, operation and model live in
-the app's settings instead of in the app:
+A preset is a URL of your own whose connection, operation and model are set on
+the gateway, in the app's settings, not in your app's code:
 
 ```text
-POST https://api.appaigateway.com/v2/apps/{app}/presets/{slug}
+POST https://api.appaigateway.com/v2/apps/{app}/presets/{name}
 ```
 
 The app sends only its request's own content. You decide, and can change at any
@@ -19,28 +19,33 @@ to fall back to when the provider fails. A preset does not depend on the app's
 
 On the app's **Presets** tab, click **Add preset** and fill in:
 
-- **Name**: 1 to 64 characters from `a-z`, `0-9` and `-`. It is the last part
-  of the URL, so name it for what it does, such as `chat` or `transcribe`, not
-  for the model behind it.
+- **Name**: 1 to 64 characters from `a-z`, `0-9` and `-`. It is the `{name}` at
+  the end of the URL, so name it for what it does, such as `chat` or
+  `transcribe`, not for the model behind it.
 - **Provider**: one of your provider connections.
 - **Operation**: the kind of request it sends, such as `openai.responses` or
   `openai.transcription`. Your app's request must be in that operation's format.
-- **Model**: change it at any time; the app keeps calling the same name. The
-  model must have a price, or saving is refused.
+- **Model**: change it at any time; the app keeps calling the same name. Saving
+  is refused unless the model's cost can be counted: a price for it, or a
+  provider that reports each request's cost itself.
 - **Most output tokens**: optional. A request that asks for more is refused;
   one that names no limit gets this value written in.
 - **Fixed parameters (JSON)**: optional. Merged into each JSON request, winning
   over the app's values. Use it for what every request should send, such as an
   image size or a voice.
-- **Add fallback**: optional. More connections and models to try in order when
-  an attempt gets no answer, a `429` or a `5xx`. Each must speak the same format
-  as the preset's operation, such as `xai.responses` behind `openai.responses`.
-  Leave a fallback's operation empty to use the connection's first operation in
-  that format.
+- **Add fallback**: optional. More connections and models to try in order. See
+  [Fallbacks](#fallbacks).
 
 Click **Save presets** to save.
 
-## What the app sees
+## Calling one
+
+```sh
+curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/presets/chat \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Say hello."}'
+```
 
 The request is checked exactly like a provider proxy request: a gateway token or
 an app key, plus `X-App-Version` with a gateway token. Limits, usage and the
@@ -53,19 +58,27 @@ itself.
 
 ## Fallbacks
 
+A preset's **targets** are its own connection and model, then each fallback in
+order. When a target gets no answer, a `429` or a `5xx`, the next one is tried.
+Each fallback must speak the same format as the preset's operation, such as
+`xai.responses` behind `openai.responses`. Leave a fallback's operation empty to
+use the connection's first operation in that format.
+
 Because targets name a connection, a fallback can be a second connection of the
 same provider: `openai` falling back to `openai-dev` moves traffic to a second
 key with no change to the request.
 
-- The first target must work. A missing connection, an operation it cannot
-  serve or a key that cannot be opened refuses the request before anything is
-  spent. A first connection you turned off is skipped, so its fallbacks can
-  serve.
-- A fallback that cannot work, because its connection is gone or turned off, is
-  left out of the chain.
-- Every attempt is recorded as its own charge. A failed attempt costs nothing.
+The first target is special:
 
-The app's **Usage** tab can group charges by preset.
+- If it cannot work, because its connection is gone, cannot serve the operation,
+  or its key cannot be opened, the request is refused before anything is spent.
+- If you turned its connection off, it is skipped, so its fallbacks can serve.
+
+A fallback that cannot work, because its connection is gone or turned off, is
+left out of the chain.
+
+Every attempt is recorded as its own charge. A failed attempt costs nothing. The
+app's **Usage** tab can group charges by preset.
 
 ## In the settings
 

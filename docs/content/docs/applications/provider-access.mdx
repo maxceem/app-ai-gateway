@@ -26,6 +26,11 @@ refused with `403 path_not_allowed`.
 
 Operations marked **live sessions, coming later** cannot be served yet.
 
+Some operations make a short-lived token for a live session, such as OpenAI's
+`v1/realtime/client_secrets`. The gateway checks, limits and prices the request
+that makes the token. The live session itself then runs between your app and the
+provider directly, so what it spends is outside the app's budgets and usage.
+
 A request that asks the provider to run in the background, with
 `"background": true` or xAI's `"deferred": true`, is refused with
 `400 invalid_request`. Its result and cost arrive only on a later poll, which
@@ -39,11 +44,14 @@ to call the `list_provider_types` tool.
 A connection can list **passthrough** paths: paths of the provider the gateway
 has no operation for, such as OpenAI's `v1/files`, each with its method. An app
 reaches them only if it allows the `passthrough` operation on that connection.
-The gateway forwards such a request without reading it:
+The gateway forwards such a request as it was sent:
 
 - The app's sign-in, and its request limits, still apply.
 - No model is read or checked, so the models list and model rewrites do not
-  apply, and the body is sent as the app sent it.
+  apply.
+- The body is sent as the app sent it, unless the connection sets fixed fields
+  on that path. Then the gateway reads the JSON body and writes those fields
+  over the app's values.
 - It is priced only if the path has a flat price per request. Without one, the
   call costs nothing in usage, and budgets do not stop it.
 - It is never kept in [conversation history](/applications/conversations).
@@ -58,13 +66,26 @@ to allow every model that has a price. [Model rewrites](/applications/model-rewr
 are applied after this check, so list the name the app sends. A request for
 another model is refused with `403 model_not_allowed`.
 
-Model names are the provider's own: `gemini-3.5-flash`, never
-`google/gemini-3.5-flash`. OpenRouter is the exception: its model names include
-the author, such as `openai/gpt-5.4-mini`, as OpenRouter names them.
+Model names are the provider's own, exactly as the provider spells them:
+`gemini-3.5-flash` on Gemini, never `google/gemini-3.5-flash`. Where the
+provider's own names carry a prefix, keep it. That covers aggregators such as
+OpenRouter (`openai/gpt-5.4-mini`) and Vercel AI Gateway, and providers whose own
+model IDs have one, such as Together AI and fal.
 
-Every model still needs a price before a request reaches it, or the request is
-refused with `400 pricing_not_configured`. See
-[Model pricing](/providers/model-pricing).
+A request reaches the provider only if its cost can be counted. That needs one of
+these:
+
+- a price for the model, in a unit the operation can bill, from the price list
+  or your own price on the connection;
+- or a provider that reports each request's cost itself, such as OpenRouter for
+  chat.
+
+Otherwise the request is refused with `400 pricing_not_configured`, which also
+covers a price in a unit the operation cannot bill. On operations whose path
+names the model, such as Gemini's, an unpriced model is refused with
+`403 path_not_allowed` instead. A model you allowed whose price later disappears
+is still served, and its charge is recorded as `unresolved` until a price
+exists. See [Model pricing](/providers/model-pricing).
 
 ## Most output tokens
 
