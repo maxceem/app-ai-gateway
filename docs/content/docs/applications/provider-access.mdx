@@ -26,14 +26,6 @@ refused with `403 path_not_allowed`.
 
 Operations marked **live sessions, coming later** cannot be served yet.
 
-Some paths make a short-lived token for a live session, such as OpenAI's
-`v1/realtime/client_secrets`, listed on the connection as a passthrough path. The
-gateway checks the request that makes the token, and counts it against the app's
-request limits. It prices it only if the path has a flat price; without one, the
-request is recorded as `not_priced` and the app's budgets do not apply to it. The
-live session itself then runs between your app and the provider directly, so
-what it spends is outside the app's budgets and usage.
-
 A request that asks the provider to run in the background, with
 `"background": true` or xAI's `"deferred": true`, is refused with
 `400 invalid_request`. Its result and cost arrive only on a later poll, which
@@ -58,6 +50,16 @@ The gateway forwards such a request as it was sent:
 - It is priced only if the path has a flat price per request. Without one, the
   call costs nothing in usage, and budgets do not stop it.
 - It is never kept in [conversation history](/applications/conversations).
+
+Some passthrough paths make a short-lived token for a live session, such as
+OpenAI's `v1/realtime/client_secrets`. There is no operation to tick for them:
+the connection lists the path, and the app allows `passthrough`. The gateway
+checks the request that makes the token, and counts it against the app's request
+limits, like any passthrough call. It prices it only if the path has a flat
+price; without one, the request is recorded as `not_priced`, and the app's
+budgets do not apply to it. The live session itself then runs between your app
+and the provider directly, so what it spends is outside the app's budgets and
+usage.
 
 See [Custom base URLs](/providers/custom-base-urls) for how a connection lists
 its passthrough paths.

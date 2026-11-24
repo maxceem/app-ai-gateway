@@ -43,9 +43,13 @@ These are never stored, though their usage is still recorded:
 - a job, such as a fal request;
 - a live session, and the request that makes its token.
 
-The gateway removes the exact text of any key it sent to the provider, wherever
-it appears, even if the provider's answer repeats it. It does not look for other
-secrets your users may have typed.
+A body is not kept if it holds the exact text of a credential the call used: the
+provider key, a Cloudflare AI Gateway token, or the app's own credential (its app
+key or gateway token). That body is replaced whole by `{"omitted":"credential"}`,
+in the request or the answer, even if the provider's answer only repeats the key.
+A record field that holds one, such as the user ID, is replaced by
+`agw-omitted:credential`. The gateway does not look for other secrets your users
+may have typed.
 
 ## Turn it on
 
