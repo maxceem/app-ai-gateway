@@ -47,4 +47,14 @@ enum ModelCatalog {
     static func label(_ provider: String) -> String {
         providers.first { $0.type == provider }?.label ?? provider
     }
+
+    /// Why the demo cannot use an image model, or nil when it can. The demo
+    /// sends a prompt alone, so a model that edits a source image (ByteDance's
+    /// SeedEdit, image-to-image models) is refused before anything is sent.
+    /// The catalog leaves them out; this catches one saved earlier or typed in.
+    static func imageModelProblem(_ model: ModelChoice) -> String? {
+        let id = model.model.lowercased()
+        guard id.hasPrefix("seededit") || id.contains("-i2i") else { return nil }
+        return "\(model.model) needs a source image, which this demo does not send. Pick a model that draws from a prompt."
+    }
 }

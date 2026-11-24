@@ -20,8 +20,8 @@ final class AppSettings {
         var selection: [String: ModelChoice] = [:]
     }
 
-    var values: Values { didSet { save(); endGatewayIfChanged() } }
-    var apiKey: String { didSet { Keychain.write(apiKey, account: "api-key"); endGatewayIfChanged() } }
+    var values: Values { didSet { save() } }
+    var apiKey: String { didSet { Keychain.write(apiKey, account: "api-key") } }
 
     private static let key = "settings"
 
@@ -109,33 +109,13 @@ final class AppSettings {
 
     /// The client in use, and the setup it was built from.
     private var gateway: (setup: ClientSetup, backend: GatewayBackend)?
-    /// The end of the last client, while it runs. A new client is made only
-    /// once it is done, so no request of the old setup is sent again under
-    /// the new one.
-    private var ending: Task<Void, Never>?
 
-    /// Ends the client as soon as what it was built from changes, even while
-    /// the app is idle: a request of the old setup that is still out is then
-    /// never sent again with it.
-    private func endGatewayIfChanged() {
-        guard let gateway, gateway.setup != clientSetup else { return }
-        let old = gateway.backend.client
-        let before = ending
-        self.gateway = nil
-        ending = Task {
-            await before?.value
-            await old.invalidate()
-        }
-    }
-
-    /// The backend requests go to. The gateway one is kept while what its
+    /// The backend a request goes to. The gateway one is kept while what its
     /// client is built from stays the same, so the client keeps its token
-    /// between requests.
-    func backend() async throws -> any AIBackend {
-        // Every caller waits for the same end, then builds from the settings
-        // as they are now, without waiting again in between: two callers can
-        // never make two clients, and a client never mixes two setups.
-        await ending?.value
+    /// between requests. When the settings change, the next request gets a
+    /// new client; a request already out keeps the backend it started with,
+    /// retries included, and the old client goes away once nothing holds it.
+    func backend() throws -> any AIBackend {
         let setup = clientSetup
         if setup.simulated { return SimulatedBackend() }
         if let gateway, gateway.setup == setup { return gateway.backend }
@@ -145,6 +125,11 @@ final class AppSettings {
         if setup.apiKey?.isEmpty == true {
             throw ProviderError(status: 0, message: "Add your API key in Settings.")
         }
+        // The demo has no sign-in, so no user's identity can pass from one
+        // client to the next, and the old client is not ended. An app whose
+        // users sign in must `await client.invalidate()` before it switches
+        // users, and make a new client for the new user: see "One client
+        // per signed-in session" in the Swift SDK's README.
         let backend = GatewayBackend(baseURL: url, appID: setup.appID, apiKey: setup.apiKey, slugs: setup.slugs)
         gateway = (setup, backend)
         return backend

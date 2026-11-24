@@ -6,9 +6,10 @@ import Foundation
 /// One `AppAIGatewayClient` per gateway setup: it holds the gateway token,
 /// refreshes it, and, on an app that verifies App Attest on every request,
 /// signs each one with the device's App Attest key. The demo has no sign-in,
-/// so one client lasts until the settings change; `AppSettings` then ends it
-/// with `invalidate()` and makes a new one. An app whose users sign in makes
-/// one client per signed-in session the same way.
+/// so `AppSettings` keeps one client until the gateway settings change, then
+/// makes a new one for the next request. An app whose users sign in makes one
+/// client per signed-in session, and ends the old one with `invalidate()`
+/// before it switches users.
 struct GatewayBackend: AIBackend {
     let client: AppAIGatewayClient
     /// The slug each provider type is connected under, e.g. `"openai"`.

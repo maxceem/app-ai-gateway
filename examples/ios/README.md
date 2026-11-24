@@ -27,9 +27,11 @@ guess: Groq's transcription is `groq.transcription.openai`, and Gemini's images
 use `gemini.generate.v1beta`. `agw provider types` lists every provider's
 operations.
 
-The demo has no sign-in, so it keeps one gateway client until its settings
-change, then ends it with `invalidate()` and makes a new one. An app whose
-users sign in makes one client per signed-in session the same way.
+The demo has no sign-in, so it keeps one gateway client until its gateway
+settings change, then makes a new one for the next request. A request already
+out finishes on the client it started with. An app whose users sign in makes
+one client per signed-in session instead, and calls `await client.invalidate()`
+before it switches users: see the Swift SDK's README.
 
 To point a simulator at a gateway from a terminal, pass launch arguments, as
 `LaunchOptions.swift` lists. `-APIKeyFile` reads the key from a file, so it

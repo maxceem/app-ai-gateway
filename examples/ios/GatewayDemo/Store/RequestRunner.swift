@@ -1,4 +1,3 @@
-import AppAIGateway
 import Foundation
 import Observation
 
@@ -79,6 +78,7 @@ final class RequestRunner {
     private func draw(_ prompt: String, aspect: ImageAspect, in id: UUID, model: ModelChoice) {
         let entryID = history.append(Entry(role: .assistant, aspect: aspect, model: model, pending: true), to: id)
         run(id) { backend in
+            if let problem = ModelCatalog.imageModelProblem(model) { throw ProviderError(status: 0, message: problem) }
             let image = try await backend.generateImage(prompt: prompt, aspect: aspect, model: model)
             let file = self.history.store(image, extension: "png")
             self.history.update(entryID, in: id) { $0.file = file }
@@ -141,12 +141,11 @@ final class RequestRunner {
         tasks[id] = Task {
             var failure: Failure?
             do {
-                try await work(await settings.backend())
+                // Taken once, when the request starts: a settings change
+                // meanwhile reaches the next request, not this one.
+                try await work(try settings.backend())
             } catch is CancellationError {
             } catch let error as URLError where error.code == .cancelled {
-            } catch is GatewayClientInvalidated {
-                // The gateway settings changed while this request was out: its
-                // client was ended, and the request is dropped like a cancelled one.
             } catch {
                 failure = Failure(error)
             }
