@@ -73,8 +73,9 @@ To set one up:
    and want these paths passed through**; **Save paths** stays off until you do.
    Click **Save paths**.
 3. On the app's **Providers** tab, tick the connection first if it is not
-   allowed yet, so its operations show. Then tick the `passthrough` operation,
-   and click **Save providers**.
+   allowed yet, so its operations show. Ticking it ticks its first operation:
+   untick any operation you did not mean to allow. Then tick the `passthrough`
+   operation, and click **Save providers**.
 
 ## Models
 
@@ -104,7 +105,9 @@ Exceptions:
   name passes the app's model list. `fal.queue` checks prices but does not apply
   rewrites.
 - On other operations, a model you allowed whose price later disappears is still
-  served, and its charge is recorded as `unresolved` until a price exists.
+  served, and its charge is recorded as `unresolved` until a price exists. A
+  later price adds a correction and keeps the original row, so filtering by
+  `unresolved` can still show charges whose cost was counted later.
 
 See [Model pricing](/providers/model-pricing).
 

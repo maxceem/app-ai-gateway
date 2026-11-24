@@ -110,8 +110,9 @@ are not counted, so today's count is `null`.
 
 On an iOS app the request counts are the install's, and `install_id` names it.
 `budget_scope` says whose month the spend is: `apple_account`, `install` or
-`user`. It is `install` for an install that sent no transaction the gateway
-could check, even when the app counts per Apple Account.
+`user`. On an app that counts per Apple Account, it is `install` for an install
+that sent no transaction the gateway could check. On an app that counts per
+signed-in user, it stays `user`.
 
 It is meant for showing a user where they stand before they reach a limit. See
 [Errors and limits from the client side](/integrate/errors).

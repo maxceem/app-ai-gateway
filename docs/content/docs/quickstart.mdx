@@ -57,9 +57,10 @@ A new app may call nothing yet. You choose what it may call.
 
 Open the app's **Providers** tab and tick your `openai` connection.
 
-- **Operations** are the kinds of request the app may send. Tick
-  `openai.responses`, OpenAI's Responses API, which this guide uses. Others,
-  such as `openai.chat` for Chat Completions, can be added later.
+- **Operations** are the kinds of request the app may send. Ticking the
+  connection ticks its first operation, `openai.chat` (OpenAI's Chat
+  Completions), which this guide uses. Others, such as `openai.responses`, can
+  be added later.
 - **Models** limits the app to the models you list. Leave it empty to allow
   every model that has a price.
 
@@ -70,15 +71,15 @@ serve.
 
 The **Overview** tab's **First requests** section has example requests for
 this app, ready to copy. Or put the key in an environment variable and call
-OpenAI's Responses API through the gateway. Replace the app ID with yours.
+OpenAI's Chat Completions API through the gateway. Replace the app ID with yours.
 
 ```sh
 export APP_AI_GATEWAY_KEY="agw_…"
 
-curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/proxy/openai/v1/responses \
+curl https://api.appaigateway.com/v2/apps/example-app-a1b2c3/proxy/openai/v1/chat/completions \
   -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.4-mini","input":"Say hello."}'
+  -d '{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Say hello."}]}'
 ```
 
 The answer is OpenAI's own, unchanged. Everything after `/proxy/openai/` is the

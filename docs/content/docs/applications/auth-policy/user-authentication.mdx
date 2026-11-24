@@ -152,7 +152,7 @@ the user in a header on every call, and the gateway takes the value on trust.
 
 **Header name** is `x-end-user-id` unless you name another. Its case does not
 matter, and it is removed before the call reaches the provider. A value is 1 to
-128 printable ASCII characters.
+128 printable ASCII characters, without spaces.
 
 The header is required once set. A call without it is refused with
 `400 invalid_request`, because an app that allowed it to be missing would count
