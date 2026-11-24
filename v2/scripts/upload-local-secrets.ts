@@ -4,7 +4,9 @@
  *
  *   node --experimental-strip-types scripts/upload-local-secrets.ts -c <wrangler config> [--dir <folder>]
  *
- * - The Worker is the one the config names: there is no default.
+ * - The Worker is the one the config (and `--env`) names: there is no
+ *   default. It stops when `CLOUDFLARE_ENV` is set without `--env`, and when
+ *   the shell points Cloudflare's API elsewhere.
  * - The values go to Wrangler on stdin, never as arguments, and are never
  *   printed: only the names are.
  * - An empty value is left out, so a secret not set locally is not cleared.
@@ -25,10 +27,19 @@ const option = (name: string): string | undefined => {
   return at === -1 ? undefined : args[at + 1];
 };
 const config = option("-c");
+const envName = option("--env");
 const dir = args.includes("--dir") ? option("--dir") : V2_DIR;
-if (config === undefined || dir === undefined) {
-  console.error("usage: upload-local-secrets.ts -c <the Worker's Wrangler config> [--dir <folder>]");
+function refuse(message: string): never {
+  console.error(message);
   process.exit(2);
+}
+if (config === undefined || dir === undefined) refuse("usage: upload-local-secrets.ts -c <the Worker's Wrangler config> [--env <name>] [--dir <folder>]");
+const shellEnv = process.env.CLOUDFLARE_ENV;
+if (shellEnv !== undefined && shellEnv !== "" && envName === undefined) {
+  refuse(`CLOUDFLARE_ENV is set (${shellEnv}): name the environment with --env, so the Worker is never taken from the shell`);
+}
+for (const name of ["CLOUDFLARE_API_BASE_URL", "WRANGLER_API_ENVIRONMENT"]) {
+  if ((process.env[name] ?? "") !== "") refuse(`${name} is set: secrets go only to Cloudflare's own API. Unset it and run again.`);
 }
 
 const values = Object.fromEntries(
@@ -40,13 +51,15 @@ if (names.length === 0) {
   process.exit(1);
 }
 
-const result = spawnSync("pnpm", ["exec", "wrangler", "secret", "bulk", "-c", config], {
+// The shell's environment, without CLOUDFLARE_ENV (--env says it).
+const { CLOUDFLARE_ENV: _ignored, ...shell } = process.env;
+const result = spawnSync("pnpm", ["exec", "wrangler", "secret", "bulk", "-c", config, ...(envName === undefined ? [] : ["--env", envName])], {
   cwd: V2_DIR,
   input: JSON.stringify(values),
   // Wrangler's own logs hide request and response bodies, whatever the shell says.
-  env: { ...process.env, WRANGLER_LOG_SANITIZE: "true" },
+  env: { ...shell, WRANGLER_LOG_SANITIZE: "true" },
   stdio: ["pipe", "inherit", "inherit"],
 });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
-console.log(`Uploaded ${names.join(", ")} to the Worker in ${config}.`);
+console.log(`Uploaded ${names.join(", ")} to the Worker in ${config}${envName === undefined ? "" : `, environment ${envName}`}.`);

@@ -82,6 +82,24 @@ test("the setup reads the file as a dotenv parser does: spaced and quoted values
   });
 });
 
+test("the setup refuses a listed secret defined twice or over several lines, and changes nothing", () => {
+  withFolder((dir) => {
+    const path = join(dir, ".dev.vars");
+    const cases: [string, RegExp][] = [
+      ["JWT_SECRET=first-0123456789\nexport JWT_SECRET = \n", /JWT_SECRET is defined 2 times in \.dev\.vars/u],
+      ['BETTER_AUTH_SECRET="first line\nsecond line"\n', /BETTER_AUTH_SECRET spans several lines in \.dev\.vars/u],
+    ];
+    for (const [text, message] of cases) {
+      writeFileSync(path, text);
+      const run = script("setup-local-secrets.ts", ["--dir", dir]);
+      assert.equal(run.code, 1, run.output);
+      assert.match(run.output, message);
+      assert.match(run.output, /Nothing changed\./u);
+      assert.equal(readFileSync(path, "utf8"), text);
+    }
+  });
+});
+
 test("the upload needs the Worker's config, and sends every set value to Wrangler on stdin, never as an argument", () => {
   withFolder((dir) => {
     // A stand-in `pnpm` that records its arguments and its stdin.
@@ -94,15 +112,24 @@ test("the upload needs the Worker's config, and sends every set value to Wrangle
     const unnamed = script("upload-local-secrets.ts", ["--dir", dir], env);
     assert.equal(unnamed.code, 2);
     assert.match(unnamed.output, /-c <the Worker's Wrangler config>/u);
+    // An environment or an API endpoint from the shell is never taken: nothing reaches Wrangler.
+    const shellEnv = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--dir", dir], { ...env, CLOUDFLARE_ENV: "staging" });
+    assert.equal(shellEnv.code, 2);
+    assert.match(shellEnv.output, /CLOUDFLARE_ENV is set \(staging\): name the environment with --env/u);
+    const elsewhere = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--dir", dir], { ...env, CLOUDFLARE_API_BASE_URL: "http://127.0.0.1:1/" });
+    assert.equal(elsewhere.code, 2);
+    assert.match(elsewhere.output, /CLOUDFLARE_API_BASE_URL is set/u);
+    assert.throws(() => readFileSync(join(dir, "args")));
 
-    const run = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--dir", dir], env);
+    // The environment named on the command line is what Wrangler is given.
+    const run = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--env", "staging", "--dir", dir], { ...env, CLOUDFLARE_ENV: "staging" });
     assert.equal(run.code, 0, run.output);
-    assert.equal(readFileSync(join(dir, "args"), "utf8"), "exec\nwrangler\nsecret\nbulk\n-c\nwrangler.example.jsonc\n");
+    assert.equal(readFileSync(join(dir, "args"), "utf8"), "exec\nwrangler\nsecret\nbulk\n-c\nwrangler.example.jsonc\n--env\nstaging\n");
     // Wrangler's logs stay sanitized all the same.
     assert.equal(readFileSync(join(dir, "sanitize"), "utf8"), "true");
     // The empty value is left out, so it does not clear the Worker's own.
     assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { JWT_SECRET: "jwt-value-0123456789", BETTER_AUTH_SECRET: "auth-value-0123456789" });
-    assert.match(run.output, /Uploaded BETTER_AUTH_SECRET, JWT_SECRET to the Worker in wrangler\.example\.jsonc\./u);
+    assert.match(run.output, /Uploaded BETTER_AUTH_SECRET, JWT_SECRET to the Worker in wrangler\.example\.jsonc, environment staging\./u);
     assert.ok(!run.output.includes("jwt-value") && !run.output.includes("auth-value"), "a value was printed");
   });
 });
