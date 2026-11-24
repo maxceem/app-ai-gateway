@@ -4,77 +4,38 @@ description: Walk through creating an iOS app or a server app, and what it creat
 ---
 
 Open **Apps** and click **New app**. The **Create an app** form asks one thing at
-a time, and only what the kind of app you pick needs. You can change every
-answer later on the app's **Sign-in** tab, except the app's kind and its ID.
+a time, and only what the kind of app you pick needs. Afterwards you can change
+the app's name on its **Settings** tab, and every sign-in answer on its
+**Sign-in** tab. Only the app's ID is permanent.
 
 ## 1. Name and kind
 
-- **Name**: how the app is listed. The gateway builds the app's permanent ID
-  from it: `Calorie Tracker` becomes something like `calorie-tracker-k3f9x1`.
-  See [Apps and providers](/how-it-works/apps-and-providers#the-app-id-is-permanent).
-- **Where do calls come from?**
-  - **iOS app**: calls come straight from the app. Apple's App Attest proves
-    each call comes from your real app.
-  - **Server**: calls come from your own server, with an app key it keeps
-    secret.
+- **Name**: how the app is listed. The gateway builds the app's permanent ID from
+  it: `Calorie Tracker` becomes something like `calorie-tracker-k3f9x1`. See
+  [The app ID is permanent](/how-it-works/apps-and-providers#the-app-id-is-permanent).
+- **Where do calls come from?**: **iOS app** for calls straight from the app,
+  proved with App Attest; **Server** for calls from your own server, with an app
+  key it keeps secret.
 
 ## 2. How the app proves itself (iOS only)
 
-Only builds signed with your team and bundle ID can call through this app.
-
-- **Apple Team ID**: ten letters and digits, in your Apple developer account
-  under Membership details.
-- **Bundle ID**: such as `com.example.app`, from your target's Signing &
-  Capabilities in Xcode.
-- **Accepted builds**: **Production** covers App Store and TestFlight builds,
-  and is the only one on by default. **Development** covers builds run from
-  Xcode. Turn it on for a development bundle ID rather than the one you ship.
-  See [Application identity](/applications/auth-policy/identity).
+Your **Apple Team ID**, your **Bundle ID**, and which builds to accept. See
+[Application identity](/applications/auth-policy/identity#ios-apps).
 
 ## 3. Who may call
 
-Whether calls belong to a user, and how the gateway knows who that is.
-
-For an iOS app:
-
-- **Signed-in users only**: users sign in through your identity provider, and
-  the gateway checks their sign-in token.
-- **Anyone with the app**: no sign-in. Each install counts as one user.
-
-For a server:
-
-- **Signed-in users only**: your server forwards each user's sign-in token, and
-  the gateway checks it.
-- **Your server sends the user id**: in the `x-end-user-id` header, unless you
-  name another in **Header name**.
-- **No end users**: calls are not linked to any user, and limits apply to the
-  app as a whole.
+Whether calls belong to a user, and how the gateway knows who that is. See
+[User authentication](/applications/auth-policy/user-authentication#the-choices).
 
 ## 4. Identity provider (signed-in users only)
 
-Pick where your users sign in. The choice fills in the checking settings from
-one or two values you already have.
-
-| Identity provider | You enter |
-| --- | --- |
-| **Firebase Authentication** | Firebase project id |
-| **Supabase Auth** | Project ref |
-| **Auth0** | Your Auth0 domain, and the API identifier |
-| **Clerk** | Frontend API host, Audience |
-| **Custom issuer** | JWKS URL, Issuer (iss), Audience (aud) |
-
-See [User authentication](/applications/auth-policy/user-authentication).
+Where your users sign in, from one or two values you already have. See
+[Signed-in users only](/applications/auth-policy/user-authentication#signed-in-users-only).
 
 ## 5. Paid users only (signed-in users only)
 
-Whether a user must have paid before they can call through this app.
-
-- **Any signed-in user**: signing in is enough. Payment is not checked.
-- **Paid users only**: the sign-in token must carry the claims you list. **Add
-  RevenueCat entitlement** adds the claim RevenueCat's Firebase function kit
-  writes; enter the entitlement's identifier, such as `pro`.
-
-See [Subscription check](/applications/auth-policy/subscription-check).
+Whether a user must have paid. See
+[Subscription check](/applications/auth-policy/subscription-check).
 
 ## What is created
 

@@ -50,15 +50,16 @@ Things each provider needs you to know:
   `https://appleid.apple.com`, audience your bundle ID, JWKS URL
   `https://appleid.apple.com/auth/keys`.
 
-Issuer and audience each take one value or a list, so moving between two
-projects or bundle IDs is a change of settings rather than a cut-over.
+Issuer and audience each take one value or a list. So when you move from one
+project or bundle ID to another, you can accept both for a while, then remove the
+old one.
 
 ### What the app sends
 
-The app trades its proof and the sign-in token for a gateway token at
-`POST /v2/apps/{app}/auth/token`, then sends the gateway token with its calls.
-See [Server applications](/integrate/server). For iOS, the Swift package that
-does this is coming with the v2 SDK.
+The app sends the identity provider's token in the `issuer_token` field of the
+JSON body of `POST /v2/apps/{app}/auth/token` (and, for an iOS app registering
+its key, of `POST /v2/apps/{app}/auth/register`). It gets a gateway token back,
+and sends that with its calls. See [Server applications](/integrate/server).
 
 A refused trade answers one of three codes, chosen by what the app should do
 next:
@@ -67,7 +68,7 @@ next:
 | --- | --- | --- |
 | `403 issuer_token_rejected` | The token did not pass: bad signature, expired, wrong issuer or audience, or no user ID claim | Get a fresh token from the identity provider, try once more, then stop |
 | `403 issuer_claims_missing` | The token passed, but a claim required for paid users is not there yet | Wait and try again. Do not sign the user in again |
-| `503 issuer_verification_unavailable` | The gateway could not reach the provider's key set, so the token was never judged | Try again later, waiting longer each time |
+| `503 issuer_verification_unavailable` | The gateway could not fetch or read the provider's key set, so the token was never judged | Try again later, waiting longer each time |
 
 Each of these is listed on the app's **Errors** tab. See
 [Auth events](/applications/auth-events).
@@ -90,13 +91,18 @@ Each of these is listed on the app's **Errors** tab. See
 ```
 
 - `jwks_url` must use HTTPS.
-- `user_id_claim` names the claim used as the user ID.
+- `user_id_claim` names the claim used as the user ID. The console starts it at
+  `sub`; through the API it is required.
 - `max_token_lifetime_seconds` refuses a token whose own lifetime, its expiry
   minus its issue time, is longer than this. So a provider set up by mistake to
   issue week-long tokens cannot widen the window.
-- `token_header`, if set, names a header to carry the sign-in token in.
-- `provider` and `entitlement` only help the console reopen the same choice;
-  the gateway does not use them.
+- `token_header`, if set, names one more header that calls to the provider
+  proxy, to presets and to `/me` may carry the gateway token in, besides
+  `Authorization`. Use it when the app's own `Authorization` header must carry
+  something else, such as a provider SDK that always sends its own key there.
+  The gateway removes it before the call reaches the provider.
+- `provider` only helps the console reopen the same choice; the gateway does
+  not use it.
 - `required_claims` is the paid-user check. See
   [Subscription check](/applications/auth-policy/subscription-check).
 
@@ -108,7 +114,7 @@ about itself.
 
 The key lives in the Secure Enclave, for one install of one app on one device.
 It does not survive reinstalling the app, or moving to a new phone. So a user
-can shed the limits and blocks on an install by starting over. And there is no
+can get around the limits and blocks on an install by starting over. And there is no
 sign-in token to look at, so the paid-user check is not available.
 
 ```json
@@ -143,7 +149,7 @@ user, per-user limits cannot be set, and `GET /v2/apps/{app}/me` answers `404`.
 Use the whole app's limits instead.
 
 `end_user` is required on a server app, so an app with no users says so with
-`none`. Naming any other source is how an app chooses to have users at all.
+`none`.
 
 ```json
 "end_user": { "source": "none" }

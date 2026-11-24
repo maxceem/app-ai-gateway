@@ -18,10 +18,14 @@ Only builds signed with your team and bundle ID can call through this app.
 
 Apple ties an App Attest key to one install of one app on one device, and the
 attestation carries a hash of your team ID and bundle ID. The gateway checks
-that hash, keeps the key's public half, and from then on accepts assertions
-signed by that key: one each time a gateway token is issued and, unless the app
-checks App Attest only then, one on every request. The key never leaves the
-Secure Enclave.
+that hash and keeps the key's public half. From then on it accepts assertions
+signed by that key. The key never leaves the Secure Enclave.
+
+When the gateway asks for an assertion depends on **Check App Attest on**:
+
+- **Every request**, the default: one when the app gets a gateway token, and a
+  fresh one with every request.
+- **Token exchange**: one when the app gets a gateway token, only.
 
 Keys are per install. A user who uses your app on a phone and a tablet holds
 two keys, and a user who reinstalls the app gets a new one. A new key never
@@ -41,10 +45,14 @@ A development-signed build can be debugged, and runs on any device with your
 team's provisioning profile. That is why Development is off by default. Turn it
 on for a development bundle ID, never the one you ship.
 
-Turning an environment off also stops the keys it already let in: on their next
-request when the app checks every request, otherwise the next time they get a
-gateway token, within the hour. They are refused with `403 attest_failed`, and
-the app registers a new key in an environment it still accepts.
+Turning an environment off also stops the keys it already let in:
+
+- with **Every request**, on their next request;
+- with **Token exchange**, the next time they get a gateway token, within the
+  hour.
+
+They are refused with `403 attest_failed`, and the app registers a new key in
+an environment it still accepts.
 
 Two things no setting changes. App Attest does not work in the Simulator,
 because it needs the Secure Enclave. And a development build can attest in
@@ -55,16 +63,14 @@ reach an app that accepts production builds.
 
 ### Check App Attest on
 
-When the gateway checks the install's App Attest assertion.
-
 - **Every request**: each request carries a fresh assertion, so a gateway token
-  copied off the network is useless without the device. The default.
+  copied off the network is useless without the device. A request without one
+  is refused with `401 assertion_required`.
 - **Token exchange**: the assertion is checked once for each hourly token, and
   requests carry only the token.
 
-With **Every request**, a request without a proof is refused with
-`401 assertion_required`. Neither setting changes how limits, budgets and usage
-are counted. See [When App Attest is checked](/how-it-works/identity#when-app-attest-is-checked).
+Neither setting changes how limits, budgets and usage are counted. See
+[When App Attest is checked](/how-it-works/identity#when-app-attest-is-checked).
 
 ### In the settings
 
@@ -96,11 +102,15 @@ was **Last used**, and its **Status**.
 in a dialog titled **Copy your app key now**. The gateway keeps only a hash, so
 there is no way to see the key again. Keep it in your server's secret manager.
 
-**Revoke key** stops a key within a minute. Make the new key first, move your
-server to it, then revoke the old one, and the change costs no downtime.
+**Revoke key** stops a key. Make the new key first, move your server to it, then
+revoke the old one, and the change costs no downtime. Once revoked:
 
-Once revoked, the key is refused with `401 auth_required` or
-`403 auth_required`. Gateway tokens made with it stop working too.
+- a call sent with the key itself is refused with `401 auth_required`;
+- trading the key for a gateway token is refused with `403 auth_required`;
+- gateway tokens already made with it stop working.
+
+In normal operation this reaches every request within a minute. See
+[When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 
 ### How the key is sent
 

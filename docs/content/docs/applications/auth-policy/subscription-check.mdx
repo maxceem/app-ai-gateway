@@ -3,14 +3,19 @@ title: Subscription check
 description: Require that a signed-in user has paid before they can call AI providers through the app.
 ---
 
-**Paid users only**, on the app's **Sign-in** tab, requires the user's sign-in
-token to carry claims saying they have paid. It is available only with
-**Signed-in users only**, because it needs a token to look at.
+The **paid-user check** requires the user's sign-in token to carry claims saying
+they have paid. You turn it on with **Paid users only**, on the app's **Sign-in**
+tab. It is available only with **Signed-in users only**, because it needs a token
+to look at.
 
 ## How it works
 
 The gateway never talks to the App Store. It checks claims inside the checked
-sign-in token, and something else has to put them there after the purchase:
+sign-in token. Each time a gateway token is issued, the gateway checks the
+sign-in token as usual, then checks the required claims. A token without them is
+refused with `403 issuer_claims_missing`.
+
+Something else has to put the claims in the token after the purchase:
 
 - **RevenueCat**, with its Firebase function kit, writes the user's active
   entitlements into their Firebase token as `revenueCatEntitlements`.
@@ -29,12 +34,11 @@ the `revenueCatEntitlements` claim. To set it up:
    the token never carries the claim, so every paying user is refused.
 3. Paste the deployed function's URL into the **Webhook URL** field of the
    Firebase integration in the RevenueCat dashboard.
-4. Make a sandbox purchase, and check that the user's token carries the
-   entitlement.
-
-Each time a gateway token is issued, the gateway checks the sign-in token as
-usual, then checks the required claims. A token without them is refused with
-`403 issuer_claims_missing`.
+4. In your app, log in to RevenueCat with the user's Firebase UID as the App User
+   ID. The kit writes the claim onto the Firebase user whose UID matches, so with
+   any other ID the claim never reaches the token.
+5. Make a sandbox purchase. Then get a fresh ID token, forcing a refresh, and
+   decode it to check that `revenueCatEntitlements` lists the entitlement.
 
 ## Choices
 
@@ -52,12 +56,19 @@ usual, then checks the required claims. A token without them is refused with
 ## The waiting time
 
 The claim is written after the purchase, by a webhook or a server job, and the
-app may refresh its token before that has happened. For that time, a paying
+app's token may have been made before that happened. For that time, a paying
 user holds a valid token without the claim.
 
-This is why the refusal has its own code. `issuer_claims_missing` means the user
-is real and the entitlement has not arrived yet, so wait and try again. Treating
-it as a failed sign-in would send the user round a loop they cannot get out of.
+This is why the refusal has its own code. When the app gets
+`issuer_claims_missing` right after a purchase, it should get a fresh ID token
+from the identity provider, forcing a refresh, and try again. Do that for a
+limited time, then stop and tell the user. Do not sign them in again: that does
+not help.
+
+A missing claim does not always mean a wait. It can also mean the user has no
+entitlement, or that the setup is wrong: a kit without `SET_CUSTOM_CLAIMS`, an
+App User ID that is not the Firebase UID, or a different entitlement identifier.
+Decoding the user's fresh token shows which.
 
 The gateway measures the wait. The app's **Errors** tab shows how long users
 usually waited for the claim, and how many are waiting right now. See
@@ -71,8 +82,7 @@ entitlement named `pro`:
 ```json
 "required_claims": [
   { "path": "revenueCatEntitlements", "contains": "pro" }
-],
-"entitlement": "revenuecat"
+]
 ```
 
 A claim of your own, requiring a scope:
@@ -85,5 +95,4 @@ A claim of your own, requiring a scope:
 
 Each requirement has a `path` and exactly one of `contains` (a text or a list of
 texts, any one of which may match) or `equals` (a text, a number or a boolean).
-Every requirement must pass. `entitlement` only helps the console reopen the same
-choice, and may be left out.
+Every requirement must pass. An empty list means no paid-user check.
