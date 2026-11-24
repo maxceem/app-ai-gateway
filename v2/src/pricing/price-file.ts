@@ -8,8 +8,8 @@
  * already lists keeps v1's entry, and a test fails so the overlay's copy is
  * removed.
  */
-import models from "./models.json";
-import overlay from "./models.v2.json";
+import models from "./models.json" with { type: "json" };
+import overlay from "./models.v2.json" with { type: "json" };
 
 export type PriceFile = Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, unknown>>>>>>;
 
