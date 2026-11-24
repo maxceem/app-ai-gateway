@@ -28,7 +28,7 @@ A table over the same days, grouped one way:
 | **By install** | Which install spent what: one copy of an iOS app on one device |
 | **By status** | Calls the provider served, and those that failed |
 | **By price source** | Where each cost came from (see below) |
-| **By measurement** | Whether the provider reported all the usage, part of it, or none |
+| **By measurement** | How the gateway measured the usage |
 | **By operation** | Which kinds of request, such as `openai.responses` |
 | **By preset** | Each [preset](/applications/custom-endpoints) |
 | **By unit** | Tokens, images, seconds of audio and other units |
@@ -68,11 +68,11 @@ show as samples on the app's **Errors** tab. See [Auth events](/applications/aut
 ## Where a cost comes from
 
 - A call that fails before the provider answers usually costs nothing.
-- A stream cut part-way is charged for the usage the gateway read. If it read
-  none, the cost stays unknown, though the provider may still have charged for
-  it.
-- A charge that has usage but no price yet is priced on a later retry, for about
-  three days.
+- A stream cut part-way can still be charged using the figures the gateway has.
+  If it has no usage measure or reported cost, the cost stays unknown, though the
+  provider may still charge for it.
+- The gateway tries for about three days to price recorded usage that had no
+  price yet. If no suitable price appears, the charge stays unpriced.
 
 Each charge records its **price source**.
 
@@ -92,12 +92,11 @@ measurement**:
 
 - `complete`: nothing is missing. The usage was reported or measured in full, or
   there was none to measure.
-- `partial`: some of the usage is missing, for example because a stream ended
+- `partial`: the usage may be incomplete, for example because a stream ended
   early.
-- `estimated`: the gateway had no usable usage report, so the usage is its own
-  estimate. A job's charge starts this way.
-- `pending`: it waits for a later lookup, such as a job's result or the
-  provider's own cost figure.
+- `estimated`: the gateway had no usable measure. The usage is its own estimate,
+  or the cost is unknown. A job's charge starts this way.
+- `pending`: it waits for a later lookup.
 
 ## Through the API
 
