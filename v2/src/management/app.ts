@@ -16,6 +16,7 @@
 import type { AuthState, CfAuth } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { gatewayErrorOf } from "../auth/identity.ts";
+import { GatewayError } from "../core/errors.ts";
 import { adminAuth, type AdminVariables } from "../admin/actor.ts";
 import {
   createManagementKey,
@@ -151,7 +152,10 @@ app.route("/", identityRoutes);
 app.route("/", oauthRoutes);
 app.route("/", consoleRoutes);
 
-app.notFound((c) => c.json({ error: { code: "not_found", message: "Nothing is served at this path." } }, 404));
+// Thrown, so the entry module formats it as every other error.
+app.notFound(() => {
+  throw new GatewayError(404, "not_found", "Nothing is served at this path.");
+});
 app.onError((error) => {
   throw gatewayErrorOf(error);
 });

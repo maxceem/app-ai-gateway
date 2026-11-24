@@ -21,7 +21,7 @@ import type { ErrorResponse } from "./contracts/operation.ts";
 import { storedAppVersion } from "./core/app-version.ts";
 import { loadedAppId } from "./apps/app-records.ts";
 import { errorFacts } from "./core/error-facts.ts";
-import { GatewayError } from "./core/errors.ts";
+import { ERROR_CODE_HEADER, GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
 import { runSweep, SWEEP_CRON } from "./ledger/sweep.ts";
 import { asGatewayError } from "./core/platform-errors.ts";
@@ -152,7 +152,8 @@ app.notFound(async (c) => {
     headers.set("X-Frame-Options", "DENY");
     return new Response(page.body, { status: page.status, headers });
   }
-  return c.json({ error: { code: "not_found", message: "Nothing is served at this path." } } satisfies ErrorResponse, 404);
+  // Answered here, not thrown: no route matched, so `onError` has no route to log.
+  return errorResponse(new GatewayError(404, "not_found", "Nothing is served at this path."));
 });
 
 /** 5xx answers about the provider or the app's own setup, not a fault of the gateway. */
@@ -162,6 +163,14 @@ function errorBody(error: GatewayError): ErrorResponse {
   return {
     error: { code: error.code, message: error.message, ...(error.data === undefined ? {} : { data: error.data }) },
   };
+}
+
+/** Every error the gateway answers itself: its JSON body, its status and its headers. */
+function errorResponse(error: GatewayError): Response {
+  const headers = new Headers(error.headers);
+  headers.set("content-type", "application/json; charset=UTF-8");
+  headers.set(ERROR_CODE_HEADER, error.code);
+  return new Response(JSON.stringify(errorBody(error)), { status: error.status, headers });
 }
 
 /**
@@ -213,15 +222,10 @@ app.onError((error, c: Context<Env2>) => {
         error: errorFacts(gateway.cause ?? gateway),
       });
     }
-    const headers = new Headers(gateway.headers);
-    headers.set("content-type", "application/json; charset=UTF-8");
-    return new Response(JSON.stringify(errorBody(gateway)), { status: gateway.status, headers });
+    return errorResponse(gateway);
   }
   log("error", "unhandled_error", { path: c.req.routePath, method: c.req.method, ...requestFacts(c), error: errorFacts(error) });
-  return c.json(
-    { error: { code: "internal_error", message: "The gateway failed to handle this request." } } satisfies ErrorResponse,
-    500,
-  );
+  return errorResponse(new GatewayError(500, "internal_error", "The gateway failed to handle this request."));
 });
 
 export default {

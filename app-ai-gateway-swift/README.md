@@ -73,50 +73,68 @@ let (bytes, response) = try await gateway.withAuthorizedRequest(
 ) { try await URLSession.shared.bytes(for: $0) }
 ```
 
-If the gateway answers `401`, the helper discards its token, builds the
-request again with a fresh token and, where requests are signed, a fresh
-proof, and sends it once more. That recovers from an expired gateway token or
-one that names no install (`401 auth_required`), and from an app switched to
-verify every request after the token was cached (`401 assertion_required`).
-It retries any `401` without reading the body, including one a provider
-returned through the proxy, such as for a provider key the provider rejected;
-that costs one extra token exchange and one repeated provider call, and
-nothing more. A thrown error and every other status, `403` and `429` included,
-come back to you untouched, except one `403` described below.
-`authorizedRequest` remains available for apps that want to drive the retry
-themselves.
+The helper acts only on a refusal the gateway marks as its own, in the
+`X-AGW-Error` header, and never reads the body for it, so a stream stays
+yours. A provider's answer never carries that header, so a provider's own
+`401` or `403` comes back to you as it is and is never sent again.
+
+- `401 auth_required` (an expired gateway token, or one that names no
+  install) and `401 assertion_required` (an app switched to verify every
+  request after the token was cached): the helper forgets the token the
+  request was sent with, builds the request again with a fresh token and,
+  where requests are signed, a fresh proof, and sends it once more.
+- `403 attest_failed` on a signed request: it sends once more with a fresh
+  proof. If that is refused too, it registers a new key, gets a token for it,
+  and sends a third time. A new key costs an attestation with Apple and starts
+  a new request count for the install, so it is never the first step, and
+  requests refused at the same time share one new key. The token exchange
+  does the same: once more with a fresh challenge, then a new key. Nothing
+  helps when the key's environment is no longer accepted, or when the request
+  was changed after it was signed.
+
+Whatever the last send returns comes back to you. A thrown error and every
+other status come back untouched. `authorizedRequest` remains available for
+apps that want to drive the retry themselves.
 
 A job's status, result and cancel links point at the gateway. Follow one with
-`withAuthorizedRequest(gatewayLink:)`, which signs it like any other request.
-Only a link to this app on this gateway is accepted, so the gateway token is
-never sent anywhere else.
+`withAuthorizedRequest(gatewayLink:)`, which signs it like any other request,
+and pass `method: "PUT"` for a cancel link. Only a link to this app on this
+gateway is accepted, so the gateway token is never sent anywhere else. A status
+link can redirect to the result, which needs a proof of its own, so turn off
+redirects in your transport and let the helper follow them:
 
-When a sign-in step fails on the device after the gateway handed out a
-challenge, such as App Attest failing to reach Apple, the client reports the
-step and the error's domain and code to `POST /v2/apps/{app}/auth/failure`.
-It never sends the error's text. The report goes out in the background, so
-the error still reaches you at once. A refusal the gateway answered is not
-reported, because the gateway has recorded it already.
+```swift
+let (data, response) = try await gateway.withAuthorizedRequest(gatewayLink: statusLink) {
+    try await URLSession.shared.data(for: $0, delegate: GatewayRedirectBlocker())
+}
+```
 
-On `403 attest_failed`, the client first tries once more with the same key:
-the token exchange with a fresh challenge, a signed request with a fresh
-proof. If that is refused too, it registers a new key, gets a token for it,
-and tries a third time. A new key costs an attestation with Apple and starts a
-new request count for the install, so it is never the first step. For a signed
-request this happens only where the body comes back as `Data`, which the
-client can read: a stream's body cannot be read without spending it, so a
-streamed `403` comes back to you. Read it with `GatewayError`, and for
-`attest_failed` call `discardAccessToken()` and send once more: the fresh
-exchange runs the same recovery. Nothing helps when the key's environment is
-no longer accepted, or when the request was changed after it was signed.
+When a sign-in step fails on the device, such as App Attest failing to reach
+Apple or your sign-in token provider throwing, the client reports the step
+and the error's domain and code to `POST /v2/apps/{app}/auth/failure`. It never
+sends the error's text. The report goes out in the background, so the error
+still reaches you at once. A refusal the gateway answered is not reported,
+because the gateway has recorded it already.
+
+### One client per signed-in session
+
+Make a client when a user signs in, and end it with `invalidate()` when they
+sign out or another user signs in; then make a new one. An ended client builds
+no request and gets no token: every call throws `GatewayClientInvalidated`. A
+request it already sent comes back with its own answer, and is never sent
+again with anyone's credentials. Install mode (`.appAttestInstall`) and API-key
+apps without sign-in need only one client.
 
 On an app whose users sign in, each user on an install has a key of their own:
 the gateway ties a key to the user who registered it, and refuses a token for
-one user signed by another's key. The client keeps one key per user, named by
-the sign-in token's `iss` and `sub`, and registers a new one only for a user
-who has none on this install. A sign-in token that is not a JWT naming both
-keeps one key for the app. A key 1.x kept is tried once for the first user who
-signs in after the upgrade.
+one user signed by another's key. The client keeps one key per user and
+registers a new one only for a user who has none on this install. It names the
+user by the sign-in token's `iss` and `sub`, which must be stable and unique
+per user: Firebase's and most providers' are. If yours are not, or your app
+sets the gateway's user ID claim to another claim, pass your own stable user
+ID as `signedInUserID:`. A sign-in token that is not a JWT naming both, with no
+`signedInUserID`, keeps one key for the app. A key 1.x kept goes to the first
+user who signs in after the upgrade, and to no one else.
 
 In the App Attest modes the gateway decides whether requests are signed. Each
 app has a "Verify App Attest on" setting, and the token exchange answers with
@@ -160,8 +178,14 @@ a signed request's URL breaks its proof.
   that serves `/v1`.
 - Custom endpoints are presets: `endpointURL(slug:)` is `presetURL(name:)`,
   and `endpointSlug:` is `preset:`.
-- New: `gatewayLink:` requests for a job's links, one key per signed-in user,
-  and the `attest_failed` recovery above.
+- New: `gatewayLink:` requests for a job's links, with redirects followed,
+  one key per signed-in user, `signedInUserID:`, `invalidate()`, and the
+  `attest_failed` recovery above.
+- Make one client per signed-in session, and call `invalidate()` on the old
+  one when the user changes. A 1.x app that kept one client across sign-ins
+  must change this.
+- The helpers act only on refusals marked with `X-AGW-Error`, so a provider's
+  own `401` is no longer sent again.
 - `GatewayErrorCode` follows the gateway's v2 codes. Added:
   `presetNotFound`, `jobNotFound`, `pricingNotConfigured`,
   `maxOutputTokensExceeded`, `providerNotConfigured`, `providerDisabled`,
@@ -170,7 +194,9 @@ a signed request's URL breaks its proof.
   `unclaimedAccessExpired` and `accountExpired`. A code a release does not
   know is `.unknown`, with the gateway's message.
 - `isRetryable` is `false` for a connection that is missing, turned off or
-  unusable, although it arrives as a `502`.
+  unusable, although it arrives as a `502`, and for a spent budget
+  (`appBudgetExhausted`) or plan allowance (`billingRequestQuotaExceeded`),
+  although they arrive as a `429`: waiting a little does not bring them back.
 - `ProviderSlug` has a constant for every provider type the gateway serves.
 - A key kept by 1.x is used again. If the gateway does not know it, the client
   registers a new one by itself.

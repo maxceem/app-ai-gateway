@@ -214,12 +214,13 @@ public struct GatewayError: Error, Sendable, LocalizedError {
     /// Never send a job submission again on its own after a `5xx`: the
     /// provider may already have accepted it, and a second one is a second job.
     ///
-    /// A spent budget or plan allowance is retryable in the same sense, but the
-    /// wait is a calendar one: ``retryAfter`` and ``monthlyRequestQuota`` say
-    /// how long.
+    /// A spent budget or plan allowance is not retryable: it comes back only
+    /// in the next period, or when its limit is raised. ``retryAfter`` and
+    /// ``monthlyRequestQuota`` say when the next period begins.
     public var isRetryable: Bool {
         switch code {
-        case .providerNotConfigured, .providerDisabled, .providerUnavailable:
+        case .providerNotConfigured, .providerDisabled, .providerUnavailable,
+             .appBudgetExhausted, .billingRequestQuotaExceeded:
             return false
         default:
             return code == .issuerVerificationUnavailable || statusCode == 429 || (500..<600).contains(statusCode)
