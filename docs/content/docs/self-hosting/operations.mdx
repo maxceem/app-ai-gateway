@@ -92,7 +92,7 @@ maintenance. Together they keep the database bounded:
 | Data | Rule |
 | --- | --- |
 | Authentication events | Deleted after 90 days. |
-| App Attest challenges | Deleted within the hour after their five-minute window has passed. One that nothing used is first recorded as a [challenge auth event](/applications/auth-events#challenges-nothing-used). An expired challenge cannot be redeemed, so nothing a client sees changes. |
+| App Attest challenges | Deleted within the hour after their five-minute window has passed. One that nothing used is first recorded as a [challenge auth event](/applications/auth-events#unused-challenges). An expired challenge cannot be redeemed, so nothing a client sees changes. |
 | Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
 | CLI authorizations | A finished browser handoff is deleted, and the short-lived copy of a one-time CLI response is cleared once its recovery window has passed. |
 | Conversation history | Where `CONVERSATIONS` is bound: each app's stored days older than its `conversations.retention_days` are deleted with their images, and everything of an app that no longer exists. A run that reaches its budget continues the next night, starting after the last app it finished. |

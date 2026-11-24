@@ -213,7 +213,7 @@ export function ProvidersPage() {
         description={
           <p>
             Apps that name <span className="font-medium text-foreground">{removing?.slug}</span> stop reaching
-            this provider at once. Their settings keep the name, so adding a connection with the same slug brings
+            this provider within a minute. Their settings keep the name, so adding a connection with the same slug brings
             them back.
           </p>
         }
@@ -992,7 +992,7 @@ function ReplaceKeyDialog({ provider, onClose }: { provider: ProviderConnection 
         if (!open) onClose();
       }}
       title="Replace the key"
-      description={provider ? `Apps using ${provider.slug} switch to the new key at once.` : undefined}
+      description={provider ? `Apps using ${provider.slug} switch to the new key within a minute.` : undefined}
       submitLabel="Replace key"
       pending={update.isPending}
       disabled={opened.conflict || opened.reloading || !secret}

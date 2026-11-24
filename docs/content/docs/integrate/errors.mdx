@@ -98,9 +98,6 @@ fixes them, so do not ask the user to sign in again.
 | --- | --- | --- |
 | `email_unverified` | 403 | The account owner has not verified their email address yet. Open the link in the verification email, or send a new one from the console. Requests are served from then on |
 
-A code that starts with `billing_` also concerns your account. Show a friendly
-message, log the code, and wait `Retry-After` seconds when the answer has it.
-
 ## Handling errors well
 
 - Retry a `429` or a `5xx` with backoff, and wait at least `Retry-After`. A
