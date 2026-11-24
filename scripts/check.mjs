@@ -47,6 +47,9 @@ const steps = [
   { name: "v2:cli:check", tier: "check" },
   { name: "v2:cli:test", tier: "test" },
   { name: "v2:timers:check", tier: "check" },
+  // Last: it starts Wrangler's local runtime several times, which would slow
+  // the suites beside it, so it takes a slot only once the rest have one.
+  { name: "v2:scripts:test", tier: "test" },
 ];
 
 const tier = process.argv[2];

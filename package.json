@@ -59,6 +59,7 @@
     "release": "node scripts/release.mjs",
     "v2:check": "pnpm --filter @app-ai-gateway/gateway-v2 check",
     "v2:test": "pnpm --filter @app-ai-gateway/gateway-v2 test",
+    "v2:scripts:test": "pnpm --filter @app-ai-gateway/gateway-v2 scripts:test",
     "v2:console:check": "pnpm --filter @app-ai-gateway/console-v2 typecheck",
     "v2:console:test": "pnpm --filter @app-ai-gateway/console-v2 test",
     "v2:console:build": "pnpm --filter @app-ai-gateway/console-v2 build",
