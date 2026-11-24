@@ -124,14 +124,8 @@ try {
 } catch (error) {
   stop(`The v1 export does not load: ${(error as Error).message}`);
 }
-// The copy holds the export's secrets: it goes whatever ends the run, an interrupt included.
+// The copy holds the export's secrets: it goes whatever ends the run (`openV1Export` handles an interrupt).
 const { close } = exported;
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    close();
-    process.exit(130);
-  });
-}
 let result;
 let statements;
 let judged;

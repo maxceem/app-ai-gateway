@@ -203,9 +203,25 @@ export const REQUIRED_TABLES = [
 /** Tables read only for the ids of deleted apps: an export of a v1 that never had them is still whole. */
 export const OPTIONAL_TABLES = ["app_usage_rollup", "app_rejection_event", "app_auth_event"] as const;
 
-function rows<T>(db: DatabaseSync, table: string, sql = `SELECT * FROM ${table}`): T[] {
+/**
+ * Every row of a table, each text value whole. node:sqlite on Node 22 cuts a
+ * text value at its first NUL byte when it reads it, so a value holding one
+ * is read as hex as well, and decoded here.
+ */
+function rows<T>(db: DatabaseSync, table: string): T[] {
   if (!tableExists(db, table)) return [];
-  return db.prepare(sql).all() as T[];
+  const columns = (db.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map((column) => column.name);
+  const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
+  const withNul = (name: string) => `CASE WHEN typeof(${quoted(name)}) = 'text' AND instr(CAST(${quoted(name)} AS BLOB), X'00') > 0 THEN hex(${quoted(name)}) END`;
+  const read = db.prepare(`SELECT ${columns.map((name, index) => `${quoted(name)}, ${withNul(name)} AS "nul_hex_${index}"`).join(", ")} FROM ${quoted(table)}`).all() as Record<string, unknown>[];
+  return read.map((raw) => {
+    const row: Record<string, unknown> = {};
+    columns.forEach((name, index) => {
+      const hex = raw[`nul_hex_${index}`];
+      row[name] = typeof hex === "string" ? Buffer.from(hex, "hex").toString("utf8") : raw[name];
+    });
+    return row as T;
+  });
 }
 
 /** Reads every settings row from a v1 database. Throws when a required table is missing. */
@@ -220,11 +236,11 @@ export function readV1Settings(db: DatabaseSync): V1Settings {
     }
   }
   const blockedUsers: Record<string, number> = {};
-  for (const row of rows<{ app_id: string; n: number }>(db, "app_user", "SELECT app_id, COUNT(*) AS n FROM app_user WHERE status = 'blocked' GROUP BY app_id")) {
+  for (const row of db.prepare("SELECT app_id, COUNT(*) AS n FROM app_user WHERE status = 'blocked' GROUP BY app_id").all() as { app_id: string; n: number }[]) {
     blockedUsers[row.app_id] = row.n;
   }
   const usageRoutes: Record<string, string[]> = {};
-  for (const row of rows<{ app_id: string; route: string | null }>(db, "app_usage_event", "SELECT DISTINCT app_id, route FROM app_usage_event WHERE route IS NOT NULL ORDER BY route")) {
+  for (const row of db.prepare("SELECT DISTINCT app_id, route FROM app_usage_event WHERE route IS NOT NULL ORDER BY route").all() as { app_id: string; route: string | null }[]) {
     if (row.route !== null) (usageRoutes[row.app_id] ??= []).push(row.route);
   }
   return {
@@ -392,15 +408,24 @@ export function loadV1Export(sql: string): DatabaseSync {
 /**
  * A v1 export file, read a piece at a time into a database in a new private
  * temporary folder. `close` deletes the folder: the database holds the same
- * secrets as the export.
+ * secrets as the export. Until then, SIGINT and SIGTERM delete it and exit.
  */
 export async function openV1Export(path: string): Promise<{ db: DatabaseSync; close: () => void }> {
   const folder = mkdtempSync(join(tmpdir(), "agw-v1-export-"));
+  // From here on the folder holds the export's secrets: an interrupt, even during the load, deletes it first.
+  const interrupted = () => {
+    close();
+    process.exit(130);
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
   const db = new DatabaseSync(join(folder, "v1.sqlite"), { enableForeignKeyConstraints: false });
-  const close = () => {
+  function close(): void {
+    process.off("SIGINT", interrupted);
+    process.off("SIGTERM", interrupted);
     if (db.isOpen) db.close();
     rmSync(folder, { recursive: true, force: true });
-  };
+  }
   try {
     const loader = new ExportLoader(db);
     for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: 1 << 20 })) loader.push(chunk as string);

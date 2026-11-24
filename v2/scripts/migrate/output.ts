@@ -116,6 +116,9 @@ const HEADINGS: Record<ReportLine["kind"], string> = {
   check: "Moved, worth a look",
 };
 
+/** Lines left out by design, which need no decision: listed last in "Read before applying". */
+const ROUTINE: ReadonlySet<string> = new Set(["invitations", "people", "CLI and MCP sign-ins", "App Attest keys"]);
+
 /** Whether a line belongs in "Read before applying": every row left out, and every line marked `first`. */
 export function readFirst(line: ReportLine): boolean {
   return line.kind === "left_out" || line.first === true;
@@ -137,11 +140,14 @@ export function reportMarkdown(rows: V2Rows, report: readonly ReportLine[], mome
     "",
   ];
   if (first.length === 0) lines.push("Nothing.");
+  const decisions = first.filter((line) => !ROUTINE.has(line.subject));
   for (const kind of ["left_out", "changed", "check"] as const) {
-    const matching = sorted(first.filter((line) => line.kind === kind));
+    const matching = sorted(decisions.filter((line) => line.kind === kind));
     if (matching.length === 0) continue;
     lines.push(`### ${HEADINGS[kind]} (${matching.length})`, "", ...matching.map(bullet), "");
   }
+  const routine = sorted(first.filter((line) => ROUTINE.has(line.subject)));
+  if (routine.length > 0) lines.push(`### Routine, no action (${routine.length})`, "", ...routine.map(bullet), "");
   lines.push("", "## Rows written", "", "| Table | Rows |", "| --- | --- |");
   for (const table of TABLE_ORDER) lines.push(`| ${table} | ${rows[table].length} |`);
   for (const kind of ["changed", "check"] as const) {
