@@ -890,7 +890,8 @@
       "cache_write_1h": 10.0,
       "output": 25.0,
       "author": "Anthropic",
-      "release_date": "2025-11-24"
+      "release_date": "2025-11-24",
+      "retirement_date": "2027-01-22"
     },
     "claude-sonnet-5": {
       "kind": "text",
@@ -1034,7 +1035,8 @@
       "long_cached_input": 0.4,
       "long_output": 4.0,
       "author": "xAI",
-      "release_date": "2026-04-16"
+      "release_date": "2026-04-16",
+      "unlisted_since": "2026-11-24"
     },
     "grok-4.3": {
       "kind": "text",
@@ -1432,6 +1434,14 @@
     }
   },
   "perplexity": {
+    "google/gemini-4-neon": {
+      "kind": "text",
+      "input": 3.0,
+      "cached_input": 0.15,
+      "output": 15.0,
+      "author": "Google",
+      "release_date": "2026-11-24"
+    },
     "google/gemini-3.6-flash": {
       "kind": "text",
       "input": 1.5,
@@ -2163,6 +2173,14 @@
     }
   },
   "together": {
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017-fast": {
+      "kind": "text",
+      "input": 0.6,
+      "cached_input": 0.012,
+      "output": 2.4,
+      "author": "DeepSeek",
+      "release_date": "2026-11-24"
+    },
     "tencent/Hy4": {
       "kind": "text",
       "input": 0.834,
