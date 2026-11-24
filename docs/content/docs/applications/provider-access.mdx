@@ -105,9 +105,10 @@ Exceptions:
   name passes the app's model list. `fal.queue` checks prices but does not apply
   rewrites.
 - On other operations, a model you allowed whose price later disappears is still
-  served, and its charge is recorded as `unresolved` until a price exists. A
-  later price adds a correction and keeps the original row, so filtering by
-  `unresolved` can still show charges whose cost was counted later.
+  served, and its charge is recorded as `unresolved`. If a suitable price
+  appears while the gateway is still retrying, about three days, it adds a
+  correction and keeps the original row. So the charges API filtered by
+  `price_source=unresolved` can still show charges whose cost was counted later.
 
 See [Model pricing](/providers/model-pricing).
 

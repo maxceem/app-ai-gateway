@@ -83,9 +83,10 @@ Each charge records its **price source**.
   OpenRouter does this, for example.
 - `unresolved`: the gateway could not price the charge when it was made: it had
   no price that could bill the usage, or no usage to price. One with usage is
-  priced on a later retry, once a suitable price exists. That adds a correction
-  and keeps the original row, so filtering by `unresolved` can still show charges
-  whose cost was counted later.
+  priced on a later retry, if a suitable price appears while retries are still
+  running. That adds a correction and keeps the original row, so
+  `GET /v2/admin/apps/{app}/charges?price_source=unresolved` can still show
+  charges whose cost was counted later.
 - `not_priced`: a [passthrough](/applications/provider-access#passthrough) call
   with no price. The gateway reads no model there, so it has nothing to price.
 
