@@ -21,7 +21,9 @@ It is off for every app until you turn it on.
   often it is sent. The record names it as
   `agw-media:<YYYY-MM-DD>/media/<sha256>.<ext>` in the place its data was.
   Two kinds stay inside the record, if you keep that kind: the pieces of a
-  streamed recording, and the text of an attached plain-text document.
+  streamed recording, and the text of an Anthropic custom-content document
+  (`source.type` `content`). A plain-text document (`source.type` `text`) is
+  kept as a `.txt` file like other files.
 
 Each kind of attachment can be left out: **Images**, **Audio** and **Files**, all
 kept unless you turn one off. Media left out is recorded as
@@ -38,9 +40,12 @@ Some things are recorded by their size instead of their content:
 Only calls are stored: requests to an app's allowed operations, and presets.
 These are never stored, though their usage is still recorded:
 
-- a [passthrough](/applications/provider-access#passthrough) call;
-- a job, such as a fal request;
-- a live session, and the request that makes its token.
+- a [passthrough](/applications/provider-access#passthrough) call, including one
+  that makes a live-session token;
+- a job, such as a fal request.
+
+A live session itself is never stored, and is not in usage: only the request
+that made its token is recorded.
 
 A body is not kept if it holds the exact text of a credential the call used: the
 provider key, a Cloudflare AI Gateway token, or the app's own credential (its app

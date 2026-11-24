@@ -49,7 +49,8 @@ will not clear it.
 - The block may be left out: then the app has no limits.
 - `per_minute`, `per_day` and `monthly_nano` may each be `null`, which means no
   limit for that field alone. A request limit must be a whole number above `0`.
-  A budget may be `0`, which refuses every call that costs money.
+  A budget may be `0`, which refuses every request it covers, even one that
+  would cost nothing, whenever the month's spend can be read.
 - `per_user` limits on an app with no end users are refused when you save. A
   `per_user` block of `null`s is accepted.
 - The key is `per_user` on every kind of app. `spending.scope` is

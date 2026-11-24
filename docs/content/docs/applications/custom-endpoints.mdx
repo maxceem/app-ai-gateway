@@ -51,7 +51,7 @@ The request is checked exactly like a provider proxy request: a gateway token or
 an app key, plus `X-App-Version` with a gateway token. Limits, usage and the
 error format are the same. The answer keeps the serving provider's own format,
 and streams as it arrives. An unknown name is refused with
-`404 preset_not_found`. See [Calling presets](/integrate/endpoints).
+`404 preset_not_found`.
 
 The app's model rewrites do not apply to presets: a preset names its models
 itself.
@@ -77,8 +77,10 @@ The first target is special:
 A fallback that cannot work, because its connection is gone or turned off, is
 left out of the chain.
 
-Every attempt is recorded as its own charge. A failed attempt that produced no
-usage costs nothing. The app's **Usage** tab can group charges by preset.
+Every attempt is recorded as its own charge. An attempt that failed before a
+successful answer costs nothing. A stream that broke before the gateway read its
+usage has an unknown cost, and is charged if usage it can price arrives later.
+The app's **Usage** tab can group charges by preset.
 
 ## In the settings
 

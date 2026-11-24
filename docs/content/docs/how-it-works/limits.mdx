@@ -79,8 +79,11 @@ cannot use up the whole app's limit before their own limit stops them.
   install's, its user's and, when known, its Apple Account's month alike. So
   changing whose month an iOS budget counts, mid-month, counts the month so far
   too.
-- **A budget of zero refuses every call that costs money**, whenever the month's
-  total can be read. Leave the field empty for no limit instead. A request limit
+- **A budget of zero refuses every request it covers**, whenever the month's
+  spend can be read: the limit compares the spend with the budget before the
+  provider is called, so it refuses even a request that would cost nothing. An
+  unpriced passthrough call is not covered by budgets. Leave the field empty for
+  no limit instead. A request limit
   of zero is refused when you save, as a likely typo.
 - **Changes reach every request within a minute** in normal operation. See
   [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).

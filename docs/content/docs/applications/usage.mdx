@@ -7,9 +7,11 @@ An app's **Usage** tab shows what the app has done. The **Apps** page sums the
 same figures for the month across all your apps.
 
 Every provider attempt is recorded as one **charge**: its model, tokens, cost and
-outcome. A fallback chain records one charge per attempt. A failed attempt that
-produced no usage costs nothing. One that failed part-way, such as a stream that
-started and then broke, is charged for the usage the gateway got.
+outcome. A fallback chain records one charge per attempt. An attempt that failed
+before a successful answer costs nothing. A stream that started and then broke
+before the gateway read its usage has an unknown cost, and it may still have
+cost money at the provider. It is charged if the gateway later gets usage it can
+price.
 
 ## Daily usage by provider
 
@@ -77,9 +79,10 @@ Each charge records its **price source**.
   OpenRouter does this, for example.
 - `unresolved`: the gateway could not price the charge when it was made. Either
   it had usage but no price that could bill it, or it had no usage it could read,
-  even with a price set. When it has usage, it tries to price the charge again
-  for about three days, as soon as a price exists; after that it stays unpriced.
-  Without usage there is nothing to price, so it stays unpriced.
+  even with a price set. When it has usage, it prices the charge on a retry once
+  a suitable price exists. The first retry is about an hour later, and the wait
+  grows to six hours; after about three days it stops, and the charge stays
+  unpriced. Without usage there is nothing to price, so it stays unpriced.
 - `not_priced`: a [passthrough](/applications/provider-access#passthrough) call
   with no price. The gateway reads no model there, so it has nothing to price.
 

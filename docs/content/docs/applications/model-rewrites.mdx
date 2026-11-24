@@ -17,11 +17,16 @@ To add one, click **Add rewrite**. Enter the model the app asks for in the first
 box and the model to send in the second. Click **Save rewrites** to save. The
 model sent must have a price, or saving is refused.
 
-A rewrite applies on every connection, to calls through the provider proxy where
-the request chooses the model and names that one. It does not apply where the
-model is fixed by the path or the operation, nor to jobs, such as `fal.queue`:
-those run the model they name. It is one step only: its target is never rewritten
-again. Presets name their models themselves and are not rewritten.
+A rewrite applies on every connection, to the model a call through the provider
+proxy selects: in the body, in the path (as on Gemini and `fal.run`), or the
+provider's default when the request names none (as on Deepgram). It does not
+apply to:
+
+- operations whose model is fixed;
+- jobs, such as `fal.queue`, which run the model they name;
+- presets, which name their models themselves.
+
+It is one step only: its target is never rewritten again.
 
 ## In the settings
 

@@ -56,10 +56,14 @@ old one.
 
 ### What the app sends
 
-The app sends the identity provider's token in the `issuer_token` field of the
-JSON body of `POST /v2/apps/{app}/auth/token` (and, for an iOS app registering
-its key, of `POST /v2/apps/{app}/auth/register`). It gets a gateway token back,
-and sends that with its calls. See [Server applications](/integrate/server).
+The app sends the identity provider's token in the `issuer_token` field of a
+JSON body. An iOS app first registers its App Attest key at
+`POST /v2/apps/{app}/auth/register`, which answers the `user_id`. Then, and on
+every later sign-in, it trades for a gateway token at
+`POST /v2/apps/{app}/auth/token`, which answers it as `access_token`. A server
+app only does the second: it sends its app key and the sign-in token to
+`POST /v2/apps/{app}/auth/token`. The app sends the gateway token with its
+calls.
 
 A refused trade answers one of three codes, chosen by what the app should do
 next:
@@ -103,12 +107,15 @@ Each of these is listed on the app's **Errors** tab. See
 - `required_claims` is the paid-user check. See
   [Subscription check](/applications/auth-policy/subscription-check).
 
-On calls to the provider proxy, to presets and to `/me`, the gateway takes the
-gateway token from the first of these headers that has a value:
+On calls to the provider proxy, the gateway takes the gateway token from the
+first of these headers that has a value:
 
 1. `Authorization`;
-2. the provider's own key header, such as Anthropic's `x-api-key`;
+2. the connection's own key header, such as Anthropic's `x-api-key`;
 3. `token_header`, if set.
+
+A preset uses its first connection's key header in step 2. `/me` has no
+connection, so it skips step 2.
 
 It does not try the next one if the first holds something else, so
 `token_header` works only when the headers before it are empty. With a provider

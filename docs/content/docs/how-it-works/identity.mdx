@@ -64,10 +64,12 @@ sign-in token with every request. It trades its proof and that token once, at
 `/v2/apps/{app}/auth/token`, for a **gateway token** that lasts one hour and
 stands for both.
 
-Requests with a gateway token also carry an `X-App-Version` header: the app's
-own version, such as `1.4.2` or `1.4.2 (45)`. A request without it is refused
-with `400 invalid_request`. The gateway records it on every charge, so the app's
-**Usage** tab can show whether a problem belongs to one release.
+Provider proxy and preset requests with a gateway token also carry an
+`X-App-Version` header: the app's own version, such as `1.4.2` or `1.4.2 (45)`.
+Such a request without it is refused with `400 invalid_request`; `/me` does not
+need it. The gateway records it on every charge, so the app's **Usage** tab can
+show whether a problem belongs to one release. Only a value shaped like a version
+is saved.
 
 A server app with no signed-in users skips the trade and sends its app key
 directly.
