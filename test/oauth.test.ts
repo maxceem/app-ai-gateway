@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { BillingRuntime } from "../src/billing/contract";
 import { maintenanceSweepStatements } from "../src/auth/identity";
@@ -79,6 +79,23 @@ function runtime(cloud = true, overrides: Record<string, unknown> = {}): Env {
 }
 
 let address = crypto.randomUUID();
+
+/**
+ * Loads what the Worker mounts lazily, once, before any test runs.
+ *
+ * The management bundle behind the OAuth paths, the MCP routes and the MCP
+ * SDK are evaluated by the first request an isolate sends them: about 2.6 s
+ * between them on an idle machine, several times that on a busy one. Without
+ * this, that cost landed inside whichever test came first, the discovery test
+ * and the consent flow, and pushed them past their 5 s timeout on a loaded
+ * machine while their own work took a fraction of it. The tests still reach
+ * these modules through the same lazy mounts; they only find them loaded.
+ */
+beforeAll(async () => {
+  await import("../src/routes/management");
+  await import("../src/routes/mcp");
+  await import("@modelcontextprotocol/server");
+}, 30_000);
 
 beforeEach(async () => {
   address = crypto.randomUUID();
