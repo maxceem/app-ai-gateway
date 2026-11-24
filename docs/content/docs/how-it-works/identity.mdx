@@ -23,7 +23,8 @@ your app, and the gateway checks that against your Team ID and Bundle ID. The
 app then trades an App Attest assertion for a gateway token that lasts one
 hour. By default it also signs every request with the same key. There is no
 shared key to build into the app. The Swift package that does all this for an
-iOS app is coming with the v2 SDK.
+iOS app is coming with the v2 SDK. Until then, [iOS apps](/integrate/ios)
+describes the HTTP calls.
 
 A **server** app proves itself with an app key, a long-lived `agw_…` secret.
 With no signed-in users it sends that key with every call. With signed-in users

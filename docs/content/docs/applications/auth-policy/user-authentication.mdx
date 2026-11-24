@@ -60,8 +60,8 @@ The app sends the identity provider's token in the `issuer_token` field of a
 JSON body, with what proves the app itself:
 
 - **A server app** sends its app key in `api_key`, to
-  `POST /v2/apps/{app}/auth/token`.
-- **An iOS app** takes three steps:
+  `POST /v2/apps/{app}/auth/token`. See [Server applications](/integrate/server#signed-in-users).
+- **An iOS app** takes three steps, described in full in [iOS apps](/integrate/ios):
   1. It asks `POST /v2/apps/{app}/auth/challenge` for a challenge.
   2. To register its App Attest key, it sends `key_id`, `attestation` and the
      challenge to `POST /v2/apps/{app}/auth/register`, which answers the

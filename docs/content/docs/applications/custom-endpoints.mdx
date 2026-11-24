@@ -51,7 +51,7 @@ The request is checked exactly like a provider proxy request: a gateway token or
 an app key, plus `X-App-Version` with a gateway token. Limits, usage and the
 error format are the same. The answer keeps the serving provider's own format,
 and streams as it arrives. An unknown name is refused with
-`404 preset_not_found`.
+`404 preset_not_found`. See [Calling presets](/integrate/endpoints).
 
 The app's model rewrites do not apply to presets: a preset names its models
 itself.
