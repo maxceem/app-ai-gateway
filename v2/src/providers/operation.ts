@@ -522,6 +522,12 @@ export interface OperationDescription {
   readonly transport: Transport;
   readonly model: ModelLocation;
   readonly style?: ApiStyle;
+  /**
+   * Added by `withV1Paths` (`./llm.ts`): a path v1 served by its shape alone,
+   * not one the provider documents. A preset with no operation named prefers
+   * the provider's own (`presetOperation`).
+   */
+  readonly v1Layout?: true;
   readonly policy?: RequestPolicy;
   readonly outbound?: OutboundFields;
   readonly background?: readonly BackgroundOption[];

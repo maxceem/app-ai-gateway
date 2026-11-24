@@ -119,6 +119,8 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   transport: "kept",
   model: "kept",
   style: "kept",
+  // A custom path is the customer's own, never one v1 served by its shape.
+  v1Layout: "replaced",
   policy: "kept",
   outbound: "kept",
   background: "kept",

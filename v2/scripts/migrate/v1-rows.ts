@@ -3,10 +3,14 @@
  * export holds them, and the one place they are read from that export.
  *
  * A v1 export is what `wrangler d1 export` writes: SQL that creates every table
- * and inserts every row. It is loaded whole into an in-memory SQLite database
- * (`node:sqlite`), and read from there with plain SELECTs, so the script needs
+ * and inserts every row. It is read a piece at a time into a SQLite database
+ * (`node:sqlite`) in a private temporary folder, so an export larger than
+ * memory still loads, and read from there with plain SELECTs. The script needs
  * no access to v1 at all.
  */
+import { createReadStream, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 type Text = string;
@@ -160,6 +164,12 @@ export interface V1Settings {
   gateways: V1Gateway[];
   /** App ids v1 still names in its history, though the app is gone: never given out again in v2. */
   historyAppIds: string[];
+  /** Accounts v1 marked activated (`account_activation`), whatever their owners' addresses. */
+  activatedAccountIds: string[];
+  /** Per app, how many of its end users v1 blocked (`app_user.status`). */
+  blockedUsers: Record<string, number>;
+  /** Per app, the `slug/path` routes its usage shows it called, as v1 recorded them. */
+  usageRoutes: Record<string, string[]>;
 }
 
 /** The tables whose rows name app ids, for the ids of deleted apps. */
@@ -183,6 +193,14 @@ export function readV1Settings(db: DatabaseSync): V1Settings {
       if (typeof row.app_id === "string" && row.app_id !== "") historyAppIds.add(row.app_id);
     }
   }
+  const blockedUsers: Record<string, number> = {};
+  for (const row of rows<{ app_id: string; n: number }>(db, "app_user", "SELECT app_id, COUNT(*) AS n FROM app_user WHERE status = 'blocked' GROUP BY app_id")) {
+    blockedUsers[row.app_id] = row.n;
+  }
+  const usageRoutes: Record<string, string[]> = {};
+  for (const row of rows<{ app_id: string; route: string | null }>(db, "app_usage_event", "SELECT DISTINCT app_id, route FROM app_usage_event WHERE route IS NOT NULL ORDER BY route")) {
+    if (row.route !== null) (usageRoutes[row.app_id] ??= []).push(row.route);
+  }
   return {
     users: rows(db, "mgmt_user"),
     logins: rows(db, "mgmt_user_account"),
@@ -196,16 +214,136 @@ export function readV1Settings(db: DatabaseSync): V1Settings {
     providers: rows(db, "provider"),
     gateways: rows(db, "provider_gateway"),
     historyAppIds: [...historyAppIds].sort(),
+    activatedAccountIds: rows<{ organization_id: string }>(db, "account_activation").map((row) => row.organization_id),
+    blockedUsers,
+    usageRoutes,
   };
 }
 
 /**
- * A v1 export, loaded into a fresh in-memory database. Foreign keys are not
- * enforced: an export writes each table's rows right after the table, so a
- * row can come before the table it refers to.
+ * Splits SQL text into whole statements, a piece at a time: a `;` ends a
+ * statement only outside a quoted string or name (`'…'`, `"…"`, `` `…` ``,
+ * where a doubled quote stays inside) and outside a comment (`-- …` to the end
+ * of the line, `/* … *\/`). Comments stay in the statement, which SQLite
+ * skips.
  */
+export class StatementSplitter {
+  private pending = "";
+  /** What the scan is inside: a quote character, `--`, `/*`, or nothing. */
+  private inside: string | null = null;
+  /** Where scanning resumes in `pending`. */
+  private scanned = 0;
+
+  /** The statements `chunk` completes. */
+  push(chunk: string): string[] {
+    this.pending += chunk;
+    const done: string[] = [];
+    let start = 0;
+    let at = this.scanned;
+    for (; at < this.pending.length; at += 1) {
+      const char = this.pending[at]!;
+      const next = this.pending[at + 1];
+      if (this.inside === "--") {
+        if (char === "\n") this.inside = null;
+      } else if (this.inside === "/*") {
+        if (char === "*") {
+          if (next === undefined) break;
+          if (next === "/") {
+            this.inside = null;
+            at += 1;
+          }
+        }
+      } else if (this.inside !== null) {
+        if (char === this.inside) this.inside = null;
+      } else if (char === "'" || char === '"' || char === "`") {
+        this.inside = char;
+      } else if (char === "-" || char === "/") {
+        // A comment opener may be cut between two pieces: wait for the next.
+        if (next === undefined) break;
+        if (char === "-" && next === "-") this.inside = "--";
+        else if (char === "/" && next === "*") this.inside = "/*";
+        if (this.inside !== null) at += 1;
+      } else if (char === ";") {
+        done.push(this.pending.slice(start, at + 1));
+        start = at + 1;
+      }
+    }
+    this.pending = this.pending.slice(start);
+    this.scanned = at - start;
+    return done;
+  }
+
+  /** What is left once the text has ended: nothing but blanks and comments in a whole export. */
+  rest(): string {
+    return this.pending.replace(/--[^\n]*(\n|$)/gu, "").replace(/\/\*[\s\S]*?\*\//gu, "").trim();
+  }
+}
+
+/** How many statements are run at once while loading. */
+const BATCH = 500;
+
+/**
+ * Loads an export's text into `db` as it arrives, in one transaction. Foreign
+ * keys are not enforced: an export writes each table's rows right after the
+ * table, so a row can come before the table it refers to.
+ */
+class ExportLoader {
+  private readonly db: DatabaseSync;
+  private readonly splitter = new StatementSplitter();
+  private batch: string[] = [];
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+    db.exec("BEGIN");
+  }
+
+  push(chunk: string): void {
+    for (const statement of this.splitter.push(chunk)) {
+      this.batch.push(statement);
+      if (this.batch.length >= BATCH) this.flush();
+    }
+  }
+
+  finish(): void {
+    this.flush();
+    if (this.splitter.rest() !== "") throw new Error("the export ends inside a statement: it is cut short");
+    this.db.exec("COMMIT");
+  }
+
+  private flush(): void {
+    if (this.batch.length > 0) this.db.exec(this.batch.join("\n"));
+    this.batch = [];
+  }
+}
+
+/** A v1 export held as text, loaded into a fresh in-memory database (for tests and small exports). */
 export function loadV1Export(sql: string): DatabaseSync {
   const db = new DatabaseSync(":memory:", { enableForeignKeyConstraints: false });
-  db.exec(sql);
+  const loader = new ExportLoader(db);
+  loader.push(sql);
+  loader.finish();
   return db;
+}
+
+/**
+ * A v1 export file, read a piece at a time into a database in a new private
+ * temporary folder. `close` deletes the folder: the database holds the same
+ * secrets as the export.
+ */
+export async function openV1Export(path: string): Promise<{ db: DatabaseSync; close: () => void }> {
+  const folder = mkdtempSync(join(tmpdir(), "agw-v1-export-"));
+  const db = new DatabaseSync(join(folder, "v1.sqlite"), { enableForeignKeyConstraints: false });
+  const close = () => {
+    if (db.isOpen) db.close();
+    rmSync(folder, { recursive: true, force: true });
+  };
+  try {
+    const loader = new ExportLoader(db);
+    for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: 1 << 20 })) loader.push(chunk as string);
+    loader.finish();
+    return { db, close };
+  } catch (error) {
+    close();
+    throw error;
+  }
 }

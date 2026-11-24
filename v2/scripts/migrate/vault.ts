@@ -9,8 +9,8 @@
 import { readFileSync } from "node:fs";
 import { secretVault } from "../../src/vault/index.ts";
 import { secretContext } from "../../src/vault/secrets.ts";
-import { VAULT_SERVICE, type SecretVaultContext } from "../../src/vault/types.ts";
-import type { Resealer, V1Sealed } from "./settings.ts";
+import { SecretVaultBlobError, VAULT_SERVICE, type SecretVaultContext } from "../../src/vault/types.ts";
+import { SecretDoesNotOpen, type Resealer, type V1Sealed } from "./settings.ts";
 
 /** A vault configuration file: `NAME=value` lines, `#` comments, values optionally quoted. Only `SECRET_VAULT_*` names are kept. */
 export function readVaultFile(path: string): Record<string, string> {
@@ -36,14 +36,33 @@ function v1Context(sealed: V1Sealed): SecretVaultContext {
   return { ...ids, service: VAULT_SERVICE };
 }
 
-/** Opens with v1's vault, seals with v2's. A vault that cannot be built throws here, before anything is read. */
+/**
+ * Opens with v1's vault, seals with v2's. A vault that cannot be built throws
+ * here, before anything is read.
+ *
+ * Only a blob that does not open under its row's context is that row's
+ * problem (`SecretDoesNotOpen`): the row is left out and reported. Anything
+ * else (a missing key version, cf-kms out of reach, v2's vault refusing to
+ * seal) is the run's problem, and stops it before anything is written.
+ */
 export function vaultResealer(v1Env: Record<string, string>, v2Env: Record<string, string>): Resealer {
   const v1 = secretVault(v1Env);
   const v2 = secretVault(v2Env);
   return async (blob, from, to) => {
-    const secret = await v1.decryptSecret(blob, v1Context(from));
-    return to.kind === "providerKey"
-      ? v2.encryptSecret(secret, secretContext("providerKey", [...to.identity]))
-      : v2.encryptSecret(secret, secretContext("cloudflareGatewayToken", [...to.identity]));
+    let secret: string;
+    try {
+      secret = await v1.decryptSecret(blob, v1Context(from));
+    } catch (error) {
+      // A version the v1 vault file lacks is the file's fault, not the row's.
+      if (error instanceof SecretVaultBlobError && !error.message.includes("unavailable KEK version")) throw new SecretDoesNotOpen(error.message);
+      throw new Error(`v1's vault could not open a secret: ${(error as Error).message}`, { cause: error });
+    }
+    try {
+      return await (to.kind === "providerKey"
+        ? v2.encryptSecret(secret, secretContext("providerKey", [...to.identity]))
+        : v2.encryptSecret(secret, secretContext("cloudflareGatewayToken", [...to.identity])));
+    } catch (error) {
+      throw new Error(`v2's vault could not seal a secret: ${(error as Error).message}`, { cause: error });
+    }
   };
 }
