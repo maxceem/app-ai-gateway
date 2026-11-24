@@ -87,10 +87,13 @@ an existing app. Both save nothing, and need only the **Read only** grant. Send
 `name`, `config` and `status` only: validation refuses a `revision`. Add the
 revision when saving a change to an existing app.
 
-`GET /v2/admin/apps/{app}/check` says whether an app is ready to serve: it
-lists every connection the app's routing and presets name, with its status, and
-answers `ready`. It
-sends no provider request, so it does not test a key, a device or a sign-in.
+`GET /v2/admin/apps/{app}/check` lists every connection the app's routes and
+presets name, with its status. `ready` means the app is active and at least one connection its routes or
+presets use can be reached: one that is active, or, for a preset, a first
+connection turned off with an active fallback. It checks connection status
+only, not that a request will serve. It sends no provider request, so it does not test a key, a device or a
+sign-in. Confirm with a real request, or the example requests from
+`GET /v2/admin/apps/{app}/snippet`.
 
 ## Changing an app
 

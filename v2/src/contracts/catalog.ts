@@ -291,7 +291,7 @@ export const CATALOG = {
     tags: ["Admin applications"],
     summary: "Check whether an app is ready to serve requests",
     description:
-      "Checks the stored config as an update would, lists every provider connection its routing names with its status (a disabled one as disabled, a deleted one as missing), and answers `ready` when the app is active and at least one of them is active. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
+      "Checks the stored config as an update would, and lists every provider connection its routes and presets name, with its status (a disabled one as disabled, a deleted one as missing). `ready` means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: confirm with a real request, or the example requests. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
     security: "management",
     response: AppCheckResponseSchema,
     responseDescription: "What the check found, and what it did not try.",

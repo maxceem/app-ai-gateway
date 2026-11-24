@@ -33,9 +33,10 @@ your own task on the last line:
 ```text
 Read https://docs.appaigateway.com/agents.md, then use agw for this task.
 Check which gateway and account agw is signed in to first. If it is not signed
-in, run agw account login --no-open --json --no-input in the background, or with
-stderr sent to a file. It waits up to ten minutes; read the link and code it
-prints on stderr as soon as they appear, and give them to me to approve.
+in, run agw account login --no-open --json --no-input as a background process,
+or in a session that shows its output as it runs: it waits up to ten minutes.
+Read the link and code it prints on stderr as soon as they appear, and give
+them to me to approve.
 Read the existing providers and apps, use --json --no-input, and validate
 changes before saving them. If a provider is missing, tell me which one and
 stop: I will add its key myself, then you carry on. Never print secrets. Keep
@@ -75,9 +76,10 @@ When a provider is missing, add its key yourself, then let the agent carry on:
 The agent then finds the new connection with `agw provider list`.
 
 When the agent runs on your own machine, it can instead run
-`agw provider add --type openai --browser`. A browser window opens there for
-you to type the key; the agent tells you so, and waits with
-`agw operation wait <id>`. Over MCP, `add_provider` answers a console link for
+`agw provider add --type openai --browser --json`. If `agw` says a browser
+window opened, type the key there; the agent then waits with
+`agw operation wait <id>`. If `agw` saved the link to a file instead, the agent
+falls back to asking you to add the key yourself. Over MCP, `add_provider` answers a console link for
 you to open, and the agent waits with `get_operation`.
 
 Do not paste provider keys into the conversation. A hidden terminal prompt keeps

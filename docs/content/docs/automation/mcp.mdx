@@ -96,7 +96,7 @@ These change nothing and never send a request to a provider.
 | `list_providers`, `get_provider` | Your provider connections, as metadata; never a key |
 | `list_apps`, `get_app` | Your apps, and one app's whole document with its revision |
 | `validate_app` | Whether an app document would be accepted, without saving it |
-| `check_app` | Whether an app can serve requests, without sending one |
+| `check_app` | Each connection the app names, with its status, and `ready`: a connection-status check that sends no request and does not prove one will serve |
 | `get_app_snippet` | Example requests for the app, with no credential in them |
 | `list_app_keys` | A server app's keys, as metadata |
 | `list_app_users`, `get_app_user` | An app's end users, and one with its usage |
@@ -131,8 +131,10 @@ connection off, which can be undone.
 
 `add_provider` takes `{ type, name, slug?, baseUrl?, pricing?, cloudflareGateway?: { accountId, gatewayId } }`;
 other top-level fields are refused. `rotate_provider_key` takes `{ id, revision }`.
-Each answers a console page for you to open and enter the key: through
-Cloudflare, the Cloudflare token (required) and the provider key (optional). The
+Each answers a console page for you to open and enter the key. When adding a
+connection through Cloudflare, you enter the Cloudflare token (required) and the
+provider key (optional). A rotation takes the new provider key only, never a
+Cloudflare token. The
 agent polls `get_operation` until `completed` or `expired`. A custom provider,
 listed paths and Vercel's pinned serving providers are set in the console. See
 [Providers](/automation/agent-manual#providers) in the agent manual.

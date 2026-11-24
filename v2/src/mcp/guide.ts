@@ -76,9 +76,13 @@ the account, the person, their role and the grant.
 - \`add_app\` and \`add_app_key\` take two calls. The first, without
   \`handle\`, checks the request and reserves it: nothing is created. The
   second, with the same arguments and the answer's \`handle\`, creates it
-  once. If you lose an answer, send the same call again: it repeats the answer
-  instead of creating another. A new key is never in the answer: give the
-  person \`reveal_url\`, where they see it once, signed in to the console.
+  once. If you lose the second call's answer, send that call again within 15
+  minutes: it repeats the answer instead of creating another. After that it is
+  refused with \`already_completed\`: read \`get_operation\` with the
+  operation's \`id\` for what was created, and check any \`notice\` about an
+  identical request before reserving again, since a new reservation can create
+  a duplicate. A new key is never in the answer: give the person
+  \`reveal_url\`, where they see it once, signed in to the console.
 
 ## Secrets
 
