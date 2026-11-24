@@ -5,10 +5,17 @@ description: The two things you set up, what each one owns, and how a request mo
 
 You set up two kinds of things in the console. **Providers** are the AI
 services you hold keys for. **Apps** are the applications that call them. A
-call always names one app and one provider:
+call through the provider proxy names one app and one provider:
 
 ```text
 https://api.appaigateway.com/v2/apps/{app}/proxy/{provider}/{provider_path}
+```
+
+A call to a [preset](/applications/custom-endpoints) names the app and the
+preset instead, and the preset names the provider:
+
+```text
+https://api.appaigateway.com/v2/apps/{app}/presets/{preset}
 ```
 
 ## Providers are shared, apps choose
@@ -23,10 +30,10 @@ own, such as `openai-dev`, so an app can name one key or the other. See
 [Add a provider key](/providers/add-a-provider).
 
 A new app may call nothing. On its **Providers** tab you choose which
-connections it may use, which **operations** on each (such as `openai.chat` or
-`anthropic.messages`), and, if you want, which models.
+connections it may use. For each one you choose which **operations** it may use,
+such as `openai.chat` or `anthropic.messages`, and, if you want, which models.
 
-Everything else about how an app calls is the app's own:
+Each app has its own settings, one tab each:
 
 - **Sign-in**: how the app proves it is your app, whether calls belong to
   signed-in users, and whether those users must have paid.
@@ -37,27 +44,30 @@ Everything else about how an app calls is the app's own:
   gateway.
 - **Limits**: requests per minute and per day, and a monthly budget, for each
   user and for the whole app.
+- **Settings**: the app's name, turning it on or off, and deleting it.
 
 ## The app ID is permanent
 
 The gateway builds an app's ID from its name and a short random ending, for
 example `example-app-a1b2c3`. The ID is the `{app}` part of every URL the app
 calls, so your app builds it into its base URL. You cannot choose it or change
-it. Renaming the app changes only the name. An ID is never given to another
-app, even after the app is deleted.
+it. Renaming the app, on its **Settings** tab, changes only the name. An ID is
+never given to another app, even after the app is deleted.
 
 The ID is not a secret. Knowing it lets nobody call the app: App Attest or an
 app key still has to pass.
 
 ## What happens to a request
 
-1. The gateway reads the app from the URL and checks who is calling: a gateway
-   token for an iOS app, or an app key for a server app.
-2. It works out which user the call belongs to, if the app has users.
-3. It checks the app's providers: is this connection allowed, this operation,
-   this model? Does the model have a price, so the cost can be counted?
-4. It refuses a blocked user, then checks the app's limits: each user's first,
-   then the app's.
+1. The gateway reads the app from the URL and checks who is calling. An iOS app,
+   and a server app with signed-in users, sends a gateway token. A server app
+   without signed-in users sends its app key.
+2. It works out which user the call belongs to, if the app has users, and
+   refuses a user you blocked.
+3. It checks what the call asks for. On the provider proxy: is this connection
+   allowed, this operation, this model? On a preset: does the preset exist? And
+   does the model have a price, so the cost can be counted?
+4. It checks the app's limits: each user's first, then the app's.
 5. It adds your provider key and sends the request to the provider. The body
    goes through as you sent it, apart from a few changes in the same format,
    such as a model rewrite or an output cap you set.
@@ -81,15 +91,17 @@ This is what lets the official SDKs work as they are. Point the OpenAI SDK's
 base URL at `…/proxy/openai/v1` and it adds `responses` or `chat/completions`
 itself. See [Calling the provider proxy](/integrate/proxy).
 
-## Changes take up to a minute
+## When changes take effect
 
-The gateway keeps app and connection settings for sixty seconds. A saved change
-to an app, a new provider key, a turned-off connection: each is live everywhere
-within a minute. Blocking a user is faster: it reaches every request within ten
-seconds.
+In normal operation:
 
-There is one exception, which keeps your apps' users served when the database
-behind the gateway is slow or down. While it is, the gateway keeps serving an
-app with the settings and keys it last read, for up to fifteen minutes. A
-change you make during such a problem can take that long to reach every
-request.
+- A saved change to an app, a new or revoked key, a connection turned off, an
+  app turned off or deleted: each reaches every request within a minute.
+- Blocking or unblocking a user reaches every request within ten seconds.
+
+The exception keeps your apps' users served when the database behind the
+gateway is slow or down. While it is, the gateway may serve a request with the
+copy of the app's settings, keys and user status it last read, up to fifteen
+minutes old. So a change you make during such a problem can take up to fifteen
+minutes to reach every request. Getting a new gateway token always reads the
+database itself, so a revoked key or a blocked user cannot get one.
