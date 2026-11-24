@@ -3040,6 +3040,43 @@ struct AppAIGatewayClientTests {
         #expect(attestations.snapshot() == 2)
     }
 
+    /// The client is ended while a `401` is being recovered from, during the
+    /// rebuild's slow token exchange: nothing is sent a second time.
+    @Test
+    func aClientEndedDuringARebuildSendsNothingMore() async throws {
+        let tokens = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            let n = tokens.increment()
+            // The rebuild's exchange is slow, so the end lands while it waits.
+            if n > 1 { Thread.sleep(forTimeInterval: 0.4) }
+            return response(request, status: 200, body: "{\"access_token\":\"token-\(n)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(),
+            credentialStore: MemoryCredentialStore(keyID: "kept-key"),
+            session: session()
+        )
+        let sends = LockedCounter()
+        await #expect(throws: GatewayClientInvalidated.self) {
+            _ = try await client.withAuthorizedRequest(provider: .openai, providerPath: "v1/responses") { request in
+                sends.increment()
+                Task {
+                    try await Task.sleep(for: .milliseconds(100))
+                    await client.invalidate()
+                }
+                let http = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: ["X-AGW-Error": "auth_required"])!
+                return (Data(), http as URLResponse)
+            }
+        }
+        #expect(sends.snapshot() == 1)
+    }
+
     /// A job's links are followed only on this gateway, for this app.
     @Test
     func aGatewayLinkIsSignedOnlyForThisAppOnThisGateway() async throws {

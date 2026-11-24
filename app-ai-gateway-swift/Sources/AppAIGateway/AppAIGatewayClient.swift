@@ -308,7 +308,7 @@ public actor AppAIGatewayClient {
         try ensureLive()
         try heldRateLimit()
         if let tokenExchangeTask {
-            let token = try await tokenExchangeTask.value
+            let token = try await liveResult(of: tokenExchangeTask)
             // Ended while it waited: the token may be the next user's.
             try ensureLive()
             return token
@@ -327,9 +327,21 @@ public actor AppAIGatewayClient {
             // A discard has already cleared it, and may have started another.
             if tokenGeneration == generation { tokenExchangeTask = nil }
         }
-        let token = try await task.value
+        let token = try await liveResult(of: task)
         try ensureLive()
         return token
+    }
+
+    /// The exchange's token, or, where the client was ended meanwhile and the
+    /// exchange cancelled, ``GatewayClientInvalidated`` rather than the
+    /// cancellation's own error.
+    private func liveResult(of task: Task<AccessToken, Error>) async throws -> AccessToken {
+        do {
+            return try await task.value
+        } catch {
+            try ensureLive()
+            throw error
+        }
     }
 
     /// `provider` is a connection's slug, not a provider type. See ``ProviderSlug``.
@@ -765,6 +777,9 @@ public actor AppAIGatewayClient {
     /// a user who signs in again uses theirs.
     public func invalidate() {
         invalidated = true
+        // Cancelled, as `deinit` does: an exchange still running must not
+        // spend a challenge or an attestation for a client that has ended.
+        tokenExchangeTask?.cancel()
         discardAccessToken()
         keyReplacement?.task.cancel()
         keyReplacement = nil
@@ -821,7 +836,9 @@ public actor AppAIGatewayClient {
             return (request, token)
         }
         do {
-            return (try await signed(request, with: token), token)
+            let signedRequest = try await signed(request, with: token)
+            try ensureLive()
+            return (signedRequest, token)
         } catch let failure as LocalSigningFailure {
             // The key the token is bound to cannot sign on this device any more —
             // the app was reinstalled or restored, and its Secure Enclave key
@@ -835,6 +852,7 @@ public actor AppAIGatewayClient {
                 }
             }
             let replacement = try await currentAccessToken()
+            try ensureLive()
             // The replacement's answer decides, should the app have changed
             // its setting in between.
             guard replacement.signsEveryRequest else {
@@ -842,7 +860,9 @@ public actor AppAIGatewayClient {
                 return (request, replacement)
             }
             do {
-                return (try await signed(request, with: replacement), replacement)
+                let signedRequest = try await signed(request, with: replacement)
+                try ensureLive()
+                return (signedRequest, replacement)
             } catch let failure as LocalSigningFailure {
                 throw failure.underlying
             }
