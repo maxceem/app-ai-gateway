@@ -294,8 +294,11 @@ public struct GatewayError: Error, Sendable, LocalizedError {
             return
         }
         let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: body)
+        // A body that could not be read, such as one left in a stream, still
+        // has its code in the header.
+        let headerCode = response.value(forHTTPHeaderField: AppAIGatewayClient.errorCodeHeaderField) ?? ""
         self.init(
-            code: envelope.flatMap { GatewayErrorCode(rawValue: $0.error.code) } ?? .unknown,
+            code: GatewayErrorCode(rawValue: envelope?.error.code ?? headerCode) ?? .unknown,
             message: envelope?.error.message ?? "Gateway request failed",
             statusCode: response.statusCode,
             data: envelope?.error.data ?? [:],

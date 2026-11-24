@@ -335,7 +335,7 @@ public actor AppAIGatewayClient {
     /// The exchange's token, or, where the client was ended meanwhile and the
     /// exchange cancelled, ``GatewayClientInvalidated`` rather than the
     /// cancellation's own error.
-    private func liveResult(of task: Task<AccessToken, Error>) async throws -> AccessToken {
+    private func liveResult<Value: Sendable>(of task: Task<Value, Error>) async throws -> Value {
         do {
             return try await task.value
         } catch {
@@ -708,6 +708,19 @@ public actor AppAIGatewayClient {
     }
 
     /// A signed request that succeeded lifts the brake on key replacement.
+    /// An exchange the gateway accepted lifts the brake on key replacement
+    /// where requests are not signed (`verify_on: token_exchange`): there the
+    /// exchange is the only place a key is checked, so its success is the
+    /// proof. Where every request is signed, only a signed request that
+    /// succeeds lifts it: an exchange can succeed with a key every request is
+    /// then refused with, and lifting there would cost an attestation per
+    /// request again.
+    private func noteAcceptedExchange(_ response: TokenResponse) {
+        guard response.verify_on != Self.verifyOnEveryRequest else { return }
+        replacementHeld = false
+        replacementProven = true
+    }
+
     private func noteSignedSuccess(_ request: URLRequest, _ response: URLResponse) {
         guard request.value(forHTTPHeaderField: Self.proofHeaderField) != nil,
               (200..<300).contains(Self.status(response))
@@ -740,7 +753,19 @@ public actor AppAIGatewayClient {
     /// Replaces a key the gateway refused, and forgets the token bound to it,
     /// so the next build exchanges the replacement.
     private func recoverFromRefusedKey(_ refused: String) async throws {
-        _ = try await replaceKey(refused: refused, issuerToken: try await reportedIssuerToken(forceRefresh: false))
+        // The token bound to the refused key is no use either way: forgotten
+        // even when no replacement could be made, so the next request runs an
+        // exchange, with its own recovery, instead of the same refusal again.
+        // Kept while replacement is held: a new exchange would only bring back
+        // the same key, and cost a challenge on every request.
+        do {
+            _ = try await replaceKey(refused: refused)
+        } catch is ReplacementHeld {
+            throw ReplacementHeld()
+        } catch {
+            if accessToken?.keyID == refused { discardAccessToken() }
+            throw error
+        }
         if accessToken?.keyID == refused { discardAccessToken() }
     }
 
@@ -1121,6 +1146,7 @@ public actor AppAIGatewayClient {
         do {
             let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
             try keep(signed.keyID, slot: slot)
+            noteAcceptedExchange(response)
             return (response, signed.keyID)
         } catch let error as GatewayError where error.code == .attestFailed {
             // First once more with the same key and a fresh challenge: a
@@ -1130,6 +1156,7 @@ public actor AppAIGatewayClient {
             do {
                 let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, again))
                 try keep(again.keyID, slot: slot)
+                noteAcceptedExchange(response)
                 return (response, again.keyID)
             } catch let error as GatewayError where error.code == .attestFailed {
                 // The gateway does not accept this key: it does not know it,
@@ -1144,6 +1171,7 @@ public actor AppAIGatewayClient {
                 do {
                     let response: TokenResponse = try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry))
                     try keep(retry.keyID, slot: slot)
+                    noteAcceptedExchange(response)
                     return (response, retry.keyID)
                 } catch {
                     reportFailure(challenge: retry.challenge, step: .token, error: error)
@@ -1222,18 +1250,25 @@ public actor AppAIGatewayClient {
     /// new request count for the install, so parallel refusals must never
     /// make one each. A timed refusal of the sign-in routes is waited out
     /// before a key is generated.
-    private func replaceKey(refused: String, issuerToken: String?) async throws -> String {
+    ///
+    /// `issuerToken` is the sign-in token the caller already holds. Without
+    /// one, it is fetched only once a new registration really starts.
+    private func replaceKey(refused: String, issuerToken known: String?? = .none) async throws -> String {
         if let done = finishedReplacement, done.refused == refused { return done.replacement }
-        if let running = keyReplacement, running.refused == refused { return try await running.task.value }
+        if let running = keyReplacement, running.refused == refused { return try await liveResult(of: running.task) }
         if finishedReplacement?.replacement == refused, !replacementProven { replacementHeld = true }
         if replacementHeld { throw ReplacementHeld() }
         try ensureLive()
         try heldRateLimit()
         replacementProven = false
-        let task = Task { try await self.registerKey(issuerToken: issuerToken) }
+        let task = Task {
+            let issuerToken: String?
+            if let known { issuerToken = known } else { issuerToken = try await self.reportedIssuerToken(forceRefresh: false) }
+            return try await self.registerKey(issuerToken: issuerToken)
+        }
         keyReplacement = (refused, task)
         defer { if keyReplacement?.refused == refused { keyReplacement = nil } }
-        let replacement = try await task.value
+        let replacement = try await liveResult(of: task)
         finishedReplacement = (refused, replacement)
         return replacement
     }
@@ -1363,7 +1398,8 @@ public actor AppAIGatewayClient {
     /// never the problem: `generateAssertion` can fail for a reason that has
     /// nothing to do with the key, and a device that threw its working key away
     /// for one of those can never get it back.
-    private func registerKey(issuerToken: String?) async throws -> String {
+    private func registerKey(issuerToken given: String?) async throws -> String {
+        var issuerToken = given
         let keyID = try await attestProvider.generateKey()
         let challenge = try await challenge()
         // Every step from here until the gateway answers can fail on the
@@ -1381,7 +1417,22 @@ public actor AppAIGatewayClient {
             ]
             if let issuerToken { body["issuer_token"] = issuerToken }
             step = .register
-            let _: RegisterResponse = try await postJSON(path: "auth/register", body: body)
+            do {
+                let _: RegisterResponse = try await postJSON(path: "auth/register", body: body)
+            } catch let error as GatewayError
+                where issuerToken != nil && (error.code == .issuerTokenRejected || error.code == .issuerClaimsMissing) {
+                // The gateway checks the sign-in token before it spends the
+                // challenge, so the same attestation is sent again with a fresh
+                // token: no second attestation with Apple. Recovered as the
+                // exchange recovers: a missing claim runs the app's recovery
+                // first, as a purchase sync may be what adds it.
+                if error.code == .issuerClaimsMissing { try await issuerRejectionRecovery?() }
+                step = .issuerToken
+                issuerToken = try await optionalIssuerToken(forceRefresh: true)
+                if let issuerToken { body["issuer_token"] = issuerToken }
+                step = .register
+                let _: RegisterResponse = try await postJSON(path: "auth/register", body: body)
+            }
         } catch {
             reportFailure(challenge: challenge, step: step, error: error)
             throw error
@@ -1456,7 +1507,8 @@ public actor AppAIGatewayClient {
     }
 
     static func isReportable(_ error: Error) -> Bool {
-        if error is GatewayError || error is CancellationError { return false }
+        // An ended client reports nothing: its sign-in stopped on purpose.
+        if error is GatewayError || error is CancellationError || error is GatewayClientInvalidated { return false }
         if let urlError = error as? URLError, urlError.code == .cancelled { return false }
         return true
     }

@@ -3077,6 +3077,209 @@ struct AppAIGatewayClientTests {
         #expect(sends.snapshot() == 1)
     }
 
+    /// On an app that checks App Attest at the exchange only, an exchange
+    /// the gateway accepts lifts the brake on key replacement: its requests
+    /// carry no proof, so no signed request ever could.
+    @Test
+    func anAcceptedExchangeLiftsTheBrakeWhereRequestsAreNotSigned() async throws {
+        let attestations = LockedCounter()
+        let accept = LockedValue(false)
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                return response(request, status: 200, body: #"{"user_id":"u"}"#)
+            }
+            if accept.get() {
+                return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600,"verify_on":"token_exchange"}"#)
+            }
+            return response(request, status: 403, body: #"{"error":{"code":"attest_failed","message":"no"}}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(attestations: attestations, numberedKeys: LockedCounter()),
+            credentialStore: MemoryCredentialStore(keyID: "kept-key"),
+            session: session()
+        )
+        // The kept key is refused, and so is its replacement.
+        await #expect(throws: GatewayError.self) { _ = try await client.gatewayAccessToken() }
+        #expect(attestations.snapshot() == 1)
+        // The replacement refused again: held, no new key.
+        await #expect(throws: GatewayError.self) { _ = try await client.gatewayAccessToken() }
+        #expect(attestations.snapshot() == 1)
+        // The gateway accepts the replacement: the brake lifts.
+        accept.set(true)
+        _ = try await client.gatewayAccessToken()
+        await client.discardAccessToken()
+        accept.set(false)
+        await #expect(throws: GatewayError.self) { _ = try await client.gatewayAccessToken() }
+        #expect(attestations.snapshot() == 2)
+    }
+
+    /// A client ended while its token exchange is answered sends no failure
+    /// report: its sign-in stopped on purpose.
+    @Test
+    func anEndedClientSendsNoFailureReport() async throws {
+        let reports = FailureReportLog()
+        let box = LockedValue<AppAIGatewayClient?>(nil)
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/failure") {
+                reports.record(request)
+                return response(request, status: 200, body: #"{"recorded":true}"#)
+            }
+            // The client is ended while the gateway answers the exchange.
+            let ended = DispatchSemaphore(value: 0)
+            Task {
+                await box.get()?.invalidate()
+                ended.signal()
+            }
+            ended.wait()
+            return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttestInstall,
+            attestProvider: MockAttestProvider(),
+            credentialStore: MemoryCredentialStore(keyID: "kept-key"),
+            session: session()
+        )
+        box.set(client)
+        await #expect(throws: (any Error).self) { _ = try await client.gatewayAccessToken() }
+        await client.settleFailureReports()
+        #expect(reports.snapshot().isEmpty)
+        // The ending usually cancels the exchange first; where it lands after
+        // the answer instead, the error it raises is never reported either.
+        #expect(AppAIGatewayClient.isReportable(GatewayClientInvalidated()) == false)
+    }
+
+    /// A replacement registered with a stale sign-in token is refused before
+    /// the gateway spends its challenge: sent again with the same attestation
+    /// and a fresh token, so Apple attests once. A missing claim runs the
+    /// app's recovery first.
+    @Test(arguments: ["issuer_token_rejected", "issuer_claims_missing"])
+    func aStaleSignInTokenAtRegistrationIsRefreshedWithoutANewAttestation(_ refusal: String) async throws {
+        let attestations = LockedCounter()
+        let registerBodies = TokenBodyLog()
+        let tokens = LockedCounter()
+        let fetches = LockedValue<[Bool]>([])
+        let recoveries = RecoveryRecorder()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                registerBodies.record(request)
+                if registerBodies.snapshot().count == 1 {
+                    return response(request, status: 403, body: "{\"error\":{\"code\":\"\(refusal)\",\"message\":\"stale\"}}")
+                }
+                return response(request, status: 200, body: #"{"user_id":"alice"}"#)
+            }
+            let n = tokens.increment()
+            return response(request, status: 200, body: "{\"access_token\":\"t\(n)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttest(issuerTokenProvider: { force in
+                fetches.set(fetches.get() + [force])
+                return force ? Self.jwt(sub: "alice") + "-fresh" : Self.jwt(sub: "alice")
+            }),
+            issuerRejectionRecovery: { await recoveries.record() },
+            attestProvider: MockAttestProvider(attestations: attestations, numberedKeys: LockedCounter()),
+            credentialStore: MemoryCredentialStore(keyID: "kept-key"),
+            session: session()
+        )
+        let sends = LockedCounter()
+        let (_, answer) = try await client.withAuthorizedRequest(provider: .openai, providerPath: "v1/responses") { request in
+            let n = sends.increment()
+            let marked = n < 3 ? ["X-AGW-Error": "attest_failed"] : [:]
+            return (Data(), HTTPURLResponse(url: request.url!, statusCode: n < 3 ? 403 : 200, httpVersion: nil, headerFields: marked)! as URLResponse)
+        }
+        #expect((answer as? HTTPURLResponse)?.statusCode == 200)
+        #expect(attestations.snapshot() == 1)
+        let bodies = registerBodies.snapshot()
+        #expect(bodies.count == 2)
+        #expect(bodies[0]["attestation"] == bodies[1]["attestation"])
+        #expect(bodies[0]["key_id"] == bodies[1]["key_id"])
+        #expect(bodies[1]["issuer_token"]?.hasSuffix("-fresh") == true)
+        #expect(fetches.get().filter { $0 } == [true])
+        #expect(await recoveries.snapshot() == (refusal == "issuer_claims_missing" ? 1 : 0))
+    }
+
+    /// Requests refused with the same key at once fetch the sign-in token for
+    /// their one replacement once, and only when it starts: the ones that
+    /// join it or reuse it fetch nothing.
+    @Test
+    func refusalsSharingAReplacementFetchTheSignInTokenOnce() async throws {
+        let fetches = LockedCounter()
+        let tokens = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                return response(request, status: 200, body: #"{"user_id":"alice"}"#)
+            }
+            let n = tokens.increment()
+            return response(request, status: 200, body: "{\"access_token\":\"t\(n)\",\"expires_in\":3600,\"verify_on\":\"every_request\"}")
+        }
+        let client = AppAIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .appAttest(issuerTokenProvider: { _ in
+                fetches.increment()
+                return Self.jwt(sub: "alice")
+            }),
+            attestProvider: MockAttestProvider(numberedKeys: LockedCounter()),
+            credentialStore: MemoryCredentialStore(keyID: "kept-key"),
+            session: session()
+        )
+        _ = try await client.gatewayAccessToken()
+        #expect(fetches.snapshot() == 1)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    _ = try await client.withAuthorizedRequest(provider: .openai, providerPath: "v1/responses") { request in
+                        let refused = request.value(forHTTPHeaderField: "Authorization") == "Bearer t1"
+                        let marked = refused ? ["X-AGW-Error": "attest_failed"] : [:]
+                        return (Data(), HTTPURLResponse(url: request.url!, statusCode: refused ? 403 : 200, httpVersion: nil, headerFields: marked)! as URLResponse)
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+        // One for the replacement's registration, one for its token exchange.
+        #expect(fetches.snapshot() == 3)
+        #expect(tokens.snapshot() == 2)
+    }
+
+    /// A gateway refusal whose body could not be read keeps its code from
+    /// the header, and with it the right answer to whether to retry.
+    @Test
+    func aRefusalWithAnUnreadBodyKeepsItsCodeFromTheHeader() throws {
+        for (code, retryable) in [("provider_disabled", false), ("app_budget_exhausted", false), ("service_unavailable", true)] {
+            let error = try #require(GatewayError(
+                response: HTTPURLResponse(
+                    url: URL(string: "https://gateway.test/v2/apps/a/proxy/openai/v1/responses")!,
+                    statusCode: code == "app_budget_exhausted" ? 429 : 502,
+                    httpVersion: nil,
+                    headerFields: ["X-AGW-Error": code]
+                )!,
+                body: Data()
+            ))
+            #expect(error.code.rawValue == code)
+            #expect(error.isRetryable == retryable, "\(code)")
+            #expect(error.isFromGateway)
+        }
+    }
+
     /// A job's links are followed only on this gateway, for this app.
     @Test
     func aGatewayLinkIsSignedOnlyForThisAppOnThisGateway() async throws {

@@ -124,12 +124,13 @@ Make a client when a user signs in, and end it with `invalidate()` when they
 sign out or another user signs in; then make a new one:
 
 ```swift
-// At sign-in.
+// At sign-in. This example uses FirebaseAuth for the sign-in token.
 let gateway = AppAIGatewayClient(
     appID: "example-app-a1b2c3",
     baseURL: URL(string: "https://api.appaigateway.com")!,
     authMode: .appAttest(issuerTokenProvider: { forceRefresh in
-        try await Auth.auth().currentUser!.getIDToken(forcingRefresh: forceRefresh)
+        guard let user = Auth.auth().currentUser else { throw URLError(.userAuthenticationRequired) }
+        return try await user.getIDToken(forcingRefresh: forceRefresh)
     })
 )
 
@@ -234,8 +235,8 @@ a signed request's URL breaks its proof.
 - `ProviderSlug` has a constant for every provider type the gateway serves.
 - A key kept by 1.x is used again, for one user only on an app with signed-in
   users. If the gateway does not know it, the client registers a new one by
-  itself. If a new key is refused too, the client makes no more until a signed
-  request succeeds.
+  itself. If a new key is refused too, the client makes no more until the
+  gateway accepts one.
 
 ### Upgrading to 1.4
 
