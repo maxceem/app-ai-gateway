@@ -7,7 +7,7 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 ## Main principles
 
 - The main consumers of this gateway are individuals or teams who develop many small to medium load applications and want a fast, easy way to give their apps access to AI providers. Ease of use therefore takes priority over scalability.
-- The main aim is to keep this project simple and easy to use without compromising security and performance. Security, performance, and ease of use are the top 3 priorities.
+- The main aim is to keep this project simple and easy to use without compromising security and performance. Security, performance, and ease of use are the top 3 priorities. The Security section below names our security priorities: where to focus, alongside normal security best practices.
 - The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
 - The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
@@ -107,6 +107,20 @@ never break an older CLI's work.
   `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked config.
 
 ## Security
+
+Our security priorities, in order:
+
+1. **Keep customers' provider keys safe.** A provider key entered where we
+   ask for it is never readable by anyone else and is sent only where the
+   customer chose.
+2. **Serve an app only to its authorized callers.** A call is served only
+   when it passes the app's own checks (App Attest, app key, user sign-in,
+   paid entitlement) and stays within its limits. This protects the
+   customer's provider usage.
+
+Budgets and allowances are best effort: a small overrun is fine.
+
+Rules that follow from these:
 
 - Never print or commit provider keys, `BETTER_AUTH_SECRET`, vault keys
   (`SECRET_VAULT_LOCAL_KEK_*`, `SECRET_VAULT_KMS_TOKEN`), management keys,
