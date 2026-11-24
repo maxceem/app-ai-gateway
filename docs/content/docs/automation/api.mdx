@@ -88,11 +88,11 @@ an existing app. Both save nothing, and need only the **Read only** grant. Send
 revision when saving a change to an existing app.
 
 `GET /v2/admin/apps/{app}/check` lists every connection the app's routes and
-presets name, with its status. `ready` means the app is active and at least one connection its routes or
-presets use can be reached: one that is active, or, for a preset, a first
-connection turned off with an active fallback. It checks connection status
-only, not that a request will serve. It sends no provider request, so it does not test a key, a device or a
-sign-in. Only a successful app request confirms the app serves. The example
+presets name, with its status. `ready` means the app is active and at least one
+connection its routes or presets use can be reached: one that is active, or,
+for a preset, a first connection turned off with an active fallback. It checks
+connection status only, not that a request will serve. It sends no provider
+request, so it does not test a key, a device or a sign-in. Only a successful app request confirms the app serves. The example
 requests from `GET /v2/admin/apps/{app}/snippet` are built from the settings
 and send nothing; they can be the starting point for a test.
 

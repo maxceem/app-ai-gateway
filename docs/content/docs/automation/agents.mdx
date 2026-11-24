@@ -76,11 +76,13 @@ When a provider is missing, add its key yourself, then let the agent carry on:
 The agent then finds the new connection with `agw provider list`.
 
 When the agent runs on your own machine, it can instead run
-`agw provider add --type openai --browser --json`. If `agw` says a browser
-window opened, type the key there; the agent then waits with
-`agw operation wait <id>`. If `agw` saved the link to a file instead, the agent
-falls back to asking you to add the key yourself. Over MCP, `add_provider` answers a console link for
-you to open, and the agent waits with `get_operation`.
+`agw provider add --type openai --browser --json`. If you want that, say so in
+the prompt. If `agw` says a browser window opened, type the key there; the
+agent then waits with `agw operation wait <id>`. If `agw` saved the link to a
+file instead, the agent falls back to asking you to add the key yourself.
+
+Over MCP, `add_provider` answers a console link for you to open, and the agent
+waits with `get_operation`.
 
 Do not paste provider keys into the conversation. A hidden terminal prompt keeps
 a key off the screen, but not away from an agent that controls the terminal.

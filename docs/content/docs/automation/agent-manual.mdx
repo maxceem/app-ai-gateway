@@ -63,9 +63,9 @@ agw account status --json --no-input
   a link and a short code even on a machine with a browser. Both arrive on
   stderr while it waits; the JSON comes on stdout only after approval or
   failure. Read the link and the code as soon as they appear, and give them to
-  the person. They open the
-  link in their own browser, check the code, and approve. Signing in never
-  creates an account: the person needs one already, made in the console.
+  the person. They open the link in their own browser, check the code, and
+  approve. Signing in never creates an account: the person needs one already,
+  made in the console.
 - **Another gateway:** `agw deployment connect --url <console address>` connects
   and signs in. `agw deployment connect --cloud` goes back to the hosted service.
 - **A management key from the person:** use it as the `AGW_MANAGEMENT_KEY`
@@ -93,12 +93,13 @@ These apply however you connect: CLI, MCP or API.
    --revision`, `app replace`, `patch_app`, `update_app`, `PATCH` or `PUT`. A
    whole document is `name`, `config` and `status` as read, with your change.
    Leave out `id`, `created_at`, `updated_at` and `warnings`.
-6. A key the gateway does not know is refused. A key the gateway returned that
-   you do not know must be kept, exactly as you read it.
+6. A setting name the gateway does not know is refused. A setting the gateway
+   returned that you do not know must be kept, exactly as you read it.
 7. Prefer what can be undone. Turn an app or a connection off rather than
    deleting it, unless the person asked for the deletion.
 8. Saved changes usually reach live requests within a minute, and a block
-   within ten seconds. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+   within ten seconds. See
+   [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
 9. Do not send AI requests to test a setup unless asked: each one costs the
    person money.
 10. An app's `warnings` name behaviour that will stop on a date. Tell the
@@ -143,15 +144,17 @@ These apply however you connect: CLI, MCP or API.
      `agw app replace <app> --config @app.json`.
    - A stale revision is refused with `app_revision_conflict`: read the app
      again, apply the change on top, and repeat.
-6. Run `agw app check <app> --json`. `ready` means the app is active and at least one connection its routes or
-   presets use can be reached: one that is active, or, for a preset, a first
-   connection turned off with an active fallback. It checks connection status
-   only, not that a request will serve. Read
-   each connection's `status` too, and tell the person about any that is
-   `disabled` or `missing`. `ready: false` means the app is turned off, or no
-   connection can be reached: say which, and suggest turning the app or a
-   connection on, or adding the missing connection. The check tests no provider
-   key, device, sign-in or subscription.
+6. Run `agw app check <app> --json`. It tests no provider key, device, sign-in
+   or subscription.
+   - `ready` means the app is active and at least one connection its routes or
+     presets use can be reached: one that is active, or, for a preset, a first
+     connection turned off with an active fallback. It checks connection status
+     only, not that a request will serve.
+   - Read each connection's `status`, and tell the person about any that is
+     `disabled` or `missing`.
+   - `ready: false` means the app is turned off, or no connection can be
+     reached: say which, and suggest turning the app or a connection on, or
+     adding the missing connection.
 7. Run `agw app snippet <app> --json` for example requests (see "Applications"
    for what it leaves out). The snippet is built from the settings and sends
    nothing, so it confirms nothing: only a successful app request does. Send
@@ -226,8 +229,8 @@ The full rules are in the server's `agw://guide` resource.
 
 For an integration without the CLI or MCP:
 
-- Base address: `{API}`, `https://api.appaigateway.com`, or the self-hosted
-  gateway's own. Every route is under `/v2/admin/`, with JSON bodies.
+- Base address: `{API}`, which is `https://api.appaigateway.com`, or the
+  self-hosted gateway's own. Every route is under `/v2/admin/`, with JSON bodies.
 - Send the management key as `Authorization: Bearer agw_mgmt_…`. A key has its
   grant, `read` or `manage`, and no more than its owner's role. It never
   expires on its own.
@@ -262,7 +265,11 @@ The errors apps get on their requests are in [Errors and limits](/integrate/erro
 
 1. `GET /v2/admin/providers`. Note each connection's `type` and `slug`.
 2. If one is missing, ask the person to add its key themselves, on the
-   console's **Providers** page or with `agw` on their own machine.
+   console's **Providers** page or with `agw` on their own machine. Or open the
+   step with `POST /v2/admin/provider-handoffs` (see "Providers"), give the
+   person the link it answers, and poll `GET /v2/admin/operations/{id}`. That
+   link is the console approval page the handoff returns for the person, so you
+   may pass it on.
 3. Compose the app from the reference below.
 4. `POST /v2/admin/app-drafts/validate` with it. Fix every refusal.
 5. Create it through a reserved create ("Retrying creation safely"). Do not use
@@ -289,11 +296,12 @@ Some provider changes need a secret in the same request, so leave them to the
 person, in the console:
 
 - a new base URL needs the provider key again;
-- going back from a base URL to the provider's own address may reuse the stored
-  key;
-- a new Cloudflare gateway needs its token, and either the provider key or
-  `secret: null` to use the keys stored in Cloudflare;
+- a new Cloudflare gateway needs its token, and the provider key or Cloudflare's
+  stored keys, which the person chooses in the console;
 - leaving Cloudflare needs the provider key.
+
+Removing a base URL needs no secret, so you may do it: the stored key goes back
+to the provider's own address.
 
 The first connection of a type usually takes the type as its slug, such as
 `openai`. Another one of the same type needs its own slug.
