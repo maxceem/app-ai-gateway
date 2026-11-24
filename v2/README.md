@@ -71,6 +71,17 @@ Inside `v2/`:
   address. Otherwise it skips and sends nothing to any help desk.
 - `node --experimental-strip-types scripts/management-key.ts --account <id> [--create-account <name>] [--remote -c wrangler.<profile>.jsonc]`:
   create a management key. It is printed once; store it, never commit it.
+- `pnpm run secrets:setup-local`: fill `.dev.vars` (ignored by git) with a fresh value for each
+  secret `.dev.vars.example` lists that has none yet. Values already there are kept; only names are
+  printed. Back up `SECRET_VAULT_LOCAL_KEK_V1`.
+- `pnpm run secrets:upload -- -c <wrangler config>`: upload the values set in `.dev.vars` to the
+  Worker that config names (`wrangler secret bulk`, values on stdin). Empty values are left out.
+- `pnpm run recover-access -- --email <email> (--local | --remote -c <wrangler config>)
+  [--password-stdin] [--promote-owner --account <id>] [--dry-run] [--yes]`: let a person back in
+  with a new password, and make them an owner of an account they belong to. It reads the database
+  first and shows what it will change; `--dry-run` stops there. It asks before changing anything
+  (`--yes` answers for a run without a terminal). The password comes from a hidden prompt or a pipe,
+  never an argument, and is never printed. As in v1, the person's sessions stay signed in.
 
 ## Secrets
 
