@@ -3,106 +3,110 @@ title: Limits and blocking
 description: The limits you set on your app's users, how they are counted, and how to block a user.
 ---
 
-An app's **Limits** page sets what its callers and the app as a whole may do.
-There are two scopes, each with the same three fields.
+An app's **Limits** tab sets what each of its callers, and the app as a whole,
+may do. There are two scopes, each with the same three fields.
 
-| Field | Per-install limits (iOS) | Per-user limits (server) | Per-app limits |
-| --- | --- | --- | --- |
-| **Requests per minute** | Each install separately | Each user separately | All callers of the app together |
-| **Requests per day** | Each install separately | Each user separately | All together |
-| **Monthly spending budget (USD)** | Each Apple Account, or each install or signed-in user if you choose | Each user separately | All together |
+| Field | Each caller | The whole app |
+| --- | --- | --- |
+| **Requests per minute** | Each install (iOS) or each user (server), separately | All callers together |
+| **Requests per day** | Each install or each user, separately | All callers together |
+| **Monthly budget ($)** | Each Apple Account by default (iOS), or each install or signed-in user if you choose; each user (server) | All callers together |
 
-An install is one copy of your app on one device. Reinstalling the app
-starts a new one, and one person on a phone and a tablet is two. Counting
-iOS request limits per install means each device a person uses has its own
-minute and its own day.
+An install is one copy of your app on one device. Reinstalling the app starts a
+new one, and one person on a phone and a tablet is two. Counting iOS request
+limits per install means each device a person uses has its own minute and its
+own day.
 
 ## Whose month an iOS budget is
 
-An iOS app chooses what its monthly spending budget is measured per:
+An iOS app chooses whose month its per-caller budget counts:
 
-| Budget measured per | What it counts together |
+| Budget counted per | What it counts together |
 | --- | --- |
-| **Apple Account** (`apple_account`), the default | Every install of one Apple Account: on all of that person's devices, and across reinstalls |
-| **Install** (`install`) | One install alone. Reinstalling the app starts a fresh budget |
-| **Signed-in user** (`user`) | Every install of one signed-in user. Only an app with **Signed-in users only** can choose it |
+| **Each Apple Account** (`apple_account`), the default | Every install of one Apple Account: on all of that person's devices, and across reinstalls |
+| **Each install** (`install`) | One install alone. Reinstalling the app starts a fresh budget |
+| **Each signed-in user** (`user`) | Every install of one signed-in user. Only an app with **Signed-in users only** can choose it |
 
-**Apple Account** needs nothing from you or your users: no setting, no
-prompt and no sign-in. The AppAIGateway Swift package 1.7 or later sends the
-app's App Store transaction, which Apple signs, with each token exchange.
-The gateway checks Apple's signature and your bundle ID, and counts the
-install against the Apple Account the transaction names. See
-[iOS with the Swift package](/integrate/ios#budgets-per-apple-account).
+**Each Apple Account** needs nothing from you or your users: no setting, no
+prompt and no sign-in. The app sends its App Store transaction, which Apple
+signs, when it gets a gateway token. The gateway checks Apple's signature and
+your bundle ID, and counts the install against the Apple Account the
+transaction names.
 
-An install whose client sent no transaction the gateway could verify is
-counted on its own, exactly as under **Install**, and is never refused for
-it. That covers builds on an earlier package, builds that use an Xcode
-StoreKit configuration, and devices where StoreKit did not answer in time.
-So a person who keeps a device from reaching the App Store can still start a
-fresh budget by reinstalling, as under **Install**.
+An install whose app sent no transaction the gateway could check is counted on
+its own, exactly as under **Each install**, and is never refused for it. That
+covers builds that use an Xcode StoreKit configuration, and devices where
+StoreKit did not answer in time. So a person who keeps a device from reaching
+the App Store can still start a fresh budget by reinstalling.
 
-Each member of a Family Sharing group has their own Apple Account, and so
-their own budget. TestFlight and development builds use Apple's sandbox and
-are counted apart from App Store builds, even for the same person.
+Each member of a Family Sharing group has their own Apple Account, and so their
+own budget. TestFlight and development builds use Apple's sandbox, and are
+counted apart from App Store builds, even for the same person.
 
-Apps created before Apple Account budgets were added measure per install
-until you change it. Nothing switches the setting for you.
+A server app always counts its budget per user.
 
 ## Refusals
 
-Leave a field empty for no limit. A request refused by a per-install or
-per-user limit answers `429 app_rate_limited` or `429 app_budget_exhausted`
-with `data.scope` naming whose limit it was: `install` for an iOS app's
-request limits and an install budget, `apple_account` for an Apple Account
-budget, `user` for a server app's limits and a budget measured per user. A
-request refused by an application limit answers the same codes with
-`data.scope` set to `app`. All carry a `Retry-After` header.
+Leave a field empty for no limit.
 
-Per-install and per-user limits are checked before application limits, so one
-heavy caller cannot drain the shared window before their own limit stops them.
+A request over a request limit is refused with `429 app_rate_limited`. A request
+over a budget is refused with `429 app_budget_exhausted`. Both say whose limit
+it was in `data.scope`:
+
+- `install`: an iOS app's request limits, or a budget counted per install;
+- `apple_account`: a budget counted per Apple Account;
+- `user`: a server app's limits, or a budget counted per signed-in user;
+- `app`: the whole app's limits.
+
+Both carry a `Retry-After` header. For a budget it is the time left until the
+month ends.
+
+Each caller's limits are checked before the whole app's, so one heavy caller
+cannot use up the shared allowance before their own limit stops them.
 
 ## How they are counted
 
-- **Rate windows are fixed, not sliding.** A user can spend a full minute's
+- **Request windows are fixed, not sliding.** A user can use a full minute's
   allowance at the end of one minute and again at the start of the next, so a
-  burst of up to twice the per-minute value is possible across a boundary.
-  Days roll over at midnight UTC.
-- **Budgets settle after the response.** A request's cost is known only when
-  its response completes, and the limit counter reads the month's spend at
-  most every ten seconds, so a budget stops requests within about ten seconds
-  of the one that crossed it. A single very expensive call, or a burst inside
-  those seconds, can overshoot.
-- **Budgets use UTC calendar months.** Turning on an application budget
-  part-way through a month counts what the month has already spent. Every
-  request adds to its install's, its user's and, when known, its Apple
-  Account's month alike, so switching an iOS app's budget from one to another
-  mid-month counts the month so far too. An Apple Account's month holds only
-  requests from builds that sent a verifiable App Store transaction.
-- **A budget of zero is a closed door.** It stops all billable traffic for
-  that scope. Leave the field empty for unlimited instead. A request limit of
-  zero is rejected as a likely typo.
-- **Edits take up to a minute** to apply everywhere.
+  burst of up to twice the per-minute value is possible across the change of
+  minute. Days change at midnight UTC.
+- **Budgets settle after the answer.** A call's cost is known only when its
+  answer is complete, and the limit reads the month's spend at most every ten
+  seconds. So a budget stops calls within about ten seconds of the one that
+  crossed it. One very expensive call, or a burst inside those seconds, can go
+  over.
+- **Budgets use UTC calendar months.** Turning on a budget part-way through a
+  month counts what the month has already spent. Every call adds to its
+  install's, its user's and, when known, its Apple Account's month alike. So
+  changing whose month an iOS budget counts, mid-month, counts the month so far
+  too.
+- **A budget of zero stops everything.** It refuses every call that costs money
+  for that scope. Leave the field empty for no limit instead. A request limit
+  of zero is refused when you save, as a likely typo.
+- **Changes take up to a minute** to reach every request.
 
-Per-user limits need an app that identifies users. An app with **No user
-identity** has nobody to apply them to, and the console disables its per-user fields.
-An iOS app always identifies its installs.
+Per-caller limits need an app that names its users. An app with **No end users**
+has nobody to apply them to, so it can set only the whole app's limits. An iOS
+app always names its installs.
 
 ## Blocking a user
 
-Blocking is not a limit. On the app's **Users** page, **Block** refuses every
-request from that user, on every install, with `403 auth_required`. New token exchanges are
-refused at once, and a token the user already holds stops working within ten
-seconds. **Unblock** restores them the same way. Users identified by a backend header must be blocked in your
-backend; the gateway does not offer blocking for them.
+Blocking is not a limit. On the app's **Users** tab, **Block** refuses every
+request from that user, on every install, with `403 auth_required`. It reaches
+every request within ten seconds. **Unblock** lets them back in the same way.
+
+A user your server names in a header cannot be blocked on the gateway: your
+server decides who that is, so block them there.
 
 ## What a user can see about themselves
 
-An app that identifies users can call `GET /v1/apps/{app}/me` with the same
-credentials as a proxy request to read the limits that apply, requests today, what is
-left of the daily limit, the month's spend, and whether the user is blocked.
-On an iOS app the request counts are the install's, and `install_id` names
-it. `budget_scope` says whose month the spend is: `apple_account`, `install`
-or `user`. It is `install` for an install that sent no verifiable App Store
-transaction, even when the app measures per Apple Account.
-It is meant for showing a user where they stand before they hit a limit. See
+An app that names its users can call `GET /v2/apps/{app}/me`, signed in the same
+way as its other requests. It answers the limits that apply, today's requests,
+what is left of the daily limit, the month's spend, and whether the user is
+blocked. On an iOS app the request counts are the install's, and `install_id`
+names it. `budget_scope` says whose month the spend is: `apple_account`,
+`install` or `user`. It is `install` for an install that sent no transaction
+the gateway could check, even when the app counts per Apple Account.
+
+It is meant for showing a user where they stand before they reach a limit. See
 [Errors and limits from the client side](/integrate/errors).
