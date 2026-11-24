@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -37,21 +38,35 @@ const path = join(dir, ".dev.vars");
 let contents = existsSync(path) ? readFileSync(path, "utf8") : example;
 
 /** The names `.dev.vars.example` lists, in its order. */
-const names = [...example.matchAll(/^([A-Z][A-Z0-9_]*)=/gmu)].map((match) => match[1]!);
+const names = Object.keys(parseEnv(example));
 
 const made: string[] = [];
+const unchanged: string[] = [];
 for (const name of names) {
-  const line = new RegExp(`^${name}=(.*)$`, "mu");
-  if ((line.exec(contents)?.[1]?.trim() ?? "") !== "") continue;
   const maker = MAKERS[name];
   if (maker === undefined) continue;
+  // Whether it is set, as a dotenv parser reads the file: spaces around `=`,
+  // quotes and `export` are the parser's to judge, not a pattern's.
+  const current = parseEnv(contents)[name];
+  if (current !== undefined && current.trim() !== "") continue;
   const value = maker();
-  contents = line.test(contents) ? contents.replace(line, `${name}=${value}`) : `${contents.trimEnd()}\n${name}=${value}\n`;
+  if (current === undefined) {
+    contents = `${contents.trimEnd()}\n${name}=${value}\n`;
+  } else {
+    // Defined but empty: that one definition is replaced, never joined by a second.
+    const line = new RegExp(`^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=.*$`, "mu");
+    if (!line.test(contents)) {
+      unchanged.push(name);
+      continue;
+    }
+    contents = contents.replace(line, `${name}=${value}`);
+  }
   made.push(name);
 }
 
 writeFileSync(path, contents, { mode: 0o600 });
 chmodSync(path, 0o600);
+for (const name of unchanged) console.log(`${name} is defined but empty in a form this script does not rewrite; set it by hand.`);
 if (made.length === 0) {
   console.log(".dev.vars already holds every secret; nothing changed.");
 } else {

@@ -8,6 +8,8 @@
  * - The values go to Wrangler on stdin, never as arguments, and are never
  *   printed: only the names are.
  * - An empty value is left out, so a secret not set locally is not cleared.
+ * - Wrangler runs with `WRANGLER_LOG_SANITIZE=true`, so its own debug logs
+ *   never hold the values, whatever the shell sets.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -41,6 +43,8 @@ if (names.length === 0) {
 const result = spawnSync("pnpm", ["exec", "wrangler", "secret", "bulk", "-c", config], {
   cwd: V2_DIR,
   input: JSON.stringify(values),
+  // Wrangler's own logs hide request and response bodies, whatever the shell says.
+  env: { ...process.env, WRANGLER_LOG_SANITIZE: "true" },
   stdio: ["pipe", "inherit", "inherit"],
 });
 if (result.error) throw result.error;
