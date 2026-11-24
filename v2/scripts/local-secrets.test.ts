@@ -112,13 +112,10 @@ test("the upload needs the Worker's config, and sends every set value to Wrangle
     const unnamed = script("upload-local-secrets.ts", ["--dir", dir], env);
     assert.equal(unnamed.code, 2);
     assert.match(unnamed.output, /-c <the Worker's Wrangler config>/u);
-    // An environment or an API endpoint from the shell is never taken: nothing reaches Wrangler.
+    // An environment from the shell is never taken: nothing reaches Wrangler.
     const shellEnv = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--dir", dir], { ...env, CLOUDFLARE_ENV: "staging" });
     assert.equal(shellEnv.code, 2);
     assert.match(shellEnv.output, /CLOUDFLARE_ENV is set \(staging\): name the environment with --env/u);
-    const elsewhere = script("upload-local-secrets.ts", ["-c", "wrangler.example.jsonc", "--dir", dir], { ...env, CLOUDFLARE_API_BASE_URL: "http://127.0.0.1:1/" });
-    assert.equal(elsewhere.code, 2);
-    assert.match(elsewhere.output, /CLOUDFLARE_API_BASE_URL is set/u);
     assert.throws(() => readFileSync(join(dir, "args")));
 
     // The environment named on the command line is what Wrangler is given.

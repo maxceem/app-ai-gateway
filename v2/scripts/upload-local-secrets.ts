@@ -5,8 +5,8 @@
  *   node --experimental-strip-types scripts/upload-local-secrets.ts -c <wrangler config> [--dir <folder>]
  *
  * - The Worker is the one the config (and `--env`) names: there is no
- *   default. It stops when `CLOUDFLARE_ENV` is set without `--env`, and when
- *   the shell points Cloudflare's API elsewhere.
+ *   default. It stops when `CLOUDFLARE_ENV` is set without `--env`. The rest
+ *   of the operator's shell and `.env` settings are theirs to keep right.
  * - The values go to Wrangler on stdin, never as arguments, and are never
  *   printed: only the names are.
  * - An empty value is left out, so a secret not set locally is not cleared.
@@ -37,9 +37,6 @@ if (config === undefined || dir === undefined) refuse("usage: upload-local-secre
 const shellEnv = process.env.CLOUDFLARE_ENV;
 if (shellEnv !== undefined && shellEnv !== "" && envName === undefined) {
   refuse(`CLOUDFLARE_ENV is set (${shellEnv}): name the environment with --env, so the Worker is never taken from the shell`);
-}
-for (const name of ["CLOUDFLARE_API_BASE_URL", "WRANGLER_API_ENVIRONMENT"]) {
-  if ((process.env[name] ?? "") !== "") refuse(`${name} is set: secrets go only to Cloudflare's own API. Unset it and run again.`);
 }
 
 const values = Object.fromEntries(
