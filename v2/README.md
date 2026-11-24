@@ -74,21 +74,30 @@ Inside `v2/`:
 - `pnpm run secrets:setup-local`: fill `.dev.vars` (ignored by git) with a fresh value for each
   secret `.dev.vars.example` lists that has none yet. Values already there are kept; only names are
   printed. Back up `SECRET_VAULT_LOCAL_KEK_V1`.
-- `pnpm run secrets:upload -- -c <wrangler config>`: upload the values set in `.dev.vars` to the
-  Worker that config names (`wrangler secret bulk`, values on stdin, its logs always sanitized).
-  Empty values are left out.
+- `pnpm run secrets:upload -- -c <wrangler config> [--env <name>]`: upload the values set in
+  `.dev.vars` to the Worker that config (and `--env`) names, with `wrangler secret bulk`: values on
+  stdin, Wrangler's logs always sanitized. Empty values are left out. It stops when `CLOUDFLARE_ENV`
+  is set without `--env`, or when `CLOUDFLARE_API_BASE_URL` or `WRANGLER_API_ENVIRONMENT` is set.
 - `pnpm run recover-access -- --email <email> (--local | --remote -c <wrangler config>) [--env <name>]
   [--password-stdin] [--promote-owner --account <id>] [--dry-run] [--yes]`: let a person back in
   with a new password, and make them an owner of an account they belong to.
-  - It uses the `DB` database the config (and `--env`) resolve to, and names it. With
-    `CLOUDFLARE_ENV` set in the shell, it stops unless `--env` names the environment.
+  - It uses the `DB` database the config (and `--env`, which the config must define) resolve to,
+    and names it. It stops when `CLOUDFLARE_ENV` is set without `--env`, when
+    `CLOUDFLARE_API_BASE_URL` or `WRANGLER_API_ENVIRONMENT` is set, and, locally, when Wrangler
+    could take another database for `DB`.
   - `--remote` calls D1's query API with `CLOUDFLARE_API_TOKEN` from the environment, for the
     account in the config (or `CLOUDFLARE_ACCOUNT_ID`).
   - It reads the database first and shows what it will change; `--dry-run` stops there. It asks
     before changing anything (`--yes` answers for a run without a terminal).
-  - The changes run as one batch that first checks the rows are still there: all or nothing.
+  - It checks first that the rows it changes are still there. Then the changes go in an order
+    where stopping part-way is safe and each is safe to repeat: CLI/MCP connections revoked, browser
+    sessions deleted, the owner change, the password last. A run that stops part-way leaves the
+    person signed out with the old password, and says what was done; running the same command again
+    completes it. A local run is also one transaction. Remote statements are sent one at a time, and
+    each answer must confirm it ran; an answer lost after sending is reported as unknown.
   - The password comes from a hidden prompt or a pipe, never an argument, and is never printed:
-    8 to 128 characters.
+    8 to 128 characters. Nor is its hash, which goes remotely as a bound value, nor a database's own
+    error text.
   - A new password also signs the person out of all browser sessions and CLI/MCP connections (v1
     left them); making someone an owner does not.
 
