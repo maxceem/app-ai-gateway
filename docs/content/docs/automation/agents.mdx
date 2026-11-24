@@ -1,128 +1,117 @@
 ---
 title: Use with AI agents
-description: Connect an agent to your account, let it configure apps, and supply credentials privately.
+description: Connect an agent to your account, let it set up and check apps, and keep keys out of its view.
 ---
 
-An agent can add providers, configure your apps, write integration code and
-investigate usage. You supply credentials in your own browser, and the agent
-works with resource IDs and configuration.
+An agent can add providers, set up your apps, write the code that calls them
+and look into usage and failures. You stay in charge of secrets: you type
+provider keys in your own browser, and see new app keys on a page or in a
+private file, never in the conversation.
 
 ## Choose how to connect
 
 | Your agent can use | Start here |
 | --- | --- |
-| A terminal in your project | Install the [CLI](/automation/cli) and use the prompt below. It can save a server app's key to a private file. |
-| A remote MCP server | Add `https://console.appaigateway.com/mcp` to your client's MCP settings and approve its OAuth connection. See [MCP server](/automation/mcp). Application keys are revealed to you in your browser. |
-| Only HTTP requests | Use the [management API](/automation/api) with a credential supplied through a secret store. |
+| A terminal in your project | The [CLI](/automation/cli). It writes a server app's key to a private file. |
+| A remote MCP server | Add `https://console.appaigateway.com/v2/mcp` to the client and approve it in your browser. See [MCP server](/automation/mcp). New app keys are shown to you on a page. |
+| Only HTTP requests | The [management API](/automation/api), with a management key from your secret store. |
 
-For a review or usage investigation, choose **Read only** on the MCP consent
-page or when creating a management key on the console's **Access** page.
-Choose **Manage** when the agent needs to configure resources.
+For a review or an investigation, give the agent the **Read only** grant: on
+the approval page when the CLI or an MCP client signs in, or when you create a
+management key. Give it **Manage** when it should change things.
 
 <Callout title="Self-hosting">
-  Use your console's address followed by `/mcp`, or connect the CLI with
-  `agw deployment connect --url https://YOUR-GATEWAY --no-open --json`.
-  The same agent workflow applies. Deployment commands are needed only if you
-  want the agent to [create or maintain your own gateway](/self-hosting/deploy-to-cloudflare).
+  Use your console's address followed by `/v2/mcp`, or connect the CLI with
+  `agw deployment connect --url https://YOUR-CONSOLE`.
 </Callout>
 
 ## Give the agent a task
 
-Install the [CLI](/automation/cli), then give your coding agent this prompt.
-Replace the last line with your app's details or the change you want:
+With the CLI installed, give your coding agent a prompt like this one, with
+your own task on the last line:
 
 ```text
-Read https://docs.appaigateway.com/agents.md. Use agw for this task.
-Inspect the active deployment and account first. Use my existing hosted account;
-if login is needed, give me its URL and pairing code. Do not create another account.
-Read existing providers and apps, use --json --no-input, and validate changes.
-Give me browser handoff URLs for provider credentials; I will open them in my
-own browser. Never print secrets. Keep application keys in private files.
-Finish with app check and app snippet. Do not send inference unless I ask.
-Report the app ID, API base URL, changes, checks and any remaining setup.
-Task: Set up an iOS app for Team ID ABCDE12345 and Bundle ID com.example.app.
+Read https://docs.appaigateway.com/agents.md, then use agw for this task.
+Check which gateway and account agw is signed in to first. If it is not signed
+in, run agw account login --no-open --json --no-input as a background process,
+or in a session that shows its output as it runs: it waits up to ten minutes.
+Read the link and code it prints on stderr as soon as they appear, and give
+them to me to approve.
+Read the existing providers and apps, use --json --no-input, and validate
+changes before saving them. If a provider is missing, tell me which one and
+stop: I will add its key myself, then you carry on. Never print secrets. Keep
+app keys in private files.
+Finish with app check and app snippet. Do not send AI requests unless I ask.
+Report the app ID, the URLs my app calls, the changes, and what is left to do.
+Task: set up an iOS app for Team ID ABCDE12345 and Bundle ID com.example.app.
 ```
 
-For MCP, use the same task and ask the agent to read `agw://guide`, start with
-`get_account`, and finish with `check_app` and `get_app_snippet`.
+Over MCP, give the same task, and ask the agent to read `agw://guide`, start
+with `get_account`, and finish with `check_app` and `get_app_snippet`.
 
-Useful follow-up tasks include:
+Other tasks that work well:
 
-- “Review this app's provider access and limits, and suggest changes.”
-- “Add a custom endpoint so I can change models without releasing my app.”
-- “Explain this app's recent failures using its auth events and refusal samples.”
+- "Review this app's providers and limits, and suggest changes."
+- "Add a preset so I can change models without releasing my app."
+- "Explain this app's recent failures from its sign-in events and refusals."
 
-## Use the right account
+## Use your account
 
-**Already signed up:** sign the agent into that account first. Creating a
-provider while signed out can create a separate account; it does not find your
-existing one automatically.
+The agent works in an account you already have. Signing in never creates one:
+create your account in the console first, or on the sign-in page that opens.
 
-`agw account login --no-open --json` returns a pending login with a `url`,
-`userCode` and `id`. Open the URL in your own browser, check that the page
-shows the same pairing code, and approve. The agent then runs
-`agw operation wait <id> --json` to finish. It receives a management key of
-its own without seeing your password or browser session.
+With the CLI, the agent runs `agw account login --no-open`, which prints a link
+and a short code and waits up to ten minutes. Open the link yourself, check the
+code matches, choose the account and the grant, and approve. The agent never
+sees your password or your console session.
 
-**Starting a new account with an agent:** explicitly tell it that you want a
-new account. The first provider or app creation on a fresh hosted CLI
-connection initializes one. Help, status, lists and validation do not. With
-MCP, choose **Continue without an account** on the consent page when offered.
-These unclaimed accounts are temporary; have the agent check the account's
-expiry and start a claim so you can keep it.
+## Provider keys
 
-`agw account claim --no-open --json`, or MCP's `claim_account`, returns a URL.
-Open it in your own browser, check the account, and create your sign-in there.
-If you are already signed in as someone with another account, the page asks
-you to sign out first. Claiming keeps the agent connected.
+When a provider is missing, add its key yourself, then let the agent carry on:
 
-## Supply provider credentials
+- on the console's **Providers** page, with **Add provider**; or
+- on your own machine, with `agw provider add --type openai`, which asks for the
+  key in a hidden prompt, or reads it from stdin with `--key-stdin`.
 
-For a missing provider, the CLI can start a browser handoff:
+The agent then finds the new connection with `agw provider list`.
 
-```sh
-agw provider add --type openai --browser --no-open --json --no-input
-```
+When the agent runs on your own machine, it can instead run
+`agw provider add --type openai --browser --json`. If you want that, say so in
+the prompt. If `agw` says a browser window opened, type the key there; the
+agent then waits with `agw operation wait <id>`. If `agw` saved the link to a
+file instead, the agent falls back to asking you to add the key yourself.
 
-Open the returned URL in your own browser, check the provider and destination,
-and enter the credential. The agent waits with `agw operation wait <id> --json`
-and receives only the non-secret result. MCP's `add_provider` uses the same
-kind of handoff, followed by `get_operation`.
+Over MCP, `add_provider` answers a console link for you to open, and the agent
+waits with `get_operation`.
 
-Do not paste provider keys into the conversation. A hidden terminal prompt
-prevents echo but does not isolate a secret from an agent controlling that
-terminal. Application keys created by the CLI go to private files; keys
-created through MCP are shown on a page you open yourself.
+Do not paste provider keys into the conversation. A hidden terminal prompt keeps
+a key off the screen, but not away from an agent that controls the terminal.
 
-For unattended CI, supply a management key as `AGW_MANAGEMENT_KEY` through the
-job's secret store, or save it once with `agw account login --key-stdin`.
-The environment credential overrides any saved login. Never paste it into
-a command argument or chat message.
+For a CI job with no person present, put a management key in the job's secret
+store as `AGW_MANAGEMENT_KEY`. Never paste it into a command or a chat.
 
-## Check the result and end access
+## Check the result, and end access
 
-The agent should report the resources it changed, their IDs and slugs, your
-app's API base URL, where any key was saved, and outstanding integration work.
-`app check` and `check_app` inspect configuration without making a provider
-request. They do not test a provider key, device attestation, user sign-in or
-subscription entitlement. A successful check is not an end-to-end test.
+The agent should report what it changed, the IDs and slugs, the URLs your app
+calls, where any key was saved, and what is left to build.
 
-Keep the CLI's private state after an interrupted request so it can recover
-pending operations. A successful command that returns `state: "pending"`
-is waiting for you; it has not finished the requested change.
+`app check` and `check_app` look at the settings without calling a provider.
+They do not test a provider key, a device, a user's sign-in or a subscription,
+so a good check is not an end-to-end test.
 
-The console's **Access** page lists CLI keys and MCP connections. Revoke the
-agent's entry there when you want its access to end. `agw account logout`
-also revokes the CLI's saved key. Claiming an account does not revoke it.
+A command or tool that answers `state: "pending"` is waiting for you; it has not
+finished. The console's **Access** page lists the agent's CLI sign-in, MCP
+connection or management key. Revoke it there when the agent's work is done.
+`agw account logout` also ends the CLI's sign-in.
 
 ## Machine-readable instructions
 
-- [Agent manual](/agents.md): the task workflow and configuration reference.
-- [Documentation index](/llms.txt): find the guide relevant to the task.
-- [Full documentation](/llms-full.txt): all handwritten guides in one file.
-- [OpenAPI contract](/openapi.json): request and response schemas.
-- Individual guides as markdown: replace the trailing slash with `.md`, for
-  example `/integrate/ios.md`. The home page is `/index.md`.
+- [Agent manual](/agents.md): the workflow, the rules and the app settings
+  reference, as one markdown file.
+- [Documentation index](/llms.txt): find the guide for a task.
+- [Full documentation](/llms-full.txt): every guide in one file.
+- Each guide as markdown: replace the trailing slash with `.md`, such as
+  `/integrate/ios.md`. The home page is `/index.md`.
 
-These are static files. Reading a guide does not install a skill or change your
-project instructions. You may link the manual from your own `AGENTS.md` if useful.
+These are static files. Reading one installs nothing and changes nothing in your
+project. You may link the manual from your own `AGENTS.md`.

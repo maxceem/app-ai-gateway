@@ -1,308 +1,223 @@
 ---
 title: CLI
-description: Install the agw CLI to sign in, add providers, create and check apps, and read usage from a terminal or a coding agent.
+description: Use agw to sign in, add providers, create and change apps, and read usage from a terminal, a script or a coding agent.
 ---
 
-Install Node.js 22.19 or later, then install the CLI:
+`agw` manages your account from a terminal: provider connections, apps, their
+keys, limits and users, and usage. It is made for people and coding agents
+alike. Secrets never reach its output: a provider key comes from a hidden
+prompt, stdin or the console, and a new app key goes to a private file.
+
+## Install
+
+agw 2 manages this version of the gateway. It needs Node.js 22.19 or later:
 
 ```sh
-npm install -g @maxceem/agw
+npm install -g @maxceem/agw@2
 agw --help
-agw deployment status --json
 ```
 
-A fresh CLI uses the hosted API. If you already have an account, run
-`agw account login` before creating resources; otherwise a creation can start a
-separate account. A saved connection remains active across commands, so check
-the URL from `deployment status` and the account from `agw account status`.
-Use `agw deployment connect --cloud` to sign in to the hosted service again.
-It starts browser login unless you supply a management key.
-
-If you want a new hosted account, your first provider, provider-gateway or app
-creation initializes one and saves its credential privately. For example, run
-`agw provider add --type openai --browser --no-open`. Help, status, lists,
-validation and dry runs never create accounts. New unclaimed accounts are
-temporary; check `agw account status` and use `agw account claim` to keep yours.
-
-<Callout title="Self-hosting">
-  Connect to an existing gateway with `agw deployment connect --url URL`.
-  To create one on your Cloudflare account, use `agw deployment setup --name
-  my-gateway --no-domain`. No source checkout is needed. See
-  [Deploy to Cloudflare](/self-hosting/deploy-to-cloudflare) for deployment and
-  offline archive options.
+<Callout title="Release">
+  agw 2 is published as `@maxceem/agw` 2.0 with this version of the gateway.
+  agw 1.x manages the earlier version only, and agw 2 manages this one only:
+  each stops with a short message at the other.
 </Callout>
 
 ## Sign in
 
-`agw account login` signs the CLI in through your browser. It prints a pairing
-code, opens the console's approval page and waits:
-
-```text
-Pairing code: ABCD-EFGH
-Check that your browser shows this same code before you approve.
-Approve at: https://console.appaigateway.com/cli/approve/…
+```sh
+agw account login
 ```
 
-Check that the page shows the same code before you approve: that is what tells
-you the request on the page is the one your terminal made. Sign in if you are
-not signed in already, pick the account if you belong to several, and approve.
-The browser comes back to the CLI, which receives a management key of its own,
-stores it privately and prints your account status. The tab can then be closed.
-Declining on the page ends the command with an error. The CLI waits up to five
-minutes, and the approval page stays valid for 15.
+With a browser on this machine, `agw` opens the console, you approve, and the
+browser comes back to the terminal. Over SSH, or without a display, it prints a
+link and a short code instead: open the link in any browser, check the code
+matches, and approve. `--device` or `--no-open` does the same on a machine with
+a browser; use one of them, not both. On the approval page you choose the
+account, and **Manage** or **Read only**.
 
-To sign in to your own deployment, run `agw deployment connect --url
-https://ai.example.com`, which runs the same login against that URL.
+The sign-in renews itself while the CLI uses it. It is listed on the console's
+**Access** page, where you can revoke it, and `agw account logout` ends it.
+Signing in does not create an account: create one in the console first, or on
+the sign-in page that opens.
 
-- **No browser on this machine**: over SSH, on Linux with no display, or when
-  no one is at the terminal, the CLI does not try to open one. It prints the URL
-  and the pairing code, as `--no-open` does anywhere, and the same happens if a
-  browser fails to open. Open the URL on any device, or go to `/cli` on your
-  console, for example `https://console.appaigateway.com/cli`, and type the
-  code; then approve. The CLI collects its key once you have.
-- **An agent or a script**: with `--json` or `--no-input` the command returns at
-  once with `state: "pending"`, the `url` and the `userCode`. Give the URL to a
-  person, then run `agw operation wait <id>` to finish the login once they have
-  approved it.
-
-Each key a login creates is listed on the console's **Access** page
-with a **CLI** tag and the label the CLI sent, such as `CLI on mac-studio`, so
-you can tell which machine holds which key. Revoke one there to end that
-machine's access.
-
-`agw account logout` revokes the saved key on the deployment and removes it from
-this machine. If the deployment cannot be reached, the key is still removed
-here, the command says it could not be revoked, and `revoked` is `false` in its
-`--json` result; revoke it on the **Access** page instead.
-
-### Keys for agents and CI
-
-A machine that cannot approve anything in a browser uses an existing management
-key. Create one on the console's **Access** page, then either:
-
-- set `AGW_MANAGEMENT_KEY` in the environment. When it is set, it is the
-  credential for every command and takes precedence over any saved login, and
-  the environment key is not saved to disk. Commands can still save operation
-  state and application-key files. `agw account login` refuses to run while it is
-  set, and `agw account logout` only clears the saved login and reminds you the
-  variable is still in charge. Use `agw deployment connect --url URL` to choose
-  which deployment the key is sent to; it stores the URL, not the key.
-- or pipe it once with `--key-stdin`, which saves it like a browser login:
+`agw` talks to the hosted service unless you connect it to another gateway:
 
 ```sh
-agw account login --key-stdin < /private/path/management-key
-agw deployment connect --url https://ai.example.com --key-stdin < /private/path/management-key
+agw deployment connect --url https://console.example.com
+agw deployment connect --cloud      # back to the hosted service
+agw deployment status               # which gateway, and who is signed in
+agw account status                  # the account, your role and the grant
 ```
 
-`--key-prompt` asks for the key in a hidden prompt instead. Never pass a key as
-a command argument.
+The URL is the gateway's console address. `deployment connect` signs in too.
 
-## Human handoffs
+### Scripts and CI
 
-Run `agw account claim` to establish human ownership. The CLI prints a browser
-URL. Open it in a browser outside the agent's visible session, compare the
-account shown with the terminal, and create your sign-in on that page. This
-account must be claimed by a new person, so if the browser is already signed in
-as someone with an account, the page asks you to sign out first. The page shows
-the account being claimed and the person approving, and one button completes
-it. The CLI stays connected afterwards, so an interrupted command can
-simply continue; to end that access later, run `agw account logout` or revoke
-its key on the console's **Access** page.
+Set `AGW_MANAGEMENT_KEY` to a [management key](/automation/api#management-keys)
+instead. It is used for every command and overrides the saved sign-in, and
+nothing is stored. Pass it from your CI's secret store, never as a command-line
+argument.
 
-Provider commands offer a browser handoff for write-only secrets. Share the URL
-with the person supplying the credential. The page shows the provider, destination and proposed
-changes. Secrets never appear in CLI output or later reads. Poll with the
-operation command shown by the CLI; handoffs last 15 minutes.
+## Commands
 
-## Daily workflow
+A few commands are built into `agw`, because they need this machine: a
+browser, a hidden prompt, a private file or a wait. Every other command comes
+from the gateway you are connected to, so a new gateway release brings its
+commands without an `agw` update. `agw --help` lists both, once it can reach
+the gateway, and `agw <command> --help` lists a command's flags.
+
+A gateway command's flags follow the gateway's argument names: `team_id`
+becomes `--team-id`. A value that is a list is given once per value, and a JSON
+value is written inline or read from a file with `@path`.
+
+### Providers
 
 ```sh
-agw account status --json
-agw provider list --json
-agw app list --json
-agw usage show --month 2026-09 --json
-agw app --help
-agw provider --help
+agw provider types                              # every provider and its operations
+agw model list                                  # the priced models
+agw provider add --type openai                  # the key goes in a hidden prompt
+agw provider add --type openai --key-stdin < key.txt
+agw provider add --type openai --browser        # a person types the key in the console
+agw provider list
+agw provider show openai
+agw provider rotate-key openai                  # a new key, by id or slug
+agw provider update <id> --status disabled --revision 3
+agw provider remove <id>
 ```
 
-Most commands come from the gateway you are connected to rather than from
-`agw` itself. `agw` reads the list of commands your gateway offers, keeps it
-for a day, and reads it again as soon as the gateway changes, so a command a
-newer gateway adds works without updating `agw`, and `agw --help` lists it.
-Their flags are the gateway's own arguments: `team_id` is `--team-id`, a list
-is given by repeating its flag or with commas (`--providers openai,anthropic`),
-and a structured value is JSON, inline or as `@file`. Every command, built in or
-not, names a flag the same way. `--input` takes every argument as one JSON object. Use a command's
-`--help` for its exact flags. The commands that need your machine — signing
-in, deploying, adding a provider or an app, and anything that writes a key to
-a file — are built into `agw` and change with it. An `agw` needs a gateway at least as new
-as its own release: against an older one, the gateway's commands answer
-`gateway_outdated`, and `agw deployment update` brings a self-hosted gateway up
-to date.
+`provider update` needs the connection's `revision`, from `provider list`.
+`provider add` also takes `--name`, `--slug`, `--base-url`, `--pricing` and,
+for a custom provider, `--key-header`, `--key-format` and `--path` (once per
+path, in the [Listing paths](/providers/custom-base-urls#listing-paths) format).
+For Cloudflare AI Gateway, add `--cloudflare-account-id` and
+`--cloudflare-gateway-id` with `--browser`: the person approving types the
+Cloudflare token in the console. See [Add a provider key](/providers/add-a-provider).
 
-A release of your gateway that changes no command costs `agw` nothing. When
-a command has changed since `agw` last read the list, the run that notices it
-finishes as usual and then reads the list again, so the next run uses the new
-one; that takes one extra request, after the output. A flag the kept list does
-not know makes `agw` read the list before refusing it. If a command has come
-to delete something or to need a newer `agw`, the gateway refuses the old
-description before running anything: `agw` reads the list again and asks you
-to confirm, or to update `agw`, instead of running it as it was. An argument
-the command no longer takes is refused rather than ignored.
-
-Read an app before editing it. `agw app update <app-id>` changes only what you
-name, and leaves everything else as it is:
+### Apps
 
 ```sh
-agw app update <app-id> --name "Production" --status active
-agw app update <app-id> --team-id ABCDE12345 --verify-on every_request
-agw app update <app-id> --providers openai,anthropic
+agw app add --type server --name "Backend" --providers openai
+agw app add --type ios --name "My App" --team-id ABCDE12345 --bundle-id com.example.app \
+  --providers openai=openai.responses+openai.chat
+agw app list
+agw app show <app>
+agw app check <app>            # connection status; sends no provider request
+agw app snippet <app>          # example requests for its routes and presets
+agw app validate <app> --config @app.json
+agw app update <app> --name "New name" --status disabled
+agw app replace <app> --config @app.json
+agw app remove <app>
 ```
 
-`--name` and `--status` apply to any app; `--team-id`, `--bundle-id`,
-`--attest-environments` and `--verify-on` to an iOS app; `--providers` or
-`--all-providers` choose which providers it may use, as `--providers` does on
-`agw app add`. A
-provider it already selected keeps its allowed paths and models. These apply
-to the app as it is when the command runs.
+- `--providers` allows a connection on the new app. A slug alone allows the
+  connection's first operation, as the console does; `slug=op+op` names the
+  operations.
+- `app add --dry-run` checks the app without creating it. `--file` reads the
+  whole app document, `{ name, config, status? }`, from a file.
+- A server app's first key is written to a private file, never printed. The
+  answer names the file. `--key-output <path>` chooses it; an existing file is
+  never overwritten.
+- `app update --operations` applies a JSON Patch to the app, with `--revision`
+  from `app show`. See [Changing an app](/automation/api#changing-an-app).
+- `app replace` saves a whole document, with the `revision` inside it.
+  `app validate` takes the same document without `revision`, which it refuses.
+- `app snippet` leaves some things out, by design. A preset with fixed
+  parameters gets only a note with its URL, when its first connection is an
+  active connection the snippet can describe.
+  A route or preset whose connection is disabled or missing gets a note saying
+  so, with no example.
 
-For any other setting, pass `--operations`, a list of operations, each
-`add`, `replace` or `remove` at a path into the app as `app show` returns it,
-with the `--revision` you read it at:
-
-```json
-[
-  { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
-  { "op": "replace", "path": "/status", "value": "disabled" }
-]
-```
+### Keys, users and usage
 
 ```sh
-agw app update <app-id> --revision 7 --operations @patch.json
+agw app key add <app> --name ci      # written to a private file
+agw app key list <app>
+agw app key revoke <app> <key>
+agw app user list <app>
+agw app user block <app> <user>
+agw usage show                       # this month, every app
+agw usage show --app <app>
+agw usage breakdown --app <app> --by model
+agw app charge list <app>
+agw app auth-event summary <app>
+agw app conversations <app> --from 2026-11-01 --media
 ```
 
-Everything you do not name stays as it is, and the result is checked as a
-whole update would be: either every operation applies and is saved, or
-nothing is. `null` is written as `null`, which means unlimited for a limit. A
-change made since you read the app is refused with `app_revision_conflict`;
-read it again and repeat.
+`app conversations` downloads an app's [stored conversations](/applications/conversations)
+into a folder, `--output`, with their media when you add `--media`.
 
-`agw app replace <app-id> --config @app.json` replaces the whole document.
-Build the file from `agw app show <app-id> --json`, keeping `name`, `config`,
-`status` and `revision` from `result.app`; it does not transfer credentials or
-usage to another deployment.
+### Browser steps
 
-A setting named like a credential, such as a provider parameter called
-`api_key`, is never shown: `app show` prints `[redacted]` in its place and its
-summary says which settings it hid. Such an app cannot be sent back whole with
-`app replace`, which says so; change its other settings with `app update`, which
-leaves the hidden one as it is, and change that one in the console or the API.
+`provider add --browser` and `provider rotate-key --browser` open a console page
+where a person types the key and approves, within 15 minutes. The page's link
+carries its own proof, so `agw` never prints it: it opens it in a browser on
+this machine, or, with `--no-open` or no browser, saves it in a file only you
+can read and says where.
 
-`agw app snippet <app-id>` prints a request that app can send: curl for a
-server app, Swift for an iOS one. Creating an app prints it too. It is built
-from that app's own providers, allowed endpoints and priced models, and stands
-named placeholders in — `PROVIDER_SLUG`, `MODEL` — for anything not set up yet,
-so you always get something to run and can see what is still missing.
+`agw` then waits for the person. With `--json` or `--no-input` it answers at
+once with `state: "pending"` instead. So a browser step suits a person at this
+machine; from another machine, add the key on the console's **Providers** page.
 
-To check a document without saving it, run `agw app validate --config
-@app.json --json` for a new app, or `agw app validate <app-id> --config
-@app.json --json` for a change to an existing one, with `name`, `config` and
-`status` in the file. `agw app add --dry-run --json` checks a new app built from
-flags; without a login it can check only the local schema, which
-`validation.remote` says.
+A pending result has not finished: run `agw operation wait <id>` to wait, 300
+seconds unless you give `--timeout <seconds>`. A wait that times out does not
+cancel the step; run `operation wait` again.
 
-After saving, run `agw app check <app-id> --json`. It reads configuration
-without sending inference; it does not verify upstream keys, App Attest on a
-device, sign-in or entitlements. Generate the matching client example with
-`app snippet` and address any placeholder notes before using it.
+### Removals
 
-`agw app show` and `agw app check` print an app's warnings.
+A command that cannot be undone, such as `app remove`, asks you to type `yes` on
+a terminal. With `--json`, or without a terminal, it needs `--yes` instead,
+which an agent adds only after the person it works for agreed.
 
-`agw app conversations <app-id> --from YYYY-MM-DD --to YYYY-MM-DD --output
-<folder>` downloads an app's [conversation history](/applications/conversations)
-as gzipped JSON Lines, one folder per day; `--media` also fetches the media
-they name. Files already in the folder are skipped, so the same command
-fetches only what is new.
+## Output
 
-Flag-based `agw app add --type ios` enables both production and development
-App Attest environments. Use `--attest-environments production` for a shipped
-app, and a separate development app when needed. The console and an API body
-that omits environments default to production only.
+- `--json` prints one JSON document: `{ "schemaVersion": 1, "ok": true, "result": … }`,
+  or `"ok": false` with `error.code`, `error.message` and `error.nextAction`.
+  Its fields only grow from one release to the next. `--help` prints text.
+- `--no-input` never prompts. A command that would have to ask fails instead.
+- With `--json`, results and errors are JSON on stdout. Otherwise text results
+  go to stdout, and errors and progress to stderr.
 
-`--verify-on every_request` or `--verify-on token_exchange`, on `agw app add
---type ios` or `agw app update`, sets when the app verifies App Attest. A new
-app verifies every request, which needs clients on the AppAIGateway Swift
-package 1.4 or later; `token_exchange` checks the assertion once per hourly
-token. Apps created before this setting was added were set to
-`token_exchange`, so switch one to `every_request` only once every build in
-use is on 1.4 or later.
+Exit codes:
 
-Application keys are written only to a private file. Select a path with
-`--key-output`, or use the default managed private file.
-Use the browser login, `AGW_MANAGEMENT_KEY` or `--key-stdin` to authenticate;
-see [Sign in](#sign-in). Never put secrets in command arguments, source control, chat or logs.
-The CLI does not make inference requests as a setup check. Provider inference
-must be requested explicitly.
+| Code | Meaning |
+| --- | --- |
+| `0` | Done. A browser step may still be pending: check `state` |
+| `2` | The command line is wrong |
+| `3` | The gateway or the network failed |
+| `4` | A state or a decision stops it, such as a missing confirmation |
+| `5` | `agw` stopped waiting. A browser step is still open; a browser sign-in must start again |
+
+After some refusals, when the gateway's release differs from `agw`'s, the
+output adds a notice saying which side to update.
+
+## Where agw keeps things
+
+`agw` keeps its files in a private folder: `~/.local/state/agw/v2` (or
+`$XDG_STATE_HOME/agw/v2`), and `%LOCALAPPDATA%\agw\v2` on Windows. It holds:
+
+- `connection.json`: the gateway and the sign-in;
+- `handoffs/`: a browser step's link, saved only when no browser opened;
+- `app-keys/`: the app keys `agw` writes without `--key-output`.
+
+A pending browser step is not kept there: `agw operation wait <id>` takes its
+ID, so keep the ID the command answered.
+
+## Compatibility
+
+An installed `agw` keeps working as the gateway gets newer:
+
+- answers and app settings only gain fields, and `agw` keeps and sends back
+  settings it does not know;
+- a command edits only what its flags name;
+- the gateway's commands arrive with the gateway. When one changed since `agw`
+  read it, `agw` reads the list again and may retry, or refuses with
+  `tool_changed` rather than run it blind. A command that needs a newer `agw`
+  is refused with `cli_outdated`.
 
 ## Human support
 
-Where your deployment offers human support, `agw support send` emails it for
-you, and the reply comes to your account's email address:
-
-```sh
-agw support send --type bug --message "Streaming responses stop after 30 seconds" --context app_id=my-app
-```
-
-`--type` is `bug`, `support` or `feedback`. Pipe a longer message in with
-`--message-stdin`, and add facts with repeated `--context name=value`. In a
-terminal the CLI shows the message and asks before sending; without one it
-sends only with `--yes`, so an agent has to have shown you the message first.
-A message that looks like it contains a key, token or password is refused, and
-the same message sent twice within ten minutes is sent once. The answer
-carries a reference such as `SUP-7F3K2Q` to quote when you follow up.
-
-## Output and recovery
-
-`--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
-`result` or `error`, plus `notices` when there is something to know that is
-not the answer. A command that comes from the gateway also carries `summary`,
-one sentence about the result, and its `result` is what the gateway's MCP tool
-of the same name returns. When a request fails and the CLI and the gateway API are
-different releases, a `version_mismatch` notice says which one to update. Progress goes to stderr. Without `--json` the same result is
-printed as plain text to read, and a failure is printed to stderr instead of
-stdout. A successful result with `state: "pending"` still needs its browser
-step and `operation wait`; it does not mean the change finished. A deletion
-asks for confirmation in a terminal; without one it runs only with `--yes`, so
-an agent has to have asked you first. Exit codes are
-0 for success, 2 for input errors, 3 for remote failures,
-4 for state or authentication recovery, and 5 for a wait timeout. A timeout
-leaves the operation pending.
-
-A request refused by a limit says which one: `error.message` names the limit, its
-ceiling and what the count is shared across, and `error.details` carries `scope`,
-`limit`, `windowSeconds`, `retryAfterSeconds` and `resetAt`. Wait
-`retryAfterSeconds` and repeat the same command.
-
-The CLI keeps one active connection. Its private state lives in
-`$XDG_STATE_HOME/agw` or `~/.local/state/agw`, and `%LOCALAPPDATA%/agw` on Windows.
-It saves initiation proofs before requests and credentials before reporting
-success. Repeat a failed command with the same state to recover a lost response;
-do not delete state or invent a new request proof. A recovered application key
-can finish writing to a new unused output file without issuing another key.
-
-A short lock guards each write to that state rather than the command around it,
-so other commands still run beside an `agw operation wait` that is polling. A
-deployment installed with `agw deployment setup` keeps its vault key in a file
-of its own under `vault-keys/` in the same directory, and keeps nothing else
-from the install. Back that directory up privately: losing the vault key makes
-stored provider credentials unreadable.
-
-Remote key replay lasts 15 minutes. After it expires, recovery identifies the
-existing resource; inspect it and replace its key intentionally. Each creation
-is saved as an operation before it is sent, so running the same command again
-after a lost response never creates a duplicate. Account usage includes retained
-records from deleted apps.
-
-`agw deployment update --dry-run` and `agw deployment domain --hostname
-ai.example.com --dry-run` inspect changes without deploying. Updating a mobile
-app's embedded gateway URL remains a separate application release.
+`agw support send --type support --message-stdin < note.txt` emails support for
+the signed-in person, who gets the reply by email. `--type` is `bug`,
+`support` or `feedback`. Without a terminal it needs
+`--yes`: show the person the message first. Never put a key or token in it.

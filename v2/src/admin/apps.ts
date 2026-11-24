@@ -874,7 +874,14 @@ export async function checkApp(c: AdminContext): Promise<Response> {
     throw invalid("The stored config is not JSON");
   }
   const config = await checkAppConfig(c.env.DB, actor.accountId, stored, storedRouting(row));
-  const slugs = Object.keys(config.routing.providers);
+  // Every connection a request can reach: the routing's, then each preset's and
+  // its fallbacks', which serve without a routing entry. Each once, in that order.
+  const slugs = [
+    ...new Set([
+      ...Object.keys(config.routing.providers),
+      ...Object.values(config.presets ?? {}).flatMap((preset) => [preset.provider, ...(preset.fallback ?? []).map((one) => one.provider)]),
+    ]),
+  ];
   const providers: { id: string | null; slug: string; status: "active" | "disabled" | "missing" }[] = [];
   for (const slug of slugs) {
     const connection = await c.env.DB.prepare("SELECT id, status FROM provider_connection WHERE account_id = ? AND slug = ?")
@@ -882,11 +889,22 @@ export async function checkApp(c: AdminContext): Promise<Response> {
       .first<{ id: string; status: "active" | "disabled" }>();
     providers.push(connection === null ? { id: null, slug, status: "missing" } : { id: connection.id, slug, status: connection.status });
   }
+  const statusOf = (slug: string) => providers.find((provider) => provider.slug === slug)?.status ?? "missing";
+  // A route serves through its own connection. A preset serves through its
+  // first connection, or through its fallbacks while that one is turned off;
+  // a first connection that is gone refuses the preset outright.
+  const servable =
+    Object.keys(config.routing.providers).some((slug) => statusOf(slug) === "active") ||
+    Object.values(config.presets ?? {}).some((preset) => {
+      const first = statusOf(preset.provider);
+      if (first === "active") return true;
+      return first === "disabled" && (preset.fallback ?? []).some((one) => statusOf(one.provider) === "active");
+    });
   return c.json({
     app_id: row.id,
     status: row.status,
     providers,
-    ready: row.status === "active" && providers.some((provider) => provider.status === "active"),
+    ready: row.status === "active" && servable,
     limitations: [...APP_CHECK_LIMITATIONS],
   } satisfies OperationResponse<"checkApp">);
 }

@@ -264,6 +264,8 @@ describe("adding a provider connection through a person", () => {
     expect((await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "nope", name: "X" })).status).toBe(400);
     expect((await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "X", secret: KEY })).status).toBe(400);
     expect((await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "X", baseUrl: "http://10.0.0.1" })).status).toBe(400);
+    // A custom provider's key header is set in the console: the field is refused, never dropped.
+    expect((await send(caller, "POST", "/v2/admin/provider-handoffs", { type: "openai", name: "X", auth: { header: "x-api-key", format: "{key}" } })).status).toBe(400);
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_operation WHERE kind = 'provider.add.browser'").first<{ n: number }>();
     const before = count!.n;
     await send(caller, "POST", "/v2/admin/providers", { type: "openai", name: "Taken", slug: "taken", secret: KEY });

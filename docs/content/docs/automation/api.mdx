@@ -3,191 +3,151 @@ title: Use the API
 description: Manage providers, apps, users and usage from scripts and CI with a management key.
 ---
 
-The console uses the API to manage your apps and providers. Some account and
-access actions require a human console session; management credentials cannot
-perform those actions. For a terminal or coding agent, start with the [CLI](/automation/cli),
-which handles protected state, browser handoffs and creation retries. Direct
-integrations can use the same API from a deployment script or CI job.
-
-Use `https://api.appaigateway.com` as the API origin and
-[console.appaigateway.com](https://console.appaigateway.com) to manage access.
-
-<Callout title="Self-hosting">
-  Use your gateway's API origin. If your console and API share an address,
-  use that address. Routes and request bodies are the same.
-</Callout>
+Everything the console does with your apps and providers is also an HTTP API
+under `/v2/admin`. Use it from a script or CI job with a management key. A
+coding agent is better served by the [CLI](/automation/cli) or the
+[MCP server](/automation/mcp), which keep secrets out of its view.
 
 ## Management keys
 
-A management key authenticates API calls to the `/v1/admin/*` routes. Open
-the user menu in the console, choose **Access**, and click **New
-key**. The key is shown once in a dialog titled **Copy your new key now**. The
-same page lists the MCP clients connected with OAuth, whose access tokens the
-`/v1/admin/*` routes accept too; see [MCP server](/automation/mcp#connect-with-oauth).
+Open the console's **Access** page and click **New key**. Give the key a name,
+choose what it may do, and click **Create key**:
 
-A management key acts within its owning identity's current account membership
-and role. It does not expire. Store it in a secret manager and read it from the
-environment. **Revoke key** stops it immediately.
+- **Manage**: everything your role allows: create, change and delete apps,
+  providers and keys.
+- **Read only**: lists and inspects apps, providers and usage, but cannot
+  change them.
 
-Each key also has a grant, chosen when you create it. **Manage**, the default,
-lets the key do everything its owner's role allows. **Read only** lets it list,
-inspect and validate your apps, providers and usage, but not change them. A
-change the owner's role would otherwise allow is refused with
-`403 grant_insufficient`; one the role or the kind of credential rules out is
-refused for that reason instead. A read-only key can still revoke itself
-(`DELETE /v1/cli/credential`). Give one to a dashboard or an agent that only
-needs to look.
+A dialog titled **Copy your new key now** shows the key once. The gateway keeps
+only a hash. Store it in your secret manager. Only an owner or admin can create
+one.
 
-Keys are listed and revoked on that page, and created there or by a CLI login
-you approve in the browser (`agw account login`). A key the CLI received is
-listed with a **CLI** tag and the label the CLI sent, such as `CLI on
-mac-studio`. A management key cannot create or list keys, and the only key it
-can revoke is itself (`DELETE /v1/cli/credential`, which is what
-`agw account logout` sends). So a key you hand to another system cannot issue
-itself a second key, and revoking the one you handed out ends that access for
-good.
-
-The console's **Access** page calls
-[Create a management key](/api/admin-management-keys/createManagementKey),
-[List management keys](/api/admin-management-keys/listManagementKeys) and
-[Revoke a management key](/api/admin-management-keys/revokeManagementKey).
-They accept a console session only.
-
-Management keys manage; they never call providers. An app's own API key is
-what calls providers, and a management key is refused on those routes.
+A key acts in the account it was created in, with the grant you chose and no
+more than its creator's role. The **Access** page lists every key, with its
+grant and status, beside your CLI sign-ins and MCP connections. **Revoke key**
+stops it at once. The **Access** routes, which list, create and revoke
+management keys, CLI sign-ins and MCP connections, need a person signed in to
+the console: a management key or token is refused with `403 session_required`.
 
 ## Making a call
 
-Send the management credential as an `Authorization: Bearer` header from your
-HTTP client's protected credential store. Do not put it in shell arguments or
-logs. The CLI reads it from the `AGW_MANAGEMENT_KEY` environment variable,
-which takes precedence over any saved login without saving that environment
-key to disk. A CI job can supply it from its secret store:
+Send the key as a bearer token:
 
 ```sh
-AGW_MANAGEMENT_KEY="$MANAGEMENT_KEY" agw app list --json
+curl https://api.appaigateway.com/v2/admin/apps \
+  -H "Authorization: Bearer $AGW_MANAGEMENT_KEY"
 ```
 
-To save the key on a machine instead, pipe it once through stdin:
+<Callout title="Self-hosting">
+  Use your gateway's own address in place of `https://api.appaigateway.com`.
+</Callout>
 
-```sh
-agw deployment connect --url https://api.appaigateway.com --key-stdin < /private/path/management-key
-agw app list --json
-```
+`GET /v2/admin/session` answers who the key is: the account, your role and the
+key's grant. Call it first when something is refused.
 
-The full reference with every
-request and response shape is under [API reference](/api), and the OpenAPI
-document is at [/openapi.json](/openapi.json).
+An OAuth access token from an MCP client or a CLI sign-in works the same way,
+with its own grant.
+
+A refusal is `{ "error": { "code": "…", "message": "…" } }`, like the
+gateway's other errors. The codes, and what to do about each, are in the agent
+manual's [Errors](/automation/agent-manual#errors).
 
 ## What you can do
 
 | Area | Routes |
 | --- | --- |
-| Providers | `GET`, `POST /v1/admin/providers`, `POST /v1/admin/providers/test`, `PUT`, `DELETE /v1/admin/providers/{id}` |
-| Gateways | `GET`, `POST /v1/admin/provider-gateways`, `POST …/test`, `PATCH`, `DELETE …/{id}`, `POST …/{id}/rotate` |
-| Apps | `GET`, `POST /v1/admin/apps`, `GET`, `PUT`, `DELETE /v1/admin/apps/{app}`, `POST …/validate`, `POST /v1/admin/app-drafts/validate` |
-| App checks | `GET /v1/admin/apps/{app}/check`, `GET …/snippet` (no inference) |
-| App keys | `GET`, `POST /v1/admin/apps/{app}/keys`, `POST …/keys/{key}/revoke` |
-| Users | `GET /v1/admin/apps/{app}/users`, `GET …/users/{user}`, `POST …/block`, `POST …/unblock` |
-| Usage | `GET /v1/admin/apps/{app}/usage`, `…/usage/timeseries`, `…/usage/breakdown`, `…/events`, `POST …/usage/reprice` |
-| Auth events | `GET /v1/admin/apps/{app}/auth-events`, `…/auth-events/summary`, `…/rejection-events` |
-| Prices | `GET /v1/admin/prices` |
+| Who is calling | `GET /v2/admin/session` |
+| Prices and provider types | `GET /v2/admin/prices`, `GET /v2/admin/provider-types` |
+| Provider connections | `GET`, `POST /v2/admin/providers`, `POST /v2/admin/providers/test`, `GET`, `PUT`, `DELETE /v2/admin/providers/{id}` |
+| Apps | `GET`, `POST /v2/admin/apps`, `GET`, `PUT`, `PATCH`, `DELETE /v2/admin/apps/{app}` |
+| Checking apps | `POST /v2/admin/app-drafts/validate`, `POST /v2/admin/apps/{app}/validate`, `GET /v2/admin/apps/{app}/check`, `GET /v2/admin/apps/{app}/snippet` |
+| App keys | `GET`, `POST /v2/admin/apps/{app}/keys`, `POST /v2/admin/apps/{app}/keys/{key}/revoke` |
+| End users | `GET /v2/admin/apps/{app}/users`, `GET /v2/admin/apps/{app}/users/{user}`, `POST …/block`, `POST …/unblock` |
+| Usage and charges | `GET /v2/admin/usage`, and under `/v2/admin/apps/{app}`: `usage`, `usage/timeseries`, `usage/breakdown`, `charges`, `jobs` |
+| Sign-in health | Under `/v2/admin/apps/{app}`: `auth-events/summary`, `auth-events`, `rejection-events` |
+| Stored conversations | `GET /v2/admin/apps/{app}/conversations`, `GET /v2/admin/apps/{app}/conversations/file?name=…` |
+| Creating without seeing a secret | `POST /v2/admin/provider-handoffs`, `POST /v2/admin/providers/{id}/key-handoffs`, `POST /v2/admin/reserved/apps`, `POST /v2/admin/reserved/apps/{app}/keys`, `GET /v2/admin/operations/{id}` |
 
-Account status and totals are also available through `GET /v1/cli/account`
-and `GET /v1/cli/usage?month=YYYY-MM`. The latter retains usage from deleted apps.
+The guides for each area explain the fields: [Add a provider key](/providers/add-a-provider),
+[Create an app](/applications/create), [Users](/applications/users) and
+[Usage and charges](/applications/usage#through-the-api). The app settings are
+described field by field in the
+[configuration reference](/automation/agent-manual#application-configuration-reference).
 
-## Validate before you write
+The generated API reference on this site still describes the earlier version
+of the gateway. The OpenAPI document for this version is generated from the
+same contracts the gateway runs, as `v2/openapi/openapi.json` in the
+repository; the gateway does not serve it yet.
 
-`POST /v1/admin/apps/{app}/validate` checks an application body without
-saving it and returns the same errors an update of that app would. Run it
-before `PUT` in any automated flow, so a bad configuration is caught before it
-replaces a good one. For an app you have not created yet, use
-`POST /v1/admin/app-drafts/validate`, which returns the errors a creation
-would.
+## Check before you write
 
-## Rules worth knowing
+`POST /v2/admin/app-drafts/validate` checks a new app's `{ name, config, status? }`
+as a create would, and `POST /v2/admin/apps/{app}/validate` checks a change to
+an existing app. Both save nothing, and need only the **Read only** grant. Send
+`name`, `config` and `status` only: validation refuses a `revision`. Add the
+revision when saving a change to an existing app.
 
-- Never send `id` when creating an app. The gateway assigns it and returns
-  it as `app.id`. A body with `id` is refused with `400`.
-- `PUT /v1/admin/apps/{app}` replaces the whole app: send `name`, the full
-  `config`, `status`, and the `revision` from your latest read. Omitted `status`
-  defaults to `active`, so preserve it to avoid enabling a paused app.
-- `PATCH /v1/admin/apps/{app}` changes only what you name, and is the better
-  fit for a small edit. Send the `revision` and a list of `operations`, each
-  an RFC 6902 `add`, `replace` or `remove` at a JSON Pointer under `/name`,
-  `/status` or `/config`:
+`GET /v2/admin/apps/{app}/check` lists every connection the app's routes and
+presets name, with its status. `ready` means the app is active and at least one
+connection its routes or presets use can be reached: one that is active, or,
+for a preset, a first connection turned off with an active fallback. It checks
+connection status only, not that a request will serve. It sends no provider
+request, so it does not test a key, a device or a sign-in. Only a successful app request confirms the app serves. The example
+requests from `GET /v2/admin/apps/{app}/snippet` are built from the settings
+and send nothing; they can be the starting point for a test.
 
-  ```json
-  { "revision": 7, "operations": [
-    { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
-    { "op": "replace", "path": "/config/limits/per_app/spending/monthly_usd", "value": null },
-    { "op": "remove", "path": "/config/routing/model_rewrites/old-name" }
-  ] }
-  ```
+## Changing an app
 
-  The operations apply in order to the app as `GET` returns it, and the
-  result is checked exactly as a `PUT` of the whole app would be. Nothing is
-  saved unless every operation applies and the result is accepted. A value is
-  written as given: `null` means unlimited for a limit, and only `remove`
-  deletes. `add` writes a key, an array position, or `-` to append; `replace`
-  and `remove` need something to already be there.
-- App deletion requires `DELETE /v1/admin/apps/{app}?confirm={app}`, repeating
-  the app ID in the query.
-- An app's API key is returned once, as `api_key.key` on create or `key` on
-  `POST …/keys`. Ordinary reads never return it; retry-safe operations have the
-  limited recovery window described below.
-- A provider key is never returned. Responses carry only `secretHint`, the
-  last characters.
-- App and provider changes take up to a minute to affect live traffic.
-  Management credential revocation is immediate; user blocks stop new token
-  exchanges immediately and existing gateway tokens within ten seconds.
+Every app has a `revision`, which each save raises by one. A change sends the
+revision it read, and is refused with `409 app_revision_conflict` if someone
+saved the app since. Read it again, and make your change on top.
 
-## Example: create a server app and its first key
+To replace the whole app, send `PUT /v2/admin/apps/{app}` with `name`, `config`,
+`status` and `revision`, as `GET` answered them. Leave out `id`, `created_at`,
+`updated_at` and `warnings`.
 
-Send this JSON body to `POST https://api.appaigateway.com/v1/admin/apps`
-from your authenticated HTTP client, with `Content-Type: application/json`.
-First add a provider with slug `openai` and validate the same body at
-`POST /v1/admin/app-drafts/validate`.
+To change a few settings, send `PATCH` with `revision` and `operations`, a JSON
+Patch:
 
 ```json
 {
-  "name": "Search service",
-  "config": {
-    "authentication": { "type": "api_key", "end_user": { "source": "none" } },
-    "routing": {
-      "providers": {
-        "mode": "selected",
-        "selected": { "openai": { "allowed_paths": ["v1/responses"], "allowed_models": ["gpt-5.6-sol"] } }
-      },
-      "model_rewrites": {}
-    },
-    "limits": {
-      "per_user": { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": null } },
-      "per_app": { "requests": { "per_minute": 300, "per_day": 10000 }, "spending": { "monthly_usd": 100 } }
-    }
-  }
+  "revision": 4,
+  "operations": [
+    { "op": "replace", "path": "/config/limits/per_app/requests/per_minute", "value": 600 },
+    { "op": "replace", "path": "/status", "value": "disabled" }
+  ]
 }
 ```
 
-The response carries `app.id`, which clients compile into their URLs, and
-`api_key.key`, which goes straight into the calling service's secret manager.
-Handle the response privately: do not print it to a terminal or CI log. For a
-retryable script, submit the body as an operation as described below. The CLI
-handles both retry proofs and private key storage automatically.
+Each operation is `add`, `replace` or `remove`, at a path under `/name`,
+`/status` or `/config`. They apply in order, and nothing is saved unless all
+of them apply and the result passes the same checks as `PUT`. `null` sets a
+limit to unlimited; only `remove` deletes a field.
 
-## Revisions and retry proofs
+A provider connection has a `revision` too, for `PUT /v2/admin/providers/{id}`.
 
-Read an app, provider or provider gateway before updating it and send back the
-`revision` it answered with. Apps require it on full `PUT`; providers require it
-on `PUT`; gateways require it when renaming or rotating a token. A missing
-revision returns 400 and a stale one 409; reread and merge before retrying. The
-revision travels only in the body — no `ETag` is published, because anything
-that compresses a response rewrites that header and a browser cannot read it
-cross-origin.
+Older clients read and write these documents too, so keep settings you do not
+know as you read them, and send them back unchanged.
 
-To make the creation of an app, app key, provider or provider gateway safe to
-retry, send it to `POST /v1/cli/operations` with a random `token` you persist
-before sending. Retrying with the same token and payload recovers the existing
-resource instead of creating another. A new key is returned for 15 minutes;
-after that the result identifies the resource and never creates another key
-automatically.
+## Example: a server app and its key
+
+```sh
+curl https://api.appaigateway.com/v2/admin/apps \
+  -H "Authorization: Bearer $AGW_MANAGEMENT_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Backend",
+    "config": {
+      "authentication": { "type": "api_key", "end_user": { "source": "none" } },
+      "routing": { "providers": { "openai": { "operations": ["openai.chat"] } } }
+    }
+  }'
+```
+
+The answer is `201` with `app` and, for a server app, `api_key`: the app's first
+key, shown this once. Store `api_key.key` straight in your secret manager.
+`POST /v2/admin/apps/{app}/keys` with a `name` makes another one, also shown
+once.
+
+A script that may retry, or must never see the key, uses the
+[reserved create](/automation/agent-manual#retrying-creation-safely) instead.

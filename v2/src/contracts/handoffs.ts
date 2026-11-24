@@ -33,7 +33,7 @@ import {
  * stores). Passthrough paths are left out: listing them is a trust choice a
  * person makes in the console.
  */
-export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true, passthrough: true })
+export const ProviderHandoffRequestSchema = ProviderCreateRequestSchema.omit({ secret: true, cloudflareGateway: true, servingProviders: true, passthrough: true, auth: true })
   .extend({
     /** Send the connection through this Cloudflare AI Gateway. The person approving enters its token. */
     cloudflareGateway: CloudflareGatewayIdsSchema.optional(),

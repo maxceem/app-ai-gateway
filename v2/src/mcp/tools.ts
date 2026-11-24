@@ -560,14 +560,11 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "check_app",
     title: "Check whether an app is ready",
     description:
-      "Checks whether an app can serve requests, without sending any: checks its stored configuration, lists every provider connection its routing names with that connection's status, and reports ready when the app is active and at least one of them is active. It does not try App Attest, sign-in or the provider keys, and says so in limitations.",
+      "Checks an app without sending any request: checks its stored configuration, and lists every provider connection its routes and presets name, with each connection's status. ready means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: only a successful app request confirms it. get_app_snippet builds example requests from the settings and sends none; it can be the starting point when the person has asked for a test. It does not try App Attest, sign-in or the provider keys, and says so in limitations.",
     operation: "checkApp",
     cli: { command: "app check", args: ["app"], view: { rows: "providers", columns: ["slug=Provider", "status", "id"], notes: ["limitations"] } },
-    summary: (result) => {
-      const active = result.providers.filter((provider) => provider.status === "active").length;
-      const standing = `${result.status}, and ${active} of ${plural(result.providers.length, "provider connection")} it names ${active === 1 ? "is" : "are"} active`;
-      return `App ${result.app_id} is ${result.ready ? "" : "not "}ready: it is ${standing}. No request was sent.`;
-    },
+    summary: (result) =>
+      `App ${result.app_id} is ${result.status} and ${result.ready ? "ready" : "not ready"}: ready depends on whether its routes and presets can reach a connection, not on how many are active. See each connection's status. No request was sent.`,
   }),
   tool({
     name: "list_app_keys",

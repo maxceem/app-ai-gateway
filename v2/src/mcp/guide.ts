@@ -36,10 +36,12 @@ the account, the person, their role and the grant.
 
 - \`get_account\`: who you are and the account you act in.
 - \`list_models\`: the priced models an app may allow.
+- \`list_provider_types\`: every provider type a connection can be added for, and its operations.
 - \`list_providers\`, \`get_provider\`: the account's provider connections, as metadata.
 - \`list_apps\`, \`get_app\`: the apps, and one app's whole stored document.
 - \`validate_app\`: whether an app document would be accepted, without saving it.
-- \`check_app\`: whether an app can serve requests, without sending one.
+- \`check_app\`: the status of each connection an app's routes and presets name, without sending a request.
+- \`get_app_snippet\`: example requests for an app's routes and presets, with no credential in them.
 - \`list_app_keys\`: an app-key app's keys, as metadata.
 - \`list_app_users\`, \`get_app_user\`: an app's end users and their usage.
 - \`get_usage\`: a month's usage, for one app or the whole account.
@@ -75,9 +77,15 @@ the account, the person, their role and the grant.
 - \`add_app\` and \`add_app_key\` take two calls. The first, without
   \`handle\`, checks the request and reserves it: nothing is created. The
   second, with the same arguments and the answer's \`handle\`, creates it
-  once. If you lose an answer, send the same call again: it repeats the answer
-  instead of creating another. A new key is never in the answer: give the
-  person \`reveal_url\`, where they see it once, signed in to the console.
+  once. If you lose the second call's answer, send that call again within 15
+  minutes: it repeats the answer instead of creating another. After that it is
+  refused with \`already_completed\`: read \`get_operation\` with the
+  operation's \`id\` for what was created. If you reserve again, inspect the
+  operation named in any \`notice\` the new reservation answers before you
+  send its \`handle\`: sending it can create a duplicate. A new key is never in
+  the answer: when the answer has \`reveal_url\`, give it to the person, who
+  sees the key once, signed in to the console. After the reveal window closes,
+  it is left out.
 
 ## Secrets
 

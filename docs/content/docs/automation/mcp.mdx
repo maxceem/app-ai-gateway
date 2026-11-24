@@ -1,364 +1,200 @@
 ---
 title: MCP server
-description: Connect an MCP client such as a coding agent to your gateway and let it read and change your apps, providers and usage.
+description: Connect an MCP client such as a coding agent to your gateway, and let it read and change your apps, providers and usage.
 ---
 
 The gateway is also a [Model Context Protocol](https://modelcontextprotocol.io)
-server. An MCP client — a coding agent, a desktop assistant, an IDE — can
-connect to it to read your apps, providers and usage and to change them,
-through tools written for an agent rather than for an HTTP client. Each tool
-runs the same operation the API and the [CLI](/automation/cli) run, with the
-same rules, so connecting a client over MCP gives it no more and no less than
-the credential it connects with. No key or token ever passes through a tool,
-in either direction.
+server. An MCP client, such as a coding agent, a desktop assistant or an IDE,
+can connect to it to read your apps, providers and usage, and to change them.
+Each tool runs the same operation the [API](/automation/api) and the
+[CLI](/automation/cli) run, with the same rules. No key or token ever passes
+through a tool, in either direction.
 
-## First task
+## Connect
 
-Add `https://console.appaigateway.com/mcp` to your client's remote MCP servers,
-then approve the OAuth connection in your browser. Select your existing
-account and **Read only** for inspection, or **Manage** for configuration.
-Use **Continue without an account** only when you want a new account.
-
-Ask the agent to read `agw://guide`, call `get_account`, and inspect your apps
-and providers before changing them. For example: “Check my app's configuration
-and show the integration snippet; do not send inference.” It can use
-`check_app` and `get_app_snippet` without making a provider request.
-
-<Callout title="Self-hosting">
-  Use your console's origin followed by `/mcp`. OAuth requires the settings in
-  [Configuration](/self-hosting/configuration#mcp-clients); management keys are
-  an alternative when OAuth is not configured.
-</Callout>
-
-## Endpoint
-
-The server is one URL on the host you sign in to the console at:
+Add this address to your client's remote MCP servers:
 
 ```text
-https://console.appaigateway.com/mcp
+https://console.appaigateway.com/v2/mcp
 ```
 
-On your own deployment it is your console's address followed by `/mcp`, such
-as `https://console.example.com/mcp`. If you serve your apps from a separate
-API host with `PUBLIC_API_URL`, the MCP endpoint is not on that host; it answers
-`404` there, like the console's own routes.
+Most clients then sign in on their own: your browser opens the console, and you
+approve the connection. Then ask the agent to call `get_account` and read
+`agw://guide` before it changes anything. For example: "Check my app's
+settings and show its example requests; do not send any AI request." It can do
+that with `check_app` and `get_app_snippet`.
 
-It speaks the Streamable HTTP transport over `POST`, statelessly: there is no
-session to keep, and every request carries its credential. Clients on protocol
-revision `2026-07-28` and clients on the 2025 revisions are both served.
-
-A client connects in one of two ways: with OAuth, where you approve it in your
-browser and it never holds a key, or with a management key you create and give
-it. Either way it gets the same tools, under the same rules.
+<Callout title="Self-hosting">
+  Use your console's address followed by `/v2/mcp`. The endpoint answers only
+  on the console's address, never on a separate API host.
+</Callout>
 
 ## Connect with OAuth
 
-Give the client the endpoint URL and nothing else. Most MCP clients then sign
-in on their own. On your own deployment this needs the console's address
-configured; see [Configuration](/self-hosting/configuration#mcp-clients).
+Give the client the address and nothing else.
 
 1. The client's first request is refused with `401` and a challenge naming
-   `https://console.appaigateway.com/.well-known/oauth-protected-resource/mcp`.
-   That document names your console's address as the authorization server,
-   and the client reads where to send you from
-   `/.well-known/oauth-authorization-server`.
-2. The client opens your browser at the console's consent page. It shows the
-   app's name as the app declares it, the domain that vouches for that name,
-   and what the app asks for: **Read only** or **Manage**.
-3. You decide:
-   - **Signed in:** pick which of your accounts the app may use and what it
-     may do, then **Allow**. The grant starts at what the app asked for, and
-     you may give it less or more; a **Read only** connection can use every
-     reading tool, and every change tool refuses it with `grant_insufficient`.
-     A **Manage** connection can do what your role allows.
-   - **Not signed in:** sign in, or create an account, and you come back to
-     the same page. Google sign-in is offered where the deployment has it.
-   - **Continue without an account**, where it is offered: see below.
-   - **Deny** sends the app away with nothing.
-4. The browser returns to the app, which exchanges what it received for its
-   tokens. From then on it calls `/mcp` with them, and renews them by itself.
+   `/.well-known/oauth-protected-resource/v2/mcp` on the console. From there it
+   finds the console's sign-in.
+2. The client opens your browser at a page titled **Connect an app to your
+   account**. It shows the client's name, as the client states it, beside the
+   domain that vouches for it, and what it **Asks for**.
+3. You choose:
+   - **Signed in:** which of your accounts the client may use, and what it may
+     do, then **Allow**. **Manage** is everything your role allows. **Read only**
+     lists and inspects, and every change tool refuses it with
+     `grant_insufficient`.
+   - **Not signed in:** **Sign in**, or **Create an account**, and you come
+     back to the same page.
+   - **Deny** sends the client away with nothing.
+4. The browser returns to the client, which receives its tokens and renews
+   them on its own.
 
-The consent page is open for ten minutes. Each request a connection sends is
-attributed to MCP and to the app it was issued to.
-
-### Continue without an account
-
-You can start without signing up: **Continue without an account** creates a new
-account nobody has claimed yet, and connects the app to it. It is the same kind
-of account the [CLI](/automation/cli) creates the first time it is used without
-signing in:
-
-- The connection always gets the **Manage** grant, because it is the only way
-  into that account. If the app asked for **Read only**, the page says so.
-- On the hosted service, an account nobody has claimed is deleted unless a
-  person claims it; the consent page shows when, and `get_account` reports it
-  to the agent.
-- To keep it, ask the agent to call `claim_account`, open the link it gives
-  you, and create your sign-in there. The connection keeps working afterwards,
-  and you will find it on your **Access** page.
-- On a self-hosted deployment it is offered only before anyone has set the
-  deployment up: the first connection's account becomes the deployment's
-  account, exactly as the CLI's first account does, and the door closes after
-  it.
-
-On the hosted service, each network address can create a few such accounts a
-day, counted together with the CLI's.
-
-### How a client identifies itself
-
-An app identifies itself with an `https` URL as its `client_id`: the address of
-a small JSON document describing it, its Client ID Metadata Document. The
-gateway fetches it when the app asks to connect, and only the redirect
-addresses it lists can receive the result. The name the document declares is
-the app's own claim, which is why the consent page always shows it beside the
-domain that served it.
-
-A self-hosted deployment can turn this off with `OAUTH_CIMD`, and can register
-apps itself with `OAUTH_CLIENTS`, an advanced option for clients that cannot
-publish such a document; see [Configuration](/self-hosting/configuration#oauth_cimd).
-
-### Tokens and how long they last
+The page stays valid for ten minutes.
 
 | What | How long |
 | --- | --- |
 | Access token (`agw_oat_…`) | 10 minutes |
-| Refresh token (`agw_ort_…`) and the connection itself | 30 days, restarted each time the app refreshes |
-| The code the browser brings back | Once, within 10 minutes |
+| Refresh token (`agw_ort_…`), and so the connection | 30 days, starting again at each renewal |
 
-A connection the app uses at least once a month lives until you revoke it.
-Every refresh replaces both tokens; presenting an old refresh token again,
-after a short grace period, ends the whole connection, because only a stolen
-copy would. Presenting the newest refresh token within 5 seconds of the
-refresh that issued it is answered `429` with `slow_down` and a `Retry-After`
-header, and that token stays good; presenting the previous one within the grace
-period instead answers the same tokens that refresh did.
-The same access token also works as a bearer token on the
-management API under `/v1/admin`, with the same grant, though a client
-discovers how to authorize only from `/mcp`: the API's refusals carry a
-`Bearer realm="management"` challenge that names no metadata. Neither ever reaches your keys and
-connections themselves: those are managed only in the console.
-
-### Revoking a connection
-
-The console's **Access** page lists every connection beside your management
-keys: the app's name and domain, its grant, the account, when it was created
-and when it lapses unless renewed. **Revoke connection** ends it at once, and
-the app has to be approved again to come back. An app can also end its own
-connection at `/oauth/revoke`.
-
-### Endpoints
-
-All of them are on the console's address, never on a separate API host:
-
-| URL | What it is |
-| --- | --- |
-| `/.well-known/oauth-protected-resource/mcp` | Where the MCP endpoint says to authorize; also at `/.well-known/oauth-protected-resource` |
-| `/.well-known/oauth-authorization-server` | The authorization server's metadata |
-| `/oauth/authorize` | Where the app sends the browser: the authorization-code flow with PKCE (`S256`) |
-| `/oauth/token` | The code exchange and refresh, form-encoded |
-| `/oauth/revoke` | Revocation, form-encoded |
-
-The scopes are `read` and `manage`, and `resource` is the console's address or
-the MCP endpoint's. There is no dynamic client registration and no client
-secret: every app is a public client.
+So a client used at least once a month stays connected until you revoke it. The
+console's **Access** page lists each connection with its client, grant and
+account. **Revoke connection** ends it, and the client must be approved again.
 
 ## Connect with a management key
 
-Create a management key on the console's **Access** page and give it
-to the client as a bearer token, in an `Authorization: Bearer` header. Choose
-the key's grant for what the client should be able to do:
-
-- **Read only** for a client that only looks. Every reading tool works with
-  it, and every change tool is refused with `grant_insufficient`.
-- **Manage** for a client that will also change things. It can do what the
-  key's owner's role allows: an owner's or admin's key can make every change
-  below, a member's none.
-
-Keep the key out of the client's configuration file where you can. A client
-that expands environment variables, such as Claude Code with a project
-`.mcp.json`, can read it from the environment:
+Create a [management key](/automation/api#management-keys) on the **Access**
+page, with the **Read only** or **Manage** grant, and give it to the client as
+an `Authorization: Bearer` header. Keep it out of the client's settings file
+where you can. A client that reads environment variables, such as Claude Code
+with a project `.mcp.json`, can take it from there:
 
 ```json title=".mcp.json"
 {
   "mcpServers": {
     "app-ai-gateway": {
       "type": "http",
-      "url": "https://console.appaigateway.com/mcp",
+      "url": "https://console.appaigateway.com/v2/mcp",
       "headers": { "Authorization": "Bearer ${AGW_MANAGEMENT_KEY}" }
     }
   }
 }
 ```
 
-A request without a bearer token, or with one that is not a live management
-key or access token, is answered `401` with a `WWW-Authenticate: Bearer
-realm="management"` challenge that also names where to authorize, when the
-deployment runs OAuth. The server never accepts a console
-sign-in cookie. Revoking the key on the **Access** page ends the client's
-access at once.
-
-Each request a client sends with your key is attributed to MCP, whatever the
-client calls itself.
+The server reads only the `Authorization` header, never a console sign-in
+cookie. Revoking the key on the **Access** page ends the client's access.
 
 ## Reading tools
 
-These tools change nothing and never send a request to a provider. Tools
-about one app take its id as `app`.
+These change nothing and never send a request to a provider.
 
-| Tool | What it returns |
+| Tool | What it answers |
 | --- | --- |
-| `get_account` | Your account and the deployment it lives on; for an account nobody has claimed yet, its deadlines |
-| `get_capabilities` | The provider types and provider gateway types the deployment supports |
-| `list_models` | The priced models, with per-token prices and retirement dates |
-| `list_providers` | Your providers' metadata; never a key, only its last characters |
-| `get_provider` | One provider's metadata, by id or slug |
-| `list_provider_gateways` | Your provider gateways' metadata |
-| `list_apps` | Your apps, with their status and a month's usage |
-| `get_app` | One app's whole stored document, with its revision |
-| `validate_app` | Whether an app document would be accepted, as a new app or as an update of one, without saving it |
-| `check_app` | Whether an app can serve requests, without sending one |
-| `get_app_snippet` | The first request an app can send, without a credential in it |
-| `list_app_keys` | A server app's keys, as metadata; never a key's value |
-| `list_app_users` | An app's end users, a page at a time |
-| `get_app_user` | One end user, with status and usage |
-| `list_app_events` | An app's proxied requests, newest first |
-| `list_auth_events` | An app's sign-in and App Attest attempts, newest first |
-| `get_auth_event_summary` | An app's sign-in outcomes per day |
-| `list_rejection_events` | Samples of the requests the gateway refused for an app |
-| `get_usage` | One month's totals, for all your apps or for one |
-| `get_usage_breakdown` | An app's usage grouped by model, provider, user or another dimension |
-| `get_usage_timeseries` | An app's usage per day |
+| `get_account` | Who you are, the account, your role and the grant. Call it first |
+| `list_models` | The priced models |
+| `list_provider_types` | Every provider type and its operations |
+| `list_providers`, `get_provider` | Your provider connections, as metadata; never a key |
+| `list_apps`, `get_app` | Your apps, and one app's whole document with its revision |
+| `validate_app` | Whether an app document would be accepted, without saving it |
+| `check_app` | Each connection the app names, with its status, and `ready`: a connection-status check that sends no request and does not prove one will serve |
+| `get_app_snippet` | Example requests for the app, with no credential in them |
+| `list_app_keys` | A server app's keys, as metadata |
+| `list_app_users`, `get_app_user` | An app's end users, and one with its usage |
+| `get_usage` | One month's totals, for one app or all of them |
+| `get_usage_breakdown`, `get_usage_timeseries` | An app's usage by one dimension, or by day |
+| `list_app_charges` | An app's charges, one by one |
+| `list_app_jobs` | An app's jobs, and the estimates not yet settled |
+| `get_auth_event_summary`, `list_auth_events`, `list_rejection_events` | Why an app's users cannot sign in or are refused |
+| `get_operation` | Where a creating tool's step stands |
 
 ## Change tools
 
 | Tool | What it does |
 | --- | --- |
-| `get_operation` | Where a change a tool started stands: pending, completed with what it created, or expired |
-| `add_provider`, `add_provider_gateway` | Start adding a provider or a provider gateway; you enter its key or token in your browser |
-| `update_provider`, `update_provider_gateway` | Change a provider's name, routing, pricing or status, or rename a provider gateway |
-| `rotate_provider_key`, `rotate_provider_gateway_key` | Start replacing a key or token; you enter the new one in your browser |
-| `remove_provider`, `remove_provider_gateway` | Delete one for good, with its id repeated as `confirm` |
-| `add_app` | Create an app; a server app's key is shown to you on a page, never to the agent |
-| `update_app` | Replace an app's document, at the revision it was read at |
-| `patch_app` | Change only the settings named (`add`, `replace` or `remove` at a path), at the revision it was read at |
-| `remove_app` | Delete an app for good, with its id repeated as `confirm` |
-| `add_app_key` | Create another key for a server app, shown to you on a page |
-| `revoke_app_key` | Revoke one of a server app's keys |
+| `add_provider`, `rotate_provider_key` | Answer a console page where a person enters the provider's key |
+| `update_provider` | Rename a connection, change its prices, or turn it off |
+| `remove_provider` | Delete a connection for good |
+| `add_app`, `add_app_key` | Create an app or a server app key, in two calls |
+| `patch_app` | Change some of an app's settings |
+| `update_app` | Replace an app's whole document |
+| `remove_app` | Delete an app for good |
+| `revoke_app_key` | Revoke a server app's key |
 | `block_app_user`, `unblock_app_user` | Block or unblock one of an app's users |
-| `contact_support` | Email human support for you, where your deployment offers it; the reply comes to your email address |
-| `claim_account` | Start claiming an account nobody owns yet, in your browser |
+| `contact_support` | Email human support for you, where the gateway offers it |
+
+`patch_app`, `update_app` and `update_provider` take the `revision` the agent
+read: a change someone made since is refused, never overwritten. The removals
+take the ID twice, as the ID and as `confirm`. Prefer turning an app or a
+connection off, which can be undone.
+
+### A key is entered in your browser
+
+`add_provider` takes `{ type, name, slug?, baseUrl?, pricing?, cloudflareGateway?: { accountId, gatewayId } }`;
+other top-level fields are refused. `rotate_provider_key` takes `{ id, revision }`.
+Each answers a console page for you to open and enter the key. When adding a
+connection through Cloudflare, you enter the Cloudflare token (required) and the
+provider key (optional). A rotation takes the new provider key only, never a
+Cloudflare token. The
+agent polls `get_operation` until `completed` or `expired`. A custom provider,
+listed paths and Vercel's pinned serving providers are set in the console. See
+[Providers](/automation/agent-manual#providers) in the agent manual.
 
 ### Creating takes two calls
 
-`add_app` and `add_app_key` create something an agent may need to ask for
-again after a lost answer, so each takes two calls. The first, without
-`handle`, checks the request, creates nothing, and answers a `handle` and the
-reserved operation's `id`. The second, with the same arguments and that
-`handle`, creates it — once. Calling again with the same handle answers the same result with
-`replayed: true` and creates nothing more, so an agent can always retry. A
-handle lapses after 15 minutes unused, and one sent with different arguments
-is refused with `operation_mismatch`. When the first call answers a `notice`,
-the same request was already made within the last hour, and the notice names
-it so the agent can look before creating a second.
+`add_app` takes `{ config: { name, config, status? }, handle? }` and
+`add_app_key` takes `{ app, name, handle? }`. The first call reserves, the
+second, with the answer's `handle`, creates once. A new key is never in the
+answer: open `reveal_url`, signed in as an owner or admin, and click
+**Reveal the key**. See
+[Retrying creation safely](/automation/agent-manual#retrying-creation-safely).
 
-Every tool answer that names an operation calls it `id`, and `get_operation`
-takes that `id`. A `handle` is only ever what the second call of a create
-takes.
+### What a tool never shows
 
-### A key is revealed on a page you open
+A field named like a credential, such as `secret`, `token`, `api_key` or
+`password`, is refused in a tool's arguments, and shown as `[redacted]` in its
+answers. Names such as `secretHint` or `max_tokens` are not credentials. If
+`get_app` shows `[redacted]` inside an app's settings, the agent must not send
+that marker back: have the person make that change in the console or the CLI.
 
-A key is revealed on a page a person opens, never in a tool result. When
-`add_app` creates a server app, or `add_app_key` a key, the answer carries
-`reveal_url`, a page on your console. Open it signed in as an owner or admin
-of the account, press **Reveal the key** and copy it: it is shown once, within
-15 minutes of its creation, and nothing reveals it again. Nobody else can open
-it with the link alone, and the agent never sees the key.
+## Answers and refusals
 
-### Keys and tokens are entered in your browser
+Each answer has a short summary for the agent and the same body the API answers
+with. A refusal from a tool is an answer marked as an error, with the gateway's
+error code, its message, and what to do next. The endpoint itself answers HTTP
+errors instead: `401` for a missing or invalid credential, `403` for a browser
+origin it does not serve, and `405` for `GET` or `DELETE`.
 
-`add_provider`, `add_provider_gateway`, `rotate_provider_key` and
-`rotate_provider_gateway_key` take everything except the secret, and answer a
-URL. Open it in your browser, check what is about to be stored, enter the key
-or token there and approve. The agent waits with `get_operation`, passing
-the answer's `id`, until the change completes, or until it lapses after 15
-minutes or you decline it. A tool called with a key or token as an argument
-refuses it.
-
-### How secrets are kept out of tools
-
-A field is named like a credential when its name, lower-cased and with `_`
-and `-` removed, is one of `secret`, `token`, `apikey`, `password`, `passwd`, `passphrase`, `credential`, `credentials`, `authorization`, `accesstoken`, `refreshtoken`, `idtoken`, `authtoken`, `sessiontoken`, `bearertoken`, `clientsecret`, `apisecret`, `secretkey` and `privatekey`. The whole name is compared, so `api_key`,
-`apiKey` and `Token` match, and `secretHint`, `tokenHint` and `max_tokens` do
-not.
-
-- **Arguments.** The four browser-step tools above, `add_app`, `update_app`
-  and `validate_app` for the app document they take, and `patch_app` for each
-  value it writes, read under the key its path ends with, refuse a
-  call with a field of such a name anywhere in its arguments: at any depth,
-  inside a list, beside the documented arguments or inside them. The refusal
-  names the field and never its value, and nothing is stored.
-- **URLs in a browser step.** Every string in a browser step's arguments is
-  trimmed before anything is stored. One longer than any field of a browser
-  step accepts is refused at once; the rest are read with the URL parser a
-  browser uses. A `baseUrl` follows the rules a provider's base URL always follows:
-  an `https://` address on a public domain name, with no credentials, query
-  string, fragment or port. Any other string the parser reads as a URL is
-  refused when it carries credentials (`https://user:pass@…`, however it is
-  written) or when its query or fragment names a credential. Both are first
-  percent-decoded, repeatedly, so an encoded delimiter such as `%3D` delimits,
-  and then split on every `?`, `&`, `#` and `;`. A piece with an `=` is a
-  parameter: its name is stripped of leading `?`, `#` and `/` and compared with
-  the names above. A piece without one is a route or a flag and is not judged. So
-  `?api_key=…`, `#access_token=…` and `#/callback?token=…` are refused, while
-  `https://example.com/?version=2`, `https://example.com/#/settings/password`
-  or a name like `OpenAI: production` is accepted.
-- **Results.** In every tool result, a field with a credential name is shown
-  as `[redacted]` — the whole field, whatever it holds: a string, a number, a
-  list or an object — however it was stored. An app you configured through
-  the API or the CLI may carry provider-native parameters of any name, and an
-  agent reads them as `[redacted]`. The one exception is the metadata of the
-  key a tool just created — the `api_key` of an `add_app` or `add_app_key`
-  result and `result.api_key` of a `get_operation` result (`id`, `name`,
-  `key_prefix`, `created_at`) — shown when it holds nothing else. An `api_key`
-  anywhere else, inside an app document included, is redacted. A field holding `null` stays `null`, and hint fields
-  such as `secretHint` are shown as they are.
-
-### Changes without a browser step
-
-Updates carry the `revision` the agent read, so a change someone made since is
-refused rather than overwritten. Deletions repeat the id as `confirm`; prefer
-disabling an app or a provider, which you can undo. Saved app and provider
-changes take up to a minute to affect live traffic. User blocks refuse new
-token exchanges immediately and existing gateway tokens within ten seconds.
-
-If `get_app` returns `[redacted]` inside configuration, do not send that marker
-back or omit those fields from a full replacement. Have the person make the
-edit through a client that can preserve the original values.
-
-## Results and refusals
-
-Each result has a one- or two-sentence summary for the agent to read and the
-same body the API answers with as structured content. A refusal is a tool
-result marked as an error, carrying the gateway's error code, its message and
-what to do next, such as `app_not_found` with "Call list_apps for the ids of
-your apps". Only a missing or invalid credential is answered with an HTTP
-error; a **Read only** credential asking for a change is a tool result too.
-
-The server also publishes `agw://guide`, a resource with the full rules for
-working with the gateway over MCP. Clients that read resources can hand it to
-the agent; its contents are the same as what the server tells every client
-when it connects, at length.
+`agw://guide` is a resource with the full rules for working with the gateway
+over MCP. It is written into the server itself, so an agent connected to any
+deployment can read it.
 
 ## Calling from a browser
 
-Most MCP clients are not browsers and send no `Origin` header; they are always
-served. A request from a web page is served only from the console's own origin
-or from one you list. On your own deployment, list the origins of browser-based
-MCP clients you trust in the `MCP_ALLOWED_ORIGINS` variable; see
-[Configuration](/self-hosting/configuration#mcp_allowed_origins). They receive
-CORS headers on `/mcp` and on the three `/oauth` endpoints, and every other
-origin is refused with `403`. The discovery documents are readable from any
-origin. If your deployment
-answers on more than one host name, set `CLI_CONSOLE_ORIGIN` to the console's
-address, so only that host serves `/mcp` and only its origin counts as the
-console's own.
+Most MCP clients are not browsers and send no `Origin` header, so the origin
+check does not apply to them; they still need a valid credential. A request
+from a web page is served only from the console's own address, or from an
+address the deployment lists; every other one is refused with `403`.
+
+## For MCP client developers
+
+The server speaks the Streamable HTTP transport over `POST`, with no session to
+keep: every request carries its credential. Clients on the `2026-07-28`
+protocol revision and on the 2025 revisions are both served.
+
+A client usually names itself with an `https` address as its `client_id`: a
+small JSON document describing it, which the gateway reads. Only the return
+addresses it lists can receive the result. A deployment can also register
+clients itself, and can turn these documents off. There is no client secret and
+no dynamic client registration.
+
+The OAuth addresses, all on the console:
+
+| Address | What it is |
+| --- | --- |
+| `/.well-known/oauth-protected-resource/v2/mcp` | What the MCP endpoint points to |
+| `/.well-known/oauth-authorization-server/v2` | The sign-in server's details |
+| `/v2/oauth/authorize` | The browser step, with PKCE (`S256`) |
+| `/v2/oauth/token` | Code exchange and renewal |
+| `/v2/oauth/revoke` | A client ending its own connection |
+
+The scopes are `read` and `manage`.

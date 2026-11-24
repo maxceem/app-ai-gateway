@@ -474,6 +474,46 @@ describe("validate and check", () => {
     ]);
     expect(checked.body.limitations.length).toBeGreaterThan(0);
   });
+
+  it("counts the connections presets use, which serve without a routing entry", async () => {
+    const key = await seedManagementKey();
+    const { body: first } = await createProvider(key);
+    const { body: spare } = await createProvider(key);
+    const config = {
+      ...apiKeyConfig(),
+      presets: {
+        chat: {
+          provider: first.provider.slug,
+          operation: "openai.chat",
+          model: "gpt-4o-mini",
+          fallback: [{ provider: spare.provider.slug, model: "gpt-4o-mini" }],
+        },
+      },
+    };
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}/check`;
+    const checked = await request(key, "GET", path);
+    expect(checked.body.ready).toBe(true);
+    expect(checked.body.providers).toEqual([
+      { id: first.provider.id, slug: first.provider.slug, status: "active" },
+      { id: spare.provider.id, slug: spare.provider.slug, status: "active" },
+    ]);
+
+    // Turned off, the first connection lets the fallback serve.
+    await request(key, "PUT", `/v2/admin/providers/${first.provider.id}`, { revision: 1, status: "disabled" });
+    const paused = await request(key, "GET", path);
+    expect(paused.body.ready).toBe(true);
+    expect(paused.body.providers[0]).toMatchObject({ slug: first.provider.slug, status: "disabled" });
+
+    // Deleted, it refuses the preset before any fallback: nothing serves.
+    await request(key, "DELETE", `/v2/admin/providers/${first.provider.id}`);
+    const broken = await request(key, "GET", path);
+    expect(broken.body.ready).toBe(false);
+    expect(broken.body.providers).toEqual([
+      { id: null, slug: first.provider.slug, status: "missing" },
+      { id: spare.provider.id, slug: spare.provider.slug, status: "active" },
+    ]);
+  });
 });
 
 describe("plan ceilings on saved settings", () => {

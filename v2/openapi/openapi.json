@@ -1533,11 +1533,11 @@
                 "status"
               ]
             },
-            "description": "Every provider connection the app's routing names. A disabled one is listed as disabled, and one that was deleted as missing, with a null id."
+            "description": "Every provider connection the app's routing or presets name, presets' fallbacks included. A disabled one is listed as disabled, and one that was deleted as missing, with a null id."
           },
           "ready": {
             "type": "boolean",
-            "description": "Whether the app is active and at least one connection it names is active."
+            "description": "`ready` means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: only a successful app request confirms it. The example requests (`getAppSnippet`) are built from the settings and send nothing; they can be the starting point when the person has asked for a test."
           },
           "limitations": {
             "type": "array",
@@ -5182,9 +5182,6 @@
           "baseUrl": {
             "type": "string"
           },
-          "auth": {
-            "$ref": "#/components/schemas/CustomProviderAuth"
-          },
           "pricing": {
             "type": "object",
             "additionalProperties": {
@@ -8535,7 +8532,7 @@
         ],
         "operationId": "checkApp",
         "summary": "Check whether an app is ready to serve requests",
-        "description": "Checks the stored config as an update would, lists every provider connection its routing names with its status (a disabled one as disabled, a deleted one as missing), and answers `ready` when the app is active and at least one of them is active. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
+        "description": "Checks the stored config as an update would, and lists every provider connection its routes and presets name, with its status (a disabled one as disabled, a deleted one as missing). `ready` means the app is active and at least one connection its routes or presets use can be reached: one that is active, or, for a preset, a first connection turned off with an active fallback. It checks connection status only, not that a request will serve: only a successful app request confirms it. The example requests (`getAppSnippet`) are built from the settings and send nothing; they can be the starting point when the person has asked for a test. It sends no provider request, and `limitations` says what it did not try. A stored config that would no longer be accepted answers `400` with the reason.",
         "security": [
           {
             "ManagementBearer": []
@@ -11524,7 +11521,7 @@
         ],
         "operationId": "openProviderHandoff",
         "summary": "Open adding a provider connection whose key a person enters",
-        "description": "For an agent, which must never hold a provider key. Send everything `createProvider` takes but `secret`. It is checked now, as `createProvider` would check it, and nothing is created: the answer's `url` is a console page where a person enters the key and approves, within 15 minutes. Give the URL to the person, and read the operation with `getOperation` until it completes. Answers a `notice` when an identical request was made in the last hour.",
+        "description": "For an agent, which must never hold a provider key. Send `type` and `name`, and optionally `slug`, `baseUrl`, `pricing` and `cloudflareGateway` with `accountId` and `gatewayId` only; any other field is refused. It is checked now, as `createProvider` would check it, and nothing is created: the answer's `url` is a console page where a person enters the key and approves, within 15 minutes. Give the URL to the person, and read the operation with `getOperation` until it completes. Answers a `notice` when an identical request was made in the last hour.",
         "security": [
           {
             "ManagementBearer": []
