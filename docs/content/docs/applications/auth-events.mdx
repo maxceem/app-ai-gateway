@@ -60,8 +60,8 @@ before that, such as one with no valid key, is never recorded here.
 Gateway-token exchanges and key registrations are recorded, with these
 exceptions, which write no event at all:
 
-- a call refused by the sign-in flood limit, which stops a flood of calls from one
-  network before anything is read;
+- a call refused by the sign-in flood limit, which counts calls per app and per
+  client address and stops a flood before anything is read;
 - a call whose body is not a JSON object (invalid JSON, or valid JSON such as
   `[]`), or is too large, which is refused before recording starts;
 - a call for an app ID that does not exist.
@@ -91,6 +91,7 @@ features.
 | `auth_method_not_supported` | A way of signing in the app does not use |
 | `auth_required` | No usable credential, or a blocked user |
 | `app_disabled` | The app is turned off |
+| `email_unverified` | Your account's email address is not verified yet. Open the link in the verification email, or send a new one from the console |
 | `invalid_request` | A malformed sign-in request |
 | `abandoned` | An unused challenge, and the app never said why |
 | `client_failed` | The app reported a step that failed on the device after it got a challenge |

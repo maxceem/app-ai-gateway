@@ -57,16 +57,23 @@ old one.
 ### What the app sends
 
 The app sends the identity provider's token in the `issuer_token` field of a
-JSON body. An iOS app first registers its App Attest key at
-`POST /v2/apps/{app}/auth/register`, which answers the `user_id`. Then, and on
-every later sign-in, it trades for a gateway token at
-`POST /v2/apps/{app}/auth/token`, which answers it as `access_token`. A server
-app only does the second: it sends its app key and the sign-in token to
-`POST /v2/apps/{app}/auth/token`. The app sends the gateway token with its
-calls.
+JSON body, with what proves the app itself:
 
-A refused trade answers one of three codes, chosen by what the app should do
-next:
+- **A server app** sends its app key in `api_key`, to
+  `POST /v2/apps/{app}/auth/token`.
+- **An iOS app** first asks `POST /v2/apps/{app}/auth/challenge` for a
+  challenge. To register its App Attest key, it sends `key_id`, `attestation` and
+  the challenge to `POST /v2/apps/{app}/auth/register`, which answers the
+  `user_id`. To get a gateway token, then and on every later sign-in, it sends
+  `key_id`, an `assertion` and a fresh challenge to
+  `POST /v2/apps/{app}/auth/token`.
+
+`/auth/token` answers the gateway token as `access_token`, and the app sends it
+with its calls.
+
+The trade can be refused for a bad app key, a blocked user or a malformed body,
+like any sign-in. Three codes are about checking the sign-in token itself, and
+each says what the app should do next:
 
 | Code | Meaning | The app should |
 | --- | --- | --- |

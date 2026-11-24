@@ -51,9 +51,8 @@ A body is not kept if it holds the exact text of a credential the call used: the
 provider key, a Cloudflare AI Gateway token, or the app's own credential (its app
 key or gateway token). That body is replaced whole by `{"omitted":"credential"}`,
 in the request or the answer, even if the provider's answer only repeats the key.
-A record field that holds one, such as the user ID, is replaced by
-`agw-omitted:credential`. The gateway does not look for other secrets your users
-may have typed.
+A record field that holds one, such as the user ID, has its value dropped. The
+gateway does not look for other secrets your users may have typed.
 
 ## Turn it on
 
@@ -112,7 +111,9 @@ Through the API:
 - `GET /v2/admin/apps/{app}/conversations?from=YYYY-MM-DD&to=YYYY-MM-DD` lists
   the batches, a page at a time; pass `next_cursor` back as `cursor`.
 - `GET /v2/admin/apps/{app}/conversations/file?name=<name>` downloads one batch,
-  or one piece of media by the name a record gives it.
+  or one piece of media. For media, take the name a record gives it and leave out
+  the `agw-media:` at its start: `name=2026-08-01/media/<sha256>.png`. With the
+  `agw-media:` left in, the request is refused with `400 invalid_request`.
 
 ## How long they are kept
 

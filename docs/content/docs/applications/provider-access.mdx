@@ -64,8 +64,14 @@ OpenAI's `v1/realtime/client_secrets`:
 - The live session itself then runs between your app and the provider directly,
   so what it spends is outside the app's budgets and usage.
 
-See [Custom base URLs](/providers/custom-base-urls) for how a connection lists
-its passthrough paths.
+To set one up:
+
+1. On the **Providers** page, open the connection's actions and choose
+   **Passthrough paths**.
+2. Add one line per path, method first, such as `POST v1/realtime/client_secrets`.
+   A price, such as `$0.002`, may follow. Click **Save paths**.
+3. On the app's **Providers** tab, tick the `passthrough` operation on that
+   connection, and click **Save providers**.
 
 ## Models
 
@@ -91,7 +97,9 @@ Exceptions:
 - A few operations take only priced models in their path, such as fal's
   `fal.run` and `fal.queue`. There, when the model sent has no price, the
   request is refused with `403 path_not_allowed` instead, even if you listed it
-  in **Models**. A rewrite to a priced model works.
+  in **Models**. On `fal.run`, a rewrite to a priced model works if the requested
+  name passes the app's model list. `fal.queue` checks prices but does not apply
+  rewrites.
 - On other operations, a model you allowed whose price later disappears is still
   served, and its charge is recorded as `unresolved` until a price exists.
 

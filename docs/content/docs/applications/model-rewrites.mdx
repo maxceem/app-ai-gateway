@@ -13,13 +13,16 @@ app keeps asking for `gpt-5.4-mini`, and you point that name at a newer model.
 For a bigger change, such as another provider or fixed settings, use a
 [preset](/applications/custom-endpoints).
 
-To add one, click **Add rewrite**. Enter the model the app asks for in the first
-box and the model to send in the second. Click **Save rewrites** to save. The
-model sent must have a price, or saving is refused.
+To add one, click **Add rewrite**. In the first box, enter the name the app asks
+for. It can be a name of your own, such as `my-model`, that no provider has. In
+the second, enter the model to send. Click **Save rewrites** to save. The model
+sent must have a price, or be served by a provider that reports each request's
+cost itself, or saving is refused.
 
 A rewrite applies on every connection, to the model a call through the provider
-proxy selects: in the body, in the path (as on Gemini and `fal.run`), or the
-provider's default when the request names none (as on Deepgram). It does not
+proxy selects: in the body or a form field, in the query, in the path (as on
+Gemini and `fal.run`), or the provider's default when the request names none
+(as on Deepgram). It does not
 apply to:
 
 - operations whose model is fixed;
@@ -37,5 +40,5 @@ It is one step only: its target is never rewritten again.
 ```
 
 `model_rewrites` maps the model name an app sends to the one the provider
-receives. Both are the provider's own model names. Leave it out for no
-rewrites.
+receives. The first is the name the app asks for, which may be a name of your
+own. The second is the provider's own model name. Leave it out for no rewrites.
