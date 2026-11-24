@@ -734,10 +734,9 @@ export const AppSnippetExampleSchema = z
     file: z.object({ field: z.string(), name: z.string() }).optional(),
     /**
      * The example as a person copies it. For an app called with a key, a
-     * curl command that reads the credential from an environment variable
-     * and gives it to curl on stdin, never as an argument, and never prints
-     * it. For an iOS app, the whole request described: method, URL, headers,
-     * body or upload.
+     * curl command that sends the credential in a header, read from an
+     * environment variable. For an iOS app, the whole request described:
+     * method, URL, headers, body or upload.
      */
     text: z.string(),
   })

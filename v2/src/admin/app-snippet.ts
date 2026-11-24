@@ -22,9 +22,9 @@
  *   cap to (`applyOutputCap`).
  * - A preset is resolved to the operation its connection actually runs, and
  *   judged the same way.
- * - An app called with a key gets curl that never prints a credential
- *   (`./snippet-request.ts`). An iOS app gets each request described in full:
- *   the Swift SDK sends it.
+ * - An app called with a key gets curl that reads the credential from an
+ *   environment variable (`./snippet-request.ts`). An iOS app gets each
+ *   request described in full: the Swift SDK sends it.
  */
 import type { Context } from "hono";
 import { parseServedAppConfig, type AppConfig, type ProviderRouting } from "../contracts/app-config.ts";
@@ -56,7 +56,7 @@ const PROMPT = "Hello!";
 export const APP_KEY_VARIABLE = "APP_AI_GATEWAY_KEY";
 /** The one the user's issuer token is read from, for an app whose users sign in with an issuer. */
 export const ISSUER_TOKEN_VARIABLE = "ISSUER_TOKEN";
-/** The shell variable a gateway token is kept in, inside the example's own subshell. */
+/** The shell variable a gateway token is kept in, between the exchange and the request. */
 const GATEWAY_TOKEN_VARIABLE = "APP_AI_GATEWAY_TOKEN";
 
 const SWIFT_SDK = "https://github.com/maxceem/app-ai-gateway-swift";
@@ -256,7 +256,7 @@ function callerOf(
       // A request with a gateway token names the app's version (`X-App-Version`).
       required: { "X-App-Version": APP_VERSION },
       notes: [
-        `This app's users sign in with their own issuer. Set ${APP_KEY_VARIABLE} to an app key and ${ISSUER_TOKEN_VARIABLE} to the user's token: each example first exchanges them for a gateway token, which it never prints.`,
+        `This app's users sign in with their own issuer. Set ${APP_KEY_VARIABLE} to an app key and ${ISSUER_TOKEN_VARIABLE} to the user's token: each example first exchanges them for a gateway token, and sends the request with it.`,
       ],
     };
   }
@@ -312,7 +312,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
   const examples: Example[] = [];
   /**
    * Adds an example. Every value from the app's settings reaches the command
-   * only single-quoted (`shellWord`) or through curl's stdin; a value with a
+   * only single-quoted (`shellWord`); a value with a
    * control or invisible character gets no command at all, only a note. A
    * caveat is plain text beside the command, never part of it.
    */
