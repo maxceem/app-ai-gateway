@@ -116,9 +116,10 @@ final class AppSettings {
         if setup.apiKey?.isEmpty == true {
             throw ProviderError(status: 0, message: "Add your API key in Settings.")
         }
-        // One client per gateway and app, never two at once: each client
-        // manages its own App Attest key, so two would register two keys for
-        // one install. (A different app ID has its own Keychain slot.)
+        // A slug change reuses the existing client; a change of gateway, app
+        // or key makes a new one. Each client manages its own App Attest key,
+        // so a slug change must never make a second one for the same install.
+        // (A different app ID has its own Keychain slot.)
         //
         // The demo has no sign-in, so no user's identity can pass from one
         // client to the next, and the old client is not ended. An app whose
