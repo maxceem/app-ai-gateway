@@ -52,10 +52,13 @@ extension GatewayBackend {
 
     private func chatCompletionsText(_ event: Data) -> String? {
         struct Chunk: Decodable {
-            struct Choice: Decodable { struct Delta: Decodable { let content: String? }; let delta: Delta? }
+            struct Choice: Decodable { struct Delta: Decodable { let content: String?; let refusal: String? }; let delta: Delta? }
             let choices: [Choice]?
         }
-        return (try? JSONDecoder().decode(Chunk.self, from: event))?.choices?.first?.delta?.content
+        // A model that declines answers in `refusal` instead of `content`: shown as text, so the
+        // reply is not left empty.
+        let delta = (try? JSONDecoder().decode(Chunk.self, from: event))?.choices?.first?.delta
+        return delta?.content ?? delta?.refusal
     }
 
     // MARK: Anthropic Messages

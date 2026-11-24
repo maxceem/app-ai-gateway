@@ -10,7 +10,11 @@ is in [`examples/ios`](https://github.com/maxceem/app-ai-gateway/tree/main/examp
 
 <Callout title="Release">
   The demo and the Swift package 2.0 are published with this version of the
-  gateway, and so is `agw` 2. Until then, build them from the repository.
+  gateway, and so is `agw` 2. Until then, the repository's `main` branch still
+  has the earlier demo. To try this one now, use the `v2` branch, and run the
+  CLI from it: in step 4, clone with `--branch v2`, then run `pnpm install` in
+  the repository's root, and write `pnpm v2:cli:dev` wherever this guide
+  writes `agw`.
 </Callout>
 
 This guide takes about ten minutes: a gateway app from the command line, then
@@ -131,8 +135,9 @@ Each feature starts on an OpenAI model:
 
 The model menu at the top switches models. The first request takes a moment
 longer, while the phone registers its App Attest key with the gateway. See
-what each request did with `agw usage show --app APP_ID`, or on the app's
-**Usage** tab in the console.
+what each request did with `agw app charge list APP_ID`, one line per
+attempt, or on the app's **Usage** tab in the console. `agw usage show --app
+APP_ID` gives the month's totals.
 
 To try another provider, add its key as in step 2, allow it on the app's
 **Providers** tab in the console, then turn it on in the demo's

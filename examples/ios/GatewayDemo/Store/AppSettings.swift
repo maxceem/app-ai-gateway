@@ -20,8 +20,8 @@ final class AppSettings {
         var selection: [String: ModelChoice] = [:]
     }
 
-    var values: Values { didSet { save() } }
-    var apiKey: String { didSet { Keychain.write(apiKey, account: "api-key") } }
+    var values: Values { didSet { save(); endGatewayIfChanged() } }
+    var apiKey: String { didSet { Keychain.write(apiKey, account: "api-key"); endGatewayIfChanged() } }
 
     private static let key = "settings"
 
@@ -90,50 +90,63 @@ final class AppSettings {
     /// What the gateway client is built from. Picking a model or turning a
     /// provider on changes none of it, so the client and its token stay.
     private struct ClientSetup: Equatable {
+        var simulated: Bool
         var baseURL: String
         var appID: String
         var apiKey: String?
         var slugs: [String: String]
     }
 
-    private var gateway: (setup: ClientSetup, backend: GatewayBackend)?
-
     private var clientSetup: ClientSetup {
-        ClientSetup(baseURL: values.baseURL, appID: values.appID, apiKey: values.useAPIKey ? apiKey : nil, slugs: slugs)
-    }
-
-    /// The backend requests go to. The gateway one is kept while what its
-    /// client is built from stays the same, so the client keeps its token
-    /// between requests. When that changes, the old client is ended, and the
-    /// end is awaited, before a new one is made, so no request of the old
-    /// setup is sent again under the new one.
-    func backend() async throws -> any AIBackend {
-        if values.simulated {
-            await endGateway()
-            return SimulatedBackend()
-        }
-        let setup = clientSetup
-        if let gateway, gateway.setup == setup { return gateway.backend }
-        await endGateway()
-        guard let url = URL(string: values.baseURL), url.scheme != nil, !values.appID.isEmpty else {
-            throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
-        }
-        if values.useAPIKey, apiKey.isEmpty {
-            throw ProviderError(status: 0, message: "Add your API key in Settings.")
-        }
-        let backend = GatewayBackend(
-            baseURL: url,
+        ClientSetup(
+            simulated: values.simulated,
+            baseURL: values.baseURL,
             appID: values.appID,
             apiKey: values.useAPIKey ? apiKey : nil,
             slugs: slugs
         )
-        gateway = (setup, backend)
-        return backend
     }
 
-    private func endGateway() async {
-        guard let old = gateway?.backend.client else { return }
-        gateway = nil
-        await old.invalidate()
+    /// The client in use, and the setup it was built from.
+    private var gateway: (setup: ClientSetup, backend: GatewayBackend)?
+    /// The end of the last client, while it runs. A new client is made only
+    /// once it is done, so no request of the old setup is sent again under
+    /// the new one.
+    private var ending: Task<Void, Never>?
+
+    /// Ends the client as soon as what it was built from changes, even while
+    /// the app is idle: a request of the old setup that is still out is then
+    /// never sent again with it.
+    private func endGatewayIfChanged() {
+        guard let gateway, gateway.setup != clientSetup else { return }
+        let old = gateway.backend.client
+        let before = ending
+        self.gateway = nil
+        ending = Task {
+            await before?.value
+            await old.invalidate()
+        }
+    }
+
+    /// The backend requests go to. The gateway one is kept while what its
+    /// client is built from stays the same, so the client keeps its token
+    /// between requests.
+    func backend() async throws -> any AIBackend {
+        // Every caller waits for the same end, then builds from the settings
+        // as they are now, without waiting again in between: two callers can
+        // never make two clients, and a client never mixes two setups.
+        await ending?.value
+        let setup = clientSetup
+        if setup.simulated { return SimulatedBackend() }
+        if let gateway, gateway.setup == setup { return gateway.backend }
+        guard let url = URL(string: setup.baseURL), url.scheme != nil, !setup.appID.isEmpty else {
+            throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
+        }
+        if setup.apiKey?.isEmpty == true {
+            throw ProviderError(status: 0, message: "Add your API key in Settings.")
+        }
+        let backend = GatewayBackend(baseURL: url, appID: setup.appID, apiKey: setup.apiKey, slugs: setup.slugs)
+        gateway = (setup, backend)
+        return backend
     }
 }

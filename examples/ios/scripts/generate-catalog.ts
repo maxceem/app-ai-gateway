@@ -41,10 +41,17 @@ function kind(price: Price): "chat" | "transcription" | "image" | undefined {
 }
 
 // The demo chats with every provider it lists, so only the ones that serve a
-// chat API style are listed, in the gateway's own order.
+// chat API style are listed, in the gateway's own order. Perplexity is left
+// out: most of its priced models are other makers' (`google/…`, `openai/…`),
+// which Perplexity serves on its Agent and Orchestrator APIs, not on the
+// `chat/completions` the demo sends to.
+const LEFT_OUT = new Set(["perplexity"]);
+/** Image models the demo cannot use: they edit an image it never sends. */
+const NEEDS_SOURCE_IMAGE = new Set(["seededit-3-0-i2i-250628"]);
 const order = Object.keys(BUILT_IN_PROVIDERS);
 const chatting = providerTypes()
-  .filter((provider) => !provider.custom && provider.styles.some((style) => style === "openai-chat" || style === "anthropic-messages"))
+  .filter((provider) => !provider.custom && !LEFT_OUT.has(provider.type))
+  .filter((provider) => provider.styles.some((style) => style === "openai-chat" || style === "anthropic-messages"))
   .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
 
 const providers = chatting.map(({ type, label }) => {
@@ -52,6 +59,7 @@ const providers = chatting.map(({ type, label }) => {
   for (const [id, price] of Object.entries(prices[type] ?? {})) {
     if (price.retirement_date && price.retirement_date <= today) continue;
     const k = kind(price);
+    if (k === "image" && NEEDS_SOURCE_IMAGE.has(id)) continue;
     if (k) entry[k].push(id);
   }
   return entry;

@@ -1,3 +1,4 @@
+import AppAIGateway
 import Foundation
 import Observation
 
@@ -143,6 +144,9 @@ final class RequestRunner {
                 try await work(await settings.backend())
             } catch is CancellationError {
             } catch let error as URLError where error.code == .cancelled {
+            } catch is GatewayClientInvalidated {
+                // The gateway settings changed while this request was out: its
+                // client was ended, and the request is dropped like a cancelled one.
             } catch {
                 failure = Failure(error)
             }
