@@ -14,7 +14,7 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -210,6 +210,13 @@ before(async () => {
     app("vercel-l12", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {})), routing: { providers: { mode: "selected", selected: { "claude-vercel": { allowed_paths: ["v1/messages"], allowed_models: ["claude-fable-5-2"] } } }, model_rewrites: { "anthropic/claude-fable-5-2": "openai/gpt-6.2-sol" } } })),
     // An exact Gemini path whose model the app rewrites, and a Gemini preset.
     app("gem-m13", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {}, { endpoints: { gen: { provider: "gem", model: "gemini-2.5-flash", kind: "text", api_style: "gemini_native" }, tuned: { provider: "gem", model: "tunedModels/my-model", kind: "text", api_style: "gemini_native" } } })), routing: { providers: { mode: "selected", selected: { gem: { allowed_paths: ["v1beta/models/gemini-2.5-flash:generateContent", "v1beta/models/gemini-3.5-flash:generateContent"], allowed_models: [] } } }, model_rewrites: { "gemini-2.5-flash": "gemini-4-neon" } } })),
+    // Slash variants and a passthrough template.
+    app("slashes-r18", "org_a", v1App(headerUser, { "openai-proxy": { allowed_paths: [{ path: "v1/files/data", methods: ["GET"] }, { path: "v1/files//data", methods: ["GET"] }, { path: "v1/files/name:{model}", methods: ["GET"] }], allowed_models: [] } })),
+    // Names v2 would trim: a model list, a rewrite key, a preset model.
+    app("spaced-s19", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {}, { endpoints: { padded: { provider: "openai", model: " gpt-6.2-sol ", kind: "text", api_style: "responses" } } })), routing: { providers: { mode: "selected", selected: { "claude-vercel": { allowed_paths: ["v1/messages"], allowed_models: [" claude-fable-5-2 "] }, gem: { allowed_paths: ["v1beta/models/gemini-2.5-flash:generateContent"], allowed_models: [] } } }, model_rewrites: { " gemini-2.5-flash ": "gemini-4-neon" } } })),
+    // Two passthrough sets on one connection, one app each: a tie.
+    app("tie-p16", "org_a", v1App(headerUser, { "openai-proxy": { allowed_paths: [{ path: "v1/assistants", methods: ["GET"] }], allowed_models: [] } })),
+    app("tie-q17", "org_a", v1App(headerUser, { "openai-proxy": { allowed_paths: [{ path: "v1/vector_stores", methods: ["GET"] }], allowed_models: [] } })),
     // A rewrite carried by Vercel and by a direct connection.
     app("mixed-j10", "org_a", JSON.stringify({ ...JSON.parse(v1App(headerUser, {})), routing: { providers: { mode: "selected", selected: { openai: { allowed_paths: [], allowed_models: [] }, "claude-vercel": { allowed_paths: [], allowed_models: ["fast"] } } }, model_rewrites: { fast: "claude-fable-5-2" } } })),
     insert("app_api_key", { id: "ak1", app_id: "chat-a1", name: "server", key_hash: "akh1", key_prefix: "agw_live_ab", status: "active", created_at: "2026-03-01 08:00:00", last_used_at: "2026-11-20 12:00:00" }),
@@ -449,7 +456,7 @@ test("allowed paths become operations, or passthrough paths judged by the consol
   assert.deepEqual(openai.models, ["gpt-6.2-sol"]);
   assert.equal(openai.max_output_tokens, 2048);
   said("app chat-a1", /v1beta\/models\/\{model\}:generateContent was not moved: it is Gemini's API/u, "left_out");
-  said("app chat-a1", /passthrough path POST v1\/\{model\} was not moved/u, "left_out");
+  said("app chat-a1", /the passthrough path v1\/\{model\} was not moved: v2 decodes what its \{…\} part captures/u, "left_out");
   const listed = JSON.parse(row("provider_connection", "p_direct")!.passthrough_json as string).paths as { method: string; path: string; set_fields?: unknown[] }[];
   assert.deepEqual(listed.map((one) => `${one.method} ${one.path}`).sort(), ["GET v1/files", "POST v1/files", "POST v1/realtime/client_secrets"]);
   // A live-session token mint gets the safe defaults a new listing gets.
@@ -457,9 +464,40 @@ test("allowed paths become operations, or passthrough paths judged by the consol
   said("connection openai of account org_a", /v1\/realtime\/client_secrets mints a short-lived secret/u, "changed");
 });
 
-test("a path with a leading / never matched a request in v1, so it is left out (Sol round 3, item 3)", () => {
-  said("app chat-a1", /the path "\/v1\/embeddings" was not moved: v1 compared it with each request's path exactly, so it never matched one/u, "left_out");
+test("a path with other slashes than the request's matched only those slashes in v1, so it is left out (Sol round 3, item 3; round 4, item 2)", () => {
+  said("app chat-a1", /the path "\/v1\/embeddings" was not moved: v1 matched it only with exactly these slashes, and v2 reads repeated slashes as one, so it cannot keep it apart from v1\/embeddings/u, "left_out");
   assert.ok(!config("chat-a1").routing.providers.openai.operations.includes("openai.embeddings"));
+  // A list that tells slash variants apart: neither moves.
+  said("app slashes-r18", /the path "v1\/files\/\/data" was not moved: v1 matched it only with exactly these slashes/u, "left_out");
+  said("app slashes-r18", /the path v1\/files\/data was not moved: the app's v1 list tells it apart from "v1\/files\/\/data"/u, "left_out");
+  assert.equal(config("slashes-r18").routing.providers["openai-proxy"], undefined);
+});
+
+test("a passthrough template is left out: v2 decodes and encodes again what it captures (Sol round 4, item 2)", () => {
+  said("app slashes-r18", /the passthrough path v1\/files\/name:\{model\} was not moved: v2 decodes what its \{…\} part captures and encodes it again/u, "left_out");
+});
+
+test("a model name, rewrite or preset model v2 would spell differently is left out with its route (Sol round 4, item 1)", () => {
+  // A Vercel route allowing " claude-fable-5-2 " would send another model in v2, which trims it.
+  said("app spaced-s19", /On claude-vercel, the route was not moved: v1 matched its model list exactly, and v2 trims each name, which would change " claude-fable-5-2 "/u, "left_out");
+  assert.equal(config("spaced-s19").routing.providers["claude-vercel"], undefined);
+  // A rewrite key with spaces never matched the exact path's model in v1; trimmed by v2, it would move the URL.
+  said("app spaced-s19", /rewrite of " gemini-2\.5-flash " to "gemini-4-neon" was not moved: .*The routes that could carry it were left out with it: gem/u, "left_out");
+  assert.equal(config("spaced-s19").routing.providers.gem, undefined);
+  assert.equal(config("spaced-s19").routing.model_rewrites, undefined);
+  said("app spaced-s19", /The endpoint padded was not moved: v1 sent its model " gpt-6\.2-sol " exactly as written, and v2 trims it/u, "left_out");
+});
+
+test("passthrough sets that tie go to the same set whatever the input order and locale (Sol round 4, item 4)", async () => {
+  const settings = readV1Settings(loadV1Export(exportSql));
+  const listing = async (apps: typeof settings.apps) => {
+    const moved = await migrateSettings({ ...settings, apps }, { now: NOW, reseal: vaultResealer(V1_VAULT, V2_VAULT) });
+    return JSON.parse(moved.rows.provider_connection.find((one) => one.id === "p_proxy")!.passthrough_json as string).paths;
+  };
+  const forward = await listing(settings.apps);
+  assert.deepEqual(forward, [{ method: "GET", path: "v1/assistants" }]);
+  assert.deepEqual(await listing([...settings.apps].reverse()), forward);
+  said("app tie-q17", /its passthrough paths \(GET v1\/vector_stores\) were not moved/u, "left_out");
 });
 
 test("a {name} part other than {model} was literal text in v1, and is not turned into a wildcard (Fable 7)", () => {
@@ -784,9 +822,10 @@ async function interruptLoad(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   writeFileSync(loader, `import { openV1Export } from ${JSON.stringify(join(V2_DIR, "scripts", "migrate", "v1-rows.ts"))};\nawait openV1Export(${JSON.stringify(join(folder, "export.sql"))});\nawait new Promise(() => {});\n`);
   const child = spawn(process.execPath, ["--experimental-strip-types", loader], { env: { ...process.env, TMPDIR: temporary }, stdio: "ignore" });
   const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-  // Interrupt as soon as the copy exists.
-  for (let tries = 0; tries < 400 && readdirSync(temporary).length === 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(readdirSync(temporary).length, 1, "the copy was made");
+  // Interrupt as soon as the copy's database file exists: the load is under way.
+  const database = () => readdirSync(temporary).some((name) => existsSync(join(temporary, name, "v1.sqlite")));
+  for (let tries = 0; tries < 1000 && !database(); tries += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(database(), "the copy was made");
   child.kill(signal);
   assert.equal(await exited, 130, signal);
   assert.deepEqual(readdirSync(temporary), [], `the copy is deleted on ${signal}`);

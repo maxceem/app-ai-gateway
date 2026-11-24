@@ -411,26 +411,28 @@ export function loadV1Export(sql: string): DatabaseSync {
  * secrets as the export. Until then, SIGINT and SIGTERM delete it and exit.
  */
 export async function openV1Export(path: string): Promise<{ db: DatabaseSync; close: () => void }> {
-  const folder = mkdtempSync(join(tmpdir(), "agw-v1-export-"));
-  // From here on the folder holds the export's secrets: an interrupt, even during the load, deletes it first.
-  const interrupted = () => {
-    close();
-    process.exit(130);
-  };
-  process.once("SIGINT", interrupted);
-  process.once("SIGTERM", interrupted);
-  const db = new DatabaseSync(join(folder, "v1.sqlite"), { enableForeignKeyConstraints: false });
-  function close(): void {
+  // The handlers come first, so no moment exists where the folder holds the export's secrets and an interrupt would leave it.
+  let folder: string | undefined;
+  let db: DatabaseSync | undefined;
+  const close = (): void => {
     process.off("SIGINT", interrupted);
     process.off("SIGTERM", interrupted);
-    if (db.isOpen) db.close();
-    rmSync(folder, { recursive: true, force: true });
+    if (db?.isOpen === true) db.close();
+    if (folder !== undefined) rmSync(folder, { recursive: true, force: true });
+  };
+  function interrupted(): void {
+    close();
+    process.exit(130);
   }
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
+  folder = mkdtempSync(join(tmpdir(), "agw-v1-export-"));
+  db = new DatabaseSync(join(folder, "v1.sqlite"), { enableForeignKeyConstraints: false });
   try {
-    const loader = new ExportLoader(db);
+    const loader = new ExportLoader(db!);
     for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: 1 << 20 })) loader.push(chunk as string);
     loader.finish();
-    return { db, close };
+    return { db: db!, close };
   } catch (error) {
     close();
     throw error;

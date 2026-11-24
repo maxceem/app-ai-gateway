@@ -206,11 +206,6 @@ const V1_VERCEL_PREFIX: Readonly<Record<string, string>> = {
 
 const CLOUDFLARE_HOST = "gateway.ai.cloudflare.com";
 
-/** A path as v2 lists it: no leading `/`. */
-function plainPath(path: string): string {
-  return path.trim().replace(/^\/+/u, "");
-}
-
 /** A `{name}` part other than `{model}`: v1 matched it as that literal text, never as a wildcard. */
 const LITERAL_PART = /\{(?!model\})[^}/]*\}/u;
 
@@ -706,9 +701,28 @@ function defaultReach(connection: MovedConnection): { operations: Set<string>; l
   return { operations, lostStyles, lostPaths, sessions };
 }
 
+/**
+ * An app's model list on a connection, spelled exactly as v1 held it, or null
+ * when v2 would spell a name differently: v1 matched each name exactly, and v2
+ * trims every name it stores. Such a route is left out and reported.
+ */
+function exactModels(app: V1App, slug: string, policy: V1Policy, report: ReportLine[]): string[] | null {
+  const models = policy.allowed_models ?? [];
+  const changed = models.filter((model) => model.trim() !== model || model === "");
+  if (changed.length > 0) {
+    report.push({
+      kind: "left_out",
+      subject: `app ${app.id}`,
+      what: `On ${slug}, the route was not moved: v1 matched its model list exactly, and v2 trims each name, which would change ${list(changed.map((model) => JSON.stringify(model)))}. Allow ${slug} again with the names spelled as requests send them.`,
+    });
+    return null;
+  }
+  return [...new Set(models)];
+}
+
 /** A route on a Vercel connection with no model list: v1's prefix kept it to one namespace, which v2 cannot hold. */
 function vercelWithoutModels(app: V1App, slug: string, connection: MovedConnection, policy: V1Policy, report: ReportLine[]): boolean {
-  if (connection.modelPrefix === null || (policy.allowed_models ?? []).some((model) => model.trim() !== "")) return false;
+  if (connection.modelPrefix === null || (policy.allowed_models ?? []).length > 0) return false;
   report.push({
     kind: "left_out",
     subject: `app ${app.id}`,
@@ -721,6 +735,8 @@ function vercelWithoutModels(app: V1App, slug: string, connection: MovedConnecti
 function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: MovedConnection, usage: readonly string[], report: ReportLine[]): Route | null {
   const subject = `app ${app.id}`;
   if (vercelWithoutModels(app, slug, connection, policy, report)) return null;
+  const models = exactModels(app, slug, policy, report);
+  if (models === null) return null;
   const reach = defaultReach(connection);
   // Only what still goes to the URL v1 sent it to.
   const moved = new Set<string>();
@@ -767,7 +783,6 @@ function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: Mo
     report.push({ kind: "left_out", subject, what: `On ${slug}, nothing v1 allowed can be served in v2, so the app no longer reaches ${slug}.` });
     return null;
   }
-  const models = [...new Set((policy.allowed_models ?? []).map((model) => model.trim()).filter((model) => model !== ""))];
   return {
     connection,
     operations: [...moved],
@@ -784,6 +799,8 @@ function defaultRoute(app: V1App, slug: string, policy: V1Policy, connection: Mo
 function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: MovedConnection, rewrites: Readonly<Record<string, string>>, report: ReportLine[]): Route | null {
   const subject = `app ${app.id}`;
   if (vercelWithoutModels(app, slug, connection, policy, report)) return null;
+  const allowed = exactModels(app, slug, policy, report);
+  if (allowed === null) return null;
   const v1Type = (connection.v1Description ?? connection.description).type;
   const operations = new Set<string>();
   /** Operations a listed path named the model of, with those models. */
@@ -792,12 +809,23 @@ function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: Mov
   const open = new Set<string>();
   const passthrough: { method: HttpMethod; path: string }[] = [];
   const notMoved = (what: string) => report.push({ kind: "left_out", subject, what: `On ${slug}, ${what}. Requests to it are refused with path_not_allowed.` });
+  // v1 compared each stored path with the request's path exactly, slashes included; v2 reads repeated slashes as one.
+  const folded = (path: string) => path.split("/").filter((part) => part !== "").join("/");
+  const entries = (policy.allowed_paths ?? []).map((entry) => (typeof entry === "string" ? entry : entry.path));
   for (const entry of policy.allowed_paths ?? []) {
     const path = typeof entry === "string" ? entry : entry.path;
     const methods: readonly HttpMethod[] = (typeof entry === "string" ? undefined : entry.methods) ?? ["POST"];
-    // v1 compared the stored path with the request's path as it is, which never starts with `/` or holds `//`, `.` or `..` parts.
-    if (plainPath(path) !== path || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
-      notMoved(`the path ${JSON.stringify(path)} was not moved: v1 compared it with each request's path exactly, so it never matched one, and v2 would read it as ${JSON.stringify(plainPath(path))}`);
+    if (path.trim() !== path || path.split("/").some((part) => part === "." || part === "..")) {
+      notMoved(`the path ${JSON.stringify(path)} was not moved: v1 matched it exactly as written, and v2 would read it otherwise (it trims spaces and refuses . and .. parts)`);
+      continue;
+    }
+    if (path.split("/").some((part) => part === "")) {
+      notMoved(`the path ${JSON.stringify(path)} was not moved: v1 matched it only with exactly these slashes, and v2 reads repeated slashes as one, so it cannot keep it apart from ${folded(path)}`);
+      continue;
+    }
+    const twins = entries.filter((other) => other !== path && folded(other) === path);
+    if (twins.length > 0) {
+      notMoved(`the path ${path} was not moved: the app's v1 list tells it apart from ${list(twins.map((twin) => JSON.stringify(twin)))}, and v2 reads repeated slashes as one, so it cannot`);
       continue;
     }
     if (LITERAL_PART.test(path)) {
@@ -859,6 +887,11 @@ function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: Mov
       notMoved(`the path ${path} was not moved: ${connection.description.label} serves no such operation, and v2 lists no passthrough path through it`);
       continue;
     }
+    // v2 decodes what a {…} part captures and encodes it again for the provider; v1 matched and sent the request's path as it came.
+    if (path.includes("{")) {
+      notMoved(`the passthrough path ${path} was not moved: v2 decodes what its {…} part captures and encodes it again, so a request v1 refused could pass, or reach the provider spelled differently. List the exact paths the app calls`);
+      continue;
+    }
     for (const method of methods) {
       const problem = passthroughProblem(connection, { method, path });
       if (problem !== null) notMoved(`the passthrough path ${method} ${path} was not moved: ${problem}`);
@@ -867,7 +900,6 @@ function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: Mov
   }
 
   // One model list per connection in v2. An operation it would give more models than v1 gave it is left out.
-  const allowed = [...new Set((policy.allowed_models ?? []).map((model) => model.trim()).filter((model) => model !== ""))];
   let models: string[] | undefined;
   if (allowed.length > 0) {
     models = allowed;
@@ -875,7 +907,7 @@ function listedRoute(app: V1App, slug: string, policy: V1Policy, connection: Mov
     // The model set most exact-path operations share; the open operations are narrowed to it.
     const bySet = new Map<string, string[]>();
     for (const [name, pins] of pinned) bySet.set([...pins].sort().join("\n"), [...(bySet.get([...pins].sort().join("\n")) ?? []), name]);
-    const [chosen] = [...bySet.entries()].sort((x, y) => y[1].length - x[1].length || x[0].localeCompare(y[0]));
+    const [chosen] = [...bySet.entries()].sort((x, y) => y[1].length - x[1].length || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
     models = chosen![0].split("\n");
     const narrowed = [...open].filter((name) => !pinned.has(name));
     if (narrowed.length > 0) {
@@ -929,6 +961,7 @@ interface V1Endpoint {
 function presetTarget(connections: ReadonlyMap<string, MovedConnection>, provider: string, v1Style: string, style: ApiStyle, model: string): { connection: MovedConnection; operation: string; model: string } | string {
   const connection = connections.get(provider);
   if (connection === undefined) return `the connection ${provider} was not moved`;
+  if (model.trim() !== model) return `v1 sent its model ${JSON.stringify(model)} exactly as written, and v2 trims it`;
   const wire = wireModel(connection, model);
   const v1Type = (connection.v1Description ?? connection.description).type;
   const v1Path = connection.v1.kind === "vercel" ? V1_STYLE_PATHS[v1Style] : V1_ENDPOINT_PATHS[v1Type]?.[v1Style];
@@ -1069,6 +1102,8 @@ interface AppPlan {
   readonly app: V1App;
   readonly v1: Record<string, unknown>;
   readonly routes: Map<string, Route>;
+  /** The app's rewrites that move as they are: spelled exactly as v1 held them. */
+  readonly rewrites: Record<string, string>;
 }
 
 function planApp(app: V1App, connections: ReadonlyMap<string, MovedConnection>, leftOut: ReadonlySet<string>, usage: readonly string[], report: ReportLine[]): AppPlan | null {
@@ -1081,6 +1116,13 @@ function planApp(app: V1App, connections: ReadonlyMap<string, MovedConnection>, 
     return null;
   }
   const routing = (v1.routing ?? {}) as { providers?: { mode?: string; selected?: Record<string, V1Policy> }; model_rewrites?: Record<string, string> };
+  // v1 matched a rewrite's name exactly, and sent its target as written; v2 trims both. Such a rewrite cannot move.
+  const rewrites: Record<string, string> = {};
+  const respelled: [string, string][] = [];
+  for (const [source, target] of Object.entries(routing.model_rewrites ?? {})) {
+    if (source.trim() !== source || target.trim() !== target) respelled.push([source, target]);
+    else rewrites[source] = target;
+  }
   const routes = new Map<string, Route>();
   if (routing.providers?.mode === "all") {
     for (const [slug, connection] of connections) {
@@ -1107,19 +1149,28 @@ function planApp(app: V1App, connections: ReadonlyMap<string, MovedConnection>, 
         );
         continue;
       }
-      const route = (policy.allowed_paths ?? []).length === 0 ? defaultRoute(app, slug, policy, connection, usage, report) : listedRoute(app, slug, policy, connection, routing.model_rewrites ?? {}, report);
+      const route = (policy.allowed_paths ?? []).length === 0 ? defaultRoute(app, slug, policy, connection, usage, report) : listedRoute(app, slug, policy, connection, rewrites, report);
       if (route !== null) routes.set(slug, route);
     }
   }
-  return { app, v1, routes };
+  for (const [source, target] of respelled) {
+    // Every route that could carry the trimmed name would now rewrite it, which v1 never did.
+    const carriers = [...routes].filter(([, route]) => route.models === undefined || route.models.includes(source) || route.models.includes(source.trim()));
+    for (const [slug] of carriers) routes.delete(slug);
+    report.push({
+      kind: "left_out",
+      subject,
+      what: `Its rewrite of ${JSON.stringify(source)} to ${JSON.stringify(target)} was not moved: v1 matched and sent the names exactly as written, and v2 trims them, which would change what it rewrites.${carriers.length > 0 ? ` The routes that could carry it were left out with it: ${list(carriers.map(([slug]) => slug))}.` : ""}`,
+    });
+  }
+  return { app, v1, routes, rewrites };
 }
 
 function finishApp(plan: AppPlan, connections: ReadonlyMap<string, MovedConnection>, report: ReportLine[]): AppConfig | null {
   const { app, v1, routes } = plan;
   const subject = `app ${app.id}`;
   const authentication = v1.authentication as { type?: string } | undefined;
-  const routing = (v1.routing ?? {}) as { model_rewrites?: Record<string, string> };
-  const names = namesForV2(app, routes, routing.model_rewrites ?? {}, report);
+  const names = namesForV2(app, routes, plan.rewrites, report);
   const presets = presetsFor(app, (v1.endpoints ?? {}) as Record<string, V1Endpoint>, connections, report);
   const limits = (v1.limits ?? {}) as { per_user?: V1Scope; per_app?: V1Scope };
   const config = {
@@ -1136,6 +1187,12 @@ function finishApp(plan: AppPlan, connections: ReadonlyMap<string, MovedConnecti
     const issue = parsed.error.issues[0];
     report.push({ kind: "left_out", subject, what: `Not moved: its settings do not fit v2 (${issue?.path.join(".") ?? ""}: ${issue?.message ?? "invalid"}). Its app keys stop working.` });
     return null;
+  }
+  // The names v2 stores must be the names written here, spelled as v1 held them (checked above): said if v2 changed any.
+  const stored = JSON.stringify([parsed.data.routing.model_rewrites ?? {}, Object.entries(parsed.data.routing.providers).map(([slug, route]) => [slug, route.models ?? null])]);
+  const written = JSON.stringify([names.rewrites, Object.entries(names.providers).map(([slug, route]) => [slug, (route as { models?: string[] }).models ?? null])]);
+  if (stored !== written) {
+    report.push({ kind: "check", subject, what: "v2 spells a model name or rewrite of this app differently from v1. Check its model lists and rewrites in the console.", first: true });
   }
   const conversations = ConversationsConfigSchema.safeParse(v1.conversations ?? {});
   if (!conversations.success) {
@@ -1168,7 +1225,8 @@ function settlePassthrough(plans: readonly AppPlan[], report: ReportLine[]): voi
       const key = pathSetKey(user.route.passthrough!);
       bySet.set(key, [...(bySet.get(key) ?? []), user]);
     }
-    const [home] = [...bySet.entries()].sort((x, y) => y[1].length - x[1].length || x[0].localeCompare(y[0]));
+    // Ties go to the first set in plain code-unit order, the same on every machine, whatever its locale.
+    const [home] = [...bySet.entries()].sort((x, y) => y[1].length - x[1].length || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
     const [homeKey, homeUsers] = home!;
     // Listed together, as the console saves them: a path the whole list refuses is dropped for the group.
     const listed: { method: HttpMethod; path: string }[] = [];
