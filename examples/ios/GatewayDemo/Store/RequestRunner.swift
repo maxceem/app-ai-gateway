@@ -77,8 +77,9 @@ final class RequestRunner {
 
     private func draw(_ prompt: String, aspect: ImageAspect, in id: UUID, model: ModelChoice) {
         let entryID = history.append(Entry(role: .assistant, aspect: aspect, model: model, pending: true), to: id)
-        run(id) { backend in
-            if let problem = ModelCatalog.imageModelProblem(model) { throw ProviderError(status: 0, message: problem) }
+        // Before the backend is looked up: the model's own problem comes first.
+        let problem = ModelCatalog.imageModelProblem(model)
+        run(id, before: problem.map { ProviderError(status: 0, message: $0) }) { backend in
             let image = try await backend.generateImage(prompt: prompt, aspect: aspect, model: model)
             let file = self.history.store(image, extension: "png")
             self.history.update(entryID, in: id) { $0.file = file }
@@ -134,6 +135,7 @@ final class RequestRunner {
 
     private func run(
         _ id: UUID,
+        before problem: Error? = nil,
         _ work: @escaping (any AIBackend) async throws -> Void,
         done: @escaping (Failure?) -> Void
     ) {
@@ -141,6 +143,7 @@ final class RequestRunner {
         tasks[id] = Task {
             var failure: Failure?
             do {
+                if let problem { throw problem }
                 // Taken once, when the request starts: a settings change
                 // meanwhile reaches the next request, not this one.
                 try await work(try settings.backend())

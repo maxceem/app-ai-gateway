@@ -6,8 +6,8 @@ import Foundation
 /// One `AppAIGatewayClient` per gateway setup: it holds the gateway token,
 /// refreshes it, and, on an app that verifies App Attest on every request,
 /// signs each one with the device's App Attest key. The demo has no sign-in,
-/// so `AppSettings` keeps one client until the gateway settings change, then
-/// makes a new one for the next request. An app whose users sign in makes one
+/// so `AppSettings` keeps one client until the gateway URL, app ID or key
+/// change, then makes a new one for the next request. An app whose users sign in makes one
 /// client per signed-in session, and ends the old one with `invalidate()`
 /// before it switches users.
 struct GatewayBackend: AIBackend {
@@ -15,15 +15,20 @@ struct GatewayBackend: AIBackend {
     /// The slug each provider type is connected under, e.g. `"openai"`.
     let slugs: [String: String]
 
-    init(baseURL: URL, appID: String, apiKey: String?, slugs: [String: String]) {
-        client = AppAIGatewayClient(
+    init(client: AppAIGatewayClient, slugs: [String: String]) {
+        self.client = client
+        self.slugs = slugs
+    }
+
+    /// A client for one gateway and app.
+    static func makeClient(baseURL: URL, appID: String, apiKey: String?) -> AppAIGatewayClient {
+        AppAIGatewayClient(
             appID: appID,
             baseURL: baseURL,
             // App Attest proves the request comes from your app on a real
             // device. An API key works in the simulator, for testing.
             authMode: apiKey.map { .apiKey(key: $0) } ?? .appAttestInstall
         )
-        self.slugs = slugs
     }
 
     /// POSTs `body` to the model's provider and returns the response body.

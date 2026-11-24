@@ -1,3 +1,4 @@
+import AppAIGateway
 import Foundation
 import Observation
 
@@ -87,51 +88,45 @@ final class AppSettings {
 
     // MARK: Backend
 
-    /// What the gateway client is built from. Picking a model or turning a
-    /// provider on changes none of it, so the client and its token stay.
+    /// What the gateway client is built from: where it sends, and how it
+    /// proves who is calling. Slugs, models and turning a provider on change
+    /// none of it, so the client and its token and App Attest key stay.
     private struct ClientSetup: Equatable {
-        var simulated: Bool
         var baseURL: String
         var appID: String
         var apiKey: String?
-        var slugs: [String: String]
-    }
-
-    private var clientSetup: ClientSetup {
-        ClientSetup(
-            simulated: values.simulated,
-            baseURL: values.baseURL,
-            appID: values.appID,
-            apiKey: values.useAPIKey ? apiKey : nil,
-            slugs: slugs
-        )
     }
 
     /// The client in use, and the setup it was built from.
-    private var gateway: (setup: ClientSetup, backend: GatewayBackend)?
+    private var gateway: (setup: ClientSetup, client: AppAIGatewayClient)?
 
-    /// The backend a request goes to. The gateway one is kept while what its
-    /// client is built from stays the same, so the client keeps its token
-    /// between requests. When the settings change, the next request gets a
-    /// new client; a request already out keeps the backend it started with,
-    /// retries included, and the old client goes away once nothing holds it.
+    /// The backend a request goes to: the cached client, with the slugs as
+    /// they are now. The client is kept while what it is built from stays the
+    /// same, so it keeps its token between requests. When that changes, the
+    /// next request gets a new client; a request already out keeps the backend
+    /// it started with, retries included, and the old client goes away once
+    /// nothing holds it.
     func backend() throws -> any AIBackend {
-        let setup = clientSetup
-        if setup.simulated { return SimulatedBackend() }
-        if let gateway, gateway.setup == setup { return gateway.backend }
+        if values.simulated { return SimulatedBackend() }
+        let setup = ClientSetup(baseURL: values.baseURL, appID: values.appID, apiKey: values.useAPIKey ? apiKey : nil)
+        if let gateway, gateway.setup == setup { return GatewayBackend(client: gateway.client, slugs: slugs) }
         guard let url = URL(string: setup.baseURL), url.scheme != nil, !setup.appID.isEmpty else {
             throw ProviderError(status: 0, message: "Add your gateway URL and app ID in Settings.")
         }
         if setup.apiKey?.isEmpty == true {
             throw ProviderError(status: 0, message: "Add your API key in Settings.")
         }
+        // One client per gateway and app, never two at once: each client
+        // manages its own App Attest key, so two would register two keys for
+        // one install. (A different app ID has its own Keychain slot.)
+        //
         // The demo has no sign-in, so no user's identity can pass from one
         // client to the next, and the old client is not ended. An app whose
         // users sign in must `await client.invalidate()` before it switches
-        // users, and make a new client for the new user: see "One client
-        // per signed-in session" in the Swift SDK's README.
-        let backend = GatewayBackend(baseURL: url, appID: setup.appID, apiKey: setup.apiKey, slugs: setup.slugs)
-        gateway = (setup, backend)
-        return backend
+        // users, and make a new client for the new user: see "One client per
+        // signed-in session" in the Swift SDK's README.
+        let client = GatewayBackend.makeClient(baseURL: url, appID: setup.appID, apiKey: setup.apiKey)
+        gateway = (setup, client)
+        return GatewayBackend(client: client, slugs: slugs)
     }
 }

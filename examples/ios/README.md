@@ -27,8 +27,10 @@ guess: Groq's transcription is `groq.transcription.openai`, and Gemini's images
 use `gemini.generate.v1beta`. `agw provider types` lists every provider's
 operations.
 
-The demo has no sign-in, so it keeps one gateway client until its gateway
-settings change, then makes a new one for the next request. A request already
+The demo has no sign-in, so it keeps one gateway client until the gateway
+URL, app ID or API key change, then makes a new one for the next request.
+Changing a provider's slug keeps the client: one client per gateway and app,
+never two at once, because each client manages its own App Attest key. A request already
 out finishes on the client it started with. An app whose users sign in makes
 one client per signed-in session instead, and calls `await client.invalidate()`
 before it switches users: see the Swift SDK's README.
