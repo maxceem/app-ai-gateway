@@ -11,6 +11,9 @@
  * - It first reads what is there and shows what it will change. `--dry-run`
  *   stops there and changes nothing. Otherwise it asks before changing
  *   anything; `--yes` answers for a run with no terminal.
+ * - A new password also signs the person out everywhere: their sessions are
+ *   deleted, so whoever else held one is out too (v1 left them). Making
+ *   someone an owner leaves sessions as they are.
  * - The new password comes from stdin: typed at a hidden prompt, or piped in.
  *   It is never an argument and never printed. Only its hash reaches the
  *   database, in a temporary file only this user can read, deleted after.
@@ -140,11 +143,12 @@ const found = JSON.parse(
     "--command",
     `SELECT u.id AS user_id,
        (SELECT count(*) FROM mgmt_user_account a WHERE a.user_id = u.id AND a.provider_id = 'credential') AS passwords,
+       (SELECT count(*) FROM mgmt_user_session s WHERE s.user_id = u.id) AS sessions,
        ${promote ? `(SELECT m.role FROM mgmt_organization_user m WHERE m.user_id = u.id AND m.organization_id = ${sqlText(accountId!)})` : "NULL"} AS role,
        ${promote ? `(SELECT o.name FROM mgmt_organization o WHERE o.id = ${sqlText(accountId!)})` : "NULL"} AS account_name
      FROM mgmt_user u WHERE u.kind = 'human' AND u.email = ${sqlText(email)} COLLATE NOCASE;`,
   ]),
-) as { results: { user_id: string; passwords: number; role: string | null; account_name: string | null }[] }[];
+) as { results: { user_id: string; passwords: number; sessions: number; role: string | null; account_name: string | null }[] }[];
 const person = found[0]?.results[0];
 if (person === undefined) stop(`No person signs in with ${email} on this deployment; nothing was changed.`);
 
@@ -155,10 +159,14 @@ if (password !== undefined) {
   if (person.passwords === 0) {
     stop(`${email} has no password sign-in to reset (they sign in another way, such as Google); nothing was changed.`);
   }
-  plan.push(`Set a new password for ${email}. Their sessions stay signed in.`);
+  plan.push(`Set a new password for ${email}.`);
+  plan.push(
+    `Sign ${email} out everywhere: delete their ${person.sessions === 1 ? "1 session" : `${person.sessions} sessions`}, so only the new password lets anyone in.`,
+  );
   statements.push(
     `UPDATE mgmt_user_account SET password = ${sqlText(await hashPassword(password))}, updated_at = ${Date.now()}
        WHERE provider_id = 'credential' AND user_id = ${sqlText(person.user_id)};`,
+    `DELETE FROM mgmt_user_session WHERE user_id = ${sqlText(person.user_id)};`,
   );
 }
 if (promote) {

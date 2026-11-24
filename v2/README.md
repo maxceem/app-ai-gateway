@@ -81,7 +81,8 @@ Inside `v2/`:
   with a new password, and make them an owner of an account they belong to. It reads the database
   first and shows what it will change; `--dry-run` stops there. It asks before changing anything
   (`--yes` answers for a run without a terminal). The password comes from a hidden prompt or a pipe,
-  never an argument, and is never printed. As in v1, the person's sessions stay signed in.
+  never an argument, and is never printed. A new password also signs the person out everywhere (v1 left
+  their sessions); making someone an owner does not.
 
 ## Secrets
 

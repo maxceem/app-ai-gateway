@@ -40,17 +40,18 @@ function database(): DatabaseSync {
   return new DatabaseSync(join(folder, file));
 }
 
-/** What the database holds for a person: their password hash and their role in acct1. */
-function state(userId: string): { password: string | null; role: string | null } {
+/** What the database holds for a person: their password hash, their role in acct1, and how many sessions they have. */
+function state(userId: string): { password: string | null; role: string | null; sessions: number } {
   const db = database();
   try {
     const row = db
       .prepare(
         `SELECT (SELECT password FROM mgmt_user_account WHERE user_id = ? AND provider_id = 'credential') AS password,
-                (SELECT role FROM mgmt_organization_user WHERE user_id = ? AND organization_id = 'acct1') AS role`,
+                (SELECT role FROM mgmt_organization_user WHERE user_id = ? AND organization_id = 'acct1') AS role,
+                (SELECT count(*) FROM mgmt_user_session WHERE user_id = ?) AS sessions`,
       )
-      .get(userId, userId) as { password: string | null; role: string | null };
-    return { password: row.password, role: row.role };
+      .get(userId, userId, userId) as { password: string | null; role: string | null; sessions: number };
+    return { password: row.password, role: row.role, sessions: Number(row.sessions) };
   } finally {
     db.close();
   }
@@ -75,6 +76,10 @@ before(() => {
     "INSERT INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at) VALUES ('acct1', 'Acme', 'u_bob', 'x', 'x');",
     "INSERT INTO mgmt_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES ('m_ada', 'acct1', 'u_ada', 'member', 'active', 'x');",
     "INSERT INTO mgmt_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES ('m_bob', 'acct1', 'u_bob', 'owner', 'active', 'x');",
+    // Two sessions of Ada's, say one of them someone else's, and one of Bob's.
+    "INSERT INTO mgmt_user_session (id, expires_at, token, created_at, updated_at, user_id) VALUES ('s_ada1', 9999999999999, 't1', 1, 1, 'u_ada');",
+    "INSERT INTO mgmt_user_session (id, expires_at, token, created_at, updated_at, user_id) VALUES ('s_ada2', 9999999999999, 't2', 1, 1, 'u_ada');",
+    "INSERT INTO mgmt_user_session (id, expires_at, token, created_at, updated_at, user_id) VALUES ('s_bob', 9999999999999, 't3', 1, 1, 'u_bob');",
   ].join("\n"));
   db.close();
 });
@@ -107,13 +112,19 @@ test("shows the plan and changes nothing on a dry run, or without a yes and no t
   const dry = recover([...ask, "--dry-run"], `${PASSWORD}\n`);
   assert.equal(dry.code, 0, dry.output);
   assert.match(dry.output, /Set a new password for ada@example\.test/u);
+  assert.match(dry.output, /Sign ada@example\.test out everywhere: delete their 2 sessions/u);
   assert.match(dry.output, /Make ada@example\.test an owner of Acme \(acct1\); they are a member now\./u);
   assert.match(dry.output, /Dry run: nothing was changed\./u);
+  // Making someone an owner alone leaves their sessions as they are.
+  const ownerOnly = recover(["--email", "ada@example.test", ...local(), "--promote-owner", "--account", "acct1", "--dry-run"]);
+  assert.equal(ownerOnly.code, 0, ownerOnly.output);
+  assert.match(ownerOnly.output, /Make ada@example\.test an owner/u);
+  assert.doesNotMatch(ownerOnly.output, /out everywhere/u);
   const unasked = recover(ask, `${PASSWORD}\n`);
   assert.equal(unasked.code, 1);
   assert.match(unasked.output, /no terminal to ask/u);
   for (const output of [dry.output, unasked.output]) assert.ok(!output.includes(PASSWORD), "the password was printed");
-  assert.deepEqual(state("u_ada"), { password: OLD_HASH, role: "member" });
+  assert.deepEqual(state("u_ada"), { password: OLD_HASH, role: "member", sessions: 2 });
 });
 
 test("refuses a person it cannot help, and changes nothing", () => {
@@ -124,8 +135,8 @@ test("refuses a person it cannot help, and changes nothing", () => {
   const google = recover(["--email", "bob@example.test", ...local(), "--password-stdin", "--yes"], `${PASSWORD}\n`);
   assert.equal(google.code, 1);
   assert.match(google.output, /has no password sign-in to reset/u);
-  assert.deepEqual(state("u_ada"), { password: OLD_HASH, role: "member" });
-  assert.deepEqual(state("u_bob"), { password: null, role: "owner" });
+  assert.deepEqual(state("u_ada"), { password: OLD_HASH, role: "member", sessions: 2 });
+  assert.deepEqual(state("u_bob"), { password: null, role: "owner", sessions: 1 });
 });
 
 test("with a yes, sets a password the sign-in library accepts and makes the person an owner", async () => {
@@ -135,6 +146,9 @@ test("with a yes, sets a password the sign-in library accepts and makes the pers
   assert.ok(!run.output.includes(PASSWORD), "the password was printed");
   const after = state("u_ada");
   assert.equal(after.role, "owner");
+  // Signed out everywhere; nobody else's sessions are touched.
+  assert.equal(after.sessions, 0);
+  assert.equal(state("u_bob").sessions, 1);
   assert.notEqual(after.password, OLD_HASH);
   assert.equal(await verifyPassword({ hash: after.password!, password: PASSWORD }), true);
   // Not a member of the account named: refused, even on a dry run.
