@@ -5,9 +5,11 @@ description: Add a provider key, create an app, allow the provider, and send you
 
 This page takes you from an empty console to a working request. It uses a
 server app, because that is the shortest path: one key, one curl command. The
-last section says where iOS apps stand.
+section on iOS apps, at the end, says where they stand.
 
-Sign up at [console.appaigateway.com](https://console.appaigateway.com).
+Sign up at [console.appaigateway.com/v2/signup](https://console.appaigateway.com/v2/signup).
+If the console asks you to verify your email address, open the link in the email
+it sent. Until you do, your apps' requests are refused.
 
 <Callout title="Self-hosting">
   Open your own console, and replace `https://api.appaigateway.com` in the
@@ -55,9 +57,9 @@ A new app may call nothing yet. You choose what it may call.
 
 Open the app's **Providers** tab and tick your `openai` connection.
 
-- **Operations** are the kinds of request the app may send, such as
-  `openai.responses` for OpenAI's Responses API or `openai.chat` for Chat
-  Completions. Tick the ones you need.
+- **Operations** are the kinds of request the app may send. Tick
+  `openai.responses`, OpenAI's Responses API, which this guide uses. Others,
+  such as `openai.chat` for Chat Completions, can be added later.
 - **Models** limits the app to the models you list. Leave it empty to allow
   every model that has a price.
 
@@ -107,10 +109,12 @@ tokens and cost, and **Daily usage by provider** shows the day's spend. The
 | Answer | What it means |
 | --- | --- |
 | `401 auth_required` | The key is missing or wrong. |
+| `403 email_unverified` | Your account's email address is not verified yet. Open the link in the verification email, or send a new one from the console. |
 | `502 provider_not_configured` | The app does not allow a connection with the slug in the URL. Tick it on the app's **Providers** tab. |
 | `403 path_not_allowed` | The app does not allow this operation, or the path is not one the gateway knows for this provider. |
 | `403 model_not_allowed` | The model is not in the app's **Models** list. |
 | `400 pricing_not_configured` | The model has no price, so the gateway cannot count its cost. Use a model on the price list, or add a price for it. |
+| An error in OpenAI's own format | The request reached OpenAI, and OpenAI refused it. If it says the key is invalid, check the provider key you added in step 1. |
 
 The full list is in [Errors and limits](/integrate/errors).
 
@@ -120,8 +124,10 @@ An iOS app has no key to ship. It proves it is a real install of your app with
 Apple App Attest, and the gateway gives it a short-lived token. To create one,
 choose **iOS app** in step 2 and enter your **Apple Team ID** and **Bundle ID**.
 
-The Swift package that does the App Attest exchange for you is coming with the
-v2 SDK.
+Today you can create and set up an iOS app here, and the gateway serves App
+Attest sign-in for it. The Swift package that does that sign-in for you is coming
+with the v2 SDK; until then, the iOS integration guide and the demo app still
+describe the earlier version.
 
 ## Next steps
 
