@@ -536,7 +536,7 @@ export const AppCheckResponseSchema = z
         description:
           "Every provider connection the app's routing or presets name, presets' fallbacks included. A disabled one is listed as disabled, and one that was deleted as missing, with a null id.",
       }),
-    ready: z.boolean().meta({ description: "Whether the app is active and at least one connection it names is active." }),
+    ready: z.boolean().meta({ description: "Whether the app is active and can serve through at least one active connection: one its routing names, or a preset's first connection, or a fallback while that first connection is turned off. A preset whose first connection was deleted serves nothing." }),
     limitations: z.array(z.string()).meta({ description: "What this check did not exercise, one sentence each." }),
   })
   .meta({ id: "AppCheckResponse" });

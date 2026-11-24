@@ -10,6 +10,29 @@ Use [the documentation index](/llms.txt) to find the guide for a task. When the
 gateway and these pages disagree, trust the gateway: `agw <command> --help`, the
 MCP tool list and `agw://guide` come from the gateway you are connected to.
 
+## What the gateway is
+
+App AI Gateway sits between a person's apps and AI providers such as OpenAI,
+Anthropic and Gemini. The person adds each provider key once, as a **provider
+connection** with a slug. Each **app** has a permanent ID and its own settings:
+how it signs in, which connections, provider operations and models it may use,
+presets, limits on its users, and whether its conversations are kept. With
+`{API}` as the API address from the table below, apps call:
+
+- `{API}/v2/apps/{app}/proxy/{slug}/{provider_path}`, with the provider's own
+  request format;
+- `{API}/v2/apps/{app}/presets/{name}`, for a preset.
+
+See [Apps and providers](/how-it-works/apps-and-providers).
+
+"Operation" names three different things here:
+
+- a **provider operation** is one kind of request a provider serves, such as
+  `openai.responses`, which an app allows;
+- a **pending step** is a browser step or a reserved create, which
+  `agw operation wait` and `get_operation` follow;
+- a **patch operation** is one `add`, `replace` or `remove` in a JSON Patch.
+
 ## Choose the connection before changing anything
 
 Hosted addresses:
@@ -18,7 +41,7 @@ Hosted addresses:
 | --- | --- |
 | Console, sign-in, browser steps and the CLI | `https://console.appaigateway.com` |
 | MCP | `https://console.appaigateway.com/v2/mcp` |
-| App requests and the management API | `https://api.appaigateway.com` |
+| App requests and the management API (`{API}`) | `https://api.appaigateway.com` |
 
 A self-hosted gateway has its own console address, and may answer the API on
 the same address. Do not deploy anything unless the person asked for that. Use
@@ -32,13 +55,14 @@ agw deployment status --json --no-input
 agw account status --json --no-input
 ```
 
-- **Not signed in:** run `agw account login --no-open --json --no-input`.
-  `--no-open` makes it show a link and a short code even on a machine with a
-  browser. Both arrive on stderr while the command waits for the approval; the
-  JSON comes on stdout only after approval or failure. Read stderr while it
-  runs, and give the person the link and the code. They open the link in their
-  own browser, check the code, and approve. Signing in never creates an
-  account: the person needs one already, made in the console.
+- **Not signed in:** run `agw account login --no-open --json --no-input` in the
+  background, or with stderr sent to a file. It waits up to ten minutes for the
+  approval. `--no-open` makes it show a link and a short code even on a machine
+  with a browser. Both arrive on stderr while it waits; the JSON comes on
+  stdout only after approval or failure. Read the link and the code from
+  stderr as soon as they appear, and give them to the person. They open the
+  link in their own browser, check the code, and approve. Signing in never
+  creates an account: the person needs one already, made in the console.
 - **Another gateway:** `agw deployment connect --url <console address>` connects
   and signs in. `agw deployment connect --cloud` goes back to the hosted service.
 - **A management key from the person:** use it as the `AGW_MANAGEMENT_KEY`
@@ -48,21 +72,59 @@ agw account status --json --no-input
 A saved sign-in is not proof of the right account: compare the account
 `account status` names with the one the person means.
 
+## Rules
+
+These apply however you connect: CLI, MCP or API.
+
+1. Never print, log or repeat a secret: a management key, a provider key, an
+   app key or a token. When a key is created, keep it in a private file, or let
+   the person see it on its reveal page, and report only where it is.
+2. Never send `id` when creating an app. The gateway makes the ID from the name
+   and answers it as `app.id`. It never changes.
+3. Check an app before saving it: `agw app add … --dry-run` or
+   `agw app validate`, `validate_app` over MCP, or
+   `POST /v2/admin/app-drafts/validate` and `POST /v2/admin/apps/{app}/validate`.
+4. Read before you write. List providers and apps first, so you use slugs and
+   IDs that exist.
+5. A change to an app sends the `revision` you read: `agw app update
+   --revision`, `app replace`, `patch_app`, `update_app`, `PATCH` or `PUT`. A
+   whole document is `name`, `config` and `status` as read, with your change.
+   Leave out `id`, `created_at`, `updated_at` and `warnings`.
+6. A key the gateway does not know is refused. A key the gateway returned that
+   you do not know must be kept, exactly as you read it.
+7. Prefer what can be undone. Turn an app or a connection off rather than
+   deleting it, unless the person asked for the deletion.
+8. Saved changes usually reach live requests within a minute, and a block
+   within ten seconds. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
+9. Do not send AI requests to test a setup unless asked: each one costs the
+   person money.
+10. An app's `warnings` name behaviour that will stop on a date. Tell the
+    person about each one.
+
 ## CLI task workflow
 
 1. Read `agw provider list --json` and `agw app list --json`. Reuse the IDs and
    slugs they answer. Look at an app with `agw app show <app> --json`.
-2. For a missing provider, tell the person which one, and ask them to add its
-   key themselves: on the console's **Providers** page, or with
-   `agw provider add --type <type>` on their own machine, which asks for the key
-   in a hidden prompt. Then check `agw provider list` and carry on. Never ask
-   for a key in the chat, and never read or pass on a browser step's link file.
-3. Read the command's `--help`, then make the change. For an iOS app, use the
-   person's Team ID and Bundle ID. For a server app, keep its key in the private
-   file `agw` names, or a new path given with `--key-output`.
+2. For a missing provider, tell the person which one. Then:
+   - If you run on the person's own machine, you may run
+     `agw provider add --type <type> --browser --json` without `--no-open`: a
+     browser window opens there for them to type the key. Tell them it opened,
+     and wait with `agw operation wait <id> --json`.
+   - Otherwise, ask them to add the key themselves: on the console's
+     **Providers** page, or with `agw provider add --type <type>` on their own
+     machine, which asks for the key in a hidden prompt. Then check
+     `agw provider list` and carry on.
+
+   Never ask for a key in the chat, and never read or pass on a browser step's
+   link file.
+3. Read the command's `--help`, then make the change. For a new app, check it
+   first with `agw app add … --dry-run`. For an iOS app, use the person's Team
+   ID and Bundle ID. A server app's key goes to the private file `agw` names, or
+   a new path given with `--key-output`: `agw app add` creates the app directly
+   and writes its key there, which is safe for a CLI agent.
 4. To allow a provider on a new app, use `--providers <slug>` (its first
-   operation) or `--providers <slug>=<op>+<op>`. `agw provider types` lists each
-   provider's operations.
+   provider operation) or `--providers <slug>=<op>+<op>`. `agw provider types`
+   lists each provider's operations, and `agw model list` the priced models.
 5. To change an existing app:
    - `agw app update <app> --name … --status …` changes only those.
    - For any other setting, `agw app update <app> --operations @patch.json
@@ -70,24 +132,26 @@ A saved sign-in is not proof of the right account: compare the account
      Patch: `add`, `replace` or `remove` at paths such as
      `/config/limits/per_app/requests/per_minute`.
    - To save a whole document, write `name`, `config` and `status` from
-     `app show`, with your change and every setting you found there, including
-     ones you do not recognize. Check it with
-     `agw app validate <app> --config @app.json --json`; validation refuses a
-     `revision`. Then add the `revision` from `app show` and save it with
+     `app show`, with your change and every setting you found there. Check it
+     with `agw app validate <app> --config @app.json --json`; validation refuses
+     a `revision`. Then add the `revision` from `app show` and save it with
      `agw app replace <app> --config @app.json`.
    - A stale revision is refused with `app_revision_conflict`: read the app
      again, apply the change on top, and repeat.
-6. Run `agw app check <app> --json` and `agw app snippet <app> --json`. The
-   check reads settings only: it tests no provider key, device, sign-in or
-   subscription. The snippet has example requests for the app's routes and
-   presets; a preset with fixed parameters gets only a note with its URL, by
-   design. Do not send AI requests unless the person asked.
-7. Report as described in "Reporting back". A pending browser step is pending,
-   never done.
+6. Run `agw app check <app> --json`. Read each connection's `status`, not only
+   `ready`, and tell the person about any that is `disabled` or `missing`.
+   `ready: false` means the app is turned off, or nothing it names can serve:
+   say which, and suggest turning the app or a connection on, or adding the
+   missing connection. The check reads settings only: it tests no provider key,
+   device, sign-in or subscription.
+7. Run `agw app snippet <app> --json` for example requests (see "Applications"
+   for what it leaves out). Do not send AI requests unless the person asked.
+8. Report as described in "Reporting back". A pending step is pending, never
+   done.
 
 Commands not built into `agw` come from the gateway: `agw --help` lists them.
-For every command, use `--json --no-input`, and add `--no-open` for a browser
-step. `--json` answers `{schemaVersion: 1, ok: true, context, result}` or
+Use `--json --no-input` for every command. `--json` answers
+`{schemaVersion: 1, ok: true, context, result}` or
 `{schemaVersion: 1, ok: false, error}`, either with optional `notices`. Follow
 `error.nextAction`.
 
@@ -96,9 +160,10 @@ step. `--json` answers `{schemaVersion: 1, ok: true, context, result}` or
 - `--help` prints text, not JSON.
 - Exit codes: `0` done, `2` wrong command line, `3` gateway or network failure,
   `4` a state or decision stops it, `5` stopped waiting. Exit `0` can carry a
-  pending browser step: check `state`. A browser step's wait that times out
-  cancels nothing: run `agw operation wait <id>` again. A browser sign-in that
-  timed out cannot be picked up: start it again.
+  pending step: check `state`.
+- `agw operation wait <id>` waits 300 seconds, or `--timeout <seconds>`. A wait
+  that times out cancels nothing: run it again. A browser sign-in that timed
+  out cannot be picked up: start it again.
 - A `newer_gateway` notice means the gateway has settings this `agw` does not
   know. They are kept when it saves; tell the person to update `agw` before
   changing them. After some refusals, a `version_mismatch` notice names which
@@ -118,16 +183,23 @@ bearer token works too.
   the grant. A **Read only** grant refuses every change with
   `grant_insufficient`.
 - Read before you write: `list_providers`, `list_apps`, `get_app`.
-- For a small change, use `patch_app` with the revision `get_app` answered. It
-  changes only the paths you name. `update_app` replaces the whole document.
-- A provider key is never a tool argument. `add_provider` takes `type`,
-  `name`, `slug`, `baseUrl`, `pricing`, and Cloudflare's `accountId` and
-  `gatewayId` without a token. `rotate_provider_key` takes the connection's
-  `id` and `revision`. Each answers a link where the person types the key;
-  then poll `get_operation` with the answer's `id` until `state` is
-  `completed`, or stop at `expired`, which `denied: true` marks as declined.
-  Never open the link yourself. A custom provider, listed paths and pinned
-  Vercel serving providers are for the person, in the console.
+  `list_models` and `list_provider_types` name the priced models and each
+  provider's operations.
+- For a small change, use `patch_app`. With `operations` and the revision
+  `get_app` answered, it changes only the paths you name. It also takes
+  `name`, `status`, `team_id`, `bundle_id`, `attest_environments` and
+  `verify_on` directly, with no revision. `update_app` replaces the whole
+  document.
+- A provider key is never a tool argument. `add_provider` takes `type` and
+  `name`, and optionally `slug`, `baseUrl`, `pricing` and
+  `cloudflareGateway: { accountId, gatewayId }`; other top-level fields are
+  refused. `rotate_provider_key` takes the connection's `id` and `revision`.
+  Each answers a link for the person; poll `get_operation` with the answer's
+  `id` and stop at `completed` or `expired` (`denied: true` when declined).
+  Never open the link yourself. On a Cloudflare add, the person enters the
+  Cloudflare token, which is required, and the provider key, which is optional.
+  A custom provider, listed paths and pinned Vercel serving providers are for
+  the person, in the console.
 - `add_app` takes `{ config: { name, config, status? }, handle? }`, and
   `add_app_key` takes `{ app, name, handle? }`: two calls each, see "Retrying
   creation safely". A new key is never in a tool answer: give the person
@@ -143,54 +215,17 @@ The full rules are in the server's `agw://guide` resource.
 
 For an integration without the CLI or MCP:
 
-- Base address: `https://api.appaigateway.com`, or the self-hosted gateway's
-  own. Every route is under `/v2/admin/`, with JSON bodies.
+- Base address: `{API}`, `https://api.appaigateway.com`, or the self-hosted
+  gateway's own. Every route is under `/v2/admin/`, with JSON bodies.
 - Send the management key as `Authorization: Bearer agw_mgmt_…`. A key has its
   grant, `read` or `manage`, and no more than its owner's role. It never
   expires on its own.
 - `GET /v2/admin/session` answers the account, role and grant. Call it first.
-- Keys, CLI sign-ins and MCP connections are managed only in the console:
-  their routes answer a key with `403 session_required`.
+- The **Access** routes, for management keys, CLI sign-ins and MCP connections,
+  need a person signed in to the console: they answer a key or token with
+  `403 session_required`.
 
 See [Use the API](/automation/api) for the routes.
-
-## What the gateway is
-
-App AI Gateway sits between a person's apps and AI providers such as OpenAI,
-Anthropic and Gemini. The person adds each provider key once, as a **provider
-connection** with a slug. Each **app** has a permanent ID and its own settings:
-how it signs in, which connections, operations and models it may use, presets,
-limits on its users, and whether its conversations are kept. Apps call:
-
-- `{API}/v2/apps/{app}/proxy/{slug}/{provider_path}`, with the provider's own
-  request format;
-- `{API}/v2/apps/{app}/presets/{name}`, for a preset.
-
-See [Apps and providers](/how-it-works/apps-and-providers).
-
-## Rules
-
-1. Never print, log or repeat a secret: a management key, a provider key, an
-   app key or a token. When a key is created, keep it in a private file, or let
-   the person see it on its reveal page, and report only where it is.
-2. Never send `id` when creating an app. The gateway makes the ID from the name
-   and answers it as `app.id`. It never changes.
-3. Validate an app before saving it: `POST /v2/admin/app-drafts/validate` for a
-   new one, `POST /v2/admin/apps/{app}/validate` for a change.
-4. Read before you write. List providers and apps first, so you use slugs and
-   IDs that exist.
-5. A change to an app sends the `revision` you read. `PUT` replaces the whole
-   app: send back `name`, `config` and `status` as read, with your change, and
-   leave out `id`, `created_at`, `updated_at` and `warnings`.
-6. Keep settings you do not recognize exactly as you read them.
-7. Prefer what can be undone. Turn an app or a connection off rather than
-   deleting it, unless the person asked for the deletion.
-8. Saved changes usually reach live requests within a minute, and a block
-   within ten seconds. See [When changes take effect](/how-it-works/apps-and-providers#when-changes-take-effect).
-9. Do not send AI requests to test a setup unless asked: each one costs the
-   person money.
-10. An app's `warnings` name behaviour that will stop on a date. Tell the
-    person about each one.
 
 ## Errors
 
@@ -207,38 +242,47 @@ object only for codes that need more.
 | 403 | `forbidden` | The person's role does not allow it |
 | 403 | `session_required` | Only the person, in the console, can do this |
 | 404 | `not_found`, `app_not_found`, `provider_not_found`, `key_not_found` | Nothing with this ID in the account |
-| 409 | `conflict`, `app_revision_conflict` | Read it again and apply the change on top. On a provider create, the slug is taken: choose another |
+| 409 | `app_revision_conflict` | Read it again and apply the change on top |
+| 409 | `conflict` | On a change, read it again and apply the change on top. On a provider create, the slug is taken: choose another. On an app create, nothing was written: retry |
 
 The errors apps get on their requests are in [Errors and limits](/integrate/errors).
 
-## Workflow for setting up an app
+## API workflow for setting up an app
 
 1. `GET /v2/admin/providers`. Note each connection's `type` and `slug`.
 2. If one is missing, ask the person to add its key themselves, on the
-   console's **Providers** page or with `agw` on their own machine. Over MCP,
-   `add_provider` answers a console link to give them.
+   console's **Providers** page or with `agw` on their own machine.
 3. Compose the app from the reference below.
 4. `POST /v2/admin/app-drafts/validate` with it. Fix every refusal.
 5. Create it through a reserved create ("Retrying creation safely"). Do not use
    the plain `POST /v2/admin/apps`: for a server app it answers the first key in
    plain text, in the answer you read. The reserved create shows the key to the
    person on its reveal page instead.
-6. `GET /v2/admin/apps/{app}/check` and `GET /v2/admin/apps/{app}/snippet`. A
-   preset with fixed parameters gets only a note with its URL in the snippet,
-   by design.
+6. `GET /v2/admin/apps/{app}/check`: read `ready` and each connection's
+   `status`, as in the CLI workflow. Then `GET /v2/admin/apps/{app}/snippet`.
 7. Report back.
 
 ## Providers
 
 | Call | Body | Notes |
 | --- | --- | --- |
-| `GET /v2/admin/provider-types` | | Each type, its operations, and whether it can go through Cloudflare |
+| `GET /v2/admin/provider-types` | | Each type, its provider operations, and whether it can go through Cloudflare |
 | `GET /v2/admin/providers` | | `providers[]`: `id`, `type`, `slug`, `name`, `status`, `secretHint`, `baseUrl`, `cloudflareGateway`, `passthrough`, `pricing`, `revision` |
-| `POST /v2/admin/provider-handoffs` | `type`, `name`, and optional `slug`, `baseUrl`, `pricing`, and `cloudflareGateway` with `accountId` and `gatewayId` only | Answers a link where the person types the key, and the Cloudflare token if any. Use this, not a plain create. A custom provider, listed paths and `servingProviders` are refused here: the person sets those in the console |
+| `POST /v2/admin/provider-handoffs` | `type` and `name`; optional `slug`, `baseUrl`, `pricing`, `cloudflareGateway: { accountId, gatewayId }` | Answers a link where the person types the key: through Cloudflare, the Cloudflare token (required) and the provider key (optional). Other fields are refused: a custom provider, listed paths and `servingProviders` are set in the console |
 | `POST /v2/admin/providers/test` | `type`, `secret`, `baseUrl`, `cloudflareGateway`, `auth` | Tries a key without saving. Only `reason: "rejected"` says the key is probably wrong |
-| `PUT /v2/admin/providers/{id}` | `revision` and any of `name`, `pricing`, `status`, `passthrough`, `servingProviders`, `baseUrl`, `cloudflareGateway`, and `auth` on a custom provider | `status: "disabled"` pauses it and keeps the key and slug. A new `baseUrl`, or a new Cloudflare gateway, needs the key, and the Cloudflare token, in the same request: leave those changes to the person, in the console |
+| `PUT /v2/admin/providers/{id}` | `revision` and any of `name`, `pricing`, `status`, `passthrough`, `servingProviders`, `baseUrl`, `cloudflareGateway`, and `auth` on a custom provider | `status: "disabled"` pauses it and keeps the key and slug. See below for changes that need a secret |
 | `POST /v2/admin/providers/{id}/key-handoffs` | `revision` | A link where the person types a new key |
 | `DELETE /v2/admin/providers/{id}` | | For good, with its prices. Apps that use it start failing |
+
+Some provider changes need a secret in the same request, so leave them to the
+person, in the console:
+
+- a new base URL needs the provider key again;
+- going back from a base URL to the provider's own address may reuse the stored
+  key;
+- a new Cloudflare gateway needs its token, and either the provider key or
+  `secret: null` to use the keys stored in Cloudflare;
+- leaving Cloudflare needs the provider key.
 
 The first connection of a type usually takes the type as its slug, such as
 `openai`. Another one of the same type needs its own slug.
@@ -255,13 +299,13 @@ Cloudflare and Vercel AI Gateway in [their guide](/providers/gateways).
 | --- | --- | --- |
 | `GET /v2/admin/apps` | | `apps[]` |
 | `GET /v2/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at, warnings? } }` |
-| `POST /v2/admin/app-drafts/validate` | `{ name, config, status? }` | Judged as a create. Saves nothing |
-| `POST /v2/admin/apps/{app}/validate` | `{ name, config, status? }` | Judged as a change of that app. Saves nothing |
+| `POST /v2/admin/app-drafts/validate` | `{ name, config, status? }` | Checked as a new app. Saves nothing |
+| `POST /v2/admin/apps/{app}/validate` | `{ name, config, status? }` | Checked as a change of that app. Saves nothing |
 | `POST /v2/admin/apps` | `{ name, config, status? }` | Answers `app`, and for a server app its key in plain text. Agents use the reserved create instead |
 | `PUT /v2/admin/apps/{app}` | `{ name, config, status?, revision }` | Replaces the whole app |
 | `PATCH /v2/admin/apps/{app}` | `{ revision, operations }` | JSON Patch `add`, `replace` or `remove` under `/name`, `/status` or `/config` |
-| `GET /v2/admin/apps/{app}/check` | | `ready`, and each connection the app's routing and presets name, with its status |
-| `GET /v2/admin/apps/{app}/snippet` | | Example requests for the app's routes and presets, with no credential in them. A preset with fixed parameters gets a note with its URL instead |
+| `GET /v2/admin/apps/{app}/check` | | `ready`, and each connection the app's routing and presets name, with its `status` |
+| `GET /v2/admin/apps/{app}/snippet` | | Example requests for the app's routes and presets, with no credential in them |
 | `DELETE /v2/admin/apps/{app}?confirm={app}` | | For good: its keys, users and App Attest keys go; its usage history stays |
 | `GET /v2/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v2/admin/apps/{app}/keys` | `{ name }` | Answers the key once |
@@ -270,10 +314,15 @@ Cloudflare and Vercel AI Gateway in [their guide](/providers/gateways).
 `status` is `active` or `disabled`. A disabled app refuses every request with
 `403 app_disabled`, and keeps everything.
 
+The snippet leaves some things out, by design. A preset with fixed parameters
+gets only a note with its URL, when its first connection is active. A route or
+preset whose connection is disabled or missing gets a note saying so, with no
+example.
+
 ## Application configuration reference
 
-`config` is one JSON object with five parts. Unknown keys are refused when you
-save. Each part's guide explains its choices; this is the shape.
+`config` is one JSON object with five parts. Each part's guide explains its
+choices; this is the shape.
 
 ```json
 {
@@ -285,7 +334,9 @@ save. Each part's guide explains its choices; this is the shape.
 }
 ```
 
-Only `authentication` is required. A field left out takes its default.
+Only `authentication` is required. A field left out takes its default. A key
+the gateway does not know is refused. A key the gateway returned that you do
+not know must be kept.
 
 ### `authentication`
 
@@ -294,10 +345,10 @@ An iOS app, `type: "apple_app_attest"`:
 | Key | Meaning |
 | --- | --- |
 | `app_attest.team_id` | The Apple Team ID: ten uppercase letters or digits |
-| `app_attest.bundle_id` | The bundle ID |
+| `app_attest.bundle_id` | The bundle ID, in reverse-DNS form: at least two parts of letters, digits and `-`, joined by `.` |
 | `app_attest.environments` | `["production"]` (the default), `["development"]`, or both |
 | `app_attest.verify_on` | `every_request` (the default): every request carries `X-AppAttest-Proof`. `token_exchange`: only getting a token is checked |
-| `end_user` | `{ "source": "app_install" }` to count each install as a user, or `{ "source": "issuer", "issuer": { … } }` for signed-in users |
+| `end_user` | Required. `{ "source": "app_install" }` to count each install as a user, or `{ "source": "issuer", "issuer": { … } }` for signed-in users |
 
 A server app, `type: "api_key"`:
 
@@ -305,16 +356,22 @@ A server app, `type: "api_key"`:
 | --- | --- |
 | `end_user` | Required. `{ "source": "none" }` for no users; `{ "source": "header", "header": "x-end-user-id" }` when the server names the user; `{ "source": "issuer", "issuer": { … } }` for signed-in users |
 
-The `issuer` object:
+`end_user.header` is a valid header name of at most 64 characters, and not one
+the gateway uses: `authorization`, `cookie`, `host`, `content-type`,
+`content-length`, `x-app-version`, `x-appattest-proof`, `x-client-sdk`,
+`x-client-trace-id`, `x-conversation-storage`, or a built-in provider's key
+header.
+
+The `issuer` object. Every field is required unless marked Optional.
 
 | Key | Meaning |
 | --- | --- |
 | `jwks_url` | Where the identity provider publishes its keys. `https` only |
-| `issuer`, `audience` | Accepted `iss` and `aud` values: a string, or a list |
+| `issuer`, `audience` | Accepted `iss` and `aud` values: a non-empty string, or a non-empty list of them |
 | `user_id_claim` | The claim used as the user ID, usually `"sub"` |
-| `required_claims` | Claims a paid user must have: each `{ "path", "contains" }` or `{ "path", "equals" }`. `[]` for none |
-| `max_token_lifetime_seconds` | Refuse a token whose own lifetime is longer, such as `86400` |
-| `token_header` | Optional. One more header that may carry the gateway token |
+| `required_claims` | Claims a paid user must have, `[]` for none. Each has a non-blank `path` and exactly one of `contains` (a non-blank string, or a non-empty list of them) or `equals` (a non-blank string, a number or a boolean) |
+| `max_token_lifetime_seconds` | A positive whole number. A token whose own lifetime is longer is refused. Usually `86400` |
+| `token_header` | Optional. One more header that may carry the gateway token. Not empty, and not one of the names `end_user.header` may not be |
 | `provider` | Optional: `firebase`, `supabase`, `auth0`, `clerk` or `custom`, so the console shows the same choice |
 | `entitlement` | Optional: `revenuecat` or `custom`, for the same reason |
 
@@ -328,9 +385,9 @@ see [Subscription check](/applications/auth-policy/subscription-check).
 | Key | Meaning |
 | --- | --- |
 | `providers` | Keyed by connection slug. A slug not listed is not allowed |
-| `providers.<slug>.operations` | Operations the app may use on that connection, such as `["openai.responses"]`. At least one. `passthrough` allows its listed paths |
+| `providers.<slug>.operations` | Required. The provider operations the app may use on that connection, such as `["openai.responses"]`. `passthrough` allows its listed paths |
 | `providers.<slug>.models` | Optional. Allowed models. Left out, every priced model |
-| `providers.<slug>.max_output_tokens` | Optional. The most output tokens a request may ask for |
+| `providers.<slug>.max_output_tokens` | Optional. A positive whole number: the most output tokens a request may ask for |
 | `model_rewrites` | Optional. A model name the app sends, mapped to the model sent. The target needs a price |
 
 See [Provider access](/applications/provider-access) and
@@ -338,33 +395,33 @@ See [Provider access](/applications/provider-access) and
 
 ### `limits`
 
-Two parts, `per_user` and `per_app`, each with the same fields. `null` means no
-limit, and is the default.
+Two parts, `per_user` and `per_app`, each with `requests` and `spending`. `null`
+means no limit, and is the default.
 
 | Key | Meaning |
 | --- | --- |
-| `requests.per_minute`, `requests.per_day` | Request limits. Positive whole numbers |
-| `spending.monthly_nano` | A monthly budget in nano-dollars: `1000000000` is $1. `0` stops all spend |
-| `per_user.spending.scope` | Whose month a per-user budget counts: `apple_account` (iOS default), `install`, or `user` (server default, and on iOS only with signed-in users) |
+| `requests.per_minute`, `requests.per_day` | A positive whole number, or `null` |
+| `spending.monthly_nano` | A monthly budget in nano-dollars, from `0` to `9007199254740991`, or `null`. `1000000000` is $1; `0` stops all spend |
+| `per_user.spending.scope` | Whose month a per-user budget counts. On iOS: `apple_account` (the default) or `install`, and `user` only with signed-in users. On a server app: `user` only. Only `per_user` has it |
 
-`per_user` limits need an app that names its users. On an iOS app, per-user
-request limits count per install. See [Limits and blocking](/how-it-works/limits)
-and [Limits](/applications/limits).
+`per_user` limits need an app whose `end_user.source` is not `none`. On an iOS
+app, per-user request limits count per install. See
+[Limits and blocking](/how-it-works/limits) and [Limits](/applications/limits).
 
 ### `presets`
 
-Keyed by name: 1 to 64 characters from `a-z`, `0-9` and `-`.
+Keyed by name. A preset serves without an entry for its connections in
+`routing.providers`.
 
 | Key | Meaning |
 | --- | --- |
 | `provider` | A connection slug |
-| `operation` | The operation it sends, such as `openai.responses` |
+| `operation` | The provider operation it sends, such as `openai.responses`. It must be one a preset can use: see `agw provider types`, `list_provider_types` or `GET /v2/admin/provider-types` |
 | `model` | The model. Needs a price, unless the provider reports its cost |
-| `params` | Optional. Merged into each JSON request, winning over the app's values |
-| `max_output_tokens` | Optional |
+| `params` | Optional. Merged into each JSON request, winning over the app's values. Refused on a preset that takes an upload, such as transcription |
+| `max_output_tokens` | Optional. Refused where the operation has no output to cap |
 | `fallback` | Optional. A list of `{ provider, model, operation? }` tried in order after no answer, a `429` or a `5xx`. Each speaks the same format. Left out, `operation` is the connection's first operation of that format that a preset can use |
 
-A preset serves without an entry for its connections in `routing.providers`.
 See [Presets](/applications/custom-endpoints).
 
 ### `conversations`
@@ -373,34 +430,22 @@ Optional, and off unless `store` is `true`.
 
 | Key | Meaning |
 | --- | --- |
-| `store` | Keep a copy of each call the app makes, and its answer. A request with `X-Conversation-Storage: off` is skipped. Passthrough paths, jobs and live sessions are never kept |
+| `store` | Keep a copy of each eligible call whose answer went back to the app. A request with `X-Conversation-Storage: off` is skipped, and passthrough paths, jobs and live sessions are never kept. A body that is too large, or that holds a credential, may be left out |
 | `keep.images`, `keep.audio`, `keep.files` | Which attachments are kept beside it. Each defaults to `true` |
 | `retention_days` | Days to keep them, 1 to 400. Default `180` |
 
 Turn it on only when the person asks, and remind them to say so in their privacy
 policy. See [Conversation history](/applications/conversations).
 
-### Rules for valid settings
+### Names and lists
 
 | Field | Rule |
 | --- | --- |
-| `app_attest.team_id` | Ten uppercase letters or digits |
-| `app_attest.bundle_id` | Reverse-DNS: at least two parts of letters, digits and `-`, joined by `.` |
-| `end_user.header`, `issuer.token_header` | A valid header name, at most 64 characters. Not one the gateway uses: `authorization`, `cookie`, `host`, `content-type`, `content-length`, `x-app-version`, `x-appattest-proof`, `x-client-sdk`, `x-client-trace-id`, `x-conversation-storage`, or a provider's key header |
-| `issuer.issuer`, `issuer.audience` | A non-empty string, or a non-empty list of them |
-| `issuer.max_token_lifetime_seconds` | A positive whole number |
-| `required_claims[].contains` | A string, or a non-empty list of strings |
-| `required_claims[].equals` | A string, number or boolean. Each requirement has exactly one of `contains` and `equals` |
 | Connection slugs | `^[a-z0-9][a-z0-9-]{0,62}$` |
 | Preset names | `^[a-z0-9-]{1,64}$` |
-| Operation names | At most 100 characters |
-| Model names | At most 200 characters |
+| Provider operation names | Not empty after trimming, at most 100 characters |
+| Model names | Not empty after trimming, at most 200 characters |
 | `operations`, `models` | When present, not empty, and no value twice |
-| `max_output_tokens` | A positive whole number |
-| `requests.per_minute`, `requests.per_day` | A positive whole number, or `null` |
-| `spending.monthly_nano` | A whole number from `0` to `9007199254740991`, or `null` |
-| `spending.scope` | Only under `per_user`. A server app takes only `user` |
-| `per_user` limits | Only on an app whose `end_user.source` is not `none` |
 
 ### Examples
 
@@ -499,7 +544,8 @@ Support replies to the person's email address, never to you.
 
 1. Only when the person asked. Show them the exact message first, and send it
    once they agree. Without a terminal, `agw support send` needs `--yes`.
-2. Choose the type: `bug`, `support` for a question, or `feedback`.
+2. Choose the type, `--type` on the CLI and `kind` over MCP and the API: `bug`,
+   `support` for a question, or `feedback`.
 3. Say what happened, what they expected and what was tried, with IDs and
    codes in `--context key=value`.
 4. Never include a key, token or password: a message that looks like it holds
@@ -516,34 +562,37 @@ agw support send --type bug --message "Streaming from my-app stops after about 3
 
 When you finish, report what you created or changed, by ID and slug; the URLs
 the app calls; where each key was stored, or which reveal page the person must
-open; and what you could not do. Never include a secret.
+open; any connection the check found disabled or missing; and what you could
+not do. Never include a secret.
 
 ## Retrying creation safely
 
 A plain create is not safe to repeat: if its answer is lost, you cannot tell
-whether it happened. For apps and app keys, use a reserved create:
+whether it happened. Over MCP and the API, create apps and app keys with a
+reserved create:
 
 1. `POST /v2/admin/reserved/apps` with `{ name, config, status? }`, or
    `POST /v2/admin/reserved/apps/{app}/keys` with `{ name }`. Nothing is
-   created. The answer has `state: "reserved"`, a `handle`, the operation's `id`
-   and when it lapses, 15 minutes later.
+   created. The answer has `state: "reserved"`, a `handle`, the pending step's
+   `id` and when it lapses, 15 minutes later.
 2. Send the same body again with `handle`. It is created once, and the answer
-   has `state: "created"`. Sending it again repeats that answer with
-   `replayed: true`, until long after: then it is refused with
-   `already_completed`, and `GET /v2/admin/operations/{id}` still says what was
-   created.
+   has `state: "created"`. Within 15 minutes of the creation, sending it again
+   repeats that answer with `replayed: true`. Later it is refused with
+   `already_completed`.
 
 A server app's key is never in these answers. While it can still be revealed,
 the answer has `reveal_url`: give it to the person, where an owner or admin
-sees the key once, within 15 minutes. `GET /v2/admin/operations/{id}` says
-where an operation stands: `pending`, `completed` with what it created, or
-`expired`, with `denied: true` when the person declined. Stop polling at
-`completed` or `expired`.
+sees the key once, within 15 minutes. Once the key is revealed, a repeated
+answer may leave `reveal_url` out.
+
+`GET /v2/admin/operations/{id}` says where a pending step stands: `pending`,
+`completed` with what it created, or `expired`, with `denied: true` when the
+person declined. Stop polling at `completed` or `expired`. The record is kept
+for 90 days.
 
 Refusals: `operation_mismatch` when the handle was reserved for other
 arguments, `operation_expired` when it lapsed, and `operation_not_found` for a
 handle this gateway never gave out.
 
 A provider connection is added by the person, with its key, so it needs no
-reserved create. Over MCP or the API, `POST /v2/admin/provider-handoffs` opens
-that step for them, and the same operation route says when it is done.
+reserved create.

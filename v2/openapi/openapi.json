@@ -1537,7 +1537,7 @@
           },
           "ready": {
             "type": "boolean",
-            "description": "Whether the app is active and at least one connection it names is active."
+            "description": "Whether the app is active and can serve through at least one active connection: one its routing names, or a preset's first connection, or a fallback while that first connection is turned off. A preset whose first connection was deleted serves nothing."
           },
           "limitations": {
             "type": "array",

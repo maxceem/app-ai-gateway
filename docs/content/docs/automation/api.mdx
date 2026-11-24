@@ -25,9 +25,9 @@ one.
 A key acts in the account it was created in, with the grant you chose and no
 more than its creator's role. The **Access** page lists every key, with its
 grant and status, beside your CLI sign-ins and MCP connections. **Revoke key**
-stops it at once. The routes that list, create and revoke keys and connections
-need a person signed in to the console: a management key or token is refused
-with `403 session_required`.
+stops it at once. The **Access** routes, which list, create and revoke
+management keys, CLI sign-ins and MCP connections, need a person signed in to
+the console: a management key or token is refused with `403 session_required`.
 
 ## Making a call
 
@@ -49,19 +49,8 @@ An OAuth access token from an MCP client or a CLI sign-in works the same way,
 with its own grant.
 
 A refusal is `{ "error": { "code": "…", "message": "…" } }`, like the
-gateway's other errors. The codes you are most likely to meet:
-
-| Code | Status | Meaning |
-| --- | --- | --- |
-| `invalid_request` | 400 | The body or a field is wrong. The message names it |
-| `pricing_not_configured` | 400 | A model the settings name has no price. See [Model pricing](/providers/model-pricing) |
-| `app_revision_required` | 400 | An app change sent no `revision` |
-| `auth_required` | 401 | No key, or one that is wrong or revoked |
-| `grant_insufficient` | 403 | The key has the **Read only** grant |
-| `forbidden` | 403 | Your role in the account does not allow this |
-| `session_required` | 403 | Only a person signed in to the console can do this, such as managing keys |
-| `not_found`, `provider_not_found`, `key_not_found` | 404 | Nothing with this ID in your account |
-| `conflict`, `app_revision_conflict` | 409 | Someone changed it since you read it, or the slug is taken |
+gateway's other errors. The codes, and what to do about each, are in the agent
+manual's [Errors](/automation/agent-manual#errors).
 
 ## What you can do
 
@@ -92,11 +81,11 @@ repository; the gateway does not serve it yet.
 
 ## Check before you write
 
-`POST /v2/admin/app-drafts/validate` judges a new app's `{ name, config, status? }`
-as a create would, and `POST /v2/admin/apps/{app}/validate` judges a change to
+`POST /v2/admin/app-drafts/validate` checks a new app's `{ name, config, status? }`
+as a create would, and `POST /v2/admin/apps/{app}/validate` checks a change to
 an existing app. Both save nothing, and need only the **Read only** grant. Send
 `name`, `config` and `status` only: validation refuses a `revision`. Add the
-revision for the save itself.
+revision when saving a change to an existing app.
 
 `GET /v2/admin/apps/{app}/check` says whether an app is ready to serve: it
 lists every connection the app's routing and presets name, with its status, and

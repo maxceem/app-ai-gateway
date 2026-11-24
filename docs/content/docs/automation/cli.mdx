@@ -30,10 +30,11 @@ agw account login
 ```
 
 With a browser on this machine, `agw` opens the console, you approve, and the
-browser comes back to the terminal. Over SSH, without a display, or with
-`--device`, it prints a link and a short code instead: open the link in any
-browser, check the code matches, and approve. `--no-open` prints the link
-without opening a browser.
+browser comes back to the terminal. Over SSH, or without a display, it prints a
+link and a short code instead: open the link in any browser, check the code
+matches, and approve. `--device` or `--no-open` does the same on a machine with
+a browser; use one of them, not both. On the approval page you choose the
+account, and **Manage** or **Read only**.
 
 The sign-in renews itself while the CLI uses it. It is listed on the console's
 **Access** page, where you can revoke it, and `agw account logout` ends it.
@@ -74,6 +75,7 @@ value is written inline or read from a file with `@path`.
 
 ```sh
 agw provider types                              # every provider and its operations
+agw model list                                  # the priced models
 agw provider add --type openai                  # the key goes in a hidden prompt
 agw provider add --type openai --key-stdin < key.txt
 agw provider add --type openai --browser        # a person types the key in the console
@@ -120,8 +122,10 @@ agw app remove <app>
   from `app show`. See [Changing an app](/automation/api#changing-an-app).
 - `app replace` saves a whole document, with the `revision` inside it.
   `app validate` takes the same document without `revision`, which it refuses.
-- `app snippet` gives a preset with fixed parameters only a note with its URL,
-  by design: what its request becomes cannot be shown safely.
+- `app snippet` leaves some things out, by design. A preset with fixed
+  parameters gets only a note with its URL, when its first connection is active.
+  A route or preset whose connection is disabled or missing gets a note saying
+  so, with no example.
 
 ### Keys, users and usage
 
@@ -152,9 +156,11 @@ can read and says where.
 
 `agw` then waits for the person. With `--json` or `--no-input` it answers at
 once with `state: "pending"` instead. So a browser step suits a person at this
-machine; from another machine, add the key on the console's **Providers** page. A pending result has not finished: run
-`agw operation wait <id>` to wait. A wait that times out does not cancel the
-step; run `operation wait` again.
+machine; from another machine, add the key on the console's **Providers** page.
+
+A pending result has not finished: run `agw operation wait <id>` to wait, 300
+seconds unless you give `--timeout <seconds>`. A wait that times out does not
+cancel the step; run `operation wait` again.
 
 ### Removals
 
@@ -168,8 +174,8 @@ which an agent adds only after the person it works for agreed.
   or `"ok": false` with `error.code`, `error.message` and `error.nextAction`.
   Its fields only grow from one release to the next. `--help` prints text.
 - `--no-input` never prompts. A command that would have to ask fails instead.
-- Text output and errors go to stdout and stderr, so a redirected stdout never
-  holds half an error.
+- Text output goes to stdout and errors go to stderr, so a redirected stdout
+  never holds half an error.
 
 Exit codes:
 
@@ -207,5 +213,6 @@ An installed `agw` keeps working as the gateway gets newer:
 ## Human support
 
 `agw support send --type support --message-stdin < note.txt` emails support for
-the signed-in person (`--type` is `bug`, `support` or `feedback`), who gets the reply by email. Without a terminal it needs
+the signed-in person, who gets the reply by email. `--type` is `bug`,
+`support` or `feedback`. Without a terminal it needs
 `--yes`: show the person the message first. Never put a key or token in it.
