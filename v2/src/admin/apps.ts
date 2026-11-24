@@ -874,7 +874,14 @@ export async function checkApp(c: AdminContext): Promise<Response> {
     throw invalid("The stored config is not JSON");
   }
   const config = await checkAppConfig(c.env.DB, actor.accountId, stored, storedRouting(row));
-  const slugs = Object.keys(config.routing.providers);
+  // Every connection a request can reach: the routing's, then each preset's and
+  // its fallbacks', which serve without a routing entry. Each once, in that order.
+  const slugs = [
+    ...new Set([
+      ...Object.keys(config.routing.providers),
+      ...Object.values(config.presets ?? {}).flatMap((preset) => [preset.provider, ...(preset.fallback ?? []).map((one) => one.provider)]),
+    ]),
+  ];
   const providers: { id: string | null; slug: string; status: "active" | "disabled" | "missing" }[] = [];
   for (const slug of slugs) {
     const connection = await c.env.DB.prepare("SELECT id, status FROM provider_connection WHERE account_id = ? AND slug = ?")

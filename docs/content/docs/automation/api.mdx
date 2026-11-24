@@ -25,8 +25,9 @@ one.
 A key acts in the account it was created in, with the grant you chose and no
 more than its creator's role. The **Access** page lists every key, with its
 grant and status, beside your CLI sign-ins and MCP connections. **Revoke key**
-stops it at once. Keys and connections themselves are managed only in the
-console: the API cannot create, list or revoke them.
+stops it at once. The routes that list, create and revoke keys and connections
+need a person signed in to the console: a management key or token is refused
+with `403 session_required`.
 
 ## Making a call
 
@@ -94,10 +95,12 @@ repository; the gateway does not serve it yet.
 `POST /v2/admin/app-drafts/validate` judges a new app's `{ name, config, status? }`
 as a create would, and `POST /v2/admin/apps/{app}/validate` judges a change to
 an existing app. Both save nothing, and need only the **Read only** grant. Send
-the same document you would save.
+`name`, `config` and `status` only: validation refuses a `revision`. Add the
+revision for the save itself.
 
 `GET /v2/admin/apps/{app}/check` says whether an app is ready to serve: it
-lists every connection the app names, with its status, and answers `ready`. It
+lists every connection the app's routing and presets name, with its status, and
+answers `ready`. It
 sends no provider request, so it does not test a key, a device or a sign-in.
 
 ## Changing an app

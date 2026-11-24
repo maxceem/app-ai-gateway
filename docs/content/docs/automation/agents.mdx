@@ -33,7 +33,8 @@ your own task on the last line:
 ```text
 Read https://docs.appaigateway.com/agents.md, then use agw for this task.
 Check which gateway and account agw is signed in to first. If it is not signed
-in, run agw account login and give me the link and code to approve.
+in, run agw account login --no-open --json --no-input, read the link and code
+it prints on stderr while it waits, and give them to me to approve.
 Read the existing providers and apps, use --json --no-input, and validate
 changes before saving them. If a provider is missing, tell me which one and
 stop: I will add its key myself, then you carry on. Never print secrets. Keep
@@ -57,9 +58,9 @@ Other tasks that work well:
 The agent works in an account you already have. Signing in never creates one:
 create your account in the console first, or on the sign-in page that opens.
 
-With the CLI, `agw account login` opens your browser to approve the sign-in.
-Where the agent's terminal has no browser, it prints a link and a short code:
-open the link yourself, check the code matches, and approve. The agent never
+With the CLI, the agent runs `agw account login --no-open`, which prints a link
+and a short code while it waits. Open the link yourself, check the code
+matches, and approve. The agent never
 sees your password or your console session.
 
 ## Provider keys

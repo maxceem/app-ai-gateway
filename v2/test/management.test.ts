@@ -474,6 +474,31 @@ describe("validate and check", () => {
     ]);
     expect(checked.body.limitations.length).toBeGreaterThan(0);
   });
+
+  it("counts the connections presets use, which serve without a routing entry", async () => {
+    const key = await seedManagementKey();
+    const { body: first } = await createProvider(key);
+    const { body: spare } = await createProvider(key);
+    const config = {
+      ...apiKeyConfig(),
+      presets: {
+        chat: {
+          provider: first.provider.slug,
+          operation: "openai.chat",
+          model: "gpt-4o-mini",
+          fallback: [{ provider: spare.provider.slug, model: "gpt-4o-mini" }],
+        },
+      },
+    };
+    const { body } = await createApp(key, config);
+    const path = `/v2/admin/apps/${body.app.id}/check`;
+    const checked = await request(key, "GET", path);
+    expect(checked.body.ready).toBe(true);
+    expect(checked.body.providers).toEqual([
+      { id: first.provider.id, slug: first.provider.slug, status: "active" },
+      { id: spare.provider.id, slug: spare.provider.slug, status: "active" },
+    ]);
+  });
 });
 
 describe("plan ceilings on saved settings", () => {

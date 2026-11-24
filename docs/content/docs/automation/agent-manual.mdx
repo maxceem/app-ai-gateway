@@ -32,10 +32,13 @@ agw deployment status --json --no-input
 agw account status --json --no-input
 ```
 
-- **Not signed in:** run `agw account login --no-open --json --no-input`. Give
-  the person the link and the code. They open it in their own browser, check the
-  code, and approve. Signing in never creates an account: the person needs one
-  already, made in the console.
+- **Not signed in:** run `agw account login --no-open --json --no-input`.
+  `--no-open` makes it show a link and a short code even on a machine with a
+  browser. Both arrive on stderr while the command waits for the approval; the
+  JSON comes on stdout only after approval or failure. Read stderr while it
+  runs, and give the person the link and the code. They open the link in their
+  own browser, check the code, and approve. Signing in never creates an
+  account: the person needs one already, made in the console.
 - **Another gateway:** `agw deployment connect --url <console address>` connects
   and signs in. `agw deployment connect --cloud` goes back to the hosted service.
 - **A management key from the person:** use it as the `AGW_MANAGEMENT_KEY`
@@ -66,15 +69,19 @@ A saved sign-in is not proof of the right account: compare the account
      --revision <n>`, with the revision from `app show`. The file is a JSON
      Patch: `add`, `replace` or `remove` at paths such as
      `/config/limits/per_app/requests/per_minute`.
-   - `agw app replace <app> --config @app.json` saves a whole document:
-     `name`, `config`, `status` and `revision` from `app show`, and every
-     setting you found there, including ones you do not recognize.
-   - Check first with `agw app validate <app> --config @app.json --json`.
+   - To save a whole document, write `name`, `config` and `status` from
+     `app show`, with your change and every setting you found there, including
+     ones you do not recognize. Check it with
+     `agw app validate <app> --config @app.json --json`; validation refuses a
+     `revision`. Then add the `revision` from `app show` and save it with
+     `agw app replace <app> --config @app.json`.
    - A stale revision is refused with `app_revision_conflict`: read the app
      again, apply the change on top, and repeat.
 6. Run `agw app check <app> --json` and `agw app snippet <app> --json`. The
    check reads settings only: it tests no provider key, device, sign-in or
-   subscription. Do not send AI requests unless the person asked.
+   subscription. The snippet has example requests for the app's routes and
+   presets; a preset with fixed parameters gets only a note with its URL, by
+   design. Do not send AI requests unless the person asked.
 7. Report as described in "Reporting back". A pending browser step is pending,
    never done.
 
@@ -84,14 +91,21 @@ step. `--json` answers `{schemaVersion: 1, ok: true, context, result}` or
 `{schemaVersion: 1, ok: false, error}`, either with optional `notices`. Follow
 `error.nextAction`.
 
-- A removal runs only with `--yes`, once the person has agreed.
+- With `--json`, a removal runs only with `--yes`, even on a terminal. Pass it
+  only once the person has agreed.
+- `--help` prints text, not JSON.
 - Exit codes: `0` done, `2` wrong command line, `3` gateway or network failure,
-  `4` a state or decision stops it, `5` stopped waiting while the step is still
-  open. A wait that times out cancels nothing: `agw operation wait <id>` again.
+  `4` a state or decision stops it, `5` stopped waiting. Exit `0` can carry a
+  pending browser step: check `state`. A browser step's wait that times out
+  cancels nothing: run `agw operation wait <id>` again. A browser sign-in that
+  timed out cannot be picked up: start it again.
 - A `newer_gateway` notice means the gateway has settings this `agw` does not
   know. They are kept when it saves; tell the person to update `agw` before
-  changing them. A `version_mismatch` notice after a failure names which side
-  to update.
+  changing them. After some refusals, a `version_mismatch` notice names which
+  side to update.
+- When the gateway changed a command since `agw` read it, `agw` may read the
+  command list again and retry, or refuse with `tool_changed`. A command that
+  needs a newer `agw` is refused with `cli_outdated`.
 
 ## MCP
 
@@ -106,12 +120,18 @@ bearer token works too.
 - Read before you write: `list_providers`, `list_apps`, `get_app`.
 - For a small change, use `patch_app` with the revision `get_app` answered. It
   changes only the paths you name. `update_app` replaces the whole document.
-- A provider key is never a tool argument. `add_provider` and
-  `rotate_provider_key` answer a link where the person types the key; then poll
-  `get_operation` with the answer's `id` until it completes. Never open the
-  link yourself.
-- `add_app` and `add_app_key` take two calls: see "Retrying creation safely".
-  A new key is never in a tool answer: give the person `reveal_url`.
+- A provider key is never a tool argument. `add_provider` takes `type`,
+  `name`, `slug`, `baseUrl`, `pricing`, and Cloudflare's `accountId` and
+  `gatewayId` without a token. `rotate_provider_key` takes the connection's
+  `id` and `revision`. Each answers a link where the person types the key;
+  then poll `get_operation` with the answer's `id` until `state` is
+  `completed`, or stop at `expired`, which `denied: true` marks as declined.
+  Never open the link yourself. A custom provider, listed paths and pinned
+  Vercel serving providers are for the person, in the console.
+- `add_app` takes `{ config: { name, config, status? }, handle? }`, and
+  `add_app_key` takes `{ app, name, handle? }`: two calls each, see "Retrying
+  creation safely". A new key is never in a tool answer: give the person
+  `reveal_url`, while the answer has one.
 - A field shown as `[redacted]` holds a secret. Never send that marker back.
   Have the person change that setting in the console or the CLI.
 - A refusal is a tool answer marked as an error, with the gateway's code and the
@@ -174,7 +194,8 @@ See [Apps and providers](/how-it-works/apps-and-providers).
 
 ## Errors
 
-Every refusal is `{ "error": { "code": "…", "message": "…", "data": { … } } }`.
+Every refusal is `{ "error": { "code": "…", "message": "…" } }`, with a `data`
+object only for codes that need more.
 
 | Status | Code | What to do |
 | --- | --- | --- |
@@ -198,11 +219,13 @@ The errors apps get on their requests are in [Errors and limits](/integrate/erro
    `add_provider` answers a console link to give them.
 3. Compose the app from the reference below.
 4. `POST /v2/admin/app-drafts/validate` with it. Fix every refusal.
-5. Create it through a reserved create ("Retrying creation safely"), or
-   `POST /v2/admin/apps` where a lost answer is not a risk. A server app's first
-   key is in the plain create's answer once, or on the reserved create's reveal
-   page.
-6. `GET /v2/admin/apps/{app}/check` and `GET /v2/admin/apps/{app}/snippet`.
+5. Create it through a reserved create ("Retrying creation safely"). Do not use
+   the plain `POST /v2/admin/apps`: for a server app it answers the first key in
+   plain text, in the answer you read. The reserved create shows the key to the
+   person on its reveal page instead.
+6. `GET /v2/admin/apps/{app}/check` and `GET /v2/admin/apps/{app}/snippet`. A
+   preset with fixed parameters gets only a note with its URL in the snippet,
+   by design.
 7. Report back.
 
 ## Providers
@@ -211,9 +234,9 @@ The errors apps get on their requests are in [Errors and limits](/integrate/erro
 | --- | --- | --- |
 | `GET /v2/admin/provider-types` | | Each type, its operations, and whether it can go through Cloudflare |
 | `GET /v2/admin/providers` | | `providers[]`: `id`, `type`, `slug`, `name`, `status`, `secretHint`, `baseUrl`, `cloudflareGateway`, `passthrough`, `pricing`, `revision` |
-| `POST /v2/admin/provider-handoffs` | Everything the create takes but `secret` | Answers a link where the person types the key. Use this, not a plain create |
+| `POST /v2/admin/provider-handoffs` | `type`, `name`, and optional `slug`, `baseUrl`, `pricing`, and `cloudflareGateway` with `accountId` and `gatewayId` only | Answers a link where the person types the key, and the Cloudflare token if any. Use this, not a plain create. A custom provider, listed paths and `servingProviders` are refused here: the person sets those in the console |
 | `POST /v2/admin/providers/test` | `type`, `secret`, `baseUrl`, `cloudflareGateway`, `auth` | Tries a key without saving. Only `reason: "rejected"` says the key is probably wrong |
-| `PUT /v2/admin/providers/{id}` | `revision` and any of `name`, `pricing`, `status`, `passthrough`, `baseUrl`, `cloudflareGateway`, `servingProviders` | `status: "disabled"` pauses it and keeps the key and slug |
+| `PUT /v2/admin/providers/{id}` | `revision` and any of `name`, `pricing`, `status`, `passthrough`, `servingProviders`, `baseUrl`, `cloudflareGateway`, and `auth` on a custom provider | `status: "disabled"` pauses it and keeps the key and slug. A new `baseUrl`, or a new Cloudflare gateway, needs the key, and the Cloudflare token, in the same request: leave those changes to the person, in the console |
 | `POST /v2/admin/providers/{id}/key-handoffs` | `revision` | A link where the person types a new key |
 | `DELETE /v2/admin/providers/{id}` | | For good, with its prices. Apps that use it start failing |
 
@@ -234,11 +257,11 @@ Cloudflare and Vercel AI Gateway in [their guide](/providers/gateways).
 | `GET /v2/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at, warnings? } }` |
 | `POST /v2/admin/app-drafts/validate` | `{ name, config, status? }` | Judged as a create. Saves nothing |
 | `POST /v2/admin/apps/{app}/validate` | `{ name, config, status? }` | Judged as a change of that app. Saves nothing |
-| `POST /v2/admin/apps` | `{ name, config, status? }` | Answers `app`, and for a server app `api_key` once |
+| `POST /v2/admin/apps` | `{ name, config, status? }` | Answers `app`, and for a server app its key in plain text. Agents use the reserved create instead |
 | `PUT /v2/admin/apps/{app}` | `{ name, config, status?, revision }` | Replaces the whole app |
 | `PATCH /v2/admin/apps/{app}` | `{ revision, operations }` | JSON Patch `add`, `replace` or `remove` under `/name`, `/status` or `/config` |
-| `GET /v2/admin/apps/{app}/check` | | `ready`, and each connection the app names with its status |
-| `GET /v2/admin/apps/{app}/snippet` | | Example requests for every route and preset, with no credential in them |
+| `GET /v2/admin/apps/{app}/check` | | `ready`, and each connection the app's routing and presets name, with its status |
+| `GET /v2/admin/apps/{app}/snippet` | | Example requests for the app's routes and presets, with no credential in them. A preset with fixed parameters gets a note with its URL instead |
 | `DELETE /v2/admin/apps/{app}?confirm={app}` | | For good: its keys, users and App Attest keys go; its usage history stays |
 | `GET /v2/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v2/admin/apps/{app}/keys` | `{ name }` | Answers the key once |
@@ -339,8 +362,9 @@ Keyed by name: 1 to 64 characters from `a-z`, `0-9` and `-`.
 | `model` | The model. Needs a price, unless the provider reports its cost |
 | `params` | Optional. Merged into each JSON request, winning over the app's values |
 | `max_output_tokens` | Optional |
-| `fallback` | Optional. A list of `{ provider, model, operation? }` tried in order after no answer, a `429` or a `5xx`. Each speaks the same format |
+| `fallback` | Optional. A list of `{ provider, model, operation? }` tried in order after no answer, a `429` or a `5xx`. Each speaks the same format. Left out, `operation` is the connection's first operation of that format that a preset can use |
 
+A preset serves without an entry for its connections in `routing.providers`.
 See [Presets](/applications/custom-endpoints).
 
 ### `conversations`
@@ -349,12 +373,34 @@ Optional, and off unless `store` is `true`.
 
 | Key | Meaning |
 | --- | --- |
-| `store` | Keep a copy of every call the app makes, and its answer |
+| `store` | Keep a copy of each call the app makes, and its answer. A request with `X-Conversation-Storage: off` is skipped. Passthrough paths, jobs and live sessions are never kept |
 | `keep.images`, `keep.audio`, `keep.files` | Which attachments are kept beside it. Each defaults to `true` |
 | `retention_days` | Days to keep them, 1 to 400. Default `180` |
 
 Turn it on only when the person asks, and remind them to say so in their privacy
 policy. See [Conversation history](/applications/conversations).
+
+### Rules for valid settings
+
+| Field | Rule |
+| --- | --- |
+| `app_attest.team_id` | Ten uppercase letters or digits |
+| `app_attest.bundle_id` | Reverse-DNS: at least two parts of letters, digits and `-`, joined by `.` |
+| `end_user.header`, `issuer.token_header` | A valid header name, at most 64 characters. Not one the gateway uses: `authorization`, `cookie`, `host`, `content-type`, `content-length`, `x-app-version`, `x-appattest-proof`, `x-client-sdk`, `x-client-trace-id`, `x-conversation-storage`, or a provider's key header |
+| `issuer.issuer`, `issuer.audience` | A non-empty string, or a non-empty list of them |
+| `issuer.max_token_lifetime_seconds` | A positive whole number |
+| `required_claims[].contains` | A string, or a non-empty list of strings |
+| `required_claims[].equals` | A string, number or boolean. Each requirement has exactly one of `contains` and `equals` |
+| Connection slugs | `^[a-z0-9][a-z0-9-]{0,62}$` |
+| Preset names | `^[a-z0-9-]{1,64}$` |
+| Operation names | At most 100 characters |
+| Model names | At most 200 characters |
+| `operations`, `models` | When present, not empty, and no value twice |
+| `max_output_tokens` | A positive whole number |
+| `requests.per_minute`, `requests.per_day` | A positive whole number, or `null` |
+| `spending.monthly_nano` | A whole number from `0` to `9007199254740991`, or `null` |
+| `spending.scope` | Only under `per_user`. A server app takes only `user` |
+| `per_user` limits | Only on an app whose `end_user.source` is not `none` |
 
 ### Examples
 
@@ -483,12 +529,16 @@ whether it happened. For apps and app keys, use a reserved create:
    and when it lapses, 15 minutes later.
 2. Send the same body again with `handle`. It is created once, and the answer
    has `state: "created"`. Sending it again repeats that answer with
-   `replayed: true`.
+   `replayed: true`, until long after: then it is refused with
+   `already_completed`, and `GET /v2/admin/operations/{id}` still says what was
+   created.
 
-A server app's key is never in these answers: give the person `reveal_url`,
-where an owner or admin sees it once, within 15 minutes. `GET
-/v2/admin/operations/{id}` says where an operation stands: `pending`,
-`completed` with what it created, or `expired`.
+A server app's key is never in these answers. While it can still be revealed,
+the answer has `reveal_url`: give it to the person, where an owner or admin
+sees the key once, within 15 minutes. `GET /v2/admin/operations/{id}` says
+where an operation stands: `pending`, `completed` with what it created, or
+`expired`, with `denied: true` when the person declined. Stop polling at
+`completed` or `expired`.
 
 Refusals: `operation_mismatch` when the handle was reserved for other
 arguments, `operation_expired` when it lapsed, and `operation_not_found` for a

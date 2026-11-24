@@ -65,10 +65,11 @@ So a client used at least once a month stays connected until you revoke it. The
 console's **Access** page lists each connection with its client, grant and
 account. **Revoke connection** ends it, and the client must be approved again.
 
-A client names itself with an `https` address as its `client_id`: a small JSON
-document describing it, which the gateway reads. Only the return addresses it
-lists can receive the result. There is no client secret and no dynamic client
-registration.
+A client usually names itself with an `https` address as its `client_id`: a
+small JSON document describing it, which the gateway reads. Only the return
+addresses it lists can receive the result. A deployment can also register
+clients itself, and can turn these documents off. There is no client secret and
+no dynamic client registration.
 
 The OAuth addresses, all on the console:
 
@@ -150,21 +151,32 @@ connection off, which can be undone.
 
 ### A key is entered in your browser
 
-`add_provider` and `rotate_provider_key` take everything but the key, and answer
-a console page's address. Open it in your browser, check what is about to be
-stored, enter the key there and approve, within 15 minutes. The agent waits with
-`get_operation` and the answer's `id`. A tool called with a key as an argument
+`add_provider` takes `type`, `name`, and optionally `slug`, `baseUrl`,
+`pricing`, and a Cloudflare `accountId` and `gatewayId` without the token.
+`rotate_provider_key` takes the connection's `id` and the `revision` it was read
+at. Each answers a console page's address. Open it in your browser, check what
+is about to be stored, enter the key (and the Cloudflare token, if any) and
+approve, within 15 minutes. The agent polls `get_operation` with the answer's
+`id` until `state` is `completed`, and stops at `expired`, which carries
+`denied: true` when you declined. A tool called with a key as an argument
 refuses it.
+
+A custom provider, listed paths and Vercel's pinned serving providers cannot be
+added this way: set them in the console. When the agent runs elsewhere, you can
+also add the key yourself on the **Providers** page and let it carry on.
 
 ### Creating takes two calls
 
 `add_app` and `add_app_key` may need to be asked again after a lost answer, so
-each takes two calls:
+each takes two calls. `add_app` takes `{ config: { name, config, status? }, handle? }`,
+and `add_app_key` takes `{ app, name, handle? }`.
 
 1. Without `handle`, the request is checked and reserved. Nothing is created.
    The answer has a `handle` and the operation's `id`.
 2. With the same arguments and that `handle`, it is created, once. Sending it
-   again answers the same result with `replayed: true`.
+   again answers the same result with `replayed: true`. Long after, it is
+   refused with `already_completed` instead, and `get_operation` still says
+   what was created.
 
 A handle lapses 15 minutes after it was given. One sent with other arguments is
 refused with `operation_mismatch`. A `notice` in the first answer says the same
@@ -173,8 +185,8 @@ second.
 
 ### A key is shown on a page you open
 
-A new server app key is never in a tool's answer. The answer has `reveal_url`,
-a console page. Open it signed in as an owner or admin, click
+A new server app key is never in a tool's answer. While the key can still be
+revealed, the answer has `reveal_url`, a console page. Open it signed in as an owner or admin, click
 **Reveal the key**, and copy it. It is shown once, within 15 minutes of its
 creation.
 
@@ -189,9 +201,10 @@ that marker back: have the person make that change in the console or the CLI.
 ## Answers and refusals
 
 Each answer has a short summary for the agent and the same body the API answers
-with. A refusal is an answer marked as an error, with the gateway's error code,
-its message, and what to do next. Only a missing or invalid credential is an
-HTTP error.
+with. A refusal from a tool is an answer marked as an error, with the gateway's
+error code, its message, and what to do next. The endpoint itself answers HTTP
+errors instead: `401` for a missing or invalid credential, `403` for a browser
+origin it does not serve, and `405` for `GET` or `DELETE`.
 
 `agw://guide` is a resource with the full rules for working with the gateway
 over MCP. It is written into the server itself, so an agent connected to any
@@ -199,7 +212,7 @@ deployment can read it.
 
 ## Calling from a browser
 
-Most MCP clients are not browsers, send no `Origin` header, and are always
-served. A request from a web page is served only from the console's own
-address, or from an address the deployment lists; every other one is refused
-with `403`.
+Most MCP clients are not browsers and send no `Origin` header, so the origin
+check does not apply to them; they still need a valid credential. A request
+from a web page is served only from the console's own address, or from an
+address the deployment lists; every other one is refused with `403`.

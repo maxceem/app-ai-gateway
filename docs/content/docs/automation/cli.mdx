@@ -101,7 +101,7 @@ agw app add --type ios --name "My App" --team-id ABCDE12345 --bundle-id com.exam
 agw app list
 agw app show <app>
 agw app check <app>            # can it serve requests? sends no provider request
-agw app snippet <app>          # example requests for every route and preset
+agw app snippet <app>          # example requests for its routes and presets
 agw app validate <app> --config @app.json
 agw app update <app> --name "New name" --status disabled
 agw app replace <app> --config @app.json
@@ -119,6 +119,9 @@ agw app remove <app>
 - `app update --operations` applies a JSON Patch to the app, with `--revision`
   from `app show`. See [Changing an app](/automation/api#changing-an-app).
 - `app replace` saves a whole document, with the `revision` inside it.
+  `app validate` takes the same document without `revision`, which it refuses.
+- `app snippet` gives a preset with fixed parameters only a note with its URL,
+  by design: what its request becomes cannot be shown safely.
 
 ### Keys, users and usage
 
@@ -156,14 +159,14 @@ step; run `operation wait` again.
 ### Removals
 
 A command that cannot be undone, such as `app remove`, asks you to type `yes` on
-a terminal. Elsewhere it needs `--yes`, which an agent adds only after the
-person it works for agreed.
+a terminal. With `--json`, or without a terminal, it needs `--yes` instead,
+which an agent adds only after the person it works for agreed.
 
 ## Output
 
 - `--json` prints one JSON document: `{ "schemaVersion": 1, "ok": true, "result": … }`,
   or `"ok": false` with `error.code`, `error.message` and `error.nextAction`.
-  Its fields only grow from one release to the next.
+  Its fields only grow from one release to the next. `--help` prints text.
 - `--no-input` never prompts. A command that would have to ask fails instead.
 - Text output and errors go to stdout and stderr, so a redirected stdout never
   holds half an error.
@@ -172,13 +175,13 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Done |
+| `0` | Done. A browser step may still be pending: check `state` |
 | `2` | The command line is wrong |
 | `3` | The gateway or the network failed |
 | `4` | A state or a decision stops it, such as a missing confirmation |
-| `5` | `agw` stopped waiting, while the browser step is still open |
+| `5` | `agw` stopped waiting. A browser step is still open; a browser sign-in must start again |
 
-When a gateway refuses a command and its release differs from `agw`'s, the
+After some refusals, when the gateway's release differs from `agw`'s, the
 output adds a notice saying which side to update.
 
 ## Where agw keeps things
@@ -196,8 +199,10 @@ An installed `agw` keeps working as the gateway gets newer:
 - answers and app settings only gain fields, and `agw` keeps and sends back
   settings it does not know;
 - a command edits only what its flags name;
-- the gateway's commands arrive with the gateway, and a command that changed in
-  a way `agw` cannot handle is refused with `tool_changed` rather than run.
+- the gateway's commands arrive with the gateway. When one changed since `agw`
+  read it, `agw` reads the list again and may retry, or refuses with
+  `tool_changed` rather than run it blind. A command that needs a newer `agw`
+  is refused with `cli_outdated`.
 
 ## Human support
 

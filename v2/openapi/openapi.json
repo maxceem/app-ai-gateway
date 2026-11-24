@@ -1533,7 +1533,7 @@
                 "status"
               ]
             },
-            "description": "Every provider connection the app's routing names. A disabled one is listed as disabled, and one that was deleted as missing, with a null id."
+            "description": "Every provider connection the app's routing or presets name, presets' fallbacks included. A disabled one is listed as disabled, and one that was deleted as missing, with a null id."
           },
           "ready": {
             "type": "boolean",
