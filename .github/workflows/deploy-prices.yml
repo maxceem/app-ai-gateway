@@ -4,8 +4,9 @@
 # live, and so does the public `/models.json`, minutes after it merges. Nothing is published: no
 # tag, GitHub release, npm package or documentation deploy.
 #
-# Three jobs, so that only released code ever holds the deploy secrets and no
-# package code runs beside them, as in .github/workflows/release.yml:
+# Four jobs, so that only released code ever holds the deploy secrets, no
+# package code runs beside them, and each job holds only the secret it needs,
+# as in .github/workflows/release.yml:
 #   start   runs on main when a merge changes the price list. It holds no secrets;
 #           it starts this workflow again at the newest `vX.Y.Z` tag.
 #   build   runs at that tag, so this file, scripts/prices-deploy.mjs and the
@@ -16,6 +17,8 @@
 #   deploy  installs only Wrangler (deploy/), takes only those built files and
 #           deploys them; its Wrangler config and D1 migrations come from the
 #           tag's checkout.
+#   post-deploy-check  holds only POST_DEPLOY_CHECK_TOKEN, and asks the outside
+#           monitor to check what `deploy` deployed; it never fails the run.
 #
 # The `prices` environment holds the secrets. It must admit `v*` tags only,
 # and only the project owner can create those (see release.yml), so neither a
@@ -35,8 +38,7 @@ on:
   # Started by `start` below at a release tag, or by hand at one.
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 # A run at a tag shares the `release` group with release.yml for its whole
 # length, queued rather than replaced, so a release and a prices deploy never
@@ -189,9 +191,25 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
 
+      - name: Summarize
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
+        run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"
+
+  # Its own job, so the Cloudflare token and the monitor's token never share
+  # one. It asks the outside monitor to run the smoke checks against what was
+  # just deployed, and never fails the deploy.
+  post-deploy-check:
+    needs: [build, deploy]
+    if: vars.POST_DEPLOY_CHECK_URL != ''
+    runs-on: ubuntu-latest
+    environment: prices
+    continue-on-error: true
+    permissions: {}
+    steps:
       - name: Start the post-deploy checks
-        if: vars.POST_DEPLOY_CHECK_URL != ''
-        continue-on-error: true
         env:
           POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
           POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
@@ -208,9 +226,3 @@ jobs:
               --header 'Content-Type: application/json' \
               --data "@$RUNNER_TEMP/announcement.json" "$POST_DEPLOY_CHECK_URL"
 
-      - name: Summarize
-        env:
-          TAG: ${{ needs.build.outputs.tag }}
-          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
-          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
-        run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"
