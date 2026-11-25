@@ -59,6 +59,9 @@
     "SECRET_VAULT_MODE": "local",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
   },
+  // The vault Worker (`vault/`, plan step 8i): it seals provider keys and
+  // sends every call that carries one. The gateway never holds them.
+  "services": [{ "binding": "VAULT", "service": "app-ai-gateway-v2-vault" }],
   "d1_databases": [
     {
       "binding": "DB",

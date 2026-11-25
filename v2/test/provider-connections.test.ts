@@ -25,7 +25,7 @@ async function seedConnection(baseUrl: string | null = null): Promise<{ id: stri
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `openai-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -82,7 +82,7 @@ describe("opening a connection's key", () => {
     const { id, slug } = await seedConnection();
     await connectionCredentials(env, await load(slug));
 
-    const replaced = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", ""], "sk-replaced-key");
+    const replaced = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], "sk-replaced-key");
     await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(replaced, id).run();
     invalidateConnection(ACCOUNT_ID, slug);
 
@@ -114,7 +114,7 @@ describe("opening a connection's key", () => {
   });
 
   async function addCloudflareGateway(id: string): Promise<void> {
-    const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id], "cf-token");
+    const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id, "cf-account", "cf-gateway"], "cf-token");
     await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?")
       .bind(JSON.stringify({ account_id: "cf-account", gateway_id: "cf-gateway", token_blob: token }), id)
       .run();

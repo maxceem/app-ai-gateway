@@ -499,7 +499,7 @@ async function routedApp(limits: Record<string, unknown>, accountId: string = AC
   }
   const connectionId = crypto.randomUUID().replaceAll("-", "");
   const slug = `openai-${connectionId.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [accountId, connectionId, "openai", ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [accountId, connectionId, "openai", "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection (id, account_id, type, slug, name, status, secret_blob, secret_hint, revision, created_by, created_at, updated_at)

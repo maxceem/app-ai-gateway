@@ -17,7 +17,7 @@ import type { ConnectionRecord } from "../src/providers/connections.ts";
 import type { OperationDescription, ProviderDescription } from "../src/providers/operation.ts";
 import type { Preset } from "../src/contracts/app-config.ts";
 import type { Caller } from "../src/proxy/serve.ts";
-import type { UpstreamCredentials } from "../src/providers/connections.ts";
+import type { SealedCredentials } from "../src/providers/connections.ts";
 import { providerTtfbTimeoutMs, sendAttempts, type ClientSide, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
@@ -45,7 +45,7 @@ async function connection(type: string, status: "active" | "disabled" = "active"
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -115,11 +115,20 @@ async function chargesOfCall(requestId: string): Promise<Record<string, any>[]> 
 
 const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), contentType: "application/json" });
 
+/** A unit attempt's key, sealed as its connection's (`conn_<seq>`, the provider's own address). */
+const sealedBlobs = new Map<string, Promise<string>>();
+function sealedKey(seq: number, key: string): Promise<SealedCredentials> {
+  const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, `conn_${seq}`, "openai", "", "", ""];
+  const name = `${seq}\u0000${key}`;
+  if (!sealedBlobs.has(name)) sealedBlobs.set(name, sealSecret(env, "providerKey", identity, key));
+  return sealedBlobs.get(name)!.then((blob) => ({ providerKey: { blob, identity }, cloudflareToken: null }));
+}
+
 /** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */
 function unitAttempt(
   seq: number,
   overrides: Partial<{
-    credentials: () => Promise<UpstreamCredentials>;
+    credentials: () => Promise<SealedCredentials>;
     body: () => ReturnType<typeof jsonBody>;
     requestId: string;
     operation: OperationDescription;
@@ -133,7 +142,7 @@ function unitAttempt(
     hostKey: "main",
     path: "/v1/chat/completions",
     query: "",
-    credentials: overrides.credentials ?? vi.fn(async (): Promise<UpstreamCredentials> => ({ providerKey: SECRET, cloudflareToken: null })),
+    credentials: overrides.credentials ?? vi.fn(() => sealedKey(seq, SECRET)),
     body: overrides.body ?? vi.fn(jsonBody),
     attempt: {
       requestId: overrides.requestId ?? "req_unit",
@@ -509,7 +518,7 @@ describe("presets", () => {
     expect((await charges(appId))[0]).toMatchObject({ status: "ok", price_source: "unresolved", cost_nano: null, preset: "gone" });
   });
 
-  it("refuses a first target whose key cannot be opened, and leaves out a fallback's, so the last usable answer passes through", async () => {
+  it("goes on past a first target whose key the vault cannot open, and leaves out a fallback's, so the last usable answer passes through", async () => {
     const first = await connection("openai");
     const broken = await connection("openai");
     await env.DB.prepare("UPDATE provider_connection SET secret_blob = 'not-a-sealed-secret' WHERE slug = ?").bind(broken).run();
@@ -519,17 +528,21 @@ describe("presets", () => {
         fallback: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: broken, model: "gpt-4o-mini" }] },
       },
     });
-    const refused = await post(`/v2/apps/${appId}/presets/primary`, key, { messages: [] });
-    expect(refused.response.status).toBe(502);
-    expect(JSON.parse(refused.text).error.code).toBe("provider_unavailable");
-    expect(fetchSpy).not.toHaveBeenCalled();
+    // The key opens only in the vault, when the call is sent (plan step 8i): a first target whose key
+    // does not open sends nothing, and the chain goes on to its fallback.
+    fetchSpy.mockImplementation(async () => CHAT_OK());
+    const served = await post(`/v2/apps/${appId}/presets/primary`, key, { messages: [] });
+    expect(served.response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect((await charges(appId)).map((row) => [row.seq, row.status])).toEqual([[2, "ok"]]);
+    fetchSpy.mockClear();
 
     fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
     const passed = await post(`/v2/apps/${appId}/presets/fallback`, key, { messages: [] });
     expect(passed.response.status).toBe(503);
     expect(JSON.parse(passed.text)).toEqual({ error: { code: "busy" } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect((await charges(appId)).map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
+    expect((await charges(appId)).filter((row) => row.preset === "fallback").map((row) => [row.seq, row.http_status])).toEqual([[1, 503]]);
   });
 
   it("sends nothing more once the app went away", async () => {
@@ -668,8 +681,8 @@ describe("presets", () => {
       );
       // Opening the key takes 45 s, longer than the deployment's 30 s first-byte time.
       const slowKey = () =>
-        new Promise<UpstreamCredentials>((resolve) => {
-          setTimeout(() => resolve({ providerKey: "sk-test-slow-open", cloudflareToken: null }), 45_000); // real-timer: faked by vi.useFakeTimers above.
+        new Promise<SealedCredentials>((resolve) => {
+          setTimeout(() => resolve(sealedKey(1, "sk-test-slow-open")), 45_000); // real-timer: faked by vi.useFakeTimers above.
         });
       const context = fakeContext({ ...env, PROVIDER_TTFB_TIMEOUT_SECONDS: "30" } as Env);
       const answered = sendAttempts(context.c, NO_CLIENT, [unitAttempt(1, { credentials: vi.fn(slowKey) })]);
@@ -701,7 +714,7 @@ describe("presets", () => {
     try {
       const { c, done } = fakeContext();
       const requestId = `req_${crypto.randomUUID()}`;
-      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
+      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<SealedCredentials>(() => undefined)), requestId });
       const after = unitAttempt(3, { requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
       const answered = sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), hanging, after]);
@@ -746,7 +759,7 @@ describe("presets", () => {
 
   it("answers from the first attempt at once, never opening a fallback's key it does not need", async () => {
     const { c, done } = fakeContext();
-    const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)) });
+    const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<SealedCredentials>(() => undefined)) });
     fetchSpy.mockImplementation(async () => CHAT_OK());
     const response = await sendAttempts(c, NO_CLIENT, [unitAttempt(1), hanging]);
     expect(response.status).toBe(200);
@@ -760,7 +773,7 @@ describe("presets", () => {
     try {
       const { c, done } = fakeContext();
       const requestId = `req_${crypto.randomUUID()}`;
-      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<UpstreamCredentials>(() => undefined)), requestId });
+      const hanging = unitAttempt(2, { credentials: vi.fn(() => new Promise<SealedCredentials>(() => undefined)), requestId });
       fetchSpy.mockImplementation(async () => Response.json({ error: { code: "busy" } }, { status: 503 }));
       const answered = sendAttempts(c, NO_CLIENT, [unitAttempt(1, { requestId }), hanging]);
       await vi.advanceTimersByTimeAsync(120_001);

@@ -166,25 +166,63 @@ export function connectionDescription(connection: ConnectionRecord): ProviderDes
  * moves it (`./route.ts`).
  */
 export { CLOUDFLARE_AI_GATEWAY_ORIGIN } from "./destinations.ts";
-import { CLOUDFLARE_AI_GATEWAY_ORIGIN, cloudflareGatewayPath, directOrigin } from "./destinations.ts";
+import { CLOUDFLARE_AI_GATEWAY_ORIGIN, cloudflareGatewayPath, directOrigin, isDeclaredHost } from "./destinations.ts";
 
 /**
  * The origin a connection's provider key is given for, which seals it: the
  * connection's base URL, its Cloudflare AI Gateway, or "" for the provider's
- * own host. A key is never sent anywhere else: moving a connection to a new
- * origin needs the key again (`src/admin/providers.ts`).
+ * own hosts. A built-in provider's base URL that is exactly one of its own
+ * hosts (fal's `https://queue.fal.run/`) is "" too: the key goes only to the
+ * provider's hosts, which the vault knows (plan step 8i). A key is never sent
+ * anywhere else: moving a connection to a new origin needs the key again
+ * (`src/admin/providers.ts`).
  */
 export function keyOrigin(connection: {
+  readonly type: string;
   readonly baseUrl: string | null;
   readonly cloudflareGateway: { readonly accountId: string; readonly gatewayId: string } | null;
 }): string {
-  if (connection.baseUrl !== null) return connection.baseUrl;
+  if (connection.baseUrl !== null) {
+    const builtIn = builtInProvider(connection.type);
+    return builtIn !== null && isDeclaredHost(builtIn, connection.baseUrl) ? "" : connection.baseUrl;
+  }
   const gateway = connection.cloudflareGateway;
   if (gateway === null) return "";
   // The address ids make (`cloudflareGatewayPath`). Ids that lead nowhere (`.`, `..`) keep the label they
   // were always sealed under, so no stored key's label ever changes; nothing is ever sent for them (`./route.ts`).
   const path = cloudflareGatewayPath(gateway) ?? `v1/${encodeURIComponent(gateway.accountId)}/${encodeURIComponent(gateway.gatewayId)}/`;
   return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}${path}`;
+}
+
+/**
+ * The ids a provider key is sealed to: the connection, its type, the origin
+ * it goes to (`keyOrigin`), and a custom provider's key header and format as
+ * saved ("" for a built-in type). A new custom header or format needs the key
+ * again.
+ */
+export function keyIdentity(
+  accountId: string,
+  connectionId: string,
+  type: string,
+  origin: string,
+  customAuth: ProviderAuth | null | undefined,
+): SecretIdentity<"providerKey"> {
+  const auth = type === CUSTOM_PROVIDER_TYPE ? (customAuth ?? null) : null;
+  return [accountId, connectionId, type, origin, auth?.header ?? "", auth?.format ?? ""];
+}
+
+/** The ids a connection's provider key is sealed to (`keyIdentity`). */
+export function providerKeyIdentity(connection: ConnectionRecord): SecretIdentity<"providerKey"> {
+  return keyIdentity(connection.accountId, connection.id, connection.type, keyOrigin(connection), connection.customAuth);
+}
+
+/** The ids a connection's Cloudflare AI Gateway token is sealed to: the connection, and the gateway it goes to. */
+export function cloudflareTokenIdentity(
+  accountId: string,
+  connectionId: string,
+  gateway: { readonly accountId: string; readonly gatewayId: string },
+): SecretIdentity<"cloudflareGatewayToken"> {
+  return [accountId, connectionId, gateway.accountId, gateway.gatewayId];
 }
 
 /**
@@ -258,12 +296,43 @@ export async function connectionCredentials(env: Env, connection: ConnectionReco
   const providerKey =
     connection.secretBlob === null
       ? null
-      : await opened(env, connection, "providerKey", [connection.accountId, connection.id, connection.type, keyOrigin(connection)], connection.secretBlob);
+      : await opened(env, connection, "providerKey", providerKeyIdentity(connection), connection.secretBlob);
   const cloudflareToken =
     gateway === null
       ? null
-      : await opened(env, connection, "cloudflareGatewayToken", [connection.accountId, connection.id], gateway.tokenBlob);
+      : await opened(env, connection, "cloudflareGatewayToken", cloudflareTokenIdentity(connection.accountId, connection.id, gateway), gateway.tokenBlob);
   return { providerKey, cloudflareToken };
+}
+
+/**
+ * A connection's credentials, still sealed, for a call the vault sends
+ * (`src/vault/client.ts`): the same checks as `connectionCredentials`, with
+ * nothing opened here. The vault opens them, under the same ids.
+ */
+export interface SealedCredentials {
+  readonly providerKey: { readonly blob: string; readonly identity: SecretIdentity<"providerKey"> } | null;
+  readonly cloudflareToken: { readonly blob: string; readonly identity: SecretIdentity<"cloudflareGatewayToken"> } | null;
+}
+
+export function sealedCredentials(connection: ConnectionRecord): SealedCredentials {
+  const gateway = connection.cloudflareGateway;
+  if (connection.baseUrl !== null && gateway !== null && connection.secretBlob !== null) {
+    log("error", "provider_connection_unusable", {
+      account: connection.accountId,
+      connection: connection.id,
+      providerType: connection.type,
+      reason: "base_url_and_cloudflare_gateway",
+    });
+    throw new GatewayError(502, "provider_unavailable", "The provider connection cannot be used as stored");
+  }
+  if (connection.secretBlob === null && gateway === null) {
+    throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
+  }
+  return {
+    providerKey: connection.secretBlob === null ? null : { blob: connection.secretBlob, identity: providerKeyIdentity(connection) },
+    cloudflareToken:
+      gateway === null ? null : { blob: gateway.tokenBlob, identity: cloudflareTokenIdentity(connection.accountId, connection.id, gateway) },
+  };
 }
 
 /**

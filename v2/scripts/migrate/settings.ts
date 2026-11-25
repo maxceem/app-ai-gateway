@@ -115,8 +115,8 @@ export type V1Sealed =
   | { readonly kind: "providerKey"; readonly identity: readonly [organizationId: string, providerId: string, providerType: string, baseUrl: string] }
   | { readonly kind: "providerGatewayToken"; readonly identity: readonly [organizationId: string, providerGatewayId: string] };
 export type V2Sealed =
-  | { readonly kind: "providerKey"; readonly identity: readonly [accountId: string, connectionId: string, providerType: string, baseUrl: string] }
-  | { readonly kind: "cloudflareGatewayToken"; readonly identity: readonly [accountId: string, connectionId: string] };
+  | { readonly kind: "providerKey"; readonly identity: readonly [accountId: string, connectionId: string, providerType: string, baseUrl: string, keyHeader: string, keyFormat: string] }
+  | { readonly kind: "cloudflareGatewayToken"; readonly identity: readonly [accountId: string, connectionId: string, gatewayAccountId: string, gatewayId: string] };
 
 /**
  * Opens a v1 blob and seals its secret for v2. The secret itself never leaves
@@ -494,7 +494,7 @@ async function moveConnection(
   let servingProviders: string | null = null;
   let v1: V1Destination = { kind: "direct", base: V1_DIRECT_BASE_URL[provider.type] ?? "" };
   const sealToken = async (gateway: V1Gateway): Promise<string | null> => {
-    const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "cloudflareGatewayToken", identity: [provider.organization_id, provider.id] });
+    const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "cloudflareGatewayToken", identity: [provider.organization_id, provider.id, ids!.accountId, ids!.gatewayId] });
     return blob === null ? null : JSON.stringify({ account_id: ids!.accountId, gateway_id: ids!.gatewayId, token_blob: blob, token_hint: hint(gateway.secret_hint) });
   };
 
@@ -532,7 +532,7 @@ async function moveConnection(
       description = vercel;
       typeChanged = true;
       v1 = { kind: "vercel" };
-      const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "providerKey", identity: [provider.organization_id, provider.id, "vercel", keyOrigin({ baseUrl: null, cloudflareGateway: null })] });
+      const blob = await reseal(gateway.secret_blob, { kind: "providerGatewayToken", identity: [gateway.organization_id, gateway.id] }, { kind: "providerKey", identity: [provider.organization_id, provider.id, "vercel", keyOrigin({ type: "vercel", baseUrl: null, cloudflareGateway: null }), "", ""] });
       if (blob === null) return null;
       secretBlob = blob;
       secretHint = hint(gateway.secret_hint);
@@ -571,7 +571,7 @@ async function moveConnection(
     const blob = await reseal(
       provider.secret_blob,
       { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, provider.base_url ?? ""] },
-      { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, keyOrigin({ baseUrl, cloudflareGateway: ids })] },
+      { kind: "providerKey", identity: [provider.organization_id, provider.id, provider.type, keyOrigin({ type: provider.type, baseUrl, cloudflareGateway: ids }), "", ""] },
     );
     if (blob === null) return null;
     secretBlob = blob;

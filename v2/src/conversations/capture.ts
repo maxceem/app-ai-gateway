@@ -22,6 +22,7 @@ import { wholeBody } from "../proxy/observe.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 import type { CaptureHints, ConversationCapture } from "./record.ts";
 import { appFolderName, conversationsBucket } from "./storage.ts";
+import { vault, type SealedCallCredentials } from "../vault/client.ts";
 
 /** A request or response body larger than this is recorded by its size alone (v1). */
 export const CAPTURE_MAX_BYTES = 8 * 1024 * 1024;
@@ -79,6 +80,11 @@ export interface CaptureInput {
    * credentials the app sent. A body that contains one is never stored.
    */
   readonly secrets: readonly string[];
+  /**
+   * The provider's credentials the call carried, still sealed: the gateway
+   * never holds them, so the vault says which texts echo one (plan step 8i).
+   */
+  readonly sealed?: SealedCallCredentials;
   readonly response: {
     readonly contentType: string;
     /** The body's pieces, or null where it was larger than `CAPTURE_MAX_BYTES`. Joined here, in the background. */
@@ -122,26 +128,50 @@ const OMITTED_FIELD = "agw-omitted:credential";
  * test for bodies and metadata alike: history never holds a key an upstream
  * echoed back (an error that repeats its auth header, say).
  */
-function holdsCredential(secrets: readonly string[], text: string): boolean {
-  return secrets.some((secret) => text.includes(secret));
+/** The credentials a stored text must not hold: the app's, by value, and the provider's, as the vault judged each text. */
+interface Credentials {
+  readonly secrets: readonly string[];
+  readonly echoed: ReadonlySet<string>;
+}
+
+function holdsCredential(credentials: Credentials, text: string): boolean {
+  return credentials.echoed.has(text) || credentials.secrets.some((secret) => text.includes(secret));
+}
+
+/**
+ * The texts that echo the provider's sealed credentials, as the vault judges
+ * them. When the vault cannot say, every text counts as holding one: nothing
+ * that might hold a key is stored.
+ */
+async function echoedTexts(env: Env, input: CaptureInput, texts: readonly string[]): Promise<ReadonlySet<string>> {
+  const sealed = input.sealed;
+  const candidates = [...new Set(texts.filter((text) => text.length > 0))];
+  if (sealed === undefined || (sealed.providerKey === undefined && sealed.cloudflareToken === undefined) || candidates.length === 0) return new Set();
+  try {
+    const held = await vault(env).holds(sealed, candidates);
+    return new Set(candidates.filter((_, index) => held[index] === true));
+  } catch (error) {
+    log("warn", "conversation_credentials_unchecked", { app: input.appId, chargeId: input.chargeId, error: errorFacts(error) });
+    return new Set(candidates);
+  }
 }
 
 /** A body that holds a credential is replaced by a marker. Bodies are decoded only where a secret could match. */
 function withoutCredentials(
   input: CaptureInput,
-  secrets: readonly string[],
+  credentials: Credentials,
   which: "request" | "response",
-  body: { contentType: string; bytes: Uint8Array<ArrayBuffer> | null },
+  body: { contentType: string; bytes: Uint8Array<ArrayBuffer> | null; text: string },
 ): { contentType: string; bytes: Uint8Array<ArrayBuffer> | null } {
-  if (body.bytes === null || body.bytes.byteLength === 0 || secrets.length === 0) return body;
-  if (!holdsCredential(secrets, new TextDecoder().decode(body.bytes))) return body;
+  if (body.bytes === null || body.bytes.byteLength === 0) return body;
+  if (!holdsCredential(credentials, body.text)) return { contentType: body.contentType, bytes: body.bytes };
   log("warn", "conversation_body_omitted", { app: input.appId, chargeId: input.chargeId, body: which, reason: "credential" });
   return { contentType: "application/json", bytes: OMITTED };
 }
 
 /** A stored metadata field (the trace id, the user id, ...) that holds a credential is left out of the record. */
-function metadataWithoutCredentials(input: CaptureInput, secrets: readonly string[], field: string, value: string | null): string | null {
-  if (value === null || !holdsCredential(secrets, value)) return value;
+function metadataWithoutCredentials(input: CaptureInput, credentials: Credentials, field: string, value: string | null): string | null {
+  if (value === null || !holdsCredential(credentials, value)) return value;
   log("warn", "conversation_field_omitted", { app: input.appId, chargeId: input.chargeId, field, reason: "credential" });
   return null;
 }
@@ -168,17 +198,34 @@ async function capture(env: Env, input: CaptureInput): Promise<void> {
   // always long enough here and always appears verbatim when echoed
   // (`providerSecretAccepted` in contracts/admin.ts).
   const secrets = input.secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
-  const field = (name: string, value: string | null) => metadataWithoutCredentials(input, secrets, name, value);
   const sentRequest = await sentBody(input.sent);
+  const responseBytes = input.response.pieces === null ? null : plainBytes(wholeBody(input.response.pieces));
+  const requestText = sentRequest.bytes === null ? "" : new TextDecoder().decode(sentRequest.bytes);
+  const responseText = responseBytes === null ? "" : new TextDecoder().decode(responseBytes);
+  const metadata = [
+    input.identity.userId,
+    input.identity.installId,
+    input.appVersion,
+    input.clientTraceId,
+    input.preset,
+    input.route,
+    input.model,
+    sentRequest.contentType,
+    input.response.contentType,
+  ].filter((value): value is string => value !== null);
+  const credentials: Credentials = { secrets, echoed: await echoedTexts(env, input, [...metadata, requestText, responseText]) };
+  const field = (name: string, value: string | null) => metadataWithoutCredentials(input, credentials, name, value);
   // A content type is checked on its own, even where the body is empty or too large to keep:
   // one that holds a credential is left out.
-  const request = withoutCredentials(input, secrets, "request", {
+  const request = withoutCredentials(input, credentials, "request", {
     contentType: field("request_content_type", sentRequest.contentType) ?? "",
     bytes: sentRequest.bytes,
+    text: requestText,
   });
-  const response = withoutCredentials(input, secrets, "response", {
+  const response = withoutCredentials(input, credentials, "response", {
     contentType: field("response_content_type", input.response.contentType) ?? "",
-    bytes: input.response.pieces === null ? null : plainBytes(wholeBody(input.response.pieces)),
+    bytes: responseBytes,
+    text: responseText,
   });
   const record: ConversationCapture = {
     eventId: input.chargeId,

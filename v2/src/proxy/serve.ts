@@ -52,15 +52,16 @@ import { recordLedgerEntry } from "../ledger/write.ts";
 import { knownModel, listedUnitRate, priceSources, resolveCall, resolvePassthrough, servedNow, type CallRefusal } from "../pricing/billability.ts";
 import {
   connectionDescription,
-  connectionCredentials,
+  sealedCredentials,
   loadConnection,
   type ConnectionRecord,
-  type UpstreamCredentials,
+  type SealedCredentials,
 } from "../providers/connections.ts";
 import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarget } from "../providers/matcher.ts";
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
-import { keyAuth, upstreamRequest } from "../providers/route.ts";
+import { keyAuth, sealedUpstreamRequest } from "../providers/route.ts";
+import { vault, type SealedCallCredentials } from "../vault/client.ts";
 import { modelBodyField, readingRules, rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
@@ -434,8 +435,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // job is refused here, before its key is opened or anything is spent.
       if (operation.lifecycle === "job" && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
 
-      // The credentials are opened before admission: a request that cannot be sent must not spend anything.
-      const credentials = await connectionCredentials(c.env, connection);
+      // The credentials are checked before admission: a request that cannot be sent must not spend anything.
+      // They stay sealed: the vault opens them when it sends the call (plan step 8i).
+      const credentials = sealedCredentials(connection);
 
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
@@ -530,8 +532,8 @@ async function servePassthrough(
   }
   if (applied.body.kind === "set") sent = { bytes: applied.body.bytes, contentType: "application/json" };
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
-  // The credentials are opened before admission: a request that cannot be sent must not spend anything.
-  const credentials = await connectionCredentials(c.env, connection);
+  // The credentials are checked before admission: a request that cannot be sent must not spend anything.
+  const credentials = sealedCredentials(connection);
   await timedAdmission(timingsOf(c.req.raw), () =>
     admitRequest({
       env: c.env,
@@ -610,7 +612,10 @@ export type ParsedBody =
 /** What an attempt sent: its body, and the credentials it carried, for its stored conversation. */
 interface SentAttempt {
   readonly body: OutgoingBody;
+  /** The app's own credentials the call carried. */
   readonly secrets: readonly (string | null)[];
+  /** The provider's, still sealed: the vault judges what echoes them. */
+  readonly sealed?: SealedCallCredentials;
 }
 
 export type OutgoingBody =
@@ -884,7 +889,7 @@ export interface PreparedAttempt {
    * admission, so a request whose key cannot be opened is refused before it
    * spends anything; a fallback's only when the chain reaches it.
    */
-  readonly credentials: () => Promise<UpstreamCredentials>;
+  readonly credentials: () => Promise<SealedCredentials>;
   /** Built only when this attempt is sent, so a long chain never holds every target's body at once. */
   readonly body: () => OutgoingBody;
   readonly attempt: CallAttempt;
@@ -1057,7 +1062,7 @@ async function sendAttemptsKeptFor(
       }
       throw budgetExhausted(index);
     }
-    let credentials: UpstreamCredentials;
+    let credentials: SealedCredentials;
     try {
       // Before the first fetch, opening the key has its own budget, as before
       // the first-byte setting; that time starts with the provider attempt.
@@ -1083,7 +1088,7 @@ async function sendAttemptsKeptFor(
     let sent!: SentAttempt;
     try {
       const body = prepared.body();
-      sent = { body, secrets: [credentials.providerKey, credentials.cloudflareToken, ...clientSecrets] };
+      sent = { body, secrets: clientSecrets };
       // The app's headers without the gateway's own credentials and end-user ids:
       // the only client headers anything below may forward, the provider's or Cloudflare's.
       const client = withoutHeaders(c.req.raw.headers, [...stripped, ...keyHeaders]);
@@ -1098,7 +1103,7 @@ async function sendAttemptsKeptFor(
       if (body.contentType === null) headers.delete("content-type");
       else headers.set("content-type", body.contentType);
       // Where it goes and what it carries: set last, so nothing a client sent can override it.
-      const target = upstreamRequest(connection, description, {
+      const target = sealedUpstreamRequest(connection, description, {
         hostKey: prepared.hostKey,
         passthrough: isPassthrough(prepared.operation),
         path: prepared.path.replace(/^\//u, ""),
@@ -1120,6 +1125,8 @@ async function sendAttemptsKeptFor(
       }
       const url = target.url;
       keyHeader = target.keyHeader;
+      // The provider key never reaches this Worker: a stored conversation asks the vault what echoes it.
+      sent = { ...sent, sealed: target.credentials };
 
       // Checked just before each fetch: nothing is sent for an app that went
       // away. The app's own signal is never passed to the provider, so an
@@ -1134,14 +1141,15 @@ async function sendAttemptsKeptFor(
       controller = new AbortController();
       const abort = controller;
       timer = setTimeout(() => abort.abort(), remainingMs);
-      fetching = fetch(url, {
+      // The vault adds the key, sends it without following a redirect, and streams the answer back.
+      fetching = vault(c.env).call({
+        url,
         method: c.req.method,
         headers,
         // A GET carries no body: fetch refuses one, even an empty one.
         body: c.req.method === "GET" ? null : (body.form ?? (body.bytes as Uint8Array<ArrayBuffer>)),
-        // Never follow a redirect: it could take the key to another host.
-        redirect: "manual",
         signal: controller.signal,
+        credentials: target.credentials,
       });
       if (prepared.operation.lifecycle === "job") {
         keepAliveUntilReleased(c, job);
@@ -1151,15 +1159,23 @@ async function sendAttemptsKeptFor(
       if (previous !== null) return answer(c, previous.prepared, previous.upstream, previous.latencyMs, previous.keyHeader, previous.controller, previous.sent);
       throw error;
     }
-    // The fallback is under way: the failed answer before it is charged and let go.
-    if (previous !== null) {
-      retire(c, previous);
-      previous = null;
-    }
     let upstream: Response;
     try {
       upstream = await fetching;
     } catch (error) {
+      // The vault refused to send it: the key did not open, or the address is not one it is sealed for.
+      // Nothing reached the provider and nothing is charged: like a key that failed to open before
+      // the vault, it is left out, and a failed answer held before it is still the answer.
+      if (error instanceof GatewayError && error.code === "provider_unavailable") {
+        if (last && previous === null && failure === null) throw error;
+        log("warn", "preset_fallback_skipped", { app: attempt.appId, providerSlug: connection.slug, code: error.code });
+        continue;
+      }
+      // The fallback was under way: the failed answer before it is charged and let go.
+      if (previous !== null) {
+        retire(c, previous);
+        previous = null;
+      }
       const timedOut = controller.signal.aborted;
       log("warn", timedOut ? "provider_ttfb_timeout" : "provider_request_failed", {
         app: attempt.appId,
@@ -1191,6 +1207,11 @@ async function sendAttemptsKeptFor(
       clearTimeout(timer);
     }
     const latencyMs = Date.now() - providerStart;
+    // The fallback reached the provider: the failed answer before it is charged and let go.
+    if (previous !== null) {
+      retire(c, previous);
+      previous = null;
+    }
 
     if (!last && retryableStatus(upstream.status)) {
       // Kept, not yet charged: if no later attempt can be sent, it is the answer.
@@ -1409,6 +1430,7 @@ function storeConversation(
       latencyMs: answer.latencyMs,
       sent,
       secrets: sentAttempt.secrets.filter((secret): secret is string => secret !== null),
+      ...(sentAttempt.sealed === undefined ? {} : { sealed: sentAttempt.sealed }),
       response: { contentType: answer.contentType, pieces: answer.whole, totalBytes: answer.totalBytes, aborted: answer.aborted },
     }),
   );

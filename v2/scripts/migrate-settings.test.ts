@@ -410,7 +410,7 @@ test("a vault outage stops the run, naming the row; only a blob that does not op
   // A v1 vault file that lacks a key version is the file's fault, not the row's.
   const missing = vaultResealer({ SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: kek() }, V2_VAULT);
   const blob = await secretVault({ SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: kek(), SECRET_VAULT_LOCAL_KEK_V4: kek(), SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "4" }).encryptSecret("x", { service: VAULT_SERVICE });
-  await assert.rejects(missing(blob, { kind: "providerGatewayToken", identity: ["o", "g"] }, { kind: "cloudflareGatewayToken", identity: ["o", "c"] }), /v1's vault could not open a secret/u);
+  await assert.rejects(missing(blob, { kind: "providerGatewayToken", identity: ["o", "g"] }, { kind: "cloudflareGatewayToken", identity: ["o", "c", "a", "g"] }), /v1's vault could not open a secret/u);
 });
 
 test("a Cloudflare AI Gateway row becomes the connection's own setting, with the token a live request opens", async () => {

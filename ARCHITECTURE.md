@@ -88,11 +88,22 @@ imports are fine.
 Keep one Workers `compatibility_date` for every deployment: self-hosted,
 hosted and tests alike. Every gateway Worker's wrangler config in this branch
 carries that same date, and they change together: `v2/wrangler.jsonc`, the
-smoke Workers under `v2/smoke/` [v1: `wrangler.jsonc`]. Don't set another in
+vault Worker's `v2/vault/wrangler.jsonc`, the smoke Workers under `v2/smoke/`
+[v1: `wrangler.jsonc`]. Don't set another in
 a deployment profile overlay unless it is absolutely necessary and the user
 has confirmed it; the release's prebuilt deploy refuses one anyway. The
 static docs deployment (`docs/wrangler.jsonc`) is separate and keeps its own
 date.
+
+## The vault Worker
+
+`v2/vault/` is the only Worker that opens provider keys outside a live
+session. It seals a key as soon as the gateway receives it, and sends every
+call that carries one, only to the address the key is sealed for. Keep it
+plain JavaScript with no npm packages, type-checked through JSDoc and
+uploaded as it is. The gateway reaches it only through
+`v2/src/vault/client.ts`. A new built-in provider host must be added to
+`v2/vault/src/hosts.js` too; a test fails until it is.
 
 ## Docs deployment
 

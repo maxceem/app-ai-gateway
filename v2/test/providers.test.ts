@@ -30,7 +30,7 @@ async function setup(
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
   const baseUrl = options.baseUrl ?? null;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

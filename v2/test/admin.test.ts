@@ -114,7 +114,7 @@ describe("provider connections", () => {
       const id = saved.body.provider.id as string;
       // A key stored before the rule: three characters.
       const row = await env.DB.prepare("SELECT account_id FROM provider_connection WHERE id = ?").bind(id).first<{ account_id: string }>();
-      const blob = await sealSecret(env, "providerKey", [row!.account_id, id, "openai", ""], "abc");
+      const blob = await sealSecret(env, "providerKey", [row!.account_id, id, "openai", "", "", ""], "abc");
       await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(blob, id).run();
       const renamed = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, name: "Renamed" });
       expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);

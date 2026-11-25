@@ -340,9 +340,12 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
 /**
  * Header names a custom provider's key may not be sent in: ones the request
  * itself, its body or its connection depend on, the gateway's own, and
- * Cloudflare's. Compared lower-cased.
+ * Cloudflare's. Compared lower-cased. The header is sealed with the key, so
+ * the vault sends it only in the header chosen here (plan step 8i).
  */
 const RESERVED_KEY_HEADERS: ReadonlySet<string> = new Set([
+  "access-control-request-headers",
+  "access-control-request-method",
   "host",
   "content-type",
   "content-length",

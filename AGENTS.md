@@ -117,7 +117,7 @@ Rules that follow from these:
   (`SECRET_VAULT_LOCAL_KEK_*`, `SECRET_VAULT_KMS_TOKEN`), management keys,
   gateway application keys, or development credentials.
 - Provider keys are per-organization rows in D1, encrypted through
-  `src/vault/`. They are write-only: no response body may ever contain a
+  `src/vault/` [v2: sealed and opened only by the vault Worker, `v2/vault/`]. They are write-only: no response body may ever contain a
   submitted secret, only its `secretHint`.
 - Use Wrangler secret commands, stdin, hidden prompts, or ignored local files for
   secret values. Do not place secret values in command arguments.

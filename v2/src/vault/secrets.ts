@@ -17,7 +17,9 @@ import {
  * step.
  *
  * Adding a secret means adding a line here, where the whole set is visible at
- * once, rather than burying a new context in a route.
+ * once, rather than burying a new context in a route. The vault Worker
+ * (`v2/vault/src/seal.js`, `CONTEXT_NAMES`) seals and opens under the same
+ * contexts, and a test checks the two tables agree.
  *
  * The values are what distinguish one blob from another, and they are what does
  * the security work: an account's provider key is bound to that
@@ -27,17 +29,29 @@ import {
  * for the reason given on {@link VAULT_SERVICE}.
  */
 const SECRET_CONTEXTS = {
-  /** A provider connection's key, bound to its account, its connection, its type and the origin it is sent to. */
-  providerKey: (accountId: string, connectionId: string, providerType: string, baseUrl: string) => ({
+  /**
+   * A provider connection's key, bound to its account, its connection, its
+   * type, the origin it is sent to, and, for a custom provider, the header and
+   * format it is sent in, as saved ("" for a built-in type). The vault sends a
+   * custom key only in its sealed header (plan step 8i).
+   */
+  providerKey: (accountId: string, connectionId: string, providerType: string, baseUrl: string, keyHeader: string, keyFormat: string) => ({
     accountId,
     connectionId,
     providerType,
     baseUrl,
+    keyHeader,
+    keyFormat,
   }),
-  /** The Cloudflare AI Gateway token of one provider connection (plan D13). */
-  cloudflareGatewayToken: (accountId: string, connectionId: string) => ({
+  /**
+   * The Cloudflare AI Gateway token of one provider connection (plan D13),
+   * bound to the Cloudflare account and gateway it is sent to (step 8i).
+   */
+  cloudflareGatewayToken: (accountId: string, connectionId: string, gatewayAccountId: string, gatewayId: string) => ({
     accountId,
     connectionId,
+    gatewayAccountId,
+    gatewayId,
   }),
 } as const satisfies Record<string, (...args: string[]) => Record<string, string>>;
 

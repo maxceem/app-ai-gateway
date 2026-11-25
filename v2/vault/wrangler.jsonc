@@ -1,0 +1,23 @@
+// The vault Worker (plan step 8i): the only Worker that opens provider keys
+// outside a live session. Plain JavaScript modules, uploaded as they are,
+// with no build and no npm packages. A deployment's own name goes in a
+// gitignored `wrangler.<profile>.jsonc` next to this file, never here.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway-v2-vault",
+  "main": "src/index.js",
+  // Keep this the same as the gateway's `wrangler.jsonc`.
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["enable_request_signal"],
+  "no_bundle": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js"] }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "enabled": true, "head_sampling_rate": 1 } },
+  // `local`: the key-encryption keys are this Worker's secrets
+  // (SECRET_VAULT_LOCAL_KEK_V<n>), and only this Worker's.
+  "vars": {
+    "SECRET_VAULT_MODE": "local",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+  }
+}
