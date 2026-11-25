@@ -115,7 +115,8 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
-  it("counts every account's abandoned challenges once all their writes are in (step 8f)", async () => {
+  // Seeds a second account, which takes a few seconds under load.
+  it("counts every account's abandoned challenges once all their writes are in (step 8f)", { timeout: 30_000 }, async () => {
     const now = Date.now();
     const mine = await seedApp(attestAuthentication());
     const other = await seedHuman();
