@@ -61,7 +61,8 @@ export const ROW_WRITES = {
   // more, in `app_auth_event_claim_delay`.
   app_auth_event: 6,
   app_rejection_event: 5,
-  open_work: 5,
+  // An upper bound: 5 for a given-up row; one more for a row still being tried, in `open_work_due_pending`.
+  open_work: 6,
   // 9 for most charges; a correction has one more, in `charge_correction_day`.
   charge: 10,
   session: 4,

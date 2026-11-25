@@ -112,9 +112,9 @@ describe("the ledger object", () => {
       )
       .run();
     // The write set the alarm for the nightly run, due at once on a new object, which deletes
-    // work given up more than 90 days ago.
+    // work given up more than 90 days ago. It may already be running on its own.
     await runDurableObjectAlarm(stub);
-    expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0);
+    await vi.waitFor(async () => expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0));
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
   });
 
