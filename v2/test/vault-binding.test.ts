@@ -77,6 +77,22 @@ describe.each([
     expect(await vaultClient.holds(credentials, [`bad header: Bearer ${KEY}`, "nothing here", ""])).toEqual([true, false, false]);
   });
 
+  it("refuses a built-in key in a header its provider does not take keys in, which an answer could echo", async () => {
+    const vaultClient = client();
+    const builtIn: [string, string, string, string] = ["acct_bind", "conn_bind", "fal", ""];
+    const blob = await vaultClient.seal("providerKey", builtIn, KEY);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const call = vaultClient.call({
+      url: "https://queue.fal.run/fal-ai/flux/dev",
+      method: "POST",
+      headers: new Headers(),
+      body: "{}",
+      credentials: { providerKey: { blob, identity: builtIn, header: "origin", format: "{key}" } },
+    });
+    await expect(call).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("seals a key again only for its provider's own address, in the same account, connection and type", async () => {
     const vaultClient = client();
     const blob = await vaultClient.seal("providerKey", IDENTITY, KEY);

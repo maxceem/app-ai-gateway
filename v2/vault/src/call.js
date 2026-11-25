@@ -9,7 +9,7 @@
  * opens the key, adds it, and streams the answer back without the key header.
  * It never follows a redirect, never logs a key and never returns one.
  */
-import { PROVIDER_HOSTS } from "./hosts.js";
+import { BUILT_IN_KEY_HEADERS, PROVIDER_HOSTS } from "./hosts.js";
 import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
 
 /** @typedef {import("./seal.js").VaultEnv} VaultEnv */
@@ -166,6 +166,10 @@ export function readCredentials(value) {
     const identity = identityOf(key.identity);
     if (typeof key.blob !== "string" || identity === null || typeof key.header !== "string" || typeof key.format !== "string") return null;
     if (!HEADER_NAME.test(key.header) || !key.format.includes("{key}") || key.format.length > 256) return null;
+    // A built-in type's key goes only in a header its providers take keys in: a header such
+    // as `origin` could come back in an answer (`access-control-allow-origin`), with the key.
+    // A custom provider's key goes in the customer's own header.
+    if (Object.hasOwn(PROVIDER_HOSTS, identity[2] ?? "") && !BUILT_IN_KEY_HEADERS.includes(key.header.toLowerCase())) return null;
     credentials.providerKey = { blob: key.blob, identity, header: key.header, format: key.format };
   }
   if (record.cloudflareToken !== undefined) {
@@ -231,7 +235,6 @@ export async function callProvider(env, call) {
   };
   if (call.signal !== undefined) init.signal = call.signal;
   const upstream = await fetch(target, init);
-  // The key header never goes back, whatever the provider echoed.
   // The key header never goes back, whatever the provider echoed, and neither does
   // a header the vault keeps for itself: a provider cannot fake a vault refusal.
   const names = [...upstream.headers.keys()];

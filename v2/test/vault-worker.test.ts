@@ -7,7 +7,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowedUrl, callProvider, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
-import { PROVIDER_HOSTS } from "../vault/src/hosts.js";
+import { BUILT_IN_KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
 import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext } from "../vault/src/seal.js";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
@@ -93,6 +93,15 @@ describe("the vault's tables", () => {
     expect(table).toEqual(declared);
   });
 
+  it("takes a built-in key only in the headers the provider descriptions use for keys", () => {
+    const declared = new Set<string>();
+    for (const provider of Object.values(BUILT_IN_PROVIDERS)) {
+      declared.add(provider.auth.header.toLowerCase());
+      for (const auth of Object.values(provider.cloudflareGateway?.authByStyle ?? {})) declared.add(auth!.header.toLowerCase());
+    }
+    expect([...BUILT_IN_KEY_HEADERS].sort()).toEqual([...declared].sort());
+  });
+
   it("seals and opens under the same contexts as the gateway", async () => {
     expect(Object.keys(CONTEXT_NAMES).sort()).toEqual([...SECRET_KINDS].sort());
     for (const kind of SECRET_KINDS) {
@@ -134,6 +143,18 @@ describe("a call", () => {
     expect(init?.redirect).toBe("manual");
     expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
     expect(new Headers(init?.headers).has("x-agw-vault")).toBe(false);
+  });
+
+  it("never serves a key opened under one address for a call that names another, with the same blob", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("ok"));
+    const sealed = await providerKey(["a", "c", "custom", "https://first.example.com/"]);
+    // Opened properly first, so it is in the vault's cache.
+    expect((await callProvider(vaultEnv, { url: "https://first.example.com/v1", method: "GET", headers: new Headers(), body: null, credentials: sealed })).status).toBe(200);
+    // The same blob, under another address it was never sealed for, with a URL that matches that address.
+    const moved = { providerKey: { ...sealed.providerKey, identity: ["a", "c", "custom", "https://evil.example.com/"] } };
+    const answer = await callProvider(vaultEnv, { url: "https://evil.example.com/v1", method: "GET", headers: new Headers(), body: null, credentials: moved });
+    expect(answer.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("refuses, sending nothing, a call to another address or with a key that does not open", async () => {

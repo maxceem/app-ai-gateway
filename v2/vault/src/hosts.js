@@ -31,3 +31,12 @@ export const PROVIDER_HOSTS = Object.freeze({
   vercel: ["ai-gateway.vercel.sh"],
   xai: ["api.x.ai"],
 });
+
+/**
+ * The only headers a built-in provider type's key may be sent in: the ones
+ * the provider descriptions name for keys (`auth`, and Cloudflare AI
+ * Gateway's `authByStyle`). Any other header, such as `origin`, could be
+ * echoed back in an answer with the key in it, so the vault refuses it. A test
+ * in the gateway fails when this list and the descriptions differ.
+ */
+export const BUILT_IN_KEY_HEADERS = Object.freeze(["authorization", "x-api-key", "x-goog-api-key", "xi-api-key"]);
