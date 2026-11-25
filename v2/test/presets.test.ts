@@ -249,6 +249,8 @@ describe("presets", () => {
     expect(presetOperation(perplexity, "openai-chat", undefined, "perplexity/sonar")?.name).toBe("perplexity.chat");
     // An Orchestrator-only model goes to the Orchestrator for Responses, not to the Agent API.
     expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-5.4-mini")?.name).toBe("perplexity.orchestrator.responses");
+    // One the Agent API's own pages show it serving, though its model list does not, counts as served there.
+    expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-6.1-terra")?.name).toBe("perplexity.agent");
     // Every other provider's operations serve any id.
     expect(presetOperation(BUILT_IN_PROVIDERS.openrouter!, "openai-chat", undefined, "openai/gpt-4o")?.name).toBe("openrouter.chat");
   });
@@ -1033,8 +1035,8 @@ describe("saving rewrites and presets", () => {
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
       // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
       [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
-      // Fixed parameters that have the Agent API choose its models need the list it chooses among.
-      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { effort: "low" } }, "lets the provider choose the model"],
+      // Fixed parameters naming another model than the preset's would refuse every call.
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "Model is not allowed"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });

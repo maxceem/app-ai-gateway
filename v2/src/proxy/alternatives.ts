@@ -70,39 +70,29 @@ export function namedAlternatives(description: ProviderDescription, operation: O
 }
 
 /**
- * The model a request is judged and charged as when the provider chooses
- * among the models it names (`providerChoice`): the first model it names
- * besides its own (`alternativeModels`), each of which is judged. That is the
- * case when the request names no model of its own but a list (Perplexity's
- * Agent API reads `models` without `model`), or names a model that asks the
- * provider to choose (`perplexity/auto`). Null when the request's own model
- * is the one to judge.
+ * The model a request stands as, by the one rule for the models a request
+ * names: every one is judged, the one in its model field (after the app's
+ * rewrites) and every one its provider reads elsewhere (`alternativeModels`),
+ * and the model the answer says served it is charged (`chargedAs`).
  *
- * A request that lets the provider choose (a choosing model, or a field such
- * as `effort` that brings its own models) but names no models to choose among
- * is refused: the models it may be served with cannot be judged.
+ * `own` is its model field's, rewritten; undefined when it names none. Null
+ * means that model stands for the request. Otherwise the first model it
+ * names elsewhere does: when its field names none (Perplexity's Agent API
+ * reads `models` alone), or names one that has the provider choose
+ * (`choosingModels`). A request naming no model at all is left to the model
+ * field's own rule (a default, or a refusal). One that has the provider
+ * choose but names no models to choose among is refused: the provider would
+ * pick a model the gateway cannot judge.
  */
-export function chosenAmong(
-  description: ProviderDescription,
-  operation: OperationDescription,
-  body: Record<string, unknown>,
-  own: string | undefined,
-): string | null {
+export function standingModel(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>, own: string | undefined): string | null {
   const rules = readingRules(description, operation);
-  const choice = rules.providerChoice;
-  const named = [...namedAlternatives(description, operation, body).keys()];
-  const field = choice?.fields?.find((name) => Object.hasOwn(body, name) && body[name] !== undefined && body[name] !== null);
-  const choosing = own !== undefined && choice?.models?.includes(own) === true;
-  if ((field !== undefined || choosing) && named.length === 0) {
-    const where = (rules.alternativeModels?.paths ?? []).map((path) => path.replaceAll("[]", "")).join(" or ");
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      `${field ?? own} lets the provider choose the model, so the request must also name the models it may choose among in ${where}`,
-    );
-  }
-  if (own === undefined || choosing) return named[0] ?? null;
-  return null;
+  const choosing = own !== undefined && rules.choosingModels?.includes(own) === true;
+  if (own !== undefined && !choosing) return null;
+  const [first] = namedAlternatives(description, operation, body).keys();
+  if (first !== undefined) return first;
+  if (!choosing) return null;
+  const where = (rules.alternativeModels?.paths ?? []).map((path) => path.replaceAll("[]", "")).join(" and ");
+  throw new GatewayError(400, "invalid_request", `${own} has the provider choose the model, so the request must name the models it may choose among in ${where}`);
 }
 
 /**

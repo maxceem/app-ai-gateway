@@ -199,7 +199,7 @@ export function presetShape(
     const unserved = modelProblem(operation, target.model);
     if (unserved !== null) return { ok: false, path: at("model"), message: unserved };
     // A preset fixes its model, so it cannot be one that has the provider choose another (`perplexity/auto`).
-    if (readingRules(description, operation).providerChoice?.models?.includes(target.model) === true) {
+    if (readingRules(description, operation).choosingModels?.includes(target.model) === true) {
       return { ok: false, path: at("model"), message: `${target.model} has the provider choose the model, and a preset fixes its model: name the model` };
     }
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {

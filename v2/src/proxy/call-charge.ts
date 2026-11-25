@@ -139,31 +139,31 @@ function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefin
 /**
  * What to charge in place of a provider's rounded figure (`costReportStep`),
  * or null to charge the figure. Only where the figure is below our price for
- * the call's usage by no more than the rounding can explain (a small
- * Perplexity call reads $0): then our price is charged, as an estimate, so
- * never below the model's standard rate. A figure further below is the
- * provider's own, a discount or a cheaper tier, and stands.
+ * the call's usage, at the tier that served it, by no more than the rounding
+ * can explain (a small Perplexity call reads $0). Then our price is charged,
+ * as an estimate, so never below the model's standard rate. A figure further
+ * below is the provider's own, a discount, and stands.
  */
 function roundedReplacement(
   attempt: CallAttempt,
   reported: number,
   usage: UsageObservation | null,
   served: ServiceMode,
+  priced: { readonly cost: NanoDollars } | null,
 ): NonNullable<ReturnType<typeof priceInServedMode>> | null {
-  if (usage === null || attempt.price === null) return null;
+  if (usage === null || attempt.price === null || priced === null) return null;
   const meter = declaredOperation(attempt.operation)?.meter;
   const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
   if (step === null) return null;
-  // Priced as an estimate: the dearer of the served mode's price and the model's standard one.
-  const estimate = pricedOrNull(attempt.price.price, usage, served, true);
-  if (estimate === null) return null;
   try {
-    const gap = estimate.cost - fromDollars(reported);
-    return gap > 0 && gap <= fromDollars(step) ? estimate : null;
+    const gap = priced.cost - fromDollars(reported);
+    if (gap <= 0 || gap > fromDollars(step)) return null;
   } catch (error) {
     if (error instanceof MoneyError) return null;
     throw error;
   }
+  // Priced as an estimate: the dearer of the served tier's price and the model's standard one.
+  return pricedOrNull(attempt.price.price, usage, served, true);
 }
 
 export function chargeId(requestId: string, seq: number): string {
@@ -235,7 +235,7 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  const rounded = reported === null ? null : roundedReplacement(attempt, reported, usage, servedMode);
+  const rounded = reported === null ? null : roundedReplacement(attempt, reported, usage, servedMode, priced);
   if (reported !== null && rounded !== null) {
     // The provider's figure is rounded coarser than the call costs (a small
     // Perplexity call reads $0): its usage at our price is charged instead,

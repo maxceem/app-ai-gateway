@@ -351,9 +351,14 @@ describe("Perplexity", () => {
     // A small flex call that reads $0: our flex price is half the standard one, but an estimate is never below standard.
     await agentCall({ input_tokens: 2, output_tokens: 0, service_tier: "flex", cost: { currency: "USD", total_cost: 0 } }, { service_tier: "flex" });
     const standard = listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 });
+    // A small flex call whose figure, $0.00001, is within a rounding step of our flex price ($0.000012) but not of
+    // the standard one ($0.000024): rounding explains it, so our price stands in, at no less than standard.
+    await agentCall({ input_tokens: 2, output_tokens: 2, service_tier: "flex", cost: { currency: "USD", total_cost: 0.00001 } }, { service_tier: "flex" });
+    const smallStandard = listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 });
     expect(await chargesOf(appId)).toMatchObject([
       { price_source: "provider_usd", cost_nano: fromDollars(1), price_is_estimate: 0 },
       { price_source: "list_rate", cost_nano: standard, price_is_estimate: 1 },
+      { price_source: "list_rate", cost_nano: smallStandard, price_is_estimate: 1 },
     ]);
   });
 
@@ -372,21 +377,37 @@ describe("Perplexity", () => {
     expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-6.2-sol", cost_nano: fromDollars(0.001) }]);
   });
 
-  it("serves an Agent API effort or profile only with a models list, which replaces the models they bring and is judged", async () => {
+  it("serves an Agent API effort or profile beside the model it names, and refuses one that names no model", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna"] });
-    for (const field of [{ effort: "low" }, { profile: "profile_123" }, { preset: "fast" }]) {
-      const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi", ...field });
-      expect(refused.response.status, JSON.stringify(field)).toBe(400);
-      expect(await refused.response.json()).toMatchObject({ error: { code: "invalid_request" } });
-    }
-    const other = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", models: ["openai/gpt-6.2-sol"], input: "hi" });
-    expect(other.response.status).toBe(403);
+    // With no model named, Perplexity would run the effort's own models, which the gateway cannot judge.
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", input: "hi" });
+    expect(bare.response.status).toBe(400);
     expect(fetchSpy).not.toHaveBeenCalled();
+    // A field sent beside effort overrides the effort's own: the named model is judged and used.
     fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.001 } } }));
-    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", models: ["openai/gpt-6-luna"], input: "hi" });
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", model: "openai/gpt-6-luna", input: "hi" });
     expect(served.response.status).toBe(200);
     await served.response.text();
     await waitOnExecutionContext(served.ctx);
+  });
+
+  it("judges a rewrite to perplexity/auto as perplexity/auto: served only with a routing block whose models are allowed", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["house", "perplexity/glm-5.3-flash"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ house: "perplexity/auto" }), appId)
+      .run();
+    clearCaches();
+    // Were it sent, the provider would answer.
+    fetchSpy.mockImplementation(async () => Response.json({ model: "perplexity/glm-5.3-flash", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
+    expect(bare.response.status).toBe(400);
+    const outside = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, {
+      model: "house",
+      routing: { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] },
+      messages: [],
+    });
+    expect(outside.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("serves perplexity/auto only with a routing block, judging every model it names and charging the one that served", async () => {

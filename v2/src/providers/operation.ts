@@ -675,7 +675,7 @@ export interface OperationDescription {
  */
 export type ReadingRules = Pick<
   ProviderDescription,
-  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "providerChoice" | "modelNamespaces"
+  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "choosingModels" | "modelNamespaces"
 >;
 
 /**
@@ -890,14 +890,12 @@ export interface ProviderDescription {
    */
   readonly alternativeModels?: { readonly paths: readonly string[] };
   /**
-   * Ways a request lets the provider choose the model itself: request fields
-   * that bring their own models (Perplexity's Agent API `effort`, `profile`,
-   * and `preset`, its old name), and model names that ask it to choose
-   * (`perplexity/auto`). Such a request is served only when it names the
-   * models the provider may choose among, in `alternativeModels`, so each can
-   * be judged (`src/proxy/alternatives.ts`).
+   * Model names that are not a model but ask the provider to choose one
+   * (Perplexity's `perplexity/auto`). A request naming one is served only
+   * when it names, in `alternativeModels`, the models the provider may choose
+   * among, each judged (`src/proxy/alternatives.ts`).
    */
-  readonly providerChoice?: { readonly fields?: readonly string[]; readonly models?: readonly string[] };
+  readonly choosingModels?: readonly string[];
   /**
    * A request field that limits which providers serve the request (Vercel's
    * `providerOptions.gateway.only`). A connection may pin it

@@ -10,16 +10,19 @@ import { defineProvider, type OperationDescription, type ProviderDescription, ty
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
 /**
- * The models each of Perplexity's APIs serves by a `maker/model` id, from its
- * two model lists (docs.perplexity.ai, agent-api/models and
- * orchestrator/models, read 2026-11-25). Each API leaves out the models only
- * the other lists (`unservedModels`); a model neither lists, such as one
- * added since, is judged by its price alone.
+ * The models each of Perplexity's APIs serves by a `maker/model` id: every id
+ * its pages name, its model list and its examples alike (docs.perplexity.ai,
+ * the agent-api and orchestrator pages, read 2026-11-25). Each API leaves out
+ * only the models the other's pages name and its own never do
+ * (`unservedModels`), so a model either page shows on an API counts as
+ * served there. A model neither names, such as one added since, is judged by
+ * its price alone.
  */
 const AGENT_MODELS = [
-  "anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
-  "openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna",
-  "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "openai/gpt-5.5",
+  "anthropic/claude-fable-5-2", "anthropic/claude-fable-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5",
+  "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-5-5",
+  "openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna",
+  "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "openai/gpt-5.5", "openai/gpt-5.4",
   "google/gemini-4-argon", "google/gemini-4-carbon", "google/gemini-4-hydrogen", "google/gemini-4-neon",
   "google/gemini-3.8-flash", "google/gemini-3.7-flash", "google/gemini-3.6-flash",
   "xai/grok-4.7", "xai/grok-4.6", "xai/grok-4.5",
@@ -53,38 +56,26 @@ const PERPLEXITY_SERVICE_MODES: ProviderDescription["serviceModes"] = [
 ];
 
 /**
- * The Agent API's reading rules: Perplexity's, plus the models a request may
- * be served with besides its own.
- *
- * - `models`, a fallback chain it reads before `model`
- *   (agent-api/model-fallback). Each model on it is judged as the request's
- *   own model is (`alternativeModels`): the app's model list, a preset's one
- *   model, and a price. With no `model`, the list alone names the models.
- * - `effort`, `profile` and `preset` (effort's old name) bring a model or a
- *   model chain of their own. Perplexity's docs say a field sent beside them
- *   overrides theirs, but not that `model` replaces a chain they bring in
- *   `models`, which Perplexity reads first. So a request with one of them is
- *   served only with its own `models` list, which replaces theirs and is
- *   judged (`providerChoice`).
+ * The Agent API's reading rules: Perplexity's, plus `models`, a fallback
+ * chain it reads before `model` (agent-api/model-fallback), whose models are
+ * judged as the request's own (`alternativeModels`). A field sent beside
+ * `effort` or `profile` overrides theirs (agent-api/effort, agent-api/profiles):
+ * with `model` or `models`, the request names its models itself, and each is
+ * judged. With neither, it names none, and is refused.
  */
-const AGENT_RULES: ReadingRules = {
-  serviceModes: PERPLEXITY_SERVICE_MODES,
-  alternativeModels: { paths: ["models[]"] },
-  providerChoice: { fields: ["effort", "profile", "preset"] },
-};
+const AGENT_RULES: ReadingRules = { serviceModes: PERPLEXITY_SERVICE_MODES, alternativeModels: { paths: ["models[]"] } };
 
 /**
  * The Orchestrator API's reading rules: Perplexity's, plus `perplexity/auto`,
  * which has the Orchestrator choose the model (orchestrator/routing-and-
- * reliability). Without a `routing` block it chooses by a policy of its own,
- * among models the request does not name. So it is served only with a
- * `routing` block, whose `default_model` and each route's `model` are judged
- * as the request's own model is (`alternativeModels`, `providerChoice`).
+ * reliability). Its `routing` block names the models it may choose among,
+ * judged as the request's own (`alternativeModels`); without one it chooses
+ * by its own policy, and the request is refused (`choosingModels`).
  */
 const ORCHESTRATOR_RULES: ReadingRules = {
   serviceModes: PERPLEXITY_SERVICE_MODES,
   alternativeModels: { paths: ["routing.default_model", "routing.routes[].model"] },
-  providerChoice: { models: ["perplexity/auto"] },
+  choosingModels: ["perplexity/auto"],
 };
 
 /** The Orchestrator's Chat Completions and Responses report a one-hour cache write in their one count, asked for with `prompt_cache_options.ttl`. */

@@ -61,10 +61,10 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarg
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, readingRules, rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { chargedAs, chosenAmong, judgedAlternatives } from "./alternatives.ts";
+import { chargedAs, judgedAlternatives, standingModel } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
@@ -337,12 +337,18 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const parsed = await requestBody(bytes, contentType, operation, description);
       const body = parsed.kind === "json" ? parsed.body : parsed.kind === "form" ? formFields(parsed.fields) : {};
       if (parsed.kind === "json") refuseBackground(operation, body);
-      // Where the provider chooses among models the request names besides its
-      // own (Perplexity's `models` with no `model`, or `perplexity/auto` with
-      // `routing`), the first of them is judged and charged as the request's
-      // model, never rewritten; every one of them is judged below.
-      const own = ownModel(operation, body);
-      const chosen = chosenAmong(description, operation, body, own);
+      // Every model the request names is judged: its own, after the app's
+      // rewrites, and those its provider reads elsewhere (`alternatives`
+      // below). Where its own field names none that is a model (`models`
+      // alone, or `perplexity/auto`), the first of the others stands for it,
+      // never rewritten (`standingModel`).
+      const field = modelBodyField(operation);
+      const named = field === null ? undefined : bodyModel(body, field);
+      const rewritten = named === undefined ? undefined : rewrittenModel(operation, named, app.routing.model_rewrites);
+      const chosen = field === null ? null : standingModel(description, operation, body, rewritten);
+      // A rewrite to a model that has the provider choose is sent as written.
+      const chosenRewritten = chosen !== null && named !== undefined && rewritten !== named;
+      if (chosenRewritten) body[field!] = rewritten;
       const requested = chosen ?? requestModel(operation, body, match.parts, url.searchParams);
       // The caller's text: a refusal's diagnostic keeps it only when it names a
       // model the gateway knows, checked then, so a served request never pays.
@@ -413,7 +419,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         parsed.kind === "json"
           ? {
               bytes:
-                capped || metered || pinned || bodyModelChanged || outbound.bodyChanged ? new TextEncoder().encode(JSON.stringify(body)) : bytes,
+                capped || metered || pinned || bodyModelChanged || chosenRewritten || outbound.bodyChanged
+                  ? new TextEncoder().encode(JSON.stringify(body))
+                  : bytes,
               contentType: "application/json",
             }
           : parsed.kind === "form" && (Object.keys(formChanges).length > 0 || formRemoved.length > 0)
@@ -796,10 +804,8 @@ export function requestModel(
   return value;
 }
 
-/** The model a JSON or form body names in the operation's model field, or undefined where it names none there. */
-function ownModel(operation: OperationDescription, body: Record<string, unknown>): string | undefined {
-  const field = modelBodyField(operation);
-  if (field === null) return "";
+/** The model a JSON or form body names in `field`, or undefined where it names none. */
+function bodyModel(body: Record<string, unknown>, field: string): string | undefined {
   const value = Object.hasOwn(body, field) ? body[field] : undefined;
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }

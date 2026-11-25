@@ -138,18 +138,17 @@ Orchestrator API serves the model. A preset whose model
 no path of its kind serves, or that names an operation that does not serve its
 model, is refused when you save it.
 
-Models a request names besides its own are checked like its own model: each
-must be one the app allows, with a price.
+Every model a request names must be one the app allows, with a price: its
+`model`, after your model rewrites, each entry of the Agent API's `models`
+list, and the `routing.default_model` and each route's `model` on the
+Orchestrator API. The charge is for the model that served the request.
 
-- The Agent API's `models` list, which it tries before `model`. A request may
-  send the list without `model`.
-- The Agent API's `effort` and `profile` bring models of their own, so a request
-  with either is served only with its own `models` list.
-- On the Orchestrator API, `perplexity/auto` lets Perplexity choose the model.
-  It is served only with a `routing` block, and the `default_model` and each
-  route's `model` in it are checked. A preset can't use `perplexity/auto`.
-
-The charge is for the model that served the request.
+- The Agent API tries `models` before `model`, and a request may send the list
+  without `model`.
+- A request that names no model is refused, because Perplexity would choose
+  one. That includes an Agent API `effort` or `profile` sent with no `model`
+  or `models`, and `perplexity/auto` sent with no `routing` block. A preset
+  can't use `perplexity/auto`.
 
 One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
 "1h"`, or `cache_control` on Messages) are charged at the one-hour rate.
