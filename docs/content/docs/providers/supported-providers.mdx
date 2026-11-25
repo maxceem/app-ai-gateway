@@ -105,6 +105,8 @@ the China platform, set the base URL to `https://api.moonshot.cn/`.
 `api.us.mistral.ai`, and Together AI's `us-api.together.ai` cost more than the
 global host. Set one as the connection's base URL, and its requests are priced
 at that region's price. See [Service modes](/providers/model-pricing#service-modes).
+OpenRouter's in-region hosts are set the same way, with their API path:
+`https://eu.openrouter.ai/api/` or `https://us.openrouter.ai/api/`.
 
 **Fireworks AI and Hugging Face** have no price list here. Fireworks names
 models per account, and Hugging Face prices one model differently on each
@@ -123,11 +125,14 @@ accounts.
 What your app's model list checks on OpenRouter:
 
 - `model`, as the request sends it, and each model in a `models` fallback
-  list (`fallbacks` on the Messages API). Each must be on your list. The
-  request is charged as the model that answered.
+  list. On a custom Messages path to OpenRouter, `fallbacks` is checked the
+  same way. Each must be on your list. The request is charged as the model
+  that answered. A `models` list sent with no `model` must start with a model
+  that can be billed, since OpenRouter tries it first.
 - A router such as `openrouter/auto`, or a saved preset as the model
-  (`@preset/...`), is a model name like any other: served when your list
-  names it, refused when it doesn't. A target of one of your app's rewrites
+  (`@preset/...`), is a model name like any other. When your app lists its
+  models, it's served if the list names it and refused if it doesn't. When
+  your app lists no models, it's served. A target of one of your app's rewrites
   is your choice too, and is served.
 
 What is passed through as it is, with no check: a `preset` field, plugins

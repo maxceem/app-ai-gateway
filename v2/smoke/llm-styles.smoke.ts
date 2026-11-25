@@ -170,7 +170,7 @@ test("an OpenRouter fallback model or router the app does not list is refused be
   }
 });
 
-test("a background Responses request is refused before it reaches the provider",{ skip, timeout: TEST_TIMEOUT_MS }, async () => {
+test("a background Responses request is refused before it reaches the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await send(`/v2/apps/${appId}/proxy/${slugs.openai}/v1/responses`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-bg-${run}` },

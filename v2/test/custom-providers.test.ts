@@ -916,6 +916,21 @@ describe("serving a custom provider", () => {
     expect(errors.mock.calls.length).toBeGreaterThan(0);
   });
 
+  it("refuses a models list sent with no model on a custom OpenRouter Responses path when its first model has no price", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "v1/responses", style: "openai-responses" }], ["custom.openai-responses"], "https://openrouter.ai/api/", {
+      "rated/model": { input: 1_000_000_000, output: 2_000_000_000 },
+    });
+    // Answered, so a request wrongly sent on fails the test without reaching OpenRouter.
+    fetchSpy.mockResolvedValue(Response.json({ id: "r1", model: "rated/model", output: [], usage: { input_tokens: 10, output_tokens: 2 } }));
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/responses`, key, {
+      body: JSON.stringify({ models: ["new-lab/unrated", "rated/model"], input: "hi" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "pricing_not_configured" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("judges an OpenRouter Messages path's fallbacks with OpenRouter's own fields, and charges the fallback that answered at its rate", async () => {
     const rates = { "anthropic/claude-haiku-4.5": { input: 1_000_000_000, output: 5_000_000_000 }, "anthropic/claude-sonnet-4.5": { input: 3_000_000_000, output: 15_000_000_000 } };
     const listedOne = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [

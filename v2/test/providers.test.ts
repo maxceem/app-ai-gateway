@@ -814,20 +814,37 @@ describe("OpenRouter's other models", () => {
     expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(403);
   });
 
-  it("lets the first model of a models list that can be billed stand, when the request names no model and the app lists none", async () => {
+  it("needs the first model of a models list sent with no model to be billable, the one the provider tries first; later ones may have no price", async () => {
     const { appId, slug, key } = await setup("vercel", { operations: ["vercel.chat"] });
+    const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
+      messages: [],
+      providerOptions: { gateway: { models: ["nobody/model", "openai/gpt-4o-mini"] } },
+    });
+    expect(refused.response.status).toBe(400);
+    expect(await refused.response.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-4o-mini", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
     const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
       messages: [],
-      providerOptions: { gateway: { models: ["nobody/model", "openai/gpt-4o-mini"] } },
+      providerOptions: { gateway: { models: ["openai/gpt-4o-mini", "nobody/model"] } },
     });
     expect(response.status).toBe(200);
     await response.text();
     await waitOnExecutionContext(ctx);
     expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-4o-mini" }]);
-    // None that can be billed: refused.
-    const none = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { messages: [], providerOptions: { gateway: { models: ["nobody/model"] } } });
-    expect(none.response.status).toBe(400);
+  });
+
+  it("charges the cost OpenRouter reports, unmarked and unlogged, when the model that answered is none of the request's names", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, SOL] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // An alias or a router always answers under another name.
+    fetchSpy.mockResolvedValueOnce(answer("openai/gpt-6-luna-20260922"));
+    const { response, ctx } = await post(chat(appId, slug), key, { model: LUNA, models: [SOL], messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: LUNA, price_source: "provider_usd", price_is_estimate: 0, cost_nano: fromDollars(0.0012) }]);
+    expect(warns.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("served_model_unexpected"));
   });
 
   it("judges an OpenRouter preset's fixed fallback list by the same rule when it is saved", () => {
