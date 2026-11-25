@@ -9,7 +9,8 @@
  *
  * The opened data key is cached in memory for five minutes, by its wrapped
  * form and the context, as the package does. The token goes out on every call
- * to cf-kms, so plain HTTP is refused, loopback aside.
+ * to cf-kms, so plain HTTP is refused, loopback aside, and a redirect is never
+ * followed.
  */
 
 export const ENVELOPE_PREFIX = "cfkms-env1";
@@ -50,8 +51,9 @@ function canonical(context) {
   return JSON.stringify(Object.fromEntries(entries));
 }
 
-/** Whether the token may be sent to `url`: https, or loopback for local work. @param {string} url */
+/** Whether the token may be sent to `url`: a URL that parses, https, or loopback for local work. @param {string} url */
 export function secureKmsUrl(url) {
+  if (!URL.canParse(url)) return false;
   return /^https:\/\//iu.test(url) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/iu.test(url);
 }
 
@@ -80,7 +82,13 @@ export function createKmsClient(options) {
       method: "POST",
       headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
+      // Never follow a redirect: it would take the token somewhere else.
+      redirect: "manual",
     });
+    if ((response.status >= 300 && response.status < 400) || response.type === "opaqueredirect") {
+      await response.body?.cancel();
+      throw new KmsError("redirect_refused", response.status);
+    }
     /** @type {unknown} */
     let payload;
     try {

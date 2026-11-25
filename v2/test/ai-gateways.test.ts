@@ -484,6 +484,24 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
   });
 });
 
+describe("testing a key through Cloudflare AI Gateway, with both credentials (8i review)", () => {
+  it("seals the provider key for the gateway it is tested through, so the vault sends it", async () => {
+    const key = await seedManagementKey();
+    fetchSpy.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await admin(key, "POST", "/v2/admin/providers/test", {
+      type: "openai",
+      secret: PROVIDER_KEY,
+      cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN },
+    });
+    expect(result.body).toEqual({ validated: true });
+    const [input, init] = fetchSpy.mock.calls[0]!;
+    expect(String(input)).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/models");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe(`Bearer ${PROVIDER_KEY}`);
+    expect(headers.get("cf-aig-authorization")).toBe(`Bearer ${CF_TOKEN}`);
+  });
+});
+
 describe("calls through the gateways, end to end", () => {
   async function routed(
     provider: Record<string, unknown>,

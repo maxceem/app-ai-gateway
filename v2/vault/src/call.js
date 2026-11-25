@@ -277,6 +277,8 @@ export async function callProvider(env, call) {
     redirect: "manual",
   };
   if (call.signal !== undefined) init.signal = call.signal;
+  // The caller's time may have run out while the key was opened: then nothing is sent.
+  call.signal?.throwIfAborted();
   const upstream = await fetch(target, init);
   // The key header never goes back, whatever the provider echoed, and neither does
   // a header the vault keeps for itself: a provider cannot fake a vault refusal.

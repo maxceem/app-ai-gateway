@@ -26,28 +26,38 @@ export type ProbeResult =
   | { validated: false; reason: "unexpected_status" | "rejected"; status: number };
 
 /**
- * Sends the provider's probe, built where live requests are built
- * (`src/providers/route.ts`), so the test reaches the same host with the
- * same credentials. `probe` is null for a provider with no probe.
+ * Seals the key and sends the provider's probe (built where live requests are
+ * built, `src/providers/route.ts`), both under one time limit, so the test
+ * reaches the same host with the same credentials. `build` is null for a
+ * provider with no probe. A seal or send that fails or runs out of time
+ * proves nothing: `unreachable`.
  */
-export async function probeProviderKey(env: Env, description: ProviderDescription, probe: SealedUpstreamRequest | null): Promise<ProbeResult> {
-  if (description.probe === undefined || probe === null) return { validated: false, reason: "no_probe" };
-  const headers = new Headers(description.probe.headers);
-  for (const [name, value] of Object.entries(probe.headers)) headers.set(name, value);
+export async function probeProviderKey(
+  env: Env,
+  description: ProviderDescription,
+  build: (() => Promise<SealedUpstreamRequest>) | null,
+): Promise<ProbeResult> {
+  if (description.probe === undefined || build === null) return { validated: false, reason: "no_probe" };
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new Error("provider probe timed out")), PROBE_TIMEOUT_MS);
   let response: Response;
   try {
-    // The vault never follows a redirect: it could take the key to another host.
-    response = await vault(env).call({
-      url: probe.url,
-      method: "GET",
-      headers,
-      body: null,
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-      credentials: probe.credentials,
+    const timedOut = new Promise<never>((_, reject) => {
+      deadline.signal.addEventListener("abort", () => reject(deadline.signal.reason), { once: true });
     });
+    const probe = await Promise.race([build(), timedOut]);
+    const headers = new Headers(description.probe.headers);
+    for (const [name, value] of Object.entries(probe.headers)) headers.set(name, value);
+    // The vault never follows a redirect: it could take the key to another host.
+    response = await Promise.race([
+      vault(env).call({ url: probe.url, method: "GET", headers, body: null, signal: deadline.signal, credentials: probe.credentials }),
+      timedOut,
+    ]);
   } catch (error) {
     log("warn", "provider_probe_unreachable", { providerType: description.type, error: errorFacts(error) });
     return { validated: false, reason: "unreachable" };
+  } finally {
+    clearTimeout(timer);
   }
   await response.body?.cancel();
   if (response.status === 401) {

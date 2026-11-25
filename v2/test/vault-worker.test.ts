@@ -349,6 +349,17 @@ describe("kms mode", () => {
     expect(kms.calls).toContain("/v1/decrypt");
   });
 
+  it("never follows a redirect from cf-kms, so the token is never sent anywhere else", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      calls.push(String(input));
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 307, headers: { location: "https://elsewhere.example.test/v1/generate-data-key" } });
+    });
+    await expect(seal({ ...KMS_ENV }, "providerKey", IDS, KEY)).rejects.toThrow(/redirect_refused/u);
+    expect(calls).toEqual(["https://kms.example.test/v1/generate-data-key"]);
+  });
+
   it.each([
     ["complete local settings", vaultEnv, "ok"],
     ["complete kms settings", KMS_ENV, "ok"],
@@ -357,6 +368,10 @@ describe("kms mode", () => {
     ["kms over plain http", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "http://kms.example.test" }, "misconfigured"],
     ["kms without a token", { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "https://kms.example.test" }, "misconfigured"],
     ["kms with a local key left over", { ...KMS_ENV, SECRET_VAULT_LOCAL_KEK_V1: "x" }, "misconfigured"],
+    ["a local key that is not 32 bytes of base64", { SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: "bm90LTMyLWJ5dGVz" }, "misconfigured"],
+    ["a local key that is not base64", { SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: "%%%" }, "misconfigured"],
+    ["an older local key that is not usable", { ...vaultEnv, SECRET_VAULT_LOCAL_KEK_V2: "short" }, "misconfigured"],
+    ["a kms URL that does not parse", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://" }, "misconfigured"],
   ])("reports %s as %s", (_name, settings, expected) => {
     expect(vaultStatus({ ...settings })).toBe(expected);
   });

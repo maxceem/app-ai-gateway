@@ -91,7 +91,7 @@ import type { FieldSetting, OperationDescription, ProviderAuth, ProviderDescript
 import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers/passthrough.ts";
 import { TemplateError } from "../providers/path.ts";
 import { cloudflareIdProblem, normalizedBaseUrl } from "../providers/destinations.ts";
-import { sealedUpstreamRequest } from "../providers/route.ts";
+import { sealedUpstreamRequest, type SealedUpstreamRequest } from "../providers/route.ts";
 import { vault } from "../vault/client.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { checkConnectionChange, checkNewConnection, parseBody } from "./apps.ts";
@@ -1144,42 +1144,45 @@ export async function testProvider(c: AdminContext): Promise<Response> {
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   // The probe is built as a live request would be: same host, same credentials,
   // sealed first and sent by the vault. A test names no stored connection: its id is "".
-  let probe = null;
-  if (description.probe !== undefined) {
-    const accountId = c.get("actor").accountId;
-    const unsealed: ConnectionRecord = {
-      id: "",
-      accountId,
-      type: body.type,
-      slug: "",
-      status: "active",
-      baseUrl,
-      secretBlob: null,
-      rates: null,
-      servingProviders: null,
-      cloudflareGateway: null,
-    };
-    const connection: ConnectionRecord = {
-      ...unsealed,
-      secretBlob: body.secret === undefined ? null : await vault(c.env).seal("providerKey", providerKeyIdentity(unsealed), body.secret),
-      cloudflareGateway:
-        cloudflare === null
-          ? null
-          : {
-              accountId: cloudflare.accountId,
-              gatewayId: cloudflare.gatewayId,
-              tokenBlob: await vault(c.env).seal("cloudflareGatewayToken", cloudflareTokenIdentity(accountId, "", cloudflare), cloudflare.token),
-              tokenHint: null,
-            },
-    };
-    probe = sealedUpstreamRequest(connection, description, {
-      hostKey: "main",
-      path: description.probe.path,
-      query: "",
-      credentials: sealedCredentials(connection),
-      appId: "",
-      userId: null,
-    });
-  }
-  return c.json((await probeProviderKey(c.env, description, probe)) satisfies OperationResponse<"testProvider">);
+  // Each credential is sealed for where the probe really goes, Cloudflare included.
+  const env = c.env;
+  const accountId = c.get("actor").accountId;
+  const build =
+    description.probe === undefined
+      ? null
+      : async (): Promise<SealedUpstreamRequest> => {
+          const destination: ConnectionRecord = {
+            id: "",
+            accountId,
+            type: body.type,
+            slug: "",
+            status: "active",
+            baseUrl,
+            secretBlob: null,
+            rates: null,
+            servingProviders: null,
+            cloudflareGateway:
+              cloudflare === null
+                ? null
+                : {
+                    accountId: cloudflare.accountId,
+                    gatewayId: cloudflare.gatewayId,
+                    tokenBlob: await vault(env).seal("cloudflareGatewayToken", cloudflareTokenIdentity(accountId, "", cloudflare), cloudflare.token),
+                    tokenHint: null,
+                  },
+          };
+          const connection: ConnectionRecord = {
+            ...destination,
+            secretBlob: body.secret === undefined ? null : await vault(env).seal("providerKey", providerKeyIdentity(destination), body.secret),
+          };
+          return sealedUpstreamRequest(connection, description, {
+            hostKey: "main",
+            path: description.probe!.path,
+            query: "",
+            credentials: sealedCredentials(connection),
+            appId: "",
+            userId: null,
+          });
+        };
+  return c.json((await probeProviderKey(env, description, build)) satisfies OperationResponse<"testProvider">);
 }

@@ -156,6 +156,35 @@ describe("provider connections", () => {
     expect(seen[0]?.get("authorization")).toBe(`Bearer ${secret}`);
   });
 
+  it("answers `unreachable` when sealing the key stalls, within the probe's one time limit (8i review)", async () => {
+    const key = await seedManagementKey();
+    setVaultForTests((vaultEnv) => ({ ...localVault(vaultEnv), seal: () => new Promise<string>(() => undefined) }));
+    const fetched = vi.spyOn(globalThis, "fetch");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = request(key, "POST", "/v2/admin/providers/test", { type: "openai", secret: "sk-live-key-under-test" });
+      await vi.advanceTimersByTimeAsync(4_001);
+      const tested = await pending;
+      expect(tested.status).toBe(200);
+      expect(tested.body).toEqual({ validated: false, reason: "unreachable" });
+    } finally {
+      vi.useRealTimers();
+      setVaultForTests(localVault);
+    }
+    expect(fetched).not.toHaveBeenCalled();
+  });
+
+  it("answers `unreachable` when sealing the key fails", async () => {
+    const key = await seedManagementKey();
+    setVaultForTests((vaultEnv) => ({ ...localVault(vaultEnv), seal: () => Promise.reject(new Error("vault refused")) }));
+    try {
+      const tested = await request(key, "POST", "/v2/admin/providers/test", { type: "openai", secret: "sk-live-key-under-test" });
+      expect(tested.body).toEqual({ validated: false, reason: "unreachable" });
+    } finally {
+      setVaultForTests(localVault);
+    }
+  });
+
   it("seals the key and returns only its hint", async () => {
     const key = await seedManagementKey();
     const created = await createProvider(key, { pricing: { "my-model": { input: 1, output: 2 } } });

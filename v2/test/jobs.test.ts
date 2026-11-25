@@ -5,7 +5,7 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi, type MockInstance } from "vitest";
 import { timeOrderedId } from "../src/core/ids.ts";
 import worker from "../src/index.ts";
 import { readJobId, signJobId, userDigest, type JobClaimsInput } from "../src/jobs/job-id.ts";
@@ -1634,6 +1634,42 @@ describe("a final result's body after the sweep item's time, and the provider's 
     const reason = new Error("the item's time is up");
     await expect(fetchJob(env, context, "status", claims, null, AbortSignal.abort(reason))).rejects.toBe(reason);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("starts no provider request when the sweep item's time runs out while the vault opens the key, and the estimate stays (8i review)", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    await submit(appId, slug, key);
+    const [row] = await openWork(appId);
+    const item = {
+      id: String(row!.id),
+      kind: "job_check" as const,
+      accountId: ACCOUNT_ID,
+      appId,
+      ownerType: "job",
+      ownerId: String(row!.owner_id),
+      chargeId: String(row!.charge_id),
+      detail: JSON.parse(String(row!.detail_json)) as Record<string, unknown>,
+      dueAt: 0,
+      tries: 0,
+    };
+    fetchSpy.mockClear();
+    const time = new AbortController();
+    // The vault's own code, with the item's time running out after the call reached it, as it opens the key.
+    setVaultForTests((vaultEnv) => {
+      const inner = localVault(vaultEnv);
+      return {
+        ...inner,
+        call: (input) => {
+          time.abort(new Error("the item's time is up"));
+          return inner.call(input);
+        },
+      };
+    });
+    onTestFinished(() => setVaultForTests(localVault));
+    await expect(checkJob(env, item, { ledger: ledger(), now: Date.now(), lastTry: false, signal: time.signal })).rejects.toThrow();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await charges(appId)).toHaveLength(1);
   });
 
   it("polls through the vault: this Worker sends only the sealed key, which the vault adds (plan step 8i)", async () => {

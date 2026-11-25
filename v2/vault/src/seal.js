@@ -152,10 +152,8 @@ function keks(env) {
   return { materials, current };
 }
 
-/** @param {string} material @returns {Promise<CryptoKey>} */
-function importKek(material) {
-  const cached = importedKeks.get(material);
-  if (cached) return cached;
+/** A KEK's bytes: valid base64 of exactly 32 bytes. @param {string} material @returns {Uint8Array<ArrayBuffer>} */
+function kekBytes(material) {
   /** @type {Uint8Array<ArrayBuffer>} */
   let bytes;
   try {
@@ -164,6 +162,14 @@ function importKek(material) {
     throw new VaultConfigurationError("a KEK is not valid base64");
   }
   if (bytes.length !== KEK_BYTES) throw new VaultConfigurationError(`a KEK must decode to ${KEK_BYTES} bytes`);
+  return bytes;
+}
+
+/** @param {string} material @returns {Promise<CryptoKey>} */
+function importKek(material) {
+  const cached = importedKeks.get(material);
+  if (cached) return cached;
+  const bytes = kekBytes(material);
   const imported = crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]).catch((error) => {
     importedKeks.delete(material);
     throw error;
@@ -201,7 +207,7 @@ function kms(env) {
   const token = env.SECRET_VAULT_KMS_TOKEN;
   if (typeof url !== "string" || url.trim() === "") throw new VaultConfigurationError("SECRET_VAULT_KMS_URL is required in kms mode");
   if (typeof token !== "string" || token.trim() === "") throw new VaultConfigurationError("SECRET_VAULT_KMS_TOKEN is required in kms mode");
-  if (!secureKmsUrl(url.trim())) throw new VaultConfigurationError("SECRET_VAULT_KMS_URL must use https");
+  if (!secureKmsUrl(url.trim())) throw new VaultConfigurationError("SECRET_VAULT_KMS_URL must be an https URL");
   const client = createKmsClient({ url: url.trim(), token: token.trim() });
   kmsClients.set(env, client);
   return client;
@@ -216,7 +222,7 @@ function kms(env) {
 export function vaultStatus(env) {
   try {
     if (vaultMode(env) === "kms") kms(env);
-    else keks(env);
+    else for (const material of keks(env).materials.values()) kekBytes(material);
     return "ok";
   } catch {
     return "misconfigured";
