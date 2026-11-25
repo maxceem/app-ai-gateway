@@ -29,6 +29,9 @@ import { LEDGER_SCHEMA } from "../ledger/schema.ts";
 import { runSweep } from "../ledger/sweep.ts";
 import { NIGHTLY_HOUR_UTC, runLedgerNightly } from "../maintenance/nightly.ts";
 
+/** The shortest time between two runs of the alarm's work: a minute, as the sweep's cron ran. */
+export const WORK_EVERY_MS = 60_000;
+
 /** The object's own bookkeeping, apart from the ledger's tables. */
 const META_TABLE = "CREATE TABLE IF NOT EXISTS ledger_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
@@ -114,7 +117,9 @@ export class AccountLedger extends DurableObject<Env> {
   /**
    * Sets the alarm for the next work: the earliest open work still being
    * tried, and the next nightly maintenance while the ledger holds rows. An
-   * alarm already set earlier is kept, unless `fresh` (the alarm just ran).
+   * alarm already set earlier is kept, unless `fresh` (the alarm just ran):
+   * then the next run is at least `WORK_EVERY_MS` away, as the minute cron
+   * was, so work that keeps failing never runs the alarm in a loop.
    */
   private async planWork(fresh = false): Promise<void> {
     const sql = this.ctx.storage.sql;
@@ -123,7 +128,7 @@ export class AccountLedger extends DurableObject<Env> {
     const now = Date.now();
     const times = [...(due === null ? [] : [due]), ...(held ? [nextNightly(now, readMeta(this.ctx.storage, "nightly_day"))] : [])];
     if (times.length === 0) return;
-    const next = Math.max(now, Math.min(...times));
+    const next = Math.max(fresh ? now + WORK_EVERY_MS : now, Math.min(...times));
     const current = fresh ? null : await this.ctx.storage.getAlarm();
     if (current === null || current > next) await this.ctx.storage.setAlarm(next);
   }
