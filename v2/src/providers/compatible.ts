@@ -6,8 +6,32 @@
  * `withV1Paths`.
  */
 import { chat, completions, embeddings, images, messages, responses, speech, withV1Paths } from "./llm.ts";
-import { defineProvider, type OperationDescription } from "./operation.ts";
+import { defineProvider, type OperationDescription, type ProviderDescription, type ReadingRules } from "./operation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
+
+/**
+ * Models on Perplexity's Agent API that its Orchestrator API does not serve,
+ * from the two model lists (docs.perplexity.ai, agent-api/models and
+ * orchestrator/models, read 2026-11-25).
+ */
+const AGENT_ONLY_MODELS = ["perplexity/sonar", "perplexity/nemotron-3.5-super-120b-a12b", "google/gemini-4-argon", "google/gemini-4-carbon"];
+
+/** `fast` is Perplexity's alias for priority. */
+const PERPLEXITY_SERVICE_MODES: ProviderDescription["serviceModes"] = [
+  {
+    names: ["service_tier"],
+    axis: "tier",
+    values: { auto: "standard", default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "priority" },
+  },
+];
+
+/**
+ * The Agent API's reading rules: Perplexity's, plus its `models` list, a
+ * fallback chain it reads before `model` (agent-api/model-fallback). Each
+ * model on it is judged as the request's own model is (`alternativeModels`):
+ * the app's model list, a preset's one model, and a price.
+ */
+const AGENT_RULES: ReadingRules = { serviceModes: PERPLEXITY_SERVICE_MODES, alternativeModels: { field: "models" } };
 
 export const perplexity = defineProvider({
   type: "perplexity",
@@ -17,14 +41,7 @@ export const perplexity = defineProvider({
   auth: { header: "authorization", format: "Bearer {key}" },
   // No probe: Perplexity has no free call that needs a key.
   cloudflareGateway: { slug: "perplexity-ai" },
-  // `fast` is Perplexity's alias for priority.
-  serviceModes: [
-    {
-      names: ["service_tier"],
-      axis: "tier",
-      values: { auto: "standard", default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "priority" },
-    },
-  ],
+  serviceModes: PERPLEXITY_SERVICE_MODES,
   // Perplexity serves two kinds of model id at different paths (`modelIds`):
   // - its own Sonar names (`sonar`, `sonar-pro`) on Sonar Chat Completions,
   //   at `chat/completions` and `v1/sonar`;
@@ -32,19 +49,22 @@ export const perplexity = defineProvider({
   //   Agent API (`v1/agent`, and `v1/responses` for OpenAI's SDKs) and on the
   //   Orchestrator API under `orchestrator/v1/`, which it first served under
   //   `router/v1/` and still does.
-  // The Agent API reports its own cost, with its tools' (`providerCost`).
+  // Some models are on the Agent API only (`unservedModels` on the
+  // Orchestrator's operations). The Agent API reports its own cost, with its
+  // tools' (`providerCost`), and reads a `models` list before `model`
+  // (`AGENT_RULES`).
   operations: withV1Paths("perplexity", [
     plain(chat("perplexity.chat", "chat/completions")),
     plain(chat("perplexity.chat.v1", "v1/chat/completions")),
     plain(chat("perplexity.sonar", "v1/sonar")),
-    namespaced(responses("perplexity.agent", "v1/agent", { providerCost: "perplexity" })),
-    namespaced(responses("perplexity.responses", "v1/responses", { providerCost: "perplexity" })),
-    namespaced(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions")),
-    namespaced(responses("perplexity.orchestrator.responses", "orchestrator/v1/responses")),
-    namespaced(messages("perplexity.orchestrator.messages", "orchestrator/v1/messages")),
-    namespaced(chat("perplexity.router.chat", "router/v1/chat/completions")),
-    namespaced(responses("perplexity.router.responses", "router/v1/responses")),
-    namespaced(messages("perplexity.router.messages", "router/v1/messages")),
+    agent(responses("perplexity.agent", "v1/agent", { providerCost: "perplexity" })),
+    agent(responses("perplexity.responses", "v1/responses", { providerCost: "perplexity" })),
+    orchestrator(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions")),
+    orchestrator(responses("perplexity.orchestrator.responses", "orchestrator/v1/responses")),
+    orchestrator(messages("perplexity.orchestrator.messages", "orchestrator/v1/messages")),
+    orchestrator(chat("perplexity.router.chat", "router/v1/chat/completions")),
+    orchestrator(responses("perplexity.router.responses", "router/v1/responses")),
+    orchestrator(messages("perplexity.router.messages", "router/v1/messages")),
     embeddings("perplexity.embeddings", "v1/embeddings"),
     embeddings("perplexity.embeddings.contextualized", "v1/contextualizedembeddings"),
   ]),
@@ -53,6 +73,16 @@ export const perplexity = defineProvider({
 /** An operation that serves only a provider's own plain model names (`modelIds`). */
 function plain(operation: OperationDescription): OperationDescription {
   return { ...operation, modelIds: "plain" };
+}
+
+/** An Orchestrator API operation: `maker/model` ids, except the Agent API's own. */
+function orchestrator(operation: OperationDescription): OperationDescription {
+  return { ...namespaced(operation), unservedModels: AGENT_ONLY_MODELS };
+}
+
+/** An Agent API operation: `maker/model` ids, with the Agent API's reading rules. */
+function agent(operation: OperationDescription): OperationDescription {
+  return { ...namespaced(operation), rules: AGENT_RULES };
 }
 
 /** An operation that serves only `maker/model` ids (`modelIds`). */

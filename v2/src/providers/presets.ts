@@ -13,7 +13,7 @@
 import { CUSTOM_OPERATIONS } from "./custom.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { ProviderMatcher } from "./matcher.ts";
-import { servesModelId, type ApiStyle, type OperationDescription, type ProviderDescription } from "./operation.ts";
+import { servesModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "./operation.ts";
 
 /** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
 const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
@@ -58,23 +58,19 @@ export function presetOperationProblem(description: ProviderDescription, operati
 
 /**
  * The operation a preset target uses on a connection of this type: the named
- * one, or the provider's own one of `style` that serves `model`. Null when
- * there is none that can serve a preset, or the named one speaks another
- * style.
+ * one, or the provider's own one of `style`, one that serves `model` where
+ * there is one. Null when there is none that can serve a preset, or the named
+ * one speaks another style.
  *
  * A named one is used as named, whatever model it is given: saving refuses
  * one that does not serve its model (`presetShape`), and serving never
  * starts refusing a preset that was saved.
  *
- * With no name, only operations that serve the model's id form are taken
- * (`modelIds`): a Perplexity target with `openai/gpt-6.2-sol` goes to the
- * Orchestrator API, one with `sonar-pro` to Sonar's `chat/completions`.
- * Of those, the provider's documented operations come first. Then the paths
- * v1 served by their shape alone (`v1Layout`): first those under the first
- * path segment all its documented operations share, as Groq's
- * `openai/v1/...`, so a Groq transcription goes to
- * `openai/v1/audio/transcriptions`, not to `v1/audio/transcriptions`, which
- * Groq does not serve; then the rest, in declared order.
+ * With no name, an operation that serves the model is taken (`servesModel`):
+ * a Perplexity target with `openai/gpt-6.2-sol` goes to the Orchestrator API,
+ * one with `sonar-pro` to Sonar's `chat/completions`. Where none does, the
+ * choice is made as if the model did not matter, so serving sends the
+ * request where it always did; saving refuses such a target.
  */
 export function presetOperation(
   description: ProviderDescription,
@@ -82,18 +78,36 @@ export function presetOperation(
   name: string | undefined,
   model: string,
 ): OperationDescription | null {
+  return chosenOperation(description, style, name, model) ?? chosenOperation(description, style, name, null);
+}
+
+/**
+ * The choice itself, for `model`, or for any model when it is null. The
+ * provider's documented operations come first. Then the paths v1 served by
+ * their shape alone (`v1Layout`): first those under the first path segment
+ * all its documented operations share, as Groq's `openai/v1/...`, so a Groq
+ * transcription goes to `openai/v1/audio/transcriptions`, not to
+ * `v1/audio/transcriptions`, which Groq does not serve; then the rest, in
+ * declared order. For a model, a provider with documented operations of
+ * `style` that all leave it out has none for it: a v1 path is not a
+ * stand-in.
+ */
+function chosenOperation(description: ProviderDescription, style: ApiStyle, name: string | undefined, model: string | null): OperationDescription | null {
   const usable = (operation: OperationDescription) => operation.style === style && presetOperationProblem(description, operation) === null;
   if (name !== undefined) return description.operations.find((operation) => operation.name === name && usable(operation)) ?? null;
   const documented = description.operations.filter((operation) => operation.v1Layout !== true);
   const home = sharedFirstSegment(documented.map((operation) => operation.match.path));
   const rank = (operation: OperationDescription) => (operation.v1Layout !== true ? 0 : home !== null && operation.match.path.startsWith(`${home}/`) ? 1 : 2);
-  const candidates = description.operations.filter((operation) => usable(operation) && servesModelId(operation, model));
+  const ofStyle = description.operations.filter(usable);
+  const candidates = model === null ? ofStyle : ofStyle.filter((operation) => servesModel(operation, model));
+  if (model !== null && ofStyle.some((operation) => operation.v1Layout !== true) && !candidates.some((operation) => operation.v1Layout !== true)) return null;
   return [...candidates].sort((left, right) => rank(left) - rank(right))[0] ?? null;
 }
 
-/** Why `operation` does not serve `model` by its id's form (`modelIds`), or null when it does. */
-function modelIdProblem(operation: OperationDescription, model: string): string | null {
-  if (servesModelId(operation, model)) return null;
+/** Why `operation` does not serve `model` (`servesModel`), or null when it does. */
+function modelProblem(operation: OperationDescription, model: string): string | null {
+  if (servesModel(operation, model)) return null;
+  if (operation.unservedModels?.includes(model) === true) return `${operation.name} does not serve ${model}; use another operation for it`;
   return operation.modelIds === "namespaced"
     ? `${operation.name} serves only maker/model ids, such as openai/gpt-6.2-sol; ${model} is not one`
     : `${operation.name} serves only the provider's own model names, with no maker/ prefix; use another operation for ${model}`;
@@ -178,8 +192,12 @@ export function presetShape(
               : (presetOperationProblem(description, named) ?? `${target.operation} cannot be a preset`),
       };
     }
-    const wrongForm = modelIdProblem(operation, target.model);
-    if (wrongForm !== null) return { ok: false, path: at("model"), message: wrongForm };
+    // Saving is strict where serving is forgiving: a target whose model no operation serves is refused.
+    if (target.operation === undefined && chosenOperation(description, style, undefined, target.model) === null) {
+      return { ok: false, path: at("model"), message: `${found.type} has no ${style} operation a preset can use that serves ${target.model}` };
+    }
+    const unserved = modelProblem(operation, target.model);
+    if (unserved !== null) return { ok: false, path: at("model"), message: unserved };
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       return { ok: false, path: "max_output_tokens", message: `${operation.name} has no output to cap` };
     }

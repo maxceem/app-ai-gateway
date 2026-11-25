@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import worker from "../src/index.ts";
 import { fromDollars } from "../src/money.ts";
 import { listPrice } from "../src/pricing/prices.ts";
+import BUILT_IN_PRICES from "../src/pricing/models.json";
 import { priceTokens } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
@@ -289,6 +290,59 @@ describe("Perplexity", () => {
       { operation: "perplexity.agent", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
       { operation: "perplexity.responses", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
     ]);
+  });
+
+  it("charges an Agent API answer that reports no cost at our price, marked an estimate and logged", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1 });
+    expect(charge!.cost_nano).toBeGreaterThanOrEqual(listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 20 }));
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_not_reported");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_not_reported"));
+  });
+
+  it("judges every model of an Agent API models list as the request's own, and charges the one that served", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/gpt-6.2-sol"] });
+    // Perplexity reads models before model: a model the app does not allow is refused there too.
+    const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", models: ["anthropic/claude-fable-5-2"], input: "hi" });
+    expect(refused.response.status).toBe(403);
+    expect(await refused.response.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 10, output_tokens: 2 } }));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", models: ["openai/gpt-6.2-sol"], input: "hi" });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-6.2-sol" }]);
+  });
+
+  it("bills one-hour cache writes on the Orchestrator's Messages API at twice the input rate", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.messages"] });
+    fetchSpy.mockResolvedValueOnce(
+      Response.json({
+        type: "message",
+        model: "anthropic/claude-sonnet-5-5",
+        content: [],
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 } },
+      }),
+    );
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/messages`, key, { model: "anthropic/claude-sonnet-5-5", max_tokens: 10, messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    // A million one-hour write tokens at 2 × $2 input, not at the five-minute $2.50.
+    expect(await chargesOf(appId)).toMatchObject([{ cost_nano: fromDollars(4) }]);
+    // Every Anthropic model Perplexity serves has the rate, never left to fall back to the cheaper one.
+    const anthropicModels = Object.keys(BUILT_IN_PRICES.perplexity ?? {}).filter((model) => model.startsWith("anthropic/"));
+    expect(anthropicModels.length).toBeGreaterThan(0);
+    for (const model of anthropicModels) expect(listPrice("perplexity", model)?.rates.cache_write_1h, model).toBeGreaterThan(0);
   });
 
   it("serves the Orchestrator API at its documented paths, and still at the router paths it first used", async () => {

@@ -510,8 +510,9 @@ export interface SessionSpec {
 /** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */
 export type ModelIdForm = "plain" | "namespaced";
 
-/** Whether `operation` serves `model` by its id's form (`modelIds`). */
-export function servesModelId(operation: Pick<OperationDescription, "modelIds">, model: string): boolean {
+/** Whether `operation` serves `model`: by its id's form (`modelIds`), and not one it lists as unserved (`unservedModels`). */
+export function servesModel(operation: Pick<OperationDescription, "modelIds" | "unservedModels">, model: string): boolean {
+  if (operation.unservedModels?.includes(model) === true) return false;
   if (operation.modelIds === undefined) return true;
   return model.includes("/") === (operation.modelIds === "namespaced");
 }
@@ -560,6 +561,12 @@ export interface OperationDescription {
    * left out.
    */
   readonly modelIds?: ModelIdForm;
+  /**
+   * Models of that form it does not serve, though another operation of its
+   * provider does: Perplexity's Orchestrator API lacks some models of its
+   * Agent API, such as `perplexity/sonar`. Judged where `modelIds` is.
+   */
+  readonly unservedModels?: readonly string[];
   /**
    * The request body may be raw bytes, such as audio, sent as they are with
    * their own content type, never read or copied. A JSON body is still read

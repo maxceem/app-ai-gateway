@@ -148,7 +148,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   //   or, where the provider may change the model, did not name the billed one;
   // - an option billed on top at a price the gateway does not have;
   // - a stream whose final event was cut, its usage read from an earlier event;
-  // - a measure the reader worked out, not one the answer reported.
+  // - a measure the reader worked out, not one the answer reported;
+  // - an answer that should have carried the provider's own cost and did not.
+  const costNotReported = attempt.reportsCost && reported === null && usage !== null;
   const judged: [EstimateReason, boolean][] = [
     ["service_mode", attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined],
     ["served_model", attempt.servedModelUnknown === true],
@@ -156,11 +158,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     ["final_event_unread", usage?.finalEventUnread === true],
     ["measure_worked_out", usage?.measureWorkedOut === true],
     ["served_model", usage !== null && servedModelInDoubt(attempt, usage, facts)],
+    ["cost_not_reported", costNotReported],
   ];
   const reasons = [...new Set(judged.filter(([, applies]) => applies).map(([reason]) => reason))];
   const modeUnknown = reasons.length > 0;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
+  // Priced at our rates instead, as an estimate, when a price exists; logged as unresolved below when none does.
+  if (costNotReported && attempt.price !== null) log("warn", "provider_cost_not_reported", facts);
   // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).
   const unanswered = (attempt.answeredKeys ?? []).filter(
     (key) => usage !== null && usage.priceKeys?.[key] === undefined && usage.priceKeyChoices?.[key] === undefined,

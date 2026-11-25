@@ -243,6 +243,10 @@ describe("presets", () => {
     expect(presetOperation(perplexity, "anthropic-messages", undefined, "perplexity/glm-5.3")?.name).toBe("perplexity.orchestrator.messages");
     // A named operation is used as named: saving judges its model, serving never starts refusing it.
     expect(presetOperation(perplexity, "openai-chat", "perplexity.chat", "openai/gpt-6.2-sol")?.name).toBe("perplexity.chat");
+    // An Agent-only model goes to the Agent API for Responses. For Chat Completions no Perplexity API serves
+    // it: serving sends it where it always went, and saving refuses it (below).
+    expect(presetOperation(perplexity, "openai-responses", undefined, "perplexity/sonar")?.name).toBe("perplexity.agent");
+    expect(presetOperation(perplexity, "openai-chat", undefined, "perplexity/sonar")?.name).toBe("perplexity.chat");
     // Every other provider's operations serve any id.
     expect(presetOperation(BUILT_IN_PROVIDERS.openrouter!, "openai-chat", undefined, "openai/gpt-4o")?.name).toBe("openrouter.chat");
   });
@@ -363,6 +367,18 @@ describe("presets", () => {
     const rows = await charges(appId);
     expect(rows[1]).toMatchObject({ seq: 2, status: "ok", model: "openai/gpt-6.2-sol", operation: "perplexity.orchestrator.chat" });
     expect(rows[1]!.cost_nano).toBeGreaterThan(0);
+  });
+
+  it("refuses a Perplexity Agent preset call whose models list names another model than the preset's", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { agent: { provider: slug, operation: "perplexity.agent", model: "openai/gpt-6-luna" } } });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    // Perplexity reads models before model, so it would serve the dearer one.
+    const other = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi", models: ["anthropic/claude-fable-5-2"] });
+    expect(other.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const same = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi", models: ["openai/gpt-6-luna"] });
+    expect(same.response.status).toBe(200);
   });
 
   it("falls back when the provider cannot be reached, and on a 429", async () => {
@@ -985,6 +1001,7 @@ describe("saving rewrites and presets", () => {
     const ok = { provider: openai, operation: "openai.chat", model: "gpt-4o-mini" };
     expect((await save({ presets: { a: { ...ok, fallback: [{ provider: anthropic, model: "claude-haiku-4-5" }] } } })).status).toBe(200);
     expect((await save({ presets: { a: { ...ok, fallback: [{ provider: perplexity, model: "openai/gpt-6.2-sol" }] } } })).status).toBe(200);
+    expect((await save({ presets: { a: { provider: perplexity, operation: "perplexity.agent", model: "perplexity/sonar" } } })).status).toBe(200);
     const cases: [Record<string, unknown>, string][] = [
       [{ ...ok, provider: "missing-zz" }, "no provider connection"],
       [{ ...ok, operation: "openai.realtime" }, "not an operation a preset can use"],
@@ -999,6 +1016,9 @@ describe("saving rewrites and presets", () => {
       [{ provider: perplexity, operation: "perplexity.chat", model: "openai/gpt-6.2-sol" }, "serves only the provider's own model names"],
       [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "sonar-pro" }, "serves only maker/model ids"],
       [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.chat", model: "openai/gpt-6.2-sol" }] }, "serves only the provider's own model names"],
+      // perplexity/sonar is on the Agent API only: no Chat Completions operation serves it.
+      [{ ...ok, fallback: [{ provider: perplexity, model: "perplexity/sonar" }] }, "has no openai-chat operation a preset can use that serves perplexity/sonar"],
+      [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/sonar" }] }, "does not serve perplexity/sonar"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });

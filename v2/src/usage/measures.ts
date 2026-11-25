@@ -28,9 +28,12 @@ const COUNTED = ["image", "audio", "video", "unknown"] as const;
  *   named one the billed model is not;
  * - `unpriced_option`: an option billed on top at a price the gateway lacks;
  * - `final_event_unread`: the answer was cut, its usage read early;
- * - `measure_worked_out`: the reader worked its measure out.
+ * - `measure_worked_out`: the reader worked its measure out;
+ * - `cost_not_reported`: an answer that should carry the provider's own cost
+ *   (`providerCost`) came without it, so its usage was priced at our rates,
+ *   which may leave out what the provider adds, such as a tool's fee.
  */
-export const ESTIMATE_REASONS = ["service_mode", "served_model", "unpriced_option", "final_event_unread", "measure_worked_out"] as const;
+export const ESTIMATE_REASONS = ["service_mode", "served_model", "unpriced_option", "final_event_unread", "measure_worked_out", "cost_not_reported"] as const;
 export type EstimateReason = (typeof ESTIMATE_REASONS)[number];
 
 /**

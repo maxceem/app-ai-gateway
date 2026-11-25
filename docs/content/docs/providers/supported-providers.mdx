@@ -128,12 +128,19 @@ accounts.
   `perplexity/sonar`, on its Agent API (`v1/agent`, or `v1/responses` for
   OpenAI's SDKs) and its Orchestrator API (`orchestrator/v1/`).
 
+A few models, such as `perplexity/sonar`, are on the Agent API only.
+
 A preset fallback that names no operation goes to the path that serves its
 model's name: Sonar's for a Sonar name, the Orchestrator API for Chat
-Completions or Messages, and the Agent API for Responses. A preset that names
-an operation that does not serve its model is refused when you save it. The
-Agent API reports what each request cost, including its tools such as web
-search, and that figure is what is charged.
+Completions or Messages, and the Agent API for Responses. A preset whose model
+no path of its kind serves, or that names an operation that does not serve its
+model, is refused when you save it.
+
+The Agent API reports what each request cost, including its tools such as web
+search, and that figure is what is charged. An answer without that figure is
+charged at the model's price, marked as an estimate. The Agent API also takes
+a `models` list it tries before `model`: each model on it must be one the app
+allows, as `model` must.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,
