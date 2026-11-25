@@ -149,15 +149,15 @@ const ROUNDING_MATTERS_BELOW_STEPS = 100;
  * call cost, and what to charge then; null when the figure stands, exact.
  *
  * Only a small figure, under `ROUNDING_MATTERS_BELOW_STEPS` steps, is judged.
- * It is judged against the provider's own list rate at the tier that served
- * (a small Perplexity call reads $0): below it by no more than one step,
- * rounding explains the gap, and that list rate is charged instead, as an
- * estimate, so never below the standard rate nor below the figure
- * (`replace`). Never the customer's own rate: the figure it stands in for is
- * the provider's, which a customer's rate never changes elsewhere. With no
- * list rate, a figure under one step says nothing exact (`unknown`): it is
- * charged as an answer that reported no cost. A figure further below the
- * list rate is the provider's own, a discount, and stands.
+ * Perplexity rounds each part of its cost, not only the total, so a small
+ * call can read $0 though its parts cost more than one step. Such a figure
+ * below the provider's own list rate at the tier that served is taken as
+ * rounded, and that list rate is charged instead, as an estimate, so never
+ * below the standard rate nor below the figure (`replace`). Never the
+ * customer's own rate: the figure it stands in for is the provider's, which a
+ * customer's rate never changes elsewhere. With no list rate, a figure under
+ * one step says nothing exact (`unknown`): it is charged as an answer that
+ * reported no cost.
  */
 function roundedFigure(
   attempt: CallAttempt,
@@ -174,8 +174,7 @@ function roundedFigure(
     const figure = fromDollars(reported);
     if (listed === null) return figure < fromDollars(step) && hasMeasure(usage) ? { kind: "unknown" } : null;
     const listedCost = pricedOrNull(listed, usage, served, false)?.cost ?? null;
-    const gap = listedCost === null ? null : listedCost - figure;
-    if (gap === null || gap <= 0 || gap > fromDollars(step)) return null;
+    if (listedCost === null || listedCost <= figure) return null;
     // At the list rate, as an estimate: the dearer of the served tier's price and the standard one.
     const pricing = pricedOrNull(listed, usage, served, true);
     if (pricing === null) return null;

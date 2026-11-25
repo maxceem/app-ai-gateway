@@ -378,6 +378,20 @@ describe("Perplexity", () => {
     expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
   });
 
+  it("charges the list rate for a small call Perplexity reads as $0, though its rounded parts lose more than one step", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 90 in and 19 out of gpt-6-luna cost $0.0000185 at the list, but each part rounds to $0, and so does the total.
+    const usage = { input_tokens: 90, output_tokens: 19, cost: { currency: "USD", input_cost: 0, output_cost: 0, total_cost: 0 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6-luna", output: [], usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const listed = listedCost("perplexity", "openai/gpt-6-luna", { inputTokens: 90, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 19 });
+    expect(listed).toBeGreaterThan(fromDollars(0.00001));
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "list_rate", cost_nano: listed, price_is_estimate: 1 }]);
+  });
+
   it("takes a large Perplexity figure as exact, even one rounding step below the list", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
     const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -407,7 +421,7 @@ describe("Perplexity", () => {
     expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_not_reported"));
   });
 
-  it("lets Perplexity's rounding explain only a gap of one rounding step, never a cheaper tier, and floors at the standard rate", async () => {
+  it("takes a large figure below the list as Perplexity's own, and floors a rounded small one at the standard rate", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const agentCall = async (usage: Record<string, unknown>, body: Record<string, unknown> = {}) => {

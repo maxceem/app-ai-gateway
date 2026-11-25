@@ -162,8 +162,8 @@ Sonar and the Agent API report what each request cost, including Sonar's
 request fee and the Agent API's tools such as web search, and that figure is
 what is charged. Perplexity rounds it to five decimals, so a very small
 request can read $0. When a figure under $0.001 is less than Perplexity's own
-price for the request by no more than the rounding, Perplexity's price is
-charged instead, marked as an estimate. For a model with no price, such a
+price for the request, Perplexity's price is charged instead, marked as an
+estimate. For a model with no price, such a
 figure is treated like a missing one. An answer without the figure is charged
 at the model's price, marked as an estimate. If the model has no price, the
 request's cost is left unknown until you add one. This applies to every
