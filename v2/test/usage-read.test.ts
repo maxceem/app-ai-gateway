@@ -469,7 +469,10 @@ describe("isolation", () => {
       .bind(appId, other.accountId)
       .run();
     await seed({ appId, usedAt: at("2025-07-10", 1), cost: 200, accountId: other.accountId });
-    const rows = await ledger().prepare("SELECT account_id, charges, cost_nano FROM usage_day WHERE app_id = ? ORDER BY cost_nano").bind(appId).all();
+    // Each account's totals are in its own ledger.
+    const totals = async (accountId: string) =>
+      (await ledger(accountId).prepare("SELECT account_id, charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results;
+    const rows = { results: [...(await totals(ACCOUNT_ID)), ...(await totals(other.accountId))] };
     expect(rows.results).toEqual([
       { account_id: ACCOUNT_ID, charges: 1, cost_nano: 100 },
       { account_id: other.accountId, charges: 1, cost_nano: 200 },

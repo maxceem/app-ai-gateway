@@ -22,7 +22,7 @@ import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger, pauseLedgerWork } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -118,8 +118,6 @@ let fetchSpy: MockInstance<typeof fetch>;
 let logs: string[];
 
 beforeEach(() => {
-  // These tests run the sweep themselves, at their own times.
-  pauseLedgerWork();
   clearCaches();
   logs = [];
   const keep = (line: unknown) => {
@@ -1025,7 +1023,7 @@ describe("request ids, result bodies and stalled answers (review fixes, round 3)
 });
 
 /** A D1 whose estimate reads wait for `gate`, and whose batches never answer when `stallWrites` is set. */
-function slowD1(gate: Promise<void>, stallWrites = false): D1Database {
+function slowD1(gate: Promise<void>, stallWrites = false, onHold?: () => void): D1Database {
   const wrap = <T extends object>(target: T, get: (target: T, prop: string | symbol) => unknown): T =>
     new Proxy(target, { get: (t, prop) => get(t, prop) });
   const pass = (t: object, prop: string | symbol) => {
@@ -1042,7 +1040,7 @@ function slowD1(gate: Promise<void>, stallWrites = false): D1Database {
         p === "bind"
           ? (...args: unknown[]) =>
               wrap(st.bind(...args), (bound, q) =>
-                q === "first" ? async (...more: unknown[]) => (await gate, (bound.first as (...a: unknown[]) => unknown)(...more)) : pass(bound, q),
+                q === "first" ? async (...more: unknown[]) => (onHold?.(), await gate, (bound.first as (...a: unknown[]) => unknown)(...more)) : pass(bound, q),
               )
           : pass(st, p),
       );
@@ -1059,9 +1057,13 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     const kept: Promise<unknown>[] = [];
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => (held = resolve));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const run = runSweep(env, slowD1(gate), { now: Date.now() + 5 * 60_000, itemTimeLimitMs: 1_000, waitUntil: (work) => kept.push(work) });
+    const run = runSweep(env, slowD1(gate, false, held), { now: Date.now() + 5 * 60_000, itemTimeLimitMs: 1_000, waitUntil: (work) => kept.push(work) });
     // The item's time passes while the estimate read hangs: the run moves on, the settlement does not stop.
+    // The clock moves only once the read is held: the ledger's answers before it take real time.
+    await holding;
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await run).toMatchObject({ retried: 1 });
     expect(kept).toHaveLength(1);

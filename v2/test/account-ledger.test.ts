@@ -5,7 +5,7 @@
  */
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { migrateLedger, nextNightly } from "../src/do/AccountLedger.ts";
 import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
@@ -75,6 +75,8 @@ describe("the ledger object", () => {
   });
 
   it("sets its alarm for open work, and its sweep takes the due rows", async () => {
+    // This test lets the object set its alarm.
+    vi.restoreAllMocks();
     const db = ledger("acc_alarm");
     const due = Date.now() + 3_600_000;
     await db

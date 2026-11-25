@@ -6,8 +6,8 @@
  */
 import { env } from "cloudflare:workers";
 import { ledgerObject } from "../src/ledger/database.ts";
-import { runDurableObjectAlarm } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { priceUnresolvedCharge, settleCharge, settleJob } from "../src/ledger/corrections.ts";
 import {
   BARRIER_WAIT_MS,
@@ -22,14 +22,11 @@ import { OPEN_WORK_HANDLERS, runSweep, SWEEP_MAX_TRIES, type OpenWorkHandler } f
 import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
 import { recordLedgerEntry, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { nano } from "../src/money.ts";
-import { ACCOUNT_ID, ledger, pauseLedgerWork, seedAccount, seedApp, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
+import { ACCOUNT_ID, ledger, seedAccount, seedApp, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-19T10:00:00Z");
 let counter = 0;
 const unique = (prefix: string) => `${prefix}_${++counter}_${crypto.randomUUID().slice(0, 6)}`;
-
-// These tests run the sweep and settlement themselves, at their own times.
-beforeEach(() => pauseLedgerWork());
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -879,8 +876,11 @@ describe("the ledger object's alarm", () => {
     )
       .bind(id, ACCOUNT_ID, id)
       .run();
-    await runDurableObjectAlarm(ledgerObject(env, ACCOUNT_ID));
+    const object = ledgerObject(env, ACCOUNT_ID);
+    await runDurableObjectAlarm(object);
     expect(await ledger().prepare("SELECT COUNT(*) AS n FROM open_work WHERE id = ?").bind(id).first()).toEqual({ n: 0 });
+    // The next night's run is set now; a test run cannot wait for it.
+    await runInDurableObject(object, (_instance, state) => state.storage.deleteAlarm());
   });
 });
 

@@ -633,7 +633,7 @@ describe("end users", () => {
   ) {
     chargeCount += 1;
     const kind = values.kind ?? "attempt";
-    await ledger().prepare(
+    await ledger(values.accountId ?? ACCOUNT_ID).prepare(
       `INSERT INTO charge (id, kind, account_id, app_id, end_user_id, owner_type, owner_id, provider_type, operation, model, status,
          cost_nano, measured, price_source, input_tokens, output_tokens, measures_json, correction_kind, used_at, usage_day, written_at)
        VALUES (?, ?, ?, ?, ?, 'call', ?, 'openai', 'openai.chat', 'gpt-4o-mini', ?, ?, 'complete', 'list_rate', 10, 2, '{}', ?, ?, ?, ?)`,
@@ -694,15 +694,16 @@ describe("end users", () => {
     const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users?month=${thisMonth}`);
     expect(listed.status).toBe(200);
     expect(listed.body.total).toBe(4);
-    expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["header-user", "100%_user", "refused-only", "signed-in"]);
-    const header = listed.body.users[0];
+    // D1's users first, then the users only the ledger has seen, each newest first (step 8f).
+    expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "header-user", "100%_user", "refused-only"]);
+    const header = listed.body.users[1];
     expect(header).toMatchObject({
       is_virtual: true,
       status: "active",
       created_at: new Date(lastMonth).toISOString(),
       usage: { charges: 2, failed: 1, cost_nano: 1_750, input_tokens: 30 },
     });
-    expect(listed.body.users[3]).toMatchObject({ is_virtual: false, usage: { charges: 0, cost_nano: 0 } });
+    expect(listed.body.users[0]).toMatchObject({ is_virtual: false, usage: { charges: 0, cost_nano: 0 } });
 
     const month = new Date(lastMonth).toISOString().slice(0, 7);
     const older = await request(key, "GET", `/v2/admin/apps/${appId}/users/header-user?month=${month}`);
@@ -711,8 +712,11 @@ describe("end users", () => {
     // `%` and `_` in a search match themselves.
     const searched = await request(key, "GET", `/v2/admin/apps/${appId}/users?query=${encodeURIComponent("0%_")}`);
     expect(searched.body.users.map((user: { id: string }) => user.id)).toEqual(["100%_user"]);
-    const page = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=1&offset=1`);
-    expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 1, users: [{ id: "100%_user" }] });
+    const page = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=1&offset=2`);
+    expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 2, users: [{ id: "100%_user" }] });
+    // A page across the two lists: the last of D1's users, then the first only the ledger has seen.
+    const across = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=2&offset=0`);
+    expect(across.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "header-user"]);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users?month=2026-13`)).status).toBe(400);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/nobody`)).status).toBe(404);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-user`)).status).toBe(404);
