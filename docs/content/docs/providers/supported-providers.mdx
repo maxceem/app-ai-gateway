@@ -124,12 +124,17 @@ Every model an OpenRouter request names must be one your app allows:
 
 - Each model in a `models` fallback list is checked like `model`. The request
   is charged as the model that answered.
-- When your app lists its models, or a preset fixes the model, a router that
-  picks the model for you, such as `openrouter/auto`, is refused, even when
-  the list includes it, because the gateway can't check which model it
-  picks. A `preset` field, and a server tool that calls another model (an
-  advisor, a subagent, a fusion panel or image generation), are refused for
-  the same reason. Other tools, such as web search, are sent as they are.
+- A router that picks the model for you, such as `openrouter/auto`, is
+  served when your app lists it, or a preset names it: you chose to let
+  OpenRouter pick. When your app lists its models but not the router, the
+  router is refused, as a fallback too, because the gateway can't check
+  which model it picks.
+- When your app lists its models, or a preset fixes the model, a `preset`
+  field that loads a preset (`@preset/...`), a server tool that calls
+  another model (an advisor, a subagent, a fusion panel or image
+  generation) and the `fusion` plugin are refused for the same reason.
+  Other tools and plugins, such as web search, are sent as they are, and so
+  is a bare preset name, which OpenRouter ignores.
 - When your app lists no models, all of these are sent as they are, and
   charged at the cost OpenRouter reports.
 - A model that is itself a preset (`@preset/...`) or a variant (`...:nitro`)
@@ -167,9 +172,10 @@ Orchestrator API. The charge is for the model that served the request.
   `Model` or `ROUTING`, is refused: Perplexity may read it as the field.
 - A request that names no model is refused, because Perplexity would choose
   one. That includes an Agent API `effort` or `profile` sent with no `model`
-  or `models`. When your app lists its models, `perplexity/auto` sent with no
-  `routing` block is refused too; when it lists none, `perplexity/auto` is
-  served at your price for it. A preset can't use `perplexity/auto`.
+  or `models`. `perplexity/auto` with a `routing` block is charged as the
+  model that answered. With no `routing` block, it is served at your price
+  for it when your app lists it, or a preset names it, or your app lists no
+  models; when your app lists other models only, it is refused.
 
 One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
 "1h"`, or `cache_control` on Messages) are charged at the one-hour rate.

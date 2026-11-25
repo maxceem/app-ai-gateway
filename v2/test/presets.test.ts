@@ -1000,6 +1000,11 @@ describe("saving rewrites and presets", () => {
     expect((await save({ routing: { model_rewrites: { house: "some-router-model-zz" } } })).status).toBe(200);
   });
 
+  it("accepts a preset that fixes a router: naming it is the customer's choice to let the provider pick", async () => {
+    const slug = await connection("openrouter");
+    expect((await save({ presets: { a: { provider: slug, operation: "openrouter.chat", model: "openrouter/auto" } } })).status).toBe(200);
+  });
+
   it("accepts a service mode in a preset's params on an operation that reports its own cost", async () => {
     const slug = await connection("xai");
     expect((await save({ presets: { a: { provider: slug, operation: "xai.chat", model: "grok-4.6", params: { service_tier: "priority" } } } })).status).toBe(200);
@@ -1042,8 +1047,8 @@ describe("saving rewrites and presets", () => {
       [{ ...ok, fallback: [{ provider: perplexity, model: "perplexity/sonar" }] }, "has no openai-chat operation a preset can use that serves perplexity/sonar"],
       [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/sonar" }] }, "does not serve perplexity/sonar"],
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
-      // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
-      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
+      // A preset may fix perplexity/auto, the customer's choice to let Perplexity pick, but only with a price for it.
+      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has no price"],
       // Fixed parameters naming another model than the preset's would refuse every call: refused by the save-time rule.
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "a preset fixes its model to openai/gpt-6-luna"],
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { Models: ["openai/gpt-6.2-sol"] } }, "Models must be spelled models"],

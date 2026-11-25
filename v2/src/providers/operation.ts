@@ -902,14 +902,14 @@ export interface ProviderDescription {
     /**
      * The paths above that name the models a model in `choosingModels` picks
      * among. Absent, every path does (Perplexity's `routing` block). Empty,
-     * none does: a fallback list is not one (OpenRouter's `models`), so such a
-     * model is always refused.
+     * none does: a fallback list is not one (OpenRouter's `models`).
      */
     readonly choosingAmong?: readonly string[];
     /**
      * Request fields that bring models of their own which the gateway cannot
      * judge, such as a saved OpenRouter preset or a server tool that calls
-     * another model: a request sending one is refused. With `containing`, only
+     * another model: a request sending one is refused where its models are
+     * limited (an app's list, or a preset's model). With `containing`, only
      * when a value there, ignoring letter case, contains one of these words.
      * A path reads as in `paths` (`src/proxy/alternatives.ts`).
      */
@@ -917,11 +917,12 @@ export interface ProviderDescription {
   };
   /**
    * Model names that are not a model but ask the provider to choose one
-   * (Perplexity's `perplexity/auto`, OpenRouter's routers). A request naming
-   * one is served only when it names, in `alternativeModels.choosingAmong`,
-   * the models the provider may choose among, each judged
-   * (`src/proxy/alternatives.ts`). Named as another model the provider may
-   * serve the request with, one is refused.
+   * (Perplexity's `perplexity/auto`, OpenRouter's routers). One the app's
+   * list or a preset names itself is the customer's choice, and is served.
+   * Otherwise, where the app limits its models, a request naming one is
+   * served only when it names, in `alternativeModels.choosingAmong`, the
+   * models the provider may choose among, each judged; the first stands for
+   * it (`src/proxy/alternatives.ts`).
    */
   readonly choosingModels?: readonly string[];
   /**

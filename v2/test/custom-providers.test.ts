@@ -154,11 +154,13 @@ describe("a custom provider's description", () => {
         const { providerCost: _report, ...meter } = definition.meter as typeof definition.meter & { providerCost?: unknown };
         expect(custom.meter, `${provider.type} ${style} meter`).toEqual(meter);
         expect(reportsCost(custom)).toBe(false);
-        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's.
+        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's;
+        // where the style comes from another provider, the base URL's own provider's model fields over them.
         const rules = readingRules(provider, definition);
+        const own = owner !== null && owner !== provider ? owner : null;
         expect(custom.rules?.serviceModes).toBe(rules.serviceModes);
-        expect(custom.rules?.alternativeModels).toBe(rules.alternativeModels);
-        expect(custom.rules?.choosingModels).toBe(rules.choosingModels);
+        expect(custom.rules?.alternativeModels).toBe(own?.alternativeModels ?? rules.alternativeModels);
+        expect(custom.rules?.choosingModels).toBe(own?.choosingModels ?? rules.choosingModels);
         expect(custom.rules?.modelNamespaces).toBe(rules.modelNamespaces);
       }
     }
@@ -885,6 +887,32 @@ describe("serving a custom provider", () => {
     expect(response.status, text).toBe(403);
     expect(JSON.parse(text)).toMatchObject({ error: { code: "model_not_allowed" } });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("judges an OpenRouter Messages path's fallbacks with OpenRouter's own fields, and charges the fallback that answered at its rate", async () => {
+    const rates = { "anthropic/claude-haiku-4.5": { input: 1_000_000_000, output: 5_000_000_000 }, "anthropic/claude-sonnet-4.5": { input: 3_000_000_000, output: 15_000_000_000 } };
+    const listedOne = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [
+      "anthropic/claude-haiku-4.5",
+    ]);
+    const body = { model: "anthropic/claude-haiku-4.5", max_tokens: 10, fallbacks: [{ model: "anthropic/claude-sonnet-4.5" }], messages: [] };
+    const outside = await send("POST", `/v2/apps/${listedOne.appId}/proxy/${listedOne.slug}/v1/messages`, listedOne.key, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+    expect(outside.response.status, outside.text).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const listedBoth = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [
+      "anthropic/claude-haiku-4.5",
+      "anthropic/claude-sonnet-4.5",
+    ]);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "m1", type: "message", model: "anthropic/claude-sonnet-4.5", content: [], usage: { input_tokens: 1000, output_tokens: 100 } }));
+    const served = await send("POST", `/v2/apps/${listedBoth.appId}/proxy/${listedBoth.slug}/v1/messages`, listedBoth.key, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+    expect(served.response.status, served.text).toBe(200);
+    // At the fallback's rate: 1,000 in at $3 and 100 out at $15 a million.
+    expect(await chargesOf(listedBoth.appId)).toEqual([expect.objectContaining({ model: "anthropic/claude-sonnet-4.5", price_source: "customer_rate", cost_nano: 4_500_000 })]);
   });
 
   it("sends an image edit preset on a custom path as the upload it is", async () => {

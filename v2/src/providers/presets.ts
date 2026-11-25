@@ -13,7 +13,7 @@
 import { CUSTOM_OPERATIONS } from "./custom.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { ProviderMatcher } from "./matcher.ts";
-import { readingRules, servesModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "./operation.ts";
+import { servesModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "./operation.ts";
 
 /** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
 const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
@@ -198,10 +198,6 @@ export function presetShape(
     }
     const unserved = modelProblem(operation, target.model);
     if (unserved !== null) return { ok: false, path: at("model"), message: unserved };
-    // A preset fixes its model, so it cannot be one that has the provider choose another (`perplexity/auto`).
-    if (readingRules(description, operation).choosingModels?.includes(target.model) === true) {
-      return { ok: false, path: at("model"), message: `${target.model} has the provider choose the model, and a preset fixes its model: name the model` };
-    }
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       return { ok: false, path: "max_output_tokens", message: `${operation.name} has no output to cap` };
     }

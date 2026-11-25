@@ -16,7 +16,9 @@
  *   (`choosingModels`), is refused, but only where the request's models are
  *   limited: by the app's model list, or by a preset that fixes its model.
  *   Without a limit there is nothing to get around, so such a request is
- *   served as any other, and charged as its own model.
+ *   served as any other;
+ * - a model that has the provider choose, which the app's list or a preset
+ *   names itself, is the customer's choice: it stands as any listed model.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -106,27 +108,28 @@ export function namedAlternatives(
  * (`choosingAmong`). A request naming no model at all is left to the model
  * field's own rule (a default, or a refusal). One that has the provider
  * choose but names no models to choose among is refused: the provider would
- * pick a model the gateway cannot judge. `limited` says whether the app
- * limits its models; without a limit, a model that has the provider choose
- * stands for the request as any other does.
+ * pick a model the gateway cannot judge, but only where `allowed`, the app's
+ * model list, limits it: without a list there is nothing to get around, and
+ * the model stands for the request as written. One the list names itself
+ * is the customer's choice, and stands as any listed model does.
  */
 export function standingModel(
   description: ProviderDescription,
   operation: OperationDescription,
   body: Record<string, unknown>,
   own: string | undefined,
-  limited: boolean,
+  allowed: readonly string[] | undefined,
 ): string | null {
   // A key in another letter case is refused first, before the model it hides is judged or priced.
   refuseMiscasedModelKeys(description, operation, body);
   const rules = readingRules(description, operation);
-  const choosing = limited && own !== undefined && rules.choosingModels?.includes(own) === true;
+  const choosing = own !== undefined && rules.choosingModels?.includes(own) === true && allowed?.includes(own) !== true;
   if (own !== undefined && !choosing) return null;
   const paths = rules.alternativeModels?.paths ?? [];
   const among = choosing ? (rules.alternativeModels?.choosingAmong ?? paths) : paths;
   const [first] = namedAlternatives(description, operation, body, among).keys();
   if (first !== undefined) return first;
-  if (!choosing) return null;
+  if (!choosing || allowed === undefined) return null;
   if (among.length === 0) throw choosingRefusal(own);
   const where = among.map((path) => path.replaceAll("[]", "")).join(" and ");
   throw new GatewayError(400, "invalid_request", `${own} has the provider choose the model, so the request must name the models it may choose among in ${where}`);
@@ -191,9 +194,7 @@ export function savedAlternativesProblem(
     if (error instanceof GatewayError) return error.message;
     throw error;
   }
-  const choosing = readingRules(description, operation).choosingModels;
   for (const [named, field] of namedAlternatives(description, operation, body)) {
-    if (choosing?.includes(named) === true) return `${field} names ${named}, which has the provider choose the model`;
     const call = resolveAlternative(operation, sources, named, new Set([model]), { asIfServed: true });
     if (call.kind === "refused") {
       return call.reason === "model_not_allowed"
@@ -255,9 +256,9 @@ function refuseMiscasedModelKeys(description: ProviderDescription, operation: Op
 /**
  * Judges the models `body` names besides its own. `allowed` is the model
  * policy the request's own model passed: the app's list, or a preset's one
- * model; without it, any model with a price, and the fields and models only
- * a limit could be got around with (`refusedWhen`, `choosingModels`) are
- * served.
+ * model; without it, any model with a price, and the fields only a limit
+ * could be got around with (`refusedWhen`) are served. A model that has the
+ * provider choose is judged as any other: served where the list names it.
  */
 export function judgedAlternatives(
   description: ProviderDescription,
@@ -272,10 +273,7 @@ export function judgedAlternatives(
   if (named.size === 0) return NONE;
   const judged = new Map<string, Alternative>();
   const allowed = modelSet(policy.allowed);
-  const choosing = limited ? readingRules(description, operation).choosingModels : undefined;
   for (const [model, field] of named) {
-    // Another model that has the provider choose would let it serve the request with one the gateway never judged.
-    if (choosing?.includes(model) === true) throw choosingRefusal(model);
     // Resolved by the one rule saving runs too (`resolveAlternative`).
     const call = resolveAlternative(operation, policy.sources, model, allowed);
     if (call.kind === "refused") {

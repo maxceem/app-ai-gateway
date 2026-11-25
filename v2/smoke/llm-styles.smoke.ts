@@ -141,13 +141,14 @@ test("OpenRouter is billed at the cost its answer reports", { skip, timeout: TES
   same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
-test("an OpenRouter router, and a server tool that calls another model, are refused where the app lists its models", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
-  // An app of its own that lists its models: with no list there is nothing to get around, and these are served.
+test("an OpenRouter router the app does not list, and a server tool that calls another model, are refused where the app lists its models", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  // An app of its own that lists its models: with no list there is nothing to get around, and these are
+  // served. A router the list names itself would be the customer's choice, and served too.
   const listed = await admin("POST", "/v2/admin/apps", {
     name: "Smoke OpenRouter models",
     config: {
       authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
-      routing: { providers: { [slugs.openrouter!]: { operations: ["openrouter.chat"], models: ["mock-lab/unlisted-model", "openrouter/auto"] } } },
+      routing: { providers: { [slugs.openrouter!]: { operations: ["openrouter.chat"], models: ["mock-lab/unlisted-model"] } } },
     },
   });
   expectStatus(listed, 201, "app");
