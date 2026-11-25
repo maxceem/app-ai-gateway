@@ -141,7 +141,22 @@ test("OpenRouter is billed at the cost its answer reports", { skip, timeout: TES
   same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
-test("a background Responses request is refused before it reaches the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+test("an OpenRouter router, and a server tool that calls another model, are refused before they reach the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  for (const body of [
+    { model: "openrouter/auto", messages: [{ role: "user", content: "Hi" }] },
+    { model: "mock-lab/unlisted-model", tools: [{ type: "openrouter:advisor" }], messages: [{ role: "user", content: "Hi" }] },
+  ]) {
+    const response = await send(`/v2/apps/${appId}/proxy/${slugs.openrouter}/v1/chat/completions`, base, {
+      method: "POST",
+      headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-router-${run}` },
+      body: JSON.stringify(body),
+    });
+    await expectResponse(response, 400, "the OpenRouter request");
+    expectCode(await readJson(response), "invalid_request", "response");
+  }
+});
+
+test("a background Responses request is refused before it reaches the provider",{ skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await send(`/v2/apps/${appId}/proxy/${slugs.openai}/v1/responses`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-bg-${run}` },

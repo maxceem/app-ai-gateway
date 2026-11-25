@@ -23,7 +23,38 @@ export const openrouter = defineProvider({
       values: { default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "fast", ultrafast: "ultrafast" },
     },
   ],
-  operations: withV1Paths("openrouter", [chat("openrouter.chat", "v1/chat/completions", { providerCost: "openrouter" })], {
+  // Every place a request names a model, or lets OpenRouter choose one, is
+  // judged, or refused when it cannot be (src/proxy/alternatives.ts):
+  // - `models` is a fallback list, tried after `model`, and `fallbacks` its
+  //   Anthropic Messages spelling: each model is judged, and the one the
+  //   answer names is charged (docs: guides/routing/model-fallbacks);
+  // - a router has OpenRouter pick the model. The Auto Router's own list of
+  //   allowed models takes patterns, under its plugin's id, so no router is
+  //   served (docs: guides/routing/routers/overview, .../auto-router);
+  // - a `preset` field brings a saved model, fallback list and tools; a
+  //   server tool that calls another model (an advisor, a subagent, a fusion
+  //   panel, image generation) may name one, default to one, or let the
+  //   model pick it (docs: guides/features/presets, .../server-tools). Both
+  //   are refused. Tool types have aliases, such as Anthropic's
+  //   `advisor_20260301`, so a type is matched by the words it contains.
+  // A `model` that is itself a preset (`@preset/...`) or a variant
+  // (`...:nitro`) is judged as written: served only where the app allows it.
+  alternativeModels: {
+    paths: ["models[]", "fallbacks[].model"],
+    choosingAmong: [],
+    refusedWhen: [{ path: "preset" }, { path: "tools[].type", containing: ["advisor", "subagent", "fusion", "image"] }],
+  },
+  choosingModels: [
+    "openrouter/auto",
+    "openrouter/auto-beta",
+    "openrouter/auto-code",
+    "openrouter/free",
+    "openrouter/pareto-code",
+    "openrouter/fusion",
+    "nvidia/switchyard",
+    "typesafe/jev-router",
+  ],
+  operations: withV1Paths("openrouter",[chat("openrouter.chat", "v1/chat/completions", { providerCost: "openrouter" })], {
     styles: ["chat"],
     chat: { providerCost: "openrouter" },
   }),

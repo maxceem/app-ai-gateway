@@ -10,7 +10,10 @@
  *   it is one of them, in the service mode the request asks of that model's
  *   provider (`chargedAs`);
  * - when the answer does not say which model served it, the request's own is
- *   charged, as an estimate, and logged.
+ *   charged, as an estimate, and logged;
+ * - a field that brings models the gateway cannot judge (`refusedWhen`), or a
+ *   model that has the provider choose with no models named to choose among
+ *   (`choosingModels`), is refused.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -32,11 +35,11 @@ export type Alternatives = ReadonlyMap<string, Alternative>;
 const NONE: Alternatives = new Map();
 
 /**
- * The models `body` names at `path`: a dot path whose `[]` after a name reads
- * every item of that list (`routing.routes[].model`). Absent when nothing is
- * there; a value that is not a model id is refused.
+ * The values `body` has at `path`: a dot path whose `[]` after a name reads
+ * every item of that list (`routing.routes[].model`). Empty when nothing is
+ * there. `notList` is called where a `[]` name holds something else.
  */
-function modelsAt(body: Record<string, unknown>, path: string): string[] {
+function valuesAt(body: Record<string, unknown>, path: string, notList: () => void): unknown[] {
   let values: unknown[] = [body];
   for (const segment of path.split(".")) {
     const list = segment.endsWith("[]");
@@ -48,10 +51,18 @@ function modelsAt(body: Record<string, unknown>, path: string): string[] {
       if (found === undefined || found === null) continue;
       if (!list) next.push(found);
       else if (Array.isArray(found)) next.push(...found);
-      else throw invalidModels(path);
+      else notList();
     }
     values = next;
   }
+  return values;
+}
+
+/** The models `body` names at `path` (`valuesAt`); a value that is not a model id is refused. */
+function modelsAt(body: Record<string, unknown>, path: string): string[] {
+  const values = valuesAt(body, path, () => {
+    throw invalidModels(path);
+  });
   if (!values.every((model) => typeof model === "string" && model.length > 0)) throw invalidModels(path);
   return values as string[];
 }
@@ -60,10 +71,19 @@ function invalidModels(path: string): GatewayError {
   return new GatewayError(400, "invalid_request", `${path.replaceAll("[]", "")} must name model ids`);
 }
 
-/** Every model `body` names besides its own (`alternativeModels`), in order, each once, with the path it was named at. */
-export function namedAlternatives(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): Map<string, string> {
+/**
+ * Every model `body` names besides its own (`alternativeModels`), in order,
+ * each once, with the path it was named at. `paths`, when given, reads only
+ * those.
+ */
+export function namedAlternatives(
+  description: ProviderDescription,
+  operation: OperationDescription,
+  body: Record<string, unknown>,
+  paths: readonly string[] = readingRules(description, operation).alternativeModels?.paths ?? [],
+): Map<string, string> {
   const named = new Map<string, string>();
-  for (const path of readingRules(description, operation).alternativeModels?.paths ?? []) {
+  for (const path of paths) {
     for (const model of modelsAt(body, path)) if (!named.has(model)) named.set(model, path.replaceAll("[]", ""));
   }
   return named;
@@ -79,7 +99,8 @@ export function namedAlternatives(description: ProviderDescription, operation: O
  * means that model stands for the request. Otherwise the first model it
  * names elsewhere does: when its field names none (Perplexity's Agent API
  * reads `models` alone), or names one that has the provider choose
- * (`choosingModels`). A request naming no model at all is left to the model
+ * (`choosingModels`), and then only where it names the models chosen among
+ * (`choosingAmong`). A request naming no model at all is left to the model
  * field's own rule (a default, or a refusal). One that has the provider
  * choose but names no models to choose among is refused: the provider would
  * pick a model the gateway cannot judge.
@@ -88,11 +109,38 @@ export function standingModel(description: ProviderDescription, operation: Opera
   const rules = readingRules(description, operation);
   const choosing = own !== undefined && rules.choosingModels?.includes(own) === true;
   if (own !== undefined && !choosing) return null;
-  const [first] = namedAlternatives(description, operation, body).keys();
+  const paths = rules.alternativeModels?.paths ?? [];
+  const among = choosing ? (rules.alternativeModels?.choosingAmong ?? paths) : paths;
+  const [first] = namedAlternatives(description, operation, body, among).keys();
   if (first !== undefined) return first;
   if (!choosing) return null;
-  const where = (rules.alternativeModels?.paths ?? []).map((path) => path.replaceAll("[]", "")).join(" and ");
+  if (among.length === 0) throw choosingRefusal(own);
+  const where = among.map((path) => path.replaceAll("[]", "")).join(" and ");
   throw new GatewayError(400, "invalid_request", `${own} has the provider choose the model, so the request must name the models it may choose among in ${where}`);
+}
+
+function choosingRefusal(model: string): GatewayError {
+  return new GatewayError(400, "invalid_request", `${model} has the provider choose the model, and the gateway cannot check its choice: name the model`);
+}
+
+/**
+ * Refuses a body that sends a field bringing models the gateway cannot judge
+ * (`alternativeModels.refusedWhen`): a saved OpenRouter preset, or a server
+ * tool that calls another model.
+ */
+function refuseUnjudgedFields(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): void {
+  for (const rule of readingRules(description, operation).alternativeModels?.refusedWhen ?? []) {
+    const values = valuesAt(body, rule.path, () => {});
+    const words = rule.containing?.map(folded);
+    const hit = values.find((value) => words === undefined || (typeof value === "string" && words.some((word) => folded(value).includes(word))));
+    if (hit === undefined) continue;
+    const field = rule.path.replaceAll("[]", "");
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      words === undefined ? `${field} brings models the gateway cannot check` : `${field} ${String(hit)} calls models the gateway cannot check`,
+    );
+  }
 }
 
 /**
@@ -125,11 +173,14 @@ export function savedAlternativesProblem(
 ): string | null {
   try {
     refuseMiscasedModelKeys(description, operation, body);
+    refuseUnjudgedFields(description, operation, body);
   } catch (error) {
     if (error instanceof GatewayError) return error.message;
     throw error;
   }
+  const choosing = readingRules(description, operation).choosingModels;
   for (const [named, field] of namedAlternatives(description, operation, body)) {
+    if (choosing?.includes(named) === true) return `${field} names ${named}, which has the provider choose the model`;
     const call = resolveAlternative(operation, sources, named, new Set([model]), { asIfServed: true });
     if (call.kind === "refused") {
       return call.reason === "model_not_allowed"
@@ -157,12 +208,18 @@ function folded(key: string): string {
  * read it, and the gateway, reading the exact key, would judge another model
  * or none. Checked at every level a model is read at: the model field, each
  * `alternativeModels` path and each object on it, and the fields that bring
- * models of their own (`pinWhen`). A well-formed request never has one.
+ * models of their own (`pinWhen`, `refusedWhen`). A well-formed request never
+ * has one.
  */
 function refuseMiscasedModelKeys(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): void {
   const field = modelBodyField(operation);
   const alternatives = readingRules(description, operation).alternativeModels;
-  const paths = [...(field === null ? [] : [field]), ...(alternatives?.paths ?? []), ...(alternatives?.pinWhen?.fields ?? [])];
+  const paths = [
+    ...(field === null ? [] : [field]),
+    ...(alternatives?.paths ?? []),
+    ...(alternatives?.pinWhen?.fields ?? []),
+    ...(alternatives?.refusedWhen ?? []).map((rule) => rule.path),
+  ];
   for (const path of paths) {
     let level: unknown[] = [body];
     for (const segment of path.split(".")) {
@@ -194,11 +251,15 @@ export function judgedAlternatives(
   policy: { readonly allowed: readonly string[] | undefined; readonly sources: PriceSources; readonly baseUrl: string | null },
 ): Alternatives {
   refuseMiscasedModelKeys(description, operation, body);
+  refuseUnjudgedFields(description, operation, body);
   const named = namedAlternatives(description, operation, body);
   if (named.size === 0) return NONE;
   const judged = new Map<string, Alternative>();
   const allowed = modelSet(policy.allowed);
+  const choosing = readingRules(description, operation).choosingModels;
   for (const [model, field] of named) {
+    // Another model that has the provider choose would let it serve the request with one the gateway never judged.
+    if (choosing?.includes(model) === true) throw choosingRefusal(model);
     // Resolved by the one rule saving runs too (`resolveAlternative`).
     const call = resolveAlternative(operation, policy.sources, model, allowed);
     if (call.kind === "refused") {

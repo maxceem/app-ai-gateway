@@ -12,6 +12,8 @@ import { listPrice } from "../src/pricing/prices.ts";
 import BUILT_IN_PRICES from "../src/pricing/models.json";
 import { priceTokens } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
+import { savedAlternativesProblem } from "../src/proxy/alternatives.ts";
+import { priceSources } from "../src/pricing/billability.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -636,6 +638,98 @@ describe("Perplexity", () => {
       { operation: "perplexity.orchestrator.chat", price_source: "list_rate", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 }) },
       { operation: "perplexity.router.chat" },
     ]);
+  });
+});
+
+describe("OpenRouter's other models", () => {
+  const LUNA = "openai/gpt-6-luna";
+  const SOL = "openai/gpt-6.2-sol";
+  const chat = (appId: string, slug: string) => `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`;
+  const answer = (model: string) => Response.json({ model, choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0012 } });
+
+  it("judges every model of a models fallback list, and charges the one that served", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, SOL] });
+    // Answered, so a request the gateway wrongly sends on fails the test without reaching OpenRouter.
+    fetchSpy.mockResolvedValue(answer(SOL));
+    const outside = await post(chat(appId, slug), key, { model: LUNA, models: ["anthropic/claude-fable-5-2"], messages: [] });
+    expect(outside.response.status).toBe(403);
+    expect(await outside.response.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(answer(SOL));
+    const served = await post(chat(appId, slug), key, { model: LUNA, models: [SOL], messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(sent(0).body).toMatchObject({ model: LUNA, models: [SOL] });
+    expect(await chargesOf(appId)).toMatchObject([{ model: SOL, price_source: "provider_usd", cost_nano: fromDollars(0.0012) }]);
+  });
+
+  it("judges a models list sent without a model, its first model standing for the request", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
+    fetchSpy.mockResolvedValue(answer(LUNA));
+    const outside = await post(chat(appId, slug), key, { models: [LUNA, SOL], messages: [] });
+    expect(outside.response.status).toBe(403);
+    fetchSpy.mockResolvedValueOnce(answer(LUNA));
+    const served = await post(chat(appId, slug), key, { models: [LUNA], messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: LUNA }]);
+  });
+
+  it("refuses a router, which picks a model the gateway cannot check, even one the app lists and with a models list", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, "openrouter/auto"] });
+    fetchSpy.mockResolvedValue(answer(LUNA));
+    for (const body of [
+      { model: "openrouter/auto", messages: [] },
+      { model: "openrouter/auto", models: [LUNA], messages: [] },
+      { model: "openrouter/auto", plugins: [{ id: "auto-router", allowed_models: [LUNA] }], messages: [] },
+      // As a fallback, too.
+      { model: LUNA, models: ["openrouter/auto"], messages: [] },
+    ]) {
+      const { response } = await post(chat(appId, slug), key, body);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a saved OpenRouter preset sent beside the model, and a server tool that calls another model, in any spelling", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
+    fetchSpy.mockResolvedValue(answer(LUNA));
+    for (const body of [
+      { model: LUNA, preset: "@preset/writer", messages: [] },
+      { model: LUNA, tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }], messages: [] },
+      { model: LUNA, tools: [{ type: "openrouter:subagent" }], messages: [] },
+      { model: LUNA, tools: [{ type: "openrouter:fusion" }], messages: [] },
+      { model: LUNA, tools: [{ type: "openrouter:image_generation" }], messages: [] },
+      { model: LUNA, tools: [{ type: "advisor_20260301", name: "advisor", model: SOL }], messages: [] },
+      { model: LUNA, tools: [{ type: "OpenRouter:Advisor" }], messages: [] },
+      { model: LUNA, Preset: "@preset/writer", messages: [] },
+    ]) {
+      const { response } = await post(chat(appId, slug), key, body);
+      expect(response.status).toBe(400);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // A tool that calls no other model is sent as it came.
+    fetchSpy.mockResolvedValueOnce(answer(LUNA));
+    const tools = [{ type: "function", function: { name: "lookup" } }, { type: "openrouter:web_search" }];
+    const served = await post(chat(appId, slug), key, { model: LUNA, tools, messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(sent(0).body.tools).toEqual(tools);
+  });
+
+  it("judges an OpenRouter preset's fixed parameters by the same rule when it is saved", () => {
+    const description = BUILT_IN_PROVIDERS.openrouter!;
+    const operation = description.operations.find((op) => op.name === "openrouter.chat")!;
+    const sources = priceSources({ type: "openrouter", rates: null });
+    expect(savedAlternativesProblem(description, operation, { models: [SOL] }, LUNA, sources)).toMatch(/fixes its model/);
+    expect(savedAlternativesProblem(description, operation, { models: ["openrouter/auto"] }, LUNA, sources)).toMatch(/has the provider choose/);
+    expect(savedAlternativesProblem(description, operation, { preset: "@preset/writer" }, LUNA, sources)).toMatch(/cannot check/);
+    expect(savedAlternativesProblem(description, operation, { tools: [{ type: "openrouter:fusion" }] }, LUNA, sources)).toMatch(/cannot check/);
+    expect(savedAlternativesProblem(description, operation, { models: [LUNA], tools: [{ type: "openrouter:web_search" }] }, LUNA, sources)).toBeNull();
   });
 });
 
