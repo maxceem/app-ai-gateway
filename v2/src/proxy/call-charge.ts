@@ -35,6 +35,7 @@ import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { providerListPrice } from "../pricing/billability.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
 import { declaredOperation } from "../providers/presets.ts";
@@ -137,33 +138,44 @@ function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefin
 }
 
 /**
- * What to charge in place of a provider's rounded figure (`costReportStep`),
- * or null to charge the figure. Only where the figure is below our price for
- * the call's usage, at the tier that served it, by no more than the rounding
- * can explain (a small Perplexity call reads $0). Then our price is charged,
- * as an estimate, so never below the model's standard rate. A figure further
- * below is the provider's own, a discount, and stands.
+ * Whether a provider's figure is rounded (`costReportStep`) below what the
+ * call cost, and what to charge then; null when the figure stands, exact.
+ *
+ * The figure is judged against the provider's own list rate at the tier that
+ * served (a small Perplexity call reads $0): below it by no more than the
+ * rounding step, rounding explains the gap. With no list rate, any figure
+ * under one step is in doubt. A figure further below is the provider's own, a
+ * discount, and stands.
+ *
+ * In doubt, our price for the call (the customer's rate where it has one) is
+ * charged as an estimate, so never below the standard rate (`replace`). With
+ * no price at all, the figure is kept but marked an estimate, never an exact
+ * charge (`keep`).
  */
-function roundedReplacement(
+function roundedFigure(
   attempt: CallAttempt,
   reported: number,
   usage: UsageObservation | null,
   served: ServiceMode,
-  priced: { readonly cost: NanoDollars } | null,
-): NonNullable<ReturnType<typeof priceInServedMode>> | null {
-  if (usage === null || attempt.price === null || priced === null) return null;
+): { readonly kind: "replace"; readonly pricing: NonNullable<ReturnType<typeof priceInServedMode>> } | { readonly kind: "keep" } | null {
+  if (usage === null) return null;
   const meter = declaredOperation(attempt.operation)?.meter;
   const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
   if (step === null) return null;
+  const listed = providerListPrice(attempt.providerType, attempt.model);
+  const listedCost = listed === null ? null : pricedOrNull(listed, usage, served, false)?.cost ?? null;
   try {
-    const gap = priced.cost - fromDollars(reported);
-    if (gap <= 0 || gap > fromDollars(step)) return null;
+    const figure = fromDollars(reported);
+    const gap = listedCost === null ? null : listedCost - figure;
+    const explained = gap === null ? figure < fromDollars(step) && hasMeasure(usage) : gap > 0 && gap <= fromDollars(step);
+    if (!explained) return null;
   } catch (error) {
     if (error instanceof MoneyError) return null;
     throw error;
   }
   // Priced as an estimate: the dearer of the served tier's price and the model's standard one.
-  return pricedOrNull(attempt.price.price, usage, served, true);
+  const pricing = attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, served, true);
+  return pricing === null ? { kind: "keep" } : { kind: "replace", pricing };
 }
 
 export function chargeId(requestId: string, seq: number): string {
@@ -235,16 +247,23 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  const rounded = reported === null ? null : roundedReplacement(attempt, reported, usage, servedMode, priced);
-  if (reported !== null && rounded !== null) {
+  const rounded = reported === null ? null : roundedFigure(attempt, reported, usage, servedMode);
+  if (reported !== null && rounded?.kind === "replace") {
     // The provider's figure is rounded coarser than the call costs (a small
     // Perplexity call reads $0): its usage at our price is charged instead,
     // as an estimate, never below the standard rate.
-    priced = rounded;
-    costed = { costNano: rounded.cost, priceSource: attempt.price!.source, estimate: true, rates: rounded.rates };
+    priced = rounded.pricing;
+    costed = { costNano: rounded.pricing.cost, priceSource: attempt.price!.source, estimate: true, rates: rounded.pricing.rates };
     measured = outcome.cut ? "partial" : "complete";
     reasons.push("cost_rounded");
     log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });
+  } else if (reported !== null && rounded?.kind === "keep") {
+    // Rounded, and no price to charge instead: the figure is all there is, so
+    // it is kept, but never as an exact charge.
+    costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: true, rates: null };
+    measured = outcome.cut ? "partial" : "complete";
+    reasons.push("cost_rounded");
+    log("error", "provider_cost_rounded_unpriced", { ...facts, reportedUsd: reported });
   } else if (reported !== null) {
     // What the provider charged wins: it is the whole figure, discounts included.
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };

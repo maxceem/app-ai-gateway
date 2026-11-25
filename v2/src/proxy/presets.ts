@@ -50,7 +50,7 @@ import type { ApiStyle, OperationDescription, ProviderDescription } from "../pro
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
 import { keyAuth } from "../providers/route.ts";
 import type { CallAttempt } from "./call-charge.ts";
-import { judgedAlternatives } from "./alternatives.ts";
+import { judgedAlternatives, pinnedModels } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { removeOutbound, removeOutboundForm, requestFacts } from "./request-fields.ts";
@@ -195,6 +195,8 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
       if (location.in === "body") body[location.field] = model;
       // The path names the model; the body names none, as v1.
       else delete body.model;
+      // A field that brings its own models (an Agent API `effort`) is sent with the preset's model as its only one.
+      pinnedModels(description, operation, body, model);
       // Webhook fields, and fetch fields the operation does not need, never reach the provider.
       removeOutbound(operation, body, new URLSearchParams());
       return body;

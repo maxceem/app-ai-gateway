@@ -385,6 +385,15 @@ describe("presets", () => {
     expect(same.response.status).toBe(200);
   });
 
+  it("sends a Perplexity Agent preset whose fixed parameters name an effort with its own model as the only one", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { agent: { provider: slug, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { effort: "low" } } } });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.00002 } } }));
+    const answer = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi" });
+    expect(answer.response.status).toBe(200);
+    expect(sent(0).body).toMatchObject({ effort: "low", model: "openai/gpt-6-luna", models: ["openai/gpt-6-luna"] });
+  });
+
   it("refuses a Perplexity Orchestrator preset call whose routing block names another model than the preset's", async () => {
     const slug = await connection("perplexity");
     const { appId, key } = await appWith({ presets: { chat: { provider: slug, operation: "perplexity.orchestrator.chat", model: "perplexity/glm-5.3-flash" } } });
@@ -1035,8 +1044,8 @@ describe("saving rewrites and presets", () => {
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
       // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
       [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
-      // Fixed parameters naming another model than the preset's would refuse every call.
-      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "Model is not allowed"],
+      // Fixed parameters naming another model than the preset's would refuse every call: refused by the save-time rule.
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "a preset fixes its model to openai/gpt-6-luna"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });

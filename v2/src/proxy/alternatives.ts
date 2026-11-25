@@ -14,7 +14,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
-import { modelSet, resolveAlternative, type Billing, type PriceSources } from "../pricing/billability.ts";
+import { callGap, modelSet, resolveAlternative, type Billing, type PriceSources } from "../pricing/billability.ts";
 import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { ServiceMode, ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
@@ -93,6 +93,46 @@ export function standingModel(description: ProviderDescription, operation: Opera
   if (!choosing) return null;
   const where = (rules.alternativeModels?.paths ?? []).map((path) => path.replaceAll("[]", "")).join(" and ");
   throw new GatewayError(400, "invalid_request", `${own} has the provider choose the model, so the request must name the models it may choose among in ${where}`);
+}
+
+/**
+ * Writes the request's judged `model` as its only alternative where a field
+ * it sends brings a model list of its own and it sends no list
+ * (`alternativeModels.pinWhen`): then the provider can serve it only with a
+ * model the gateway judged. True when it changed the body.
+ */
+export function pinnedModels(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>, model: string): boolean {
+  const pin = readingRules(description, operation).alternativeModels?.pinWhen;
+  if (pin === undefined) return false;
+  const sent = (name: string) => Object.hasOwn(body, name) && body[name] !== undefined && body[name] !== null;
+  if (!pin.fields.some(sent) || sent(pin.list)) return false;
+  body[pin.list] = [model];
+  return true;
+}
+
+/**
+ * The save-time rule for the models a preset's fixed parameters name besides
+ * its own: each must be the preset's model, since a preset fixes it, and be
+ * one a call can be saved with (`callGap`: a price, or the provider's own cost
+ * report). Null when they pass, or why not.
+ */
+export function savedAlternativesProblem(
+  description: ProviderDescription,
+  operation: OperationDescription,
+  body: Record<string, unknown>,
+  model: string,
+  sources: PriceSources,
+): string | null {
+  for (const [named, field] of namedAlternatives(description, operation, body)) {
+    const call = resolveAlternative(operation, sources, named, new Set([model]), { asIfServed: true });
+    if (call.kind === "refused") {
+      return call.reason === "model_not_allowed"
+        ? `${field} names ${named}, but a preset fixes its model to ${model}`
+        : `${field} names ${named}, which has no price that ${operation.name} can bill`;
+    }
+    if (callGap(call) !== null) return `${field} names ${named}, which has no price that ${operation.name} can bill`;
+  }
+  return null;
 }
 
 /**

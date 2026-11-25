@@ -42,7 +42,7 @@ import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passt
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, presetShape } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
-import { judgedAlternatives } from "../proxy/alternatives.ts";
+import { savedAlternativesProblem } from "../proxy/alternatives.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
@@ -596,9 +596,10 @@ async function checkPreset(
       try {
         refuseBackground(operation, judged);
         applyOutputCap(operation, judged, preset.max_output_tokens);
-        // Models the parameters name besides the preset's own pass the rule a call does (`judgedAlternatives`):
-        // a preset fixes its model, so only that one, or every call would be refused.
-        judgedAlternatives(description, operation, judged, { allowed: [target.model], sources: priceSources(connection), baseUrl: connection.base_url });
+        // Models the parameters name besides the preset's own pass the save-time rule: only the preset's model,
+        // with a price it can be billed at (`savedAlternativesProblem`).
+        const named = savedAlternativesProblem(description, operation, judged, target.model, priceSources(connection));
+        if (named !== null) throw new GatewayError(400, "invalid_request", named);
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
         throw invalid(`${where}.params: ${error.message}${index === 0 ? "" : ` (for ${label})`}`, { slug });

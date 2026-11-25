@@ -145,6 +145,9 @@ Orchestrator API. The charge is for the model that served the request.
 
 - The Agent API tries `models` before `model`, and a request may send the list
   without `model`.
+- An Agent API `effort` or `profile` can bring a `models` list of its own. A
+  request that sends one with `model` and no `models` list is sent with
+  `models` set to that one model, so Perplexity uses only the model checked.
 - A request that names no model is refused, because Perplexity would choose
   one. That includes an Agent API `effort` or `profile` sent with no `model`
   or `models`, and `perplexity/auto` sent with no `routing` block. A preset
@@ -156,8 +159,11 @@ One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
 Sonar and the Agent API report what each request cost, including Sonar's
 request fee and the Agent API's tools such as web search, and that figure is
 what is charged. Perplexity rounds it to five decimals, so a very small
-request can read $0: it is then charged at the model's price, marked as an
-estimate. So is an answer that comes without the figure.
+request can read $0. When that is less than Perplexity's own rates for the
+request by no more than the rounding, the request is charged at the model's
+price instead, marked as an estimate. A model with no price keeps the figure,
+marked as an estimate. An answer that comes without the figure is charged at
+the model's price, marked as an estimate.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,

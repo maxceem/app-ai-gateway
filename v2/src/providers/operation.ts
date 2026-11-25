@@ -888,7 +888,18 @@ export interface ProviderDescription {
    * (`src/proxy/alternatives.ts`). The charge is priced at the model the
    * answer says served it.
    */
-  readonly alternativeModels?: { readonly paths: readonly string[] };
+  readonly alternativeModels?: {
+    readonly paths: readonly string[];
+    /**
+     * Fields that bring a model list of their own, which the provider reads
+     * before the request's model (Perplexity's Agent API `effort`,
+     * `profile` and `preset`): when one is sent and `list` is not, the
+     * gateway writes `list` as the request's judged model alone. A field the
+     * request sends overrides the one it brings, so the provider uses only a
+     * model the gateway judged (`src/proxy/alternatives.ts`).
+     */
+    readonly pinWhen?: { readonly fields: readonly string[]; readonly list: string };
+  };
   /**
    * Model names that are not a model but ask the provider to choose one
    * (Perplexity's `perplexity/auto`). A request naming one is served only

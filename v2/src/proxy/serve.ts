@@ -64,7 +64,7 @@ import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { modelBodyField, readingRules, rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { chargedAs, judgedAlternatives, standingModel } from "./alternatives.ts";
+import { chargedAs, judgedAlternatives, pinnedModels, standingModel } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
@@ -400,6 +400,8 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const capped = parsed.kind === "json" && applyOutputCap(operation, body, routing.max_output_tokens);
       const metered = parsed.kind === "json" && requestStreamUsage(operation, body);
       const pinned = parsed.kind === "json" && pinServingProviders(description, connection.servingProviders, body);
+      // A field that brings its own models (an Agent API `effort`) is sent with the judged model as its only one.
+      const modelsPinned = parsed.kind === "json" && pinnedModels(description, operation, body, model);
       // A transcription is only sent in a format whose answer can be priced.
       const format = parsed.kind === "form" ? meteredTranscriptionFormat(operation, description, parsed.fields) : null;
       const location = operation.model;
@@ -419,7 +421,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
         parsed.kind === "json"
           ? {
               bytes:
-                capped || metered || pinned || bodyModelChanged || chosenRewritten || outbound.bodyChanged
+                capped || metered || pinned || modelsPinned || bodyModelChanged || chosenRewritten || outbound.bodyChanged
                   ? new TextEncoder().encode(JSON.stringify(body))
                   : bytes,
               contentType: "application/json",

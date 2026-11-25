@@ -58,12 +58,17 @@ const PERPLEXITY_SERVICE_MODES: ProviderDescription["serviceModes"] = [
 /**
  * The Agent API's reading rules: Perplexity's, plus `models`, a fallback
  * chain it reads before `model` (agent-api/model-fallback), whose models are
- * judged as the request's own (`alternativeModels`). A field sent beside
- * `effort` or `profile` overrides theirs (agent-api/effort, agent-api/profiles):
- * with `model` or `models`, the request names its models itself, and each is
- * judged. With neither, it names none, and is refused.
+ * judged as the request's own (`alternativeModels`). An `effort` level or a
+ * `profile` (`preset` is effort's old name) may bring a `models` chain of its
+ * own. A field the request sends overrides theirs (agent-api/effort,
+ * agent-api/profiles), so a request with one and no `models` list is sent
+ * with `models` set to its judged model alone (`pinWhen`). With no model
+ * named at all, it is refused.
  */
-const AGENT_RULES: ReadingRules = { serviceModes: PERPLEXITY_SERVICE_MODES, alternativeModels: { paths: ["models[]"] } };
+const AGENT_RULES: ReadingRules = {
+  serviceModes: PERPLEXITY_SERVICE_MODES,
+  alternativeModels: { paths: ["models[]"], pinWhen: { fields: ["effort", "profile", "preset"], list: "models" } },
+};
 
 /**
  * The Orchestrator API's reading rules: Perplexity's, plus `perplexity/auto`,
