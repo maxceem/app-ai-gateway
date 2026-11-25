@@ -55,7 +55,8 @@ never an edit of a merged one. Each object applies it when it next wakes.
 
 v2 has no way to delete an account yet. Whatever adds one must also clear
 that account's ledger object: `ctx.storage.deleteAlarm()`, then
-`ctx.storage.deleteAll()`. A late retry from the failed-write store may create the object
+`ctx.storage.deleteAll()`, then end the live instance (`ctx.abort()`) so it
+doesn't keep running with no tables. A late retry from the failed-write store may create the object
 again; its detail rows age out, and a monthly total may stay. That is
 accepted.
 

@@ -89,28 +89,33 @@ Retention runs in two places.
 
 A cron trigger runs every hour, at minute 17, for what D1 holds:
 
-- Expired App Attest challenges are deleted within the hour after their
-  five-minute window has passed. One that nothing used is first recorded as
-  a [challenge auth event](/applications/auth-events#unused-challenges).
+- Expired App Attest challenges are deleted, a bounded batch per run, so a
+  large backlog waits for later runs. One that nothing used is first recorded
+  as a [challenge auth event](/applications/auth-events#unused-challenges); if
+  that event can't be written, the challenge is still deleted and a warning is
+  logged.
 - Finished CLI and browser sign-ins are cleaned up.
 - At 03:17 UTC, where `CONVERSATIONS` is bound, each app's stored days older
   than its `conversations.retention_days` are deleted with their images, and
   everything of an app that no longer exists. A run that reaches its budget
   continues the next night.
 
-Usage history lives in one Durable Object per account, and each one keeps
-itself in order on its own alarm:
+Usage history lives in one Durable Object per account. Each call's charge
+updates that account's daily totals as it is written. Each object keeps itself
+in order on its own alarm:
 
 | Data | Rule |
 | --- | --- |
 | Pending work, such as job results still to fetch | Checked when it is due, at most once a minute. |
 | Authentication and rejection events | Deleted after 90 days, in a nightly run after 04:00 UTC. |
-| Usage | Per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
+| Usage | In the same nightly run, per-request rows older than 90 days are deleted; their daily totals stay. Once a whole month is older than 400 days, its daily totals are folded into one monthly total. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.
-Each account's nightly run has its own limit, sized for Cloudflare's Free
-plan. A backlog larger than one night is continued the next one.
+Each account's nightly run has its own limits,
+[`MAINTENANCE_QUERY_BUDGET`](/self-hosting/configuration#maintenance_query_budget)
+and [`MAINTENANCE_ROW_BUDGET`](/self-hosting/configuration#maintenance_row_budget).
+A backlog larger than one night is continued the next one.
 
 ## Backups and usage history
 
@@ -121,11 +126,16 @@ Usage history is not in D1. Charges, usage totals, sessions and sign-in
 events live in one Durable Object per account, each with its own storage, so
 `wrangler d1 export` does not include them.
 
-On Cloudflare's Free plan, Durable Objects have daily limits. Past them, a
-request is still served, and its usage record goes to a small store kept for
-failed writes, which retries it later. If that store can't take it either,
-the record is written to the logs as `usage_record_failed`, so nothing is lost
-without a trace.
+Cloudflare limits how much Durable Objects may do each day on its Free plan.
+Every Durable Object the gateway uses shares those limits. Past them, until
+they reset:
+
+- Calls are still served, but their charges can't be recorded. Each one is
+  written to the logs as `usage_record_failed` instead.
+- Per-user and per-app limits are not enforced. Each call logs
+  `app_limits_unchecked`.
+- App Attest requests are refused with a `503` the app may retry: the replay
+  check, the token exchange and `/me` all need a Durable Object.
 
 ## Reprice stored usage
 
