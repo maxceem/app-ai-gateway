@@ -24,7 +24,7 @@
  * A submission whose answer was lost is never sent again: it keeps its
  * estimate, marked `estimated`, and is logged (T15).
  */
-import { chargeStore } from "../do/ChargeStore.ts";
+import { chargeStore } from "../ledger/charge-store.ts";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";

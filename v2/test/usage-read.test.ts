@@ -404,6 +404,50 @@ describe("unpriced", () => {
   });
 });
 
+describe("dates", () => {
+  it("refuse days and months the calendar has not, and years outside 1970 to 2999 (Sol 7b-3 round 1)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const status = async (path: string) => (await request(key, "GET", `/v2/admin/apps/${appId}/${path}`)).status;
+    expect(await status("charges?from=2025-02-01&to=2025-02-29")).toBe(400);
+    expect(await status("usage/breakdown?by=user&from=2025-04-31&to=2025-05-01")).toBe(400);
+    expect(await status("usage/timeseries?from=2024-02-29&to=2024-03-01")).toBe(200);
+    expect(await status("usage?month=1969-12")).toBe(400);
+    expect(await status("usage?month=0099-01")).toBe(400);
+    expect(await status("usage?month=3000-01")).toBe(400);
+    expect(await status("usage?month=2999-12")).toBe(200);
+    expect(await status("usage/timeseries?from=2999-12-31&to=2999-12-31")).toBe(200);
+    // A defaulted start never falls before the first accepted day (Neon 7b-3 round 1).
+    const early = await request(key, "GET", `/v2/admin/apps/${appId}/usage/timeseries?to=1970-01-10`);
+    expect(early.status).toBe(200);
+    expect(early.body).toMatchObject({ from: "1970-01-01", to: "1970-01-10" });
+  });
+
+  it("count a charge at midnight UTC on its own day, in the totals and in the charges", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    await seed({ appId, usedAt: Date.parse("2025-11-30T23:59:59.999Z"), id: "ch_last" });
+    await seed({ appId, usedAt: Date.parse("2025-12-01T00:00:00.000Z"), id: "ch_first" });
+    const november = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-11`);
+    expect(november.body.charges).toBe(1);
+    const december = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
+    expect(december.body.charges).toBe(1);
+    const lastDay = await request(key, "GET", `/v2/admin/apps/${appId}/charges?from=2025-11-30&to=2025-11-30`);
+    expect(lastDay.body.charges.map((row: any) => row.id)).toEqual(["ch_last"]);
+    const byUser = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?by=operation&from=2025-12-01&to=2025-12-01`);
+    expect(byUser.body.rows).toEqual([expect.objectContaining({ charges: 1 })]);
+  });
+
+  it("limit a breakdown from the charges to 31 days, and one from the day totals to 400", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    const status = async (path: string) => (await request(key, "GET", `/v2/admin/apps/${appId}/${path}`)).status;
+    expect(await status("usage/breakdown?by=user&from=2025-01-01&to=2025-01-31")).toBe(200);
+    expect(await status("usage/breakdown?by=user&from=2025-01-01&to=2025-02-01")).toBe(400);
+    expect(await status("usage/breakdown?by=model&from=2025-01-01&to=2025-02-01")).toBe(200);
+  });
+});
+
 describe("a slow ledger", () => {
   it("answers 503 deadline_exceeded with Retry-After when the account's ledger does not answer in time (step 8f)", async () => {
     const key = await seedManagementKey();

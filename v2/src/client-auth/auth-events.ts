@@ -97,12 +97,17 @@ async function recordAttempt(input: AuthEventInput & { accountId: string }, id: 
   const userId = input.userId ?? null;
   let delayMs: number | null = null;
   if (change === "succeeded") {
-    const wait = await db
-      .prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = ?")
-      .bind(input.appId, userId)
-      .first<{ since: number | null }>();
-    const since = wait?.since ?? null;
-    if (since !== null && since <= now && since >= now - STALE_WAIT_MS) delayMs = Math.max(0, now - since);
+    try {
+      const wait = await db
+        .prepare("SELECT claim_pending_since AS since FROM app_end_user WHERE app_id = ? AND id = ?")
+        .bind(input.appId, userId)
+        .first<{ since: number | null }>();
+      const since = wait?.since ?? null;
+      if (since !== null && since <= now && since >= now - STALE_WAIT_MS) delayMs = Math.max(0, now - since);
+    } catch (error) {
+      // The event is still written, without its wait measured.
+      log("warn", "claim_wait_unread", { app: input.appId, error: errorFacts(error) });
+    }
   }
   await writeEvent(input, id, now, delayMs);
   if (change === "succeeded") {

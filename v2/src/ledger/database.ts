@@ -11,8 +11,10 @@
  *   `transactionSync`, as D1 runs a batch in one transaction.
  *
  * Bound values follow D1: `undefined` is refused, a boolean is stored as 1 or
- * 0. `meta.changes` is the rows the statement wrote, the trigger's writes
- * included, as D1 counts them.
+ * 0. `meta.changes` is the object's `rowsWritten`, not D1's row count: on an
+ * insert or update it includes the trigger's writes and each index entry
+ * written, and on a delete it is exact. It is 0 only when nothing was
+ * written, which is what the ledger code reads it for.
  */
 
 import { withDeadline } from "../core/background.ts";
@@ -29,6 +31,7 @@ export interface LedgerResult {
   /** Each row's values in column order, so two columns of one name both come through `raw`. */
   readonly values: unknown[][];
   readonly columns: string[];
+  /** The object's `rowsWritten`: trigger and index writes included on an insert or update, exact on a delete. */
   readonly changes: number;
   readonly rowsRead: number;
 }

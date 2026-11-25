@@ -14,7 +14,6 @@
  * charge can still be written by hand.
  */
 import { DurableObject } from "cloudflare:workers";
-import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
@@ -71,22 +70,6 @@ function byAccount<T>(items: readonly T[], account: (item: T) => string): Map<st
     groups.set(account(item), list);
   }
   return groups;
-}
-
-/** How long one call to an app's failed-write store may take before it counts as failed. */
-export const CHARGE_STORE_DEADLINE_MS = 5_000;
-
-/**
- * An app's failed-write store, each call under a deadline (plan, step 8f:
- * every call that crosses to another store has one). A call that runs out
- * rejects, so the caller's last resort, the logs, still runs in time.
- */
-export function chargeStore(env: Env, appId: string, deadlineMs = CHARGE_STORE_DEADLINE_MS) {
-  const store = env.CHARGE_STORE.getByName(appId);
-  return {
-    keep: (entries: readonly LedgerEntry[]) => withDeadline(store.keep(entries), deadlineMs, "keeping the charge"),
-    keepWork: (rows: readonly OpenWorkRow[]) => withDeadline(store.keepWork(rows), deadlineMs, "keeping the open work"),
-  };
 }
 
 export class ChargeStore extends DurableObject<Env> {

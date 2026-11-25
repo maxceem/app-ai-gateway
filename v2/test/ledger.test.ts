@@ -5,7 +5,8 @@
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHARGE_STORE_DEADLINE_MS, MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
+import { MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
+import { CHARGE_STORE_DEADLINE_MS } from "../src/ledger/charge-store.ts";
 import { ledgerDb } from "../src/ledger/database.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
 import { nano, type NanoDollars } from "../src/money.ts";

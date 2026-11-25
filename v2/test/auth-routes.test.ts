@@ -115,6 +115,23 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("still writes a sign-in event, with no wait measured, when D1 cannot read the user's wait (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const prepare = env.DB.prepare.bind(env.DB);
+    const flakyDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property !== "prepare") return Reflect.get(target, property)?.bind?.(target) ?? Reflect.get(target, property);
+        return (sql: string) => {
+          if (sql.startsWith("SELECT claim_pending_since")) throw new Error("D1 cannot read");
+          return prepare(sql);
+        };
+      },
+    });
+    await recordAuthEvent({ env: { ...env, DB: flakyDb } as Env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-unread", outcome: "ok", latencyMs: 1 });
+    expect(await authEvents(appId)).toEqual([expect.objectContaining({ user_id: "u-unread", outcome: "ok", claim_delay_ms: null })]);
+  });
+
   // Seeds a second account, which takes a few seconds under load.
   it("counts every account's abandoned challenges once all their writes are in (step 8f)", { timeout: 30_000 }, async () => {
     const now = Date.now();
