@@ -16,6 +16,7 @@
  */
 
 import { withDeadline } from "../core/background.ts";
+import { serviceUnavailable } from "../core/platform-errors.ts";
 
 /** One statement as it travels to the object: its SQL and its bound values. */
 export interface LedgerStatement {
@@ -69,8 +70,13 @@ export function ledgerDb(env: Env, accountId: string, options: { readonly deadli
   const object = ledgerObject(env, accountId);
   const deadlineMs = options.deadlineMs ?? LEDGER_CALL_DEADLINE_MS;
   return shapedLikeD1((statements, transaction) =>
-    withDeadline(object.query(statements as LedgerStatement[], transaction), deadlineMs, "calling the account's ledger"),
+    withDeadline(object.query(statements as LedgerStatement[], transaction), deadlineMs, "calling the account's ledger", ledgerTooSlow),
   );
+}
+
+/** A ledger call past its deadline: the route deadline's own error, so a route answers 503 `deadline_exceeded` with Retry-After. */
+function ledgerTooSlow(message: string): Error {
+  return serviceUnavailable("deadline_exceeded", "The gateway took too long to answer; retry shortly", new Error(message));
 }
 
 /** Runs statements on an object's own database. A transaction is one `transactionSync`. */

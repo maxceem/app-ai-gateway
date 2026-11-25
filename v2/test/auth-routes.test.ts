@@ -1,11 +1,12 @@
 import { env } from "cloudflare:workers";
 import { LEDGER_CALL_DEADLINE_MS } from "../src/ledger/database.ts";
+import { BACKGROUND_JOB_DEADLINE_MS, boundedJob } from "../src/core/background.ts";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { AUTH_EVENT_JOB_DEADLINE_MS, drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, recordAuthEvent, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, recordAuthEvent, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
   ACCOUNT_ID,
@@ -113,6 +114,19 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("gives up the expired-challenge clean-up as one job inside the request's background time, with a warning (step 8f)", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // Its D1 read never answers.
+    const stalledDb = { prepare: () => ({ bind: () => ({ all: () => new Promise(() => undefined) }) }) } as unknown as D1Database;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // As `/auth/challenge` runs it, one challenge in a hundred.
+    const job = boundedJob(settleExpiredChallenges(env, stalledDb), "settling expired challenges", "auth_challenges_prune_failed");
+    await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DEADLINE_MS);
+    vi.useRealTimers();
+    expect(await job).toBeUndefined();
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_challenges_prune_failed"'))).toBe(true);
+  });
+
   it("gives up a sign-in event whose D1 lookup never answers, inside the request's background time, with a warning (step 8f)", async () => {
     const appId = await seedApp(attestAuthentication());
     const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -120,7 +134,7 @@ describe("POST /v2/apps/{app}/auth/failure", () => {
     const stalledDb = { prepare: () => ({ bind: () => ({ first: () => new Promise(() => undefined), run: () => new Promise(() => undefined) }) }) };
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const writing = recordAuthEvent({ env: { ...env, DB: stalledDb } as unknown as Env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-stalled", outcome: "ok", latencyMs: 1 });
-    await vi.advanceTimersByTimeAsync(AUTH_EVENT_JOB_DEADLINE_MS);
+    await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DEADLINE_MS);
     vi.useRealTimers();
     await writing;
     expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_event_record_failed"'))).toBe(true);

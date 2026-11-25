@@ -20,14 +20,12 @@ import {
 import { EXCHANGES, type AuthAttempt, type IssuedToken } from "../client-auth/token-exchange.ts";
 import { AppAttestFailureReportSchema } from "../contracts/auth.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { contained } from "../core/background.ts";
+import { boundedJob, contained } from "../core/background.ts";
 import { clientNetwork } from "../core/client-network.ts";
 import { CLIENT_SDK_HEADER, storedClientSdk } from "../core/client-sdk.ts";
 import { storedAppVersion } from "../core/app-version.ts";
-import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError, type ErrorCode, type GatewayErrorReason } from "../core/errors.ts";
 import { clientAddress, enforceEndpointRateLimit, type EndpointRateLimitName } from "../core/flood-limit.ts";
-import { log } from "../core/log.ts";
 import { asGatewayError } from "../core/platform-errors.ts";
 import type { AppRecord } from "../core/types.ts";
 import { database } from "../db/index.ts";
@@ -215,11 +213,8 @@ export async function challengeHandler(c: AuthContext): Promise<Response> {
   // One challenge in a hundred also settles the expired ones, so the table
   // stays small where no cron runs, such as local development.
   if (Math.random() < 0.01) {
-    c.executionCtx.waitUntil(
-      settleExpiredChallenges(c.env, c.env.DB).catch((error: unknown) => {
-        log("warn", "auth_challenges_prune_failed", { error: errorFacts(error) });
-      }),
-    );
+    // One deadline over the whole job (the D1 read, the ledger writes, the D1 delete), inside `waitUntil`.
+    c.executionCtx.waitUntil(boundedJob(settleExpiredChallenges(c.env, c.env.DB), "settling expired challenges", "auth_challenges_prune_failed"));
   }
   return c.json({
     challenge,

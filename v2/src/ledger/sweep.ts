@@ -211,7 +211,13 @@ export async function runSweep(
         }, itemLimit);
       });
       const answer = await Promise.race([handlers[item.kind](env, item, { ledger, now, lastTry, signal: controller.signal, keepAlive: options.waitUntil }), late]);
-      result = answer === TIMED_OUT ? retry("timed out") : answer;
+      if (answer === TIMED_OUT) {
+        // Like any other failure: tried again later, and logged so the monitor sees it.
+        log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(new Error(`took longer than ${itemLimit} ms`)) });
+        result = retry("timed out");
+      } else {
+        result = answer;
+      }
     } catch (error) {
       log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(error) });
       result = retry("failed");

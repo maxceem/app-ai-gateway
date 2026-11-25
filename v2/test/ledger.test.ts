@@ -210,7 +210,7 @@ describe("the failed-write store", () => {
       const retry = retryStored((accountId) => ledgerDb(stalledLedgers, accountId, { deadlineMs: LEDGER_D1_DEADLINE_MS }), [entry()], [], 0);
       const outcome = retry.then(
         () => "written",
-        (error: unknown) => (error as Error).message,
+        (error: unknown) => `${(error as { status?: number }).status} ${(error as { reason?: string }).reason ?? ""} ${String((error as { cause?: unknown }).cause)}`,
       );
       await vi.advanceTimersByTimeAsync(LEDGER_D1_DEADLINE_MS - 1);
       let settled: string | undefined;
@@ -218,7 +218,8 @@ describe("the failed-write store", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
-      expect(await outcome).toMatch(/calling the account's ledger took longer than/);
+      // The route deadline's own error: a route that waits on it answers 503 `deadline_exceeded`.
+      expect(await outcome).toMatch(/^503 deadline_exceeded .*calling the account's ledger took longer than/);
     } finally {
       vi.useRealTimers();
     }

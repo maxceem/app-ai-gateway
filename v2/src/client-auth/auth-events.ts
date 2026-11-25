@@ -5,7 +5,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { deletePass, type Pass } from "../core/chunked-delete.ts";
-import { withDeadline } from "../core/background.ts";
+import { boundedJob } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import type { ErrorCode } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -134,15 +134,6 @@ async function recordAttempt(input: AuthEventInput & { accountId: string }, id: 
   return delayMs;
 }
 
-/**
- * How long the whole recording of one attempt may take: the D1 read of the
- * user's wait, every try at the event, and the D1 change. It runs after the
- * answer, inside the request's `waitUntil`, which ends about 30 s after it,
- * so this ends well before and its warning is always logged. Each ledger
- * call also has the ledger's own deadline (`ledgerDb`).
- */
-export const AUTH_EVENT_JOB_DEADLINE_MS = 20_000;
-
 /** The event itself, in the account's ledger, once: its id is stable. A success gets a few tries; a failure is logged and skipped. */
 async function writeEvent(input: AuthEventInput & { accountId: string }, id: string, now: number, delayMs: number | null): Promise<void> {
   const ledger = ledgerDb(input.env, input.accountId);
@@ -195,12 +186,15 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
   if (input.accountId === null) return;
   const id = timeOrderedId();
   const now = Date.now();
-  try {
-    const delayMs = await withDeadline(recordAttempt({ ...input, accountId: input.accountId }, id, now), AUTH_EVENT_JOB_DEADLINE_MS, "recording the auth event");
-    if (delayMs !== null) log("info", "claim_propagation_recovered", { app: input.appId, delayMs });
-  } catch (error) {
-    log("warn", "auth_event_record_failed", { id, appId: input.appId, event: input.event, outcome: input.outcome, error: errorFacts(error) });
-  }
+  // The whole recording (the D1 read of the wait, every try at the event, the D1 change) runs
+  // under one deadline inside the request's `waitUntil`, so its warning is always logged.
+  const delayMs = await boundedJob(recordAttempt({ ...input, accountId: input.accountId }, id, now), "recording the auth event", "auth_event_record_failed", {
+    id,
+    appId: input.appId,
+    event: input.event,
+    outcome: input.outcome,
+  });
+  if (delayMs !== undefined && delayMs !== null) log("info", "claim_propagation_recovered", { app: input.appId, delayMs });
 }
 
 /** Marks a challenge as used by a refused attempt, so its expiry is not also counted as abandoned. */

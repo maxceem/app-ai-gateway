@@ -9,7 +9,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { QueryBudget } from "../src/core/query-budget.ts";
-import type { LedgerStatement } from "../src/ledger/database.ts";
+import { LEDGER_CALL_DEADLINE_MS, type LedgerStatement } from "../src/ledger/database.ts";
 import { runUsageRetention } from "../src/ledger/retention.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, ledger } from "./helpers.ts";
 
@@ -401,6 +401,29 @@ describe("unpriced", () => {
     expect(await usage()).toMatchObject({ charges: 1, unpriced: 0, cost_nano: 750 });
     const fromCharges = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?from=2025-11-01&to=2025-11-30&by=user`);
     expect(fromCharges.body.rows).toEqual([expect.objectContaining({ key: "u1", charges: 1, unpriced: 0, cost_nano: 750 })]);
+  });
+});
+
+describe("a slow ledger", () => {
+  it("answers 503 deadline_exceeded with Retry-After when the account's ledger does not answer in time (step 8f)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const ctx = createExecutionContext();
+    const answering = worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/usage`, { headers: { authorization: `Bearer ${key}` } }),
+      stalled,
+      ctx,
+    );
+    await vi.advanceTimersByTimeAsync(LEDGER_CALL_DEADLINE_MS);
+    vi.useRealTimers();
+    const response = await answering;
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).not.toBeNull();
+    expect(await response.json()).toMatchObject({ error: { code: "service_unavailable" } });
   });
 });
 

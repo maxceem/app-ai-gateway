@@ -827,6 +827,7 @@ describe("the sweep", () => {
   it("gives an item its time limit, and gives up after the set number of tries, keeping the row", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const prefix = unique("sw_slow");
     await work(`${prefix}_hang`, T0 - 10_000, "job_check");
     await work(`${prefix}_last`, T0 - 9_000, "job_check", SWEEP_MAX_TRIES - 1);
@@ -838,6 +839,10 @@ describe("the sweep", () => {
       { id: `${prefix}_last`, tries: SWEEP_MAX_TRIES, due_at: T0 - 9_000, last_error: "not ready", gave_up_at: T0 },
     ]);
     expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)).message)).toContain("open_work_gave_up");
+    // An item that ran out of time is logged like any other failure (step 8f).
+    expect(warned.mock.calls.map(([line]) => JSON.parse(String(line)) as { message: string; work?: string })).toContainEqual(
+      expect.objectContaining({ message: "open_work_failed", work: `${prefix}_hang` }),
+    );
     // A given-up row is never taken again.
     const seen: string[] = [];
     await runSweep(env, ledger(), { now: T0 + 10 * 60 * 60 * 1000, handlers: { ...OPEN_WORK_HANDLERS, job_check: async (_e, i) => (seen.push(i.id), { done: true }) } });
