@@ -161,9 +161,10 @@ request fee and the Agent API's tools such as web search, and that figure is
 what is charged. Perplexity rounds it to five decimals, so a very small
 request can read $0. When that is less than Perplexity's own rates for the
 request by no more than the rounding, the request is charged at the model's
-price instead, marked as an estimate. A model with no price keeps the figure,
-marked as an estimate. An answer that comes without the figure is charged at
-the model's price, marked as an estimate.
+price instead, marked as an estimate. For a model with no price, such a figure
+is treated like a missing one. An answer without the figure is charged at the
+model's price, marked as an estimate. If the model has no price, the request's
+cost is left unknown until you add one.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,

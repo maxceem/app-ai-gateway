@@ -149,15 +149,15 @@ function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefin
  *
  * In doubt, our price for the call (the customer's rate where it has one) is
  * charged as an estimate, so never below the standard rate (`replace`). With
- * no price at all, the figure is kept but marked an estimate, never an exact
- * charge (`keep`).
+ * no price to charge, the cost is `unknown`: charged as an answer that
+ * reported none.
  */
 function roundedFigure(
   attempt: CallAttempt,
   reported: number,
   usage: UsageObservation | null,
   served: ServiceMode,
-): { readonly kind: "replace"; readonly pricing: NonNullable<ReturnType<typeof priceInServedMode>> } | { readonly kind: "keep" } | null {
+): { readonly kind: "replace"; readonly pricing: NonNullable<ReturnType<typeof priceInServedMode>> } | { readonly kind: "unknown" } | null {
   if (usage === null) return null;
   const meter = declaredOperation(attempt.operation)?.meter;
   const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
@@ -175,7 +175,7 @@ function roundedFigure(
   }
   // Priced as an estimate: the dearer of the served tier's price and the model's standard one.
   const pricing = attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, served, true);
-  return pricing === null ? { kind: "keep" } : { kind: "replace", pricing };
+  return pricing === null ? { kind: "unknown" } : { kind: "replace", pricing };
 }
 
 export function chargeId(requestId: string, seq: number): string {
@@ -198,7 +198,12 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const answered = outcome.httpStatus !== null && outcome.httpStatus >= 200 && outcome.httpStatus < 300;
   const facts = { app: attempt.appId, charge: id, providerType: attempt.providerType, providerSlug: attempt.providerSlug, model: attempt.model };
 
-  const reported = outcome.providerCostUsd ?? null;
+  const figure = outcome.providerCostUsd ?? null;
+  const rounded = figure === null ? null : roundedFigure(attempt, figure, usage, servedMode);
+  // A rounded figure with no price to charge in its place says nothing exact
+  // (a $0 may be any amount under one step): the answer is charged as one
+  // that reported no cost.
+  const reported = rounded?.kind === "unknown" ? null : figure;
   // Every reason a charge is an estimate, each judged and logged on its own,
   // never skipped because an earlier one already applies:
   // - a mode value the gateway does not know, in the request or the response;
@@ -247,7 +252,6 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  const rounded = reported === null ? null : roundedFigure(attempt, reported, usage, servedMode);
   if (reported !== null && rounded?.kind === "replace") {
     // The provider's figure is rounded coarser than the call costs (a small
     // Perplexity call reads $0): its usage at our price is charged instead,
@@ -257,13 +261,6 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     measured = outcome.cut ? "partial" : "complete";
     reasons.push("cost_rounded");
     log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });
-  } else if (reported !== null && rounded?.kind === "keep") {
-    // Rounded, and no price to charge instead: the figure is all there is, so
-    // it is kept, but never as an exact charge.
-    costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: true, rates: null };
-    measured = outcome.cut ? "partial" : "complete";
-    reasons.push("cost_rounded");
-    log("error", "provider_cost_rounded_unpriced", { ...facts, reportedUsd: reported });
   } else if (reported !== null) {
     // What the provider charged wins: it is the whole figure, discounts included.
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };

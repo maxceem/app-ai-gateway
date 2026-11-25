@@ -416,7 +416,7 @@ describe("Perplexity", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
-  it("judges Perplexity's rounded figure against its own list rate, and keeps a rounded $0 with no price as an estimate", async () => {
+  it("judges Perplexity's rounded figure against its own list rate, and leaves a rounded $0 with no price unresolved", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/brand-new-model"] });
     // The customer's own rate for gpt-6-luna is ten times the list's.
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
@@ -433,13 +433,16 @@ describe("Perplexity", () => {
     // At the list's $0.10/$0.50, 33 in and 5 out cost $0.0000058: $0 is rounding. At the customer's rate,
     // $0.000058, the gap is past one step, but rounding is judged against Perplexity's own rate.
     await call("openai/gpt-6-luna", 0);
-    // No price at all: the rounded $0 is all there is, kept, but as an estimate.
+    // No price at all: a rounded $0 may be any amount under one step, so it is charged as an answer
+    // that reported no cost: unresolved, logged, and priced later once a rate exists. Never a booked $0.
     await call("openai/brand-new-model", 0);
-    expect(await chargesOf(appId)).toMatchObject([
+    const charges = await chargesOf(appId);
+    expect(charges).toMatchObject([
       { price_source: "customer_rate", cost_nano: 58_000, price_is_estimate: 1 },
-      { price_source: "provider_usd", cost_nano: 0, price_is_estimate: 1 },
+      { price_source: "unresolved", cost_nano: null },
     ]);
-    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_rounded_unpriced"));
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charges[1]!.id).first()).toEqual({ kind: "unresolved" });
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
   it("judges a rewrite to perplexity/auto as perplexity/auto: served only with a routing block whose models are allowed", async () => {
