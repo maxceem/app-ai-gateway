@@ -32,6 +32,7 @@
 #   post-deploy-check POST_DEPLOY_CHECK_TOKEN         none               deploy-gateway
 #                     (notify)
 #   follow-prices     GitHub token                    actions: write     deploy-gateway,
+#                                                                        deploy-docs,
 #                                                                        publish-archive,
 #                                                                        publish-npm
 #   refresh-context7  CONTEXT7_API_KEY (notify)       none               deploy-docs
@@ -47,7 +48,7 @@
 #     because an installed CLI refuses to run until it can download exactly
 #     that archive;
 #   - main's price list is deployed, when it is newer, only after the gateway,
-#     the archive and npm all succeeded;
+#     the docs, the archive and npm all succeeded;
 #   - the post-deploy check and the Context7 refresh are best effort and never
 #     fail the release.
 #
@@ -60,8 +61,8 @@
 #               bypass. Only `deploy-gateway` uses it, so one approval covers a
 #               release, and every later job runs only after that job
 #               succeeded.
-#   docs        holds a Cloudflare token that can deploy Workers but not touch
-#               D1, R2 or routes. No reviewer: its job runs after the approved
+#   docs        holds a Cloudflare token that can edit only the docs Worker,
+#               with no D1, R2 or gateway access. No reviewer: its job runs after the approved
 #               gateway deploy.
 #   release     holds no secret. It is what npm's trusted publisher names, so
 #               only `publish-npm` can publish the CLI. No reviewer, for the
@@ -80,9 +81,9 @@
 #                                scripts/wrangler-config.mjs), since `build` builds
 #                                from wrangler.jsonc alone
 # `docs` environment secrets, required:
-#   DOCS_CLOUDFLARE_API_TOKEN    Workers Scripts: Edit on the account, plus what the
-#                                docs overlay's custom domain needs on its zone;
-#                                no D1, no R2
+#   DOCS_CLOUDFLARE_API_TOKEN    edit access to the docs Worker only, plus what the
+#                                docs overlay's route or custom domain needs on its
+#                                zone; no D1, no R2
 #   CLOUDFLARE_ACCOUNT_ID        the same account
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
 # `notify` environment secrets, optional:
@@ -299,8 +300,8 @@ jobs:
         run: echo "Deployed ${TAG} with the price list from ${PRICES_REVISION} (${PRICES_UPDATED})." >> "$GITHUB_STEP_SUMMARY"
 
   # After the gateway, so a release whose gateway failed never changes the
-  # docs. Its own environment, with no reviewer and a token that can deploy
-  # Workers but not touch D1, R2 or the gateway's routes: the approval for
+  # docs. Its own environment, with no reviewer and a token that can edit only
+  # the docs Worker, with no D1, R2 or gateway access: the approval for
   # `deploy-gateway` already covers it.
   deploy-docs:
     needs: [build, deploy-gateway]
@@ -499,7 +500,7 @@ jobs:
   # release, unless a newer release exists: running an older release again is
   # a rollback.
   follow-prices:
-    needs: [build, deploy-gateway, publish-archive, publish-npm]
+    needs: [build, deploy-gateway, deploy-docs, publish-archive, publish-npm]
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
     permissions:
