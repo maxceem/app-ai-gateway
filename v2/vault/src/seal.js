@@ -257,15 +257,16 @@ export async function seal(env, kind, identity, plaintext) {
  * @param {unknown} identity
  * @param {unknown} blob
  * @param {AbortSignal} [signal] the caller's, for the call to cf-kms in kms mode
+ * @param {number} [until] when to stop waiting on cf-kms, in epoch ms
  * @returns {Promise<string>}
  */
-export async function open(env, kind, identity, blob, signal) {
+export async function open(env, kind, identity, blob, signal, until) {
   const context = secretContext(kind, identity);
   if (typeof blob !== "string") throw new VaultBlobError("invalid blob");
   if (vaultMode(env) === "kms") {
     if (!blob.startsWith(`${ENVELOPE_PREFIX}.`)) throw new VaultBlobError("blob was not sealed in kms mode");
     try {
-      return await kms(env).decryptSecret(blob, context, signal);
+      return await kms(env).decryptSecret(blob, context, signal, until);
     } catch (error) {
       if (!(error instanceof KmsError)) throw error;
       if (error.code === "decrypt_failed" || error.code === "invalid_envelope") throw new VaultBlobError("blob does not open under this identity");

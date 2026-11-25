@@ -39,6 +39,7 @@ export async function probeProviderKey(
 ): Promise<ProbeResult> {
   if (description.probe === undefined || build === null) return { validated: false, reason: "no_probe" };
   const deadline = new AbortController();
+  const endsAt = Date.now() + PROBE_TIMEOUT_MS;
   const timer = setTimeout(() => deadline.abort(new Error("provider probe timed out")), PROBE_TIMEOUT_MS);
   let response: Response;
   try {
@@ -50,7 +51,7 @@ export async function probeProviderKey(
     for (const [name, value] of Object.entries(probe.headers)) headers.set(name, value);
     // The vault never follows a redirect: it could take the key to another host.
     response = await Promise.race([
-      vault(env).call({ url: probe.url, method: "GET", headers, body: null, signal: deadline.signal, credentials: probe.credentials }),
+      vault(env).call({ url: probe.url, method: "GET", headers, body: null, signal: deadline.signal, deadline: endsAt, credentials: probe.credentials }),
       timedOut,
     ]);
   } catch (error) {

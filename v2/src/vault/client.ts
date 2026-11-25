@@ -18,6 +18,8 @@ import type { SecretIdentity, SecretKind } from "./secrets.ts";
 export const VAULT_CALL_HEADER = "x-agw-vault";
 /** Set on an answer the vault gives itself, never on a provider's. Its value is a code. */
 export const VAULT_ERROR_HEADER = "x-agw-vault-error";
+/** The caller's deadline over the binding, in epoch ms, as the vault reads it (`v2/vault/src/call.js`). */
+export const VAULT_DEADLINE_HEADER = "x-agw-vault-deadline";
 
 /** A provider key, sealed, with the header and format it is sent in. */
 export interface SealedProviderKey {
@@ -46,6 +48,13 @@ export interface VaultCall {
   readonly headers: Headers;
   readonly body: BodyInit | null;
   readonly signal?: AbortSignal;
+  /**
+   * When this Worker gives up on the call, in epoch ms: the same deadline its
+   * signal aborts on. The vault stops waiting on cf-kms before it, so a stall
+   * comes back as the vault's refusal (nothing sent, nothing charged), never
+   * as this Worker giving up on a call it cannot tell apart.
+   */
+  readonly deadline?: number;
   readonly credentials: SealedCallCredentials;
 }
 
@@ -100,6 +109,7 @@ function bindingClient(binding: VaultBinding): VaultClient {
     call: async (input) => {
       const headers = new Headers(input.headers);
       headers.set(VAULT_CALL_HEADER, JSON.stringify(input.credentials));
+      if (input.deadline !== undefined) headers.set(VAULT_DEADLINE_HEADER, String(input.deadline));
       const request = new Request(input.url, {
         method: input.method,
         headers,

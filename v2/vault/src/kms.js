@@ -97,11 +97,14 @@ export function createKmsClient(options) {
    * @param {unknown} body
    * @param {readonly string[]} fields
    * @param {AbortSignal} [signal] the caller's own, if it has one: the call stops at whichever ends first
+   * @param {number} [until] the caller's own end, in epoch ms, when sooner than this call's limit
    * @returns {Promise<Record<string, unknown>>}
    */
-  async function call(path, body, fields, signal) {
+  async function call(path, body, fields, signal, until) {
+    const wait = Math.min(KMS_TIMEOUT_MS, until === undefined ? KMS_TIMEOUT_MS : until - Date.now());
+    if (wait <= 0) throw new KmsError("timeout", 0);
     const limit = new AbortController();
-    const timer = setTimeout(() => limit.abort(new KmsError("timeout", 0)), KMS_TIMEOUT_MS);
+    const timer = setTimeout(() => limit.abort(new KmsError("timeout", 0)), wait);
     const stop = signal === undefined ? limit.signal : AbortSignal.any([limit.signal, signal]);
     try {
       return await send(path, body, fields, stop);
@@ -180,8 +183,9 @@ export function createKmsClient(options) {
      * @param {string} blob
      * @param {Record<string, string>} context
      * @param {AbortSignal} [signal]
+     * @param {number} [until]
      */
-    async decryptSecret(blob, context, signal) {
+    async decryptSecret(blob, context, signal, until) {
       const parts = blob.split(".");
       // The wrapped key has dots of its own: it is everything between the prefix and the iv and ciphertext.
       if (parts.length < 4 || parts[0] !== ENVELOPE_PREFIX) throw new KmsError("invalid_envelope", 0);
@@ -194,7 +198,7 @@ export function createKmsClient(options) {
       let key = cached !== undefined && cached.expiresAt > Date.now() ? cached.key : null;
       if (key === null) {
         cache.delete(cacheKey);
-        const opened = await call("/v1/decrypt", { wrappedKey: wrapped, encryptionContext: context }, ["plaintextKey"], signal);
+        const opened = await call("/v1/decrypt", { wrappedKey: wrapped, encryptionContext: context }, ["plaintextKey"], signal, until);
         key = await importDataKey(fromBase64Url(/** @type {string} */ (opened.plaintextKey)));
         remember(cacheKey, key);
       }

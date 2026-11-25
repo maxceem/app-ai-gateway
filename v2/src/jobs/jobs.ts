@@ -352,6 +352,7 @@ export async function fetchJob(
   const untilHeaders = new AbortController();
   const stop = () => untilHeaders.abort(signal?.reason);
   signal?.addEventListener("abort", stop, { once: true });
+  const deadline = Date.now() + JOB_POLL_TIMEOUT_MS;
   const timer = setTimeout(() => untilHeaders.abort(new Error("job poll timed out")), JOB_POLL_TIMEOUT_MS);
   try {
     const response = await vault(env).call({
@@ -360,6 +361,7 @@ export async function fetchJob(
       headers: new Headers(target.headers),
       body: null,
       signal: untilHeaders.signal,
+      deadline,
       credentials: target.credentials,
     });
     return { response, keyHeader: target.keyHeader, url: target.url };

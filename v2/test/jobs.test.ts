@@ -1750,10 +1750,14 @@ describe("the vault's refusals on jobs (Gemini Neon review)", () => {
     onTestFinished(() => setVaultForTests(localVault));
     kms.state.stalled = true;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const pending = submit(appId, slug, key);
-    await vi.advanceTimersByTimeAsync(KMS_TIMEOUT_MS + 1);
-    const submitted = await pending;
-    vi.useRealTimers();
+    let submitted: Awaited<ReturnType<typeof submit>>;
+    try {
+      const pending = submit(appId, slug, key);
+      await vi.advanceTimersByTimeAsync(KMS_TIMEOUT_MS + 1);
+      submitted = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(submitted.response.status).toBe(502);
     expect(submitted.json).toMatchObject({ error: { code: "provider_unavailable" } });
     expect(toFal).toEqual([]);

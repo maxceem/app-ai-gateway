@@ -1149,6 +1149,8 @@ async function sendAttemptsKeptFor(
         // A GET carries no body: fetch refuses one, even an empty one.
         body: c.req.method === "GET" ? null : (body.form ?? (body.bytes as Uint8Array<ArrayBuffer>)),
         signal: controller.signal,
+        // The same deadline the timer above aborts on: the vault's own refusal comes first.
+        deadline,
         credentials: target.credentials,
       });
       if (prepared.operation.lifecycle === "job") {

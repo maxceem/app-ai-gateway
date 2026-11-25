@@ -35,14 +35,22 @@ import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
  *   readonly headers: Headers,
  *   readonly body: BodyInit | null,
  *   readonly signal?: AbortSignal,
+ *   readonly deadline?: number,
  *   readonly credentials: SealedCredentials,
  * }} VaultCall
+ *
+ * `deadline` is when the caller gives up, in epoch ms: the vault stops waiting
+ * on cf-kms half a second before it, so its own refusal arrives first.
  */
 
 /** The request header the sealed credentials travel in over the service binding. */
 export const CALL_HEADER = "x-agw-vault";
 /** Set on an answer the vault itself gives, never on a provider's. Its value is a code. */
 export const VAULT_ERROR_HEADER = "x-agw-vault-error";
+/** The caller's deadline, in epoch ms, over the service binding (`VaultCall.deadline`). */
+export const DEADLINE_HEADER = "x-agw-vault-deadline";
+/** How long before the caller's deadline the vault stops waiting on cf-kms. */
+const DEADLINE_MARGIN_MS = 500;
 
 /** Cloudflare AI Gateway's own origin. Only Cloudflare's: the vault takes no test stand-in. */
 const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
@@ -65,12 +73,13 @@ const openedCache = new Map();
  * @param {readonly string[]} identity
  * @param {string} blob
  * @param {AbortSignal} [signal] the caller's, passed on to cf-kms in kms mode
+ * @param {number} [until] when to stop waiting on cf-kms, in epoch ms
  */
-async function opened(env, kind, identity, blob, signal) {
+async function opened(env, kind, identity, blob, signal, until) {
   const key = [kind, ...identity, blob].join("\u0000");
   const cached = openedCache.get(key);
   if (cached !== undefined && Date.now() - cached.at < SECRET_CACHE_TTL_MS) return cached.value;
-  const value = await open(env, kind, identity, blob, signal);
+  const value = await open(env, kind, identity, blob, signal, until);
   openedCache.delete(key);
   if (openedCache.size >= SECRET_CACHE_MAX) {
     const oldest = openedCache.keys().next().value;
@@ -247,23 +256,28 @@ export async function callProvider(env, call) {
   if (target === null) return refuse("destination_refused");
   const headers = new Headers(call.headers);
   headers.delete(CALL_HEADER);
+  headers.delete(DEADLINE_HEADER);
+  // One wait for both credentials, ending before the caller gives up.
+  const until = call.deadline === undefined ? undefined : call.deadline - DEADLINE_MARGIN_MS;
   /** @type {string[]} */
   const keyHeaders = [];
   try {
     if (credentials.providerKey !== undefined) {
       // `readCredentials` has set the placement: the type's own key header, or the sealed one.
       const { blob, identity, header = "", format = "" } = credentials.providerKey;
-      const key = await opened(env, "providerKey", identity, blob, call.signal);
+      const key = await opened(env, "providerKey", identity, blob, call.signal, until);
       // A callback, so a key with `$&` is sent as it is.
       headers.set(header, format.replace("{key}", () => key));
       keyHeaders.push(header.toLowerCase());
     }
     if (credentials.cloudflareToken !== undefined) {
       const { blob, identity } = credentials.cloudflareToken;
-      const token = await opened(env, "cloudflareGatewayToken", identity, blob, call.signal);
+      const token = await opened(env, "cloudflareGatewayToken", identity, blob, call.signal, until);
       headers.set(CLOUDFLARE_TOKEN_HEADER, `Bearer ${token}`);
       keyHeaders.push(CLOUDFLARE_TOKEN_HEADER);
     }
+    // The caller's time may have run out while the key was opened: then nothing is sent.
+    call.signal?.throwIfAborted();
   } catch (error) {
     if (error instanceof VaultConfigurationError) return refuse("misconfigured");
     if (error instanceof VaultBlobError) return refuse("credential_unavailable");
@@ -278,8 +292,6 @@ export async function callProvider(env, call) {
     redirect: "manual",
   };
   if (call.signal !== undefined) init.signal = call.signal;
-  // The caller's time may have run out while the key was opened: then nothing is sent.
-  call.signal?.throwIfAborted();
   const upstream = await fetch(target, init);
   // The key header never goes back, whatever the provider echoed, and neither does
   // a header the vault keeps for itself: a provider cannot fake a vault refusal.
@@ -307,12 +319,14 @@ export async function callFromRequest(env, request) {
   } catch {
     return refuse("bad_request");
   }
+  const deadline = Number(request.headers.get(DEADLINE_HEADER) ?? "");
   return callProvider(env, {
     url: request.url,
     method: request.method,
     headers: request.headers,
     body: request.body,
     signal: request.signal,
+    ...(Number.isFinite(deadline) && deadline > 0 ? { deadline } : {}),
     credentials: /** @type {SealedCredentials} */ (credentials),
   });
 }
