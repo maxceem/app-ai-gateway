@@ -92,7 +92,14 @@ export class AccountLedger extends DurableObject<Env> {
   /** Runs statements sent with D1's shape: one by one, or a batch as one transaction. */
   async query(statements: LedgerStatement[], transaction: boolean): Promise<LedgerResult[]> {
     const results = runLedgerStatements(this.ctx.storage, statements, transaction);
-    if (results.some((result) => result.changes > 0)) await this.planWork();
+    if (results.some((result) => result.changes > 0)) {
+      // The write has committed: a failure to set the alarm never turns it into a failed write.
+      try {
+        await this.planWork();
+      } catch (error) {
+        log("warn", "ledger_alarm_unset", { error: errorFacts(error) });
+      }
+    }
     return results;
   }
 

@@ -7,11 +7,11 @@ import { SWEEP_BATCH } from "../src/ledger/sweep.ts";
 import { seenSql } from "../src/admin/users.ts";
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { AccountLedger, migrateLedger, NEXT_DUE_SQL, nextNightly } from "../src/do/AccountLedger.ts";
 import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
-import { allowLedgerWork, ledger } from "./helpers.ts";
+import { allowLedgerWork, ledger, pauseLedgerWork } from "./helpers.ts";
 
 describe("the ledger object", () => {
   it("runs the rollup trigger inside the object's SQLite, once per charge", async () => {
@@ -235,6 +235,19 @@ describe("the ledger object", () => {
     expect(next).not.toBeNull();
     expect(next!).toBeGreaterThanOrEqual(Date.now() + 50_000);
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
+  it("answers a committed write even when setting its alarm fails, with a warning (step 8f)", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const proto = AccountLedger.prototype as unknown as { planWork(): Promise<void> };
+    proto.planWork = () => Promise.reject(new Error("alarm storage unavailable"));
+    onTestFinished(() => pauseLedgerWork());
+    const written = await ledger("acc_alarm_fails")
+      .prepare("INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, tries, created_at) VALUES ('w', 'unresolved', 'acc_alarm_fails', 'a', 'call', 'o', 0, 0, 1)")
+      .run();
+    expect(written.meta.changes).toBeGreaterThan(0);
+    expect(await ledger("acc_alarm_fails").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(1);
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"ledger_alarm_unset"'))).toBe(true);
   });
 
   it("finds its next work through the index of work still being tried (step 8f)", async () => {
