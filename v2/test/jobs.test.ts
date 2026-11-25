@@ -672,7 +672,8 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
 
 /**
  * A sweep batch that takes every due row: other tests' failed-write stores may
- * still be writing their work into the shared ledger after `onlyThisApp`.
+ * still be writing their work into the shared ledger after `onlyThisApp`. The
+ * tests that use it get more time, as that work is checked too.
  */
 const SWEEP_EVERY_DUE_ROW = 1_000;
 
@@ -2028,7 +2029,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
   const cancelledResult = () =>
     Response.json({ detail: "Request cancelled by the client." }, { status: 499, headers: { "x-fal-error-type": "client_cancelled" } });
 
-  it("cancels through the gateway, free, and settles a job cancelled while queued to zero", async () => {
+  it("cancels through the gateway, free, and settles a job cancelled while queued to zero", { timeout: 30_000 }, async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
@@ -2065,7 +2066,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(await total(appId)).toBe(75_000_000);
   });
 
-  it("settles a job cancelled at fal directly to zero, read by the sweep alone", async () => {
+  it("settles a job cancelled at fal directly to zero, read by the sweep alone", { timeout: 30_000 }, async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
@@ -2088,7 +2089,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(await total(appId)).toBe(100_000_000);
   });
 
-  it("does not read a 499 without fal's client_cancelled header as a free cancel", async () => {
+  it("does not read a 499 without fal's client_cancelled header as a free cancel", { timeout: 30_000 }, async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
@@ -2109,7 +2110,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("the four failure cases on a cancel: a lost provider answer, a repeat, a restart before delivery, a duplicate completion", async () => {
+  it("the four failure cases on a cancel: a lost provider answer, a repeat, a restart before delivery, a duplicate completion", { timeout: 30_000 }, async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const { jobId } = await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
