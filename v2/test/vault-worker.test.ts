@@ -349,6 +349,16 @@ describe("kms mode", () => {
     expect(kms.calls).toContain("/v1/decrypt");
   });
 
+  it("refuses to seal with a kms URL that has a fragment, sending nothing", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      calls.push(String(input));
+      return Response.json({});
+    });
+    await expect(seal({ ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/#setup" }, "providerKey", IDS, KEY)).rejects.toThrow(/https URL/u);
+    expect(calls).toEqual([]);
+  });
+
   it("never follows a redirect from cf-kms, so the token is never sent anywhere else", async () => {
     const calls: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -372,6 +382,9 @@ describe("kms mode", () => {
     ["a local key that is not base64", { SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: "%%%" }, "misconfigured"],
     ["an older local key that is not usable", { ...vaultEnv, SECRET_VAULT_LOCAL_KEK_V2: "short" }, "misconfigured"],
     ["a kms URL that does not parse", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://" }, "misconfigured"],
+    ["a kms URL with a fragment", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/#setup" }, "misconfigured"],
+    ["a kms URL with a query", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/?env=prod" }, "misconfigured"],
+    ["a kms URL with a path", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/base/" }, "ok"],
   ])("reports %s as %s", (_name, settings, expected) => {
     expect(vaultStatus({ ...settings })).toBe(expected);
   });

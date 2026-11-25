@@ -51,9 +51,15 @@ function canonical(context) {
   return JSON.stringify(Object.fromEntries(entries));
 }
 
-/** Whether the token may be sent to `url`: a URL that parses, https, or loopback for local work. @param {string} url */
+/**
+ * Whether the token may be sent to `url`: a URL that parses, with no query or
+ * fragment (the API paths are added to it), over https or loopback for local work.
+ * @param {string} url
+ */
 export function secureKmsUrl(url) {
   if (!URL.canParse(url)) return false;
+  const parsed = new URL(url);
+  if (parsed.search !== "" || parsed.hash !== "" || url.includes("?") || url.includes("#")) return false;
   return /^https:\/\//iu.test(url) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/iu.test(url);
 }
 
@@ -67,7 +73,9 @@ function importDataKey(bytes) {
  */
 export function createKmsClient(options) {
   if (!secureKmsUrl(options.url)) throw new KmsError("insecure_url", 0);
-  const baseUrl = options.url.replace(/\/+$/u, "");
+  // Built from the parsed URL: its origin and path, with the API path added.
+  const parsed = new URL(options.url);
+  const baseUrl = `${parsed.origin}${parsed.pathname.replace(/\/+$/u, "")}`;
   /** @type {Map<string, { key: CryptoKey, expiresAt: number }>} */
   const cache = new Map();
 
