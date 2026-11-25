@@ -4,8 +4,9 @@
 # live, and so does the public `/models.json`, minutes after it merges. Nothing is published: no
 # tag, GitHub release, npm package or documentation deploy.
 #
-# Three jobs, so that only released code ever holds the deploy secrets and no
-# package code runs beside them, as in .github/workflows/release.yml:
+# Four jobs, so that only released code ever holds the deploy secrets, no
+# package code runs beside them, and each job holds only the secret it needs,
+# as in .github/workflows/release.yml:
 #   start   runs on main when a merge changes the price list. It holds no secrets;
 #           it starts this workflow again at the newest `vX.Y.Z` tag.
 #   build   runs at that tag, so this file, scripts/prices-deploy.mjs and the
@@ -16,6 +17,9 @@
 #   deploy  installs only Wrangler (deploy/), takes only those built files and
 #           deploys them; its Wrangler config and D1 migrations come from the
 #           tag's checkout.
+#   post-deploy-check  runs in the `notify` environment and holds only
+#           POST_DEPLOY_CHECK_TOKEN. It asks the outside monitor to check what
+#           `deploy` deployed, and never fails the run.
 #
 # The `prices` environment holds the secrets. It must admit `v*` tags only,
 # and only the project owner can create those (see release.yml), so neither a
@@ -25,7 +29,8 @@
 #   CLOUDFLARE_API_TOKEN      the same permissions the release's deploy uses
 #   CLOUDFLARE_ACCOUNT_ID     the account the gateway Worker lives in
 #   WRANGLER_CLOUD_OVERLAY    contents of wrangler.cloud.overlay.jsonc
-#   POST_DEPLOY_CHECK_TOKEN   optional, as in .github/workflows/release.yml
+# POST_DEPLOY_CHECK_TOKEN lives in the `notify` environment, as in
+# .github/workflows/release.yml, never beside the Cloudflare token.
 name: Deploy the model prices
 
 on:
@@ -35,8 +40,7 @@ on:
   # Started by `start` below at a release tag, or by hand at one.
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 # A run at a tag shares the `release` group with release.yml for its whole
 # length, queued rather than replaced, so a release and a prices deploy never
@@ -76,6 +80,8 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       prices_revision: ${{ steps.plan.outputs.prices_revision }}
       prices_updated: ${{ steps.plan.outputs.prices_updated }}
+      # `deploy` downloads exactly this upload, by its id.
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,13 +119,19 @@ jobs:
           PRICES_UPDATED: ${{ steps.plan.outputs.prices_updated }}
         run: node scripts/build-prebuilt.mjs dist/prebuilt
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prices
           path: dist/prebuilt/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # An empty id would make the download take every artifact in the run.
+      - name: Check the artifact has an id
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID" || { echo "The upload returned no artifact id." >&2; exit 1; }
 
   deploy:
     needs: build
@@ -138,7 +150,8 @@ jobs:
       # and only the expected built files are copied out.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: prices
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/prices
       - name: Take only the built files from the artifact
         env:
@@ -189,9 +202,27 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
 
+      - name: Summarize
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
+        run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"
+
+  # Its own job and environment, so the Cloudflare token and the monitor's
+  # token never share one. The `notify` environment is the one the release's
+  # post-deploy check uses (see release.yml). It asks the outside monitor to
+  # run the smoke checks against what was just deployed, and never fails the
+  # deploy.
+  post-deploy-check:
+    needs: [build, deploy]
+    if: vars.POST_DEPLOY_CHECK_URL != ''
+    runs-on: ubuntu-latest
+    environment: notify
+    continue-on-error: true
+    permissions: {}
+    steps:
       - name: Start the post-deploy checks
-        if: vars.POST_DEPLOY_CHECK_URL != ''
-        continue-on-error: true
         env:
           POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
           POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
@@ -208,9 +239,3 @@ jobs:
               --header 'Content-Type: application/json' \
               --data "@$RUNNER_TEMP/announcement.json" "$POST_DEPLOY_CHECK_URL"
 
-      - name: Summarize
-        env:
-          TAG: ${{ needs.build.outputs.tag }}
-          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
-          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
-        run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"

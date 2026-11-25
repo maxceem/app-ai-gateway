@@ -10,35 +10,62 @@
 # The project owner cuts a release with `pnpm run release <version>` (scripts/release.mjs),
 # which bumps both manifests, commits, tags and pushes the two together.
 #
-# Building and publishing are separate jobs, so that no package code runs where
-# the secrets are. `build` installs every dependency and builds, with no secret
-# and read-only access: the gateway archive and the CLI package, the Worker and
-# console the hosted gateway deploys (scripts/build-prebuilt.mjs), and the
-# documentation site. `publish` installs only Wrangler and its config reader,
-# from deploy/'s own lockfile and without install scripts, plus a pinned npm,
-# and takes nothing from `build` but those built files. Its Wrangler
-# configuration and the D1 migrations it applies come from the tag's checkout.
-# A dependency that misbehaves while building can still change what is built,
-# but it never runs beside the Cloudflare token or npm's publishing identity.
+# Every job gets only the secret it needs, so a package that misbehaves in one
+# job never sees another job's secret. `build` installs every dependency and
+# builds, with no secret and read-only access: the gateway archive and the CLI
+# package, the Worker and console the hosted gateway deploys
+# (scripts/build-prebuilt.mjs), and the documentation site. The jobs after it
+# take nothing from `build` but those built files, and their scripts, Wrangler
+# configuration and D1 migrations come from the tag's checkout. Jobs that run
+# Wrangler install only it and its config reader, from deploy/'s own lockfile
+# and without install scripts.
 #
-# `publish` does, in order:
-#   1. the gateway archive, uploaded to the GitHub release the tag names
-#   2. the gateway Worker, deployed to Cloudflare with the `cloud` profile
-#      and, when POST_DEPLOY_CHECK_URL is set, the smoke checks asked for
-#   3. the CLI, published to npm — after 1, because an installed CLI refuses to
-#      run until it can download exactly that archive
-#   4. the documentation site, then the pages it changed submitted to IndexNow,
-#      and Context7 asked to re-read it
+#   job               secret                          permissions        after
+#   verify            none                            contents: read     -
+#   build             none                            contents: read     -
+#   deploy            Cloudflare token, account,      contents: read     verify, build
+#                     both overlays (production)
+#   publish-archive   GitHub token                    contents: write    deploy
+#   publish-npm       npm identity by OIDC (release)  id-token: write    publish-archive
+#   post-deploy-check POST_DEPLOY_CHECK_TOKEN         none               deploy
+#                     (notify)
+#   follow-prices     GitHub token                    actions: write     deploy,
+#                                                                        publish-archive,
+#                                                                        publish-npm
+#   refresh-context7  CONTEXT7_API_KEY (notify)       none               deploy
 #
-# The publish job runs in the `production` environment, and every secret below
-# belongs to that environment, never to the repository. A repository secret is
-# handed to any workflow on any branch a writer pushes; an environment secret
-# only to a job the environment admits. The environment admits `v*` tags only,
-# and it holds each run until the project owner approves it, with no admin
-# bypass. Without that approval nothing reaches Cloudflare or npm, however the
-# run started.
+# Every job after `build` downloads the one artifact `build` uploaded, by its
+# id, so no other upload with the same name can take its place.
 #
-# Environment secrets required:
+# The order keeps today's gates:
+#   - the deploy job checks both configurations with a dry run before it
+#     deploys anything, deploys the gateway, and only then the docs; nothing
+#     else is published before that job succeeds;
+#   - the gateway archive is on the GitHub release before the CLI reaches npm,
+#     because an installed CLI refuses to run until it can download exactly
+#     that archive;
+#   - main's price list is deployed, when it is newer, only after the deploy,
+#     the archive and npm all succeeded;
+#   - the post-deploy check and the Context7 refresh are best effort and never
+#     fail the release.
+#
+# Environments. Each admits `v*` tags only, and only the project owner can
+# create those. A repository secret would be handed to any workflow on any
+# branch a writer pushes; an environment secret only to a job the environment
+# admits.
+#   production  holds the Cloudflare token both deploys need. It holds each
+#               run until the project owner approves it, with no admin bypass.
+#               Only `deploy` uses it, so one approval covers a release, and
+#               every later job runs only after that job succeeded.
+#   release     holds no secret. It is what npm's trusted publisher names, so
+#               only `publish-npm` can publish the CLI. No reviewer: its job
+#               runs only after the approved deploy.
+#   notify      holds the two low-value tokens that tell outside services a
+#               release happened. Its jobs run no package installs. No
+#               reviewer. The prices deploy (.github/workflows/deploy-prices.yml)
+#               uses it for its post-deploy check too.
+#
+# `production` environment secrets, required:
 #   CLOUDFLARE_API_TOKEN         D1: Edit, Workers Scripts: Edit and Workers R2 Storage: Edit
 #                                on the account, and Workers Routes: Edit on the zone
 #   CLOUDFLARE_ACCOUNT_ID        the account both Workers live in
@@ -47,7 +74,7 @@
 #                                scripts/wrangler-config.mjs), since `build` builds
 #                                from wrangler.jsonc alone
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
-# Environment secrets, optional:
+# `notify` environment secrets, optional:
 #   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
 #                                refresh the documentation
 #   POST_DEPLOY_CHECK_TOKEN      bearer token for POST_DEPLOY_CHECK_URL
@@ -58,7 +85,8 @@
 #   POST_DEPLOY_CHECK_URL        where to ask for the smoke checks after the
 #                                deploy; unset, none are asked for
 # npm needs no token: `@maxceem/agw` is published through npm trusted publishing,
-# which authenticates this workflow file by OIDC and signs the provenance.
+# which authenticates this workflow file by OIDC and signs the provenance. Its
+# trusted publisher names the `release` environment.
 name: Release
 
 on:
@@ -66,8 +94,7 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
+permissions: {}
 
 # Shared with the prices deploy (.github/workflows/deploy-prices.yml), so the
 # two never deploy at once, and queued so neither replaces the other's pending run.
@@ -125,6 +152,9 @@ jobs:
     outputs:
       prices_revision: ${{ steps.prices.outputs.revision }}
       prices_updated: ${{ steps.prices.outputs.updated }}
+      # Every later job downloads exactly this upload, by its id, never a
+      # same-named artifact from another job or run.
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,7 +192,8 @@ jobs:
           DOCS_SITE_SCRIPT: ${{ vars.DOCS_SITE_SCRIPT }}
         run: pnpm --filter @app-ai-gateway/docs static:build
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release
           path: |
@@ -174,49 +205,55 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # An empty id would make every later download take every artifact in
+      # the run, so stop here instead.
+      - name: Check the artifact has an id
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID" || { echo "The upload returned no artifact id." >&2; exit 1; }
 
-  publish:
+  # Deploys the gateway, then the documentation. The only job that waits for
+  # the owner's approval; every job after it runs only once it succeeded. Both
+  # deploys run Wrangler with the same Cloudflare token, so one job holds it.
+  deploy:
     needs: [verify, build]
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
     environment: production
     permissions:
-      contents: write # create the GitHub release and upload the gateway archive
-      id-token: write # npm trusted publishing
-      actions: write # start a prices deploy when main's price list is newer than the tag's
+      contents: read
+    outputs:
+      # Set once the gateway is live, so the post-deploy check still runs when
+      # the documentation deploy after it fails.
+      gateway_deployed: ${{ steps.gateway.outputs.deployed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
-          fetch-depth: 0 # the previous release tag, for the release notes
           persist-credentials: false
 
       # Into a directory of its own, never over the checkout: code that ran in
       # `build` could have put anything in the artifact, such as a changed
       # script. Only the expected built files are copied out, to paths the
-      # checkout does not have, and a symbolic link (which could make the docs
-      # deploy upload a file such as an overlay) stops the job.
+      # checkout does not have, and a symbolic link stops the job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
-      - name: Take only the built files from the artifact
+      - name: Take only the built gateway and documentation from the artifact
         env:
           FROM: ${{ runner.temp }}/release
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version="${TAG#v}"
           if [ -n "$(find "$FROM" -type l)" ]; then
             echo "The build artifact contains symbolic links; not using it." >&2
             exit 1
           fi
-          for path in cli/dist dist docs/out; do
+          for path in dist docs/out; do
             test ! -e "$path" || { echo "$path already exists in the checkout" >&2; exit 1; }
           done
-          mkdir -p cli/dist dist/npm dist/prebuilt/worker
-          cp "$FROM/cli/dist/gateway-${version}.tar.gz" "$FROM/cli/dist/release-integrity.json" cli/dist/
-          cp "$FROM/dist/npm/maxceem-agw-${version}.tgz" dist/npm/
+          mkdir -p dist/prebuilt/worker
           cp "$FROM/dist/prebuilt/worker/index.js" dist/prebuilt/worker/
           cp -R "$FROM/dist/prebuilt/console" dist/prebuilt/console
           cp -R "$FROM/docs/out" docs/out
@@ -234,7 +271,7 @@ jobs:
           pnpm install --dir deploy --ignore-workspace --frozen-lockfile --ignore-scripts
           ln -s deploy/node_modules node_modules
 
-      - name: Write the Cloudflare deployment profile
+      - name: Write the Cloudflare deployment profiles
         env:
           WRANGLER_CLOUD_OVERLAY: ${{ secrets.WRANGLER_CLOUD_OVERLAY }}
           DOCS_WRANGLER_CLOUD_OVERLAY: ${{ secrets.DOCS_WRANGLER_CLOUD_OVERLAY }}
@@ -245,46 +282,28 @@ jobs:
           printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
           printf '%s\n' "$DOCS_WRANGLER_CLOUD_OVERLAY" > docs/wrangler.cloud.overlay.jsonc
 
-      # Before anything is published: the overlays must suit the prebuilt
+      # Before anything is published: the overlay must suit the prebuilt
       # Worker (scripts/wrangler-config.mjs refuses one that changes how it is
-      # built), which a dry run checks without contacting Cloudflare.
+      # built), which a dry run checks without contacting Cloudflare. The docs'
+      # configuration is checked the same way.
       - name: Check the deployment configuration
         env:
           WRANGLER_SEND_METRICS: "false"
-        run: node scripts/wrangler.mjs --profile cloud --prebuilt dist/prebuilt deploy --dry-run
-
-      - name: Publish the gateway archive to the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node cli/scripts/publish-release.mjs --prebuilt
+        run: |
+          set -euo pipefail
+          node scripts/wrangler.mjs --profile cloud --prebuilt dist/prebuilt deploy --dry-run
+          node scripts/wrangler.mjs --profile cloud --cwd docs deploy --dry-run
 
       - name: Deploy the gateway
+        id: gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
-      # Asks the outside monitor to run the smoke checks (smoke/) against what
-      # was just deployed, the previous release's included. It reports the
-      # result itself, so this only starts it, and never fails the release.
-      - name: Start the post-deploy checks
-        if: vars.POST_DEPLOY_CHECK_URL != ''
-        continue-on-error: true
-        env:
-          POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
-          POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
-          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
         run: |
           set -euo pipefail
-          jq -nc --arg version "$TAG" --arg revision "$PRICES_REVISION" --arg updated "$PRICES_UPDATED" \
-            '{version: $version, title: (if $revision == "" then $version else "\($version) with prices \($revision) (\($updated))" end)}' \
-            > "$RUNNER_TEMP/announcement.json"
-          printf 'Authorization: Bearer %s\n' "$POST_DEPLOY_CHECK_TOKEN" |
-            curl --fail --silent --show-error --max-time 30 --header @- \
-              --header 'Content-Type: application/json' \
-              --data "@$RUNNER_TEMP/announcement.json" "$POST_DEPLOY_CHECK_URL"
+          node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
 
       - name: Summarize
         env:
@@ -293,6 +312,98 @@ jobs:
           PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
         run: echo "Deployed ${TAG} with the price list from ${PRICES_REVISION} (${PRICES_UPDATED})." >> "$GITHUB_STEP_SUMMARY"
 
+      # After the gateway, so a release whose gateway failed never changes the
+      # docs. IndexNow: fingerprint the live docs before deploying, then submit
+      # the pages the deploy added, changed or removed. Neither step fails the
+      # job.
+      - name: Fingerprint the live documentation for IndexNow
+        run: node docs/scripts/indexnow.mjs snapshot https://docs.appaigateway.com
+
+      # The site `build` built into docs/out; docs/wrangler.jsonc serves it as
+      # static assets.
+      - name: Deploy the documentation
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: node scripts/wrangler.mjs --profile cloud --cwd docs deploy
+
+      - name: Submit the changed documentation pages to IndexNow
+        run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out
+
+  publish-archive:
+    needs: [build, deploy]
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and upload the gateway archive
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0 # the previous release tag, for the release notes
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Take only the gateway archive from the artifact
+        env:
+          FROM: ${{ runner.temp }}/release
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          test ! -e cli/dist || { echo "cli/dist already exists in the checkout" >&2; exit 1; }
+          mkdir -p cli/dist
+          cp "$FROM/cli/dist/gateway-${version}.tar.gz" "$FROM/cli/dist/release-integrity.json" cli/dist/
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Publish the gateway archive to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node cli/scripts/publish-release.mjs --prebuilt
+
+  # After the archive: an installed CLI refuses to run until it can download
+  # exactly that archive.
+  publish-npm:
+    needs: [build, publish-archive]
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Take only the CLI package from the artifact
+        env:
+          FROM: ${{ runner.temp }}/release
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -n "$(find "$FROM" -type l)" ]; then
+            echo "The build artifact contains symbolic links; not using it." >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/npm"
+          cp "$FROM/dist/npm/maxceem-agw-${version}.tgz" "$RUNNER_TEMP/npm/"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
       # Trusted publishing needs npm 11.5.1 or newer; Node 22 still bundles 10.
       # Pinned, since it runs in this job. Provenance is generated by the OIDC
       # exchange itself, so no flag and no NPM_TOKEN are involved. The package
@@ -309,39 +420,80 @@ jobs:
             echo "@maxceem/agw@${version} is already published; leaving it alone."
             exit 0
           fi
-          npm publish "dist/npm/maxceem-agw-${version}.tgz" --access public --ignore-scripts
+          npm publish "$RUNNER_TEMP/npm/maxceem-agw-${version}.tgz" --access public --ignore-scripts
 
-      # IndexNow: fingerprint the live docs before deploying, then submit the
-      # pages the deploy added, changed or removed. Neither step fails the job.
-      - name: Fingerprint the live documentation for IndexNow
-        run: node docs/scripts/indexnow.mjs snapshot https://docs.appaigateway.com
-
-      # The site `build` built into docs/out; docs/wrangler.jsonc serves it as
-      # static assets.
-      - name: Deploy the documentation
+  # Asks the outside monitor to run the smoke checks (smoke/) against what was
+  # just deployed, the previous release's included. It reports the result
+  # itself, so this only starts it, and never fails the release.
+  # Runs once the gateway is live, even if the documentation deploy after it
+  # failed.
+  post-deploy-check:
+    needs: [build, deploy]
+    if: >-
+      !cancelled()
+      && github.repository == 'maxceem/app-ai-gateway'
+      && vars.POST_DEPLOY_CHECK_URL != ''
+      && needs.deploy.outputs.gateway_deployed == 'true'
+    runs-on: ubuntu-latest
+    environment: notify
+    continue-on-error: true
+    permissions: {}
+    steps:
+      - name: Start the post-deploy checks
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WRANGLER_SEND_METRICS: "false"
-        run: node scripts/wrangler.mjs --profile cloud --cwd docs deploy
+          POST_DEPLOY_CHECK_URL: ${{ vars.POST_DEPLOY_CHECK_URL }}
+          POST_DEPLOY_CHECK_TOKEN: ${{ secrets.POST_DEPLOY_CHECK_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
+          PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
+        run: |
+          set -euo pipefail
+          jq -nc --arg version "$TAG" --arg revision "$PRICES_REVISION" --arg updated "$PRICES_UPDATED" \
+            '{version: $version, title: (if $revision == "" then $version else "\($version) with prices \($revision) (\($updated))" end)}' \
+            > "$RUNNER_TEMP/announcement.json"
+          printf 'Authorization: Bearer %s\n' "$POST_DEPLOY_CHECK_TOKEN" |
+            curl --fail --silent --show-error --max-time 30 --header @- \
+              --header 'Content-Type: application/json' \
+              --data "@$RUNNER_TEMP/announcement.json" "$POST_DEPLOY_CHECK_URL"
 
-      - name: Submit the changed documentation pages to IndexNow
-        run: node docs/scripts/indexnow.mjs submit https://docs.appaigateway.com docs/out
-
-      # Near the end: when main's price list moved on since the tag (one merged while
-      # this release waited, or this is a run again after a prices deploy), the
-      # gateway now runs an older one. Deploy main's on this release, unless a
-      # newer release exists: running an older release again is a rollback.
+  # After the gateway deploy: when main's price list moved on since the tag
+  # (one merged while this release waited, or this is a run again after a
+  # prices deploy), the gateway now runs an older one. Deploy main's on this
+  # release, unless a newer release exists: running an older release again is
+  # a rollback.
+  follow-prices:
+    needs: [build, deploy, publish-archive, publish-npm]
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # start a prices deploy when main's price list is newer than the tag's
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0 # the newest release tag and main's price list
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
       - name: Deploy main's price list if it is newer
         env:
           GH_TOKEN: ${{ github.token }}
           PRICES_REVISION: ${{ needs.build.outputs.prices_revision }}
         run: node scripts/prices-deploy.mjs follow "$PRICES_REVISION"
 
-      # Context7 serves the docs to coding agents from llms.txt and otherwise
-      # re-reads them only every few weeks. Never fails the job.
+  # Context7 serves the docs to coding agents from llms.txt and otherwise
+  # re-reads them only every few weeks. Never fails the release.
+  refresh-context7:
+    needs: deploy
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    environment: notify
+    continue-on-error: true
+    permissions: {}
+    steps:
       - name: Refresh the documentation on Context7
-        continue-on-error: true
         env:
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         run: |
