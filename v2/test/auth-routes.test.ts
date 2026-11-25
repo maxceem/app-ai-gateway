@@ -114,6 +114,26 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("retries a sign-in event through a fresh ledger stub after one breaks (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let stubs = 0;
+    // The first stub is broken for good; any later one reaches the real ledger.
+    const flaky = {
+      ...env,
+      ACCOUNT_LEDGER: {
+        idFromName: (name: string) => name,
+        get: (name: string) => {
+          stubs += 1;
+          if (stubs === 1) return { query: () => Promise.reject(new Error("broken stub")) };
+          return env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(name));
+        },
+      },
+    } as unknown as Env;
+    await recordAuthEvent({ env: flaky, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-fresh", outcome: "ok", latencyMs: 1 });
+    expect((await authEvents(appId)).map((event) => event.user_id)).toEqual(["u-fresh"]);
+  });
+
   it("gives up the expired-challenge clean-up as one job inside the request's background time, with a warning (step 8f)", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     // Its D1 read never answers.

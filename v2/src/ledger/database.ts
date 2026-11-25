@@ -65,12 +65,12 @@ export function ledgerObject(env: Env, accountId: string): DurableObjectStub<imp
  */
 export const LEDGER_CALL_DEADLINE_MS = 10_000;
 
-/** The account's ledger, with D1's shape. Each statement or batch is one call to the object, under its deadline. */
+/** The account's ledger, with D1's shape. Each statement or batch is one call to the object, through a fresh stub, under its deadline. */
 export function ledgerDb(env: Env, accountId: string, options: { readonly deadlineMs?: number } = {}): D1Database {
-  const object = ledgerObject(env, accountId);
   const deadlineMs = options.deadlineMs ?? LEDGER_CALL_DEADLINE_MS;
+  // A fresh stub for every call: a stub broken by one failure stays broken, so a retry needs a new one.
   return shapedLikeD1((statements, transaction) =>
-    withDeadline(object.query(statements as LedgerStatement[], transaction), deadlineMs, "calling the account's ledger", ledgerTooSlow),
+    withDeadline(ledgerObject(env, accountId).query(statements as LedgerStatement[], transaction), deadlineMs, "calling the account's ledger", ledgerTooSlow),
   );
 }
 

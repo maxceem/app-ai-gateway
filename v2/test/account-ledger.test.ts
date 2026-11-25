@@ -155,6 +155,33 @@ describe("the ledger object", () => {
     expect(plan).toMatch(/app_rejection_event_app_user_created \(app_id=\? AND user_id>\?\)/u);
   });
 
+  it("never lets a write pull its alarm into the minute after a run (step 8f)", async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = ledgerObject(env, "acc_pause");
+    const work = (id: string, due: number) =>
+      ledger("acc_pause")
+        .prepare("INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, due_at, tries, created_at) VALUES (?, 'unresolved', 'acc_pause', 'a', 'call', ?, 'missing', ?, 0, 1)")
+        .bind(id, id, due)
+        .run();
+    // Tonight's maintenance is done, so the alarm is the work's alone.
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO ledger_meta (key, value) VALUES ('nightly_day', ?)", new Date().toISOString().slice(0, 10));
+    });
+    await work("first", Date.now() + 3_600_000);
+    await runInDurableObject(stub, (_instance, state) => state.storage.sql.exec("UPDATE open_work SET due_at = ?", Date.now() - 1));
+    // The sweep tries it (its charge is not there yet) and leaves it for later: the alarm is a minute out at least.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    const after = await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm());
+    expect(after).not.toBeNull();
+    expect(after!).toBeGreaterThanOrEqual(Date.now() + 50_000);
+    // New work due at once does not pull the alarm into that minute.
+    await work("second", 0);
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(after);
+    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
   it("runs the nightly maintenance once a day, after its hour", () => {
     const at = (iso: string) => Date.parse(iso);
     expect(nextNightly(at("2026-11-25T02:00:00Z"), null)).toBe(at("2026-11-25T04:00:00Z"));
