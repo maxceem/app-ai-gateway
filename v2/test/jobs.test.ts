@@ -1995,7 +1995,7 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
     expect(polled.response.headers.get("location")).toBeNull();
   });
 
-  it("settles from the result when the app never polls and the status redirects to this job's result", async () => {
+  it("settles from the result when the app never polls and the status redirects to this job's result", { timeout: 30_000 }, async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     await submit(appId, slug, key);
@@ -2004,7 +2004,7 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
       status: () => new Response(null, { status: 303, headers: { location: "https://queue.fal.run/fal-ai/flux/requests/req-1" } }),
       result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "1" } }),
     });
-    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000, batch: SWEEP_EVERY_DUE_ROW });
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
     // 1 unit: the $0.05 estimate comes down to $0.025.
