@@ -105,6 +105,21 @@ requests a month produces. A backlog larger than one night is continued the
 next one; on the Workers Paid plan,
 [`MAINTENANCE_QUERY_BUDGET`](/self-hosting/configuration) lets one run do more.
 
+## Backups and usage history
+
+The D1 database holds your settings and sign-ins: accounts, apps, keys,
+provider connections and app users. `wrangler d1 export` backs those up.
+
+Usage history is not in D1. Charges, usage totals, sessions and sign-in
+events live in one Durable Object per account, each with its own storage, so
+`wrangler d1 export` does not include them.
+
+On Cloudflare's Free plan, Durable Objects have daily limits. Past them, a
+request is still served, and its usage record goes to a small store kept for
+failed writes, which retries it later. If that store can't take it either,
+the record is written to the logs as `usage_record_failed`, so nothing is lost
+without a trace.
+
 ## Reprice stored usage
 
 If a provider's prices change or you add a custom price after the fact,
