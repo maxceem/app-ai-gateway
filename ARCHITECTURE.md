@@ -54,11 +54,10 @@ A change to a ledger table is a new version at the end of `LEDGER_SCHEMA`,
 never an edit of a merged one. Each object applies it when it next wakes.
 
 v2 has no way to delete an account yet. Whatever adds one must also clear
-that account's ledger object: `ctx.storage.deleteAlarm()`, then
-`ctx.storage.deleteAll()`, then end the live instance with
-`ctx.abort("Account deleted", { retryAlarm: false })` so it doesn't keep
-running with no tables. The abort makes the delete call reject for its
-caller, who should treat that rejection as success. A late retry from the failed-write store may create the object
+that account's ledger object. Inside the object: `ctx.storage.deleteAlarm()`,
+then `ctx.storage.deleteAll()`, then run the schema setup again
+(`migrateLedger`) so the live instance has empty tables, and return normally.
+The caller then gets a plain success or a real error. A late retry from the failed-write store may create the object
 again; its detail rows age out, and a monthly total may stay. That is
 accepted.
 
