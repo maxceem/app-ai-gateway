@@ -50,13 +50,14 @@ export const perplexity = defineProvider({
   //   Orchestrator API under `orchestrator/v1/`, which it first served under
   //   `router/v1/` and still does.
   // Some models are on the Agent API only (`unservedModels` on the
-  // Orchestrator's operations). The Agent API reports its own cost, with its
-  // tools' (`providerCost`), and reads a `models` list before `model`
-  // (`AGENT_RULES`).
+  // Orchestrator's operations). Sonar and the Agent API report their own
+  // cost (`providerCost`), with Sonar's request fee and the Agent's tools,
+  // which our token prices leave out. The Agent API reads a `models` list
+  // before `model` (`AGENT_RULES`).
   operations: withV1Paths("perplexity", [
-    plain(chat("perplexity.chat", "chat/completions")),
-    plain(chat("perplexity.chat.v1", "v1/chat/completions")),
-    plain(chat("perplexity.sonar", "v1/sonar")),
+    plain(chat("perplexity.chat", "chat/completions", { providerCost: "perplexity" })),
+    plain(chat("perplexity.chat.v1", "v1/chat/completions", { providerCost: "perplexity" })),
+    plain(chat("perplexity.sonar", "v1/sonar", { providerCost: "perplexity" })),
     agent(responses("perplexity.agent", "v1/agent", { providerCost: "perplexity" })),
     agent(responses("perplexity.responses", "v1/responses", { providerCost: "perplexity" })),
     orchestrator(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions")),

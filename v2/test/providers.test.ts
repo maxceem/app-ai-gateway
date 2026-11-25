@@ -292,6 +292,34 @@ describe("Perplexity", () => {
     ]);
   });
 
+  it("bills Sonar at the cost it reports, its request fee included", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.chat"] });
+    // As a real answer gave it (T30): 11 tokens in, 7 out, and a $0.0025 request fee.
+    const cost = { input_tokens_cost: 0.00158, output_tokens_cost: 0.00003, request_cost: 0.0025, total_cost: 0.00411 };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "sonar", choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, cost } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, { model: "sonar", messages: [] });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ operation: "perplexity.chat", price_source: "provider_usd", cost_nano: fromDollars(0.00411) }]);
+  });
+
+  it("never charges Perplexity's figure, rounded to five decimals, below our price for the call's usage", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // As a real answer gave it (T30): 33 tokens in and 5 out of openai/gpt-6-luna read $0.
+    const usage = { input_tokens: 33, output_tokens: 5, total_tokens: 38, cost: { currency: "USD", input_cost: 0, output_cost: 0, total_cost: 0 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6-luna", output: [], usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1 });
+    expect(charge!.cost_nano).toBe(listedCost("perplexity", "openai/gpt-6-luna", { inputTokens: 33, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 5 }));
+    expect(charge!.cost_nano).toBeGreaterThan(0);
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_rounded");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
+  });
+
   it("charges an Agent API answer that reports no cost at our price, marked an estimate and logged", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
     const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);

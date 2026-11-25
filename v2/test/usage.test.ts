@@ -394,6 +394,9 @@ describe("provider cost reports", () => {
     expect(readProviderCost(values({ usage: { cost: { ...cost, currency: "EUR" } } }), "perplexity")).toBeNull();
     expect(readProviderCost(values({ usage: { cost: { total_cost: -1 } } }), "perplexity")).toBeNull();
     expect(readProviderCost(values({ usage: { input_tokens: 1, output_tokens: 1 } }), "perplexity")).toBeNull();
+    // Sonar's, as a real answer gave it: no currency, the request fee inside the total.
+    const sonar = { input_tokens_cost: 0.00158, output_tokens_cost: 0.00003, request_cost: 0.0025, total_cost: 0.00411 };
+    expect(readProviderCost(values({ usage: { prompt_tokens: 11, completion_tokens: 7, cost: sonar } }), "perplexity")).toBe(0.00411);
   });
 });
 

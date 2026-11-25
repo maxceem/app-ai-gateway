@@ -31,9 +31,11 @@ const COUNTED = ["image", "audio", "video", "unknown"] as const;
  * - `measure_worked_out`: the reader worked its measure out;
  * - `cost_not_reported`: an answer that should carry the provider's own cost
  *   (`providerCost`) came without it, so its usage was priced at our rates,
- *   which may leave out what the provider adds, such as a tool's fee.
+ *   which may leave out what the provider adds, such as a tool's fee;
+ * - `cost_rounded`: the provider's figure, rounded coarser than the call
+ *   costs, was below what our price says its usage costs, which was charged.
  */
-export const ESTIMATE_REASONS = ["service_mode", "served_model", "unpriced_option", "final_event_unread", "measure_worked_out", "cost_not_reported"] as const;
+export const ESTIMATE_REASONS = ["service_mode", "served_model", "unpriced_option", "final_event_unread", "measure_worked_out", "cost_not_reported", "cost_rounded"] as const;
 export type EstimateReason = (typeof ESTIMATE_REASONS)[number];
 
 /**

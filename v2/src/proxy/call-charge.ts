@@ -37,6 +37,8 @@ import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../l
 import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
+import { declaredOperation } from "../providers/presets.ts";
+import { costReportStep } from "../usage/cost-reports.ts";
 import { usageMeasures, type EstimateReason } from "../usage/measures.ts";
 import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -120,6 +122,23 @@ function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceM
   }
 }
 
+/**
+ * Whether a provider's figure is rounded (`costReportStep`) and below what our
+ * price says the call's usage costs, so charging it would charge too little.
+ */
+function roundedBelowPrice(attempt: CallAttempt, reported: number, priced: { readonly cost: NanoDollars } | null): boolean {
+  if (priced === null || attempt.price === null) return false;
+  const report = declaredOperation(attempt.operation)?.meter;
+  const step = report?.kind === "response_json" && report.providerCost !== undefined ? costReportStep(report.providerCost) : null;
+  if (step === null) return false;
+  try {
+    return priced.cost > fromDollars(reported);
+  } catch (error) {
+    if (error instanceof MoneyError) return false;
+    throw error;
+  }
+}
+
 export function chargeId(requestId: string, seq: number): string {
   return `${requestId}:${seq}`;
 }
@@ -189,7 +208,15 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  if (reported !== null) {
+  if (reported !== null && roundedBelowPrice(attempt, reported, priced)) {
+    // The provider's figure is rounded coarser than the call costs (a small
+    // Perplexity call reads $0): its usage at our price is charged instead,
+    // as an estimate, never less.
+    costed = { costNano: priced!.cost, priceSource: attempt.price!.source, estimate: true, rates: priced!.rates };
+    measured = outcome.cut ? "partial" : "complete";
+    reasons.push("cost_rounded");
+    log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });
+  } else if (reported !== null) {
     // What the provider charged wins: it is the whole figure, discounts included.
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";

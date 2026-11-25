@@ -52,11 +52,13 @@ function xaiCost(root: Record<string, unknown>): number | null {
 }
 
 /**
- * Perplexity's Agent API: `usage.cost.total_cost`, in dollars, at the root of
- * an answer and under `response` on the event that closes a stream
- * (`response.completed`). It holds what the tokens cost and what the built-in
- * tools it ran cost (`tool_calls_cost`, such as a web search), which no token
- * price of ours covers. A figure in another currency is no report.
+ * Perplexity: `usage.cost.total_cost`, in dollars, at the root of an answer
+ * and under `response` on the event that closes an Agent API stream
+ * (`response.completed`). The Agent API's holds what the tokens cost and what
+ * the built-in tools it ran cost (`tool_calls_cost`, such as a web search);
+ * Sonar's, its request fee (`request_cost`). No token price of ours covers
+ * either. Sonar names no currency; a figure in another currency than US
+ * dollars is no report.
  */
 function perplexityCost(root: Record<string, unknown>): number | null {
   const usage = asRecord(root.usage) ?? asRecord(asRecord(root.response)?.usage);
@@ -72,6 +74,19 @@ const READERS: Readonly<Record<ProviderCostReport, (root: Record<string, unknown
   xai: xaiCost,
   perplexity: perplexityCost,
 };
+
+/**
+ * How finely a provider's figure is rounded, in dollars, where it is rounded
+ * coarser than a call can cost: Perplexity gives five decimals, so a small
+ * call reads $0. Such a figure is never charged below what our price says the
+ * call's usage costs (`../proxy/call-charge.ts`).
+ */
+const ROUNDED_TO_USD: Partial<Record<ProviderCostReport, number>> = { perplexity: 0.00001 };
+
+/** The step a provider's figure is rounded to, in dollars, or null when it is exact. */
+export function costReportStep(report: ProviderCostReport): number | null {
+  return ROUNDED_TO_USD[report] ?? null;
+}
 
 /**
  * The reader of one document's cost in dollars, or null when it reports
