@@ -23,7 +23,6 @@ import { loadedAppId } from "./apps/app-records.ts";
 import { errorFacts } from "./core/error-facts.ts";
 import { ERROR_CODE_HEADER, GatewayError } from "./core/errors.ts";
 import { log } from "./core/log.ts";
-import { runSweep, SWEEP_CRON } from "./ledger/sweep.ts";
 import { asGatewayError } from "./core/platform-errors.ts";
 import { clientCallDeadline, type DeadlineVariables } from "./http/deadline.ts";
 import { serverTiming } from "./proxy/timing.ts";
@@ -42,6 +41,7 @@ export { FloodLimiter } from "./do/FloodLimiter.ts";
 export { ChargeStore } from "./do/ChargeStore.ts";
 export { AppLimiter } from "./do/AppLimiter.ts";
 export { AccountLimiter } from "./do/AccountLimiter.ts";
+export { AccountLedger } from "./do/AccountLedger.ts";
 export { ConversationLog } from "./do/ConversationLog.ts";
 
 type Env2 = { Bindings: Env; Variables: DeadlineVariables };
@@ -232,15 +232,12 @@ app.onError((error, c: Context<Env2>) => {
 export default {
   fetch: app.fetch,
   /**
-   * Every minute: the sweep of open work. Hourly (the other cron): the
-   * clean-up of expired App Attest challenges and sign-in records, and once a
-   * day the nightly maintenance (`./maintenance/nightly.ts`).
+   * Hourly: the clean-up of expired App Attest challenges and sign-in
+   * records, and once a day the nightly maintenance of the settings
+   * (`./maintenance/nightly.ts`). Open work and the ledger's own clean-up run
+   * on each account's ledger object (`./do/AccountLedger.ts`).
    */
   async scheduled(controller, env, ctx) {
-    if (controller.cron === SWEEP_CRON) {
-      ctx.waitUntil(runSweep(env, { waitUntil: (work) => ctx.waitUntil(work) }).catch((error: unknown) => log("error", "sweep_failed", { error: errorFacts(error) })));
-      return;
-    }
     runHourly(env, controller.scheduledTime, (work) => ctx.waitUntil(work));
   },
 } satisfies ExportedHandler<Env>;

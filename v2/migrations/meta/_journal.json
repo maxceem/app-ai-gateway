@@ -85,6 +85,13 @@
       "when": 1795370899755,
       "tag": "0011_email_pending_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795592679280,
+      "tag": "0012_ledger_moves_out",
+      "breakpoints": true
     }
   ]
 }

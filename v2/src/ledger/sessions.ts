@@ -20,6 +20,7 @@
  *   written in one D1 batch (S9), and is dated on the day the session ended
  *   (S12).
  */
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { UNRESOLVED_FIRST_TRY_MS } from "../proxy/call-charge.ts";
 import { log } from "../core/log.ts";
@@ -177,9 +178,16 @@ export type CheckpointAnswer =
  * the caller; the totals they are compared with are read in the same batch,
  * after the slice is written. The plan's request allowance is not here: it
  * lives in the account's limiter object, which the caller asks itself.
+ *
+ * The slice and the totals are one transaction in the account's ledger
+ * object (`db`, step 8f). The end user's and the connection's status are
+ * settings, read from D1 (`settings`) just before it. If that read fails,
+ * only those two checks are skipped: the slice is still written, and the
+ * ledger's own stop decisions still apply.
  */
 export async function writeCheckpoint(
   db: D1Database,
+  settings: D1Database,
   input: {
     readonly session: SessionRow;
     readonly slice: ChargeRow;
@@ -251,14 +259,7 @@ export async function writeCheckpoint(
         .bind(session.accountId, input.planMinutes.fromDay, input.planMinutes.toDay),
     );
   }
-  const checksUser = session.endUserId !== null;
-  if (checksUser) {
-    statements.push(db.prepare("SELECT status FROM app_end_user WHERE app_id = ? AND id = ?").bind(session.appId, session.endUserId));
-  }
-  const checksKey = session.providerConnectionId !== null;
-  if (checksKey) {
-    statements.push(db.prepare("SELECT status FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
-  }
+  const standing = await settingsStanding(settings, session);
 
   let results: D1Result[];
   try {
@@ -292,16 +293,54 @@ export async function writeCheckpoint(
     index += 1;
     if (ms >= input.planMinutes.limitMs) reasons.push("allowance_used_up");
   }
-  if (checksUser) {
-    if (first(index)?.status === "blocked") reasons.push("user_blocked");
-    index += 1;
-  }
-  if (checksKey) {
-    const status = first(index)?.status;
-    if (status === undefined || status === "disabled") reasons.push("key_removed");
-    index += 1;
-  }
+  if (standing?.userBlocked === true) reasons.push("user_blocked");
+  if (standing?.keyRemoved === true) reasons.push("key_removed");
   return reasons.length === 0 ? { decision: "continue", written: true } : { decision: "stop", reasons, written: true };
+}
+
+/**
+ * How long a checkpoint waits for its two settings from D1. Past it, both
+ * checks are skipped, so a slow D1 never holds up the ledger transaction and
+ * its stop decisions.
+ */
+export const CHECKPOINT_SETTINGS_DEADLINE_MS = 1_000;
+
+/**
+ * The checkpoint's two checks on settings in D1: the end user blocked, the
+ * connection gone or disabled. Null when D1 cannot answer in time: both are
+ * skipped.
+ */
+async function settingsStanding(
+  settings: D1Database,
+  session: SessionRow,
+): Promise<{ readonly userBlocked: boolean; readonly keyRemoved: boolean } | null> {
+  const reads: D1PreparedStatement[] = [];
+  if (session.endUserId !== null) {
+    reads.push(settings.prepare("SELECT status FROM app_end_user WHERE app_id = ? AND id = ?").bind(session.appId, session.endUserId));
+  }
+  if (session.providerConnectionId !== null) {
+    reads.push(settings.prepare("SELECT status FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
+  }
+  if (reads.length === 0) return { userBlocked: false, keyRemoved: false };
+  let results: D1Result[];
+  try {
+    results = await withDeadline(settings.batch(reads), CHECKPOINT_SETTINGS_DEADLINE_MS, "reading the checkpoint's settings");
+  } catch (error) {
+    log("warn", "checkpoint_settings_unchecked", { app: session.appId, session: session.id, error: errorFacts(error) });
+    return null;
+  }
+  let index = 0;
+  let userBlocked = false;
+  let keyRemoved = false;
+  if (session.endUserId !== null) {
+    userBlocked = (results[index]?.results[0] as { status?: unknown } | undefined)?.status === "blocked";
+    index += 1;
+  }
+  if (session.providerConnectionId !== null) {
+    const status = (results[index]?.results[0] as { status?: unknown } | undefined)?.status;
+    keyRemoved = status === undefined || status === "disabled";
+  }
+  return { userBlocked, keyRemoved };
 }
 
 /**

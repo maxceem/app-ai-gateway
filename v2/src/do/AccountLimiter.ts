@@ -15,6 +15,7 @@
  * by, the limits a customer sets on its own app (`app_*`).
  */
 import { DurableObject } from "cloudflare:workers";
+import { ledgerDb } from "../ledger/database.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 
@@ -110,9 +111,8 @@ export class AccountLimiter extends DurableObject<Env> {
   private readSessionMs(key: string, input: { accountId: string; fromDay: string; toDay: string; now: number }): Promise<number> {
     const pending = this.minutesReads.get(key);
     if (pending !== undefined) return pending;
-    const read = this.env.DB.prepare(
-      `SELECT COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE account_id = ? AND day >= ? AND day < ?`,
-    )
+    const read = ledgerDb(this.env, input.accountId)
+      .prepare(`SELECT COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE account_id = ? AND day >= ? AND day < ?`)
       .bind(input.accountId, input.fromDay, input.toDay)
       .first<{ ms: number }>()
       .then((row) => {

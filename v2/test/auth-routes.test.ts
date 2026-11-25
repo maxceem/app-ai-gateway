@@ -1,12 +1,15 @@
 import { env } from "cloudflare:workers";
+import { LEDGER_CALL_DEADLINE_MS } from "../src/ledger/database.ts";
+import { BACKGROUND_JOB_DEADLINE_MS, boundedJob } from "../src/core/background.ts";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, recordAuthEvent, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
+  ACCOUNT_ID,
   attestAuthentication,
   authEvents,
   clearCaches,
@@ -111,6 +114,124 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("still writes a sign-in event, with no wait measured, when D1 cannot read the user's wait (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const prepare = env.DB.prepare.bind(env.DB);
+    const flakyDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property !== "prepare") return Reflect.get(target, property)?.bind?.(target) ?? Reflect.get(target, property);
+        return (sql: string) => {
+          if (sql.startsWith("SELECT claim_pending_since")) throw new Error("D1 cannot read");
+          return prepare(sql);
+        };
+      },
+    });
+    await recordAuthEvent({ env: { ...env, DB: flakyDb } as Env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-unread", outcome: "ok", latencyMs: 1 });
+    expect(await authEvents(appId)).toEqual([expect.objectContaining({ user_id: "u-unread", outcome: "ok", claim_delay_ms: null })]);
+  });
+
+  it("counts every account's abandoned challenges once all their writes are in (step 8f)", async () => {
+    const now = Date.now();
+    const mine = await seedApp(attestAuthentication());
+    // A second account, written directly: signing one up is slow.
+    const other = `acc_two_${crypto.randomUUID().slice(0, 8)}`;
+    const theirs = `theirs-${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Two', 'usr_test', ?, ?)").bind(
+        other,
+        new Date(now).toISOString(),
+        new Date(now).toISOString(),
+      ),
+      env.DB.prepare(
+        "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Theirs', '{}', 1, 'active', 0, 0)",
+      ).bind(theirs, other),
+    ]);
+    await env.DB.prepare("DELETE FROM app_auth_challenge").run();
+    await env.DB.batch(
+      [mine, mine, theirs].map((appId, index) =>
+        env.DB.prepare("INSERT INTO app_auth_challenge (challenge, app_id, expires_at, attempted) VALUES (?, ?, ?, 0)").bind(`two-${index}`, appId, now - 1_000),
+      ),
+    );
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
+  });
+
+  it("retries a sign-in event through a fresh ledger stub after one breaks (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let stubs = 0;
+    // The first stub is broken for good; any later one reaches the real ledger.
+    const flaky = {
+      ...env,
+      ACCOUNT_LEDGER: {
+        idFromName: (name: string) => name,
+        get: (name: string) => {
+          stubs += 1;
+          if (stubs === 1) return { query: () => Promise.reject(new Error("broken stub")) };
+          return env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(name));
+        },
+      },
+    } as unknown as Env;
+    await recordAuthEvent({ env: flaky, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-fresh", outcome: "ok", latencyMs: 1 });
+    expect((await authEvents(appId)).map((event) => event.user_id)).toEqual(["u-fresh"]);
+  });
+
+  it("gives up the expired-challenge clean-up as one job inside the request's background time, with a warning (step 8f)", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // Its D1 read never answers.
+    const stalledDb = { prepare: () => ({ bind: () => ({ all: () => new Promise(() => undefined) }) }) } as unknown as D1Database;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // As `/auth/challenge` runs it, one challenge in a hundred.
+    const job = boundedJob(settleExpiredChallenges(env, stalledDb), "settling expired challenges", "auth_challenges_prune_failed");
+    await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DEADLINE_MS);
+    vi.useRealTimers();
+    expect(await job).toBeUndefined();
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_challenges_prune_failed"'))).toBe(true);
+  });
+
+  it("gives up a sign-in event whose D1 lookup never answers, inside the request's background time, with a warning (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // A success reads the user's wait from D1 first; that read never answers.
+    const stalledDb = { prepare: () => ({ bind: () => ({ first: () => new Promise(() => undefined), run: () => new Promise(() => undefined) }) }) };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const writing = recordAuthEvent({ env: { ...env, DB: stalledDb } as unknown as Env, appId, accountId: ACCOUNT_ID, event: "token_exchange", userId: "u-stalled", outcome: "ok", latencyMs: 1 });
+    await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DEADLINE_MS);
+    vi.useRealTimers();
+    await writing;
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_event_record_failed"'))).toBe(true);
+  });
+
+  it("gives up an event write the ledger never answers, inside the request's background time, with a warning (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const writing = recordAuthEvent({ env: stalled, appId, accountId: ACCOUNT_ID, event: "challenge", outcome: "client_failed", latencyMs: 1 });
+    await vi.advanceTimersByTimeAsync(LEDGER_CALL_DEADLINE_MS);
+    vi.useRealTimers();
+    await writing;
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_event_record_failed"'))).toBe(true);
+  });
+
+  it("answers once the challenge is spent, and writes the event after the answer, so a stalled ledger never holds it (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const challenge = await challengeFor(appId);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    const report = { challenge, step: "attest_key", error: { domain: "com.apple.devicecheck.error", code: 3 } };
+    // The background work is never awaited: the stalled event write would never end.
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/auth/failure`, {
+        method: "POST",
+        body: JSON.stringify(report),
+        headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.10" },
+      }),
+      stalled,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toEqual({ recorded: true });
+  });
+
   it("records one report per challenge, as a challenge auth event", async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);
@@ -339,6 +460,24 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
 });
 
 describe("GET /v2/apps/{app}/me", () => {
+  it("answers without the month's spend when the account's ledger cannot give it, with a warning (step 8f)", async () => {
+    const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });
+    const key = await seedAppKey(appId);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const down = () => Promise.reject(new Error("ledger down"));
+    const ledgerDown = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: down }) } } as unknown as Env;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${key.key}`, "x-end-user-id": "user-8", "cf-connecting-ip": "198.51.100.9" } }),
+      ledgerDown,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { limits: { monthly_cost_usd: number | null } }).limits.monthly_cost_usd).toBeNull();
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"budget_total_unread"'))).toBe(true);
+  });
+
   it("names the user an app key and header give, and whether they are blocked", async () => {
     const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });
     const key = await seedAppKey(appId);
@@ -442,8 +581,8 @@ describe("expired challenges", () => {
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-tried', ?, ?, 1)").bind(appId, now - 1000),
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('fresh', ?, ?, 0)").bind(appId, now + 60_000),
     ]);
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
     const events = await authEvents(appId);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ id: "challenge:old-unused", outcome: "abandoned", created_at: now - 1000 - 300_000 });
@@ -467,7 +606,7 @@ describe("expired challenges", () => {
         ),
       ),
     );
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
     const versions = Object.fromEntries((await authEvents(appId)).map((event: any) => [event.id, event.app_version]));
     expect(versions).toEqual({ "challenge:free-text": null, "challenge:version": "1.2.3 (45)", "challenge:none": null });
   });
@@ -490,15 +629,15 @@ describe("expired challenges", () => {
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     // A batch of 2 stands in for 1,000: the oldest two go first.
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env, env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
     const left = await env.DB.prepare("SELECT challenge FROM app_auth_challenge ORDER BY expires_at").all<{ challenge: string }>();
     expect(left.results.map((row) => row.challenge)).toEqual(["backlog-2", "backlog-3", "backlog-4"]);
     // The hourly drain goes on while batches come back full, up to its limit, and says a backlog is left.
-    expect(await drainExpiredChallenges(env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     // With room for more batches it clears the rest in one run, and stops at the first batch that is not full.
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     const versions = (await authEvents(appId)).map((event: any) => event.app_version).sort();
     expect(versions).toEqual(["1.0.0", "1.0.2", "1.0.3", "1.0.4"]);
@@ -515,7 +654,7 @@ describe("expired challenges", () => {
     );
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toEqual([]);
   });
@@ -531,19 +670,28 @@ describe("expired challenges", () => {
     );
     // The first batch selects race-0 and race-1; a clean-up started by a challenge request deletes race-0 before it writes.
     let raced = false;
+    // Another clean-up deletes a challenge of the batch just before this one's delete runs.
     const db = new Proxy(env.DB, {
       get(target, property, receiver) {
-        if (property !== "batch") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
-        return async (statements: D1PreparedStatement[]) => {
-          if (!raced) {
-            raced = true;
-            await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
-          }
-          return target.batch(statements);
+        if (property !== "prepare") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.startsWith("DELETE FROM app_auth_challenge WHERE challenge IN")) return statement;
+          return {
+            bind: (...values: unknown[]) => ({
+              run: async () => {
+                if (!raced) {
+                  raced = true;
+                  await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
+                }
+                return statement.bind(...values).run();
+              },
+            }),
+          };
         };
       },
     });
-    expect(await drainExpiredChallenges(db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
+    expect(await drainExpiredChallenges(env, db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
   });
 

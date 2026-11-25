@@ -3,11 +3,13 @@
  * installs registered without Apple, and the assertions and request proofs a
  * device would send.
  */
+import { AccountLedger } from "../src/do/AccountLedger.ts";
+import { ledgerDb, type LedgerResult, type LedgerStatement } from "../src/ledger/database.ts";
 import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { encode } from "cbor-x";
-import { vi } from "vitest";
+import { onTestFinished, vi } from "vitest";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { base64url, requestClientData } from "../src/client-auth/request-proof.ts";
@@ -227,8 +229,8 @@ export function useFakeClock(): void {
 }
 
 /** The auth events of one app, oldest first. */
-export async function authEvents(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();
+export async function authEvents(appId: string, accountId: string = ACCOUNT_ID): Promise<Record<string, unknown>[]> {
+  const { results } = await ledger(accountId).prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();
   return results;
 }
 
@@ -339,6 +341,59 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
  * fixed clock and the ledger's late-booking rule (`../src/ledger/late-booking.ts`)
  * agree.
  */
-export function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
-  return writeToLedger(env.DB, entries, Math.max(...entries.map((entry) => entry.charge.writtenAt)));
+export async function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
+  const at = Math.max(...entries.map((entry) => entry.charge.writtenAt));
+  let changes = 0;
+  for (const accountId of new Set(entries.map((entry) => entry.charge.accountId))) {
+    changes += await writeToLedger(ledger(accountId), entries.filter((entry) => entry.charge.accountId === accountId), at);
+  }
+  return changes;
+}
+
+/**
+ * `base` with every account's ledger object replaced by a D1-shaped stand-in
+ * `make` builds from the real one: one that fails, stalls or counts.
+ */
+export function withLedgerDb(base: Env, make: (real: D1Database, accountId: string) => D1Database): Env {
+  const namespace = {
+    idFromName: (name: string) => name,
+    get: (accountId: string) => ({
+      query: async (statements: readonly LedgerStatement[], transaction: boolean): Promise<LedgerResult[]> => {
+        const db = make(ledger(accountId), accountId);
+        const prepared = statements.map((statement) => db.prepare(statement.sql).bind(...statement.params));
+        const results = transaction ? await db.batch(prepared) : [await prepared[0]!.all()];
+        return results.map((result) => {
+          const columns = Object.keys((result.results[0] ?? {}) as object);
+          const values = (result.results as Record<string, unknown>[]).map((row) => columns.map((column) => row[column]));
+          return { values, columns, changes: result.meta.changes ?? 0, rowsRead: 0 };
+        });
+      },
+    }),
+  };
+  return { ...base, ACCOUNT_LEDGER: namespace } as unknown as Env;
+}
+
+/** The ledger object's own `planWork`, kept so a test can let alarms be set again. */
+const PLAN_WORK = (AccountLedger.prototype as unknown as { planWork(fresh?: boolean): Promise<void> }).planWork;
+
+/**
+ * Keeps the ledger objects from setting their alarms, for every test unless
+ * it calls `allowLedgerWork`: an alarm would run the real sweep and nightly
+ * clean-up at the real time, over rows each test dates at its own, and an
+ * alarm left set keeps the run from ending. Patched on the class itself, not
+ * spied, so `vi.restoreAllMocks()` in a test never turns alarms back on.
+ */
+export function pauseLedgerWork(): void {
+  (AccountLedger.prototype as unknown as { planWork(): Promise<void> }).planWork = async () => undefined;
+}
+
+/** Lets the ledger objects set their alarms until the test ends. */
+export function allowLedgerWork(): void {
+  (AccountLedger.prototype as unknown as { planWork(fresh?: boolean): Promise<void> }).planWork = PLAN_WORK;
+  onTestFinished(() => pauseLedgerWork());
+}
+
+/** An account's ledger, with D1's shape, as the code reads and writes it (step 8f). */
+export function ledger(accountId: string = ACCOUNT_ID): D1Database {
+  return ledgerDb(env, accountId);
 }

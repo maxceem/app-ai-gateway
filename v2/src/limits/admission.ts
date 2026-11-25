@@ -77,10 +77,10 @@ export interface EndUserCaller {
 export function endUserCaller(app: AppRecord, identity: GatewayIdentity): EndUserCaller | null {
   if (identity.authMethod === "attest") {
     const scope = configuredBudgetScope(app.authentication, app.limits);
-    let spend: SpendKey & { scope: BudgetScope } = { appId: app.id, scope: "install", key: identity.installId };
-    if (scope === "user" && identity.userId !== null) spend = { appId: app.id, scope: "user", key: identity.userId };
+    let spend: SpendKey & { scope: BudgetScope } = { accountId: app.accountId, appId: app.id, scope: "install", key: identity.installId };
+    if (scope === "user" && identity.userId !== null) spend = { accountId: app.accountId, appId: app.id, scope: "user", key: identity.userId };
     if (scope === "apple_account" && identity.appleAccountId !== null) {
-      spend = { appId: app.id, scope: "apple_account", key: identity.appleAccountId };
+      spend = { accountId: app.accountId, appId: app.id, scope: "apple_account", key: identity.appleAccountId };
     }
     return { name: installLimiterName(app.id, identity.installId), scope: "install", spend };
   }
@@ -88,7 +88,7 @@ export function endUserCaller(app: AppRecord, identity: GatewayIdentity): EndUse
   return {
     name: userLimiterName(app.id, identity.userId),
     scope: "user",
-    spend: { appId: app.id, scope: "user", key: identity.userId },
+    spend: { accountId: app.accountId, appId: app.id, scope: "user", key: identity.userId },
   };
 }
 
@@ -186,7 +186,7 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
           rpm: perApp.requests.per_minute,
           rpd: perApp.requests.per_day,
           budgetNano: perApp.spending.monthly_nano,
-          spend: { appId: app.id, scope: "app", key: app.id },
+          spend: { accountId: app.accountId, appId: app.id, scope: "app", key: app.id },
         }),
       ),
       remaining(),

@@ -33,6 +33,7 @@ import {
   useAppJobs,
   JOBS_REFRESH_MS,
   useAppKeys,
+  useAppSeenUsers,
   useAppUsers,
   useCreateAppKey,
   useDeleteApp,
@@ -792,7 +793,86 @@ function UsersTab({ app }: { app: App }) {
           </Button>
         </div>
       ) : null}
+      <SeenUsers appId={app.id} search={search.trim()} />
     </div>
+  );
+}
+
+/**
+ * User ids only the app's usage names, such as a server app's end-user
+ * header: a second list under the users sign-in recorded, paged on its own
+ * from a cursor. A page can hold fewer than a full page and still have a next.
+ */
+function SeenUsers({ appId, search }: { appId: string; search: string }) {
+  // The cursor of each page shown so far; the last is the current one.
+  const [cursors, setCursors] = useState<(string | undefined)[]>([undefined]);
+  const cursor = cursors.at(-1);
+  const seen = useAppSeenUsers(appId, { query: search || undefined, limit: PAGE, cursor });
+  const list = seen.data?.users ?? [];
+  const next = seen.data?.next_cursor ?? null;
+  const first = cursors.length === 1;
+  useEffect(() => setCursors([undefined]), [search]);
+  // Shown once the first page has someone, or a next page, or failed to load (so the failure is
+  // seen). A later page keeps the section, with Previous and Next, while it loads and when it fails.
+  if (first && !seen.isError && (seen.isPending || (list.length === 0 && next === null))) return null;
+
+  return (
+    <section className="space-y-2" aria-label="Also seen in usage">
+      <h3 className="text-sm font-medium">Also seen in usage</h3>
+      <p className="text-sm text-muted-foreground">User ids the app's requests named that sign-in never recorded, such as an end-user header.</p>
+      <Card className="overflow-hidden py-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>User</TableHead>
+              <TableHead className="text-right">Requests</TableHead>
+              <TableHead className="text-right">Cost</TableHead>
+              <TableHead>Last seen</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {seen.isPending ? (
+              <TableRow>
+                <TableCell colSpan={4}>
+                  <Skeleton className="h-5 w-full" />
+                </TableCell>
+              </TableRow>
+            ) : seen.isError ? (
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-sm text-destructive">
+                  Could not load this page. {seen.error instanceof Error ? seen.error.message : ""}
+                </TableCell>
+              </TableRow>
+            ) : list.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
+                  None on this page.
+                </TableCell>
+              </TableRow>
+            ) : (
+              list.map((user) => (
+                <TableRow key={user.id}>
+                  <TableCell className="max-w-72 font-mono text-xs break-all">{user.id}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatNumber(user.usage.charges)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatCost(nanoToDollars(user.usage.cost_nano))}</TableCell>
+                  <TableCell className="text-muted-foreground">{user.last_seen_at ? <RelativeTime value={user.last_seen_at} /> : "—"}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+      {first && next === null ? null : (
+        <div className="flex items-center justify-end gap-2 text-sm">
+          <Button size="sm" variant="outline" disabled={first} onClick={() => setCursors(cursors.slice(0, -1))}>
+            Previous
+          </Button>
+          <Button size="sm" variant="outline" disabled={next === null} onClick={() => next !== null && setCursors([...cursors, next])}>
+            Next
+          </Button>
+        </div>
+      )}
+    </section>
   );
 }
 

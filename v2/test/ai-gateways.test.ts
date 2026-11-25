@@ -23,6 +23,7 @@ import {
   seedAppKey,
   seedManagementKey,
   seedRoutedApp,
+  ledger,
 } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -525,7 +526,7 @@ describe("calls through the gateways, end to end", () => {
   }
 
   async function charges(appId: string) {
-    const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ?").bind(appId).all();
+    const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ?").bind(appId).all();
     return results;
   }
 

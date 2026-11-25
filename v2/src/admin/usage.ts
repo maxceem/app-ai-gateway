@@ -17,6 +17,7 @@
  * may come back in another account after its app was deleted, and the ledger
  * keeps the first account's rows.
  */
+import { ledgerDb } from "../ledger/database.ts";
 import { modelAuthor } from "../providers/model-author.ts";
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
@@ -164,7 +165,7 @@ export async function getAccountUsage(c: AdminContext): Promise<Response> {
   const actor = c.get("actor");
   const month = parseQuery(c, UsageMonthQuerySchema).month ?? currentMonth();
   const { first, next } = monthDays(month);
-  const db = c.env.DB;
+  const db = ledgerDb(c.env, actor.accountId);
   const [perApp, oldest] = await db.batch([
     db
       .prepare(`SELECT app_id, ${ROLLUP_SUMS} FROM (${monthUsageSql(false)}) GROUP BY app_id`)
@@ -183,7 +184,7 @@ export async function getAccountUsage(c: AdminContext): Promise<Response> {
     ? new Map<string, string>()
     : new Map(
         (
-          await db
+          await c.env.DB
             .prepare("SELECT id, name FROM app WHERE account_id = ? AND id IN (SELECT value FROM json_each(?))")
             .bind(actor.accountId, JSON.stringify(rows.map((row) => row.app_id)))
             .all<{ id: string; name: string }>()
@@ -209,7 +210,7 @@ export async function getAppUsage(c: AdminContext): Promise<Response> {
   const month = parseQuery(c, UsageMonthQuerySchema).month ?? currentMonth();
   await appExists(c.env.DB, actor.accountId, appId);
   const { first, next } = monthDays(month);
-  const db = c.env.DB;
+  const db = ledgerDb(c.env, actor.accountId);
   const [sums, oldest] = await db.batch([
     db.prepare(`SELECT ${ROLLUP_SUMS} FROM (${monthUsageSql(true)})`).bind(actor.accountId, month, first, next, appId),
     // The app's oldest usage kept, read through the rollups' keys: whether it
@@ -237,7 +238,7 @@ export async function getAppUsageTimeseries(c: AdminContext): Promise<Response> 
   const query = parseQuery(c, UsageRangeQuerySchema);
   const range = dayRange(query.from, query.to);
   await appExists(c.env.DB, actor.accountId, appId);
-  const { results } = await c.env.DB.prepare(
+  const { results } = await ledgerDb(c.env, actor.accountId).prepare(
     `SELECT day, provider_type, ${ROLLUP_SUMS} FROM usage_day
       WHERE app_id = ? AND account_id = ? AND day >= ? AND day <= ?
       GROUP BY day, provider_type
@@ -279,7 +280,7 @@ export async function getAppUsageBreakdown(c: AdminContext): Promise<Response> {
   // A breakdown from the charges groups every charge in its range, so its range is shorter.
   const range = dayRange(query.from, query.to, totalsColumn === undefined ? USAGE_CHARGE_RANGE_MAX_DAYS : USAGE_RANGE_MAX_DAYS);
   await appExists(c.env.DB, actor.accountId, appId);
-  const db = c.env.DB;
+  const db = ledgerDb(c.env, actor.accountId);
   const order = "ORDER BY cost_nano DESC, charges DESC, key LIMIT ?";
   const { results } = totalsColumn !== undefined
     ? await db
@@ -302,7 +303,7 @@ export async function getAppUsageBreakdown(c: AdminContext): Promise<Response> {
   const slugs = query.by === "connection" && results.length > 0
     ? new Map(
         (
-          await db
+          await c.env.DB
             .prepare("SELECT id, slug FROM provider_connection WHERE account_id = ? AND id IN (SELECT value FROM json_each(?))")
             .bind(actor.accountId, JSON.stringify(results.map((row) => row.key).filter((key) => key !== null)))
             .all<{ id: string; slug: string }>()
@@ -399,7 +400,7 @@ export async function listAppCharges(c: AdminContext): Promise<Response> {
     where.push("(used_at, id) < (?, ?)");
     params.push(before.usedAt, before.id);
   }
-  const { results } = await c.env.DB.prepare(
+  const { results } = await ledgerDb(c.env, actor.accountId).prepare(
     `SELECT id, kind, owner_type, owner_id, corrects_charge_id, correction_kind, status, http_status, error_code,
             provider_type, provider_connection_id, operation, preset, model, end_user_id, install_id, cost_nano,
             measured, price_source, price_is_estimate, input_tokens, cached_input_tokens, cache_write_tokens,

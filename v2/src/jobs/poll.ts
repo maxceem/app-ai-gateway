@@ -34,6 +34,7 @@ import { parseJson, readBounded } from "../core/bounded-body.ts";
 import { GatewayError } from "../core/errors.ts";
 import { connectionDescription, loadConnection } from "../providers/connections.ts";
 import { clientResponseHeaders, noStore } from "../proxy/headers.ts";
+import { ledgerDb } from "../ledger/database.ts";
 import { serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { readJobId, userDigest, type JobClaims } from "./job-id.ts";
 import {
@@ -138,7 +139,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
                 // The units header is applied even when the copy breaks. Whether the body is
                 // still needed is decided with the estimate's rate; the job's check stays open.
                 const facts = readResultFacts(context.spec, response, read);
-                if (facts !== null) await applyFinalResult(c.env, ref, facts, now);
+                if (facts !== null) await applyFinalResult(c.env, ledgerDb(c.env, ref.accountId), ref, facts, now);
               })(),
             );
           }

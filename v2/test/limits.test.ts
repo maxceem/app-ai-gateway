@@ -27,6 +27,7 @@ import {
   tokenForInstall,
   useFakeClock,
   watch,
+  ledger,
 } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
@@ -431,13 +432,13 @@ describe("budget totals", () => {
     const at = Date.parse("2026-11-19T10:00:00Z");
     const day = "2026-11-19";
     const add = (nano: number) =>
-      env.DB.prepare(
+      ledger().prepare(
         `INSERT INTO budget_day (app_id, scope, scope_id, day, cost_nano, session_ms) VALUES (?, 'app', ?, ?, ?, 0)
          ON CONFLICT (app_id, scope, scope_id, day) DO UPDATE SET cost_nano = cost_nano + excluded.cost_nano`,
       ).bind(appId, appId, day, nano).run();
     const limiter = env.APP_LIMITER.getByName(appId);
     const check = (now: number) =>
-      limiter.checkRequest({ now, rpm: null, rpd: null, budgetNano: 150, spend: { appId, scope: "app", key: appId } });
+      limiter.checkRequest({ now, rpm: null, rpd: null, budgetNano: 150, spend: { accountId: ACCOUNT_ID, appId, scope: "app", key: appId } });
     await add(100);
     expect(await check(at)).toEqual({ allowed: true, budget: "checked" });
     await add(100);
@@ -456,7 +457,7 @@ describe("budget totals", () => {
       rpd: null,
       budgetNano: 1,
       // A month the D1 query cannot bind turns the read into a failure.
-      spend: { appId, scope: "app", key: undefined as unknown as string },
+      spend: { accountId: ACCOUNT_ID, appId, scope: "app", key: undefined as unknown as string },
     });
     expect(result).toEqual({ allowed: true, budget: "unread" });
   });
@@ -474,7 +475,7 @@ describe("budget totals", () => {
 
 describe("plan minutes", () => {
   it("are the account's session time in the rollups over the period", async () => {
-    await env.DB.prepare(
+    await ledger("acc_minutes").prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, session_ms)
        VALUES ('acc_minutes', 'app_m', '2026-11-12', 'openai', '', '', 'ok', '', 90000),
               ('acc_minutes', 'app_m', '2026-12-12', 'openai', '', '', 'ok', '', 60000)`,
@@ -538,8 +539,8 @@ async function chat(target: { appId: string; slug: string; key: string }, enviro
   return { status: response.status, headers: response.headers, body };
 }
 
-async function rejections(appId: string) {
-  const { results } = await env.DB.prepare("SELECT reason, scope FROM app_rejection_event WHERE app_id = ?").bind(appId).all();
+async function rejections(appId: string, accountId: string = ACCOUNT_ID) {
+  const { results } = await ledger(accountId).prepare("SELECT reason, scope FROM app_rejection_event WHERE app_id = ?").bind(appId).all();
   return results;
 }
 
@@ -617,7 +618,7 @@ describe("limits on the proxy path", () => {
       },
     });
     expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
-    expect(await rejections(target.appId)).toEqual(
+    expect(await rejections(target.appId, accountId)).toEqual(
       expect.arrayContaining([{ reason: "blocked_app_rate", scope: "app" }, { reason: "blocked_billing", scope: "account" }]),
     );
   });

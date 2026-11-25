@@ -1,15 +1,15 @@
 /**
- * Dollar budget totals, read from the D1 rollups (`budget_day`), which the
- * ledger trigger keeps. Nothing else writes them, so a charge is counted once.
+ * Dollar budget totals, read from the rollups (`budget_day`) in the
+ * account's ledger object, which the ledger trigger keeps. Nothing else writes them, so a charge is counted once.
  *
  * A budget month is the UTC calendar month, as v1.
  */
 import type { BudgetScope } from "../contracts/app-config.ts";
 
-/** Whose month a budget is measured over. The app's own scope is keyed by the app id. */
+/** Whose month a budget is measured over, and in which account's ledger. The app's own scope is keyed by the app id. */
 export type SpendKey =
-  | { appId: string; scope: "app"; key: string }
-  | { appId: string; scope: BudgetScope; key: string };
+  | { accountId: string; appId: string; scope: "app"; key: string }
+  | { accountId: string; appId: string; scope: BudgetScope; key: string };
 
 /** The first day of `now`'s UTC month and of the next one, as `YYYY-MM-DD`. */
 export function utcMonthDays(now: number): { from: string; to: string } {

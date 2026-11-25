@@ -126,7 +126,7 @@ function utcDay(): string {
  * what `/me` said, and whether the UTC day stayed the same from the call to
  * the read, so the day's count is exact.
  */
-async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: string; limits: Record<string, unknown> }; sameDay: boolean }> {
+async function oneCallThenMe(): Promise<{ user: string; token: string; standing: { user_id: string; limits: Record<string, unknown> }; sameDay: boolean }> {
   const user = uniqueSlug("smoke-user");
   const exchanged = await exchange(await userToken(user));
   await expectResponse(exchanged, 200, "exchanged");
@@ -145,7 +145,7 @@ async function oneCallThenMe(): Promise<{ user: string; standing: { user_id: str
   const me = await send(`/v2/apps/${appId}/me`, base, { headers: { authorization: `Bearer ${token}` } });
   await expectResponse(me, 200, "me");
   const standing = (await readJson(me)) as { user_id: string; limits: Record<string, unknown> };
-  return { user, standing, sameDay: utcDay() === day };
+  return { user, token, standing, sameDay: utcDay() === day };
 }
 
 test("a signed-in user exchanges a token, calls a provider, and reads /me", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
@@ -168,7 +168,17 @@ test("a signed-in user exchanges a token, calls a provider, and reads /me", { sk
   // A fresh user's one call, counted once: what is left is the day's limit less that one.
   same(limits.requests_today, 1, "limits.requests_today is not 1");
   same(limits.requests_remaining, PER_DAY - 1, "limits.requests_remaining is not PER_DAY - 1");
-  check(typeof limits.monthly_cost_usd === "number" && limits.monthly_cost_usd >= 0, "/me has no monthly cost");
+  // The month's spend is null when the account's ledger did not answer in time: read /me again, for a while.
+  const cost =
+    limits.monthly_cost_usd !== null
+      ? limits.monthly_cost_usd
+      : await poll(async () => {
+          const again = await send(`/v2/apps/${appId}/me`, base, { headers: { authorization: `Bearer ${run.token}` } });
+          await expectResponse(again, 200, "again");
+          const value = ((await readJson(again)) as { limits: { monthly_cost_usd: unknown } }).limits.monthly_cost_usd;
+          return value === null ? undefined : value;
+        }, "/me never gave the month's spend");
+  check(typeof cost === "number" && cost >= 0, "/me has no monthly cost");
 });
 
 test("the app key alone is refused once users must sign in", { skip, timeout: TEST_TIMEOUT_MS }, async () => {

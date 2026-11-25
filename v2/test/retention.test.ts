@@ -39,10 +39,10 @@ import {
   USAGE_DETAIL_RETENTION_DAYS,
 } from "../src/ledger/retention.ts";
 import { insertChargeStatement, utcDay, type ChargeRow } from "../src/ledger/write.ts";
-import { CHALLENGE_SETTLE_STATEMENTS, NIGHTLY_HOUR_UTC, nightlyPasses, runNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
+import { CHALLENGE_SETTLE_STATEMENTS, NIGHTLY_HOUR_UTC, nightlyPasses, runLedgerNightly, SIGN_IN_SWEEP_STATEMENTS } from "../src/maintenance/nightly.ts";
 import { nano } from "../src/money.ts";
 import { usageByUser } from "../src/admin/users.ts";
-import { ACCOUNT_ID, attestAuthentication, seedApp } from "./helpers.ts";
+import { ACCOUNT_ID, attestAuthentication, ledger, seedApp } from "./helpers.ts";
 
 const DAY = 86_400_000;
 /** The run's time: 04:17 UTC, as the nightly cron. */
@@ -60,7 +60,7 @@ const TABLES = ["charge", "session", "open_work", "budget_day", "usage_day", "us
 beforeEach(async () => {
   quiet();
   // The passes cover whole tables, so each test starts from empty ones.
-  await env.DB.batch(TABLES.map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+  await ledger().batch(TABLES.map((table) => ledger().prepare(`DELETE FROM ${table}`)));
 });
 
 afterEach(() => {
@@ -116,17 +116,17 @@ function charge(fields: Partial<ChargeRow> & { usedAt: number }): ChargeRow {
 
 async function insert(...charges: ChargeRow[]): Promise<void> {
   // Seeded as of their own time: the ledger takes them then (`../src/ledger/late-booking.ts`).
-  await env.DB.batch(charges.map((row) => insertChargeStatement(env.DB, row, row.writtenAt)));
+  await ledger().batch(charges.map((row) => insertChargeStatement(ledger(), row, row.writtenAt)));
 }
 
 async function chargeIds(): Promise<string[]> {
-  const { results } = await env.DB.prepare("SELECT id FROM charge ORDER BY rowid").all<{ id: string }>();
+  const { results } = await ledger().prepare("SELECT id FROM charge ORDER BY rowid").all<{ id: string }>();
   return results.map((row) => row.id);
 }
 
 async function openWork(fields: { ownerType: string; ownerId: string; gaveUpAt?: number | null; createdAt?: number }): Promise<string> {
   const id = unique("work");
-  await env.DB.prepare(
+  await ledger().prepare(
     `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at, gave_up_at)
      VALUES (?, 'unresolved', ?, 'app_retention', ?, ?, NULL, NULL, ?, 0, ?, ?)`,
   )
@@ -136,7 +136,7 @@ async function openWork(fields: { ownerType: string; ownerId: string; gaveUpAt?:
 }
 
 async function session(id: string, startedAt: number, settlement: "open" | "settled" | "estimate_kept"): Promise<void> {
-  await env.DB.prepare(
+  await ledger().prepare(
     `INSERT INTO session (id, account_id, app_id, provider_type, operation, mode, slot, state, time_cap_ms, started_at, settlement, created_at, updated_at)
      VALUES (?, ?, 'app_retention', 'elevenlabs', 'elevenlabs.agent', 'relayed', 'conversational', 'ended', 1800000, ?, ?, ?, ?)`,
   )
@@ -145,13 +145,13 @@ async function session(id: string, startedAt: number, settlement: "open" | "sett
 }
 
 async function rows(sql: string, ...params: unknown[]): Promise<Record<string, unknown>[]> {
-  return (await env.DB.prepare(sql).bind(...params).all<Record<string, unknown>>()).results;
+  return (await ledger().prepare(sql).bind(...params).all<Record<string, unknown>>()).results;
 }
 
 const budget = (n = 1_000) => new QueryBudget(n);
 
 async function authEventRow(createdAt: number): Promise<void> {
-  await env.DB.prepare(
+  await ledger().prepare(
     `INSERT INTO app_auth_event (id, app_id, event, outcome, created_at) VALUES (?, 'app_retention', 'token_exchange', 'succeeded', ?)`,
   )
     .bind(unique("evt"), createdAt)
@@ -182,7 +182,7 @@ describe("usage retention: charges", () => {
     await insert(old, edge, recent);
     const before = await rows("SELECT * FROM usage_day ORDER BY day");
 
-    const result = await runUsageRetention(env.DB, NOW, budget());
+    const result = await runUsageRetention(ledger(), NOW, budget());
 
     expect(await chargeIds()).toEqual([edge.id, recent.id]);
     expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
@@ -197,7 +197,7 @@ describe("usage retention: charges", () => {
     const live = await openWork({ ownerType: "call", ownerId: waiting.ownerId });
     await openWork({ ownerType: "call", ownerId: gaveUp.ownerId, gaveUpAt: RECENT });
 
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
 
     expect(await chargeIds()).toEqual([waiting.id]);
     expect(await rows("SELECT id FROM open_work WHERE gave_up_at IS NULL")).toEqual([{ id: live }]);
@@ -208,7 +208,7 @@ describe("usage retention: charges", () => {
     const lately = await openWork({ ownerType: "job", ownerId: "job_b", gaveUpAt: RECENT });
     const live = await openWork({ ownerType: "job", ownerId: "job_c" });
 
-    const result = await runUsageRetention(env.DB, NOW, budget());
+    const result = await runUsageRetention(ledger(), NOW, budget());
 
     expect(result.gaveUpWork).toMatchObject({ deleted: 1, caughtUp: true });
     const left = (await rows("SELECT id FROM open_work ORDER BY id")).map((row) => row.id);
@@ -222,7 +222,7 @@ describe("usage retention: charges", () => {
     await insert(estimate);
     await openWork({ ownerType: "job", ownerId: job });
 
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
 
     expect(await chargeIds()).toEqual([estimate.id]);
   });
@@ -234,7 +234,7 @@ describe("usage retention: charges", () => {
     for (const row of kept) await openWork({ ownerType: "call", ownerId: row.ownerId });
     await insert(...Array.from({ length: 6 }, () => charge({ usedAt: OLD })));
 
-    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 2);
 
     expect(await chargeIds()).toEqual(kept.map((row) => row.id));
     expect(result.charges).toMatchObject({ deleted: 6, caughtUp: true });
@@ -245,7 +245,7 @@ describe("usage retention: charges", () => {
     await insert(...recent);
     await insert(charge({ usedAt: OLD }));
 
-    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 2);
 
     expect(await chargeIds()).toEqual(recent.map((row) => row.id));
     expect(result.charges).toMatchObject({ deleted: 1, caughtUp: true });
@@ -259,7 +259,7 @@ describe("usage retention: charges", () => {
     await insert(fix, original, keptFix, keptOriginal);
     await openWork({ ownerType: "call", ownerId: keptOriginal.ownerId });
 
-    const result = await runUsageRetention(env.DB, NOW, budget());
+    const result = await runUsageRetention(ledger(), NOW, budget());
     // The correction goes in its own pass, the charge in the next once no correction is left (Astra 7b-2 round 2).
     expect(await chargeIds()).toEqual([keptFix.id, keptOriginal.id]);
     expect(result.corrections).toMatchObject({ deleted: 1, caughtUp: true });
@@ -274,12 +274,12 @@ describe("usage retention: charges", () => {
     const fix = charge({ usedAt: OLD, kind: "correction", correctionKind: "pricing", correctsChargeId: original.id, ownerId: original.ownerId, costNano: nano(-750) });
     const other = charge({ usedAt: OLD, costNano: nano(500) });
     await insert(original, fix, other);
-    const read = async () => (await usageByUser(env.DB, ACCOUNT_ID, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
+    const read = async () => (await usageByUser(ledger(), ACCOUNT_ID, "app_retention", ["user_1"], OLD_MONTH)).get("user_1");
     expect(await read()).toMatchObject({ charges: 2, cost_nano: 750 });
 
     // One charge a chunk, one chunk of each pass a night, and a read after every night.
     for (let night = 0; night < 10 && (await chargeIds()).length > 0; night++) {
-      await runUsageRetention(env.DB, NOW, new QueryBudget(3), 1);
+      await runUsageRetention(ledger(), NOW, new QueryBudget(3), 1);
       const ids = await chargeIds();
       if (ids.includes(fix.id)) expect(ids).toContain(original.id);
       expect((await read())?.cost_nano ?? 0).toBeGreaterThanOrEqual(0);
@@ -295,7 +295,7 @@ describe("usage retention: charges", () => {
     await insert(template, charge({ usedAt: OLD, kind: "correction", correctionKind: "dollars", ownerType: "session", ownerId: sessionId, seq: null }));
     const columns = (await rows("SELECT name FROM pragma_table_info('charge')")).map((row) => String(row.name));
     const copied = columns.map((column) => (column === "id" ? "'slice_' || n.i" : column === "seq" ? "n.i" : column)).join(", ");
-    await env.DB.prepare(
+    await ledger().prepare(
       `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)
        INSERT INTO charge (${columns.join(", ")}) SELECT ${copied} FROM n, charge WHERE charge.id = ?`,
     )
@@ -304,7 +304,7 @@ describe("usage retention: charges", () => {
     expect(await rows("SELECT COUNT(*) AS n FROM charge")).toEqual([{ n: 1_002 }]);
 
     const rowLimit = 2_000;
-    const result = await runUsageRetention(env.DB, NOW, budget(), 100, rowLimit);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 100, rowLimit);
 
     const deleted = (result.corrections?.deleted ?? 0) + (result.charges?.deleted ?? 0);
     expect(result.corrections).toMatchObject({ deleted: 1 });
@@ -326,14 +326,14 @@ describe("usage retention: charges", () => {
     const total = charge({ usedAt: OLD, kind: "correction", correctionKind: "dollars", ownerType: "session", ownerId: sessionId, seq: null });
     await insert(first, second, ...slices, total);
 
-    const result = await runUsageRetention(env.DB, NOW, budget(), 1);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 1);
 
     expect(await chargeIds()).toEqual([first.id, second.id]);
     expect(result.corrections).toMatchObject({ deleted: 1, caughtUp: true });
     expect(result.charges).toMatchObject({ deleted: 2, caughtUp: true });
 
     // The next day the second try is past the window too, and both go (Astra 7b-2 round 2).
-    await runUsageRetention(env.DB, NOW + DAY, budget(), 1);
+    await runUsageRetention(ledger(), NOW + DAY, budget(), 1);
     expect(await chargeIds()).toEqual([]);
   });
 
@@ -342,21 +342,21 @@ describe("usage retention: charges", () => {
     const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
     await insert(estimate);
     const final = { kind: "dollars", costNano: nano(1_200) } as const;
-    expect(await settleJob(env.DB, { jobId: job, final, now: OLD + DAY })).toMatchObject({ status: "settled" });
+    expect(await settleJob(ledger(), { jobId: job, final, now: OLD + DAY })).toMatchObject({ status: "settled" });
     const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
     expect(await total()).toBe(1_200);
 
     // A poll reads the estimate, then retention runs before it writes.
     const read = (await rows("SELECT id FROM charge WHERE id = ?", estimate.id)).length;
     expect(read).toBe(1);
-    await runUsageRetention(env.DB, NOW, budget());
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
     expect(await chargeIds()).toEqual([]);
 
     // The poll writes from what it read: nothing is booked.
-    expect(await settleJobFrom(env.DB, estimate, final, NOW)).toEqual({ status: "already" });
+    expect(await settleJobFrom(ledger(), estimate, final, NOW)).toEqual({ status: "already" });
     // A poll after that finds no estimate.
-    expect(await settleJob(env.DB, { jobId: job, final, now: NOW })).toEqual({ status: "charge_missing" });
+    expect(await settleJob(ledger(), { jobId: job, final, now: NOW })).toEqual({ status: "charge_missing" });
     expect(await chargeIds()).toEqual([]);
     expect(await total()).toBe(1_200);
   });
@@ -366,14 +366,14 @@ describe("usage retention: charges", () => {
     const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
     await insert(estimate);
     const final = { kind: "dollars", costNano: nano(1_200) } as const;
-    await settleJob(env.DB, { jobId: job, final, now: OLD + DAY });
+    await settleJob(ledger(), { jobId: job, final, now: OLD + DAY });
 
     // A night whose budget ran out between the two: the estimate is gone, its
     // settlement is still there until a later chunk.
-    await env.DB.prepare("DELETE FROM charge WHERE id = ?").bind(estimate.id).run();
+    await ledger().prepare("DELETE FROM charge WHERE id = ?").bind(estimate.id).run();
     expect(await chargeIds()).toHaveLength(1);
 
-    expect(await settleJobFrom(env.DB, estimate, { kind: "dollars", costNano: nano(1_500) }, NOW)).toEqual({ status: "already" });
+    expect(await settleJobFrom(ledger(), estimate, { kind: "dollars", costNano: nano(1_500) }, NOW)).toEqual({ status: "already" });
     expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(1_200);
   });
 
@@ -383,24 +383,24 @@ describe("usage retention: charges", () => {
     const estimate = charge({ usedAt: OLD, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(1_000) });
     await insert(estimate);
     const final = { kind: "dollars", costNano: nano(1_200) } as const;
-    await settleJob(env.DB, { jobId: job, final, now: OLD + DAY });
+    await settleJob(ledger(), { jobId: job, final, now: OLD + DAY });
     const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
     expect(await total()).toBe(1_200);
 
     // A night whose allowance ran out after the corrections pass: the settlement is gone, the estimate stays.
-    const result = await runUsageRetention(env.DB, NOW, new QueryBudget(2));
+    const result = await runUsageRetention(ledger(), NOW, new QueryBudget(2));
     expect(result.corrections).toMatchObject({ deleted: 1 });
     expect(await chargeIds()).toEqual([estimate.id]);
 
     // A late poll finds the estimate and settles again: the correction is dated on the estimate's
     // day, too late for the ledger, so nothing is written and the day rollup is unchanged.
-    expect(await settleJob(env.DB, { jobId: job, final, now: NOW })).toEqual({ status: "already" });
+    expect(await settleJob(ledger(), { jobId: job, final, now: NOW })).toEqual({ status: "already" });
     expect(await chargeIds()).toEqual([estimate.id]);
     expect(await total()).toBe(1_200);
     expect(codes).toContain("ledger_booking_too_late");
 
     // The next night deletes the estimate.
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
     expect(await chargeIds()).toEqual([]);
     expect(await total()).toBe(1_200);
   });
@@ -413,18 +413,18 @@ describe("usage retention: charges", () => {
     await insert(estimate);
     const total = async () => (await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost;
     // A poll settles 100 at 120; its figure also went to the failed-write store, as after a D1 timeout on a write that committed.
-    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: OLD + DAY })).toMatchObject({ status: "settled" });
+    expect(await settleJob(ledger(), { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: OLD + DAY })).toMatchObject({ status: "settled" });
     const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof figureWork>[1];
     const stored = figureWork(ref, facts, OLD + DAY);
     expect(await total()).toBe(120);
 
     // A night whose allowance ran out after the corrections pass: the settlement is gone, the estimate stays.
-    await runUsageRetention(env.DB, NOW, new QueryBudget(2));
+    await runUsageRetention(ledger(), NOW, new QueryBudget(2));
     expect(await chargeIds()).toEqual([estimate.id]);
 
     // The store replays the figure. The work may come back; what it would book is too late for the ledger.
-    await retryStored(env.DB, [], [stored], NOW);
-    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: NOW })).toEqual({ status: "already" });
+    await retryStored(() => ledger(), [], [stored], NOW);
+    expect(await settleJob(ledger(), { jobId: job, final: { kind: "dollars", costNano: nano(120) }, now: NOW })).toEqual({ status: "already" });
     expect(await chargeIds()).toEqual([estimate.id]);
     expect(await total()).toBe(120);
     expect(codes).toContain("ledger_booking_too_late");
@@ -436,10 +436,10 @@ describe("usage retention: charges", () => {
     const job = timeOrderedId(started);
     const estimate = charge({ usedAt: started, kind: "estimate", ownerType: "job", ownerId: job, measured: "pending", costNano: nano(100) });
     await insert(estimate);
-    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[2];
-    expect(await keepFigure(env, { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
+    const facts = { status: 200, units: 3, outputs: {} } as unknown as Parameters<typeof keepFigure>[3];
+    expect(await keepFigure(env, ledger(), { job, accountId: ACCOUNT_ID, appId: "app_retention" }, facts, NOW)).toBe(true);
     expect(await rows("SELECT id FROM open_work WHERE gave_up_at IS NULL")).toHaveLength(1);
-    expect(await settleJob(env.DB, { jobId: job, final: { kind: "dollars", costNano: nano(130) }, now: NOW })).toMatchObject({ status: "settled" });
+    expect(await settleJob(ledger(), { jobId: job, final: { kind: "dollars", costNano: nano(130) }, now: NOW })).toMatchObject({ status: "settled" });
     expect((await rows("SELECT SUM(cost_nano) AS cost FROM usage_day"))[0]?.cost).toBe(130);
   });
 });
@@ -453,7 +453,7 @@ describe("the late-booking rule", () => {
       const original = charge({ usedAt: NOW - days * DAY, priceSource: "unresolved", costNano: nano(0) });
       await insert(original);
       const work = await openWork({ ownerType: "call", ownerId: original.ownerId });
-      return settleCharge(env.DB, { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
+      return settleCharge(ledger(), { chargeId: original.id, final: { kind: "dollars", costNano: nano(700) }, now: NOW, doneWork: work });
     };
     expect(await book(LEDGER_LATE_BOOKING_DAYS - 1)).toMatchObject({ status: "settled" });
     expect(warned).toEqual([]);
@@ -474,7 +474,7 @@ describe("the late-booking rule", () => {
   it("is judged at the time of writing, not the row's own write time", async () => {
     const codes = warningCodes();
     const late = charge({ usedAt: OLD });
-    await env.DB.batch([insertChargeStatement(env.DB, late, NOW)]);
+    await ledger().batch([insertChargeStatement(ledger(), late, NOW)]);
     expect(await chargeIds()).toEqual([]);
     expect(codes).toEqual(["ledger_booking_too_late"]);
   });
@@ -509,7 +509,7 @@ describe("usage retention: sessions", () => {
     const recentSlice = slice(recent, RECENT);
     await insert(openSlice, settledSlice, recentSlice);
 
-    const result = await runUsageRetention(env.DB, NOW, budget());
+    const result = await runUsageRetention(ledger(), NOW, budget());
 
     expect(await chargeIds()).toEqual([openSlice.id, recentSlice.id]);
     expect((await rows("SELECT id FROM session ORDER BY rowid")).map((row) => row.id)).toEqual([open, recent]);
@@ -523,7 +523,7 @@ describe("usage retention: sessions", () => {
     await session(id, OLD, "estimate_kept");
     await openWork({ ownerType: "session", ownerId: id });
 
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
 
     expect(await rows("SELECT id FROM session")).toEqual([{ id }]);
   });
@@ -534,7 +534,7 @@ describe("usage retention: budget totals", () => {
     await insert(charge({ usedAt: OLD }), charge({ usedAt: NOW - DAY }));
     expect(await rows("SELECT COUNT(*) AS n FROM budget_day")).toEqual([{ n: 4 }]);
 
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
 
     expect(await rows("SELECT DISTINCT day FROM budget_day")).toEqual([{ day: utcDay(NOW - DAY) }]);
   });
@@ -542,7 +542,7 @@ describe("usage retention: budget totals", () => {
 
 describe("usage retention: day rollups into months", () => {
   async function day(dayText: string, fields: { app?: string; cost?: number; ms?: number; outcome?: string } = {}): Promise<void> {
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit,
          charges, unpriced_charges, cost_nano, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, units, session_ms)
        VALUES (?, ?, ?, 'openai', '', 'gpt-4o-mini', ?, '', 2, 1, ?, 100, 10, 1, 50, 0, ?)`,
@@ -562,7 +562,7 @@ describe("usage retention: day rollups into months", () => {
     await day("2026-05-01", { cost: 3_000 });
     await day("2027-06-14", { cost: 4_000 });
 
-    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 2);
 
     expect(result.months).toMatchObject({ caughtUp: true });
     expect((await rows("SELECT day FROM usage_day ORDER BY day")).map((row) => row.day)).toEqual(["2026-05-01", "2027-06-14"]);
@@ -577,7 +577,7 @@ describe("usage retention: day rollups into months", () => {
     for (const recent of ["2027-06-10", "2027-06-11", "2027-06-12", "2027-06-13", "2027-06-14"]) await day(recent);
     await day("2026-04-03", { cost: 70 });
 
-    const result = await runUsageRetention(env.DB, NOW, budget(), 2);
+    const result = await runUsageRetention(ledger(), NOW, budget(), 2);
 
     expect(result.months).toMatchObject({ deleted: 1, caughtUp: true });
     expect(await rows("SELECT month, cost_nano FROM usage_month")).toEqual([{ month: "2026-04", cost_nano: 70 }]);
@@ -598,7 +598,7 @@ describe("usage retention: day rollups into months", () => {
       nights += 1;
       expect(nights).toBeLessThan(5);
       // Eight statements: one each for the five delete passes, which have nothing to do, and one chunk of the fold.
-      const result = await runUsageRetention(env.DB, NOW, new QueryBudget(8), 2);
+      const result = await runUsageRetention(ledger(), NOW, new QueryBudget(8), 2);
       expect(result.months?.chunks).toBe(1);
       expect(await april()).toEqual(whole);
     }
@@ -611,7 +611,7 @@ describe("usage retention: day rollups into months", () => {
     const HUGE = 5_000_000_000_000_000_000n;
     async function hugeDay(dayText: string, app: string): Promise<void> {
       // Bound as text and cast, so the exact integer reaches SQLite.
-      await env.DB.prepare(
+      await ledger().prepare(
         `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, charges, cost_nano)
          VALUES (?, ?, ?, 'openai', '', 'gpt-4o-mini', 'ok', '', 1, CAST(? AS INTEGER))`,
       )
@@ -628,7 +628,7 @@ describe("usage retention: day rollups into months", () => {
       await day("2026-04-01", { app: "app_small", cost: 7 });
       await day("2026-04-02", { app: "app_small", cost: 8 });
 
-      const result = await runUsageRetention(env.DB, NOW, budget());
+      const result = await runUsageRetention(ledger(), NOW, budget());
 
       expect(result.months).toMatchObject({ caughtUp: true });
       expect(await months()).toEqual([
@@ -647,7 +647,7 @@ describe("usage retention: day rollups into months", () => {
       await day("2026-04-04", { app: "app_small", cost: 8 });
 
       // One row a chunk: the second huge day meets the first in its month row.
-      const result = await runUsageRetention(env.DB, NOW, budget(), 1);
+      const result = await runUsageRetention(ledger(), NOW, budget(), 1);
 
       expect(result.months).toMatchObject({ caughtUp: true });
       expect(await months()).toEqual([
@@ -659,7 +659,7 @@ describe("usage retention: day rollups into months", () => {
     });
     it("stops at the smallest integer too, and still folds the other keys in the same chunk (Sol 7b-2 round 3)", async () => {
       const MIN = -9223372036854775808n;
-      await env.DB.prepare(
+      await ledger().prepare(
         `INSERT INTO usage_month (account_id, app_id, month, provider_type, provider_connection_id, model, outcome, unit, charges, cost_nano)
          VALUES (?, 'app_low', '2026-04', 'openai', '', 'gpt-4o-mini', 'ok', '', 1, CAST(? AS INTEGER))`,
       )
@@ -668,7 +668,7 @@ describe("usage retention: day rollups into months", () => {
       await day("2026-04-01", { app: "app_low", cost: -1 });
       await day("2026-04-02", { app: "app_small", cost: 7 });
 
-      const result = await runUsageRetention(env.DB, NOW, budget());
+      const result = await runUsageRetention(ledger(), NOW, budget());
 
       expect(result.months).toMatchObject({ caughtUp: true });
       expect(await months()).toEqual([
@@ -681,9 +681,9 @@ describe("usage retention: day rollups into months", () => {
 
   it("adds a day that arrives later to its month row", async () => {
     await day("2026-04-01", { cost: 1_000 });
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
     await day("2026-04-02", { cost: 500 });
-    await runUsageRetention(env.DB, NOW, budget());
+    await runUsageRetention(ledger(), NOW, budget());
 
     expect(await rows("SELECT month, cost_nano, charges FROM usage_month")).toEqual([{ month: "2026-04", cost_nano: 1_500, charges: 4 }]);
     expect(await rows("SELECT COUNT(*) AS n FROM usage_day")).toEqual([{ n: 0 }]);
@@ -701,7 +701,7 @@ describe("the query budget", () => {
       runs += 1;
       expect(runs).toBeLessThan(10);
       const nightly = new QueryBudget(20);
-      const result = await runUsageRetention(env.DB, NOW, nightly, 2);
+      const result = await runUsageRetention(ledger(), NOW, nightly, 2);
       allowances.push(nightly.spent);
       expect(nightly.spent).toBeLessThanOrEqual(20);
       if (runs === 1) expect(result.charges?.caughtUp).toBe(false);
@@ -712,14 +712,14 @@ describe("the query budget", () => {
 
   it("gives every pass its turn, however large the charge backlog", async () => {
     await insert(...Array.from({ length: 40 }, () => charge({ usedAt: OLD })));
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
        VALUES (?, 'app_share', '2026-01-10', 'openai', '', '', 'ok', '', 9)`,
     )
       .bind(ACCOUNT_ID)
       .run();
 
-    const result = await runUsageRetention(env.DB, NOW, new QueryBudget(20), 2);
+    const result = await runUsageRetention(ledger(), NOW, new QueryBudget(20), 2);
 
     expect(result.charges?.caughtUp).toBe(false);
     expect(result.months).toMatchObject({ caughtUp: true });
@@ -791,13 +791,13 @@ describe("the query budget", () => {
       for (let i = 0; i < n; i++) await authEventRow(OLD);
     };
     await fill(3);
-    await runPasses(env.DB, new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
+    await runPasses(ledger(), new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
     expect(codes).toEqual(["maintenance_backlog_left"]);
     codes.length = 0;
 
     // One row left, chunks of two: the chunk is short, and the budget runs out
     // before the chunk that would find nothing. Very likely done: no warning.
-    const results = await runPasses(env.DB, new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
+    const results = await runPasses(ledger(), new QueryBudget(1), DEFAULT_MAINTENANCE_ROWS, [authEventsPass(NOW)], 2);
     expect(results.get("auth_events_prune")).toMatchObject({ deleted: 1, caughtUp: false, lastFull: false });
     expect(codes).toEqual([]);
   });
@@ -810,7 +810,7 @@ describe("the query budget", () => {
 describe("the nightly run", () => {
   async function authEvent(createdAt: number): Promise<string> {
     const id = unique("evt");
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO app_auth_event (id, app_id, event, outcome, created_at) VALUES (?, 'app_retention', 'token_exchange', 'succeeded', ?)`,
     )
       .bind(id, createdAt)
@@ -820,7 +820,7 @@ describe("the nightly run", () => {
 
   async function rejection(createdAt: number): Promise<string> {
     const id = unique("rej");
-    await env.DB.prepare("INSERT INTO app_rejection_event (id, app_id, reason, created_at) VALUES (?, 'app_retention', 'model_not_allowed', ?)")
+    await ledger().prepare("INSERT INTO app_rejection_event (id, app_id, reason, created_at) VALUES (?, 'app_retention', 'model_not_allowed', ?)")
       .bind(id, createdAt)
       .run();
     return id;
@@ -835,7 +835,7 @@ describe("the nightly run", () => {
     await insert(charge({ usedAt: OLD }), recent);
 
     const allowance = new QueryBudget(49);
-    await runNightly(env, NOW, allowance, DEFAULT_MAINTENANCE_ROWS);
+    await runLedgerNightly(ledger(), NOW, allowance, DEFAULT_MAINTENANCE_ROWS);
 
     expect(await rows("SELECT id FROM app_auth_event")).toEqual([{ id: newEvent }]);
     expect(await rows("SELECT id FROM app_rejection_event")).toEqual([{ id: newRejection }]);
@@ -855,7 +855,7 @@ describe("the nightly run", () => {
     await openWork({ ownerType: "session", ownerId: waiting });
     await session(unique("ses"), RECENT, "open");
 
-    await runNightly(env, NOW, budget(), 1_000_000);
+    await runLedgerNightly(ledger(), NOW, budget(), 1_000_000);
 
     expect(warned.filter((entry) => entry.message === "ledger_sessions_stuck_open")).toEqual([
       expect.objectContaining({ message: "ledger_sessions_stuck_open", sessions: 1 }),
@@ -870,7 +870,7 @@ describe("the nightly run", () => {
     await authEvent(OLD);
     await rejection(OLD);
     // A database on which deleting auth events fails.
-    const failing = new Proxy(env.DB, {
+    const failing = new Proxy(ledger(), {
       get(target, property) {
         if (property === "prepare") {
           return (sql: string) => {
@@ -883,7 +883,7 @@ describe("the nightly run", () => {
       },
     });
 
-    await runNightly({ ...env, DB: failing } as Env, NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
+    await runLedgerNightly(failing, NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
 
     expect(warnings).toContain("auth_events_prune_failed");
     expect(await chargeIds()).toEqual([]);
@@ -892,7 +892,7 @@ describe("the nightly run", () => {
 
   it("deletes a backlog of events larger than a chunk over several statements", async () => {
     for (let index = 0; index < 12_000; index += 4_000) {
-      await env.DB.prepare(
+      await ledger().prepare(
         `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000)
          INSERT INTO app_rejection_event (id, app_id, reason, created_at) SELECT 'bulk_' || (? + i), 'app_retention', 'model_not_allowed', ? FROM n`,
       )
@@ -901,7 +901,7 @@ describe("the nightly run", () => {
     }
     const allowance = new QueryBudget(49);
 
-    await runNightly(env, NOW, allowance, MAXIMUM_MAINTENANCE_ROWS);
+    await runLedgerNightly(ledger(), NOW, allowance, MAXIMUM_MAINTENANCE_ROWS);
 
     expect(await rows("SELECT COUNT(*) AS n FROM app_rejection_event")).toEqual([{ n: 0 }]);
   });
@@ -912,7 +912,7 @@ describe("the nightly run", () => {
       table === "app_auth_event"
         ? "(id, app_id, event, outcome, created_at) SELECT 'bulk_auth_' || i, 'app_retention', 'token_exchange', 'succeeded', ?"
         : "(id, app_id, reason, created_at) SELECT 'bulk_rej_' || i, 'app_retention', 'model_not_allowed', ?";
-    await env.DB.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) INSERT INTO ${table} ${columns} FROM n`)
+    await ledger().prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) INSERT INTO ${table} ${columns} FROM n`)
       .bind(count, OLD)
       .run();
   }
@@ -922,7 +922,7 @@ describe("the nightly run", () => {
     await bulkEvents("app_auth_event", 3_000);
     await bulkEvents("app_rejection_event", 3_000);
     await insert(charge({ usedAt: OLD }));
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
        VALUES (?, 'app_turns', '2026-01-10', 'openai', '', '', 'ok', '', 9)`,
     )
@@ -931,7 +931,7 @@ describe("the nightly run", () => {
     // The charge's budget totals: one for the app, one for its user.
     const budgetDays = Number((await rows("SELECT COUNT(*) AS n FROM budget_day"))[0]!.n);
 
-    await runNightly(env, NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
+    await runLedgerNightly(ledger(), NOW, new QueryBudget(49), DEFAULT_MAINTENANCE_ROWS);
 
     const [auth] = await rows("SELECT COUNT(*) AS n FROM app_auth_event");
     const [rejections] = await rows("SELECT COUNT(*) AS n FROM app_rejection_event");
@@ -958,14 +958,14 @@ describe("the nightly run", () => {
     expect(codes).toEqual(["maintenance_backlog_left"]);
   });
 
-  it("deletes one expired row of every kind with the smallest allowances it accepts, from the hourly cron (Sol 7b-2 round 3)", async () => {
+  it("deletes one expired row of every kind with the smallest allowances it accepts (Sol 7b-2 round 3)", async () => {
     const codes = warningCodes();
     await authEvent(OLD);
     await rejection(OLD);
     await openWork({ ownerType: "call", ownerId: unique("call"), gaveUpAt: OLD });
     await insert(charge({ usedAt: OLD }));
     await session(unique("ses"), OLD, "settled");
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, cost_nano)
        VALUES (?, 'app_smallest', '2026-01-10', 'openai', '', '', 'ok', '', 9)`,
     )
@@ -977,13 +977,8 @@ describe("the nightly run", () => {
       MAINTENANCE_ROW_BUDGET: String(MINIMUM_MAINTENANCE_ROWS),
     } as Env;
 
-    const nightly = createExecutionContext();
-    await worker.scheduled!(
-      createScheduledController({ cron: "17 * * * *", scheduledTime: Date.parse(`2027-06-15T0${NIGHTLY_HOUR_UTC}:17:00Z`) }),
-      smallest,
-      nightly,
-    );
-    await waitOnExecutionContext(nightly);
+    // As the ledger object runs it, with the deployment's allowances, per account.
+    await runLedgerNightly(ledger(), Date.parse(`2027-06-15T0${NIGHTLY_HOUR_UTC}:17:00Z`), maintenanceStatementBudget(smallest), maintenanceRowLimit(smallest));
 
     for (const table of ["app_auth_event", "app_rejection_event", "open_work", "charge", "session", "budget_day"]) {
       expect(await rows(`SELECT COUNT(*) AS n FROM ${table}`), table).toEqual([{ n: 0 }]);
@@ -999,7 +994,7 @@ describe("the nightly run", () => {
     await insert(charge({ usedAt: OLD }));
     await session(unique("ses"), OLD, "settled");
     // A database on which every statement about charges fails.
-    const failing = new Proxy(env.DB, {
+    const failing = new Proxy(ledger(), {
       get(target, property) {
         if (property === "prepare") {
           return (sql: string) => {
@@ -1020,7 +1015,7 @@ describe("the nightly run", () => {
     expect(result.months).toMatchObject({ caughtUp: true });
   });
 
-  it("runs from the hourly cron at 04:17 UTC only; the hourly clean-up runs every hour", async () => {
+  it("leaves the ledger to its objects: the hourly cron cleans up challenges every hour, and never touches charges", async () => {
     await insert(charge({ usedAt: OLD }));
     const appId = await seedApp(attestAuthentication());
     await env.DB.prepare("INSERT INTO app_auth_challenge (challenge, app_id, expires_at, attempted) VALUES (?, ?, 1000, 0)")
@@ -1032,13 +1027,13 @@ describe("the nightly run", () => {
     const daytime = createExecutionContext();
     await worker.scheduled!(createScheduledController({ cron: "17 * * * *", scheduledTime: at(NIGHTLY_HOUR_UTC + 1) }), env, daytime);
     await waitOnExecutionContext(daytime);
-    expect(await chargeIds()).toHaveLength(1);
-    expect(await rows("SELECT challenge FROM app_auth_challenge WHERE app_id = ?", appId)).toEqual([]);
+    expect(await env.DB.prepare("SELECT challenge FROM app_auth_challenge WHERE app_id = ?").bind(appId).all().then((r) => r.results)).toEqual([]);
 
     const nightly = createExecutionContext();
     await worker.scheduled!(createScheduledController({ cron: "17 * * * *", scheduledTime: at(NIGHTLY_HOUR_UTC) }), env, nightly);
     await waitOnExecutionContext(nightly);
-    expect(await chargeIds()).toEqual([]);
+    // The account's ledger object deletes it on its own alarm (`runLedgerNightly`), not the cron.
+    expect(await chargeIds()).toHaveLength(1);
   });
 });
 

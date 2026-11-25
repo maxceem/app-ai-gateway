@@ -41,10 +41,17 @@ Why: D1 is one database with one writer and at most 10 GB, shared by every
 account, while the ledger grows with every request. Nothing needs a report
 across all accounts.
 
-Step 8f moves the history tables out of D1 into the per-account ledger
-object: `charge`, `usage_day`, `usage_month`, `budget_day`, `session`,
-`open_work`, `app_auth_event` and `app_rejection_event`. Until then they are
-still in D1.
+The history tables live in the ledger object (`v2/src/do/AccountLedger.ts`,
+schema in `v2/src/ledger/schema.ts`): `charge`, `usage_day`, `usage_month`,
+`budget_day`, `session`, `open_work`, `app_auth_event` and
+`app_rejection_event`. Code reaches an account's ledger with
+`ledgerDb(env, accountId)` (`v2/src/ledger/database.ts`), which has D1's
+shape. A batch there is one transaction in the object. A statement can
+never join a ledger table with a D1 table: read the settings from D1 first,
+then write to the ledger.
+
+A change to a ledger table is a new version at the end of `LEDGER_SCHEMA`,
+never an edit of a merged one. Each object applies it when it next wakes.
 
 ## The two kinds of limits
 

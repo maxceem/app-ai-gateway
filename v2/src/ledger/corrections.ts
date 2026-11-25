@@ -304,10 +304,12 @@ function tokenColumns(charge: ChargeRow): ReturnType<typeof usageFromMeasures> {
  * Prices an `unresolved` charge with the first price that exists (S11): the
  * customer's own rate on the connection, then ours. The correction holds the
  * whole cost, keeps the charge's usage date, and is the one pricing
- * correction of that charge.
+ * correction of that charge. The charge is in the account's ledger (`db`);
+ * the connection's rates are settings, in D1 (`settings`).
  */
 export async function priceUnresolvedCharge(
   db: D1Database,
+  settings: D1Database,
   input: { readonly chargeId: string; readonly now: number; readonly doneWork?: string },
 ): Promise<PricingResult> {
   const original = await readCharge(db, input.chargeId);
@@ -331,7 +333,7 @@ export async function priceUnresolvedCharge(
   const connection =
     original.providerConnectionId === null
       ? null
-      : await db
+      : await settings
           .prepare("SELECT rates_json FROM provider_connection WHERE id = ?")
           .bind(original.providerConnectionId)
           .first<{ rates_json: string | null }>();

@@ -153,7 +153,8 @@ test("a header user shows in the user list after a call, with its usage", { skip
   // The charge is written after the answer; give it a moment.
   let found: any = null;
   for (let tries = 0; tries < 20 && found === null; tries += 1) {
-    const listed = await admin("GET", `/v2/admin/apps/${appId}/users`);
+    // A user only usage names is in the second list since step 8f; sign-in's users stay in /users.
+    const listed = await admin("GET", `/v2/admin/apps/${appId}/seen-users`);
     assert.equal(listed.status, 200);
     found = listed.body.users.find((entry: { id: string }) => entry.id === user) ?? null;
     if (found === null) await new Promise((resolve) => setTimeout(resolve, 500));

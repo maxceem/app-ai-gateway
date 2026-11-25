@@ -1,21 +1,23 @@
 /**
  * Writing charges to the ledger (plan section 4.2, "Writing a charge").
  *
- * - A charge and its open-work rows are written in one D1 batch.
+ * - A charge and its open-work rows are written in one batch, one
+ *   transaction, in the account's ledger object (`./database.ts`, D21).
  * - Every insert is `ON CONFLICT(id) DO NOTHING`, never `INSERT OR IGNORE`:
  *   a retried write is skipped as a duplicate, but a row that breaks a CHECK
  *   still fails loudly instead of vanishing.
  * - The rollup trigger runs only for a row really inserted, so a retry never
  *   counts twice.
- * - If the D1 write fails, the rows go to the app's `ChargeStore`, which
+ * - If the ledger write fails, the rows go to the app's `ChargeStore`, which
  *   retries them. If that fails too, the full charge is logged as
  *   `usage_record_failed`, so it can still be recovered by hand.
  * - The request is never failed or delayed by any of this: callers run it
  *   after the response is sent.
  */
-import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { chargeStore } from "./charge-store.ts";
+import { ledgerDb } from "./database.ts";
 import { ON_TIME_SQL, onTimeCondition } from "./late-booking.ts";
 import type { NanoDollars } from "../money.ts";
 import type {
@@ -223,7 +225,7 @@ export async function writeToLedger(db: D1Database, entries: readonly LedgerEntr
   return rowsWritten(await db.batch(ledgerStatements(db, entries, now)));
 }
 
-/** How long `recordLedgerEntry` waits for D1 before the entry goes to the failed-write store. */
+/** How long `recordLedgerEntry` waits for the ledger before the entry goes to the failed-write store. */
 export const LEDGER_D1_DEADLINE_MS = 5_000;
 
 /** The UTC day of a time, `YYYY-MM-DD`. */
@@ -232,21 +234,21 @@ export function utcDay(at: number): string {
 }
 
 /**
- * Records an entry: D1 first, then the app's store, then the logs. Never
- * throws. Run it after the response is sent.
+ * Records an entry: the account's ledger object first, then the app's store,
+ * then the logs. Never throws. Run it after the response is sent.
  */
 export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<void> {
   try {
-    // A D1 write that stalls must not outlast the request's waitUntil window:
+    // A write that stalls must not outlast the request's waitUntil window:
     // past the deadline the entry (its charge and its open work, together) goes
-    // to the store too. Its ids are stable, so a late D1 commit is harmless.
-    await withDeadline(writeToLedger(env.DB, [entry], Date.now()), LEDGER_D1_DEADLINE_MS, "writing the charge");
+    // to the store too. Its ids are stable, so a late commit is harmless.
+    await writeToLedger(ledgerDb(env, entry.charge.accountId, { deadlineMs: LEDGER_D1_DEADLINE_MS }), [entry], Date.now());
     return;
   } catch (error) {
     log("warn", "ledger_write_failed", { app: entry.charge.appId, charge: entry.charge.id, error: errorFacts(error) });
   }
   try {
-    await env.CHARGE_STORE.getByName(entry.charge.appId).keep([entry]);
+    await chargeStore(env, entry.charge.appId).keep([entry]);
     return;
   } catch (error) {
     logLostEntry(entry, error);

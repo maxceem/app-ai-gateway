@@ -18,7 +18,7 @@ import { planIncludes } from "../src/billing/access.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -166,7 +166,7 @@ function providerAnswers(): void {
 }
 
 async function chargeIds(appId: string): Promise<string[]> {
-  const { results } = await env.DB.prepare("SELECT id FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all<{ id: string }>();
+  const { results } = await ledger().prepare("SELECT id FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all<{ id: string }>();
   return results.map((row) => row.id);
 }
 
@@ -954,7 +954,7 @@ describe("conversation storage through the gateway", () => {
     expect(record!.created_at.slice(0, 10)).toBe("2026-11-21");
     const keys = (await bucket().list({ prefix: `${appPrefix(ACCOUNT_ID, appId)}` })).objects.map((object) => object.key);
     expect(keys.filter((key) => key.endsWith(".jsonl.gz")).every((key) => key.includes("/2026-11-21/"))).toBe(true);
-    const charge = await env.DB.prepare("SELECT usage_day FROM charge WHERE id = ?").bind(record!.event_id).first<{ usage_day: string }>();
+    const charge = await ledger().prepare("SELECT usage_day FROM charge WHERE id = ?").bind(record!.event_id).first<{ usage_day: string }>();
     expect(charge!.usage_day).toBe("2026-11-21");
   });
 
@@ -1025,7 +1025,7 @@ describe("conversation storage through the gateway", () => {
     const [record] = await storedRecords(appId);
     expect(record).toMatchObject({ status: "provider_error", http_status: 200, client_aborted: false });
     // The charge took the same decision.
-    const charge = await env.DB.prepare("SELECT status FROM charge WHERE id = ?").bind(record!.event_id).first<{ status: string }>();
+    const charge = await ledger().prepare("SELECT status FROM charge WHERE id = ?").bind(record!.event_id).first<{ status: string }>();
     expect(charge!.status).toBe("network_error");
   });
 

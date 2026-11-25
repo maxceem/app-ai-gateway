@@ -28,7 +28,7 @@ import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
 import { STANDARD_MODE, parseServiceModeName } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 /** Saves a price on an OpenAI connection, as the management API does. */
 const save = (pricing: Parameters<typeof ratesFromPricing>[0], type = "openai") => ratesFromPricing(pricing, type);
@@ -471,7 +471,7 @@ describe("through the proxy", () => {
     await response.arrayBuffer();
     await waitOnExecutionContext(ctx);
     expect(response.status).toBe(200);
-    const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+    const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
     return results;
   }
 
@@ -500,7 +500,7 @@ describe("through the proxy", () => {
       .bind(JSON.stringify({ "house-voice": { per_million_characters: 15_000_000_000 } }), id)
       .run();
     // The sweep writes the label its pricing result gives: characters were worked out from the request.
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({
       status: "priced",
       correction: { costNano: 30_000_000, unit: "characters", measured: "estimated" },
     });

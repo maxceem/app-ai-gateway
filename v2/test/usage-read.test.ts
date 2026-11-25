@@ -9,8 +9,9 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { QueryBudget } from "../src/core/query-budget.ts";
+import { LEDGER_CALL_DEADLINE_MS, type LedgerStatement } from "../src/ledger/database.ts";
 import { runUsageRetention } from "../src/ledger/retention.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, ledger } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -23,12 +24,6 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 const ORIGIN = "https://gateway.test";
-/** Migration 0009's text, to run one of its statements over seeded rows. */
-const MIGRATION_0009: string = Object.values(
-  (import.meta as ImportMeta & {
-    glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
-  }).glob<string>("../migrations/0009_usage_reads.sql", { query: "?raw", import: "default", eager: true }),
-)[0]!;
 const OTHER_ACCOUNT = "acc_other_usage";
 
 async function request(key: string, method: string, path: string, body?: unknown) {
@@ -88,7 +83,7 @@ async function seed(values: Seed): Promise<string> {
   counter += 1;
   const id = values.id ?? `ch_${String(counter).padStart(4, "0")}_${crypto.randomUUID().slice(0, 6)}`;
   const kind = values.kind ?? "attempt";
-  await env.DB.prepare(
+  await ledger(values.accountId ?? ACCOUNT_ID).prepare(
     `INSERT INTO charge (id, kind, account_id, app_id, end_user_id, owner_type, owner_id, provider_type, provider_connection_id,
        operation, model, status, cost_nano, measured, price_source, input_tokens, output_tokens, session_ms, measures_json,
        correction_kind, corrects_charge_id, client_trace_id, used_at, usage_day, written_at, unit)
@@ -127,7 +122,7 @@ async function seed(values: Seed): Promise<string> {
 
 /** A month total as the nightly fold leaves it (`../src/ledger/retention.ts`). */
 async function monthRow(appId: string, month: string, values: { charges: number; cost: number; accountId?: string; failed?: boolean }) {
-  await env.DB.prepare(
+  await ledger(values.accountId ?? ACCOUNT_ID).prepare(
     `INSERT INTO usage_month (account_id, app_id, month, provider_type, provider_connection_id, model, outcome, unit, charges, cost_nano, input_tokens)
      VALUES (?, ?, ?, 'openai', '', 'gpt-4o-mini', ?, '', ?, ?, 100)`,
   )
@@ -199,7 +194,7 @@ describe("month totals", () => {
     await seed({ appId, usedAt: at("2025-06-03") });
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-06`)).body.first_usage_day).toBe("2025-06-03");
     // A month folded long ago is older still; the charges themselves may be gone.
-    await env.DB.prepare("DELETE FROM charge WHERE app_id = ?").bind(appId).run();
+    await ledger().prepare("DELETE FROM charge WHERE app_id = ?").bind(appId).run();
     await monthRow(appId, "2024-01", { charges: 1, cost: 10 });
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-06`)).body.first_usage_day).toBe("2024-01");
   });
@@ -407,43 +402,6 @@ describe("unpriced", () => {
     const fromCharges = await request(key, "GET", `/v2/admin/apps/${appId}/usage/breakdown?from=2025-11-01&to=2025-11-30&by=user`);
     expect(fromCharges.body.rows).toEqual([expect.objectContaining({ key: "u1", charges: 1, unpriced: 0, cost_nano: 750 })]);
   });
-
-  it("migration 0009 takes charges corrected before it out of the unpriced count, once (Fable 7b-3)", async () => {
-    const key = await seedManagementKey();
-    const appId = await createApp(key);
-    const priced = await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
-    await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved" });
-    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "pricing", correctsChargeId: priced, cost: 300 });
-    // A second correction of the same charge subtracts nothing more (Neon 7b-3 round 2).
-    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "dollars", correctsChargeId: priced, cost: 40 });
-    // A failed unpriced charge with a unit, priced later: its own rollup row (outcome failed, unit images).
-    const failed = await seed({ appId, usedAt: at("2025-12-04"), cost: null, priceSource: "unresolved", status: "provider_error", unit: "images" });
-    await seed({ appId, usedAt: at("2025-12-04"), kind: "correction", correctionKind: "pricing", correctsChargeId: failed, cost: 200, status: "provider_error", unit: "images" });
-    // As the rollup stood before 0009: every unpriced charge counted, no correction ever subtracted.
-    await env.DB.prepare("UPDATE usage_day SET unpriced_charges = CASE outcome WHEN 'ok' THEN 2 ELSE 1 END WHERE account_id = ? AND app_id = ?")
-      .bind(ACCOUNT_ID, appId)
-      .run();
-    // The migration's own statement, run over the table it now has.
-    const update = MIGRATION_0009.split("--> statement-breakpoint")
-      .map((statement) => statement.trim())
-      .find((statement) => statement.includes("UPDATE `__new_usage_day`"));
-    expect(update).toBeDefined();
-    const sql = update!.replace(/^(--[^\n]*\n)+/u, "").replaceAll("`__new_usage_day`", "usage_day");
-    // Driven from the corrections, never a scan of charges per rollup row (Neon 7b-3 round 1).
-    const plan = (await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`).all<{ detail: string }>()).results.map((row) => row.detail);
-    expect(plan.join("\n")).toContain("charge_corrects");
-    expect(plan.filter((line) => /^SCAN (o|charge)\b/u.test(line))).toEqual([]);
-    await env.DB.prepare(sql).run();
-    const usage = await request(key, "GET", `/v2/admin/apps/${appId}/usage?month=2025-12`);
-    expect(usage.body).toMatchObject({ charges: 3, unpriced: 1, cost_nano: 540 });
-    const rows = await env.DB.prepare("SELECT outcome, unit, unpriced_charges AS n FROM usage_day WHERE account_id = ? AND app_id = ? ORDER BY outcome")
-      .bind(ACCOUNT_ID, appId)
-      .all();
-    expect(rows.results).toEqual([
-      { outcome: "failed", unit: "images", n: 0 },
-      { outcome: "ok", unit: "", n: 1 },
-    ]);
-  });
 });
 
 describe("dates", () => {
@@ -490,19 +448,46 @@ describe("dates", () => {
   });
 });
 
+describe("a slow ledger", () => {
+  it("answers 503 deadline_exceeded with Retry-After when the account's ledger does not answer in time (step 8f)", async () => {
+    const key = await seedManagementKey();
+    const appId = await createApp(key);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const ctx = createExecutionContext();
+    const answering = worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/apps/${appId}/usage`, { headers: { authorization: `Bearer ${key}` } }),
+      stalled,
+      ctx,
+    );
+    await vi.advanceTimersByTimeAsync(LEDGER_CALL_DEADLINE_MS);
+    vi.useRealTimers();
+    const response = await answering;
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).not.toBeNull();
+    expect(await response.json()).toMatchObject({ error: { code: "service_unavailable" } });
+  });
+});
+
 describe("query plans", () => {
   /** The plan of the charge query a request really sends, with its real parameters. */
   async function planOf(send: () => Promise<unknown>): Promise<string> {
-    const prepare = env.DB.prepare.bind(env.DB);
-    let sent: { sql: string; params: unknown[] } | undefined;
-    const spy = vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
-      const statement = prepare(sql);
-      if (!/\bFROM charge\b/u.test(sql) || /^\s*SELECT 1 AS found/u.test(sql)) return statement;
-      const bind = statement.bind.bind(statement);
-      return Object.assign(statement, {
-        bind: (...params: unknown[]) => {
-          sent = { sql, params };
-          return bind(...params);
+    // The charge query is sent to the account's ledger object: catch it on its way there.
+    const get = env.ACCOUNT_LEDGER.get.bind(env.ACCOUNT_LEDGER);
+    let sent: LedgerStatement | undefined;
+    const spy = vi.spyOn(env.ACCOUNT_LEDGER, "get").mockImplementation((id, options) => {
+      const stub = get(id, options);
+      return new Proxy(stub, {
+        get(target, property) {
+          if (property !== "query") return Reflect.get(target, property);
+          return (statements: LedgerStatement[], transaction: boolean) => {
+            for (const statement of statements) {
+              if (/\bFROM charge\b/u.test(statement.sql)) sent = statement;
+            }
+            return target.query(statements, transaction);
+          };
         },
       });
     });
@@ -512,7 +497,7 @@ describe("query plans", () => {
       spy.mockRestore();
     }
     expect(sent, "no charge query was sent").toBeDefined();
-    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sent!.sql}`).bind(...sent!.params).all<{ detail: string }>();
+    const { results } = await ledger().prepare(`EXPLAIN QUERY PLAN ${sent!.sql}`).bind(...sent!.params).all<{ detail: string }>();
     return results.map((row) => row.detail).join("\n");
   }
 
@@ -551,7 +536,10 @@ describe("isolation", () => {
       .bind(appId, other.accountId)
       .run();
     await seed({ appId, usedAt: at("2025-07-10", 1), cost: 200, accountId: other.accountId });
-    const rows = await env.DB.prepare("SELECT account_id, charges, cost_nano FROM usage_day WHERE app_id = ? ORDER BY cost_nano").bind(appId).all();
+    // Each account's totals are in its own ledger.
+    const totals = async (accountId: string) =>
+      (await ledger(accountId).prepare("SELECT account_id, charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results;
+    const rows = { results: [...(await totals(ACCOUNT_ID)), ...(await totals(other.accountId))] };
     expect(rows.results).toEqual([
       { account_id: ACCOUNT_ID, charges: 1, cost_nano: 100 },
       { account_id: other.accountId, charges: 1, cost_nano: 200 },
@@ -672,8 +660,8 @@ describe("month totals after the nightly fold", () => {
     const before = await read();
     expect(before).toMatchObject({ charges: 3, failed: 1, unpriced: 1, cost_nano: 3_500 });
     // Well past 400 days: the fold moves February 2024's days into its month total.
-    await runUsageRetention(env.DB, Date.parse("2026-06-01T12:00:00Z"), new QueryBudget(1_000));
-    const days = await env.DB.prepare("SELECT COUNT(*) AS n FROM usage_day WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).first("n");
+    await runUsageRetention(ledger(), Date.parse("2026-06-01T12:00:00Z"), new QueryBudget(1_000));
+    const days = await ledger().prepare("SELECT COUNT(*) AS n FROM usage_day WHERE account_id = ? AND app_id = ?").bind(ACCOUNT_ID, appId).first("n");
     expect(days).toBe(0);
     // The totals read the same; the first day kept is now the month's, the only form left.
     expect(await read()).toEqual({ ...before, first_usage_day: "2024-02" });

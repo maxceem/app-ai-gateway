@@ -16,7 +16,7 @@ import { savedAlternativesProblem } from "../src/proxy/alternatives.ts";
 import { priceSources } from "../src/pricing/billability.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-5678";
@@ -62,7 +62,7 @@ async function post(path: string, key: string, body: Record<string, unknown>, he
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 
@@ -265,7 +265,7 @@ describe("text APIs through the proxy", () => {
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, input_tokens: 10 });
     // Unresolved with a measure is always retried: a customer rate added later prices it.
-    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
@@ -538,7 +538,7 @@ describe("Perplexity", () => {
       { price_source: "list_rate", cost_nano: 5_800, price_is_estimate: 1 },
       { price_source: "unresolved", cost_nano: null },
     ]);
-    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charges[1]!.id).first()).toEqual({ kind: "unresolved" });
+    expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charges[1]!.id).first()).toEqual({ kind: "unresolved" });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 

@@ -24,10 +24,11 @@
     "logs": { "enabled": true, "head_sampling_rate": 1 },
     "traces": { "enabled": true, "head_sampling_rate": 0.01 }
   },
-  // Every minute: the sweep of open work. Hourly, at minute 17: clean-ups,
-  // at 03:17 UTC conversation retention, and at 04:17 UTC the nightly
-  // maintenance (`src/maintenance/nightly.ts`).
-  "triggers": { "crons": ["* * * * *", "17 * * * *"] },
+  // Hourly, at minute 17: clean-ups, at 03:17 UTC conversation retention,
+  // and at 04:17 UTC the nightly maintenance of the settings
+  // (`src/maintenance/nightly.ts`). Open work and the ledger's own clean-up
+  // run on each account's ledger object (`src/do/AccountLedger.ts`).
+  "triggers": { "crons": ["17 * * * *"] },
   "durable_objects": {
     "bindings": [
       // The end user's limiter: for now, the App Attest replay counter of each install.
@@ -40,14 +41,16 @@
       { "name": "ACCOUNT_LIMITER", "class_name": "AccountLimiter" },
       // One per app: stored conversations waiting for their batch, written to the
       // optional CONVERSATIONS bucket. Without the bucket it stores nothing.
-      { "name": "CONVERSATION_LOG", "class_name": "ConversationLog" }
+      { "name": "CONVERSATION_LOG", "class_name": "ConversationLog" },
+      { "name": "ACCOUNT_LEDGER", "class_name": "AccountLedger" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["EndUserLimiter", "FloodLimiter"] },
     { "tag": "v2", "new_sqlite_classes": ["ChargeStore"] },
     { "tag": "v3", "new_sqlite_classes": ["AppLimiter", "AccountLimiter"] },
-    { "tag": "v4", "new_sqlite_classes": ["ConversationLog"] }
+    { "tag": "v4", "new_sqlite_classes": ["ConversationLog"] },
+    { "tag": "v5", "new_sqlite_classes": ["AccountLedger"] }
   ],
   // The vault that seals provider keys. `local` keeps the key in the Worker's
   // secrets (SECRET_VAULT_LOCAL_KEK_V<n>); `kms` uses a separate cf-kms

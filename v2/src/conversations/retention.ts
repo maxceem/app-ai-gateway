@@ -47,7 +47,7 @@ export const RETENTION_CALLS = 500;
 /**
  * D1 queries one run may make when it is called on its own. The hourly cron
  * gives it what `MAINTENANCE_QUERY_BUDGET` leaves after the hourly clean-up in
- * the same 03:17 run (`../maintenance/nightly.ts`): 42 at the default of 50.
+ * the same 03:17 run (`../maintenance/nightly.ts`): 43 at the default of 50.
  * A run spends one to read every app's retention, then one to look at the app
  * again before each page it deletes. So on the Workers Free plan it keeps up
  * with about 40 apps that each have one page of conversations expire a night;
@@ -55,7 +55,7 @@ export const RETENTION_CALLS = 500;
  * Where the queries run out first, the run stops as it does when its R2
  * calls run out.
  */
-export const RETENTION_D1_QUERIES = 42;
+export const RETENTION_D1_QUERIES = 43;
 /** The UTC hour of the day the hourly cron runs retention in. */
 export const RETENTION_HOUR_UTC = 3;
 

@@ -28,6 +28,7 @@ export const keys = {
   /** Every page of one app's users, for an invalidation that is about all of them. */
   usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, query: unknown) => ["users", appId, query] as const,
+  seenUsers: (appId: string, query: unknown) => ["users", appId, "seen", query] as const,
   jobs: (appId: string, query: unknown) => ["jobs", appId, query] as const,
   accountUsage: (month: string) => ["account-usage", month] as const,
   appUsage: (appId: string) => ["app-usage", appId] as const,
@@ -352,6 +353,16 @@ export function useAppUsers(appId: string, query: UserQuery) {
   return useQuery({
     queryKey: keys.users(appId, query),
     queryFn: () => call("listAppUsers", { params: { app: appId }, query }),
+  });
+}
+
+export type SeenUserQuery = OperationQuery<"listAppSeenUsers">;
+
+/** User ids only the app's usage names, a page at a time from a cursor. */
+export function useAppSeenUsers(appId: string, query: SeenUserQuery) {
+  return useQuery({
+    queryKey: keys.seenUsers(appId, query),
+    queryFn: () => call("listAppSeenUsers", { params: { app: appId }, query }),
   });
 }
 

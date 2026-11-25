@@ -33,7 +33,7 @@ import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-custom-provider-key-9876";
@@ -757,7 +757,7 @@ async function send(method: string, path: string, key: string, init: { body?: Bo
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 
@@ -912,7 +912,7 @@ describe("serving a custom provider", () => {
     expect(response.status, text).toBe(200);
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ model: "openai/gpt-4o", price_source: "unresolved", cost_nano: null });
-    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
     expect(errors.mock.calls.length).toBeGreaterThan(0);
   });
 

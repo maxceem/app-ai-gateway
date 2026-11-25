@@ -24,6 +24,7 @@
  * A submission whose answer was lost is never sent again: it keeps its
  * estimate, marked `estimated`, and is logged (T15).
  */
+import { chargeStore } from "../ledger/charge-store.ts";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -705,8 +706,8 @@ function keepEstimate(ref: JobRef, facts: JobResultFacts): "estimate_kept" {
  * read (null: not in the ledger); when left out it is read here. Throws when
  * D1 cannot answer.
  */
-export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
-  const known = estimate === undefined ? await jobEstimateCharge(env.DB, ref.job) : estimate;
+export async function settleFigure(ledger: D1Database, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FigureSettlement> {
+  const known = estimate === undefined ? await jobEstimateCharge(ledger, ref.job) : estimate;
   // A whole result with no count at all settles nothing, whatever the rate: no need to wait for it.
   const countless = !counted(facts) && facts.unread !== true;
   if (known === null && !countless) {
@@ -723,17 +724,17 @@ export async function settleFigure(env: Env, ref: JobRef, facts: JobResultFacts,
   const decision: FigureDecision = known === null ? { kind: "never" } : decideFigure(known, facts);
   // Only a result with a count has a figure row of its own.
   const dropFigure = async () => {
-    if (counted(facts)) await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
+    if (counted(facts)) await ledger.prepare("DELETE FROM open_work WHERE id = ?").bind(figureWorkId(ref.job, facts)).run();
   };
   if (decision.kind === "settle" && known !== null) {
-    const settled = await settleJobFrom(env.DB, known, decision.final, now);
+    const settled = await settleJobFrom(ledger, known, decision.final, now);
     if (settled.status !== "no_rate") return "settled";
     log("error", "job_settle_no_rate", { app: ref.appId, job: ref.job, bucket: settled.bucket });
     await dropFigure();
     return "estimate_kept";
   }
   // A job settled earlier (a result read again after its units header expired) is quietly done.
-  if (await jobSettled(env.DB, ref.job)) return "settled";
+  if (await jobSettled(ledger, ref.job)) return "settled";
   if (decision.kind === "needs_outputs" && facts.unread === true) return "needs_body";
   // Never read as 0: the estimate stays, already labelled an estimate.
   await dropFigure();
@@ -754,16 +755,16 @@ export const FIGURE_D1_DEADLINE_MS = 3_000;
  * logged in full, to be settled by hand. True when it was kept somewhere the
  * sweep will find it.
  */
-export async function keepFigure(env: Env, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
+export async function keepFigure(env: Env, ledger: D1Database, ref: JobRef, facts: JobResultFacts, now: number): Promise<boolean> {
   const row = figureWork(ref, facts, now);
   try {
-    await withDeadline(writeOpenWork(env.DB, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");
+    await withDeadline(writeOpenWork(ledger, [row]), FIGURE_D1_DEADLINE_MS, "saving the figure");
     return true;
   } catch (error) {
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
   try {
-    await env.CHARGE_STORE.getByName(ref.appId).keepWork([row]);
+    await chargeStore(env, ref.appId).keepWork([row]);
     return true;
   } catch (error) {
     log("warn", "job_figure_store_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
@@ -801,10 +802,17 @@ export type FinalResultOutcome =
  * the check stays open while the body may still be needed, so the sweep
  * decides once the estimate lands. Never throws.
  */
-export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFacts, now: number, estimate?: ChargeRow | null): Promise<FinalResultOutcome> {
+export async function applyFinalResult(
+  env: Env,
+  ledger: D1Database,
+  ref: JobRef,
+  facts: JobResultFacts,
+  now: number,
+  estimate?: ChargeRow | null,
+): Promise<FinalResultOutcome> {
   let settled: FigureSettlement | null = null;
   try {
-    settled = await withDeadline(settleFigure(env, ref, facts, now, estimate), FIGURE_D1_DEADLINE_MS, "settling the figure");
+    settled = await withDeadline(settleFigure(ledger, ref, facts, now, estimate), FIGURE_D1_DEADLINE_MS, "settling the figure");
   } catch (error) {
     log("warn", "job_settle_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
@@ -813,11 +821,11 @@ export async function applyFinalResult(env: Env, ref: JobRef, facts: JobResultFa
   if (settled === "needs_body") return "retry";
   // The rate is not known yet: keep what was read, and keep checking while the body may matter.
   if (facts.unread === true && succeeded(facts)) {
-    if (counted(facts)) await keepFigure(env, ref, facts, now);
+    if (counted(facts)) await keepFigure(env, ledger, ref, facts, now);
     return "retry";
   }
   if (!counted(facts)) return keepEstimate(ref, facts);
-  return (await keepFigure(env, ref, facts, now)) ? "done" : "not_kept";
+  return (await keepFigure(env, ledger, ref, facts, now)) ? "done" : "not_kept";
 }
 
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
@@ -843,7 +851,7 @@ export function isFigureWork(id: string): boolean {
  *   read, applying it is handed to `keepAlive`, so the item's time limit
  *   cannot cut it off.
  */
-export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAlive }) => {
+export const checkJob: OpenWorkHandler = async (env, item, { ledger, now, signal, keepAlive }) => {
   const ref: JobRef = { job: item.ownerId, accountId: item.accountId, appId: item.appId };
   const detail = item.detail ?? {};
   if (isFigureWork(item.id)) {
@@ -852,7 +860,7 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
       log("error", "job_figure_unreadable", { app: item.appId, work: item.id });
       return { done: true };
     }
-    const settling = settleFigure(env, ref, facts, now);
+    const settling = settleFigure(ledger, ref, facts, now);
     keepAlive?.(settling.catch(() => undefined));
     return (await settling) === "waiting" ? retry("estimate not in the ledger yet") : { done: true };
   }
@@ -902,7 +910,7 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
     // Unknown (undefined) when D1 cannot answer in time: then the body is read, and settling reads it again.
     let estimate: ChargeRow | null | undefined;
     try {
-      estimate = await withDeadline(jobEstimateCharge(env.DB, ref.job), FIGURE_D1_DEADLINE_MS, "reading the estimate");
+      estimate = await withDeadline(jobEstimateCharge(ledger, ref.job), FIGURE_D1_DEADLINE_MS, "reading the estimate");
     } catch {
       estimate = undefined;
     }
@@ -912,9 +920,9 @@ export const checkJob: OpenWorkHandler = async (env, item, { now, signal, keepAl
     if (bodyNeeded) read = await boundedJson(result.response, { deadlineMs: JOB_BODY_READ_DEADLINE_MS });
     else void result.response.body?.cancel().catch(() => undefined);
     const facts = read === null ? headerFacts : readResultFacts(context.spec, result.response, read)!;
-    const outcome = await applyFinalResult(env, ref, facts, now, estimate);
+    const outcome = await applyFinalResult(env, ledger, ref, facts, now, estimate);
     if (outcome === "done" || outcome === "estimate_kept") {
-      await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run().catch(() => undefined);
+      await ledger.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run().catch(() => undefined);
     }
     return outcome;
   })();

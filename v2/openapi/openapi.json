@@ -421,8 +421,11 @@
                 "description": "The per-day limit on each install (App Attest) or user (server). Null means unlimited."
               },
               "monthly_cost_usd": {
-                "type": "number",
-                "description": "Spent so far in the current UTC month against the budget below, by whoever budget_scope names."
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Spent so far in the current UTC month against the budget below, by whoever budget_scope names. Null when the total could not be read in time."
               },
               "monthly_budget_usd": {
                 "type": [
@@ -1760,6 +1763,40 @@
           "last_seen_at",
           "is_virtual",
           "usage"
+        ]
+      },
+      "SeenUserListResponse": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "month": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndUser"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the next page starts; null when this was the last page. A page may hold fewer users than `limit` and still have a next one."
+          }
+        },
+        "required": [
+          "app_id",
+          "month",
+          "limit",
+          "users",
+          "next_cursor"
         ]
       },
       "EndUserResponse": {
@@ -8916,7 +8953,7 @@
         ],
         "operationId": "listAppUsers",
         "summary": "List an app's end users",
-        "description": "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
+        "description": "Users that sign-in recorded, most recently seen first, with each user's usage in `month`. User ids that only the app's charges or refusals name, such as a server app's end-user header, are listed by listAppSeenUsers. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
         "security": [
           {
             "ManagementBearer": []
@@ -9002,6 +9039,132 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndUserListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid management key, OAuth token or console sign-in is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential has only the read grant, or its owner is not an account owner or admin. A console tab naming an account the person is not a member of (`x-account-id`) is refused with `account_forbidden`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app, key or provider connection does not exist in this account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/admin/apps/{app}/seen-users": {
+      "get": {
+        "tags": [
+          "Admin end users"
+        ],
+        "operationId": "listAppSeenUsers",
+        "summary": "List user ids only an app's usage names",
+        "description": "User ids that the app's charges or refusals name but sign-in never recorded (`is_virtual`), such as a server app's end-user header, with each one's usage in `month`. In id order, a page at a time: pass `next_cursor` back as `cursor`. Users that listAppUsers lists are left out, so a page can hold fewer than `limit`.",
+        "security": [
+          {
+            "ManagementBearer": []
+          },
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(?:19[7-9]\\d|2\\d{3})-(?:0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Part of the user id."
+            },
+            "required": false,
+            "description": "Part of the user id.",
+            "name": "query",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 1024,
+              "description": "`next_cursor` from the previous page."
+            },
+            "required": false,
+            "description": "`next_cursor` from the previous page.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of user ids only usage names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeenUserListResponse"
                 }
               }
             }

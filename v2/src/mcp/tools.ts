@@ -44,6 +44,7 @@ export const MCP_READ_OPERATIONS = [
   "checkApp",
   "listAppKeys",
   "listAppUsers",
+  "listAppSeenUsers",
   "getAppUser",
   "listAppJobs",
   "getAccountUsage",
@@ -586,7 +587,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "list_app_users",
     title: "List an app's users",
     description:
-      "Returns the end users an app has seen, with their status and usage for one month, a page at a time (limit, offset). Filter by part of the user id (query) or by status. Use it to find a user before get_app_user, or to see who is blocked. It does not block or unblock anyone.",
+      "Returns the end users sign-in recorded for an app, with their status and usage for one month, a page at a time (limit, offset). Filter by part of the user id (query) or by status. Use it to find a user before get_app_user, or to see who is blocked; user ids only usage names are in list_app_seen_users. It does not block or unblock anyone.",
     operation: "listAppUsers",
     cli: {
       command: "app user list",
@@ -594,6 +595,20 @@ export const MCP_TOOLS: readonly McpTool[] = [
       view: { rows: "users", columns: ["id", "status", "installs", "usage.charges=Charges", "usage.cost_nano=Cost (nano-$)", "last_seen_at=Last seen"] },
     },
     summary: (result) => `${plural(result.users.length, "user")} of ${result.total} for ${result.app_id} in ${result.month}, from offset ${result.offset}.`,
+  }),
+  tool({
+    name: "list_app_seen_users",
+    title: "List user ids only an app's usage names",
+    description:
+      "Returns user ids that an app's charges or refusals name but sign-in never recorded, such as a server app's end-user header, with their usage for one month, in id order, a page at a time: pass next_cursor back as cursor. A page can hold fewer than limit and still have a next one. Use list_app_users for users sign-in recorded.",
+    operation: "listAppSeenUsers",
+    cli: {
+      command: "app user seen",
+      args: ["app"],
+      view: { rows: "users", columns: ["id", "usage.charges=Charges", "usage.cost_nano=Cost (nano-$)", "last_seen_at=Last seen"] },
+    },
+    summary: (result) =>
+      `${plural(result.users.length, "user")} only usage names for ${result.app_id} in ${result.month}${result.next_cursor === null ? "" : `, more from cursor ${result.next_cursor}`}.`,
   }),
   tool({
     name: "get_app_user",

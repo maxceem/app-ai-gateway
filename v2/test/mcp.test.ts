@@ -14,7 +14,7 @@ import worker from "../src/index.ts";
 import { CLI_CLIENT_ID } from "../src/auth/identity.ts";
 import { OAUTH_PATHS } from "../src/management/oauth-routes.ts";
 import { MCP_READ_OPERATIONS, MCP_TOOLS, MCP_WRITE_OPERATIONS, toolsFor } from "../src/mcp/tools.ts";
-import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
+import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, ledger } from "./helpers.ts";
 
 const CONSOLE = "https://console.gateway.test";
 const API = "https://gateway.test";
@@ -269,11 +269,13 @@ describe("usage reads with a read grant", () => {
     // One app of the person's account, with one charge.
     const appId = `reads-${crypto.randomUUID().slice(0, 8)}`;
     const usedAt = Date.parse("2025-10-15T12:00:00Z");
-    await env.DB.batch([
-      env.DB.prepare(
-        "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Reads', '{}', 1, 'active', 0, 0)",
-      ).bind(appId, human.accountId),
-      env.DB.prepare(
+    await env.DB.prepare(
+      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Reads', '{}', 1, 'active', 0, 0)",
+    )
+      .bind(appId, human.accountId)
+      .run();
+    await ledger(human.accountId).batch([
+      ledger(human.accountId).prepare(
         `INSERT INTO charge (id, kind, account_id, app_id, owner_type, owner_id, provider_type, operation, model, status, cost_nano,
            measured, price_source, measures_json, used_at, usage_day, written_at)
          VALUES (?, 'attempt', ?, ?, 'call', ?, 'openai', 'openai.chat', 'gpt-4o-mini', 'ok', 2500, 'complete', 'list_rate', '{}', ?, '2025-10-15', ?)`,
@@ -293,7 +295,7 @@ describe("usage reads with a read grant", () => {
     expect(body.result.apps).toEqual([expect.objectContaining({ app_id: appId, charges: 1 })]);
 
     // The diagnostics reads take the same read grant (step 7b-4).
-    await env.DB.prepare(
+    await ledger(human.accountId).prepare(
       "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, created_at) VALUES (?, ?, ?, 'token_exchange', 'ok', ?)",
     )
       .bind(`ae_${crypto.randomUUID().slice(0, 8)}`, appId, human.accountId, Date.now())
