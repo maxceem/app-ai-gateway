@@ -9,6 +9,7 @@ import { allowedUrl, callProvider, holds, keyHeaderAllowed, readCredentials, und
 import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
 import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext, vaultStatus } from "../vault/src/seal.js";
 import { createKmsClient } from "@maxceem/cf-kms/client";
+import { KMS_TIMEOUT_MS } from "../vault/src/kms.js";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { openSecret, sealSecret, secretContext, SECRET_KINDS, secretIdentityLength } from "../src/vault/secrets.ts";
@@ -282,7 +283,7 @@ function fakeKms(token = "kms-token") {
     calls.push(url.pathname);
     if (new Headers(init?.headers).get("authorization") !== `Bearer ${token}`) return Response.json({ error: { code: "unauthorized" } }, { status: 401 });
     const body = JSON.parse(String(init?.body)) as { encryptionContext: Record<string, string>; wrappedKey?: string };
-    if (url.pathname === "/v1/generate-data-key") {
+    if (url.pathname.endsWith("/v1/generate-data-key")) {
       const key = b64url(crypto.getRandomValues(new Uint8Array(32)));
       const wrappedKey = `v1.${crypto.randomUUID()}`;
       issued.set(wrappedKey, { key, context: canonical(body.encryptionContext) });
@@ -363,6 +364,9 @@ describe("kms mode", () => {
   it.each([
     ["answers 5xx", () => Response.json({ error: { code: "internal" } }, { status: 503 })],
     ["fails on the network", () => Promise.reject(new TypeError("network down"))],
+    ["answers something that is not JSON", () => new Response("<html>bad gateway</html>", { status: 200 })],
+    ["answers 500 with no error code", () => Response.json({}, { status: 500 })],
+    ["answers 200 without the key it was asked for", () => Response.json({ kekVersion: 1 })],
   ] as const)("sends nothing to the provider, and answers a refusal the gateway turns into 502, when cf-kms %s", async (_name, answer) => {
     // Sealed while cf-kms worked; opened by a fresh isolate's client, which must ask it.
     fakeKms();
@@ -383,6 +387,52 @@ describe("kms mode", () => {
     expect(response.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
     expect(() => vaultAnswer(response)).toThrow(expect.objectContaining({ status: 502, code: "provider_unavailable" }));
     expect(sent).toEqual([]);
+  });
+
+  it("ends a stalled cf-kms call at its own time limit, as a refusal, before sending anything (Gemini Neon review)", async () => {
+    fakeKms();
+    const blob = await seal({ ...KMS_ENV }, "providerKey", IDS, KEY);
+    const sent: string[] = [];
+    vi.mocked(globalThis.fetch).mockImplementation(
+      (input, init) =>
+        new Promise<Response>((resolve, reject) => {
+          if (!String(input).startsWith("https://kms.example.test/")) {
+            sent.push(String(input));
+            resolve(new Response("ok"));
+            return;
+          }
+          // cf-kms never answers: only the abort ends it.
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+        }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = callProvider({ ...KMS_ENV }, {
+        url: "https://api.openai.com/v1/models",
+        method: "GET",
+        headers: new Headers(),
+        body: null,
+        credentials: { providerKey: { blob, identity: IDS, header: "authorization", format: "Bearer {key}" } },
+      });
+      await vi.advanceTimersByTimeAsync(KMS_TIMEOUT_MS + 1);
+      const response = await pending;
+      expect(response.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses a kms blob whose parts are not base64 as a blob that does not open, keeping open()'s errors", async () => {
+    await expect(open({ ...KMS_ENV }, "providerKey", IDS, "cfkms-env1.v1.wrapped.AAAAA.AAAAA")).rejects.toThrow(/does not open/u);
+  });
+
+  it("reaches a cf-kms deployment under a path, at that path", async () => {
+    const kms = fakeKms();
+    const env = { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/base" };
+    const blob = await seal(env, "providerKey", IDS, KEY);
+    expect(await open({ ...env }, "providerKey", IDS, blob)).toBe(KEY);
+    expect(kms.calls).toEqual(["/base/v1/generate-data-key", "/base/v1/decrypt"]);
   });
 
   it("answers `misconfigured` when cf-kms refuses the vault's token", async () => {
@@ -425,6 +475,7 @@ describe("kms mode", () => {
     ["a kms URL with a fragment", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/#setup" }, "misconfigured"],
     ["a kms URL with a query", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/?env=prod" }, "misconfigured"],
     ["a kms URL with a path", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/base/" }, "ok"],
+    ["local mode with a kms setting left over", { ...vaultEnv, SECRET_VAULT_KMS_URL: "https://kms.example.test" }, "misconfigured"],
   ])("reports %s as %s", (_name, settings, expected) => {
     expect(vaultStatus({ ...settings })).toBe(expected);
   });

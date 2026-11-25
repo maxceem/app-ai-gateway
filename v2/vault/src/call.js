@@ -64,12 +64,13 @@ const openedCache = new Map();
  * @param {"providerKey" | "cloudflareGatewayToken"} kind
  * @param {readonly string[]} identity
  * @param {string} blob
+ * @param {AbortSignal} [signal] the caller's, passed on to cf-kms in kms mode
  */
-async function opened(env, kind, identity, blob) {
+async function opened(env, kind, identity, blob, signal) {
   const key = [kind, ...identity, blob].join("\u0000");
   const cached = openedCache.get(key);
   if (cached !== undefined && Date.now() - cached.at < SECRET_CACHE_TTL_MS) return cached.value;
-  const value = await open(env, kind, identity, blob);
+  const value = await open(env, kind, identity, blob, signal);
   openedCache.delete(key);
   if (openedCache.size >= SECRET_CACHE_MAX) {
     const oldest = openedCache.keys().next().value;
@@ -252,14 +253,14 @@ export async function callProvider(env, call) {
     if (credentials.providerKey !== undefined) {
       // `readCredentials` has set the placement: the type's own key header, or the sealed one.
       const { blob, identity, header = "", format = "" } = credentials.providerKey;
-      const key = await opened(env, "providerKey", identity, blob);
+      const key = await opened(env, "providerKey", identity, blob, call.signal);
       // A callback, so a key with `$&` is sent as it is.
       headers.set(header, format.replace("{key}", () => key));
       keyHeaders.push(header.toLowerCase());
     }
     if (credentials.cloudflareToken !== undefined) {
       const { blob, identity } = credentials.cloudflareToken;
-      const token = await opened(env, "cloudflareGatewayToken", identity, blob);
+      const token = await opened(env, "cloudflareGatewayToken", identity, blob, call.signal);
       headers.set(CLOUDFLARE_TOKEN_HEADER, `Bearer ${token}`);
       keyHeaders.push(CLOUDFLARE_TOKEN_HEADER);
     }

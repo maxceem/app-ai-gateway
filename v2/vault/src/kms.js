@@ -16,6 +16,12 @@
 export const ENVELOPE_PREFIX = "cfkms-env1";
 const IV_BYTES = 12;
 const CACHE_TTL_MS = 300_000;
+/**
+ * How long one cf-kms call may take: far under any provider's time limit, so
+ * a stalled cf-kms ends as the vault's own refusal (nothing sent, nothing
+ * charged) rather than as the caller giving up on a call it cannot tell apart.
+ */
+export const KMS_TIMEOUT_MS = 5_000;
 const MAX_CACHE_ENTRIES = 512;
 
 /** A cf-kms call or envelope that failed, by cf-kms's own code. */
@@ -39,7 +45,14 @@ function toBase64Url(bytes) {
 /** @param {string} value @returns {Uint8Array<ArrayBuffer>} */
 function fromBase64Url(value) {
   if (!/^[A-Za-z0-9_-]*$/u.test(value)) throw new KmsError("invalid_envelope", 0);
-  const binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/").padEnd(value.length + ((4 - (value.length % 4)) % 4), "="));
+  /** @type {string} */
+  let binary;
+  try {
+    binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/").padEnd(value.length + ((4 - (value.length % 4)) % 4), "="));
+  } catch {
+    // A length no base64 can have, such as 4n+1.
+    throw new KmsError("invalid_envelope", 0);
+  }
   const bytes = new Uint8Array(new ArrayBuffer(binary.length));
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
@@ -83,15 +96,38 @@ export function createKmsClient(options) {
    * @param {string} path
    * @param {unknown} body
    * @param {readonly string[]} fields
+   * @param {AbortSignal} [signal] the caller's own, if it has one: the call stops at whichever ends first
    * @returns {Promise<Record<string, unknown>>}
    */
-  async function call(path, body, fields) {
+  async function call(path, body, fields, signal) {
+    const limit = new AbortController();
+    const timer = setTimeout(() => limit.abort(new KmsError("timeout", 0)), KMS_TIMEOUT_MS);
+    const stop = signal === undefined ? limit.signal : AbortSignal.any([limit.signal, signal]);
+    try {
+      return await send(path, body, fields, stop);
+    } catch (error) {
+      if (limit.signal.aborted) throw new KmsError("timeout", 0);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * @param {string} path
+   * @param {unknown} body
+   * @param {readonly string[]} fields
+   * @param {AbortSignal} signal
+   * @returns {Promise<Record<string, unknown>>}
+   */
+  async function send(path, body, fields, signal) {
     const response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       // Never follow a redirect: it would take the token somewhere else.
       redirect: "manual",
+      signal,
     });
     if ((response.status >= 300 && response.status < 400) || response.type === "opaqueredirect") {
       await response.body?.cancel();
@@ -143,8 +179,9 @@ export function createKmsClient(options) {
     /**
      * @param {string} blob
      * @param {Record<string, string>} context
+     * @param {AbortSignal} [signal]
      */
-    async decryptSecret(blob, context) {
+    async decryptSecret(blob, context, signal) {
       const parts = blob.split(".");
       // The wrapped key has dots of its own: it is everything between the prefix and the iv and ciphertext.
       if (parts.length < 4 || parts[0] !== ENVELOPE_PREFIX) throw new KmsError("invalid_envelope", 0);
@@ -157,7 +194,7 @@ export function createKmsClient(options) {
       let key = cached !== undefined && cached.expiresAt > Date.now() ? cached.key : null;
       if (key === null) {
         cache.delete(cacheKey);
-        const opened = await call("/v1/decrypt", { wrappedKey: wrapped, encryptionContext: context }, ["plaintextKey"]);
+        const opened = await call("/v1/decrypt", { wrappedKey: wrapped, encryptionContext: context }, ["plaintextKey"], signal);
         key = await importDataKey(fromBase64Url(/** @type {string} */ (opened.plaintextKey)));
         remember(cacheKey, key);
       }

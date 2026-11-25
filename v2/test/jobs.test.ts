@@ -25,7 +25,10 @@ import { sealSecret } from "../src/vault/secrets.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger } from "./helpers.ts";
 import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
-import { setVaultForTests, type VaultCall } from "../src/vault/client.ts";
+import { setVaultForTests, VAULT_ERROR_HEADER, vaultAnswer, type VaultCall } from "../src/vault/client.ts";
+import { callProvider } from "../vault/src/call.js";
+import { KMS_TIMEOUT_MS } from "../vault/src/kms.js";
+import { seal as sealVault } from "../vault/src/seal.js";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -1702,6 +1705,104 @@ describe("a final result's body after the sweep item's time, and the provider's 
     falAnswers({});
     await submit(appId, slug, key);
     expect(fetchSpy.mock.calls.map(([input]) => String(input))).toContain("https://proxy.example.net/fal/queue/fal-ai/flux/dev");
+  });
+});
+
+describe("the vault's refusals on jobs (Gemini Neon review)", () => {
+  /** A cf-kms stand-in: issues data keys, and unwraps them while `stalled` is false. */
+  function kmsStandIn() {
+    const issued = new Map<string, string>();
+    const state = { stalled: false };
+    const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+    const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as { wrappedKey?: string };
+      if (String(input).endsWith("/v1/generate-data-key")) {
+        const key = b64url(crypto.getRandomValues(new Uint8Array(32)));
+        const wrappedKey = `v1.${crypto.randomUUID()}`;
+        issued.set(wrappedKey, key);
+        return Response.json({ plaintextKey: key, wrappedKey, kekVersion: 1 });
+      }
+      if (state.stalled) {
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+      }
+      return Response.json({ plaintextKey: issued.get(body.wrappedKey ?? ""), kekVersion: 1 });
+    };
+    return { state, answer };
+  }
+
+  it("charges nothing and sends nothing to fal when cf-kms stalls while a submission's key is opened", async () => {
+    const { appId, slug, key, connectionId } = await setup();
+    const kms = kmsStandIn();
+    const KMS_ENV = { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "https://kms.example.test", SECRET_VAULT_KMS_TOKEN: "kms-token" };
+    falAnswers({});
+    const falAnswer = fetchSpy.getMockImplementation()!;
+    const toFal: string[] = [];
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).startsWith("https://kms.example.test/")) return kms.answer(input, init);
+      toFal.push(String(input));
+      return falAnswer(input, init);
+    });
+    // Sealed by one vault isolate; every call is a fresh one, so the key is opened through cf-kms.
+    const blob = await sealVault({ ...KMS_ENV }, "providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], SECRET);
+    await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(blob, connectionId).run();
+    clearCaches();
+    setVaultForTests(() => ({ ...localVault(env), call: async (input) => vaultAnswer(await callProvider({ ...KMS_ENV }, input)) }));
+    onTestFinished(() => setVaultForTests(localVault));
+    kms.state.stalled = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = submit(appId, slug, key);
+    await vi.advanceTimersByTimeAsync(KMS_TIMEOUT_MS + 1);
+    const submitted = await pending;
+    vi.useRealTimers();
+    expect(submitted.response.status).toBe(502);
+    expect(submitted.json).toMatchObject({ error: { code: "provider_unavailable" } });
+    expect(toFal).toEqual([]);
+    expect(await charges(appId)).toEqual([]);
+  });
+
+  async function brokenKeyAfterSubmit() {
+    const { appId, slug, key, connectionId } = await setup();
+    falAnswers({});
+    const submitted = await submit(appId, slug, key);
+    const jobId = String(submitted.json!.request_id);
+    // The vault refuses the key (it no longer opens, or the address is not one it is sealed for): nothing reaches fal.
+    setVaultForTests((vaultEnv) => ({
+      ...localVault(vaultEnv),
+      call: async () => vaultAnswer(new Response(null, { status: 502, headers: { [VAULT_ERROR_HEADER]: "credential_unavailable" } })),
+    }));
+    onTestFinished(() => setVaultForTests(localVault));
+    void connectionId;
+    fetchSpy.mockClear();
+    return { appId, key, jobId };
+  }
+
+  it("answers a poll the vault refuses with 502 provider_unavailable, calls nothing, and keeps the estimate", async () => {
+    const { appId, key, jobId } = await brokenKeyAfterSubmit();
+    const polled = await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
+    expect(polled.response.status).toBe(502);
+    expect(polled.json).toMatchObject({ error: { code: "provider_unavailable" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
+  });
+
+  it("fails a sweep check the vault refuses with 502 provider_unavailable, calls nothing, and keeps the estimate", async () => {
+    const { appId } = await brokenKeyAfterSubmit();
+    const [row] = await openWork(appId);
+    const item = {
+      id: String(row!.id),
+      kind: "job_check" as const,
+      accountId: ACCOUNT_ID,
+      appId,
+      ownerType: "job",
+      ownerId: String(row!.owner_id),
+      chargeId: String(row!.charge_id),
+      detail: JSON.parse(String(row!.detail_json)) as Record<string, unknown>,
+      dueAt: 0,
+      tries: 0,
+    };
+    await expect(checkJob(env, item, { ledger: ledger(), now: Date.now(), lastTry: false })).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
   });
 });
 
