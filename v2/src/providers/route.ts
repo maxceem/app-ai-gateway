@@ -21,8 +21,10 @@ import { GatewayError } from "../core/errors.ts";
 import {
   upstreamOrigin,
   type ConnectionRecord,
+  type SealedCredentials,
   type UpstreamCredentials,
 } from "./connections.ts";
+import type { SealedCallCredentials, SealedCloudflareToken, SealedProviderKey } from "../vault/client.ts";
 import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
 import { cloudflareGatewayOrigin } from "./destinations.ts";
 
@@ -97,7 +99,7 @@ function asciiJson(value: unknown): string {
 export { cloudflareOrigin } from "./destinations.ts";
 
 /** The connection type's own request decoration (`attributionHeaders`). */
-function attribution(description: ProviderDescription, input: UpstreamRequestInput): Record<string, string> {
+function attribution(description: ProviderDescription, input: Pick<UpstreamRequestInput, "appId" | "userId">): Record<string, string> {
   return { ...(description.attributionHeaders?.({ appId: input.appId, userId: input.userId }) ?? {}) };
 }
 
@@ -131,25 +133,29 @@ export function upstreamUrl(
   return `${origin}${route.slug}/${path}${input.query}`;
 }
 
-/** The URL and headers of one request to a connection's provider. */
-export function upstreamRequest(
+/** Where one request goes and its headers, without any credential, and how the credentials go in. */
+interface UpstreamTarget {
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  /** The provider key's header and format, or null when no provider key is sent. */
+  readonly keyAuth: ProviderAuth | null;
+  /** Whether a Cloudflare AI Gateway token is sent. */
+  readonly cloudflare: boolean;
+}
+
+function upstreamTarget(
   connection: ConnectionRecord,
   description: ProviderDescription,
-  input: UpstreamRequestInput,
-): UpstreamRequest {
+  input: Omit<UpstreamRequestInput, "credentials"> & { readonly hasProviderKey: boolean; readonly hasCloudflareToken: boolean },
+): UpstreamTarget {
   const gateway = connection.cloudflareGateway;
   if (gateway === null) {
-    if (input.credentials.providerKey === null) {
+    if (!input.hasProviderKey) {
       throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
     }
-    const url = upstreamUrl(connection, description, input);
-    return {
-      url,
-      headers: { ...attribution(description, input), ...providerAuth(description.auth, input.credentials.providerKey) },
-      keyHeader: description.auth.header.toLowerCase(),
-    };
+    return { url: upstreamUrl(connection, description, input), headers: attribution(description, input), keyAuth: description.auth, cloudflare: false };
   }
-  if (input.credentials.cloudflareToken === null) {
+  if (!input.hasCloudflareToken) {
     throw new GatewayError(502, "provider_unavailable", `${description.label} cannot be reached through Cloudflare AI Gateway`);
   }
   const url = upstreamUrl(connection, description, input);
@@ -158,15 +164,65 @@ export function upstreamRequest(
     if (CLOUDFLARE_CLIENT_HEADERS.includes(name.toLowerCase())) headers[name.toLowerCase()] = value;
   });
   Object.assign(headers, attribution(description, input), {
-    "cf-aig-authorization": `Bearer ${input.credentials.cloudflareToken}`,
     // Cloudflare's own logs, under the real app and user: set here alone.
     "cf-aig-metadata": asciiJson({ app_id: input.appId, ...(input.userId === null ? {} : { user_id: input.userId }) }),
   });
-  const auth = keyAuth(connection, description, input.style);
-  if (input.credentials.providerKey !== null) Object.assign(headers, providerAuth(auth, input.credentials.providerKey));
+  return { url, headers, keyAuth: input.hasProviderKey ? keyAuth(connection, description, input.style) : null, cloudflare: true };
+}
+
+/**
+ * The URL and headers of one request to a connection's provider, with the
+ * opened credentials in them: for the work that does not go through the vault
+ * yet (jobs, the key test). Calls go through `sealedUpstreamRequest`.
+ */
+export function upstreamRequest(
+  connection: ConnectionRecord,
+  description: ProviderDescription,
+  input: UpstreamRequestInput,
+): UpstreamRequest {
+  const { credentials } = input;
+  const target = upstreamTarget(connection, description, {
+    ...input,
+    hasProviderKey: credentials.providerKey !== null,
+    hasCloudflareToken: credentials.cloudflareToken !== null,
+  });
+  const headers = { ...target.headers };
+  if (target.cloudflare && credentials.cloudflareToken !== null) headers["cf-aig-authorization"] = `Bearer ${credentials.cloudflareToken}`;
+  if (target.keyAuth !== null && credentials.providerKey !== null) Object.assign(headers, providerAuth(target.keyAuth, credentials.providerKey));
+  return { url: target.url, headers, keyHeader: (target.keyAuth ?? keyAuth(connection, description, input.style)).header.toLowerCase() };
+}
+
+/** One request whose credentials stay sealed: the vault adds them (`src/vault/client.ts`). */
+export interface SealedUpstreamRequest {
+  readonly url: string;
+  /** Set on the outgoing headers last, over anything else. Never a credential. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** The header the provider key is sent in: never forwarded from the client, never passed back to it. */
+  readonly keyHeader: string;
+  readonly credentials: SealedCallCredentials;
+}
+
+/** The URL and headers of one request to a connection's provider, with its credentials sealed for the vault. */
+export function sealedUpstreamRequest(
+  connection: ConnectionRecord,
+  description: ProviderDescription,
+  input: Omit<UpstreamRequestInput, "credentials"> & { readonly credentials: SealedCredentials },
+): SealedUpstreamRequest {
+  const { credentials } = input;
+  const target = upstreamTarget(connection, description, {
+    ...input,
+    hasProviderKey: credentials.providerKey !== null,
+    hasCloudflareToken: credentials.cloudflareToken !== null,
+  });
+  const sealed: { providerKey?: SealedProviderKey; cloudflareToken?: SealedCloudflareToken } = {};
+  if (target.keyAuth !== null && credentials.providerKey !== null) {
+    sealed.providerKey = { ...credentials.providerKey, header: target.keyAuth.header, format: target.keyAuth.format };
+  }
+  if (target.cloudflare && credentials.cloudflareToken !== null) sealed.cloudflareToken = credentials.cloudflareToken;
   return {
-    url,
-    headers,
-    keyHeader: auth.header.toLowerCase(),
+    url: target.url,
+    headers: target.headers,
+    keyHeader: (target.keyAuth ?? keyAuth(connection, description, input.style)).header.toLowerCase(),
+    credentials: sealed,
   };
 }

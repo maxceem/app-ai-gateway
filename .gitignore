@@ -8,6 +8,7 @@ node_modules/
 /wrangler.*.jsonc
 /docs/wrangler.*.jsonc
 /v2/wrangler.*.jsonc
+/v2/vault/wrangler.*.jsonc
 .env
 .env.*
 !.env.example

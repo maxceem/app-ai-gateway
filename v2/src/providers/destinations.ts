@@ -63,7 +63,7 @@ export interface RouteSetting {
 }
 
 /** Whether `baseUrl` is exactly one of the provider's declared hosts, as its default routing would address it. */
-function isDeclaredHost(description: ProviderDescription, baseUrl: string): boolean {
+export function isDeclaredHost(description: ProviderDescription, baseUrl: string): boolean {
   let href: string;
   try {
     href = new URL(baseUrl).href;

@@ -114,7 +114,7 @@ describe("opening a connection's key", () => {
   });
 
   async function addCloudflareGateway(id: string): Promise<void> {
-    const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id], "cf-token");
+    const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id, "cf-account", "cf-gateway"], "cf-token");
     await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?")
       .bind(JSON.stringify({ account_id: "cf-account", gateway_id: "cf-gateway", token_blob: token }), id)
       .run();

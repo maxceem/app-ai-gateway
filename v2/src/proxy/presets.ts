@@ -40,11 +40,11 @@ import { UNRECOGNIZED } from "../diagnostics/rejection-events.ts";
 import { admitRequest } from "../limits/admission.ts";
 import { priceSources, resolvePresetTarget } from "../pricing/billability.ts";
 import {
-  connectionCredentials,
+  sealedCredentials,
   connectionDescription,
   loadConnection,
   type ConnectionRecord,
-  type UpstreamCredentials,
+  type SealedCredentials,
 } from "../providers/connections.ts";
 import type { ApiStyle, OperationDescription, ProviderDescription } from "../providers/operation.ts";
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
@@ -150,7 +150,7 @@ export interface TargetInput {
   readonly streaming: boolean;
   readonly connection: ConnectionRecord;
   readonly description: ProviderDescription;
-  readonly credentials: () => Promise<UpstreamCredentials>;
+  readonly credentials: () => Promise<SealedCredentials>;
   readonly target: Pick<PresetFallback, "operation" | "model">;
   /** The chain's first target, which is served even when its price has gone since the preset was saved. */
   readonly primary: boolean;
@@ -342,12 +342,13 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
             if (primary) paused = error;
             continue;
           }
-          // The first target's key is opened before admission, so one that
-          // cannot be opened is refused before anything is spent, as v1. A
-          // fallback's is opened only when the chain reaches it.
-          const opened = primary ? await connectionCredentials(c.env, connection) : null;
+          // The first target's credentials are checked before admission, so a
+          // connection with none is refused before anything is spent, as v1. A
+          // fallback's are checked only when the chain reaches it. They stay
+          // sealed: the vault opens them when it sends the call (plan step 8i).
+          const checked = primary ? sealedCredentials(connection) : null;
           const open = connection;
-          const credentials = opened !== null ? () => Promise.resolve(opened) : () => connectionCredentials(c.env, open);
+          const credentials = checked !== null ? () => Promise.resolve(checked) : () => Promise.resolve().then(() => sealedCredentials(open));
           attempts.push(
             targetAttempt({
               slug,

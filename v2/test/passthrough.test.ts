@@ -18,6 +18,7 @@ import { isExtraClientHeader, mayCarryCredential } from "../src/proxy/headers.ts
 import { callCharge, type CallAttempt } from "../src/proxy/call-charge.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
+import { keyOrigin } from "../src/providers/connections.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
@@ -385,7 +386,7 @@ async function setup(
   const baseUrl = connection.baseUrl ?? null;
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, keyOrigin({ type, baseUrl: baseUrl ?? null, cloudflareGateway: null })], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

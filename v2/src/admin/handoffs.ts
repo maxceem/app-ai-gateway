@@ -49,7 +49,7 @@ import { invalidateConnection, keyOrigin, readCloudflareGateway } from "../provi
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { cloudflareGatewayOrigin } from "../providers/destinations.ts";
 import { builtInProvider } from "../providers/index.ts";
-import { sealSecret } from "../vault/secrets.ts";
+import { vault } from "../vault/client.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
 import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
@@ -436,8 +436,8 @@ async function providerAddWrite(
   // Judged again at approval, so a step opened before the rule cannot send a token where its ids lead once parsed.
   if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   // Sealed for where the key goes: the base URL, the Cloudflare gateway, or the provider's own host.
-  const origin = keyOrigin({ baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
-  const blob = secret === undefined ? null : await sealSecret(env, "providerKey", [accountId, id, review.type, origin], secret);
+  const origin = keyOrigin({ type: review.type, baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
+  const blob = secret === undefined ? null : await vault(env).seal("providerKey", [accountId, id, review.type, origin], secret);
   const cloudflareJson =
     cloudflare === null || cloudflareToken === undefined ? null : await storedCloudflare(env, accountId, id, { ...cloudflare, token: cloudflareToken });
   const cap = await planCap(env, env.DB, accountId, "provider");
@@ -511,8 +511,8 @@ async function providerKeyWrite(env: Env, accountId: string, review: RotateRevie
     throw new GatewayError(409, "conflict", "The provider connection changed since this was asked for; ask for it again");
   }
   // Sealed for the origin the connection has now, which the revision check keeps unchanged.
-  const origin = keyOrigin({ baseUrl: current.base_url, cloudflareGateway: readCloudflareGateway(current.cloudflare_gateway_json) });
-  const blob = await sealSecret(env, "providerKey", [accountId, current.id, current.type, origin], secret);
+  const origin = keyOrigin({ type: current.type, baseUrl: current.base_url, cloudflareGateway: readCloudflareGateway(current.cloudflare_gateway_json) });
+  const blob = await vault(env).seal("providerKey", [accountId, current.id, current.type, origin], secret);
   const now = Date.now();
   const statement = database(env.DB)
     .update(providerConnection)

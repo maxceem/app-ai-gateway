@@ -9,6 +9,30 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          // The vault Worker (`vault/`), uploaded as it is, behind the VAULT binding.
+          // Most tests run its modules in this Worker instead (`test/local-vault.ts`);
+          // `vault-binding.test.ts` goes through the binding. Its provider is a stand-in
+          // that echoes what reached it, so no test call leaves the machine.
+          workers: [
+            {
+              name: "app-ai-gateway-v2-vault",
+              modules: true,
+              modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+              scriptPath: path.join(import.meta.dirname, "vault/src/index.js"),
+              compatibilityDate: "2026-07-24",
+              compatibilityFlags: ["enable_request_signal"],
+              bindings: {
+                SECRET_VAULT_MODE: "local",
+                SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
+                SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+              },
+              outboundService: async (request: Request) =>
+                Response.json(
+                  { url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: await request.text() },
+                  { headers: { "x-echo": "1", authorization: request.headers.get("authorization") ?? "" } },
+                ),
+            },
+          ],
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
           bindings: {

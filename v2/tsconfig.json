@@ -13,7 +13,9 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-pool-workers/types", "node"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "smoke/**/*.ts", "vitest.config.ts", "drizzle.config.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "vault/src/**/*.js", "test/**/*.ts", "scripts/**/*.ts", "smoke/**/*.ts", "vitest.config.ts", "drizzle.config.ts", "worker-configuration.d.ts"]
 }
