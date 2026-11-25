@@ -4,6 +4,7 @@
  * goes through an app the caller's account owns, and shows only events
  * recorded under that account. The clock is frozen, so day bounds are exact.
  */
+import type { LedgerStatement } from "../src/ledger/database.ts";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,7 @@ import worker from "../src/index.ts";
 import { recordAuthEvent } from "../src/client-auth/auth-events.ts";
 import { appIds } from "../src/admin/apps.ts";
 import { APPLE_FAILURES, CLAIM_WAIT_TOTALS, claimWaitAt, FAILING_NETWORKS, PENDING_USERS } from "../src/admin/diagnostics.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey, ledger } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -87,9 +88,10 @@ interface AuthSeed {
 async function authEvent(values: AuthSeed): Promise<string> {
   counter += 1;
   const id = values.id ?? `ae_${String(counter).padStart(4, "0")}`;
-  await env.DB.prepare(
+  const accountId = await accountOf(values.appId);
+  await ledger(accountId ?? ACCOUNT_ID).prepare(
     `INSERT INTO app_auth_event (id, app_id, account_id, user_id, event, auth_method, outcome, reason, network_asn, network_name, latency_ms, claim_delay_ms, created_at)
-     VALUES (?1, ?2, (SELECT account_id FROM app WHERE id = ?2), ?3, ?4, 'api_key', ?5, ?6, ?7, ?8, 12, ?9, ?10)`,
+     VALUES (?1, ?2, ?11, ?3, ?4, 'api_key', ?5, ?6, ?7, ?8, 12, ?9, ?10)`,
   )
     .bind(
       id,
@@ -102,9 +104,15 @@ async function authEvent(values: AuthSeed): Promise<string> {
       values.network ?? null,
       values.claimDelayMs ?? null,
       values.at,
+      accountId,
     )
     .run();
   return id;
+}
+
+/** The account that owns an app, from D1: the ledger an event of it goes to. */
+async function accountOf(appId: string): Promise<string | null> {
+  return (await env.DB.prepare("SELECT account_id FROM app WHERE id = ?").bind(appId).first<{ account_id: string }>())?.account_id ?? null;
 }
 
 async function rejection(values: {
@@ -118,11 +126,12 @@ async function rejection(values: {
 }): Promise<string> {
   counter += 1;
   const id = values.id ?? `re_${String(counter).padStart(4, "0")}`;
-  await env.DB.prepare(
+  const accountId = await accountOf(values.appId);
+  await ledger(accountId ?? ACCOUNT_ID).prepare(
     `INSERT INTO app_rejection_event (id, app_id, account_id, user_id, reason, scope, provider_slug, model, latency_ms, created_at)
-     VALUES (?1, ?2, (SELECT account_id FROM app WHERE id = ?2), ?3, ?4, ?5, 'openai', ?6, 3, ?7)`,
+     VALUES (?1, ?2, ?8, ?3, ?4, ?5, 'openai', ?6, 3, ?7)`,
   )
-    .bind(id, values.appId, values.user ?? null, values.reason ?? "model_not_allowed", values.scope ?? null, values.model ?? "gpt-4o-mini", values.at)
+    .bind(id, values.appId, values.user ?? null, values.reason ?? "model_not_allowed", values.scope ?? null, values.model ?? "gpt-4o-mini", values.at, accountId)
     .run();
   return id;
 }
@@ -255,7 +264,7 @@ describe("summary", () => {
     // Outside a 7-day window.
     await authEvent({ appId, at: daysAgo(10), outcome: "attest_failed", asn: 13335, network: "Cloudflare" });
     await rejection({ appId, at: yesterday, reason: "blocked_user", scope: "user" });
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO charge (id, kind, account_id, app_id, owner_type, owner_id, provider_type, operation, model, status, cost_nano,
          measured, price_source, measures_json, used_at, usage_day, written_at)
        VALUES (?, 'attempt', ?, ?, 'call', ?, 'openai', 'openai.chat', 'gpt-4o-mini', 'provider_error', NULL, 'complete', 'list_rate', '{}', ?, ?, ?)`,
@@ -361,7 +370,7 @@ describe("claim waits", () => {
         ?.since ?? null;
     const delays = async (userId: string) =>
       (
-        await env.DB.prepare("SELECT claim_delay_ms AS ms FROM app_auth_event WHERE app_id = ? AND user_id = ? AND outcome = 'ok' ORDER BY created_at")
+        await ledger().prepare("SELECT claim_delay_ms AS ms FROM app_auth_event WHERE app_id = ? AND user_id = ? AND outcome = 'ok' ORDER BY created_at")
           .bind(appId, userId)
           .all<{ ms: number | null }>()
       ).results.map((row) => row.ms);
@@ -474,7 +483,7 @@ describe("isolation", () => {
   it("never shows a row recorded with no account (Sol 7b-4)", async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
-    await env.DB.prepare(
+    await ledger().prepare(
       "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, latency_ms, created_at) VALUES (?, ?, NULL, 'token_exchange', 'ok', 1, ?)",
     )
       .bind(`ae_old_${crypto.randomUUID()}`, appId, at("2026-11-19"))
@@ -486,11 +495,13 @@ describe("isolation", () => {
 describe("query plans", () => {
   /** The plan of the first query a request sends to `table`, with its real parameters. */
   async function planOf(table: string, send: () => Promise<unknown>): Promise<string> {
+    let sent: { sql: string; params: readonly unknown[] } | undefined;
+    const matches = (sql: string) => sent === undefined && new RegExp(`\\bFROM ${table}\\b`, "u").test(sql);
+    // Settings are read from D1; events from the account's ledger object (step 8f).
     const prepare = env.DB.prepare.bind(env.DB);
-    let sent: { sql: string; params: unknown[] } | undefined;
-    const spy = vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+    const d1 = vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
       const statement = prepare(sql);
-      if (sent !== undefined || !new RegExp(`\\bFROM ${table}\\b`, "u").test(sql)) return statement;
+      if (!matches(sql)) return statement;
       const bind = statement.bind.bind(statement);
       return Object.assign(statement, {
         bind: (...params: unknown[]) => {
@@ -499,13 +510,28 @@ describe("query plans", () => {
         },
       });
     });
+    const get = env.ACCOUNT_LEDGER.get.bind(env.ACCOUNT_LEDGER);
+    const objects = vi.spyOn(env.ACCOUNT_LEDGER, "get").mockImplementation((id, options) => {
+      const stub = get(id, options);
+      return new Proxy(stub, {
+        get(target, property) {
+          if (property !== "query") return Reflect.get(target, property);
+          return (statements: LedgerStatement[], transaction: boolean) => {
+            for (const statement of statements) if (matches(statement.sql)) sent = statement;
+            return target.query(statements, transaction);
+          };
+        },
+      });
+    });
     try {
       await send();
     } finally {
-      spy.mockRestore();
+      d1.mockRestore();
+      objects.mockRestore();
     }
     expect(sent, `no query to ${table} was sent`).toBeDefined();
-    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sent!.sql}`).bind(...sent!.params).all<{ detail: string }>();
+    const db = table === "app_end_user" ? env.DB : ledger();
+    const { results } = await db.prepare(`EXPLAIN QUERY PLAN ${sent!.sql}`).bind(...sent!.params).all<{ detail: string }>();
     return results.map((row) => row.detail).join("\n");
   }
 
@@ -536,7 +562,7 @@ describe("query plans", () => {
     const appId = await createApp(key);
     await authEvent({ appId, at: at("2026-11-19"), claimDelayMs: 1_000 });
     for (const [name, sql] of [["totals", CLAIM_WAIT_TOTALS], ["p50", claimWaitAt(50)], ["p95", claimWaitAt(95)]] as const) {
-      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      const { results } = await ledger().prepare(`EXPLAIN QUERY PLAN ${sql}`)
         .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
         .all<{ detail: string }>();
       const searches = results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
@@ -551,13 +577,13 @@ describe("query plans", () => {
     // The failing networks: the window through the app's time index, never a scan of the table.
     // Its two sorts (the grouping, and the order by count) are over the grouped networks
     // only, never the events: an order by an aggregate always needs one.
-    const networks = await env.DB.prepare(`EXPLAIN QUERY PLAN ${FAILING_NETWORKS}`)
+    const networks = await ledger().prepare(`EXPLAIN QUERY PLAN ${FAILING_NETWORKS}`)
       .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
       .all<{ detail: string }>();
     const reads = networks.results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));
     expect(reads).toEqual([expect.stringContaining("app_auth_event_app_account_created")]);
     // Apple's failures: the same window through the same index, counted with no sort.
-    const apple = await env.DB.prepare(`EXPLAIN QUERY PLAN ${APPLE_FAILURES}`)
+    const apple = await ledger().prepare(`EXPLAIN QUERY PLAN ${APPLE_FAILURES}`)
       .bind(appId, ACCOUNT_ID, at("2026-11-01"), at("2026-11-20"))
       .all<{ detail: string }>();
     const appleReads = apple.results.map((row) => row.detail).filter((detail) => /^(SEARCH|SCAN)/u.test(detail));

@@ -15,7 +15,7 @@ import { apiPrefixesOf, compilePassthrough, namedPartProblem, ProviderMatcher } 
 import { LIVE_TOKEN_WINDOW_SECONDS, type FieldSetting } from "../src/providers/operation.ts";
 import { applyFieldSettings, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { parseTemplate } from "../src/providers/path.ts";
-import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+import { clearCaches, loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS, seedAppKey, seedManagementKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-4321";
@@ -259,7 +259,7 @@ async function send(method: string, path: string, key: string, body?: string, he
 const sentBody = (call: number) => JSON.parse(new TextDecoder().decode(fetchSpy.mock.calls[call]![1]!.body as Uint8Array)) as Record<string, unknown>;
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 

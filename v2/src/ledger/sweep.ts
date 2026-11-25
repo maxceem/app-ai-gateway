@@ -24,8 +24,6 @@ import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
 import { checkJob } from "../jobs/jobs.ts";
 
-/** The sweep's cron: every minute, faster than fal's shortest result window. Also in wrangler.jsonc. */
-export const SWEEP_CRON = "* * * * *";
 
 /** Rows taken per run. Small, so one run stays well inside a cron invocation. */
 export const SWEEP_BATCH = 25;
@@ -61,6 +59,8 @@ export type OpenWorkHandler = (
   env: Env,
   item: OpenWorkItem,
   context: {
+    /** The account's ledger the item belongs to: the object running the sweep. */
+    readonly ledger: D1Database;
     readonly now: number;
     readonly lastTry: boolean;
     readonly signal?: AbortSignal;
@@ -95,9 +95,9 @@ function byProvider(table: Record<string, OpenWorkHandler>, what: string): OpenW
 
 /** The handler for each kind of open work. */
 export const OPEN_WORK_HANDLERS: Record<OpenWorkKind, OpenWorkHandler> = {
-  async unresolved(env, item, { now }) {
+  async unresolved(env, item, { ledger, now }) {
     if (item.chargeId === null) return DONE;
-    const result = await priceUnresolvedCharge(env.DB, { chargeId: item.chargeId, now });
+    const result = await priceUnresolvedCharge(ledger, env.DB, { chargeId: item.chargeId, now });
     switch (result.status) {
       case "priced":
       case "already":
@@ -109,8 +109,8 @@ export const OPEN_WORK_HANDLERS: Record<OpenWorkKind, OpenWorkHandler> = {
         return retry("no price yet");
     }
   },
-  async stale_session(env, item, { now, lastTry }) {
-    const result = await settleSession(env.DB, { sessionId: item.ownerId, now, lastTry });
+  async stale_session(_env, item, { ledger, now, lastTry }) {
+    const result = await settleSession(ledger, { sessionId: item.ownerId, now, lastTry });
     return result === "waiting" || result === "not_closed" ? retry(`session ${result}`) : DONE;
   },
   provider_lookup: byProvider(PROVIDER_LOOKUPS, "cost lookup"),
@@ -162,16 +162,20 @@ function paceOf(item: OpenWorkItem): { readonly maxTries: number; readonly delay
 
 const TIMED_OUT = Symbol("timed out");
 
-/** Runs one sweep: the due rows, earliest first, each with its time limit. */
+/**
+ * Runs one sweep of one account's ledger: its due rows, earliest first, each
+ * with its time limit. The ledger object runs it on its alarm.
+ */
 export async function runSweep(
   env: Env,
+  ledger: D1Database,
   options: {
     readonly now?: number;
     readonly handlers?: Record<OpenWorkKind, OpenWorkHandler>;
     readonly batch?: number;
     readonly itemTimeLimitMs?: number;
     readonly runTimeLimitMs?: number;
-    /** The cron's `ctx.waitUntil`, for work that must finish after an item's time limit. */
+    /** Keeps work alive that must finish after an item's time limit. */
     readonly waitUntil?: (work: Promise<unknown>) => void;
   } = {},
 ): Promise<SweepSummary> {
@@ -180,7 +184,7 @@ export async function runSweep(
   const handlers = options.handlers ?? OPEN_WORK_HANDLERS;
   const itemLimit = options.itemTimeLimitMs ?? SWEEP_ITEM_TIME_LIMIT_MS;
   const runLimit = options.runTimeLimitMs ?? SWEEP_RUN_TIME_LIMIT_MS;
-  const rows = await env.DB.prepare(
+  const rows = await ledger.prepare(
     "SELECT * FROM open_work WHERE gave_up_at IS NULL AND due_at <= ? ORDER BY due_at, id LIMIT ?",
   )
     .bind(now, options.batch ?? SWEEP_BATCH)
@@ -206,7 +210,7 @@ export async function runSweep(
           resolve(TIMED_OUT);
         }, itemLimit);
       });
-      const answer = await Promise.race([handlers[item.kind](env, item, { now, lastTry, signal: controller.signal, keepAlive: options.waitUntil }), late]);
+      const answer = await Promise.race([handlers[item.kind](env, item, { ledger, now, lastTry, signal: controller.signal, keepAlive: options.waitUntil }), late]);
       result = answer === TIMED_OUT ? retry("timed out") : answer;
     } catch (error) {
       log("warn", "open_work_failed", { app: item.appId, work: item.id, kind: item.kind, error: errorFacts(error) });
@@ -218,12 +222,12 @@ export async function runSweep(
     const lastTry = item.tries + 1 >= pace.maxTries;
     try {
       if (result.done) {
-        await env.DB.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
+        await ledger.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
         done += 1;
       } else {
         const update = lastTry
-          ? env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?").bind(result.reason, now, item.id)
-          : env.DB.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?").bind(
+          ? ledger.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?").bind(result.reason, now, item.id)
+          : ledger.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?").bind(
               result.reason,
               now + pace.delay(item.tries + 1),
               item.id,

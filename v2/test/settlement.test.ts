@@ -5,8 +5,9 @@
  * Test 1 (the same charge twice counts once) is in ledger.test.ts.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, createScheduledController, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { ledgerObject } from "../src/ledger/database.ts";
+import { runDurableObjectAlarm } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { priceUnresolvedCharge, settleCharge, settleJob } from "../src/ledger/corrections.ts";
 import {
   BARRIER_WAIT_MS,
@@ -17,16 +18,18 @@ import {
   writeCheckpoint,
   type SessionRow,
 } from "../src/ledger/sessions.ts";
-import { OPEN_WORK_HANDLERS, runSweep, SWEEP_CRON, SWEEP_MAX_TRIES, type OpenWorkHandler } from "../src/ledger/sweep.ts";
+import { OPEN_WORK_HANDLERS, runSweep, SWEEP_MAX_TRIES, type OpenWorkHandler } from "../src/ledger/sweep.ts";
 import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
 import { recordLedgerEntry, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { nano } from "../src/money.ts";
-import worker from "../src/index.ts";
-import { ACCOUNT_ID, seedAccount, seedApp, writeAtTheirTime } from "./helpers.ts";
+import { ACCOUNT_ID, ledger, pauseLedgerWork, seedAccount, seedApp, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-19T10:00:00Z");
 let counter = 0;
 const unique = (prefix: string) => `${prefix}_${++counter}_${crypto.randomUUID().slice(0, 6)}`;
+
+// These tests run the sweep and settlement themselves, at their own times.
+beforeEach(() => pauseLedgerWork());
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -122,25 +125,25 @@ function slice(session: SessionRow, seq: number, cost: number, fields: Partial<C
   });
 }
 
-async function checkpoint(session: SessionRow, seq: number, cost: number, extra: Partial<Parameters<typeof writeCheckpoint>[1]> = {}) {
-  return writeCheckpoint(env.DB, { session, slice: slice(session, seq, cost), budgets: [], planMinutes: null, now: T0 + seq * 60_000, ...extra });
+async function checkpoint(session: SessionRow, seq: number, cost: number, extra: Partial<Parameters<typeof writeCheckpoint>[2]> = {}) {
+  return writeCheckpoint(ledger(), env.DB, { session, slice: slice(session, seq, cost), budgets: [], planMinutes: null, now: T0 + seq * 60_000, ...extra });
 }
 
 async function appCost(appId: string): Promise<number> {
-  const row = await env.DB.prepare("SELECT COALESCE(SUM(cost_nano), 0) AS cost FROM usage_day WHERE app_id = ?").bind(appId).first<{ cost: number }>();
+  const row = await ledger().prepare("SELECT COALESCE(SUM(cost_nano), 0) AS cost FROM usage_day WHERE app_id = ?").bind(appId).first<{ cost: number }>();
   return row?.cost ?? 0;
 }
 
 async function chargesOf(ownerId: string) {
   return (
-    await env.DB.prepare("SELECT id, kind, cost_nano, usage_day, correction_kind, session_ms FROM charge WHERE owner_id = ? ORDER BY written_at, id")
+    await ledger().prepare("SELECT id, kind, cost_nano, usage_day, correction_kind, session_ms FROM charge WHERE owner_id = ? ORDER BY written_at, id")
       .bind(ownerId)
       .all()
   ).results;
 }
 
 async function sessionState(id: string) {
-  return env.DB.prepare("SELECT state, final_slice, settlement, session_total_nano, end_reason FROM session WHERE id = ?").bind(id).first();
+  return ledger().prepare("SELECT state, final_slice, settlement, session_total_nano, end_reason FROM session WHERE id = ?").bind(id).first();
 }
 
 function quiet(): void {
@@ -157,8 +160,8 @@ describe("corrections", () => {
     ]);
     const final = { kind: "dollars" as const, costNano: nano(7_250) };
     const results = await Promise.all([
-      settleJob(env.DB, { jobId, final, now: T0 + 1 }),
-      settleJob(env.DB, { jobId, final, now: T0 + 2 }),
+      settleJob(ledger(), { jobId, final, now: T0 + 1 }),
+      settleJob(ledger(), { jobId, final, now: T0 + 2 }),
     ]);
     expect(results.map((r) => r.status).sort()).toEqual(["already", "settled"]);
     expect(await chargesOf(jobId)).toMatchObject([{ kind: "estimate", cost_nano: 5_000 }, { kind: "correction", cost_nano: 2_250 }]);
@@ -171,11 +174,11 @@ describe("corrections", () => {
     // Stored rates: $1 and $2 per million (today's list price for this model differs).
     const original = charge({ id, appId, costNano: nano(1_000 + 2_000), rates: { input: 1_000_000, output: 2_000_000 }, units: 3_000, unit: "tokens" });
     await writeAtTheirTime([{ charge: original, openWork: [] }]);
-    const result = await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { input: 1_500, output: 1_000 }, units: 2_500 }, now: T0 });
+    const result = await settleCharge(ledger(), { chargeId: id, final: { kind: "units", buckets: { input: 1_500, output: 1_000 }, units: 2_500 }, now: T0 });
     expect(result).toMatchObject({ status: "settled", correction: { costNano: 500, units: -500, correctionKind: "units" } });
     // The original plus its correction is the final figure, exactly.
     expect(await appCost(appId)).toBe(1_500 + 2_000);
-    expect(await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { input: 9 } }, now: T0 })).toEqual({ status: "already" });
+    expect(await settleCharge(ledger(), { chargeId: id, final: { kind: "units", buckets: { input: 9 } }, now: T0 })).toEqual({ status: "already" });
   });
 
   it("settles units at a unit rate with the cost formula the live charge uses", async () => {
@@ -184,7 +187,7 @@ describe("corrections", () => {
     // fal at $0.05 per billable unit, estimated at 0 units; it reports 2.5 units.
     const original = charge({ id, appId, costNano: nano(0), rates: { per_unit: 50_000_000 }, units: 0, unit: "model_units" });
     await writeAtTheirTime([{ charge: original, openWork: [] }]);
-    const result = await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { per_unit: 2_500 }, units: 2_500 }, now: T0 });
+    const result = await settleCharge(ledger(), { chargeId: id, final: { kind: "units", buckets: { per_unit: 2_500 }, units: 2_500 }, now: T0 });
     // 2.5 × $0.05 = $0.125, as a live charge on the same count costs (test/pricing-derived-checks.test.ts).
     expect(result).toMatchObject({ status: "settled", correction: { costNano: 125_000_000 } });
     expect(await appCost(appId)).toBe(125_000_000);
@@ -194,7 +197,7 @@ describe("corrections", () => {
     const appId = unique("app_norate");
     const id = unique("req");
     await writeAtTheirTime([{ charge: charge({ id, appId, rates: { input: 1 } }), openWork: [] }]);
-    expect(await settleCharge(env.DB, { chargeId: id, final: { kind: "units", buckets: { images: 2 } }, now: T0 })).toEqual({
+    expect(await settleCharge(ledger(), { chargeId: id, final: { kind: "units", buckets: { images: 2 } }, now: T0 })).toEqual({
       status: "no_rate",
       bucket: "images",
     });
@@ -205,15 +208,15 @@ describe("corrections", () => {
     const appId = unique("app_store_job");
     const jobId = unique("job");
     const estimate = charge({ id: `${jobId}:estimate`, appId, kind: "estimate", ownerType: "job", ownerId: jobId, costNano: nano(4_000) });
-    const failing = { batch: () => Promise.reject(new Error("D1 down")) } as unknown as D1Database;
-    await recordLedgerEntry({ ...env, DB: failing } as Env, { charge: estimate, openWork: [] });
+    const failing = { prepare: (sql: string) => ledger().prepare(sql), batch: () => Promise.reject(new Error("ledger down")) } as unknown as D1Database;
+    await recordLedgerEntry(withLedgerDb(env, () => failing), { charge: estimate, openWork: [] });
     const store = env.CHARGE_STORE.getByName(appId);
     expect(await store.pendingCount()).toBe(1);
 
     const final = { kind: "dollars" as const, costNano: nano(3_000) };
-    expect(await settleJob(env.DB, { jobId, final, now: T0 })).toEqual({ status: "charge_missing" });
+    expect(await settleJob(ledger(), { jobId, final, now: T0 })).toEqual({ status: "charge_missing" });
     expect(await runDurableObjectAlarm(store)).toBe(true);
-    expect(await settleJob(env.DB, { jobId, final, now: T0 })).toMatchObject({ status: "settled" });
+    expect(await settleJob(ledger(), { jobId, final, now: T0 })).toMatchObject({ status: "settled" });
     expect(await appCost(appId)).toBe(3_000);
   });
 
@@ -237,14 +240,14 @@ describe("corrections", () => {
         openWork: [],
       },
     ]);
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: id, now: T0 })).toEqual({ status: "no_price" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: T0 })).toEqual({ status: "no_price" });
     // The customer adds a rate: $2 input, $8 output per million.
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
       .bind(JSON.stringify({ "made-up-model": { input: 2_000_000, output: 8_000_000 } }), connectionId)
       .run();
-    const priced = await priceUnresolvedCharge(env.DB, { chargeId: id, now: T0 });
+    const priced = await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: T0 });
     expect(priced).toMatchObject({ status: "priced", correction: { costNano: 2_000 + 4_000, priceSource: "customer_rate", usageDay: utcDay(yesterday) } });
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: id, now: T0 })).toEqual({ status: "already" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: T0 })).toEqual({ status: "already" });
     expect(await appCost(appId)).toBe(6_000);
   });
 });
@@ -264,7 +267,7 @@ describe("checkpoints", () => {
     const session = sessionRow();
     expect(await checkpoint(session, 1, 100)).toEqual({ decision: "continue", written: true });
     expect(await sessionState(session.id)).toMatchObject({ state: "active", settlement: "open" });
-    const work = await env.DB.prepare("SELECT kind, due_at FROM open_work WHERE owner_id = ?").bind(session.id).first();
+    const work = await ledger().prepare("SELECT kind, due_at FROM open_work WHERE owner_id = ?").bind(session.id).first();
     expect(work).toEqual({ kind: "stale_session", due_at: T0 + session.timeCapMs + STALE_SESSION_GRACE_MS });
   });
 
@@ -274,21 +277,21 @@ describe("checkpoints", () => {
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     const session = sessionRow({ expectsSessionTotal: false });
     expect(await checkpoint(session, 1, 1_000)).toEqual({ decision: "continue", written: true });
-    const before = await env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
+    const before = await ledger().prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
     expect(before.results).toEqual([{ charges: 1, cost_nano: 1_000, session_ms: 60_000 }]);
     // Retention deletes the session's work, its slice and its row; the day rollup stays.
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
-      env.DB.prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
-      env.DB.prepare("DELETE FROM session WHERE id = ?").bind(session.id),
+    await ledger().batch([
+      ledger().prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
+      ledger().prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
+      ledger().prepare("DELETE FROM session WHERE id = ?").bind(session.id),
     ]);
     const day91 = T0 + 91 * 86_400_000;
     expect(await checkpoint(session, 1, 1_000, { now: day91 })).toEqual({ decision: "stop", reasons: ["ended"], written: true });
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: day91, now: day91 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: day91, now: day91 });
     expect(await sessionState(session.id)).toBeNull();
-    expect(await env.DB.prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
-    expect(await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
-    expect((await env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all()).results).toEqual(
+    expect(await ledger().prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect(await ledger().prepare("SELECT id FROM open_work WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect((await ledger().prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all()).results).toEqual(
       before.results,
     );
     // One warning, from the slice's insert: its day is too late for the ledger.
@@ -300,12 +303,12 @@ describe("checkpoints", () => {
     const midnight = Date.parse("2026-11-20T00:00:00Z");
     const session = sessionRow({ expectsSessionTotal: false, startedAt: midnight - 60_000 });
     const first = slice(session, 1, 1_000, { usedAt: midnight - 30_000, usageDay: utcDay(midnight - 30_000) });
-    expect(await writeCheckpoint(env.DB, { session, slice: first, budgets: [], planMinutes: null, now: midnight - 30_000 })).toMatchObject({
+    expect(await writeCheckpoint(ledger(), env.DB, { session, slice: first, budgets: [], planMinutes: null, now: midnight - 30_000 })).toMatchObject({
       written: true,
     });
     const late = slice(session, 2, 2_000, { usedAt: midnight + 30_000, usageDay: utcDay(midnight + 30_000) });
     // Replayed 30 days on: the slice's own day is inside the window, its session's start is not.
-    const answer = await writeCheckpoint(env.DB, { session, slice: late, budgets: [], planMinutes: null, now: midnight + 30 * 86_400_000 + 60_000 });
+    const answer = await writeCheckpoint(ledger(), env.DB, { session, slice: late, budgets: [], planMinutes: null, now: midnight + 30 * 86_400_000 + 60_000 });
     expect(answer).toMatchObject({ written: true });
     expect(await chargesOf(session.id)).toHaveLength(2);
   });
@@ -315,19 +318,19 @@ describe("checkpoints", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const session = sessionRow({ expectsSessionTotal: false });
     expect(await checkpoint(session, 1, 1_000)).toEqual({ decision: "continue", written: true });
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0, now: T0 });
-    const rollup = () => env.DB.prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0, now: T0 });
+    const rollup = () => ledger().prepare("SELECT charges, cost_nano, session_ms FROM usage_day WHERE app_id = ?").bind(session.appId).all();
     const before = (await rollup()).results;
     // The sweep settles it; then retention's first chunk deletes the slice, and the
     // settled session row waits for a later one.
-    await env.DB.prepare("UPDATE session SET settlement = 'settled' WHERE id = ?").bind(session.id).run();
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
-      env.DB.prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
+    await ledger().prepare("UPDATE session SET settlement = 'settled' WHERE id = ?").bind(session.id).run();
+    await ledger().batch([
+      ledger().prepare("DELETE FROM open_work WHERE owner_id = ?").bind(session.id),
+      ledger().prepare("DELETE FROM charge WHERE owner_id = ?").bind(session.id),
     ]);
     expect(await sessionState(session.id)).toMatchObject({ state: "ended" });
     await checkpoint(session, 1, 1_000, { now: T0 + 91 * 86_400_000 });
-    expect(await env.DB.prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
+    expect(await ledger().prepare("SELECT id FROM charge WHERE owner_id = ?").bind(session.id).all()).toMatchObject({ results: [] });
     expect((await rollup()).results).toEqual(before);
   });
 
@@ -335,7 +338,7 @@ describe("checkpoints", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
-    const count = (id: string) => env.DB.prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ?").bind(id).first("n");
+    const count = (id: string) => ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ?").bind(id).first("n");
     const inside = sessionRow({ expectsSessionTotal: false, startedAt: T0 - (LEDGER_LATE_BOOKING_DAYS - 1) * 86_400_000 });
     expect(await checkpoint(inside, 1, 1_000)).toEqual({ decision: "continue", written: true });
     expect(await count(inside.id)).toBe(1);
@@ -360,15 +363,15 @@ describe("checkpoints", () => {
     const session = sessionRow({ appId, endUserId: "u1", providerConnectionId: connectionId });
     const answer = await checkpoint(session, 1, 100, { planMinutes: { fromDay: "2026-11-01", toDay: "2026-12-01", limitMs: 60_000 } });
     expect(answer).toEqual({ decision: "stop", reasons: ["allowance_used_up", "user_blocked", "key_removed"], written: true });
-    await env.DB.prepare("UPDATE session SET replaced_by = 'newer' WHERE id = ?").bind(session.id).run();
+    await ledger().prepare("UPDATE session SET replaced_by = 'newer' WHERE id = ?").bind(session.id).run();
     expect(await checkpoint(session, 2, 100)).toMatchObject({ decision: "stop", reasons: expect.arrayContaining(["replaced"]) });
   });
 
   it("12: a failed checkpoint batch lets the session continue, and leaves the slice to the relay's journal", async () => {
     quiet();
     const session = sessionRow();
-    const failing = { prepare: env.DB.prepare.bind(env.DB), batch: () => Promise.reject(new Error("D1 down")) } as unknown as D1Database;
-    expect(await writeCheckpoint(failing, { session, slice: slice(session, 1, 100), budgets: [], planMinutes: null, now: T0 })).toEqual({
+    const failing = { prepare: (sql: string) => ledger().prepare(sql), batch: () => Promise.reject(new Error("D1 down")) } as unknown as D1Database;
+    expect(await writeCheckpoint(failing, env.DB, { session, slice: slice(session, 1, 100), budgets: [], planMinutes: null, now: T0 })).toEqual({
       decision: "continue",
       written: false,
     });
@@ -378,9 +381,9 @@ describe("checkpoints", () => {
   it("counts a slice's session time toward plan minutes, and a correction never changes it", async () => {
     const session = sessionRow();
     await checkpoint(session, 1, 100);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 70_000, now: T0 + 70_000 });
-    await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(500), now: T0 + 80_000 });
-    const minutes = await env.DB.prepare("SELECT COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE app_id = ?").bind(session.appId).first();
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 70_000, now: T0 + 70_000 });
+    await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(500), now: T0 + 80_000 });
+    const minutes = await ledger().prepare("SELECT COALESCE(SUM(session_ms), 0) AS ms FROM usage_day WHERE app_id = ?").bind(session.appId).first();
     expect(minutes).toEqual({ ms: 60_000 });
   });
 });
@@ -390,10 +393,10 @@ describe("the settlement barrier", () => {
     const session = sessionRow();
     for (const seq of [1, 2, 3]) await checkpoint(session, seq, 1_000);
     const endedAt = T0 + 5 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
+    await closeSession(ledger(), { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
     await checkpoint(session, 4, 1_000);
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 2_000 })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 2_000 })).toBe("settled");
     expect((await chargesOf(session.id)).at(-1)).toMatchObject({ kind: "correction", cost_nano: 10_000 - 4_000, correction_kind: "dollars" });
     expect(await appCost(session.appId)).toBe(10_000);
     expect(await sessionState(session.id)).toMatchObject({ settlement: "settled", session_total_nano: 10_000 });
@@ -406,9 +409,9 @@ describe("the settlement barrier", () => {
     const session = sessionRow();
     for (const seq of [1, 2]) await checkpoint(session, seq, 1_000);
     const endedAt = T0 + 3 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
+    await closeSession(ledger(), { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
     const late = endedAt + (LEDGER_LATE_BOOKING_DAYS + 1) * 86_400_000;
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: late })).toBe("estimate_kept");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: late })).toBe("estimate_kept");
     expect(await appCost(session.appId)).toBe(2_000);
     expect((await chargesOf(session.id)).map((c) => c.kind)).toEqual(["slice", "slice"]);
     expect(await sessionState(session.id)).toMatchObject({ settlement: "estimate_kept", session_total_nano: 10_000 });
@@ -420,8 +423,8 @@ describe("the settlement barrier", () => {
     const session = sessionRow();
     for (const seq of [1, 2, 3]) await checkpoint(session, seq, 1_000);
     const endedAt = T0 + 5 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + BARRIER_WAIT_MS })).toBe("settled");
+    await closeSession(ledger(), { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + BARRIER_WAIT_MS })).toBe("settled");
     expect(await appCost(session.appId)).toBe(10_000);
     await checkpoint(session, 4, 1_000);
     expect((await chargesOf(session.id)).find((c) => c.id === `${session.id}:slice:4`)).toMatchObject({ cost_nano: 0, session_ms: 60_000 });
@@ -432,9 +435,9 @@ describe("the settlement barrier", () => {
     quiet();
     const session = sessionRow();
     await checkpoint(session, 1, 2_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
-    expect(await settleSession(env.DB, { sessionId: session.id, now: T0 + 90_000 })).toBe("waiting");
-    expect(await settleSession(env.DB, { sessionId: session.id, now: T0 + 90_000, lastTry: true })).toBe("estimate_kept");
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    expect(await settleSession(ledger(), { sessionId: session.id, now: T0 + 90_000 })).toBe("waiting");
+    expect(await settleSession(ledger(), { sessionId: session.id, now: T0 + 90_000, lastTry: true })).toBe("estimate_kept");
     expect(await sessionState(session.id)).toMatchObject({ settlement: "estimate_kept" });
     expect(await appCost(session.appId)).toBe(2_000);
   });
@@ -443,16 +446,16 @@ describe("the settlement barrier", () => {
     const session = sessionRow({ expectsSessionTotal: false });
     await checkpoint(session, 1, 1_000);
     const endedAt = T0 + 3 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
-    expect(await settleSession(env.DB, { sessionId: session.id, now: endedAt + 1_000 })).toBe("waiting");
-    expect(await settleSession(env.DB, { sessionId: session.id, now: endedAt + BARRIER_WAIT_MS })).toBe("settled");
+    await closeSession(ledger(), { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
+    expect(await settleSession(ledger(), { sessionId: session.id, now: endedAt + 1_000 })).toBe("waiting");
+    expect(await settleSession(ledger(), { sessionId: session.id, now: endedAt + BARRIER_WAIT_MS })).toBe("settled");
     await checkpoint(session, 2, 700);
     expect(await appCost(session.appId)).toBe(1_700);
   });
 
   it("10: dates a session-level correction on the day the session ended, across midnight UTC", async () => {
     const session = sessionRow({ startedAt: Date.parse("2026-11-19T23:58:00Z") });
-    await writeCheckpoint(env.DB, {
+    await writeCheckpoint(ledger(), env.DB, {
       session,
       slice: slice(session, 1, 1_000, { usedAt: Date.parse("2026-11-19T23:58:00Z"), usageDay: "2026-11-19" }),
       budgets: [],
@@ -460,9 +463,9 @@ describe("the settlement barrier", () => {
       now: Date.parse("2026-11-19T23:59:00Z"),
     });
     const endedAt = Date.parse("2026-11-19T23:59:50Z");
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt, now: endedAt });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt, now: endedAt });
     const nextDay = Date.parse("2026-11-20T00:01:00Z");
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(3_000), now: nextDay })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(3_000), now: nextDay })).toBe("settled");
     expect((await chargesOf(session.id)).at(-1)).toMatchObject({ kind: "correction", usage_day: "2026-11-19" });
   });
 
@@ -471,19 +474,19 @@ describe("the settlement barrier", () => {
     await checkpoint(session, 1, 1_000);
     await checkpoint(session, 2, 1_000);
     const capEnds = T0 + session.timeCapMs;
-    expect(await settleSession(env.DB, { sessionId: session.id, now: capEnds })).toBe("not_closed");
-    expect(await settleSession(env.DB, { sessionId: session.id, now: capEnds + STALE_SESSION_GRACE_MS })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, now: capEnds })).toBe("not_closed");
+    expect(await settleSession(ledger(), { sessionId: session.id, now: capEnds + STALE_SESSION_GRACE_MS })).toBe("settled");
     expect(await sessionState(session.id)).toMatchObject({ state: "ended", final_slice: 2, end_reason: "time_cap", settlement: "settled" });
   });
 
   it("15: a repeated close or settlement changes nothing", async () => {
     const session = sessionRow();
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
-    await closeSession(env.DB, { session, finalSlice: 9, endReason: "error", endedAt: T0 + 99_000, now: T0 + 99_000 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await closeSession(ledger(), { session, finalSlice: 9, endReason: "error", endedAt: T0 + 99_000, now: T0 + 99_000 });
     expect(await sessionState(session.id)).toMatchObject({ final_slice: 1, end_reason: "client_closed" });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(4_000), now: T0 + 70_000 })).toBe("settled");
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(9_000), now: T0 + 80_000 })).toBe("already");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(4_000), now: T0 + 70_000 })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(9_000), now: T0 + 80_000 })).toBe("already");
     expect(await appCost(session.appId)).toBe(4_000);
   });
 });
@@ -493,16 +496,16 @@ describe("review fixes", () => {
     quiet();
     const session = sessionRow();
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
     // The provider path reads the session open. The sweep, which read it before the total was
     // stored, keeps the estimate just before the provider path's batch commits.
     const racing = {
-      prepare: env.DB.prepare.bind(env.DB),
+      prepare: (sql: string) => ledger().prepare(sql),
       batch: async (statements: D1PreparedStatement[]) => {
-        await env.DB.prepare("UPDATE session SET settlement = 'estimate_kept', session_total_nano = NULL WHERE id = ? AND settlement = 'open'")
+        await ledger().prepare("UPDATE session SET settlement = 'estimate_kept', session_total_nano = NULL WHERE id = ? AND settlement = 'open'")
           .bind(session.id)
           .run();
-        return env.DB.batch(statements);
+        return ledger().batch(statements);
       },
     } as unknown as D1Database;
     expect(await settleSession(racing, { sessionId: session.id, providerTotal: nano(9_000), now: T0 + 70_000 })).toBe("already");
@@ -515,24 +518,24 @@ describe("review fixes", () => {
     const session = sessionRow();
     for (const seq of [1, 2, 3]) await checkpoint(session, seq, 1_000);
     const endedAt = T0 + 5 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
+    await closeSession(ledger(), { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
     await checkpoint(session, 4, 1_000);
     // The sweep's try carries no total of its own.
-    expect(await settleSession(env.DB, { sessionId: session.id, now: endedAt + 2_000 })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, now: endedAt + 2_000 })).toBe("settled");
     expect(await appCost(session.appId)).toBe(10_000);
   });
 
   it("S3: close writes a session row that was never written, ended, and a later checkpoint keeps it so", async () => {
     const session = sessionRow({ expectsSessionTotal: false });
     const endedAt = T0 + 2 * 60_000 + 5_000;
-    await closeSession(env.DB, { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
+    await closeSession(ledger(), { session, finalSlice: 2, endReason: "client_closed", endedAt, now: endedAt });
     expect(await sessionState(session.id)).toMatchObject({ state: "ended", final_slice: 2, end_reason: "client_closed" });
     await checkpoint(session, 1, 500);
     await checkpoint(session, 2, 500);
     expect(await sessionState(session.id)).toMatchObject({ state: "ended", end_reason: "client_closed" });
-    expect(await settleSession(env.DB, { sessionId: session.id, now: endedAt + 1_000 })).toBe("settled");
-    const ended = await env.DB.prepare("SELECT ended_at FROM session WHERE id = ?").bind(session.id).first();
+    expect(await settleSession(ledger(), { sessionId: session.id, now: endedAt + 1_000 })).toBe("settled");
+    const ended = await ledger().prepare("SELECT ended_at FROM session WHERE id = ?").bind(session.id).first();
     expect(ended).toEqual({ ended_at: endedAt });
   });
 
@@ -556,8 +559,8 @@ describe("review fixes", () => {
           openWork: [],
         },
       ]);
-      const settle = () => settleCharge(env.DB, { chargeId: id, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 });
-      const price = () => priceUnresolvedCharge(env.DB, { chargeId: id, now: T0 });
+      const settle = () => settleCharge(ledger(), { chargeId: id, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 });
+      const price = () => priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: T0 });
       if (order === "pricing first") {
         expect(await price()).toMatchObject({ status: "priced", correction: { costNano: 2_000 } });
         expect(await settle()).toMatchObject({ status: "settled", correction: { costNano: 1_000 } });
@@ -575,10 +578,10 @@ describe("review fixes, round 2", () => {
     const session = sessionRow();
     for (const seq of [1, 2, 3]) await checkpoint(session, seq, 1_000);
     const endedAt = T0 + 5 * 60_000;
-    await closeSession(env.DB, { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
+    await closeSession(ledger(), { session, finalSlice: 4, endReason: "client_closed", endedAt, now: endedAt });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: endedAt + 1_000 })).toBe("waiting");
     await checkpoint(session, 4, 1_000);
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(9_000), now: endedAt + 2_000 })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(9_000), now: endedAt + 2_000 })).toBe("settled");
     expect(await appCost(session.appId)).toBe(10_000);
     expect(await sessionState(session.id)).toMatchObject({ session_total_nano: 10_000 });
   });
@@ -587,12 +590,12 @@ describe("review fixes, round 2", () => {
     quiet();
     const session = sessionRow();
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
     // Just before the sweep keeps the estimate, the provider path stores its total (once).
     let raced = false;
     const racing = {
       prepare: (sql: string) => {
-        const statement = env.DB.prepare(sql);
+        const statement = ledger().prepare(sql);
         if (raced || !sql.startsWith("UPDATE session SET settlement")) return statement;
         raced = true;
         return {
@@ -600,14 +603,14 @@ describe("review fixes, round 2", () => {
             const bound = statement.bind(...params);
             return {
               run: async () => {
-                await env.DB.prepare("UPDATE session SET session_total_nano = 7000 WHERE id = ? AND session_total_nano IS NULL").bind(session.id).run();
+                await ledger().prepare("UPDATE session SET session_total_nano = 7000 WHERE id = ? AND session_total_nano IS NULL").bind(session.id).run();
                 return bound.run();
               },
             };
           },
         };
       },
-      batch: env.DB.batch.bind(env.DB),
+      batch: (statements: D1PreparedStatement[]) => ledger().batch(statements),
     } as unknown as D1Database;
     expect(await settleSession(racing, { sessionId: session.id, now: T0 + 90_000, lastTry: true })).toBe("settled");
     expect(await sessionState(session.id)).toMatchObject({ settlement: "settled", session_total_nano: 7_000 });
@@ -617,29 +620,29 @@ describe("review fixes, round 2", () => {
   it("S3: closing a session that already ended and settled changes nothing", async () => {
     quiet();
     const session = sessionRow({ expectsSessionTotal: false });
-    await openSession(env.DB, session, T0);
+    await openSession(ledger(), session, T0);
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
-    await runSweep(env, { now: T0 + 2 * 60_000 });
-    const before = await env.DB.prepare("SELECT updated_at, settlement FROM session WHERE id = ?").bind(session.id).first();
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await runSweep(env, ledger(), { now: T0 + 2 * 60_000 });
+    const before = await ledger().prepare("SELECT updated_at, settlement FROM session WHERE id = ?").bind(session.id).first();
     expect(before).toMatchObject({ settlement: "settled" });
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 5 * 60_000 });
-    expect(await env.DB.prepare("SELECT updated_at, settlement FROM session WHERE id = ?").bind(session.id).first()).toEqual(before);
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ n: 0 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 5 * 60_000 });
+    expect(await ledger().prepare("SELECT updated_at, settlement FROM session WHERE id = ?").bind(session.id).first()).toEqual(before);
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ n: 0 });
   });
 
   it("S3: a repeated close never moves the sweep's next try earlier", async () => {
     quiet();
     // Waits for a provider total, so it stays unsettled after close.
     const session = sessionRow({ expectsSessionTotal: true });
-    await openSession(env.DB, session, T0);
+    await openSession(ledger(), session, T0);
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
     // The sweep has moved the next try well ahead.
     const later = T0 + 60 * 60_000;
-    await env.DB.prepare("UPDATE open_work SET due_at = ? WHERE owner_id = ?").bind(later, session.id).run();
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 2 * 60_000 });
-    expect(await env.DB.prepare("SELECT due_at FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ due_at: later });
+    await ledger().prepare("UPDATE open_work SET due_at = ? WHERE owner_id = ?").bind(later, session.id).run();
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 2 * 60_000 });
+    expect(await ledger().prepare("SELECT due_at FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ due_at: later });
   });
 
   it("S4: a job's final settlement stops a later pricing of its unresolved estimate", async () => {
@@ -662,8 +665,8 @@ describe("review fixes, round 2", () => {
         openWork: [],
       },
     ]);
-    expect(await settleJob(env.DB, { jobId, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 })).toMatchObject({ status: "settled" });
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: estimateId, now: T0 })).toEqual({ status: "already" });
+    expect(await settleJob(ledger(), { jobId, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 })).toMatchObject({ status: "settled" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: estimateId, now: T0 })).toEqual({ status: "already" });
     expect(await appCost(appId)).toBe(3_000);
   });
 
@@ -681,9 +684,9 @@ describe("review fixes, round 2", () => {
         openWork: [],
       },
     ]);
-    expect(await settleJob(env.DB, { jobId, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 })).toMatchObject({ status: "settled" });
+    expect(await settleJob(ledger(), { jobId, final: { kind: "dollars", costNano: nano(3_000) }, now: T0 })).toMatchObject({ status: "settled" });
     // Before the fix this answered no_price, so the sweep kept retrying and finally gave up on a booked charge.
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: estimateId, now: T0 })).toEqual({ status: "already" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: estimateId, now: T0 })).toEqual({ status: "already" });
     expect(await appCost(appId)).toBe(3_000);
   });
 });
@@ -700,7 +703,7 @@ describe("review fixes, Fable", () => {
       .run();
     const session = sessionRow({ providerConnectionId: connectionId, model: "made-up-model" });
     await checkpoint(session, 1, 1_000);
-    await writeCheckpoint(env.DB, {
+    await writeCheckpoint(ledger(), env.DB, {
       session,
       slice: slice(session, 2, 0, {
         costNano: null, priceSource: "unresolved", inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
@@ -709,14 +712,14 @@ describe("review fixes, Fable", () => {
       planMinutes: null,
       now: T0 + 2 * 60_000,
     });
-    await closeSession(env.DB, { session, finalSlice: 2, endReason: "client_closed", endedAt: T0 + 3 * 60_000, now: T0 + 3 * 60_000 });
+    await closeSession(ledger(), { session, finalSlice: 2, endReason: "client_closed", endedAt: T0 + 3 * 60_000, now: T0 + 3 * 60_000 });
     return session;
   }
 
   it("F1: settling first, a later pricing of an unresolved slice adds nothing on top of the session total", async () => {
     const session = await sessionWithUnresolvedSlice();
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 4 * 60_000 })).toBe("settled");
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toEqual({ status: "already" });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 4 * 60_000 })).toBe("settled");
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toEqual({ status: "already" });
     expect(await appCost(session.appId)).toBe(10_000);
   });
 
@@ -724,60 +727,60 @@ describe("review fixes, Fable", () => {
     const session = await sessionWithUnresolvedSlice();
     // Now the model has no price at all: before the fix, pricing answered no_price and the sweep retried until it gave up.
     await env.DB.prepare("UPDATE provider_connection SET rates_json = NULL WHERE id = ?").bind(session.providerConnectionId).run();
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 4 * 60_000 })).toBe("settled");
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toEqual({ status: "already" });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 4 * 60_000 })).toBe("settled");
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toEqual({ status: "already" });
     expect(await appCost(session.appId)).toBe(10_000);
   });
 
   it("A1: an unpriced checkpoint slice is queued for pricing once, in the checkpoint batch", async () => {
     const session = await sessionWithUnresolvedSlice();
     const work = () =>
-      env.DB.prepare("SELECT kind, charge_id, owner_type FROM open_work WHERE id = ?").bind(`unresolved:${session.id}:slice:2`).all();
+      ledger().prepare("SELECT kind, charge_id, owner_type FROM open_work WHERE id = ?").bind(`unresolved:${session.id}:slice:2`).all();
     expect((await work()).results).toEqual([{ kind: "unresolved", charge_id: `${session.id}:slice:2`, owner_type: "session" }]);
     // The sweep prices it from that row.
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toMatchObject({ status: "priced" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 5 * 60_000 })).toMatchObject({ status: "priced" });
   });
 
   it("F1: pricing first, the session total subtracts the pricing correction too", async () => {
     const session = await sessionWithUnresolvedSlice();
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 4 * 60_000 })).toMatchObject({ status: "priced" });
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 5 * 60_000 })).toBe("settled");
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${session.id}:slice:2`, now: T0 + 4 * 60_000 })).toMatchObject({ status: "priced" });
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(10_000), now: T0 + 5 * 60_000 })).toBe("settled");
     expect(await appCost(session.appId)).toBe(10_000);
   });
 
   it("F2: a provider total that arrives before close is kept, and the sweep applies it", async () => {
     const session = sessionRow();
     await checkpoint(session, 1, 1_000);
-    expect(await settleSession(env.DB, { sessionId: session.id, providerTotal: nano(6_000), now: T0 + 70_000 })).toBe("not_closed");
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 71_000, now: T0 + 71_000 });
-    expect(await settleSession(env.DB, { sessionId: session.id, now: T0 + 80_000 })).toBe("settled");
+    expect(await settleSession(ledger(), { sessionId: session.id, providerTotal: nano(6_000), now: T0 + 70_000 })).toBe("not_closed");
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 71_000, now: T0 + 71_000 });
+    expect(await settleSession(ledger(), { sessionId: session.id, now: T0 + 80_000 })).toBe("settled");
     expect(await appCost(session.appId)).toBe(6_000);
   });
 
   it("F4: a row with broken detail never stops the run; it is retried like any failure", async () => {
     quiet();
     const prefix = unique("sw_broken");
-    await env.DB.batch([
-      env.DB.prepare(
+    await ledger().batch([
+      ledger().prepare(
         `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
          VALUES (?, 'job_check', ?, 'app_sweep', 'job', ?, NULL, '{broken', ?, 0, ?)`,
       ).bind(`${prefix}_a`, ACCOUNT_ID, `${prefix}_a`, T0 - 2_000, T0),
-      env.DB.prepare(
+      ledger().prepare(
         `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
          VALUES (?, 'job_check', ?, 'app_sweep', 'job', ?, NULL, NULL, ?, 0, ?)`,
       ).bind(`${prefix}_b`, ACCOUNT_ID, `${prefix}_b`, T0 - 1_000, T0),
     ]);
     const done: string[] = [];
-    await runSweep(env, { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: async (_e, item) => (done.push(item.id), { done: true }) } });
+    await runSweep(env, ledger(), { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: async (_e, item) => (done.push(item.id), { done: true }) } });
     expect(done).toContain(`${prefix}_b`);
-    const left = await env.DB.prepare("SELECT id, tries, last_error FROM open_work WHERE id LIKE ?").bind(`${prefix}%`).all();
+    const left = await ledger().prepare("SELECT id, tries, last_error FROM open_work WHERE id LIKE ?").bind(`${prefix}%`).all();
     expect(left.results).toEqual([{ id: `${prefix}_a`, tries: 1, last_error: "failed" }]);
   });
 });
 
 describe("the sweep", () => {
   async function work(id: string, dueAt: number, kind = "job_check", tries = 0) {
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, ?, ?, 'app_sweep', 'job', ?, NULL, NULL, ?, ?, ?)`,
     )
@@ -787,7 +790,7 @@ describe("the sweep", () => {
 
   async function rows(prefix: string) {
     return (
-      await env.DB.prepare("SELECT id, tries, due_at, last_error, gave_up_at FROM open_work WHERE id LIKE ? ORDER BY id").bind(`${prefix}%`).all()
+      await ledger().prepare("SELECT id, tries, due_at, last_error, gave_up_at FROM open_work WHERE id LIKE ? ORDER BY id").bind(`${prefix}%`).all()
     ).results;
   }
 
@@ -804,7 +807,7 @@ describe("the sweep", () => {
       if (item.id.endsWith("_b")) throw new Error("provider down");
       return { done: true };
     };
-    const summary = await runSweep(env, { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: jobCheck } });
+    const summary = await runSweep(env, ledger(), { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: jobCheck } });
     expect(order.filter((id) => id.startsWith(prefix))).toEqual([`${prefix}_a`, `${prefix}_b`, `${prefix}_c`]);
     expect(summary.retried).toBeGreaterThanOrEqual(1);
     expect(await rows(prefix)).toEqual([
@@ -821,7 +824,7 @@ describe("the sweep", () => {
     await work(`${prefix}_last`, T0 - 9_000, "job_check", SWEEP_MAX_TRIES - 1);
     const hang: OpenWorkHandler = (_env, item) =>
       item.id.endsWith("_hang") ? new Promise(() => undefined) : Promise.resolve({ done: false, reason: "not ready" });
-    await runSweep(env, { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: hang }, itemTimeLimitMs: 20 });
+    await runSweep(env, ledger(), { now: T0, handlers: { ...OPEN_WORK_HANDLERS, job_check: hang }, itemTimeLimitMs: 20 });
     expect(await rows(prefix)).toEqual([
       { id: `${prefix}_hang`, tries: 1, due_at: T0 + 60_000, last_error: "timed out", gave_up_at: null },
       { id: `${prefix}_last`, tries: SWEEP_MAX_TRIES, due_at: T0 - 9_000, last_error: "not ready", gave_up_at: T0 },
@@ -829,66 +832,66 @@ describe("the sweep", () => {
     expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)).message)).toContain("open_work_gave_up");
     // A given-up row is never taken again.
     const seen: string[] = [];
-    await runSweep(env, { now: T0 + 10 * 60 * 60 * 1000, handlers: { ...OPEN_WORK_HANDLERS, job_check: async (_e, i) => (seen.push(i.id), { done: true }) } });
+    await runSweep(env, ledger(), { now: T0 + 10 * 60 * 60 * 1000, handlers: { ...OPEN_WORK_HANDLERS, job_check: async (_e, i) => (seen.push(i.id), { done: true }) } });
     expect(seen).not.toContain(`${prefix}_last`);
   });
 
   it("waits for a provider whose lookup is not built yet", async () => {
     quiet();
     const id = unique("lookup");
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, 'provider_lookup', ?, 'app_sweep', 'call', ?, NULL, ?, ?, 0, ?)`,
     )
       .bind(id, ACCOUNT_ID, id, JSON.stringify({ providerType: "deepgram" }), T0 - 1, T0)
       .run();
-    await runSweep(env, { now: T0 });
+    await runSweep(env, ledger(), { now: T0 });
     expect(await rows(id)).toMatchObject([{ tries: 1, last_error: "no cost lookup for provider deepgram" }]);
   });
 
   it("settles a closed session and prices an unresolved charge through its handlers; a repeat run changes nothing", async () => {
     quiet();
     const session = sessionRow({ expectsSessionTotal: false });
-    await openSession(env.DB, session, T0);
+    await openSession(ledger(), session, T0);
     await checkpoint(session, 1, 1_000);
-    await closeSession(env.DB, { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
-    await runSweep(env, { now: T0 + 61_000 + 60_000 });
+    await closeSession(ledger(), { session, finalSlice: 1, endReason: "client_closed", endedAt: T0 + 61_000, now: T0 + 61_000 });
+    await runSweep(env, ledger(), { now: T0 + 61_000 + 60_000 });
     expect(await sessionState(session.id)).toMatchObject({ settlement: "settled" });
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ n: 0 });
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM open_work WHERE owner_id = ?").bind(session.id).first()).toEqual({ n: 0 });
     // Restart before the row was removed: the handler runs again and writes nothing new.
-    await openSession(env.DB, session, T0);
-    await env.DB.prepare("UPDATE open_work SET due_at = ? WHERE owner_id = ?").bind(T0, session.id).run();
-    await runSweep(env, { now: T0 + 3 * 60_000 });
+    await openSession(ledger(), session, T0);
+    await ledger().prepare("UPDATE open_work SET due_at = ? WHERE owner_id = ?").bind(T0, session.id).run();
+    await runSweep(env, ledger(), { now: T0 + 3 * 60_000 });
     expect(await chargesOf(session.id)).toHaveLength(1);
   });
 });
 
-describe("the minute cron", () => {
-  it("runs the sweep", async () => {
+describe("the ledger object's alarm", () => {
+  it("runs the sweep of its open work", async () => {
     quiet();
+    // This test lets the object set its alarm.
+    vi.restoreAllMocks();
     const id = unique("cron");
     // Work for a session that does not exist is finished at once.
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, 'stale_session', ?, 'app_cron', 'session', ?, NULL, NULL, 0, 0, 0)`,
     )
       .bind(id, ACCOUNT_ID, id)
       .run();
-    const ctx = createExecutionContext();
-    await worker.scheduled!(createScheduledController({ cron: SWEEP_CRON, scheduledTime: Date.now() }), env, ctx);
-    await waitOnExecutionContext(ctx);
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM open_work WHERE id = ?").bind(id).first()).toEqual({ n: 0 });
+    await runDurableObjectAlarm(ledgerObject(env, ACCOUNT_ID));
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM open_work WHERE id = ?").bind(id).first()).toEqual({ n: 0 });
   });
 });
 
 describe("plan minutes in the account limiter", () => {
   it("never answers one date range's read with another's", async () => {
     const accountId = unique("acc_minutes");
-    await env.DB.batch([
-      env.DB.prepare(
+    await ledger(accountId).batch([
+      ledger(accountId).prepare(
         "INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, session_ms) VALUES (?, 'a', '2026-10-15', 'x', '', '', 'ok', '', 1000)",
       ).bind(accountId),
-      env.DB.prepare(
+      ledger(accountId).prepare(
         "INSERT INTO usage_day (account_id, app_id, day, provider_type, provider_connection_id, model, outcome, unit, session_ms) VALUES (?, 'a', '2026-11-15', 'x', '', '', 'ok', '', 5000)",
       ).bind(accountId),
     ]);

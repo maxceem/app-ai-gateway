@@ -1,10 +1,10 @@
 /**
  * One store per app for ledger writes that failed (plan section 4.2).
  *
- * It is used only when a D1 write fails, so it is never on the normal request
+ * It is used only when a write to the account's ledger object fails, so it is never on the normal request
  * path. It keeps the whole entries (charge and open work), and open-work rows
  * that have no charge (a job's saved figure), and its alarm retries them in
- * batches, with the same `ON CONFLICT(id) DO NOTHING` write, until D1 takes
+ * batches, with the same `ON CONFLICT(id) DO NOTHING` write, until the ledger takes
  * them. Writing one twice is harmless. Nothing kept here is ever edited.
  *
  * Limits (set in step 1c): it holds at most `MAX_PENDING` entries and rows
@@ -17,6 +17,7 @@ import { DurableObject } from "cloudflare:workers";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { ledgerDb } from "../ledger/database.ts";
 import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
@@ -44,10 +45,31 @@ export const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
  * charge by when it is written, not by when it was first kept
  * (`../ledger/late-booking.ts`).
  */
-export async function retryStored(db: D1Database, entries: readonly LedgerEntry[], rows: readonly OpenWorkRow[], now: number): Promise<number> {
-  const charges = await withDeadline(writeToLedger(db, entries, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
-  const work = await withDeadline(writeOpenWork(db, rows), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
-  return charges + work;
+export async function retryStored(
+  ledger: (accountId: string) => D1Database,
+  entries: readonly LedgerEntry[],
+  rows: readonly OpenWorkRow[],
+  now: number,
+): Promise<number> {
+  // An app belongs to one account, but a store outlives a move: group by the account each entry names.
+  let changes = 0;
+  for (const [accountId, group] of byAccount(entries, (entry) => entry.charge.accountId)) {
+    changes += await withDeadline(writeToLedger(ledger(accountId), group, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+  }
+  for (const [accountId, group] of byAccount(rows, (row) => row.accountId)) {
+    changes += await withDeadline(writeOpenWork(ledger(accountId), group), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+  }
+  return changes;
+}
+
+function byAccount<T>(items: readonly T[], account: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const list = groups.get(account(item)) ?? [];
+    list.push(item);
+    groups.set(account(item), list);
+  }
+  return groups;
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -126,7 +148,7 @@ export class ChargeStore extends DurableObject<Env> {
     let d1Changes: number;
     try {
       d1Changes = await retryStored(
-        this.env.DB,
+        (accountId) => ledgerDb(this.env, accountId),
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
         now,

@@ -3,6 +3,8 @@
  * installs registered without Apple, and the assertions and request proofs a
  * device would send.
  */
+import { AccountLedger } from "../src/do/AccountLedger.ts";
+import { ledgerDb, type LedgerResult, type LedgerStatement } from "../src/ledger/database.ts";
 import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
@@ -227,8 +229,8 @@ export function useFakeClock(): void {
 }
 
 /** The auth events of one app, oldest first. */
-export async function authEvents(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();
+export async function authEvents(appId: string, accountId: string = ACCOUNT_ID): Promise<Record<string, unknown>[]> {
+  const { results } = await ledger(accountId).prepare("SELECT * FROM app_auth_event WHERE app_id = ? ORDER BY id").bind(appId).all();
   return results;
 }
 
@@ -339,6 +341,49 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
  * fixed clock and the ledger's late-booking rule (`../src/ledger/late-booking.ts`)
  * agree.
  */
-export function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
-  return writeToLedger(env.DB, entries, Math.max(...entries.map((entry) => entry.charge.writtenAt)));
+export async function writeAtTheirTime(entries: readonly LedgerEntry[]): Promise<number> {
+  const at = Math.max(...entries.map((entry) => entry.charge.writtenAt));
+  let changes = 0;
+  for (const accountId of new Set(entries.map((entry) => entry.charge.accountId))) {
+    changes += await writeToLedger(ledger(accountId), entries.filter((entry) => entry.charge.accountId === accountId), at);
+  }
+  return changes;
+}
+
+/**
+ * `base` with every account's ledger object replaced by a D1-shaped stand-in
+ * `make` builds from the real one: one that fails, stalls or counts.
+ */
+export function withLedgerDb(base: Env, make: (real: D1Database, accountId: string) => D1Database): Env {
+  const namespace = {
+    idFromName: (name: string) => name,
+    get: (accountId: string) => ({
+      query: async (statements: readonly LedgerStatement[], transaction: boolean): Promise<LedgerResult[]> => {
+        const db = make(ledger(accountId), accountId);
+        const prepared = statements.map((statement) => db.prepare(statement.sql).bind(...statement.params));
+        const results = transaction ? await db.batch(prepared) : [await prepared[0]!.all()];
+        return results.map((result) => ({
+          rows: result.results as Record<string, unknown>[],
+          columns: Object.keys((result.results[0] ?? {}) as object),
+          changes: result.meta.changes ?? 0,
+          rowsRead: 0,
+        }));
+      },
+    }),
+  };
+  return { ...base, ACCOUNT_LEDGER: namespace } as unknown as Env;
+}
+
+/**
+ * Keeps the ledger objects from setting their alarms until the test ends, for
+ * tests that run the sweep, settlement or retention themselves at their own
+ * times: an alarm would otherwise run the real sweep at the real time.
+ */
+export function pauseLedgerWork(): void {
+  vi.spyOn(AccountLedger.prototype as unknown as { planWork(): Promise<void> }, "planWork").mockResolvedValue(undefined);
+}
+
+/** An account's ledger, with D1's shape, as the code reads and writes it (step 8f). */
+export function ledger(accountId: string = ACCOUNT_ID): D1Database {
+  return ledgerDb(env, accountId);
 }

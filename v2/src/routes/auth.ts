@@ -216,7 +216,7 @@ export async function challengeHandler(c: AuthContext): Promise<Response> {
   // stays small where no cron runs, such as local development.
   if (Math.random() < 0.01) {
     c.executionCtx.waitUntil(
-      settleExpiredChallenges(c.env.DB).catch((error: unknown) => {
+      settleExpiredChallenges(c.env, c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", { error: errorFacts(error) });
       }),
     );

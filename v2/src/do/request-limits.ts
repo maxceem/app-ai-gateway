@@ -15,6 +15,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { ledgerDb } from "../ledger/database.ts";
 import { monthlySpendNano, utcMonthDays, type SpendKey } from "../limits/spend.ts";
 
 /** How often a budget total in use is read again from the rollups. */
@@ -151,7 +152,7 @@ export class RequestLimitObject extends DurableObject<Env> {
    * when this object has none yet. Null when that first read fails.
    */
   private async budgetTotal(key: SpendKey, now: number): Promise<number | null> {
-    const identity = JSON.stringify([key.appId, key.scope, key.key, utcMonthDays(now).from]);
+    const identity = JSON.stringify([key.accountId, key.appId, key.scope, key.key, utcMonthDays(now).from]);
     const cached = this.spend.get(identity);
     if (cached !== undefined) {
       if (now - cached.readAt >= SPEND_REFRESH_MS) void this.readSpend(identity, key, now).catch(() => undefined);
@@ -168,7 +169,7 @@ export class RequestLimitObject extends DurableObject<Env> {
   private readSpend(identity: string, key: SpendKey, now: number): Promise<number> {
     const pending = this.spendReads.get(identity);
     if (pending !== undefined) return pending;
-    const read = monthlySpendNano(this.env.DB, key, now)
+    const read = monthlySpendNano(ledgerDb(this.env, key.accountId), key, now)
       .then((nano) => {
         const current = this.spend.get(identity);
         // A slower read never replaces a newer figure.

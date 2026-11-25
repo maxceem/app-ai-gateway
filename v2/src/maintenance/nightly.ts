@@ -20,8 +20,10 @@
  * - the sign-in library's clean-up runs (expired approvals, ended OAuth
  *   connections' tokens).
  *
- * Every night, besides, in the nightly maintenance, a set of passes taking
- * turns (`../core/chunked-delete.ts`):
+ * Every night, besides, one more batch of expired challenges. The ledger's
+ * own nightly maintenance (`runLedgerNightly`) runs on each account's ledger
+ * object, with the same allowances per account: a set of passes taking turns
+ * (`../core/chunked-delete.ts`):
  * - auth events and rejection events past their 90 days are deleted;
  * - usage retention (`../ledger/retention.ts`).
  *
@@ -42,7 +44,7 @@ import { conversationsBucket } from "../conversations/storage.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { runPasses, type Pass } from "../core/chunked-delete.ts";
-import { maintenanceRowLimit, maintenanceStatementBudget, QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
+import { maintenanceStatementBudget, QueryBudget, QueryBudgetExhausted } from "../core/query-budget.ts";
 import { rejectionEventsPass } from "../diagnostics/rejection-events.ts";
 import { STUCK_SESSION_STATEMENTS, usageRetentionPasses, warnStuckSessions } from "../ledger/retention.ts";
 
@@ -96,12 +98,12 @@ function sweepSignIn(env: Env): Promise<void> {
 }
 
 /** Expired App Attest challenges, recorded as abandoned and deleted, at most `batches` batches. */
-function settleChallenges(db: D1Database, batches: number): Promise<void> {
-  return job("auth_challenges_settled", "auth_challenges_prune_failed", () => drainExpiredChallenges(db, batches), (settled) => ({ ...settled }));
+function settleChallenges(env: Env, db: D1Database, batches: number): Promise<void> {
+  return job("auth_challenges_settled", "auth_challenges_prune_failed", () => drainExpiredChallenges(env, db, batches), (settled) => ({ ...settled }));
 }
 
-/** Statements one batch of the App Attest challenge clean-up issues: one read of a bounded batch of challenges, then one batch of two. */
-export const CHALLENGE_SETTLE_STATEMENTS = 3;
+/** D1 statements one batch of the App Attest challenge clean-up issues: one read of a bounded batch of challenges, then one delete. Its events go to the ledger objects. */
+export const CHALLENGE_SETTLE_STATEMENTS = 2;
 
 /**
  * Batches of expired challenges an ordinary hour settles while they come back
@@ -112,7 +114,7 @@ export const CHALLENGE_DRAIN_BATCHES = 5;
 
 /**
  * Conversation retention's D1 queries: what `MAINTENANCE_QUERY_BUDGET` leaves
- * once the hourly clean-up in the same 03:17 run has had its statements. 42 at
+ * once the hourly clean-up in the same 03:17 run has had its statements. 43 at
  * the default of 50, and more where a deployment on the Paid plan raises it.
  */
 export function conversationReadBudget(env: Env): QueryBudget {
@@ -133,19 +135,31 @@ function pruneConversations(env: Env, now: number): Promise<void> {
   );
 }
 
-/** The nightly passes at `now`, in the order they take their turns. */
+/**
+ * The nightly passes over one account's ledger at `now`, in the order they
+ * take their turns. The ledger object runs them once a day on its alarm
+ * (`../do/AccountLedger.ts`).
+ */
 export function nightlyPasses(now: number): Pass[] {
   return [authEventsPass(now), rejectionEventsPass(now), ...usageRetentionPasses(now)];
 }
 
-/** The nightly jobs, within `budget`'s statements and `rowLimit` rows written. */
-export async function runNightly(env: Env, now: number, budget: QueryBudget, rowLimit: number): Promise<void> {
-  await settleChallenges(budget.database(env.DB), 1);
+/**
+ * The nightly maintenance of one account's ledger, within `budget`'s
+ * statements and `rowLimit` rows written: stuck sessions are reported, then
+ * the passes take their turns. Never throws.
+ */
+export async function runLedgerNightly(ledger: D1Database, now: number, budget: QueryBudget, rowLimit: number): Promise<void> {
   if (budget.affords(STUCK_SESSION_STATEMENTS)) {
-    await job("ledger_sessions_checked", "ledger_sessions_check_failed", () => warnStuckSessions(budget.database(env.DB), now), (stuck) => ({ stuck }));
+    await job("ledger_sessions_checked", "ledger_sessions_check_failed", () => warnStuckSessions(budget.database(ledger), now), (stuck) => ({ stuck }));
   }
   // Logs each pass itself, and never throws.
-  await runPasses(env.DB, budget, rowLimit, nightlyPasses(now));
+  await runPasses(ledger, budget, rowLimit, nightlyPasses(now));
+}
+
+/** The nightly jobs on the settings in D1, within `budget`'s statements. */
+export async function runNightly(env: Env, budget: QueryBudget): Promise<void> {
+  await settleChallenges(env, budget.database(env.DB), 1);
 }
 
 /** The hourly cron. `waitUntil` keeps the work alive after the handler returns. */
@@ -155,11 +169,11 @@ export function runHourly(env: Env, scheduledTime: number, waitUntil: (work: Pro
   if (hour === RETENTION_HOUR_UTC) waitUntil(pruneConversations(env, scheduledTime));
   if (hour !== NIGHTLY_HOUR_UTC) {
     // In the conversations' hour, one batch: their D1 allowance counts on it (`conversationReadBudget`).
-    waitUntil(settleChallenges(env.DB, hour === RETENTION_HOUR_UTC ? 1 : CHALLENGE_DRAIN_BATCHES));
+    waitUntil(settleChallenges(env, env.DB, hour === RETENTION_HOUR_UTC ? 1 : CHALLENGE_DRAIN_BATCHES));
     return;
   }
   const budget = maintenanceStatementBudget(env);
   // The sign-in clean-up beside this run spends from the same invocation's limit.
   budget.charge(SIGN_IN_SWEEP_STATEMENTS);
-  waitUntil(runNightly(env, scheduledTime, budget, maintenanceRowLimit(env)));
+  waitUntil(runNightly(env, budget));
 }

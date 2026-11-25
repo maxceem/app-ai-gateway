@@ -9,6 +9,7 @@
  * Unlike v1, there is no hosted billing check here yet: that is management
  * side, and is ported with it.
  */
+import { ledgerDb } from "../ledger/database.ts";
 import type { Context } from "hono";
 import { assertAppServes, loadRequestApp } from "../apps/app-records.ts";
 import { authenticateRequest } from "../client-auth/client-auth.ts";
@@ -52,7 +53,7 @@ export async function meHandler(c: Context<{ Bindings: Env; Variables: DeadlineV
   const now = Date.now();
   const [requestsToday, spentNano, blocked] = await Promise.all([
     counted ? c.env.END_USER_LIMITER.getByName(caller.name).requestsToday(now) : Promise.resolve(null),
-    monthlySpendNano(c.env.DB, caller.spend, now),
+    monthlySpendNano(ledgerDb(c.env, caller.spend.accountId), caller.spend, now),
     appUserBlocked(c.env.DB, app.id, identity.userId),
   ]);
   const budget = perUser.spending.monthly_nano;

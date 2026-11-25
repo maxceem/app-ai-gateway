@@ -18,7 +18,7 @@ import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-5678";
@@ -79,7 +79,7 @@ async function upload(path: string, key: string, fields: Record<string, string |
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 
@@ -247,7 +247,7 @@ describe("transcription", () => {
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, { model: "whisper-1", file: AUDIO });
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, input_tokens: 40 });
-    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(/no_priced_measure.*"retried":true/));
   });
 
@@ -389,7 +389,7 @@ describe("images", () => {
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, unit: "images", units: 1 });
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_priced_measure"));
     // Nor later, when the sweep tries: the measures say no tokens were reported.
-    expect(await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({ status: "no_price" });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: String(charge!.id), now: Date.now() })).toMatchObject({ status: "no_price" });
   });
 
   it("bills xAI's images at the cost it reports", async () => {
@@ -498,8 +498,8 @@ describe("usage in other units", () => {
     await upload(`/v2/apps/${appId}/proxy/${slug}/v1/audio/transcriptions`, key, { model: "whisper-1", file: AUDIO });
     const [charge] = await chargesOf(appId);
     // As if the price had been missing when the call was made, and the charge recorded in tokens.
-    await env.DB.prepare("UPDATE charge SET price_source = 'unresolved', cost_nano = NULL, unit = 'tokens' WHERE id = ?").bind(charge!.id).run();
-    const result = await priceUnresolvedCharge(env.DB, { chargeId: String(charge!.id), now: Date.now() });
+    await ledger().prepare("UPDATE charge SET price_source = 'unresolved', cost_nano = NULL, unit = 'tokens' WHERE id = ?").bind(charge!.id).run();
+    const result = await priceUnresolvedCharge(ledger(), env.DB, { chargeId: String(charge!.id), now: Date.now() });
     // Its cost lands in the rollup of the unit the price bills.
     expect(result).toMatchObject({ status: "priced", correction: { costNano: 6_000_000, unit: "audio_seconds" } });
   });

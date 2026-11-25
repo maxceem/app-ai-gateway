@@ -12,6 +12,7 @@ import { errorFacts } from "../core/error-facts.ts";
 import { claimDiagnosticSample } from "../core/flood-limit.ts";
 import { timeOrderedId } from "../core/ids.ts";
 import { log } from "../core/log.ts";
+import { ledgerDb } from "../ledger/database.ts";
 import { deletePass, type Pass } from "../core/chunked-delete.ts";
 import type { GatewayIdentity } from "../core/types.ts";
 
@@ -93,17 +94,18 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
   const id = timeOrderedId();
   try {
     const model = input.model === null || input.modelKnown === undefined || input.modelKnown() ? input.model : UNRECOGNIZED;
-    await env.DB.prepare(
-      // Under the account the caller was verified for, and only while that
-      // account still owns the app: an app id that comes back in another
-      // account never shows this row.
-      `INSERT INTO app_rejection_event
-        (id, app_id, account_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
-         app_version, auth_method, latency_ms, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM app WHERE id = ? AND account_id = ?)
-       ON CONFLICT(id) DO NOTHING`,
-    )
+    await ledgerDb(env, input.accountId)
+      .prepare(
+        // In the ledger of the account the caller was verified for (plan, step
+        // 8f): only that account ever reads it. No check that the account still
+        // owns the app: the app's settings are in D1, and an event of an app
+        // deleted meanwhile fades with the retention.
+        `INSERT INTO app_rejection_event
+          (id, app_id, account_id, user_id, install_id, app_key_id, reason, scope, provider_slug, model, operation,
+           app_version, auth_method, latency_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO NOTHING`,
+      )
       .bind(
         id,
         identity.appId,
@@ -120,8 +122,6 @@ export async function recordRejectionEvent(env: Env, input: RejectionEventInput)
         identity.authMethod,
         input.latencyMs,
         Date.now(),
-        identity.appId,
-        input.accountId,
       )
       .run();
   } catch (error) {

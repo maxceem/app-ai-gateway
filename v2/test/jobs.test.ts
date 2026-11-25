@@ -22,7 +22,7 @@ import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, writeAtTheirTime } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger, pauseLedgerWork } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -74,12 +74,12 @@ async function call(method: string, path: string, key: string, init: { body?: st
 
 async function charges(appId: string): Promise<Record<string, unknown>[]> {
   // Each charge before its corrections, whatever times the test gave them.
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY kind = 'correction', written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY kind = 'correction', written_at, id").bind(appId).all();
   return results;
 }
 
 async function openWork(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM open_work WHERE app_id = ? ORDER BY id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM open_work WHERE app_id = ? ORDER BY id").bind(appId).all();
   return results;
 }
 
@@ -118,6 +118,8 @@ let fetchSpy: MockInstance<typeof fetch>;
 let logs: string[];
 
 beforeEach(() => {
+  // These tests run the sweep themselves, at their own times.
+  pauseLedgerWork();
   clearCaches();
   logs = [];
   const keep = (line: unknown) => {
@@ -344,8 +346,8 @@ describe("polling a job", () => {
   it("serves a client's poll past the ledger's late-booking window as usual, and books nothing: a job id never expires (Astra 7b-2 round 4)", async () => {
     const { appId, key, jobId } = await submitted();
     // The sweep's check ended long ago; only the client still polls.
-    await env.DB.prepare("DELETE FROM open_work WHERE app_id = ?").bind(appId).run();
-    const before = await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all();
+    await ledger().prepare("DELETE FROM open_work WHERE app_id = ?").bind(appId).run();
+    const before = await ledger().prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all();
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + (LEDGER_LATE_BOOKING_DAYS + 1) * 86_400_000);
     falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "3" } }) });
@@ -354,7 +356,7 @@ describe("polling a job", () => {
     expect(json).toEqual({ images: [{}, {}] });
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
     expect(await openWork(appId)).toEqual([]);
-    expect((await env.DB.prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results).toEqual(before.results);
+    expect((await ledger().prepare("SELECT charges, cost_nano FROM usage_day WHERE app_id = ?").bind(appId).all()).results).toEqual(before.results);
     expect(logged("ledger_booking_too_late")).toBe(true);
   });
 
@@ -364,13 +366,13 @@ describe("polling a job", () => {
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     const claims = (await readJobId(env.JWT_SECRET, jobId))!;
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, 'job_check', ?, ?, 'job', ?, NULL, ?, 0, 0, 0)`,
     )
       .bind(jobCheckId(claims.job), ACCOUNT_ID, appId, claims.job, JSON.stringify({ providerType: "fal", jobId }))
       .run();
-    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
     // 1 unit: the $0.05 estimate comes down to $0.025.
@@ -385,8 +387,8 @@ describe("polling a job", () => {
     expect(logged("job_units_missing")).toBe(true);
     // A poll only settles or saves a figure; its check is ended by the sweep, which finds the same.
     expect((await openWork(appId)).map((row) => row.id)).toEqual([expect.stringMatching(/^job:/)]);
-    await env.DB.prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await ledger().prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => [row.kind, row.measured])).toEqual([["estimate", "estimated"]]);
   });
@@ -491,9 +493,9 @@ describe("the sweep and the four failure cases", () => {
     await submit(appId, slug, key);
     falAnswers({ result: () => Response.json({ images: [{}, {}] }, { headers: { "x-fal-billable-units": "2" } }) });
     // Not due yet: nothing happens to it.
-    await runSweep(env, { now: Date.now() });
+    await runSweep(env, ledger(), { now: Date.now() });
     expect(await openWork(appId)).toHaveLength(1);
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     const rows = await charges(appId);
     expect(rows.map((row) => [row.kind, row.cost_nano])).toEqual([
       ["estimate", 50_000_000],
@@ -507,7 +509,7 @@ describe("the sweep and the four failure cases", () => {
     falAnswers({});
     await submit(appId, slug, key);
     falAnswers({ status: () => Response.json({ status: "IN_QUEUE" }) });
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     const [work] = await openWork(appId);
     expect(work).toMatchObject({ tries: 1, last_error: "job not done (200)" });
     expect(await charges(appId)).toHaveLength(1);
@@ -518,9 +520,9 @@ describe("the sweep and the four failure cases", () => {
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     const facts = { status: 200, units: 3, outputs: { images: 0 } };
-    expect(await settleFigure(env, ref, facts, 3_000)).toBe("waiting");
+    expect(await settleFigure(ledger(), ref, facts, 3_000)).toBe("waiting");
     await writeAtTheirTime([jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
-    expect(await settleFigure(env, ref, facts, 3_000)).toBe("settled");
+    expect(await settleFigure(ledger(), ref, facts, 3_000)).toBe("settled");
     expect((await charges(appId)).map((row) => row.cost_nano)).toEqual([50_000_000, 25_000_000]);
   });
 
@@ -533,9 +535,9 @@ describe("the sweep and the four failure cases", () => {
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     // Inside the window the estimate may still land: the figure waits for it.
-    expect(await settleFigure(env, { job: recent, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("waiting");
+    expect(await settleFigure(ledger(), { job: recent, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("waiting");
     // Past it, an estimate would be refused anyway (or retention deleted it): nothing to wait for.
-    expect(await settleFigure(env, { job: old, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("estimate_kept");
+    expect(await settleFigure(ledger(), { job: old, accountId: ACCOUNT_ID, appId }, facts, now)).toBe("estimate_kept");
     expect(warned.filter((line) => line.includes('"message":"ledger_booking_too_late"'))).toHaveLength(1);
     expect(await charges(appId)).toEqual([]);
   });
@@ -546,7 +548,7 @@ describe("the sweep and the four failure cases", () => {
     await writeAtTheirTime([jobEstimate(attempt(appId, job), QUEUE, { status: "ok", httpStatus: 200, latencyMs: 1, signedId: null, now: 2_000 })]);
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
     const facts = { status: 200, units: 4, outputs: { images: 0 } };
-    expect(await Promise.all([settleFigure(env, ref, facts, 3_000), settleFigure(env, ref, facts, 3_001)])).toEqual(["settled", "settled"]);
+    expect(await Promise.all([settleFigure(ledger(), ref, facts, 3_000), settleFigure(ledger(), ref, facts, 3_001)])).toEqual(["settled", "settled"]);
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
     expect(rows[1]).toMatchObject({ cost_nano: 50_000_000 });
@@ -570,7 +572,7 @@ describe("the final figure", () => {
   it("is never settled for a charge read from the ledger that names a rate the result cannot count", async () => {
     const tokens = { rates: { input: 1, output: 1 }, unit: "tokens" } as unknown as ChargeRow;
     expect(jobFinalFigure(tokens, readResultFacts(SPEC, { status: 200, headers: new Headers({ "x-fal-billable-units": "1" }) }, { kind: "parsed", value: {} })!)).toBeNull();
-    expect(await readCharge(env.DB, "nothing")).toBeNull();
+    expect(await readCharge(ledger(), "nothing")).toBeNull();
   });
 });
 
@@ -610,10 +612,10 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
     expect(JSON.parse(String((await openWork(appId))[0]!.detail_json))).toMatchObject({ retryEveryMs: 60_000, maxTries: 60 });
     const now = Date.now() + 5 * 60_000;
     falAnswers({ status: () => Response.json({ status: "IN_QUEUE" }) });
-    await runSweep(env, { now });
+    await runSweep(env, ledger(), { now });
     expect((await openWork(appId))[0]).toMatchObject({ tries: 1, due_at: now + 60_000 });
     fetchSpy.mockRejectedValue(new TypeError("connection reset"));
-    await runSweep(env, { now: now + 60_000 });
+    await runSweep(env, ledger(), { now: now + 60_000 });
     expect((await openWork(appId))[0]).toMatchObject({ tries: 2, due_at: now + 120_000 });
   });
 
@@ -635,7 +637,7 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
       dueAt: 0,
       tries: 0,
     };
-    await expect(checkJob(env, item, { now: Date.now(), lastTry: false, signal: AbortSignal.abort() })).rejects.toThrow();
+    await expect(checkJob(env, item, { ledger: ledger(), now: Date.now(), lastTry: false, signal: AbortSignal.abort() })).rejects.toThrow();
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(await charges(appId)).toHaveLength(1);
   });
@@ -648,7 +650,7 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
     clearCaches();
     await onlyThisApp(appId);
     fetchSpy.mockClear();
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect((await openWork(appId))[0]).toMatchObject({ tries: 1, last_error: "the job's connection is disabled" });
   });
@@ -656,23 +658,23 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
   it("counts an item whose row is gone by its last try as done, not given up", async () => {
     const { appId } = await setup();
     await onlyThisApp(appId);
-    await writeOpenWork(env.DB, [
+    await writeOpenWork(ledger(), [
       { id: "work-gone", kind: "unresolved", accountId: ACCOUNT_ID, appId, ownerType: "call", ownerId: "x", chargeId: null, detail: { maxTries: 1 }, dueAt: 0, createdAt: 0 },
     ]);
     const handlers = {
       unresolved: async () => {
-        await env.DB.prepare("DELETE FROM open_work WHERE id = 'work-gone'").run();
+        await ledger().prepare("DELETE FROM open_work WHERE id = 'work-gone'").run();
         return { done: false as const, reason: "settled elsewhere meanwhile" };
       },
     } as never;
-    expect(await runSweep(env, { now: Date.now(), handlers })).toEqual({ done: 1, retried: 0, gaveUp: 0 });
+    expect(await runSweep(env, ledger(), { now: Date.now(), handlers })).toEqual({ done: 1, retried: 0, gaveUp: 0 });
     expect(logged("open_work_gave_up")).toBe(false);
   });
 });
 
 /** The test database is shared: the sweep must see only this test's work. */
 function onlyThisApp(appId: string) {
-  return env.DB.prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
+  return ledger().prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
 }
 
 describe("a figure is its own row, written once and never changed (review fixes, round 3)", () => {
@@ -744,10 +746,10 @@ describe("a figure is its own row, written once and never changed (review fixes,
       await store.keep([estimateOf(appId, job)]);
       for (const step of order) {
         if (step === "store") await runDurableObjectAlarm(store);
-        if (step === "figure") await writeOpenWork(env.DB, [figureWork(ref, FOUR, 3_000)]);
-        if (step === "settle") await settleFigure(env, ref, FOUR, 3_000);
+        if (step === "figure") await writeOpenWork(ledger(), [figureWork(ref, FOUR, 3_000)]);
+        if (step === "settle") await settleFigure(ledger(), ref, FOUR, 3_000);
       }
-      await runSweep(env, { now: Date.now() + 60 * 60_000 });
+      await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
       expect(await costs(appId), order.join(" → ")).toEqual(SETTLED_AT_4);
       expect(await openWork(appId), order.join(" → ")).toEqual([]);
     }
@@ -756,36 +758,35 @@ describe("a figure is its own row, written once and never changed (review fixes,
   it("keeps the estimate when no usable figure ever arrives, and saves nothing for a result with no count", async () => {
     const { appId, job, ref } = await fresh();
     await writeAtTheirTime([estimateOf(appId, job)]);
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
     expect(await openWork(appId)).toEqual([]);
     // A count the estimate's rate cannot use: the estimate stays, and the row is not kept.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_000)).toBe("estimate_kept");
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: { images: 2 } }, 3_000)).toBe("estimate_kept");
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
     expect(await openWork(appId)).toEqual([]);
   });
 
   it("a later poll with no units header never replaces a saved figure, before or after the estimate lands", async () => {
     const { appId, job, ref } = await fresh();
-    expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_100)).toBe("done");
+    expect(await applyFinalResult(env, ledger(), ref, FOUR, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: { images: 2 } }, 3_100)).toBe("done");
     await writeAtTheirTime([estimateOf(appId, job)]);
     // The rate bills units: this result cannot settle it, and leaves the saved 4 alone.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: { images: 2 } }, 3_200)).toBe("estimate_kept");
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: { images: 2 } }, 3_200)).toBe("estimate_kept");
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
     expect(await openWork(appId)).toEqual([]);
   });
 
   it("keeps a figure in the failed-write store while D1 is down, and settles it once both are written", async () => {
     const { appId, job, ref } = await fresh();
-    const down = { ...env, DB: D1_DOWN } as Env;
-    await recordLedgerEntry(down, estimateOf(appId, job, null, Date.now()));
-    expect(await applyFinalResult(down, ref, FOUR, 3_000)).toBe("done");
+    await recordLedgerEntry(withLedgerDb(env, () => D1_DOWN), estimateOf(appId, job, null, Date.now()));
+    expect(await applyFinalResult(env, D1_DOWN, ref, FOUR, 3_000)).toBe("done");
     expect(logged("job_result_unrecorded")).toBe(false);
     expect(await runDurableObjectAlarm(env.CHARGE_STORE.getByName(appId))).toBe(true);
     fetchSpy.mockClear();
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
   });
@@ -796,9 +797,9 @@ describe("a figure is its own row, written once and never changed (review fixes,
     await writeAtTheirTime([entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);
-    expect(await applyFinalResult({ ...env, DB: D1_DOWN } as Env, ref, FOUR, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, D1_DOWN, ref, FOUR, 3_000)).toBe("done");
     expect(await runDurableObjectAlarm(store)).toBe(true);
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
   });
 
@@ -809,16 +810,16 @@ describe("a figure is its own row, written once and never changed (review fixes,
     await onlyThisApp(appId);
     const broken = { ...env, JWT_SECRET: "" } as Env;
     fetchSpy.mockClear();
-    await runSweep(broken, { now: Date.now() + 5 * 60_000 });
+    await runSweep(broken, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect((await openWork(appId))[0]).toMatchObject({ tries: 1, last_error: "JWT_SECRET cannot verify job ids" });
 
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
-    expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, ledger(), ref, FOUR, 3_000)).toBe("done");
     await writeAtTheirTime([estimateOf(appId, job)]);
-    await runSweep(broken, { now: Date.now() + 60 * 60_000 });
-    const rows = await env.DB.prepare("SELECT kind, cost_nano FROM charge WHERE owner_id = ? ORDER BY kind DESC").bind(job).all();
+    await runSweep(broken, ledger(), { now: Date.now() + 60 * 60_000 });
+    const rows = await ledger().prepare("SELECT kind, cost_nano FROM charge WHERE owner_id = ? ORDER BY kind DESC").bind(job).all();
     expect(rows.results.map((row) => [row.kind, row.cost_nano])).toEqual(SETTLED_AT_4);
   });
 
@@ -827,11 +828,11 @@ describe("a figure is its own row, written once and never changed (review fixes,
     await onlyThisApp(appId);
     const job = `job_${crypto.randomUUID()}`;
     const ref: JobRef = { job, accountId: ACCOUNT_ID, appId };
-    expect(await applyFinalResult(env, ref, FOUR, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, ledger(), ref, FOUR, 3_000)).toBe("done");
     await writeAtTheirTime([estimateOf(appId, job)]);
     await env.DB.prepare("DELETE FROM provider_connection WHERE id = ?").bind(connectionId).run();
     clearCaches();
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
   });
 
@@ -842,7 +843,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     await onlyThisApp(appId);
     const [check] = await openWork(appId);
     const ref: JobRef = { job: String(check!.owner_id), accountId: ACCOUNT_ID, appId };
-    expect(await settleFigure(env, ref, FOUR, Date.now())).toBe("settled");
+    expect(await settleFigure(ledger(), ref, FOUR, Date.now())).toBe("settled");
     fetchSpy.mockClear();
     const answer = await checkJob(
       env,
@@ -858,7 +859,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
         dueAt: 0,
         tries: 0,
       },
-      { now: Date.now(), lastTry: false },
+      { ledger: ledger(), now: Date.now(), lastTry: false },
     );
     expect(answer).toEqual({ done: true });
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
@@ -880,7 +881,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
       expect(response.status, change).toBe(404);
       expect(json).toMatchObject({ error: { code: "job_not_found" } });
       await onlyThisApp(appId);
-      await runSweep(env, { now: Date.now() + 5 * 60_000 });
+      await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(logged("job_check_connection_changed")).toBe(true);
       expect(await costs(appId)).toEqual([["estimate", 50_000_000]]);
@@ -896,7 +897,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
     await env.DB.prepare("UPDATE provider_connection SET status = 'disabled' WHERE slug = ?").bind(slug).run();
     await onlyThisApp(appId);
     fetchSpy.mockClear();
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect((await openWork(appId))[0]).toMatchObject({ last_error: "the job's connection is disabled" });
   });
@@ -953,7 +954,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
       for (const [name, facts, outcome] of cases) {
         const { appId, job, ref } = await fresh();
         await writeAtTheirTime([estimateWith(appId, job, rate === "per image")]);
-        expect(await applyFinalResult(env, ref, facts, 3_000), name).toBe(outcome);
+        expect(await applyFinalResult(env, ledger(), ref, facts, 3_000), name).toBe(outcome);
         const kinds = (await charges(appId)).map((row) => row.kind);
         expect(kinds, name).toEqual(outcome === "done" ? ["estimate", "correction"] : ["estimate"]);
         // Nothing is kept for later once the rate has decided: settled, or the estimate stays.
@@ -967,10 +968,10 @@ describe("a figure is its own row, written once and never changed (review fixes,
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([estimateOf(appId, job)]);
     // fal sent 4 billed units, and the body broke: the header alone is kept.
-    expect(await applyFinalResult(env, ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
     expect((await openWork(appId)).map((row) => row.id)).toEqual([`job_figure:${job}:200:4:-`]);
     expect(await runDurableObjectAlarm(store)).toBe(true);
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect(await costs(appId)).toEqual(SETTLED_AT_4);
     expect(await openWork(appId)).toEqual([]);
   });
@@ -1031,7 +1032,7 @@ function slowD1(gate: Promise<void>, stallWrites = false): D1Database {
     const value = (t as Record<string | symbol, unknown>)[prop];
     return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(t) : value;
   };
-  return wrap(env.DB, (db, prop) => {
+  return wrap(ledger(), (db, prop) => {
     if (prop === "batch" && stallWrites) return () => new Promise(() => undefined);
     if (prop !== "prepare") return pass(db, prop);
     return (sql: string) => {
@@ -1059,7 +1060,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     const gate = new Promise<void>((resolve) => (release = resolve));
     const kept: Promise<unknown>[] = [];
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const run = runSweep({ ...env, DB: slowD1(gate) } as Env, { now: Date.now() + 5 * 60_000, itemTimeLimitMs: 1_000, waitUntil: (work) => kept.push(work) });
+    const run = runSweep(env, slowD1(gate), { now: Date.now() + 5 * 60_000, itemTimeLimitMs: 1_000, waitUntil: (work) => kept.push(work) });
     // The item's time passes while the estimate read hangs: the run moves on, the settlement does not stop.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await run).toMatchObject({ retried: 1 });
@@ -1068,7 +1069,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS * 2);
     await Promise.all(kept);
     vi.useRealTimers();
-    await runSweep(env, { now: Date.now() + 60 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 60 * 60_000 });
     expect((await charges(appId)).map((row) => [row.kind, row.cost_nano])).toEqual([
       ["estimate", 50_000_000],
       ["correction", 50_000_000],
@@ -1080,7 +1081,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     await onlyThisApp(appId);
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId };
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const applying = applyFinalResult({ ...env, DB: slowD1(new Promise(() => undefined), true) } as Env, ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000);
+    const applying = applyFinalResult(env, slowD1(new Promise(() => undefined), true), ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000);
     await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // the settlement read times out
     await vi.advanceTimersByTimeAsync(FIGURE_D1_DEADLINE_MS); // then the D1 figure write
     expect(await applying).toBe("done");
@@ -1121,7 +1122,7 @@ describe("deadlines, store retries, counting and caching (review fixes, round 4)
     await writeAtTheirTime([entry]);
     const store = env.CHARGE_STORE.getByName(appId);
     await store.keep([entry]);
-    expect(await settleFigure(env, ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000)).toBe("settled");
+    expect(await settleFigure(ledger(), ref, { status: 200, units: 4, outputs: { images: 2 } }, 3_000)).toBe("settled");
     await runDurableObjectAlarm(store);
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
@@ -1236,7 +1237,7 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
     const { appId } = await setup();
     const job = `job_${crypto.randomUUID()}`;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const recording = recordLedgerEntry({ ...env, DB: slowD1(Promise.resolve(), true) } as Env, estimateEntry(appId, job));
+    const recording = recordLedgerEntry(withLedgerDb(env, () => slowD1(Promise.resolve(), true)), estimateEntry(appId, job));
     await vi.advanceTimersByTimeAsync(LEDGER_D1_DEADLINE_MS);
     await recording;
     vi.useRealTimers();
@@ -1264,12 +1265,12 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
           { status: 200, headers: { "content-type": "application/json" } },
         ),
     });
-    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
     expect(await openWork(appId)).toHaveLength(1);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
     // Readable on the next check: three images settle it.
     falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
-    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
     expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
   });
 
@@ -1336,7 +1337,7 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
     });
     const { response } = await call("GET", `/v2/apps/${appId}/jobs/${foreign}/status`, key, { user: "blocked-1" });
     expect(response.status).toBe(403);
-    const events = (await env.DB.prepare("SELECT reason, provider_slug FROM app_rejection_event WHERE app_id = ?").bind(appId).all()).results;
+    const events = (await ledger().prepare("SELECT reason, provider_slug FROM app_rejection_event WHERE app_id = ?").bind(appId).all()).results;
     expect(events).toEqual([{ reason: "blocked_user", provider_slug: null }]);
   });
 });
@@ -1360,7 +1361,7 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     await onlyThisApp(appId);
     // A failure that fal says billed 0 units: the broken body is not needed to settle it.
     falAnswers({ result: () => new Response(brokenBody(), { status: 422, headers: { "x-fal-billable-units": "0" } }) });
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(await openWork(appId)).toEqual([]);
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
@@ -1374,28 +1375,28 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     await onlyThisApp(appId);
     // A whole stream that is not whole JSON: no units header, and the rate counts images.
     falAnswers({ result: () => new Response('{"images":[{},', { status: 200, headers: { "content-type": "application/json" } }) });
-    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
     expect(await openWork(appId)).toHaveLength(1);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
     falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
-    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
     expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
   });
 
   it("saves a units header as a figure even when the body broke, and keeps checking while the rate is not known", async () => {
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId: "app_unread" };
     const rows = async () =>
-      (await env.DB.prepare("SELECT id FROM open_work WHERE owner_id = ? ORDER BY id").bind(ref.job).all()).results.map((row) => row.id);
+      (await ledger().prepare("SELECT id FROM open_work WHERE owner_id = ? ORDER BY id").bind(ref.job).all()).results.map((row) => row.id);
     // No estimate in the ledger yet: a header alone is a usable figure, and the body may still matter.
-    expect(await applyFinalResult(env, ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: 4, outputs: null, unread: true }, 3_000)).toBe("retry");
     expect(await rows()).toEqual([`job_figure:${ref.job}:200:4:-`]);
     // Nothing usable at all: nothing saved, still read again.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: null, unread: true }, 3_000)).toBe("retry");
     // A whole success with no other count is still one job, which a price per request settles: kept for the sweep.
-    expect(await applyFinalResult(env, ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("done");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 200, units: null, outputs: null }, 3_000)).toBe("done");
     expect(await rows()).toEqual([`job_figure:${ref.job}:200:-:-`, `job_figure:${ref.job}:200:4:-`]);
     // A whole failure with no count: no rate can ever settle it.
-    expect(await applyFinalResult(env, ref, { status: 422, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
+    expect(await applyFinalResult(env, ledger(), ref, { status: 422, units: null, outputs: null }, 3_000)).toBe("estimate_kept");
   });
 
   it("reads a result again when its body is empty, while the rate needs the outputs (review fixes, round 7)", async () => {
@@ -1405,10 +1406,10 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     await onlyThisApp(appId);
     // A success cut off before its first byte, with no units header.
     falAnswers({ result: () => new Response("", { status: 200, headers: { "content-type": "application/json" } }) });
-    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
     expect(await openWork(appId)).toHaveLength(1);
     falAnswers({ result: () => Response.json({ images: [{}, {}, {}] }) });
-    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
     expect((await charges(appId)).reduce((sum, row) => sum + Number(row.cost_nano), 0)).toBe(30_000_000);
   });
 
@@ -1419,7 +1420,7 @@ describe("what a broken body still settles, and rewrites (review fixes, round 6)
     await onlyThisApp(appId);
     // The price file bills flux/dev per billed unit: a whole body could not help, so the check ends.
     falAnswers({ result: () => new Response(brokenBody(), { status: 200 }) });
-    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 0 });
+    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 0 });
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
   });
@@ -1474,7 +1475,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
   it("ends a per-unit job's check without reading its body when no units header came, even a body that stalls", async () => {
     const { appId, check } = await submittedCheck();
     falAnswers({ result: () => new Response(stalling(), { status: 200 }) });
-    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await checkJob(env, itemOf(check) as never, { ledger: ledger(), now: Date.now(), lastTry: false })).toEqual({ done: true });
     expect(await openWork(appId)).toEqual([]);
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate"]);
   });
@@ -1490,13 +1491,13 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     const { appId, check } = await submittedCheck(PER_IMAGE);
     // A whole success that counts nothing: the estimate stays, and the handler itself ends the check.
     falAnswers({ result: () => Response.json({}) });
-    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await checkJob(env, itemOf(check) as never, { ledger: ledger(), now: Date.now(), lastTry: false })).toEqual({ done: true });
     expect(await openWork(appId)).toEqual([]);
   });
 
   it("never brings back a check when a committed submit batch is replayed", async () => {
     const { appId, check } = await submittedCheck();
-    const estimateRow = (await env.DB.prepare("SELECT * FROM charge WHERE id = ?").bind(String(check.charge_id)).first<Record<string, unknown>>())!;
+    const estimateRow = (await ledger().prepare("SELECT * FROM charge WHERE id = ?").bind(String(check.charge_id)).first<Record<string, unknown>>())!;
     const entry = {
       charge: chargeFromRow(estimateRow),
       openWork: [
@@ -1516,7 +1517,7 @@ describe("deciding before reading, replays and reply sizes (review fixes, round 
     };
     // The sweep ends the check: a whole result, no units header, a rate per billed unit.
     falAnswers({ result: () => Response.json({ images: [{}] }) });
-    expect(await checkJob(env, itemOf(check) as never, { now: Date.now(), lastTry: false })).toEqual({ done: true });
+    expect(await checkJob(env, itemOf(check) as never, { ledger: ledger(), now: Date.now(), lastTry: false })).toEqual({ done: true });
     expect(await openWork(appId)).toEqual([]);
     // The failed-write store replays the submit batch that had committed.
     await writeAtTheirTime([entry]);
@@ -1578,7 +1579,7 @@ describe("a final result's body after the sweep item's time, and the provider's 
       return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
     });
     const kept: Promise<unknown>[] = [];
-    const sweeping = runSweep(env, { now: Date.now() + 5 * 60_000, waitUntil: (work) => kept.push(work) });
+    const sweeping = runSweep(env, ledger(), { now: Date.now() + 5 * 60_000, waitUntil: (work) => kept.push(work) });
     await asked;
     await vi.advanceTimersByTimeAsync(4_800);
     sendHeaders();
@@ -1987,7 +1988,7 @@ describe("one rule for provider redirects on every job route (review fixes, Astr
       status: () => new Response(null, { status: 303, headers: { location: "https://queue.fal.run/fal-ai/flux/requests/req-1" } }),
       result: () => Response.json({ images: [{}] }, { headers: { "x-fal-billable-units": "1" } }),
     });
-    await runSweep(env, { now: Date.now() + 10 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 10 * 60_000 });
     const rows = await charges(appId);
     expect(rows.map((row) => row.kind)).toEqual(["estimate", "correction"]);
     // 1 unit: the $0.05 estimate comes down to $0.025.
@@ -2030,7 +2031,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     // fal confirms it: status COMPLETED, then the result's 499 with client_cancelled.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
     await onlyThisApp(appId);
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(await total(appId)).toBe(0);
     expect(await openWork(appId)).toEqual([]);
   });
@@ -2057,7 +2058,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     // The gateway never saw the cancel: fal's 499 with client_cancelled and no units is its final word.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
     await onlyThisApp(appId);
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect(await total(appId)).toBe(0);
     expect(await openWork(appId)).toEqual([]);
   });
@@ -2078,7 +2079,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
     falAnswers({ result: () => Response.json({ detail: "closed" }, { status: 499 }) });
     await onlyThisApp(appId);
-    expect(await runSweep(env, { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
     expect(await total(appId)).toBe(50_000_000);
   });
 
@@ -2111,7 +2112,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await onlyThisApp(appId);
-    await runSweep(env, { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
     expect(await total(appId)).toBe(0);
   });
@@ -2228,8 +2229,8 @@ describe("cancels, unlisted and video models (step 6b)", () => {
   it("keeps a figure's output unit when it is saved for the sweep", async () => {
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId: "app_videos" };
     const facts = { status: 200, units: null, outputs: { videos: 2 } };
-    expect(await applyFinalResult(env, ref, facts, 1_000)).toBe("done");
-    const row = await env.DB.prepare("SELECT id, detail_json FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ id: string; detail_json: string }>();
+    expect(await applyFinalResult(env, ledger(), ref, facts, 1_000)).toBe("done");
+    const row = await ledger().prepare("SELECT id, detail_json FROM open_work WHERE owner_id = ?").bind(ref.job).first<{ id: string; detail_json: string }>();
     expect(row!.id).toBe(`job_figure:${ref.job}:200:-:2videos`);
     expect(JSON.parse(row!.detail_json).result).toMatchObject({ outputs: { videos: 2 } });
   });
@@ -2263,7 +2264,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
       total_nano: 100_000_000,
     });
     // Once settled, the label is the settlement row's, not the estimate's.
-    const settlement = await env.DB.prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${String(byState.settled!.id)}`).first<{ measured: string }>();
+    const settlement = await ledger().prepare("SELECT measured FROM charge WHERE id = ?").bind(`settle:job:${String(byState.settled!.id)}`).first<{ measured: string }>();
     expect(settlement!.measured).not.toBe("estimated");
     expect(byState.settled!.measured).toBe(settlement!.measured);
     expect(byState.settled!.settled_at).not.toBeNull();
@@ -2278,13 +2279,13 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     falAnswers({});
     await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat" });
     // Another account once owned this app id: its ledger rows stay after the app is deleted.
-    const own = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'").bind(appId).first<Record<string, unknown>>();
+    const own = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? AND owner_type = 'job' AND kind = 'estimate'").bind(appId).first<Record<string, unknown>>();
     const copy: Record<string, unknown> = { ...own!, id: `other:${String(own!.id)}`, account_id: "acc_other_account", owner_id: "other-job", end_user_id: "someone-else" };
     const columns = Object.keys(copy);
-    await env.DB.prepare(`INSERT INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+    await ledger().prepare(`INSERT INTO charge (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
       .bind(...columns.map((column) => copy[column] ?? null))
       .run();
-    await env.DB.prepare(
+    await ledger().prepare(
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, created_at)
        VALUES ('other:work', 'job_check', 'acc_other_account', ?, 'job', 'other-job', 0, 0)`,
     ).bind(appId).run();
@@ -2300,7 +2301,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     expect(body.total).toBe(1);
     expect(body.jobs.map((job) => job.end_user_id)).not.toContain("someone-else");
     expect(body.jobs.map((job) => job.id)).not.toContain("other-job");
-    await env.DB.prepare("DELETE FROM open_work WHERE id = 'other:work'").run();
+    await ledger().prepare("DELETE FROM open_work WHERE id = 'other:work'").run();
   });
 
   it("reads fal's confirmed cancel as final, with its units when fal reports them, and nothing else", () => {

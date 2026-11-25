@@ -442,8 +442,8 @@ describe("expired challenges", () => {
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('old-tried', ?, ?, 1)").bind(appId, now - 1000),
       env.DB.prepare("INSERT INTO app_auth_challenge(challenge, app_id, expires_at, attempted) VALUES ('fresh', ?, ?, 0)").bind(appId, now + 60_000),
     ]);
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 0, deleted: 0, selected: 0 });
     const events = await authEvents(appId);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ id: "challenge:old-unused", outcome: "abandoned", created_at: now - 1000 - 300_000 });
@@ -467,7 +467,7 @@ describe("expired challenges", () => {
         ),
       ),
     );
-    expect(await settleExpiredChallenges(env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
+    expect(await settleExpiredChallenges(env, env.DB, now)).toEqual({ abandoned: 3, deleted: 3, selected: 3 });
     const versions = Object.fromEntries((await authEvents(appId)).map((event: any) => [event.id, event.app_version]));
     expect(versions).toEqual({ "challenge:free-text": null, "challenge:version": "1.2.3 (45)", "challenge:none": null });
   });
@@ -490,15 +490,15 @@ describe("expired challenges", () => {
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
     // A batch of 2 stands in for 1,000: the oldest two go first.
-    expect(await settleExpiredChallenges(env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
+    expect(await settleExpiredChallenges(env, env.DB, now, 2)).toEqual({ abandoned: 1, deleted: 2, selected: 2 });
     const left = await env.DB.prepare("SELECT challenge FROM app_auth_challenge ORDER BY expires_at").all<{ challenge: string }>();
     expect(left.results.map((row) => row.challenge)).toEqual(["backlog-2", "backlog-3", "backlog-4"]);
     // The hourly drain goes on while batches come back full, up to its limit, and says a backlog is left.
-    expect(await drainExpiredChallenges(env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 1, now, 2)).toEqual({ abandoned: 2, deleted: 2, batches: 1 });
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     // With room for more batches it clears the rest in one run, and stops at the first batch that is not full.
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 1, deleted: 1, batches: 1 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 0, deleted: 0, batches: 1 });
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toHaveLength(1);
     const versions = (await authEvents(appId)).map((event: any) => event.app_version).sort();
     expect(versions).toEqual(["1.0.0", "1.0.2", "1.0.3", "1.0.4"]);
@@ -515,7 +515,7 @@ describe("expired challenges", () => {
     );
     const warned: string[] = [];
     vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
-    expect(await drainExpiredChallenges(env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
+    expect(await drainExpiredChallenges(env, env.DB, 5, now, 2)).toEqual({ abandoned: 5, deleted: 5, batches: 3 });
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
     expect(warned.filter((line) => line.includes('"message":"auth_challenges_backlog_left"'))).toEqual([]);
   });
@@ -531,19 +531,28 @@ describe("expired challenges", () => {
     );
     // The first batch selects race-0 and race-1; a clean-up started by a challenge request deletes race-0 before it writes.
     let raced = false;
+    // Another clean-up deletes a challenge of the batch just before this one's delete runs.
     const db = new Proxy(env.DB, {
       get(target, property, receiver) {
-        if (property !== "batch") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
-        return async (statements: D1PreparedStatement[]) => {
-          if (!raced) {
-            raced = true;
-            await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
-          }
-          return target.batch(statements);
+        if (property !== "prepare") return Reflect.get(target, property, receiver)?.bind?.(target) ?? Reflect.get(target, property, receiver);
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.startsWith("DELETE FROM app_auth_challenge WHERE challenge IN")) return statement;
+          return {
+            bind: (...values: unknown[]) => ({
+              run: async () => {
+                if (!raced) {
+                  raced = true;
+                  await target.prepare("DELETE FROM app_auth_challenge WHERE challenge = 'race-0'").run();
+                }
+                return statement.bind(...values).run();
+              },
+            }),
+          };
         };
       },
     });
-    expect(await drainExpiredChallenges(db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
+    expect(await drainExpiredChallenges(env, db, 5, now, 2)).toMatchObject({ deleted: 4, batches: 3 });
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_auth_challenge").first<{ n: number }>())?.n).toBe(0);
   });
 

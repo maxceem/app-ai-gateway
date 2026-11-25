@@ -29,6 +29,7 @@ import {
   seedAccount,
   seedAppKey,
   seedManagementKey,
+  ledger,
 } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -92,7 +93,7 @@ async function post(path: string, key: string, body: unknown, headers: Record<st
 }
 
 async function charges(appId: string): Promise<Record<string, any>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY seq").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY seq").bind(appId).all();
   return results;
 }
 
@@ -108,7 +109,7 @@ function fakeContext(environment: Env = env): { c: ProxyContext; done: () => Pro
 
 /** The charge rows one call wrote. */
 async function chargesOfCall(requestId: string): Promise<Record<string, any>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE owner_id = ? ORDER BY seq").bind(requestId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE owner_id = ? ORDER BY seq").bind(requestId).all();
   return results;
 }
 

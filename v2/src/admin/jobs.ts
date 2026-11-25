@@ -6,6 +6,7 @@
  * (`kind = 'estimate'`, `owner_type = 'job'`), its corrections, and the
  * open-work rows the sweep still holds for it.
  */
+import { ledgerDb } from "../ledger/database.ts";
 import type { Context } from "hono";
 import { JobListQuerySchema } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
@@ -80,9 +81,10 @@ export async function listAppJobs(c: AdminContext): Promise<Response> {
         WHERE account_id = ?1 AND app_id = ?2 AND owner_type = 'job' AND kind = 'estimate' AND used_at >= ?3${settledFilter}`;
   // One batch, so one snapshot: the filter and each job's corrections and work
   // are read together, and a settlement written meanwhile shows in both or neither.
-  const [total, page] = await c.env.DB.batch([
-    c.env.DB.prepare(`SELECT COUNT(*) AS value ${jobs}`).bind(actor.accountId, appId, since),
-    c.env.DB.prepare(
+  const ledger = ledgerDb(c.env, actor.accountId);
+  const [total, page] = await ledger.batch([
+    ledger.prepare(`SELECT COUNT(*) AS value ${jobs}`).bind(actor.accountId, appId, since),
+    ledger.prepare(
       `SELECT owner_id, provider_connection_id, operation, model, end_user_id, used_at, cost_nano, measured, price_source,
               (SELECT SUM(fix.cost_nano) FROM charge AS fix
                 WHERE fix.owner_type = 'job' AND fix.owner_id = charge.owner_id AND fix.kind = 'correction'

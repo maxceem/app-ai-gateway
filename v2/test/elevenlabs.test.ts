@@ -17,7 +17,7 @@ import { attemptCostUsd, headerNumber } from "../src/proxy/meter.ts";
 import { checkAppConfig } from "../src/admin/apps.ts";
 import { servedNow } from "../src/pricing/billability.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
-import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-elevenlabs-key-5678";
@@ -70,12 +70,12 @@ async function upload(path: string, key: string, fields: Record<string, string |
 }
 
 async function openWorkFor(chargeId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM open_work WHERE charge_id = ?").bind(chargeId).all();
+  const { results } = await ledger().prepare("SELECT * FROM open_work WHERE charge_id = ?").bind(chargeId).all();
   return results;
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 

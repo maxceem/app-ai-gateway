@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement } from "./helpers.ts";
+import { clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, ledger } from "./helpers.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
@@ -273,7 +273,7 @@ describe("a call made with what the management API created", () => {
     await response.text();
     await waitOnExecutionContext(ctx);
     expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe("Bearer sk-live-secret-abcd");
-    const charge = await env.DB.prepare("SELECT status, price_source FROM charge WHERE app_id = ?").bind(app.body.app.id).first();
+    const charge = await ledger().prepare("SELECT status, price_source FROM charge WHERE app_id = ?").bind(app.body.app.id).first();
     expect(charge).toEqual({ status: "ok", price_source: "list_rate" });
   });
 });

@@ -17,6 +17,8 @@ import {
   seedRoutedApp,
   signedProof,
   tokenForInstall,
+  ledger,
+  withLedgerDb,
 } from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
@@ -87,7 +89,7 @@ async function expectedCost(): Promise<number> {
 }
 
 async function chargesOf(appId: string): Promise<Record<string, unknown>[]> {
-  const { results } = await env.DB.prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
+  const { results } = await ledger().prepare("SELECT * FROM charge WHERE app_id = ? ORDER BY written_at, id").bind(appId).all();
   return results;
 }
 
@@ -222,7 +224,7 @@ describe("OpenAI chat through the proxy", () => {
     await waitOnExecutionContext(ctx);
     const [charge] = await chargesOf(appId);
     expect(charge).toMatchObject({ price_source: "unresolved", cost_nano: null, measured: "complete", input_tokens: 800 });
-    const work = await env.DB.prepare("SELECT kind, charge_id FROM open_work WHERE charge_id = ?").bind(charge!.id).first();
+    const work = await ledger().prepare("SELECT kind, charge_id FROM open_work WHERE charge_id = ?").bind(charge!.id).first();
     expect(work).toEqual({ kind: "unresolved", charge_id: charge!.id });
   });
 
@@ -241,14 +243,14 @@ describe("OpenAI chat through the proxy", () => {
     expect(await response.json()).toMatchObject({ error: { code: "model_not_allowed", data: { model: "gpt-4o" } } });
     await waitOnExecutionContext(ctx);
     expect(fetchSpy).not.toHaveBeenCalled();
-    const event = await env.DB.prepare("SELECT reason, model, operation, user_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    const event = await ledger().prepare("SELECT reason, model, operation, user_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
     expect(event).toEqual({ reason: "model_not_allowed", model: "gpt-4o", operation: "openai.chat", user_id: "user-7" });
   });
 
   it("records a path the app does not allow, samples once a minute per user and reason, and records nothing for an unproven caller (v1 config-refusals)", async () => {
     const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
     const rejections = async () =>
-      (await env.DB.prepare("SELECT reason, user_id, operation FROM app_rejection_event WHERE app_id = ? ORDER BY id").bind(appId).all()).results;
+      (await ledger().prepare("SELECT reason, user_id, operation FROM app_rejection_event WHERE app_id = ? ORDER BY id").bind(appId).all()).results;
     // The sampling is per wall-clock minute: the clock is held inside one, a second
     // apart per call so the rows keep their order (Gemini Neon 7b-4).
     let clock = Date.parse("2026-11-20T12:00:00Z");
@@ -346,7 +348,7 @@ describe("OpenAI chat through the proxy", () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     let written = false;
-    const slowDb = new Proxy(env.DB, {
+    const slowLedger = (real: D1Database) => new Proxy(real, {
       get(target, property) {
         if (property === "batch") {
           return async (statements: D1PreparedStatement[]) => {
@@ -363,7 +365,7 @@ describe("OpenAI chat through the proxy", () => {
     const { response, ctx } = await call(
       `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`,
       chatRequest(key, { model: "gpt-4o-mini" }),
-      { ...env, DB: slowDb } as Env,
+      withLedgerDb(env, slowLedger),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ choices: [] });
@@ -493,7 +495,7 @@ describe("review fixes", () => {
     const replay = await send();
     expect(replay.response.status).toBe(403);
     await waitOnExecutionContext(replay.ctx);
-    const event = await env.DB.prepare("SELECT reason, scope FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    const event = await ledger().prepare("SELECT reason, scope FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
     expect(event).toEqual({ reason: "blocked_replay", scope: "install" });
   });
 
@@ -550,14 +552,14 @@ describe("second review fixes", () => {
     const { appId, key } = await setup();
     const { ctx } = await call(`/v2/apps/${appId}/proxy/sk-live-0123456789/v1/chat/completions`, chatRequest(key, { model: "gpt-4o-mini" }));
     await waitOnExecutionContext(ctx);
-    const event = await env.DB.prepare("SELECT provider_slug, reason FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
+    const event = await ledger().prepare("SELECT provider_slug, reason FROM app_rejection_event WHERE app_id = ?").bind(appId).first();
     expect(event).toEqual({ provider_slug: "unrecognized", reason: "provider_not_configured" });
   });
 
   it("records a refused request's model only when the gateway knows it, never the caller's own text (F3, Sol 7b-4)", async () => {
     const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
     const models = async () =>
-      (await env.DB.prepare("SELECT model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at").bind(appId).all<{ model: string }>()).results.map(
+      (await ledger().prepare("SELECT model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at").bind(appId).all<{ model: string }>()).results.map(
         (row) => row.model,
       );
     // A key put in the model field by mistake is never stored.
@@ -570,7 +572,7 @@ describe("second review fixes", () => {
     const { appId, slug, key } = await setup({ models: ["gpt-4o-mini"] });
     const { ctx } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chatRequest(key, { model: "gpt-4o" }));
     await waitOnExecutionContext(ctx);
-    const event = await env.DB.prepare("SELECT model, account_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string; account_id: string }>();
+    const event = await ledger().prepare("SELECT model, account_id FROM app_rejection_event WHERE app_id = ?").bind(appId).first<{ model: string; account_id: string }>();
     expect(event).toEqual({ model: "gpt-4o", account_id: ACCOUNT_ID });
   });
 

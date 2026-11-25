@@ -17,6 +17,7 @@
  * default the last 30. Otherwise `from` and `to` each bound the read on their
  * own, as in v1: `to` alone reads everything kept up to that day.
  */
+import { ledgerDb } from "../ledger/database.ts";
 import type { Context } from "hono";
 import type { OperationResponse } from "../contracts/catalog.ts";
 import {
@@ -119,7 +120,7 @@ export async function listAppAuthEvents(c: AdminContext): Promise<Response> {
   const appId = c.req.param("app")!;
   const query = parseQuery(c, AuthEventListQuerySchema);
   await appExists(c.env.DB, actor.accountId, appId);
-  const { rows, nextBefore } = await listEvents<AuthEventRow>(c.env.DB, {
+  const { rows, nextBefore } = await listEvents<AuthEventRow>(ledgerDb(c.env, actor.accountId), {
     table: "app_auth_event",
     accountId: actor.accountId,
     columns:
@@ -146,7 +147,7 @@ export async function listAppRejectionEvents(c: AdminContext): Promise<Response>
   const appId = c.req.param("app")!;
   const query = parseQuery(c, RejectionEventListQuerySchema);
   await appExists(c.env.DB, actor.accountId, appId);
-  const { rows, nextBefore } = await listEvents<RejectionEventRow>(c.env.DB, {
+  const { rows, nextBefore } = await listEvents<RejectionEventRow>(ledgerDb(c.env, actor.accountId), {
     table: "app_rejection_event",
     accountId: actor.accountId,
     columns:
@@ -238,9 +239,15 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
   const end = Date.parse(`${today}T00:00:00Z`) + DAY_MS;
   const start = end - days * DAY_MS;
   const from = new Date(start).toISOString().slice(0, 10);
-  const db = c.env.DB;
+  // Events and totals from the account's ledger, pending users from D1: two
+  // queries (plan, step 8f).
+  const db = ledgerDb(c.env, actor.accountId);
   const window = "app_id = ?1 AND account_id = ?2 AND created_at >= ?3 AND created_at < ?4";
-  const [auth, networks, failed, rejections, waitTotals, p50, p95, pending, appleRow] = await db.batch([
+  // Active users only: a blocked user's wait can never end. And only waits that
+  // began inside the events' retention: an older one belongs to a user who has
+  // not been back since, and its events are gone (Fable 7b-4).
+  const pendingRead = c.env.DB.prepare(PENDING_USERS).bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS).all();
+  const eventsRead = db.batch([
     db
       .prepare(
         `SELECT ${DAY_OF("created_at")} AS date, event, outcome, reason, COUNT(*) AS count
@@ -266,12 +273,9 @@ export async function getAppAuthEventSummary(c: AdminContext): Promise<Response>
     db.prepare(CLAIM_WAIT_TOTALS).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(50)).bind(appId, actor.accountId, start, end),
     db.prepare(claimWaitAt(95)).bind(appId, actor.accountId, start, end),
-    // Active users only: a blocked user's wait can never end. And only waits that
-    // began inside the events' retention: an older one belongs to a user who has
-    // not been back since, and its events are gone (Fable 7b-4).
-    db.prepare(PENDING_USERS).bind(appId, Date.now() - DIAGNOSTICS_RETENTION_DAYS * DAY_MS),
     db.prepare(APPLE_FAILURES).bind(appId, actor.accountId, start, end),
   ]);
+  const [[auth, networks, failed, rejections, waitTotals, p50, p95, appleRow], pending] = await Promise.all([eventsRead, pendingRead]);
   const all = <T>(result: D1Result | undefined) => (result?.results ?? []) as T[];
   const dailyRows = all<Summary["daily"][number]>(auth);
   let exchangeTotal = 0;
