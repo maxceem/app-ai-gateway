@@ -3,7 +3,8 @@
  * nothing and holds nothing. It answers each text API style the gateway
  * serves, with that style's usage:
  *
- * - `POST /v1/chat/completions`: Chat Completions. Its usage also carries
+ * - `POST /v1/chat/completions`, and `/orchestrator/v1/chat/completions` as
+ *   Perplexity's Orchestrator API: Chat Completions. Its usage also carries
  *   `cost`, as OpenRouter's does: $1 per million prompt tokens, so a
  *   connection that reads a provider's own cost can be checked against it.
  * - `POST /v1/responses`: the Responses API.
@@ -376,7 +377,8 @@ function answerFor(path: string): Answer | null {
   if (path === "/v1/speech-to-text") return elevenStt;
   if (path === "/v1/listen") return deepgramListen;
   if (/^\/fal-ai\/[^/]+(?:\/[^/]+)*$/u.test(path)) return falRun;
-  if (path === "/v1/chat/completions") return chat;
+  // Perplexity's Orchestrator API, where maker/model ids go.
+  if (path === "/v1/chat/completions" || path === "/orchestrator/v1/chat/completions") return chat;
   if (path === "/v1/responses") return responses;
   if (path === "/v1/messages") return messages;
   if (/^\/v1beta\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/u.test(path)) return gemini;
