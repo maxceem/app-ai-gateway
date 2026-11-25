@@ -62,11 +62,12 @@ imports are fine.
 
 ## One compatibility date
 
-Keep one Workers `compatibility_date` per Worker, in its `wrangler.jsonc`
-(`v2/wrangler.jsonc` [v1: `wrangler.jsonc`]), for every deployment:
-self-hosted, hosted and tests alike. Don't set another in a deployment
-profile overlay unless it is absolutely necessary and the owner has
-confirmed it. The release's prebuilt deploy refuses one anyway.
+Keep one Workers `compatibility_date` for every deployment: self-hosted,
+hosted and tests alike. Every Worker's wrangler config in this branch
+(`v2/wrangler.jsonc` [v1: `wrangler.jsonc`]) carries that same date, and they
+change together. Don't set another in a deployment profile overlay unless it
+is absolutely necessary and the owner has confirmed it. The release's
+prebuilt deploy refuses one anyway.
 
 ## Docs deployment
 
