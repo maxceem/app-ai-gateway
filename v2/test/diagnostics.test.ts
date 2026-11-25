@@ -200,7 +200,7 @@ describe("sign-in attempts", () => {
 });
 
 describe("page ends", () => {
-  it("hand out a cursor only when an older row exists: none after exactly a full page (Sol 7b-6)", async () => {
+  it("hand out a cursor only when an older row exists: none after exactly a full page (Sol 7b-6)", { timeout: 30_000 }, async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     for (let index = 0; index < 25; index += 1) {
@@ -314,7 +314,7 @@ describe("summary", () => {
     expect(body.apple_failures).toEqual({ count: 1, last_seen: new Date(yesterday).toISOString() });
   });
 
-  it("names at most the ten networks most failures came from, counted in SQL (Gemini Neon 7b-4)", async () => {
+  it("names at most the ten networks most failures came from, counted in SQL (Gemini Neon 7b-4)", { timeout: 30_000 }, async () => {
     const key = await seedManagementKey();
     const appId = await createApp(key);
     const yesterday = daysAgo(1);

@@ -670,6 +670,12 @@ describe("signing, refunds, the sweep's pace and its limits (review fixes)", () 
   });
 });
 
+/**
+ * A sweep batch that takes every due row: other tests' failed-write stores may
+ * still be writing their work into the shared ledger after `onlyThisApp`.
+ */
+const SWEEP_EVERY_DUE_ROW = 1_000;
+
 /** The test database is shared: the sweep must see only this test's work. */
 function onlyThisApp(appId: string) {
   return ledger().prepare("DELETE FROM open_work WHERE app_id != ?").bind(appId).run();
@@ -2033,7 +2039,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     // fal confirms it: status COMPLETED, then the result's 499 with client_cancelled.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
     await onlyThisApp(appId);
-    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000, batch: SWEEP_EVERY_DUE_ROW });
     expect(await total(appId)).toBe(0);
     expect(await openWork(appId)).toEqual([]);
   });
@@ -2060,7 +2066,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     // The gateway never saw the cancel: fal's 499 with client_cancelled and no units is its final word.
     falAnswers({ status: () => Response.json({ status: "COMPLETED", error_type: "client_cancelled" }), result: cancelledResult });
     await onlyThisApp(appId);
-    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000, batch: SWEEP_EVERY_DUE_ROW });
     expect(await total(appId)).toBe(0);
     expect(await openWork(appId)).toEqual([]);
   });
@@ -2081,7 +2087,8 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     await submitModel(appId, slug, key, "fal-ai/flux/dev", { prompt: "a cat", num_images: 2 });
     falAnswers({ result: () => Response.json({ detail: "closed" }, { status: 499 }) });
     await onlyThisApp(appId);
-    expect(await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 })).toMatchObject({ retried: 1 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000, batch: SWEEP_EVERY_DUE_ROW });
+    expect((await openWork(appId)).map((row) => row.tries)).toEqual([1]);
     expect(await total(appId)).toBe(50_000_000);
   });
 
@@ -2114,7 +2121,7 @@ describe("cancels, unlisted and video models (step 6b)", () => {
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await call("GET", `/v2/apps/${appId}/jobs/${jobId}`, key);
     await onlyThisApp(appId);
-    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000 });
+    await runSweep(env, ledger(), { now: Date.now() + 5 * 60_000, batch: SWEEP_EVERY_DUE_ROW });
     expect((await charges(appId)).map((row) => row.kind)).toEqual(["estimate", "correction"]);
     expect(await total(appId)).toBe(0);
   });
