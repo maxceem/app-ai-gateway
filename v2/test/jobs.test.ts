@@ -1571,6 +1571,8 @@ describe("a final result's body after the sweep item's time, and the provider's 
     let sendHeaders!: () => void;
     const headers = new Promise<void>((resolve) => (sendHeaders = resolve));
     let bodyStream!: ReadableStreamDefaultController<Uint8Array>;
+    let reading!: () => void;
+    const readStarted = new Promise<void>((resolve) => (reading = resolve));
     fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/status")) return Response.json({ status: "COMPLETED" });
       // The test sends the headers 4.8 s into the item and the body at 5.2 s: after the item's 5 s limit.
@@ -1583,6 +1585,9 @@ describe("a final result's body after the sweep item's time, and the provider's 
           bodyStream = controller;
           signal?.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
         },
+        pull() {
+          reading();
+        },
       });
       return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
     });
@@ -1591,6 +1596,8 @@ describe("a final result's body after the sweep item's time, and the provider's 
     await asked;
     await vi.advanceTimersByTimeAsync(4_800);
     sendHeaders();
+    // The body is read once the estimate is read from the ledger, which takes real time.
+    await readStarted;
     await vi.advanceTimersByTimeAsync(400); // the item's 5 s limit passes
     bodyStream.enqueue(new TextEncoder().encode(JSON.stringify({ images: [{}, {}, {}] })));
     bodyStream.close();
