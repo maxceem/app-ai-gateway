@@ -1,4 +1,7 @@
+import { errorFacts } from "./error-facts.ts";
 import { GatewayError } from "./errors.ts";
+import { log } from "./log.ts";
+import { serviceUnavailable } from "./platform-errors.ts";
 
 const encoder = new TextEncoder();
 
@@ -231,9 +234,19 @@ export async function enforceEndpointRateLimit(
   const policy = ENDPOINT_RATE_LIMITS[name];
   const subject = `${name}:${scopeId}`;
   const objectName = `endpoint-rate:${await subjectDigest(subject)}`;
-  const result = await env.FLOOD_LIMITER
-    .getByName(objectName)
-    .check({ limit: policy.limit, windowMs: policy.windowMs });
+  let result: Awaited<ReturnType<ReturnType<Env["FLOOD_LIMITER"]["getByName"]>["check"]>>;
+  try {
+    result = await env.FLOOD_LIMITER
+      .getByName(objectName)
+      .check({ limit: policy.limit, windowMs: policy.windowMs });
+  } catch (error) {
+    // The limiter is a Durable Object: when it fails (Cloudflare's daily
+    // limits reached, a restart), the caller gets a retryable 503, as the App
+    // Attest replay check gives, not a 500. Refusing is right: this check
+    // guards sign-in and other abuse-prone routes.
+    log("error", "flood_limit_unchecked", { policy: name, error: errorFacts(error) });
+    throw serviceUnavailable("platform_unavailable", "The gateway could not check this request; retry shortly", error);
+  }
   if (result.allowed) return;
 
   const resetAt = new Date(

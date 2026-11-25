@@ -372,25 +372,30 @@ Lowering the value shortens that wait; it does not reserve time for fallbacks.
 
 ## Nightly maintenance
 
+Each account's usage history keeps itself in order once a night, after 04:00
+UTC, in its own Durable Object (see
+[Retention](/self-hosting/operations#retention)). Two limits bound each
+account's run. A run stops at a limit and continues the next night, so a
+backlog is only deferred, never lost.
+
 ### `MAINTENANCE_QUERY_BUDGET`
 
-Plain variable, default `50`. How many D1 queries the nightly maintenance cron
-may issue in one run: it prunes sign-in history, expires finished CLI
-authorizations, and compacts usage history into its rollups. The same
-trigger settles expired App Attest challenges every hour; in the nightly run
-that counts against this budget too.
+Plain variable, default `50`. How many statements one account's nightly run
+may issue. The same number also bounds the D1 queries of the hourly clean-up
+at 03:17 and 04:17 UTC. On Cloudflare's Free plan a Worker invocation may
+issue 50 D1 queries, and 1,000 on the Workers Paid plan. A value below `20`, or
+not a whole number, is ignored; one above `1000` is lowered to `1000`.
 
-Every D1 query is a subrequest, and a Worker invocation may issue 50 of them on
-the Cloudflare Free plan and 1,000 on the Workers Paid plan. The default is the
-Free number, so a gateway installed with one click stays inside it without
-being asked anything. The run stops at the budget and continues the next night,
-which is why exceeding it is never necessary: nothing is lost, only deferred.
+### `MAINTENANCE_ROW_BUDGET`
 
-Raise it only if you are on the Workers Paid plan and have a backlog worth
-draining faster — after a long period of heavy traffic, or after restoring an
-old database. Values below `20` are ignored, and so is anything that is not a
-whole number. Set it in the dashboard under **Settings → Variables**, or in a
-profile overlay; it is deliberately not part of the one-click form.
+Plain variable, default `20000`. How many rows one account's nightly run may
+write. Cloudflare's Free plan allows 100,000 row writes a day across the
+whole Cloudflare account, and the apps need the rest. A value below `1000` is
+ignored; one above `5000000` is lowered to `5000000`.
+
+Raise either only on the Workers Paid plan, with a backlog worth clearing
+faster. Set them in the dashboard under **Settings → Variables**, or in a
+profile overlay; they are deliberately not part of the one-click form.
 
 ## Legal links
 
@@ -548,6 +553,7 @@ is only logged, so the bound Worker cannot slow down or change a sign-up.
 | `OAUTH_CLIENTS` | Variable | Unset |
 | `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
+| `MAINTENANCE_ROW_BUDGET` | Variable | `20000` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
 | `MANAGEMENT_ANALYTICS` | Analytics Engine binding | Unset (nothing recorded) |
 | `CONVERSATIONS` | R2 bucket binding | Unset (conversation storage unavailable) |

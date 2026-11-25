@@ -53,6 +53,14 @@ then write to the ledger.
 A change to a ledger table is a new version at the end of `LEDGER_SCHEMA`,
 never an edit of a merged one. Each object applies it when it next wakes.
 
+v2 has no way to delete an account yet. Whatever adds one must also clear
+that account's ledger object. Inside the object: `ctx.storage.deleteAlarm()`,
+then `ctx.storage.deleteAll()`, then run the schema setup again
+(`migrateLedger`) so the live instance has empty tables, and return normally.
+The caller then gets a plain success or a real error. Rows may come back
+from a late failed-write retry, or from alarm work that was already running;
+their detail ages out, and a monthly total may stay. That is accepted.
+
 ## The two kinds of limits
 
 Don't confuse the two kinds of limits. They never read each other.

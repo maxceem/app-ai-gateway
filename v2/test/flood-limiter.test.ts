@@ -11,6 +11,9 @@ import {
   enforceEndpointRateLimit,
 } from "../src/core/flood-limit.ts";
 import type { FloodLimiter } from "../src/do/FloodLimiter";
+import worker from "../src/index.ts";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { seedApp } from "./helpers.ts";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -215,6 +218,39 @@ describe("enforceEndpointRateLimit", () => {
     });
     // Another scope is counted on its own.
     await expect(enforceEndpointRateLimit(env, "app_auth_challenge", `${scopeId}:other`)).resolves.toBeUndefined();
+  });
+
+  it("answers a retryable 503 when the limiter object fails, not a 500", async () => {
+    const down = {
+      ...env,
+      FLOOD_LIMITER: { getByName: () => ({ check: async () => { throw new Error("Exceeded allowed rows read in Durable Objects free tier."); } }) },
+    } as unknown as Env;
+    await expect(enforceEndpointRateLimit(down, "app_auth_token", "app:x")).rejects.toMatchObject({
+      status: 503,
+      code: "service_unavailable",
+      reason: "platform_unavailable",
+    });
+  });
+
+  it("refuses a token exchange with a retryable 503 when the limiter object fails", async () => {
+    const appId = await seedApp({ type: "api_key", end_user: { source: "none" } });
+    const down = {
+      ...env,
+      FLOOD_LIMITER: { getByName: () => ({ check: async () => { throw new Error("Durable Object reset"); } }) },
+    } as unknown as Env;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`https://gateway.test/v2/apps/${appId}/auth/token`, {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.21" },
+      }),
+      down,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).not.toBeNull();
   });
 });
 
