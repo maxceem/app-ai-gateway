@@ -785,7 +785,8 @@ export interface ProviderDescription {
    * API styles as it defines them (`./custom.ts`), and a built-in
    * connection's base URL on one of them is its plain address. `*.` names
    * every host under one, as `*.api.openai.com` does OpenAI's data residency
-   * hosts.
+   * hosts. A name may carry the API's path, as `hosts` do
+   * (`eu.openrouter.ai/api`): that path is then the plain address there.
    */
   readonly otherHosts?: readonly string[];
   /**

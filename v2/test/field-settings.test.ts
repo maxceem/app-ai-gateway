@@ -366,6 +366,9 @@ describe("saving a listing", () => {
     ["openai", "https://api.openai.com/v1/", "https://api.openai.com/"],
     ["openai", "https://eu.api.openai.com/v1/", "https://eu.api.openai.com/"],
     ["openrouter", "https://openrouter.ai/", "https://openrouter.ai/api/"],
+    // Its in-region hosts keep its API path.
+    ["openrouter", "https://eu.openrouter.ai/", "https://eu.openrouter.ai/api/"],
+    ["openrouter", "https://us.openrouter.ai/v1/", "https://us.openrouter.ai/api/"],
     ["elevenlabs", "https://api.elevenlabs.io/v1/", "https://api.elevenlabs.io/"],
   ])("takes only the plain address on %s's own host", async (type, wrong, plain) => {
     const refused = await create({ type, baseUrl: wrong });

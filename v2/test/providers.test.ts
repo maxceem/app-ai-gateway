@@ -245,6 +245,16 @@ describe("text APIs through the proxy", () => {
     ]);
   });
 
+  it("sends an OpenRouter connection on its in-region host under its API path", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] }, { baseUrl: "https://eu.openrouter.ai/api/" });
+    fetchSpy.mockResolvedValue(Response.json({ model: "x/y", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0012 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "some-lab/unlisted-model" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent().url).toBe("https://eu.openrouter.ai/api/v1/chat/completions");
+  });
+
   it("leaves an OpenRouter answer that reports no cost unresolved, and asks the sweep to price its tokens once a rate exists (4b F3)", async () => {
     const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);

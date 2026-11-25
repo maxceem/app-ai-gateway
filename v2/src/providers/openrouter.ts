@@ -13,7 +13,7 @@ export const openrouter = defineProvider({
   label: "OpenRouter",
   hosts: { main: "openrouter.ai/api" },
   // Its in-region hosts (docs: guides/features/in-region-routing).
-  otherHosts: ["us.openrouter.ai", "eu.openrouter.ai"],
+  otherHosts: ["us.openrouter.ai/api", "eu.openrouter.ai/api"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // Its key-status call: `v1/models` is public and answers any token.
   probe: { path: "v1/key" },

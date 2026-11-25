@@ -288,7 +288,7 @@ function hostOf(baseUrl: string): string | null {
 export function declaredHostNames(description: ProviderDescription): readonly string[] {
   return [
     ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
-    ...(description.otherHosts ?? []).map((value) => value.toLowerCase()),
+    ...(description.otherHosts ?? []).map((value) => value.split("/")[0]!.toLowerCase()),
   ];
 }
 
