@@ -148,6 +148,8 @@ Orchestrator API. The charge is for the model that served the request.
 - An Agent API `effort` or `profile` can bring a `models` list of its own. A
   request that sends one with `model` and no `models` list is sent with
   `models` set to that one model, so Perplexity uses only the model checked.
+- A request that spells one of these fields in another letter case, such as
+  `Model` or `ROUTING`, is refused: Perplexity may read it as the field.
 - A request that names no model is refused, because Perplexity would choose
   one. That includes an Agent API `effort` or `profile` sent with no `model`
   or `models`, and `perplexity/auto` sent with no `routing` block. A preset
@@ -159,12 +161,13 @@ One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
 Sonar and the Agent API report what each request cost, including Sonar's
 request fee and the Agent API's tools such as web search, and that figure is
 what is charged. Perplexity rounds it to five decimals, so a very small
-request can read $0. When that is less than Perplexity's own rates for the
-request by no more than the rounding, the request is charged at the model's
-price instead, marked as an estimate. For a model with no price, such a figure
-is treated like a missing one. An answer without the figure is charged at the
-model's price, marked as an estimate. If the model has no price, the request's
-cost is left unknown until you add one.
+request can read $0. When a figure under $0.001 is less than Perplexity's own
+price for the request by no more than the rounding, Perplexity's price is
+charged instead, marked as an estimate. For a model with no price, such a
+figure is treated like a missing one. An answer without the figure is charged
+at the model's price, marked as an estimate. If the model has no price, the
+request's cost is left unknown until you add one. This applies to every
+provider that reports its own cost.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,

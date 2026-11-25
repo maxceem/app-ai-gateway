@@ -15,7 +15,7 @@
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { callGap, modelSet, resolveAlternative, type Billing, type PriceSources } from "../pricing/billability.ts";
-import { readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { ServiceMode, ServiceModeValue } from "../usage/service-modes.ts";
 import type { CallAttempt } from "./call-charge.ts";
 import { requestedServiceMode } from "./meter.ts";
@@ -123,6 +123,12 @@ export function savedAlternativesProblem(
   model: string,
   sources: PriceSources,
 ): string | null {
+  try {
+    refuseMiscasedModelKeys(description, operation, body);
+  } catch (error) {
+    if (error instanceof GatewayError) return error.message;
+    throw error;
+  }
   for (const [named, field] of namedAlternatives(description, operation, body)) {
     const call = resolveAlternative(operation, sources, named, new Set([model]), { asIfServed: true });
     if (call.kind === "refused") {
@@ -136,6 +142,37 @@ export function savedAlternativesProblem(
 }
 
 /**
+ * Refuses a body that names a model under a key the operation reads in
+ * another letter case, such as `Model` or `ROUTING`: a provider whose JSON
+ * decoder matches keys regardless of case (Perplexity's look like Go's) would
+ * read it, and the gateway, reading the exact key, would judge another model
+ * or none. Checked at every level a model is read at: the model field, each
+ * `alternativeModels` path and each object on it. A well-formed request never
+ * has one.
+ */
+function refuseMiscasedModelKeys(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): void {
+  const field = modelBodyField(operation);
+  const paths = [...(field === null ? [] : [field]), ...(readingRules(description, operation).alternativeModels?.paths ?? [])];
+  for (const path of paths) {
+    let level: unknown[] = [body];
+    for (const segment of path.split(".")) {
+      const key = segment.endsWith("[]") ? segment.slice(0, -2) : segment;
+      const next: unknown[] = [];
+      for (const value of level) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+        const miscased = Object.keys(value).find((name) => name !== key && name.toLowerCase() === key.toLowerCase());
+        if (miscased !== undefined) throw new GatewayError(400, "invalid_request", `${miscased} must be spelled ${key}`);
+        if (!Object.hasOwn(value, key)) continue;
+        const found = (value as Record<string, unknown>)[key];
+        if (segment.endsWith("[]") && Array.isArray(found)) next.push(...found);
+        else next.push(found);
+      }
+      level = next;
+    }
+  }
+}
+
+/**
  * Judges the models `body` names besides its own. `allowed` is the model
  * policy the request's own model passed: the app's list, or a preset's one
  * model; without it, any model with a price.
@@ -146,6 +183,7 @@ export function judgedAlternatives(
   body: Record<string, unknown>,
   policy: { readonly allowed: readonly string[] | undefined; readonly sources: PriceSources; readonly baseUrl: string | null },
 ): Alternatives {
+  refuseMiscasedModelKeys(description, operation, body);
   const named = namedAlternatives(description, operation, body);
   if (named.size === 0) return NONE;
   const judged = new Map<string, Alternative>();

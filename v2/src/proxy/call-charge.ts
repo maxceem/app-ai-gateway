@@ -138,19 +138,26 @@ function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefin
 }
 
 /**
+ * Rounding matters only on small figures: under this many steps of the
+ * provider's rounding, one step is a large share of the call. A figure above
+ * it stands as exact.
+ */
+const ROUNDING_MATTERS_BELOW_STEPS = 100;
+
+/**
  * Whether a provider's figure is rounded (`costReportStep`) below what the
  * call cost, and what to charge then; null when the figure stands, exact.
  *
- * The figure is judged against the provider's own list rate at the tier that
- * served (a small Perplexity call reads $0): below it by no more than the
- * rounding step, rounding explains the gap. With no list rate, any figure
- * under one step is in doubt. A figure further below is the provider's own, a
- * discount, and stands.
- *
- * In doubt, our price for the call (the customer's rate where it has one) is
- * charged as an estimate, so never below the standard rate (`replace`). With
- * no price to charge, the cost is `unknown`: charged as an answer that
- * reported none.
+ * Only a small figure, under `ROUNDING_MATTERS_BELOW_STEPS` steps, is judged.
+ * It is judged against the provider's own list rate at the tier that served
+ * (a small Perplexity call reads $0): below it by no more than one step,
+ * rounding explains the gap, and that list rate is charged instead, as an
+ * estimate, so never below the standard rate nor below the figure
+ * (`replace`). Never the customer's own rate: the figure it stands in for is
+ * the provider's, which a customer's rate never changes elsewhere. With no
+ * list rate, a figure under one step says nothing exact (`unknown`): it is
+ * charged as an answer that reported no cost. A figure further below the
+ * list rate is the provider's own, a discount, and stands.
  */
 function roundedFigure(
   attempt: CallAttempt,
@@ -161,21 +168,22 @@ function roundedFigure(
   if (usage === null) return null;
   const meter = declaredOperation(attempt.operation)?.meter;
   const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
-  if (step === null) return null;
+  if (step === null || reported >= step * ROUNDING_MATTERS_BELOW_STEPS) return null;
   const listed = providerListPrice(attempt.providerType, attempt.model);
-  const listedCost = listed === null ? null : pricedOrNull(listed, usage, served, false)?.cost ?? null;
   try {
     const figure = fromDollars(reported);
+    if (listed === null) return figure < fromDollars(step) && hasMeasure(usage) ? { kind: "unknown" } : null;
+    const listedCost = pricedOrNull(listed, usage, served, false)?.cost ?? null;
     const gap = listedCost === null ? null : listedCost - figure;
-    const explained = gap === null ? figure < fromDollars(step) && hasMeasure(usage) : gap > 0 && gap <= fromDollars(step);
-    if (!explained) return null;
+    if (gap === null || gap <= 0 || gap > fromDollars(step)) return null;
+    // At the list rate, as an estimate: the dearer of the served tier's price and the standard one.
+    const pricing = pricedOrNull(listed, usage, served, true);
+    if (pricing === null) return null;
+    return { kind: "replace", pricing: pricing.cost < figure ? { ...pricing, cost: figure } : pricing };
   } catch (error) {
     if (error instanceof MoneyError) return null;
     throw error;
   }
-  // Priced as an estimate: the dearer of the served tier's price and the model's standard one.
-  const pricing = attempt.price === null ? null : pricedOrNull(attempt.price.price, usage, served, true);
-  return pricing === null ? { kind: "unknown" } : { kind: "replace", pricing };
 }
 
 export function chargeId(requestId: string, seq: number): string {
@@ -254,10 +262,10 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   const openWork: OpenWorkRow[] = [];
   if (reported !== null && rounded?.kind === "replace") {
     // The provider's figure is rounded coarser than the call costs (a small
-    // Perplexity call reads $0): its usage at our price is charged instead,
-    // as an estimate, never below the standard rate.
+    // Perplexity call reads $0): its usage at the provider's list rate is
+    // charged instead, as an estimate, never below the standard rate.
     priced = rounded.pricing;
-    costed = { costNano: rounded.pricing.cost, priceSource: attempt.price!.source, estimate: true, rates: rounded.pricing.rates };
+    costed = { costNano: rounded.pricing.cost, priceSource: "list_rate", estimate: true, rates: rounded.pricing.rates };
     measured = outcome.cut ? "partial" : "complete";
     reasons.push("cost_rounded");
     log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });

@@ -257,6 +257,43 @@ describe("text APIs through the proxy", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
+  it("charges an xAI answer that leaves out its cost at our price, marked an estimate: every provider that reports its cost", async () => {
+    const { appId, slug, key } = await setup("xai", { operations: ["xai.chat"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "grok-4.5" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1 });
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_not_reported");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_not_reported"));
+  });
+
+  it("refuses a model key in another letter case, which a provider may read as the model while the gateway judges another", async () => {
+    const openaiApp = await setup("openai", { operations: ["openai.chat"] });
+    const agentApp = await setup("perplexity", { operations: ["perplexity.agent", "perplexity.orchestrator.chat"] });
+    // Were one sent, the provider would answer.
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], output: [], usage: { prompt_tokens: 1, completion_tokens: 1, input_tokens: 1, output_tokens: 1 } }));
+    const cases: [typeof openaiApp, string, Record<string, unknown>, string][] = [
+      [openaiApp, "v1/chat/completions", { model: "gpt-4o-mini", Model: "gpt-4o" }, "Model must be spelled model"],
+      [agentApp, "v1/agent", { model: "openai/gpt-6-luna", MODELS: ["anthropic/claude-fable-5-2"], input: "hi" }, "MODELS must be spelled models"],
+      [agentApp, "orchestrator/v1/chat/completions", { model: "perplexity/glm-5.3-flash", Routing: { default_model: "anthropic/claude-fable-5-2" }, messages: [] }, "Routing must be spelled routing"],
+      [
+        agentApp,
+        "orchestrator/v1/chat/completions",
+        { model: "perplexity/auto", routing: { default_model: "perplexity/glm-5.3-flash", Routes: [{ name: "a", description: "x", model: "anthropic/claude-fable-5-2" }] }, messages: [] },
+        "Routes must be spelled routes",
+      ],
+    ];
+    for (const [{ appId, slug, key }, path, body, message] of cases) {
+      const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/${path}`, key, body);
+      expect(response.status, message).toBe(400);
+      expect(((await response.json()) as { error: { message: string } }).error.message).toContain(message);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("bills xAI's chat at the ticks it reports, and its Messages API at our price", async () => {
     const { appId, slug, key } = await setup("xai", { operations: ["xai.chat", "xai.messages"] });
     fetchSpy.mockResolvedValueOnce(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost_in_usd_ticks: 25_000_000 } }));
@@ -318,6 +355,18 @@ describe("Perplexity", () => {
     expect(charge!.cost_nano).toBeGreaterThan(0);
     expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_rounded");
     expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
+  });
+
+  it("takes a large Perplexity figure as exact, even one rounding step below the list", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 100,000 input tokens at $2 a million, $0.2: a figure one step ($0.00001) below is Perplexity's, not rounding that matters.
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 100_000, output_tokens: 0, cost: { currency: "USD", total_cost: 0.19999 } } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "provider_usd", cost_nano: fromDollars(0.19999), price_is_estimate: 0 }]);
+    expect(warns.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
   });
 
   it("charges an Agent API answer that reports no cost at our price, marked an estimate and logged", async () => {
@@ -416,11 +465,11 @@ describe("Perplexity", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
-  it("judges Perplexity's rounded figure against its own list rate, and leaves a rounded $0 with no price unresolved", async () => {
+  it("judges Perplexity's rounded figure against its own list rate, charges that rate in its place, and leaves a rounded $0 with no price unresolved", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/brand-new-model"] });
-    // The customer's own rate for gpt-6-luna is ten times the list's.
+    // The customer's own rate for gpt-6-luna is half the list's.
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
-      .bind(JSON.stringify({ "openai/gpt-6-luna": { input: 1_000_000_000, output: 5_000_000_000 } }), slug)
+      .bind(JSON.stringify({ "openai/gpt-6-luna": { input: 50_000_000, output: 250_000_000 } }), slug)
       .run();
     clearCaches();
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -430,15 +479,16 @@ describe("Perplexity", () => {
       await response.text();
       await waitOnExecutionContext(ctx);
     };
-    // At the list's $0.10/$0.50, 33 in and 5 out cost $0.0000058: $0 is rounding. At the customer's rate,
-    // $0.000058, the gap is past one step, but rounding is judged against Perplexity's own rate.
+    // At the list's $0.10/$0.50, 33 in and 5 out cost $0.0000058: $0 is rounding. The figure stands for
+    // Perplexity's charge, so the list's rate stands in for it, not the customer's half: a rounded call is
+    // charged as a call Perplexity reports in full would be.
     await call("openai/gpt-6-luna", 0);
     // No price at all: a rounded $0 may be any amount under one step, so it is charged as an answer
     // that reported no cost: unresolved, logged, and priced later once a rate exists. Never a booked $0.
     await call("openai/brand-new-model", 0);
     const charges = await chargesOf(appId);
     expect(charges).toMatchObject([
-      { price_source: "customer_rate", cost_nano: 58_000, price_is_estimate: 1 },
+      { price_source: "list_rate", cost_nano: 5_800, price_is_estimate: 1 },
       { price_source: "unresolved", cost_nano: null },
     ]);
     expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charges[1]!.id).first()).toEqual({ kind: "unresolved" });

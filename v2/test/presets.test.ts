@@ -1046,6 +1046,7 @@ describe("saving rewrites and presets", () => {
       [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
       // Fixed parameters naming another model than the preset's would refuse every call: refused by the save-time rule.
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "a preset fixes its model to openai/gpt-6-luna"],
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { Models: ["openai/gpt-6.2-sol"] } }, "Models must be spelled models"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });
