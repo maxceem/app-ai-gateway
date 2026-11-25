@@ -236,7 +236,22 @@ export function customOperation(style: CustomStyle, path: string, owner: Provide
     ...(style === "openai-images" ? { uploads: true as const } : {}),
     // No list price or provider report to fall back on: every way its answers come out needs a rate.
     pricedEveryWay: true,
-    rules: rulesOf(readingRules(source, definition)),
+    rules: rulesOf(withOwnModelFields(readingRules(source, definition), owner, source)),
+  };
+}
+
+/**
+ * The style's rules, with the fields where the base URL's own provider takes
+ * a model name over them, when the style comes from another provider: a
+ * Messages path to OpenRouter reads Anthropic's request, but OpenRouter's
+ * `fallbacks` and routers, so every model it may serve is judged.
+ */
+function withOwnModelFields(rules: ReadingRules, owner: ProviderDescription | null, source: ProviderDescription): ReadingRules {
+  if (owner === null || owner === source) return rules;
+  return {
+    ...rules,
+    ...(owner.alternativeModels !== undefined ? { alternativeModels: owner.alternativeModels } : {}),
+    ...(owner.choosingModels !== undefined ? { choosingModels: owner.choosingModels } : {}),
   };
 }
 
@@ -273,7 +288,7 @@ function hostOf(baseUrl: string): string | null {
 export function declaredHostNames(description: ProviderDescription): readonly string[] {
   return [
     ...Object.values(description.hosts).map((value) => value.split("/")[0]!.toLowerCase()),
-    ...(description.otherHosts ?? []).map((value) => value.toLowerCase()),
+    ...(description.otherHosts ?? []).map((value) => value.split("/")[0]!.toLowerCase()),
   ];
 }
 

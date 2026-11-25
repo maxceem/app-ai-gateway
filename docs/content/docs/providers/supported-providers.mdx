@@ -105,6 +105,8 @@ the China platform, set the base URL to `https://api.moonshot.cn/`.
 `api.us.mistral.ai`, and Together AI's `us-api.together.ai` cost more than the
 global host. Set one as the connection's base URL, and its requests are priced
 at that region's price. See [Service modes](/providers/model-pricing#service-modes).
+OpenRouter's in-region hosts are set the same way, with their API path:
+`https://eu.openrouter.ai/api/` or `https://us.openrouter.ai/api/`.
 
 **Fireworks AI and Hugging Face** have no price list here. Fireworks names
 models per account, and Hugging Face prices one model differently on each
@@ -119,6 +121,29 @@ charged at the cost OpenRouter reports, so its models need no price. When a
 request runs on your own provider key added in OpenRouter, the cost is
 OpenRouter's fee plus the provider's cost it reports: both came out of your
 accounts.
+
+What your app's model list checks on OpenRouter:
+
+- `model`, as the request sends it, and each model in a `models` fallback
+  list. On a custom Messages path to OpenRouter, `fallbacks` is checked the
+  same way. Each must be on your list. The request is charged as the model
+  that answered. A `models` list sent with no `model` must start with a model
+  that can be billed, since OpenRouter tries it first.
+- A router such as `openrouter/auto`, or a saved preset as the model
+  (`@preset/...`), is a model name like any other. When your app lists its
+  models, it's served if the list names it and refused if it doesn't. When
+  your app lists no models, it's served. A target of one of your app's rewrites
+  is your choice too, and is served.
+
+What is passed through as it is, with no check: a `preset` field, plugins
+such as Fusion, and server tools such as an advisor, a subagent or image
+generation. These OpenRouter features can call other models, also ones
+your list doesn't name. On the built-in OpenRouter connection, those calls
+are part of the cost OpenRouter reports for the request, which is what the
+request is charged, and they count toward your app's spending limits like
+any other cost. A custom path to OpenRouter is charged at the prices you
+set for it instead, from the tokens its answer reports, so it may leave out
+what those extra calls cost.
 
 **Perplexity** has two kinds of model name, served at different paths:
 
@@ -152,8 +177,11 @@ Orchestrator API. The charge is for the model that served the request.
   `Model` or `ROUTING`, is refused: Perplexity may read it as the field.
 - A request that names no model is refused, because Perplexity would choose
   one. That includes an Agent API `effort` or `profile` sent with no `model`
-  or `models`, and `perplexity/auto` sent with no `routing` block. A preset
-  can't use `perplexity/auto`.
+  or `models`. `perplexity/auto` with a `routing` block is charged as the
+  model that answered. With no `routing` block, it is served at your price
+  for it when your app lists it, one of your app's rewrites names it, a
+  preset names it, or your app lists no models; when a request names it and
+  your app lists other models only, it is refused.
 
 One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
 "1h"`, or `cache_control` on Messages) are charged at the one-hour rate.

@@ -711,7 +711,8 @@ function baseUrlProblem(description: ProviderDescription, baseUrl: string): stri
   if (owner !== null && owner.type !== description.type) {
     return `${host} is ${owner.label}'s host; connect it as the ${owner.type} provider type, or as a custom provider`;
   }
-  const declared = Object.values(description.hosts).find((entry) => entry.split("/")[0]!.toLowerCase() === host);
+  // A declared host with a path (`openrouter.ai/api`, and its regional `eu.openrouter.ai/api`) keeps it.
+  const declared = [...Object.values(description.hosts), ...(description.otherHosts ?? [])].find((entry) => entry.split("/")[0]!.toLowerCase() === host);
   const plain = declared !== undefined ? `/${declared.slice(declared.split("/")[0]!.length + 1)}`.replace(/\/?$/u, "/") : "/";
   const own = declaredHostNames(description).some((name) => hostMatches(name, host));
   if (own && url.pathname !== plain) return `on ${description.label}'s own host the base URL is its plain address: https://${url.host}${plain}`;

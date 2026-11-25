@@ -385,6 +385,17 @@ describe("presets", () => {
     expect(same.response.status).toBe(200);
   });
 
+  it("refuses an OpenRouter preset call whose models list names another model than the preset's", async () => {
+    const slug = await connection("openrouter");
+    const { appId, key } = await appWith({ presets: { chat: { provider: slug, operation: "openrouter.chat", model: "openai/gpt-6-luna" } } });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0012 } }));
+    const other = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [], models: ["openai/gpt-6.2-sol"] });
+    expect(other.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const same = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [], models: ["openai/gpt-6-luna"] });
+    expect(same.response.status).toBe(200);
+  });
+
   it("sends a Perplexity Agent preset whose fixed parameters name an effort with its own model as the only one", async () => {
     const slug = await connection("perplexity");
     const { appId, key } = await appWith({ presets: { agent: { provider: slug, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { effort: "low" } } } });
@@ -1042,8 +1053,8 @@ describe("saving rewrites and presets", () => {
       [{ ...ok, fallback: [{ provider: perplexity, model: "perplexity/sonar" }] }, "has no openai-chat operation a preset can use that serves perplexity/sonar"],
       [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/sonar" }] }, "does not serve perplexity/sonar"],
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
-      // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
-      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
+      // A preset may fix perplexity/auto, the customer's choice to let Perplexity pick, but only with a price for it.
+      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has no price"],
       // Fixed parameters naming another model than the preset's would refuse every call: refused by the save-time rule.
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "a preset fixes its model to openai/gpt-6-luna"],
       [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { Models: ["openai/gpt-6.2-sol"] } }, "Models must be spelled models"],

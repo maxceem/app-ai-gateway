@@ -426,9 +426,16 @@ function admissionProblem(bill: Billing, listed: boolean): "wrong_unit" | "no_pr
   return null;
 }
 
-/** How a caller resolves a call. `asIfServed`: judge an operation this build does not serve yet as if it did, as saving does. */
+/**
+ * How a caller resolves a call. `asIfServed`: judge an operation this build
+ * does not serve yet as if it did, as saving does. `forgivingPrice`: admit a
+ * model with no price, as a listed one is: a live request's other models,
+ * which may never answer. One with no price that does answer is left
+ * unresolved, logged and retried once a rate exists, as any unpriced answer.
+ */
 export interface ResolveOptions {
   readonly asIfServed?: boolean;
+  readonly forgivingPrice?: boolean;
 }
 
 export function resolveCall(
@@ -486,7 +493,7 @@ export function resolveAlternative(
   if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: named };
   if (allowed !== null && !allowed.has(named)) return { kind: "refused", reason: "model_not_allowed", model: named };
   const bill = billing(operation, sources, named);
-  const problem = admissionProblem(bill, allowed !== null);
+  const problem = admissionProblem(bill, allowed !== null || options.forgivingPrice === true);
   if (problem !== null) return { kind: "refused", reason: problem, model: named };
   return { kind: "admitted", operation, requested: named, model: named, bill };
 }

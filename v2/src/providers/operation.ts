@@ -785,7 +785,8 @@ export interface ProviderDescription {
    * API styles as it defines them (`./custom.ts`), and a built-in
    * connection's base URL on one of them is its plain address. `*.` names
    * every host under one, as `*.api.openai.com` does OpenAI's data residency
-   * hosts.
+   * hosts. A name may carry the API's path, as `hosts` do
+   * (`eu.openrouter.ai/api`): that path is then the plain address there.
    */
   readonly otherHosts?: readonly string[];
   /**
@@ -881,6 +882,7 @@ export interface ProviderDescription {
   /**
    * Request fields naming more models the provider may serve the request
    * with: Vercel's fallback list (`providerOptions.gateway.models[]`),
+   * OpenRouter's `models[]` (and `fallbacks[].model` on Messages),
    * Perplexity's Agent API `models[]`, and the models its Orchestrator's
    * `routing` block chooses among. Each path is dot-separated, and `[]` after
    * a name reads every item of that list. Each model is judged as the
@@ -902,9 +904,12 @@ export interface ProviderDescription {
   };
   /**
    * Model names that are not a model but ask the provider to choose one
-   * (Perplexity's `perplexity/auto`). A request naming one is served only
-   * when it names, in `alternativeModels`, the models the provider may choose
-   * among, each judged (`src/proxy/alternatives.ts`).
+   * (Perplexity's `perplexity/auto`). One the app's list or a preset names
+   * itself, or the app's own rewrite targets, is the customer's choice, and
+   * is served. Otherwise, where the app limits its models, a request naming
+   * one is served only when it names, in `alternativeModels`, the models the
+   * provider may choose among, each judged; the first stands for it
+   * (`src/proxy/alternatives.ts`).
    */
   readonly choosingModels?: readonly string[];
   /**

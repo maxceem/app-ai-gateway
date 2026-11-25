@@ -12,6 +12,8 @@ import { listPrice } from "../src/pricing/prices.ts";
 import BUILT_IN_PRICES from "../src/pricing/models.json";
 import { priceTokens } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
+import { savedAlternativesProblem } from "../src/proxy/alternatives.ts";
+import { priceSources } from "../src/pricing/billability.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -241,6 +243,16 @@ describe("text APIs through the proxy", () => {
     expect(await chargesOf(appId)).toMatchObject([
       { status: "ok", measured: "complete", price_source: "provider_usd", cost_nano: fromDollars(0.0012), input_tokens: 10, rates_json: null },
     ]);
+  });
+
+  it("sends an OpenRouter connection on its in-region host under its API path", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] }, { baseUrl: "https://eu.openrouter.ai/api/" });
+    fetchSpy.mockResolvedValue(Response.json({ model: "x/y", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0012 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "some-lab/unlisted-model" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent().url).toBe("https://eu.openrouter.ai/api/v1/chat/completions");
   });
 
   it("leaves an OpenRouter answer that reports no cost unresolved, and asks the sweep to price its tokens once a rate exists (4b F3)", async () => {
@@ -530,16 +542,17 @@ describe("Perplexity", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
-  it("judges a rewrite to perplexity/auto as perplexity/auto: served only with a routing block whose models are allowed", async () => {
+  it("serves the app's own rewrite to perplexity/auto, the customer's choice, while judging the routing models the caller names", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["house", "perplexity/glm-5.3-flash"] });
     await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
       .bind(JSON.stringify({ house: "perplexity/auto" }), appId)
       .run();
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "perplexity/auto": { input: 1_000_000_000, output: 2_000_000_000 } }), slug)
+      .run();
     clearCaches();
-    // Were it sent, the provider would answer.
     fetchSpy.mockImplementation(async () => Response.json({ model: "perplexity/glm-5.3-flash", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
-    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
-    expect(bare.response.status).toBe(400);
+    // The caller's routing names a model the app does not list.
     const outside = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, {
       model: "house",
       routing: { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] },
@@ -547,6 +560,11 @@ describe("Perplexity", () => {
     });
     expect(outside.response.status).toBe(403);
     expect(fetchSpy).not.toHaveBeenCalled();
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
+    expect(bare.response.status).toBe(200);
+    await bare.response.text();
+    await waitOnExecutionContext(bare.ctx);
+    expect(sent(0).body.model).toBe("perplexity/auto");
   });
 
   it("serves perplexity/auto only with a routing block, judging every model it names and charging the one that served", async () => {
@@ -568,6 +586,64 @@ describe("Perplexity", () => {
     expect(await chargesOf(appId)).toMatchObject([
       { model: "perplexity/glm-5.3", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 }) },
     ]);
+  });
+
+  it("serves perplexity/auto with a routing block when the app lists no models, charged at the model that answered", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const routing = { default_model: "perplexity/glm-5.3-flash", routes: [{ name: "hard", description: "Hard questions.", model: "perplexity/glm-5.3" }] };
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", routing, messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([
+      { model: "perplexity/glm-5.3", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 }) },
+    ]);
+  });
+
+  it("always applies the app's own rewrite of perplexity/auto, even beside a routing block and with no model list", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ "perplexity/auto": "perplexity/glm-5.3" }), appId)
+      .run();
+    clearCaches();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const routing = { default_model: "perplexity/glm-5.3-flash", routes: [{ name: "hard", description: "Hard questions.", model: "perplexity/glm-5.3-flash" }] };
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", routing, messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body.model).toBe("perplexity/glm-5.3");
+    expect(await chargesOf(appId)).toMatchObject([{ model: "perplexity/glm-5.3" }]);
+  });
+
+  it("serves perplexity/auto the app lists itself, with no routing block, at its price: the customer's choice", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["perplexity/auto"] });
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "perplexity/auto": { input: 1_000_000_000, output: 2_000_000_000 } }), slug)
+      .run();
+    clearCaches();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "perplexity/auto" }]);
+  });
+
+  it("serves perplexity/auto without a routing block when the app lists no models, at its price", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "perplexity/auto": { input: 1_000_000_000, output: 2_000_000_000 } }), slug)
+      .run();
+    clearCaches();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body.model).toBe("perplexity/auto");
+    expect(await chargesOf(appId)).toMatchObject([{ model: "perplexity/auto" }]);
   });
 
   it("bills the Orchestrator's one cache-write count as one-hour writes when the request asks for them", async () => {
@@ -636,6 +712,149 @@ describe("Perplexity", () => {
       { operation: "perplexity.orchestrator.chat", price_source: "list_rate", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 }) },
       { operation: "perplexity.router.chat" },
     ]);
+  });
+});
+
+describe("OpenRouter's other models", () => {
+  const LUNA = "openai/gpt-6-luna";
+  const SOL = "openai/gpt-6.2-sol";
+  const chat = (appId: string, slug: string) => `/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`;
+  const answer = (model: string) => Response.json({ model, choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0012 } });
+
+  it("judges every model of a models fallback list, and charges the one that served", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, SOL] });
+    // Answered, so a request the gateway wrongly sends on fails the test without reaching OpenRouter.
+    fetchSpy.mockResolvedValue(answer(SOL));
+    const outside = await post(chat(appId, slug), key, { model: LUNA, models: ["anthropic/claude-fable-5-2"], messages: [] });
+    expect(outside.response.status).toBe(403);
+    expect(await outside.response.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(answer(SOL));
+    const served = await post(chat(appId, slug), key, { model: LUNA, models: [SOL], messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(sent(0).body).toMatchObject({ model: LUNA, models: [SOL] });
+    expect(await chargesOf(appId)).toMatchObject([{ model: SOL, price_source: "provider_usd", cost_nano: fromDollars(0.0012) }]);
+  });
+
+  it("judges a models list sent without a model, its first model standing for the request", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
+    fetchSpy.mockResolvedValue(answer(LUNA));
+    const outside = await post(chat(appId, slug), key, { models: [LUNA, SOL], messages: [] });
+    expect(outside.response.status).toBe(403);
+    fetchSpy.mockResolvedValueOnce(answer(LUNA));
+    const served = await post(chat(appId, slug), key, { models: [LUNA], messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: LUNA }]);
+  });
+
+  it("judges a router as the plain model name it is: served where the app lists it, refused where it does not, as a fallback too", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, "openrouter/auto"] });
+    fetchSpy.mockImplementation(async () => answer(SOL));
+    for (const body of [
+      { model: "openrouter/auto", messages: [] },
+      { model: LUNA, models: ["openrouter/auto"], messages: [] },
+    ]) {
+      const { response, ctx } = await post(chat(appId, slug), key, body);
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    for (const charge of await chargesOf(appId)) expect(charge).toMatchObject({ price_source: "provider_usd", cost_nano: fromDollars(0.0012) });
+    const calls = fetchSpy.mock.calls.length;
+    for (const body of [
+      { model: "openrouter/free", messages: [] },
+      { model: LUNA, models: ["openrouter/free"], messages: [] },
+    ]) {
+      const { response } = await post(chat(appId, slug), key, body);
+      expect(response.status, JSON.stringify(body)).toBe(403);
+    }
+    expect(fetchSpy.mock.calls.length).toBe(calls);
+  });
+
+  it("passes OpenRouter's own features through unchecked, even where the app lists its models: a preset field, plugins and server tools", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
+    fetchSpy.mockResolvedValueOnce(answer(LUNA));
+    const body = {
+      model: LUNA,
+      // The Messages API's fallback list, which Chat Completions does not read.
+      fallbacks: [{ model: SOL }],
+      preset: "@preset/writer",
+      plugins: [{ id: "fusion", analysis_models: [SOL] }],
+      tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }, { type: "openrouter:image_generation" }],
+      messages: [],
+    };
+    const { response, ctx } = await post(chat(appId, slug), key, body);
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body).toEqual(body);
+    // Charged at the cost OpenRouter reports, which covers its server tools.
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "provider_usd", cost_nano: fromDollars(0.0012) }]);
+  });
+
+  it("serves the app's own rewrite to a router or a saved preset, the customer's choice, as the target it names", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: ["house", "writer"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ house: "openrouter/auto", writer: "@preset/writer" }), appId)
+      .run();
+    clearCaches();
+    for (const [index, [alias, target]] of [["house", "openrouter/auto"], ["writer", "@preset/writer"]].entries()) {
+      fetchSpy.mockResolvedValueOnce(answer(SOL));
+      const { response, ctx } = await post(chat(appId, slug), key, { model: alias, messages: [] });
+      expect(response.status, alias).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(sent(index).body.model).toBe(target);
+    }
+    // The caller naming the target itself, which the app does not list, is judged as sent.
+    expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(403);
+  });
+
+  it("needs the first model of a models list sent with no model to be billable, the one the provider tries first; later ones may have no price", async () => {
+    const { appId, slug, key } = await setup("vercel", { operations: ["vercel.chat"] });
+    const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
+      messages: [],
+      providerOptions: { gateway: { models: ["nobody/model", "openai/gpt-4o-mini"] } },
+    });
+    expect(refused.response.status).toBe(400);
+    expect(await refused.response.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-4o-mini", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
+      messages: [],
+      providerOptions: { gateway: { models: ["openai/gpt-4o-mini", "nobody/model"] } },
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-4o-mini" }]);
+  });
+
+  it("charges the cost OpenRouter reports, unmarked and unlogged, when the model that answered is none of the request's names", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, SOL] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // An alias or a router always answers under another name.
+    fetchSpy.mockResolvedValueOnce(answer("openai/gpt-6-luna-20260922"));
+    const { response, ctx } = await post(chat(appId, slug), key, { model: LUNA, models: [SOL], messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: LUNA, price_source: "provider_usd", price_is_estimate: 0, cost_nano: fromDollars(0.0012) }]);
+    expect(warns.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("served_model_unexpected"));
+  });
+
+  it("judges an OpenRouter preset's fixed fallback list by the same rule when it is saved", () => {
+    const description = BUILT_IN_PROVIDERS.openrouter!;
+    const operation = description.operations.find((op) => op.name === "openrouter.chat")!;
+    const sources = priceSources({ type: "openrouter", rates: null });
+    expect(savedAlternativesProblem(description, operation, { models: [SOL] }, LUNA, sources)).toMatch(/fixes its model/);
+    expect(savedAlternativesProblem(description, operation, { models: [LUNA] }, LUNA, sources)).toBeNull();
+    // Passed through: OpenRouter's own features are not judged.
+    expect(savedAlternativesProblem(description, operation, { preset: "@preset/writer", tools: [{ type: "openrouter:fusion" }] }, LUNA, sources)).toBeNull();
   });
 });
 

@@ -154,11 +154,13 @@ describe("a custom provider's description", () => {
         const { providerCost: _report, ...meter } = definition.meter as typeof definition.meter & { providerCost?: unknown };
         expect(custom.meter, `${provider.type} ${style} meter`).toEqual(meter);
         expect(reportsCost(custom)).toBe(false);
-        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's.
+        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's;
+        // where the style comes from another provider, the base URL's own provider's model fields over them.
         const rules = readingRules(provider, definition);
+        const own = owner !== null && owner !== provider ? owner : null;
         expect(custom.rules?.serviceModes).toBe(rules.serviceModes);
-        expect(custom.rules?.alternativeModels).toBe(rules.alternativeModels);
-        expect(custom.rules?.choosingModels).toBe(rules.choosingModels);
+        expect(custom.rules?.alternativeModels).toBe(own?.alternativeModels ?? rules.alternativeModels);
+        expect(custom.rules?.choosingModels).toBe(own?.choosingModels ?? rules.choosingModels);
         expect(custom.rules?.modelNamespaces).toBe(rules.modelNamespaces);
       }
     }
@@ -198,6 +200,13 @@ describe("a custom provider's description", () => {
     // The same path under a base URL that holds its prefix.
     const prefixed = customDescription({ baseUrl: "https://api.perplexity.ai/orchestrator/v1/", auth: AUTH, paths: [{ method: "POST", path: "responses", style: "openai-responses" }] });
     expect(prefixed.operations[0]!.rules?.choosingModels).toEqual(["perplexity/auto"]);
+  });
+
+  it("judges OpenRouter's fallback lists on a custom path to its in-region hosts, as on its main one", () => {
+    for (const baseUrl of ["https://us.openrouter.ai/api/", "https://eu.openrouter.ai/api/"]) {
+      const description = customDescription({ baseUrl, auth: AUTH, paths: [{ method: "POST", path: "v1/messages", style: "anthropic-messages" }] });
+      expect(description.operations[0]!.rules?.alternativeModels?.paths, baseUrl).toEqual(["models[]", "fallbacks[].model"]);
+    }
   });
 
   it("bills an xAI chat path at the connection's rates, never at xAI's own dollar report", () => {
@@ -885,6 +894,67 @@ describe("serving a custom provider", () => {
     expect(response.status, text).toBe(403);
     expect(JSON.parse(text)).toMatchObject({ error: { code: "model_not_allowed" } });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("serves a fallback with no price when the app lists no models, and leaves its answer unresolved if it is the one that answers", async () => {
+    const { appId, slug, key } = await setup(
+      [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
+      ["custom.openai-chat"],
+      "https://ai-gateway.vercel.sh/v1/",
+      { "openai/gpt-4o-mini": { input: 150_000_000, output: 600_000_000 } },
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "c1", model: "openai/gpt-4o", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "openai/gpt-4o-mini", messages: [], providerOptions: { gateway: { models: ["openai/gpt-4o"] } } }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(200);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ model: "openai/gpt-4o", price_source: "unresolved", cost_nano: null });
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(errors.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a models list sent with no model on a custom OpenRouter Responses path when its first model has no price", async () => {
+    const { appId, slug, key } = await setup([{ method: "POST", path: "v1/responses", style: "openai-responses" }], ["custom.openai-responses"], "https://openrouter.ai/api/", {
+      "rated/model": { input: 1_000_000_000, output: 2_000_000_000 },
+    });
+    // Answered, so a request wrongly sent on fails the test without reaching OpenRouter.
+    fetchSpy.mockResolvedValue(Response.json({ id: "r1", model: "rated/model", output: [], usage: { input_tokens: 10, output_tokens: 2 } }));
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/responses`, key, {
+      body: JSON.stringify({ models: ["new-lab/unrated", "rated/model"], input: "hi" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "pricing_not_configured" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("judges an OpenRouter Messages path's fallbacks with OpenRouter's own fields, and charges the fallback that answered at its rate", async () => {
+    const rates = { "anthropic/claude-haiku-4.5": { input: 1_000_000_000, output: 5_000_000_000 }, "anthropic/claude-sonnet-4.5": { input: 3_000_000_000, output: 15_000_000_000 } };
+    const listedOne = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [
+      "anthropic/claude-haiku-4.5",
+    ]);
+    const body = { model: "anthropic/claude-haiku-4.5", max_tokens: 10, fallbacks: [{ model: "anthropic/claude-sonnet-4.5" }], messages: [] };
+    const outside = await send("POST", `/v2/apps/${listedOne.appId}/proxy/${listedOne.slug}/v1/messages`, listedOne.key, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+    expect(outside.response.status, outside.text).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const listedBoth = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [
+      "anthropic/claude-haiku-4.5",
+      "anthropic/claude-sonnet-4.5",
+    ]);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "m1", type: "message", model: "anthropic/claude-sonnet-4.5", content: [], usage: { input_tokens: 1000, output_tokens: 100 } }));
+    const served = await send("POST", `/v2/apps/${listedBoth.appId}/proxy/${listedBoth.slug}/v1/messages`, listedBoth.key, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+    expect(served.response.status, served.text).toBe(200);
+    // At the fallback's rate: 1,000 in at $3 and 100 out at $15 a million.
+    expect(await chargesOf(listedBoth.appId)).toEqual([expect.objectContaining({ model: "anthropic/claude-sonnet-4.5", price_source: "customer_rate", cost_nano: 4_500_000 })]);
   });
 
   it("sends an image edit preset on a custom path as the upload it is", async () => {

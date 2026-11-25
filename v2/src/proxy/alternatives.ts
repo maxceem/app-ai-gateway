@@ -10,7 +10,11 @@
  *   it is one of them, in the service mode the request asks of that model's
  *   provider (`chargedAs`);
  * - when the answer does not say which model served it, the request's own is
- *   charged, as an estimate, and logged.
+ *   charged, as an estimate, and logged;
+ * - what the customer set is their choice: a model that has the provider
+ *   choose, which the app's list or a preset names itself, stands as any
+ *   listed model, and so does the target of the app's own rewrite. Only the
+ *   models the caller sends are judged.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -70,27 +74,42 @@ export function namedAlternatives(description: ProviderDescription, operation: O
 }
 
 /**
- * The model a request stands as, by the one rule for the models a request
- * names: every one is judged, the one in its model field (after the app's
- * rewrites) and every one its provider reads elsewhere (`alternativeModels`),
- * and the model the answer says served it is charged (`chargedAs`).
+ * The model a request stands as, by the one rule for the models a
+ * request names: every one is judged, the one in its model field and every
+ * one its provider reads elsewhere (`alternativeModels`), and the model the
+ * answer says served it is charged (`chargedAs`).
  *
- * `own` is its model field's, rewritten; undefined when it names none. Null
- * means that model stands for the request. Otherwise the first model it
- * names elsewhere does: when its field names none (Perplexity's Agent API
- * reads `models` alone), or names one that has the provider choose
- * (`choosingModels`). A request naming no model at all is left to the model
+ * `own` is its model field's, as the caller sent it; undefined when it names
+ * none. Null means that model stands for the request. Otherwise the first
+ * model it names elsewhere does, the one the provider tries first, so it
+ * must be billable as a request's own model must: when its field names none
+ * (Perplexity's Agent API reads `models` alone), or names one that has the
+ * provider choose (`choosingModels`). A request naming no model at all is left to the model
  * field's own rule (a default, or a refusal). One that has the provider
  * choose but names no models to choose among is refused: the provider would
- * pick a model the gateway cannot judge.
+ * pick a model the gateway cannot judge. That holds only where `allowed`,
+ * the app's model list, limits it: without a list there is nothing to get
+ * around, and the model stands as written. `own` is the model as the caller
+ * sent it; one the list names itself, or one the app's own rewrite replaces
+ * (`rewritten`), is the customer's choice, and stands as any listed model
+ * does, so the rewrite is always applied.
  */
-export function standingModel(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>, own: string | undefined): string | null {
+export function standingModel(
+  description: ProviderDescription,
+  operation: OperationDescription,
+  body: Record<string, unknown>,
+  own: string | undefined,
+  allowed: readonly string[] | undefined,
+  rewritten = false,
+): string | null {
+  // A key in another letter case is refused first, before the model it hides is judged or priced.
+  refuseMiscasedModelKeys(description, operation, body);
   const rules = readingRules(description, operation);
-  const choosing = own !== undefined && rules.choosingModels?.includes(own) === true;
+  const choosing = own !== undefined && !rewritten && rules.choosingModels?.includes(own) === true && allowed?.includes(own) !== true;
   if (own !== undefined && !choosing) return null;
   const [first] = namedAlternatives(description, operation, body).keys();
   if (first !== undefined) return first;
-  if (!choosing) return null;
+  if (!choosing || allowed === undefined) return null;
   const where = (rules.alternativeModels?.paths ?? []).map((path) => path.replaceAll("[]", "")).join(" and ");
   throw new GatewayError(400, "invalid_request", `${own} has the provider choose the model, so the request must name the models it may choose among in ${where}`);
 }
@@ -199,8 +218,10 @@ export function judgedAlternatives(
   const judged = new Map<string, Alternative>();
   const allowed = modelSet(policy.allowed);
   for (const [model, field] of named) {
-    // Resolved by the one rule saving runs too (`resolveAlternative`).
-    const call = resolveAlternative(operation, policy.sources, model, allowed);
+    // Resolved by the one rule saving runs too (`resolveAlternative`). A
+    // missing price never refuses: the model may never answer, and one that
+    // does with no price is left unresolved, as any unpriced answer.
+    const call = resolveAlternative(operation, policy.sources, model, allowed, { forgivingPrice: true });
     if (call.kind === "refused") {
       if (call.reason === "model_not_allowed") {
         throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });
@@ -220,12 +241,16 @@ export function judgedAlternatives(
 /**
  * The attempt as it is charged: at the model the answer says served it, when
  * that is one of the request's other models. A model the answer names that
- * the request did not is logged, and the request's own model is charged.
+ * the request did not is logged, and the request's own model is charged,
+ * marked as an estimate. When the answer carries the provider's own cost
+ * (`costReported`), that cost is the charge whatever the model's name (a
+ * router's or an alias's always differs), so nothing is logged or marked.
  */
-export function chargedAs(attempt: CallAttempt, servedModel: string | null): CallAttempt {
+export function chargedAs(attempt: CallAttempt, servedModel: string | null, costReported = false): CallAttempt {
   const others = attempt.alternatives;
   if (others === undefined || others.size === 0 || servedModel === attempt.model) return attempt;
   const alternative = servedModel === null ? undefined : others.get(servedModel);
+  if (alternative === undefined && costReported) return attempt;
   if (alternative === undefined) {
     // It may have been served by another model, priced differently: the
     // request's own model is charged, marked as an estimate.

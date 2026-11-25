@@ -141,6 +141,35 @@ test("OpenRouter is billed at the cost its answer reports", { skip, timeout: TES
   same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
+test("an OpenRouter fallback model or router the app does not list is refused before it reaches the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  // An app of its own that lists its models: with no list, any model is served.
+  const listed = await admin("POST", "/v2/admin/apps", {
+    name: "Smoke OpenRouter models",
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [slugs.openrouter!]: { operations: ["openrouter.chat"], models: ["mock-lab/unlisted-model"] } } },
+    },
+  });
+  expectStatus(listed, 201, "app");
+  const listedId = checkId(listed.body.app?.id, "the app");
+  try {
+    for (const body of [
+      { model: "mock-lab/unlisted-model", models: ["mock-lab/other-model"], messages: [{ role: "user", content: "Hi" }] },
+      { model: "openrouter/auto", messages: [{ role: "user", content: "Hi" }] },
+    ]) {
+      const response = await send(`/v2/apps/${listedId}/proxy/${slugs.openrouter}/v1/chat/completions`, base, {
+        method: "POST",
+        headers: { authorization: `Bearer ${listed.body.api_key.key}`, "content-type": "application/json", "x-end-user-id": `smoke-router-${run}` },
+        body: JSON.stringify(body),
+      });
+      await expectResponse(response, 403, "the OpenRouter request");
+      expectCode(await readJson(response), "model_not_allowed", "response");
+    }
+  } finally {
+    await cleanUp([() => admin("DELETE", `/v2/admin/apps/${listedId}?confirm=${listedId}`)]);
+  }
+});
+
 test("a background Responses request is refused before it reaches the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
   const response = await send(`/v2/apps/${appId}/proxy/${slugs.openai}/v1/responses`, base, {
     method: "POST",
