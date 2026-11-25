@@ -57,6 +57,8 @@ type Options = {
   intermediateNotYetValid?: boolean;
   /** The intermediate as an end-entity certificate the root issued. */
   intermediateNotCa?: boolean;
+  /** Cuts authData to this length before the nonce is made, so every earlier check still passes. */
+  authDataLength?: number;
   /** Signs the credential certificate, or the intermediate, with an attacker's key under the real issuer's name. */
   forge?: "leaf" | "intermediate";
   /** The credential id's length field. */
@@ -80,13 +82,14 @@ async function attestation(options: Options = {}): Promise<Attestation> {
   const point = await rawPublicKey(options.otherCertificateKey ? await newKeys() : keys);
   const keyHash = await digest(point);
 
-  const authData = Buffer.alloc(87 + 77);
+  let authData = Buffer.alloc(87 + 77);
   (await digest(Buffer.from(options.appId ?? APP_ID))).copy(authData, 0);
   authData[32] = 0x40;
   authData.writeUInt32BE(options.counter ?? 0, 33);
   (options.aaguid ?? Buffer.from("appattestdevelop")).copy(authData, 37);
   authData.writeUInt16BE(options.credentialLength ?? 32, 53);
   (options.credentialId ?? keyHash).copy(authData, 55);
+  if (options.authDataLength !== undefined) authData = authData.subarray(0, options.authDataLength);
 
   const nonce = await digest(Buffer.concat([authData, await digest(Buffer.from(options.challenge ?? CHALLENGE, "base64"))]));
   const extensionValue = options.nonceExtension
@@ -222,12 +225,10 @@ describe("an App Attest attestation", () => {
       ({ authData, leaf, intermediate }) => ({
         fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate, intermediate], receipt: Buffer.from("r") }, authData,
       }),
-      // authData too short to hold a credential id, refused before it is read.
-      ({ authData, leaf, intermediate }) => ({
-        fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate], receipt: Buffer.from("r") }, authData: authData.subarray(0, 54),
-      }),
     ];
     for (const shape of shapes) await expect(verify(await attestation({ shape }))).rejects.toMatchObject(refused);
+    // authData too short to hold a credential id, with a nonce made over it, refused before it is read.
+    await expect(verify(await attestation({ authDataLength: 54 }))).rejects.toMatchObject(refused);
     const bytes = Buffer.from(valid.attestation, "base64");
     await expect(verify(valid, { attestation: bytes.subarray(0, bytes.byteLength - 1).toString("base64") }))
       .rejects.toMatchObject(refused);
