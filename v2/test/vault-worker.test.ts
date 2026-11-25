@@ -7,8 +7,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowedUrl, callProvider, holds, keyHeaderAllowed, readCredentials, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
-import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS, RESERVED_KEY_HEADER_PREFIXES, RESERVED_KEY_HEADERS } from "../vault/src/hosts.js";
-import { RESERVED_KEY_HEADERS as SAVE_RESERVED_KEY_HEADERS, customAuthProblem } from "../src/providers/custom.ts";
+import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
 import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext } from "../vault/src/seal.js";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
@@ -19,8 +18,12 @@ const KEY = "sk-test-vault-key-1234";
 
 afterEach(() => vi.restoreAllMocks());
 
-/** A sealed provider key's call credentials, for `identity` and the key's header. */
-async function providerKey(identity: [string, string, string, string]) {
+/**
+ * A sealed provider key's call credentials. A built-in type's is placed in
+ * `authorization`; a custom one is sealed with that placement.
+ */
+async function providerKey(ids: [string, string, string, string]) {
+  const identity = [...ids, ...(ids[2] === "custom" ? ["authorization", "Bearer {key}"] : ["", ""])];
   return { providerKey: { blob: await seal(vaultEnv, "providerKey", identity, KEY), identity, header: "authorization", format: "Bearer {key}" } };
 }
 
@@ -48,7 +51,7 @@ describe("where a key may go", () => {
   });
 
   it("sends a key sealed for the provider's own address only to that provider type's hosts", () => {
-    const credentials = (type: string) => ({ providerKey: { blob: "b", identity: ["a", "c", type, ""], header: "authorization", format: "Bearer {key}" } });
+    const credentials = (type: string) => ({ providerKey: { blob: "b", identity: ["a", "c", type, "", "", ""], header: "authorization", format: "Bearer {key}" } });
     expect(allowedUrl("https://queue.fal.run/fal-ai/x", credentials("fal"))).toBe("https://queue.fal.run/fal-ai/x");
     expect(allowedUrl("https://fal.run/fal-ai/x", credentials("fal"))).toBe("https://fal.run/fal-ai/x");
     expect(allowedUrl("https://openrouter.ai/api/v1/chat/completions", credentials("openrouter"))).not.toBeNull();
@@ -70,15 +73,15 @@ describe("where a key may go", () => {
     expect(allowedUrl("https://gateway.ai.cloudflare.com/v1/cf-acct/other/openai", { cloudflareToken: token })).toBeNull();
     expect(allowedUrl(`${gateway}../other/openai`, { cloudflareToken: token })).toBeNull();
     // A provider key sealed for the same gateway goes with it; one sealed for the provider's own host does not.
-    const key = { blob: "k", identity: ["a", "c", "openai", gateway], header: "authorization", format: "Bearer {key}" };
+    const key = { blob: "k", identity: ["a", "c", "openai", gateway, "", ""], header: "authorization", format: "Bearer {key}" };
     expect(allowedUrl(`${gateway}openai/x`, { cloudflareToken: token, providerKey: key })).toBe(`${gateway}openai/x`);
-    expect(allowedUrl(`${gateway}openai/x`, { cloudflareToken: token, providerKey: { ...key, identity: ["a", "c", "openai", ""] } })).toBeNull();
+    expect(allowedUrl(`${gateway}openai/x`, { cloudflareToken: token, providerKey: { ...key, identity: ["a", "c", "openai", "", "", ""] } })).toBeNull();
     expect(allowedUrl(`${gateway}openai/x`, {})).toBeNull();
   });
 
   it("sends a key sealed for a Cloudflare AI Gateway only under its own provider's path there", () => {
     const gateway = "https://gateway.ai.cloudflare.com/v1/cf-acct/cf-gw/";
-    const key = (type: string) => ({ blob: "k", identity: ["a", "c", type, gateway], header: "authorization", format: "Bearer {key}" });
+    const key = (type: string) => ({ blob: "k", identity: ["a", "c", type, gateway, "", ""], header: "authorization", format: "Bearer {key}" });
     expect(allowedUrl(`${gateway}openai/chat/completions`, { providerKey: key("openai") })).toBe(`${gateway}openai/chat/completions`);
     // AI Gateway passes `/fal/...` on to fal: an OpenAI key never goes there.
     expect(allowedUrl(`${gateway}fal/fal-ai/flux`, { providerKey: key("openai") })).toBeNull();
@@ -129,16 +132,6 @@ describe("the vault's tables", () => {
     expect({ ...CLOUDFLARE_SLUGS }).toEqual(declared);
   });
 
-  it("refuses a custom provider's key in the headers saving a custom provider refuses", () => {
-    expect([...RESERVED_KEY_HEADERS].sort()).toEqual([...SAVE_RESERVED_KEY_HEADERS].sort());
-    for (const header of [...RESERVED_KEY_HEADERS, "cf-aig-authorization", "x-agw-anything", "sec-fetch-site"]) {
-      expect(keyHeaderAllowed("custom", header), header).toBe(false);
-      expect(customAuthProblem({ header, format: "{key}" }), header).not.toBeNull();
-    }
-    expect(RESERVED_KEY_HEADER_PREFIXES).toEqual(["cf-", "x-agw-", "sec-"]);
-    expect(keyHeaderAllowed("custom", "x-my-key")).toBe(true);
-  });
-
   it("seals and opens under the same contexts as the gateway", async () => {
     expect(Object.keys(CONTEXT_NAMES).sort()).toEqual([...SECRET_KINDS].sort());
     for (const kind of SECRET_KINDS) {
@@ -151,11 +144,11 @@ describe("the vault's tables", () => {
   });
 
   it("opens a blob only under the identity it is sealed to, and re-seals without returning the key", async () => {
-    const from: [string, string, string, string] = ["a", "c", "openai", "https://llm.example.com/"];
-    const to: [string, string, string, string] = ["a", "c", "openai", ""];
+    const from = ["a", "c", "openai", "https://llm.example.com/", "", ""];
+    const to = ["a", "c", "openai", "", "", ""];
     const blob = await seal(vaultEnv, "providerKey", from, KEY);
     await expect(open(vaultEnv, "providerKey", to, blob)).rejects.toThrow(/does not open/u);
-    await expect(open(vaultEnv, "providerKey", ["a", "other", "openai", from[3]], blob)).rejects.toThrow(/does not open/u);
+    await expect(open(vaultEnv, "providerKey", ["a", "other", "openai", from[3]!, "", ""], blob)).rejects.toThrow(/does not open/u);
     const moved = await reseal(vaultEnv, "providerKey", from, to, blob);
     expect(await open(vaultEnv, "providerKey", to, moved)).toBe(KEY);
     // A Cloudflare token is never sealed again.
@@ -186,13 +179,41 @@ describe("a call", () => {
     expect(new Headers(init?.headers).has("x-agw-vault")).toBe(false);
   });
 
+  it("sends a custom provider's key only in the header sealed with it, whatever the caller names", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("ok"));
+    const identity = ["a", "c", "custom", "https://llm.example.com/", "x-my-key", "Key {key}"];
+    const blob = await seal(vaultEnv, "providerKey", identity, KEY);
+    // The caller asks for a header a proxy could reflect back: the vault uses only the sealed one.
+    const sent = await callProvider(vaultEnv, {
+      url: "https://llm.example.com/v1",
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      credentials: { providerKey: { blob, identity, header: "x-forwarded-host", format: "{key}" } },
+    });
+    expect(sent.status).toBe(200);
+    const headers = new Headers(fetchSpy.mock.calls[0]![1]?.headers);
+    expect(headers.get("x-my-key")).toBe(`Key ${KEY}`);
+    expect(headers.has("x-forwarded-host")).toBe(false);
+    // Another placement in the identity does not open the blob.
+    const moved = await callProvider(vaultEnv, {
+      url: "https://llm.example.com/v1",
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      credentials: { providerKey: { blob, identity: ["a", "c", "custom", "https://llm.example.com/", "x-forwarded-host", "{key}"] } },
+    });
+    expect(moved.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("never serves a key opened under one address for a call that names another, with the same blob", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("ok"));
     const sealed = await providerKey(["a", "c", "custom", "https://first.example.com/"]);
     // Opened properly first, so it is in the vault's cache.
     expect((await callProvider(vaultEnv, { url: "https://first.example.com/v1", method: "GET", headers: new Headers(), body: null, credentials: sealed })).status).toBe(200);
     // The same blob, under another address it was never sealed for, with a URL that matches that address.
-    const moved = { providerKey: { ...sealed.providerKey, identity: ["a", "c", "custom", "https://evil.example.com/"] } };
+    const moved = { providerKey: { ...sealed.providerKey, identity: ["a", "c", "custom", "https://evil.example.com/", "authorization", "Bearer {key}"] } };
     const answer = await callProvider(vaultEnv, { url: "https://evil.example.com/v1", method: "GET", headers: new Headers(), body: null, credentials: moved });
     expect(answer.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -217,7 +238,7 @@ describe("a call", () => {
   it("answers `holds` only for well-formed credentials that open under their own identity", async () => {
     const sealed = await providerKey(["a", "c", "openai", ""]);
     expect(await holds(vaultEnv, sealed, [`x ${KEY} y`, "no"])).toEqual([true, false]);
-    const tampered = { providerKey: { ...sealed.providerKey, identity: ["a", "other", "openai", ""] } };
+    const tampered = { providerKey: { ...sealed.providerKey, identity: ["a", "other", "openai", "", "", ""] } };
     await expect(holds(vaultEnv, tampered, [KEY])).rejects.toThrow();
     await expect(holds(vaultEnv, { providerKey: { blob: 1 } }, [KEY])).rejects.toThrow();
     await expect(holds(vaultEnv, sealed, [1])).rejects.toThrow();
@@ -229,7 +250,7 @@ describe("a call", () => {
     const sealed = await providerKey(["a", "c", "openai", ""]);
     const elsewhere = await callProvider(vaultEnv, { url: "https://evil.test/v1", method: "POST", headers: new Headers(), body: "{}", credentials: sealed });
     expect(elsewhere.headers.get(VAULT_ERROR_HEADER)).toBe("destination_refused");
-    const broken = { providerKey: { ...sealed.providerKey, identity: ["a", "other", "openai", ""] } };
+    const broken = { providerKey: { ...sealed.providerKey, identity: ["a", "other", "openai", "", "", ""] } };
     const unopened = await callProvider(vaultEnv, { url: "https://api.openai.com/v1", method: "POST", headers: new Headers(), body: "{}", credentials: broken });
     expect(unopened.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
     const malformed = await callProvider(vaultEnv, {

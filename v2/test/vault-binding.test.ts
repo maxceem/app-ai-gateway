@@ -12,7 +12,7 @@ import { localVault } from "./local-vault.ts";
 
 const KEY = "sk-test-binding-key-9876";
 const BASE = "https://llm.example.com/proxy/";
-const IDENTITY: [string, string, string, string] = ["acct_bind", "conn_bind", "openai", BASE];
+const IDENTITY: [string, string, string, string, string, string] = ["acct_bind", "conn_bind", "openai", BASE, "", ""];
 
 /** The binding's client: the test default (the local call) put aside for it. */
 function bound(): VaultClient {
@@ -79,7 +79,7 @@ describe.each([
 
   it("refuses a built-in key in a header its provider does not take keys in, which an answer could echo", async () => {
     const vaultClient = client();
-    const builtIn: [string, string, string, string] = ["acct_bind", "conn_bind", "fal", ""];
+    const builtIn: [string, string, string, string, string, string] = ["acct_bind", "conn_bind", "fal", "", "", ""];
     const blob = await vaultClient.seal("providerKey", builtIn, KEY);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const call = vaultClient.call({
@@ -96,16 +96,16 @@ describe.each([
   it("seals a key again only for its provider's own address, in the same account, connection and type", async () => {
     const vaultClient = client();
     const blob = await vaultClient.seal("providerKey", IDENTITY, KEY);
-    const moved = await vaultClient.reseal("providerKey", IDENTITY, ["acct_bind", "conn_bind", "openai", ""], blob);
+    const moved = await vaultClient.reseal("providerKey", IDENTITY, ["acct_bind", "conn_bind", "openai", "", "", ""], blob);
     expect(moved).toMatch(/^local1\./u);
     expect(moved).not.toContain(KEY);
     // Whatever the gateway asks, the vault moves a key nowhere else.
     for (const to of [
-      ["acct_bind", "conn_bind", "openai", "https://evil.test/"],
-      ["acct_other", "conn_bind", "openai", ""],
-      ["acct_bind", "conn_other", "openai", ""],
-      ["acct_bind", "conn_bind", "anthropic", ""],
-    ] as [string, string, string, string][]) {
+      ["acct_bind", "conn_bind", "openai", "https://evil.test/", "", ""],
+      ["acct_other", "conn_bind", "openai", "", "", ""],
+      ["acct_bind", "conn_other", "openai", "", "", ""],
+      ["acct_bind", "conn_bind", "anthropic", "", "", ""],
+    ] as [string, string, string, string, string, string][]) {
       await expect(vaultClient.reseal("providerKey", IDENTITY, to, blob), to.join("|")).rejects.toThrow();
     }
   });

@@ -302,7 +302,7 @@ describe("saving a custom provider", () => {
     expect(builtIn.body.provider.auth).toBeUndefined();
   });
 
-  it("keeps its key header when its paths are cleared, and takes a new one", async () => {
+  it("keeps its key header when its paths are cleared, and takes a new one only with the key again", async () => {
     const key = await seedManagementKey();
     const created = await createCustom(key, { passthrough: [{ method: "GET", path: "models" }] });
     const id = created.body.provider.id as string;
@@ -310,7 +310,11 @@ describe("saving a custom provider", () => {
     expect(cleared.status).toBe(200);
     expect(cleared.body.provider.auth).toEqual(AUTH);
     expect(cleared.body.provider.passthrough).toBeUndefined();
-    const moved = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, auth: { header: "authorization", format: "Bearer {key}" } });
+    // The key is sealed with the header it goes in (plan step 8i): a new header needs the key again.
+    const refused = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, auth: { header: "authorization", format: "Bearer {key}" } });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("needs the key in the same request");
+    const moved = await admin(key, "PUT", `/v2/admin/providers/${id}`, { revision: 2, auth: { header: "authorization", format: "Bearer {key}" }, secret: "sk-test-new-custom-key" });
     expect(moved.status).toBe(200);
     expect(moved.body.provider.auth).toEqual({ header: "authorization", format: "Bearer {key}" });
   });
@@ -722,7 +726,7 @@ async function setup(
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `custom-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "custom", baseUrl], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "custom", baseUrl, auth.header, auth.format], SECRET);
   const rates = JSON.stringify(ratesJson);
   const now = Date.now();
   await env.DB.prepare(

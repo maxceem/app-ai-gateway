@@ -386,7 +386,7 @@ async function setup(
   const baseUrl = connection.baseUrl ?? null;
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, keyOrigin({ type, baseUrl: baseUrl ?? null, cloudflareGateway: null })], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, keyOrigin({ type, baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

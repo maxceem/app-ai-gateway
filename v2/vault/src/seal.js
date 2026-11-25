@@ -22,14 +22,16 @@ export const VAULT_SERVICE = "app-ai-gateway";
  * The gateway's own table (`v2/src/vault/secrets.ts`) must name the same, and
  * a test checks that it does.
  *
- * - `providerKey`: the account, the connection, the provider type, and the
- *   address the key may go to: a base URL, a Cloudflare AI Gateway path, or
- *   "" for the provider's own hosts (`./hosts.js`).
+ * - `providerKey`: the account, the connection, the provider type, the
+ *   address the key may go to (a base URL, a Cloudflare AI Gateway path, or
+ *   "" for the provider's own hosts, `./hosts.js`), and, for a custom
+ *   provider, the header and format its key is sent in, fixed when it was
+ *   saved ("" for a built-in type, whose headers `./hosts.js` lists).
  * - `cloudflareGatewayToken`: the account, the connection, and the Cloudflare
  *   account and gateway the token may go to.
  */
 export const CONTEXT_NAMES = /** @type {const} */ ({
-  providerKey: ["accountId", "connectionId", "providerType", "baseUrl"],
+  providerKey: ["accountId", "connectionId", "providerType", "baseUrl", "keyHeader", "keyFormat"],
   cloudflareGatewayToken: ["accountId", "connectionId", "gatewayAccountId", "gatewayId"],
 });
 
@@ -220,7 +222,7 @@ export async function open(env, kind, identity, blob) {
  * Seals a provider key again for the provider's own address, without the key
  * ever leaving this Worker: for a connection whose base URL or Cloudflare
  * gateway is removed. The vault enforces the rule itself, whatever the caller
- * asks: the same account, connection and provider type, and only to "" (the
+ * asks: the same account, connection, provider type and key placement, and only to "" (the
  * provider's own hosts, which this Worker knows). A key is never moved to an
  * address someone names; that needs the key again.
  * @param {VaultEnv} env
@@ -234,7 +236,7 @@ export async function reseal(env, kind, from, to, blob) {
   if (kind !== "providerKey") throw new VaultBlobError("only a provider key can be sealed again");
   const source = secretContext(kind, from);
   const target = secretContext(kind, to);
-  const same = ["accountId", "connectionId", "providerType"].every((name) => source[name] === target[name]);
+  const same = ["accountId", "connectionId", "providerType", "keyHeader", "keyFormat"].every((name) => source[name] === target[name]);
   if (!same || target.baseUrl !== "") throw new VaultBlobError("a key can only be sealed again for its provider's own address");
   return seal(env, kind, to, await open(env, kind, from, blob));
 }

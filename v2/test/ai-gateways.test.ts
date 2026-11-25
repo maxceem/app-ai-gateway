@@ -139,7 +139,7 @@ describe("where a request goes (route.ts)", () => {
       const label = `https://gateway.ai.cloudflare.com/v1/acct/${encodeURIComponent(gatewayId)}/`;
       const setting = { accountId: "acct", gatewayId };
       expect(keyOrigin({ type: "openai", baseUrl: null, cloudflareGateway: setting })).toBe(label);
-      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label], PROVIDER_KEY);
+      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label, "", ""], PROVIDER_KEY);
       const tokenBlob = await sealSecret(env, "cloudflareGatewayToken", ["acc", "conn", setting.accountId, setting.gatewayId], CF_TOKEN);
       const stored = record({ secretBlob, cloudflareGateway: { ...setting, tokenBlob, tokenHint: null } });
       expect(await connectionCredentials(env, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });

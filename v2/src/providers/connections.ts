@@ -194,9 +194,26 @@ export function keyOrigin(connection: {
   return `${CLOUDFLARE_AI_GATEWAY_ORIGIN}${path}`;
 }
 
-/** The ids a connection's provider key is sealed to (`keyOrigin`). */
+/**
+ * The ids a provider key is sealed to: the connection, its type, the origin
+ * it goes to (`keyOrigin`), and a custom provider's key header and format as
+ * saved ("" for a built-in type). A new custom header or format needs the key
+ * again.
+ */
+export function keyIdentity(
+  accountId: string,
+  connectionId: string,
+  type: string,
+  origin: string,
+  customAuth: ProviderAuth | null | undefined,
+): SecretIdentity<"providerKey"> {
+  const auth = type === CUSTOM_PROVIDER_TYPE ? (customAuth ?? null) : null;
+  return [accountId, connectionId, type, origin, auth?.header ?? "", auth?.format ?? ""];
+}
+
+/** The ids a connection's provider key is sealed to (`keyIdentity`). */
 export function providerKeyIdentity(connection: ConnectionRecord): SecretIdentity<"providerKey"> {
-  return [connection.accountId, connection.id, connection.type, keyOrigin(connection)];
+  return keyIdentity(connection.accountId, connection.id, connection.type, keyOrigin(connection), connection.customAuth);
 }
 
 /** The ids a connection's Cloudflare AI Gateway token is sealed to: the connection, and the gateway it goes to. */

@@ -36,7 +36,7 @@ async function setup(rates: Record<string, unknown> | null = null, baseUrl: stri
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `fal-${id.slice(0, 6)}`;
   // The key is sealed to where it is sent: the base URL, or the provider's own hosts.
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null })], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -878,7 +878,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
       const { appId, slug, key, connectionId } = await setup();
       falAnswers({});
       const jobId = String((await submit(appId, slug, key)).json!.request_id);
-      const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, connectionId, "fal", ""], "sk-another-account-key");
+      const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], "sk-another-account-key");
       const update = env.DB.prepare(`UPDATE provider_connection SET ${change} WHERE slug = ?`);
       await (change.includes("?") ? update.bind(blob, slug) : update.bind(slug)).run();
       clearCaches();

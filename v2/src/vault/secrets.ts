@@ -29,12 +29,19 @@ import {
  * for the reason given on {@link VAULT_SERVICE}.
  */
 const SECRET_CONTEXTS = {
-  /** A provider connection's key, bound to its account, its connection, its type and the origin it is sent to. */
-  providerKey: (accountId: string, connectionId: string, providerType: string, baseUrl: string) => ({
+  /**
+   * A provider connection's key, bound to its account, its connection, its
+   * type, the origin it is sent to, and, for a custom provider, the header and
+   * format it is sent in, as saved ("" for a built-in type). The vault sends a
+   * custom key only in its sealed header (plan step 8i).
+   */
+  providerKey: (accountId: string, connectionId: string, providerType: string, baseUrl: string, keyHeader: string, keyFormat: string) => ({
     accountId,
     connectionId,
     providerType,
     baseUrl,
+    keyHeader,
+    keyFormat,
   }),
   /**
    * The Cloudflare AI Gateway token of one provider connection (plan D13),

@@ -77,32 +77,3 @@ export const CLOUDFLARE_SLUGS = Object.freeze({
   perplexity: "perplexity-ai",
   xai: "grok",
 });
-
-/**
- * Header names a custom provider's key may never be sent in, as the gateway
- * refuses them when a custom provider is saved (`v2/src/providers/custom.ts`,
- * `RESERVED_KEY_HEADERS`), plus any name starting `cf-`, `x-agw-` or `sec-`.
- * A test in the gateway fails when the two lists differ.
- */
-export const RESERVED_KEY_HEADERS = Object.freeze([
-  "accept",
-  "accept-encoding",
-  "access-control-request-headers",
-  "access-control-request-method",
-  "connection",
-  "content-encoding",
-  "content-length",
-  "content-type",
-  "cookie",
-  "expect",
-  "host",
-  "keep-alive",
-  "origin",
-  "referer",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "user-agent",
-]);
-export const RESERVED_KEY_HEADER_PREFIXES = Object.freeze(["cf-", "x-agw-", "sec-"]);

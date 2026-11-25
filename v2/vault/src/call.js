@@ -9,14 +9,16 @@
  * opens the key, adds it, and streams the answer back without the key header.
  * It never follows a redirect, never logs a key and never returns one.
  */
-import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS, RESERVED_KEY_HEADER_PREFIXES, RESERVED_KEY_HEADERS } from "./hosts.js";
+import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "./hosts.js";
 import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
 
 /** @typedef {import("./seal.js").VaultEnv} VaultEnv */
 
 /**
- * A provider key, sealed, with where it goes in the request.
- * @typedef {{ readonly blob: string, readonly identity: readonly string[], readonly header: string, readonly format: string }} SealedKey
+ * A provider key, sealed. For a built-in type, the header and format the
+ * gateway names for the call (one of the type's own key headers); a custom
+ * provider's key goes where it was sealed to go, and these are ignored.
+ * @typedef {{ readonly blob: string, readonly identity: readonly string[], readonly header?: string, readonly format?: string }} SealedKey
  */
 /**
  * A Cloudflare AI Gateway token, sealed.
@@ -45,7 +47,7 @@ export const VAULT_ERROR_HEADER = "x-agw-vault-error";
 /** Cloudflare AI Gateway's own origin. Only Cloudflare's: the vault takes no test stand-in. */
 const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
 const CLOUDFLARE_TOKEN_HEADER = "cf-aig-authorization";
-const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/u;
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]{1,100}$/u;
 /** Headers the vault keeps for itself (`x-agw-vault`, `x-agw-vault-error`): never taken from a provider's answer. */
 const RESERVED_HEADER = /^x-agw-vault/iu;
 const SECRET_CACHE_TTL_MS = 10 * 60_000;
@@ -111,21 +113,41 @@ export function under(url, base) {
 }
 
 /**
- * Whether a key of `providerType` may be sent in `header`. A built-in type's
- * key goes only in a header its own provider takes keys in: a header such as
- * `origin` could come back in an answer (`access-control-allow-origin`) with
- * the key, and fal passes other headers on to the apps it runs. A custom
- * provider's key goes in the customer's own header, never one the gateway
- * refuses when saving a custom provider.
+ * Whether a built-in type's key may be sent in `header`: only in a header
+ * its own provider takes keys in. A header such as `origin` could come back
+ * in an answer (`access-control-allow-origin`) with the key, and fal passes
+ * other headers on to the apps it runs. A custom provider's key is never
+ * placed by the caller: it goes in the header sealed with it (`keyPlacement`).
  * @param {string} providerType
  * @param {string} header lower-cased
  */
 export function keyHeaderAllowed(providerType, header) {
-  if (Object.hasOwn(KEY_HEADERS, providerType)) {
-    return /** @type {readonly string[]} */ (KEY_HEADERS[/** @type {keyof typeof KEY_HEADERS} */ (providerType)]).includes(header);
+  if (!Object.hasOwn(KEY_HEADERS, providerType)) return false;
+  return /** @type {readonly string[]} */ (KEY_HEADERS[/** @type {keyof typeof KEY_HEADERS} */ (providerType)]).includes(header);
+}
+
+/**
+ * Where a provider key goes in the request. A built-in type's: the header
+ * the gateway names for the call's API style, if it is one of the type's own
+ * key headers, and nothing sealed with the key. A custom provider's: only the
+ * header and format sealed with the key when it was saved; whatever the
+ * caller names is ignored, so no header a proxy might reflect back can be
+ * chosen for it. Null when neither holds.
+ * @param {readonly string[]} identity
+ * @param {unknown} header
+ * @param {unknown} format
+ * @returns {{ header: string, format: string } | null}
+ */
+export function keyPlacement(identity, header, format) {
+  const [, , providerType = "", , sealedHeader = "", sealedFormat = ""] = identity;
+  if (Object.hasOwn(PROVIDER_HOSTS, providerType)) {
+    if (sealedHeader !== "" || sealedFormat !== "") return null;
+    if (typeof header !== "string" || typeof format !== "string") return null;
+    if (format.split("{key}").length !== 2 || format.length > 256) return null;
+    return keyHeaderAllowed(providerType, header.toLowerCase()) ? { header: header.toLowerCase(), format } : null;
   }
-  if (Object.hasOwn(PROVIDER_HOSTS, providerType)) return false;
-  return !RESERVED_KEY_HEADERS.includes(header) && !RESERVED_KEY_HEADER_PREFIXES.some((prefix) => header.startsWith(prefix));
+  if (!HEADER_NAME.test(sealedHeader) || sealedFormat.split("{key}").length !== 2) return null;
+  return { header: sealedHeader, format: sealedFormat };
 }
 
 /**
@@ -181,19 +203,20 @@ export function readCredentials(value) {
   const record = /** @type {Record<string, unknown>} */ (value);
   /** @type {{ providerKey?: SealedKey, cloudflareToken?: SealedToken }} */
   const credentials = {};
-  /** @param {unknown} item */
-  const identityOf = (item) => (Array.isArray(item) && item.length === 4 && item.every((id) => typeof id === "string") ? /** @type {string[]} */ (item) : null);
+  /** @param {unknown} item @param {number} length */
+  const identityOf = (item, length) =>
+    Array.isArray(item) && item.length === length && item.every((id) => typeof id === "string") ? /** @type {string[]} */ (item) : null;
   if (record.providerKey !== undefined) {
     const key = /** @type {Record<string, unknown>} */ (record.providerKey ?? {});
-    const identity = identityOf(key.identity);
-    if (typeof key.blob !== "string" || identity === null || typeof key.header !== "string" || typeof key.format !== "string") return null;
-    if (!HEADER_NAME.test(key.header) || !key.format.includes("{key}") || key.format.length > 256) return null;
-    if (!keyHeaderAllowed(identity[2] ?? "", key.header.toLowerCase())) return null;
-    credentials.providerKey = { blob: key.blob, identity, header: key.header, format: key.format };
+    const identity = identityOf(key.identity, 6);
+    if (typeof key.blob !== "string" || identity === null) return null;
+    const placement = keyPlacement(identity, key.header, key.format);
+    if (placement === null) return null;
+    credentials.providerKey = { blob: key.blob, identity, ...placement };
   }
   if (record.cloudflareToken !== undefined) {
     const token = /** @type {Record<string, unknown>} */ (record.cloudflareToken ?? {});
-    const identity = identityOf(token.identity);
+    const identity = identityOf(token.identity, 4);
     if (typeof token.blob !== "string" || identity === null) return null;
     credentials.cloudflareToken = { blob: token.blob, identity };
   }
@@ -227,7 +250,8 @@ export async function callProvider(env, call) {
   const keyHeaders = [];
   try {
     if (credentials.providerKey !== undefined) {
-      const { blob, identity, header, format } = credentials.providerKey;
+      // `readCredentials` has set the placement: the type's own key header, or the sealed one.
+      const { blob, identity, header = "", format = "" } = credentials.providerKey;
       const key = await opened(env, "providerKey", identity, blob);
       // A callback, so a key with `$&` is sent as it is.
       headers.set(header, format.replace("{key}", () => key));

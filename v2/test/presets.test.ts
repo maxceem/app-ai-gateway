@@ -45,7 +45,7 @@ async function connection(type: string, status: "active" | "disabled" = "active"
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, ""], SECRET);
+  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -118,7 +118,7 @@ const jsonBody = () => ({ bytes: new TextEncoder().encode('{"messages":[]}'), co
 /** A unit attempt's key, sealed as its connection's (`conn_<seq>`, the provider's own address). */
 const sealedBlobs = new Map<string, Promise<string>>();
 function sealedKey(seq: number, key: string): Promise<SealedCredentials> {
-  const identity: [string, string, string, string] = [ACCOUNT_ID, `conn_${seq}`, "openai", ""];
+  const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, `conn_${seq}`, "openai", "", "", ""];
   const name = `${seq}\u0000${key}`;
   if (!sealedBlobs.has(name)) sealedBlobs.set(name, sealSecret(env, "providerKey", identity, key));
   return sealedBlobs.get(name)!.then((blob) => ({ providerKey: { blob, identity }, cloudflareToken: null }));

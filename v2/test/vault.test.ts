@@ -264,12 +264,15 @@ describe("sealed secrets", () => {
   });
 
   it("refuses a provider key moved to another account, type or destination", async () => {
-    const original = ["account-a", "conn-a", "openai", "https://first.example.test/v1/"] as const;
+    const original = ["account-a", "conn-a", "custom", "https://first.example.test/v1/", "x-my-key", "{key}"] as const;
     const blob = await sealSecret(env, "providerKey", [...original], "secret-value");
     for (const changed of [
-      ["account-b", original[1], original[2], original[3]],
-      [original[0], original[1], "anthropic", original[3]],
-      [original[0], original[1], original[2], "https://second.example.test/v1/"],
+      ["account-b", original[1], original[2], original[3], original[4], original[5]],
+      [original[0], original[1], "anthropic", original[3], original[4], original[5]],
+      [original[0], original[1], original[2], "https://second.example.test/v1/", original[4], original[5]],
+      // A custom key's placement is sealed too: another header or format does not open it.
+      [original[0], original[1], original[2], original[3], "origin", original[5]],
+      [original[0], original[1], original[2], original[3], original[4], "Bearer {key}"],
     ] as const) {
       await expect(openSecret(env, "providerKey", [...changed], blob)).rejects.toThrow();
     }
