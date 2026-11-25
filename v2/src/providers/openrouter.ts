@@ -12,6 +12,8 @@ export const openrouter = defineProvider({
   authorNamespacedModels: true,
   label: "OpenRouter",
   hosts: { main: "openrouter.ai/api" },
+  // Its in-region hosts (docs: guides/features/in-region-routing).
+  otherHosts: ["us.openrouter.ai", "eu.openrouter.ai"],
   auth: { header: "authorization", format: "Bearer {key}" },
   // Its key-status call: `v1/models` is public and answers any token.
   probe: { path: "v1/key" },

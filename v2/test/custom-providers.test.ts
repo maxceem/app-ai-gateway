@@ -202,6 +202,13 @@ describe("a custom provider's description", () => {
     expect(prefixed.operations[0]!.rules?.choosingModels).toEqual(["perplexity/auto"]);
   });
 
+  it("judges OpenRouter's fallback lists on a custom path to its in-region hosts, as on its main one", () => {
+    for (const baseUrl of ["https://us.openrouter.ai/api/", "https://eu.openrouter.ai/api/"]) {
+      const description = customDescription({ baseUrl, auth: AUTH, paths: [{ method: "POST", path: "v1/messages", style: "anthropic-messages" }] });
+      expect(description.operations[0]!.rules?.alternativeModels?.paths, baseUrl).toEqual(["models[]", "fallbacks[].model"]);
+    }
+  });
+
   it("bills an xAI chat path at the connection's rates, never at xAI's own dollar report", () => {
     const description = customDescription({ baseUrl: "https://api.x.ai/", auth: AUTH, paths: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }] });
     const xaiChat = BUILT_IN_PROVIDERS.xai!.operations.find((one) => one.style === "openai-chat")!;

@@ -133,9 +133,12 @@ What your app's model list checks on OpenRouter:
 What is passed through as it is, with no check: a `preset` field, plugins
 such as Fusion, and server tools such as an advisor, a subagent or image
 generation. These OpenRouter features can call other models, also ones
-your list doesn't name. Those calls are part of the cost OpenRouter reports
-for the request, which is what the request is charged, and they count
-toward your app's spending limits like any other cost.
+your list doesn't name. On the built-in OpenRouter connection, those calls
+are part of the cost OpenRouter reports for the request, which is what the
+request is charged, and they count toward your app's spending limits like
+any other cost. A custom path to OpenRouter is charged at the prices you
+set for it instead, from the tokens its answer reports, so it may leave out
+what those extra calls cost.
 
 **Perplexity** has two kinds of model name, served at different paths:
 

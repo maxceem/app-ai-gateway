@@ -786,6 +786,22 @@ describe("OpenRouter's other models", () => {
     expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(403);
   });
 
+  it("lets the first model of a models list that can be billed stand, when the request names no model and the app lists none", async () => {
+    const { appId, slug, key } = await setup("vercel", { operations: ["vercel.chat"] });
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-4o-mini", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, {
+      messages: [],
+      providerOptions: { gateway: { models: ["nobody/model", "openai/gpt-4o-mini"] } },
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-4o-mini" }]);
+    // None that can be billed: refused.
+    const none = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { messages: [], providerOptions: { gateway: { models: ["nobody/model"] } } });
+    expect(none.response.status).toBe(400);
+  });
+
   it("judges an OpenRouter preset's fixed fallback list by the same rule when it is saved", () => {
     const description = BUILT_IN_PROVIDERS.openrouter!;
     const operation = description.operations.find((op) => op.name === "openrouter.chat")!;

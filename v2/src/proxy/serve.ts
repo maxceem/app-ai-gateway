@@ -64,7 +64,7 @@ import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { chargedAs, judgedAlternatives, pinnedModels, standingModel } from "./alternatives.ts";
+import { chargedAs, judgedAlternatives, pinnedModels, standingModels } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
@@ -341,19 +341,27 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // provider reads elsewhere (`alternatives` below). What the customer
       // set, the app's list and its rewrites' targets, is their choice. Where
       // its own field names none that is a model (`models` alone, or an
-      // unlisted `perplexity/auto`), the first of the others stands for it,
-      // never rewritten (`standingModel`).
+      // unlisted `perplexity/auto`), the first of the others that can be
+      // billed stands for it, never rewritten (`standingModels`).
       const field = modelBodyField(operation);
       const named = field === null ? undefined : bodyModel(body, field);
-      const chosen = field === null ? null : standingModel(description, operation, body, named, routing.models);
-      const requested = chosen ?? requestModel(operation, body, match.parts, url.searchParams);
-      // The caller's text: a refusal's diagnostic keeps it only when it names a
-      // model the gateway knows, checked then, so a served request never pays.
-      caller.facts.model = requested;
-      caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested);
+      const standing = field === null ? null : standingModels(description, operation, body, named, routing.models);
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
-      const call = resolveCall(routing, chosen === null ? app.routing.model_rewrites : undefined, priceSources(connection), operation, requested);
+      const resolved = (requested: string) =>
+        resolveCall(routing, standing === null ? app.routing.model_rewrites : undefined, priceSources(connection), operation, requested);
+      let requested = standing?.[0] ?? requestModel(operation, body, match.parts, url.searchParams);
+      let call = resolved(requested);
+      for (const other of standing?.slice(1) ?? []) {
+        if (call.kind === "admitted") break;
+        const next = resolved(other);
+        if (next.kind === "admitted") [requested, call] = [other, next];
+      }
+      // The caller's text: a refusal's diagnostic keeps it only when it names a
+      // model the gateway knows, checked then, so a served request never pays.
+      const asked = requested;
+      caller.facts.model = asked;
+      caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), asked);
       if (call.kind === "refused") throw callRefusal(call, operation);
       const { model, bill } = call;
       const price = bill.price;
