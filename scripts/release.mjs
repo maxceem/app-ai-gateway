@@ -158,8 +158,9 @@ try {
   git(["push", "--atomic", "origin", BRANCH, tag]);
 
   console.log(
-    `\nPushed ${tag}. The release workflow now verifies the tag, publishes the gateway archive,\n` +
-      "deploys the gateway, publishes the CLI to npm and deploys the documentation:\n" +
+    `\nPushed ${tag}. The release workflow now verifies the tag, waits for your approval,\n` +
+      "deploys the gateway and then the documentation, publishes the gateway archive,\n" +
+      "then publishes the CLI to npm:\n" +
       "https://github.com/maxceem/app-ai-gateway/actions/workflows/release.yml",
   );
 } catch (error) {

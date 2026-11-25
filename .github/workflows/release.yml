@@ -205,6 +205,12 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # An empty id would make every later download take every artifact in
+      # the run, so stop here instead.
+      - name: Check the artifact has an id
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID" || { echo "The upload returned no artifact id." >&2; exit 1; }
 
   # Deploys the gateway, then the documentation. The only job that waits for
   # the owner's approval; every job after it runs only once it succeeded. Both
@@ -216,6 +222,10 @@ jobs:
     environment: production
     permissions:
       contents: read
+    outputs:
+      # Set once the gateway is live, so the post-deploy check still runs when
+      # the documentation deploy after it fails.
+      gateway_deployed: ${{ steps.gateway.outputs.deployed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,11 +295,15 @@ jobs:
           node scripts/wrangler.mjs --profile cloud --cwd docs deploy --dry-run
 
       - name: Deploy the gateway
+        id: gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
+        run: |
+          set -euo pipefail
+          node scripts/deploy.mjs --profile cloud --prebuilt dist/prebuilt
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
 
       - name: Summarize
         env:
@@ -411,9 +425,15 @@ jobs:
   # Asks the outside monitor to run the smoke checks (smoke/) against what was
   # just deployed, the previous release's included. It reports the result
   # itself, so this only starts it, and never fails the release.
+  # Runs once the gateway is live, even if the documentation deploy after it
+  # failed.
   post-deploy-check:
     needs: [build, deploy]
-    if: github.repository == 'maxceem/app-ai-gateway' && vars.POST_DEPLOY_CHECK_URL != ''
+    if: >-
+      !cancelled()
+      && github.repository == 'maxceem/app-ai-gateway'
+      && vars.POST_DEPLOY_CHECK_URL != ''
+      && needs.deploy.outputs.gateway_deployed == 'true'
     runs-on: ubuntu-latest
     environment: notify
     continue-on-error: true

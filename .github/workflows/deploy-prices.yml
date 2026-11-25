@@ -127,6 +127,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # An empty id would make the download take every artifact in the run.
+      - name: Check the artifact has an id
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID" || { echo "The upload returned no artifact id." >&2; exit 1; }
 
   deploy:
     needs: build
