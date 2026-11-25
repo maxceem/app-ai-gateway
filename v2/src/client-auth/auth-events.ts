@@ -5,6 +5,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { deletePass, type Pass } from "../core/chunked-delete.ts";
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import type { ErrorCode } from "../core/errors.ts";
 import { timeOrderedId } from "../core/ids.ts";
@@ -133,6 +134,14 @@ async function recordAttempt(input: AuthEventInput & { accountId: string }, id: 
   return delayMs;
 }
 
+/**
+ * How long one try at writing an event may take. Events are written after the
+ * answer, inside the request's `waitUntil`, which ends about 30 s after it:
+ * every try of a success fits well inside, so a stalled ledger ends in a
+ * logged warning, never a silent loss.
+ */
+export const AUTH_EVENT_WRITE_DEADLINE_MS = 5_000;
+
 /** The event itself, in the account's ledger, once: its id is stable. A success gets a few tries; a failure is logged and skipped. */
 async function writeEvent(input: AuthEventInput & { accountId: string }, id: string, now: number, delayMs: number | null): Promise<void> {
   const ledger = ledgerDb(input.env, input.accountId);
@@ -140,7 +149,7 @@ async function writeEvent(input: AuthEventInput & { accountId: string }, id: str
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await ledger
+      await withDeadline(ledger
         .prepare(
           `INSERT INTO app_auth_event
              (id, app_id, account_id, user_id, event, auth_method, outcome, reason, app_version, client_sdk,
@@ -165,7 +174,7 @@ async function writeEvent(input: AuthEventInput & { accountId: string }, id: str
           delayMs,
           now,
         )
-        .run();
+        .run(), AUTH_EVENT_WRITE_DEADLINE_MS, "writing the auth event");
       return;
     } catch (error) {
       lastError = error;

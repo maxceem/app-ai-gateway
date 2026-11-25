@@ -691,37 +691,42 @@ describe("end users", () => {
     await seedCharge(appId, "their-charge-user", { usedAt: now - 1_000, accountId: "another-account" });
     await seedCharge(appId, "header-user", { usedAt: now - 1_000, cost: 70_000, accountId: "another-account" });
 
+    // Two lists, each paged on its own (step 8f): the users sign-in recorded, with an exact total ...
     const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users?month=${thisMonth}`);
     expect(listed.status).toBe(200);
-    expect(listed.body.total).toBe(4);
-    // D1's users first, newest first, then the users the ledger has seen, in id order (step 8f).
-    expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user", "header-user", "refused-only"]);
-    const header = listed.body.users[2];
-    expect(header).toMatchObject({
+    expect(listed.body).toMatchObject({ total: 1, users: [{ id: "signed-in", is_virtual: false, usage: { charges: 0, cost_nano: 0 } }] });
+    // ... and the ids only usage names, in id order, from a cursor.
+    const seen = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?month=${thisMonth}`);
+    expect(seen.status).toBe(200);
+    expect(seen.body.users.map((user: { id: string }) => user.id)).toEqual(["100%_user", "header-user", "refused-only"]);
+    expect(seen.body.next_cursor).toBeNull();
+    expect(seen.body.users[1]).toMatchObject({
       is_virtual: true,
       status: "active",
       created_at: new Date(lastMonth).toISOString(),
       usage: { charges: 2, failed: 1, cost_nano: 1_750, input_tokens: 30 },
     });
-    expect(listed.body.users[0]).toMatchObject({ is_virtual: false, usage: { charges: 0, cost_nano: 0 } });
 
     const month = new Date(lastMonth).toISOString().slice(0, 7);
     const older = await request(key, "GET", `/v2/admin/apps/${appId}/users/header-user?month=${month}`);
     expect(older.body).toMatchObject({ month, user: { id: "header-user", usage: { charges: 1, cost_nano: 9_999 } } });
 
     // `%` and `_` in a search match themselves.
-    const searched = await request(key, "GET", `/v2/admin/apps/${appId}/users?query=${encodeURIComponent("0%_")}`);
+    const searched = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?query=${encodeURIComponent("0%_")}`);
     expect(searched.body.users.map((user: { id: string }) => user.id)).toEqual(["100%_user"]);
-    const page = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=1&offset=2`);
-    expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 2, users: [{ id: "header-user" }] });
-    // A page across the two lists: the last of D1's users, then the first the ledger has seen.
-    const across = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=2&offset=0`);
-    expect(across.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user"]);
-    // A user in both lists is listed once: D1's row wins, and the ledger's page comes back one short.
+    // A full page hands out a cursor, and the next page starts after it.
+    const first = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?limit=2`);
+    expect(first.body).toMatchObject({ limit: 2, users: [{ id: "100%_user" }, { id: "header-user" }], next_cursor: "header-user" });
+    const second = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?limit=2&cursor=header-user`);
+    expect(second.body).toMatchObject({ users: [{ id: "refused-only" }], next_cursor: null });
+    // A user sign-in recorded is never in the second list, even once usage names it: that page comes back one short.
     await seedCharge(appId, "signed-in", { usedAt: now - 1_000 });
-    const both = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=10`);
-    expect(both.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user", "header-user", "refused-only"]);
-    expect(both.body.total).toBe(5);
+    const short = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?limit=3&cursor=header-user`);
+    expect(short.body).toMatchObject({ users: [{ id: "refused-only" }], next_cursor: null });
+    const withSignedIn = await request(key, "GET", `/v2/admin/apps/${appId}/seen-users?limit=4`);
+    expect(withSignedIn.body.users.map((user: { id: string }) => user.id)).toEqual(["100%_user", "header-user", "refused-only"]);
+    expect(withSignedIn.body.next_cursor).toBe("signed-in");
+    expect((await request(key, "GET", `/v2/admin/apps/${appId}/users`)).body.total).toBe(1);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users?month=2026-13`)).status).toBe(400);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/nobody`)).status).toBe(404);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-user`)).status).toBe(404);

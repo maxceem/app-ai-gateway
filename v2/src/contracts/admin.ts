@@ -602,6 +602,23 @@ export const EndUserListQuerySchema = z.object({
   offset: z.coerce.number().int().min(0, { error: "offset must be 0 or more" }).default(0),
 });
 
+export const SeenUserListQuerySchema = z.object({
+  month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
+  query: z.string().max(200).optional().meta({ description: "Part of the user id." }),
+  limit: z.coerce.number().int().min(1, { error: "limit must be 1 to 200" }).max(200, { error: "limit must be 1 to 200" }).default(50),
+  cursor: z.string().max(1024).optional().meta({ description: "`next_cursor` from the previous page." }),
+});
+
+export const SeenUserListResponseSchema = z
+  .object({
+    app_id: z.string(),
+    month: z.string(),
+    limit: z.number().int(),
+    users: z.array(EndUserSchema),
+    next_cursor: z.string().nullable().meta({ description: "Where the next page starts; null when this was the last page. A page may hold fewer users than `limit` and still have a next one." }),
+  })
+  .meta({ id: "SeenUserListResponse" });
+
 export const EndUserQuerySchema = z.object({
   month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
 });

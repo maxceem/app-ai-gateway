@@ -4,9 +4,10 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
-import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
+import { AUTH_EVENT_WRITE_DEADLINE_MS, drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, recordAuthEvent, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
+  ACCOUNT_ID,
   attestAuthentication,
   authEvents,
   clearCaches,
@@ -111,6 +112,18 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("gives up an event write the ledger never answers, inside the request's background time, with a warning (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const writing = recordAuthEvent({ env: stalled, appId, accountId: ACCOUNT_ID, event: "challenge", outcome: "client_failed", latencyMs: 1 });
+    await vi.advanceTimersByTimeAsync(AUTH_EVENT_WRITE_DEADLINE_MS);
+    vi.useRealTimers();
+    await writing;
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"auth_event_record_failed"'))).toBe(true);
+  });
+
   it("answers once the challenge is spent, and writes the event after the answer, so a stalled ledger never holds it (step 8f)", async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);

@@ -161,6 +161,31 @@ describe("AppDetailPage", () => {
     );
   });
 
+  it("lists user ids only usage names in a second list, paged on its own from a cursor", async () => {
+    const seen = (users: string[], next: string | null) => ({
+      body: {
+        app_id: "my-app",
+        month: "2026-11",
+        limit: 50,
+        next_cursor: next,
+        users: users.map((id) => ({ id, status: "active", installs: 0, is_install: false, created_at: null, last_seen_at: null, is_virtual: true, usage: { charges: 1, failed: 0, cost_nano: 0, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 } })),
+      },
+    });
+    const fetchMock = stub({
+      "GET /v2/admin/apps/my-app/users?limit=50&offset=0": { body: { ...USERS, total: 1, users: [USERS.users[0]] } },
+      "GET /v2/admin/apps/my-app/seen-users?limit=50": seen(["header-1"], "header-1"),
+      "GET /v2/admin/apps/my-app/seen-users?limit=50&cursor=header-1": seen(["header-2"], null),
+    });
+    renderTab("users");
+
+    const section = await screen.findByRole("region", { name: "Also seen in usage" });
+    expect(await within(section).findByText("header-1")).toBeTruthy();
+    await userEvent.click(within(section).getByRole("button", { name: "Next" }));
+    expect(await within(section).findByText("header-2")).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/v2/admin/apps/my-app/seen-users?limit=50&cursor=header-1")).toBe(true);
+    expect((within(section).getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("lists the app's jobs with their estimate, correction, total and state", async () => {
     stub({
       "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {

@@ -32,6 +32,8 @@ import {
   CreatedAppResponseSchema,
   EndUserBlockResponseSchema,
   EndUserListQuerySchema,
+  SeenUserListQuerySchema,
+  SeenUserListResponseSchema,
   JobListQuerySchema,
   ConversationFileListSchema,
   ConversationFileQuerySchema,
@@ -357,11 +359,26 @@ export const CATALOG = {
     tags: ["Admin end users"],
     summary: "List an app's end users",
     description:
-      "Users that sign-in recorded, plus user ids that only the app's charges or refusals name (`is_virtual`, such as a server app's end-user header). Most recently seen first, with each user's usage in `month`. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
+      "Users that sign-in recorded, most recently seen first, with each user's usage in `month`. User ids that only the app's charges or refusals name, such as a server app's end-user header, are listed by listAppSeenUsers. Usage per user is kept 90 days, so a month further back shows only what is left of it.",
     security: "management",
     query: EndUserListQuerySchema,
     response: EndUserListResponseSchema,
     responseDescription: "One page of end users.",
+    errors: ADMIN_ERRORS,
+  },
+
+  listAppSeenUsers: {
+    method: "GET",
+    path: "/v2/admin/apps/{app}/seen-users",
+    params: APP_PARAM,
+    tags: ["Admin end users"],
+    summary: "List user ids only an app's usage names",
+    description:
+      "User ids that the app's charges or refusals name but sign-in never recorded (`is_virtual`), such as a server app's end-user header, with each one's usage in `month`. In id order, a page at a time: pass `next_cursor` back as `cursor`. Users that listAppUsers lists are left out, so a page can hold fewer than `limit`.",
+    security: "management",
+    query: SeenUserListQuerySchema,
+    response: SeenUserListResponseSchema,
+    responseDescription: "One page of user ids only usage names.",
     errors: ADMIN_ERRORS,
   },
 
