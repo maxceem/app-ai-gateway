@@ -96,7 +96,7 @@ export type ApiStyle = (typeof API_STYLES)[number];
  * `../usage/cost-reports.ts`. An operation that has one can be served without
  * a price of ours.
  */
-export const PROVIDER_COST_REPORTS = ["openrouter", "xai"] as const;
+export const PROVIDER_COST_REPORTS = ["openrouter", "xai", "perplexity"] as const;
 export type ProviderCostReport = (typeof PROVIDER_COST_REPORTS)[number];
 
 /**
@@ -507,6 +507,15 @@ export interface SessionSpec {
   readonly mode: "relayed" | "observed";
 }
 
+/** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */
+export type ModelIdForm = "plain" | "namespaced";
+
+/** Whether `operation` serves `model` by its id's form (`modelIds`). */
+export function servesModelId(operation: Pick<OperationDescription, "modelIds">, model: string): boolean {
+  if (operation.modelIds === undefined) return true;
+  return model.includes("/") === (operation.modelIds === "namespaced");
+}
+
 /** A closed list of values: the models priced for the operation, or a fixed list. */
 export type ClosedList = "priced_models" | readonly string[];
 
@@ -540,6 +549,17 @@ export interface OperationDescription {
    * by its price alone.
    */
   readonly modelKinds?: readonly string[];
+  /**
+   * The form of model id it serves, where a provider serves its own plain
+   * names and other makers' `maker/model` ids at different paths: Perplexity's
+   * Sonar `chat/completions` serves only its `sonar` names, its Agent and
+   * Orchestrator APIs only ids such as `openai/gpt-6.2-sol`. A preset target
+   * with no operation named takes one that serves its model's form
+   * (`presetOperation`), and saving refuses a preset target that names one
+   * that does not. A direct call is sent where the app sent it. Any form when
+   * left out.
+   */
+  readonly modelIds?: ModelIdForm;
   /**
    * The request body may be raw bytes, such as audio, sent as they are with
    * their own content type, never read or copied. A JSON body is still read

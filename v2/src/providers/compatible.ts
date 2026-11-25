@@ -6,7 +6,7 @@
  * `withV1Paths`.
  */
 import { chat, completions, embeddings, images, messages, responses, speech, withV1Paths } from "./llm.ts";
-import { defineProvider } from "./operation.ts";
+import { defineProvider, type OperationDescription } from "./operation.ts";
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
 export const perplexity = defineProvider({
@@ -25,18 +25,40 @@ export const perplexity = defineProvider({
       values: { auto: "standard", default: "standard", standard: "standard", flex: "flex", priority: "priority", fast: "priority" },
     },
   ],
+  // Perplexity serves two kinds of model id at different paths (`modelIds`):
+  // - its own Sonar names (`sonar`, `sonar-pro`) on Sonar Chat Completions,
+  //   at `chat/completions` and `v1/sonar`;
+  // - `maker/model` ids (`openai/gpt-6.2-sol`, `perplexity/sonar`) on the
+  //   Agent API (`v1/agent`, and `v1/responses` for OpenAI's SDKs) and on the
+  //   Orchestrator API under `orchestrator/v1/`, which it first served under
+  //   `router/v1/` and still does.
+  // The Agent API reports its own cost, with its tools' (`providerCost`).
   operations: withV1Paths("perplexity", [
-    chat("perplexity.chat", "chat/completions"),
-    chat("perplexity.chat.v1", "v1/chat/completions"),
-    responses("perplexity.agent", "v1/agent"),
-    responses("perplexity.responses", "v1/responses"),
-    chat("perplexity.router.chat", "router/v1/chat/completions"),
-    responses("perplexity.router.responses", "router/v1/responses"),
-    messages("perplexity.router.messages", "router/v1/messages"),
+    plain(chat("perplexity.chat", "chat/completions")),
+    plain(chat("perplexity.chat.v1", "v1/chat/completions")),
+    plain(chat("perplexity.sonar", "v1/sonar")),
+    namespaced(responses("perplexity.agent", "v1/agent", { providerCost: "perplexity" })),
+    namespaced(responses("perplexity.responses", "v1/responses", { providerCost: "perplexity" })),
+    namespaced(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions")),
+    namespaced(responses("perplexity.orchestrator.responses", "orchestrator/v1/responses")),
+    namespaced(messages("perplexity.orchestrator.messages", "orchestrator/v1/messages")),
+    namespaced(chat("perplexity.router.chat", "router/v1/chat/completions")),
+    namespaced(responses("perplexity.router.responses", "router/v1/responses")),
+    namespaced(messages("perplexity.router.messages", "router/v1/messages")),
     embeddings("perplexity.embeddings", "v1/embeddings"),
     embeddings("perplexity.embeddings.contextualized", "v1/contextualizedembeddings"),
   ]),
 });
+
+/** An operation that serves only a provider's own plain model names (`modelIds`). */
+function plain(operation: OperationDescription): OperationDescription {
+  return { ...operation, modelIds: "plain" };
+}
+
+/** An operation that serves only `maker/model` ids (`modelIds`). */
+function namespaced(operation: OperationDescription): OperationDescription {
+  return { ...operation, modelIds: "namespaced" };
+}
 
 export const deepseek = defineProvider({
   type: "deepseek",

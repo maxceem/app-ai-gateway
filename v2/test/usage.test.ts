@@ -385,6 +385,16 @@ describe("provider cost reports", () => {
     expect(readProviderCost(values({ type: "response.completed", response: { usage: { cost_in_usd_ticks: 10_000_000_000 } } }), "xai")).toBe(1);
     expect(readProviderCost(values({ usage: { cost_in_usd_ticks: -5 } }), "xai")).toBeNull();
   });
+
+  it("reads Perplexity's Agent API total, tools included, at the root and under the closing event", () => {
+    const cost = { currency: "USD", input_cost: 0.01206, output_cost: 0.01314, cache_read_cost: 0.00143, tool_calls_cost: 0.0025, total_cost: 0.02913 };
+    expect(readProviderCost(values({ usage: { input_tokens: 6599, output_tokens: 657, cost } }), "perplexity")).toBe(0.02913);
+    expect(readProviderCost(values({ type: "response.created", response: { usage: null } }, { type: "response.completed", response: { usage: { cost } } }), "perplexity")).toBe(0.02913);
+    // Another currency, a negative figure or no cost at all is no report.
+    expect(readProviderCost(values({ usage: { cost: { ...cost, currency: "EUR" } } }), "perplexity")).toBeNull();
+    expect(readProviderCost(values({ usage: { cost: { total_cost: -1 } } }), "perplexity")).toBeNull();
+    expect(readProviderCost(values({ usage: { input_tokens: 1, output_tokens: 1 } }), "perplexity")).toBeNull();
+  });
 });
 
 describe("service modes", () => {

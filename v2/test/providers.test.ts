@@ -266,6 +266,48 @@ describe("text APIs through the proxy", () => {
   });
 });
 
+describe("Perplexity", () => {
+  it("bills its Agent API at the cost it reports, its web search included, streamed or not", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent", "perplexity.responses"] });
+    const usage = { input_tokens: 100, output_tokens: 20, total_tokens: 120, cost: { currency: "USD", input_cost: 0.0002, output_cost: 0.0002, tool_calls_cost: 0.005, total_cost: 0.0054 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "resp_1", object: "response", model: "openai/gpt-6.2-sol", output: [], usage }));
+    const plain = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi", tools: [{ type: "web_search" }] });
+    await plain.response.text();
+    await waitOnExecutionContext(plain.ctx);
+    const events = sse([
+      { type: "response.created", response: { id: "resp_2", usage: null } },
+      { type: "response.completed", response: { id: "resp_2", model: "openai/gpt-6.2-sol", usage } },
+    ]);
+    fetchSpy.mockResolvedValueOnce(new Response(events, { headers: { "content-type": "text/event-stream" } }));
+    const streamed = await post(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, key, { model: "openai/gpt-6.2-sol", input: "hi", stream: true });
+    await streamed.response.text();
+    await waitOnExecutionContext(streamed.ctx);
+    expect(sent(0).url).toBe("https://api.perplexity.ai/v1/agent");
+    // Our token price alone would leave the search out.
+    expect(listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 20 })).toBeLessThan(fromDollars(0.0054));
+    expect(await chargesOf(appId)).toMatchObject([
+      { operation: "perplexity.agent", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
+      { operation: "perplexity.responses", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
+    ]);
+  });
+
+  it("serves the Orchestrator API at its documented paths, and still at the router paths it first used", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat", "perplexity.router.chat"] });
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    for (const path of ["orchestrator/v1/chat/completions", "router/v1/chat/completions"]) {
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/${path}`, key, { model: "perplexity/glm-5.3", messages: [] });
+      expect(response.status).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    expect([sent(0).url, sent(1).url]).toEqual(["https://api.perplexity.ai/orchestrator/v1/chat/completions", "https://api.perplexity.ai/router/v1/chat/completions"]);
+    expect(await chargesOf(appId)).toMatchObject([
+      { operation: "perplexity.orchestrator.chat", price_source: "list_rate", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 }) },
+      { operation: "perplexity.router.chat" },
+    ]);
+  });
+});
+
 describe("streams that end before their closing event", () => {
   it("books a Messages stream that ended cleanly without message_stop as cut short, never complete", async () => {
     const { appId, slug, key } = await setup("anthropic", { operations: ["anthropic.messages"] });

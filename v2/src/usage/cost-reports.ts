@@ -51,9 +51,26 @@ function xaiCost(root: Record<string, unknown>): number | null {
   return ticks / XAI_TICKS_PER_USD;
 }
 
+/**
+ * Perplexity's Agent API: `usage.cost.total_cost`, in dollars, at the root of
+ * an answer and under `response` on the event that closes a stream
+ * (`response.completed`). It holds what the tokens cost and what the built-in
+ * tools it ran cost (`tool_calls_cost`, such as a web search), which no token
+ * price of ours covers. A figure in another currency is no report.
+ */
+function perplexityCost(root: Record<string, unknown>): number | null {
+  const usage = asRecord(root.usage) ?? asRecord(asRecord(root.response)?.usage);
+  const cost = asRecord(usage?.cost);
+  if (cost === null) return null;
+  if (cost.currency !== undefined && cost.currency !== "USD") return null;
+  const total = finiteNumber(cost.total_cost);
+  return total === null || total < 0 ? null : total;
+}
+
 const READERS: Readonly<Record<ProviderCostReport, (root: Record<string, unknown>) => number | null>> = {
   openrouter: openRouterCost,
   xai: xaiCost,
+  perplexity: perplexityCost,
 };
 
 /**

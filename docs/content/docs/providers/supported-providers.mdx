@@ -23,7 +23,7 @@ what the API and the app's settings use.
 | Anthropic | `anthropic` | `v1/messages` (`anthropic.messages`) | Yes | `GET v1/models` |
 | xAI | `xai` | `v1/responses` (`xai.responses`), `v1/chat/completions` (`xai.chat`), `v1/completions` (`xai.completions`), `v1/messages` (`xai.messages`), `v1/stt` (`xai.transcription`), `v1/images/generations` (`xai.images`), `v1/images/edits` (`xai.images.edits`), `v1/embeddings` (`xai.embeddings`) | Yes | `GET v1/models` |
 | Gemini | `gemini` | `v1beta/models/{model}:generateContent` (`gemini.generate.v1beta`) and `v1beta/models/{model}:streamGenerateContent` (`gemini.stream.v1beta`), also under `v1/` and `v1alpha/`; `v1beta/models/{model}:embedContent` (`gemini.embed.v1beta`), also under `v1/`; `v1beta/openai/chat/completions` (`gemini.chat`) | Yes | `GET v1beta/models` |
-| Perplexity | `perplexity` | `chat/completions` (`perplexity.chat`), `v1/agent` (`perplexity.agent`), `v1/responses` (`perplexity.responses`), `v1/embeddings` (`perplexity.embeddings`), `v1/contextualizedembeddings` (`perplexity.embeddings.contextualized`), and under `router/v1/`: `chat/completions`, `responses` and `messages` (`perplexity.router.chat`, `.responses`, `.messages`) | Yes | None |
+| Perplexity | `perplexity` | `v1/agent` (`perplexity.agent`), `v1/responses` (`perplexity.responses`), `chat/completions` (`perplexity.chat`), `v1/sonar` (`perplexity.sonar`), `v1/embeddings` (`perplexity.embeddings`), `v1/contextualizedembeddings` (`perplexity.embeddings.contextualized`), and under `orchestrator/v1/`: `chat/completions`, `responses` and `messages` (`perplexity.orchestrator.chat`, `.responses`, `.messages`), also under `router/v1/` (`perplexity.router.chat`, `.responses`, `.messages`) | Yes | None |
 | DeepSeek | `deepseek` | `chat/completions` (`deepseek.chat`), `responses` (`deepseek.responses`), `beta/completions` (`deepseek.completions`), `anthropic/v1/messages` (`deepseek.messages`) | No | `GET models` |
 | Groq | `groq` | `openai/v1/chat/completions` (`groq.chat`), `openai/v1/responses` (`groq.responses`), `openai/v1/audio/speech` (`groq.speech`), `openai/v1/audio/transcriptions` (`groq.transcription.openai`) | No | `GET openai/v1/models` |
 | Mistral | `mistral` | `v1/chat/completions` (`mistral.chat`), `v1/fim/completions` (`mistral.fim`), `v1/embeddings` (`mistral.embeddings`), `v1/audio/speech` (`mistral.speech`) | No | `GET v1/models` |
@@ -119,6 +119,21 @@ charged at the cost OpenRouter reports, so its models need no price. When a
 request runs on your own provider key added in OpenRouter, the cost is
 OpenRouter's fee plus the provider's cost it reports: both came out of your
 accounts.
+
+**Perplexity** has two kinds of model name, served at different paths:
+
+- Its own Sonar names, such as `sonar-pro`, at `chat/completions` and
+  `v1/sonar`.
+- Names that carry the model's maker, such as `openai/gpt-6.2-sol` or
+  `perplexity/sonar`, on its Agent API (`v1/agent`, or `v1/responses` for
+  OpenAI's SDKs) and its Orchestrator API (`orchestrator/v1/`).
+
+A preset fallback that names no operation goes to the path that serves its
+model's name: Sonar's for a Sonar name, the Orchestrator API for Chat
+Completions or Messages, and the Agent API for Responses. A preset that names
+an operation that does not serve its model is refused when you save it. The
+Agent API reports what each request cost, including its tools such as web
+search, and that figure is what is charged.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,

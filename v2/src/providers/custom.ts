@@ -127,6 +127,8 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   meter: "replaced",
   priceKeys: "kept",
   modelKinds: "kept",
+  // A custom path is the customer's own: it serves whatever model ids they send.
+  modelIds: "replaced",
   rawBody: "kept",
   unpricedOptions: "kept",
   responseDeadlineMs: "kept",

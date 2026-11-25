@@ -305,7 +305,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
       }
       // The body is read as the first target's own operation reads it, never as the name's stand-in.
-      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation)) ?? declared;
+      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation, preset.model)) ?? declared;
       const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, resolved);
       const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
       const requestId = timeOrderedId(startedAt);

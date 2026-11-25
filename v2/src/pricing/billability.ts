@@ -520,7 +520,7 @@ export function resolvePresetTarget(
     readonly select?: { readonly params: Readonly<Record<string, unknown>>; readonly baseUrl: string | null } | undefined;
   },
 ): PresetTargetResolution {
-  const chosen = presetOperation(description, style, target.operation);
+  const chosen = presetOperation(description, style, target.operation, target.model);
   if (chosen === null) return { kind: "refused", reason: "no_operation" };
   const operation = (options.streaming && streamingSibling(description, chosen)) || chosen;
   const model = target.model;

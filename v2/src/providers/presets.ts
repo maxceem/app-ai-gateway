@@ -13,7 +13,7 @@
 import { CUSTOM_OPERATIONS } from "./custom.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { ProviderMatcher } from "./matcher.ts";
-import type { ApiStyle, OperationDescription, ProviderDescription } from "./operation.ts";
+import { servesModelId, type ApiStyle, type OperationDescription, type ProviderDescription } from "./operation.ts";
 
 /** By description: a custom provider's is built per connection (`../providers/custom.ts`), and all share one type. */
 const matchers = new WeakMap<ProviderDescription, ProviderMatcher>();
@@ -58,12 +58,20 @@ export function presetOperationProblem(description: ProviderDescription, operati
 
 /**
  * The operation a preset target uses on a connection of this type: the named
- * one, or the provider's own one of `style`. Null when there is none that can
- * serve a preset, or the named one speaks another style.
+ * one, or the provider's own one of `style` that serves `model`. Null when
+ * there is none that can serve a preset, or the named one speaks another
+ * style.
  *
- * With no name, the provider's documented operations come first. Then the
- * paths v1 served by their shape alone (`v1Layout`): first those under the
- * first path segment all its documented operations share, as Groq's
+ * A named one is used as named, whatever model it is given: saving refuses
+ * one that does not serve its model (`presetShape`), and serving never
+ * starts refusing a preset that was saved.
+ *
+ * With no name, only operations that serve the model's id form are taken
+ * (`modelIds`): a Perplexity target with `openai/gpt-6.2-sol` goes to the
+ * Orchestrator API, one with `sonar-pro` to Sonar's `chat/completions`.
+ * Of those, the provider's documented operations come first. Then the paths
+ * v1 served by their shape alone (`v1Layout`): first those under the first
+ * path segment all its documented operations share, as Groq's
  * `openai/v1/...`, so a Groq transcription goes to
  * `openai/v1/audio/transcriptions`, not to `v1/audio/transcriptions`, which
  * Groq does not serve; then the rest, in declared order.
@@ -72,14 +80,23 @@ export function presetOperation(
   description: ProviderDescription,
   style: ApiStyle,
   name: string | undefined,
+  model: string,
 ): OperationDescription | null {
   const usable = (operation: OperationDescription) => operation.style === style && presetOperationProblem(description, operation) === null;
   if (name !== undefined) return description.operations.find((operation) => operation.name === name && usable(operation)) ?? null;
   const documented = description.operations.filter((operation) => operation.v1Layout !== true);
   const home = sharedFirstSegment(documented.map((operation) => operation.match.path));
   const rank = (operation: OperationDescription) => (operation.v1Layout !== true ? 0 : home !== null && operation.match.path.startsWith(`${home}/`) ? 1 : 2);
-  const candidates = description.operations.filter(usable);
+  const candidates = description.operations.filter((operation) => usable(operation) && servesModelId(operation, model));
   return [...candidates].sort((left, right) => rank(left) - rank(right))[0] ?? null;
+}
+
+/** Why `operation` does not serve `model` by its id's form (`modelIds`), or null when it does. */
+function modelIdProblem(operation: OperationDescription, model: string): string | null {
+  if (servesModelId(operation, model)) return null;
+  return operation.modelIds === "namespaced"
+    ? `${operation.name} serves only maker/model ids, such as openai/gpt-6.2-sol; ${model} is not one`
+    : `${operation.name} serves only the provider's own model names, with no maker/ prefix; use another operation for ${model}`;
 }
 
 /** The first path segment every path shares, or null when they share none (or there are none). */
@@ -146,7 +163,7 @@ export function presetShape(
     if (found === null) return { ok: false, path: at("provider"), message: `no provider connection ${target.provider} exists` };
     const description = found.description;
     if (description === null) return { ok: false, path: at("provider"), message: `provider type ${found.type} is not supported` };
-    const operation = presetOperation(description, style, target.operation);
+    const operation = presetOperation(description, style, target.operation, target.model);
     if (operation === null) {
       const named = target.operation === undefined ? undefined : description.operations.find((candidate) => candidate.name === target.operation);
       if (target.operation === undefined) return { ok: false, path: at("provider"), message: `${found.type} has no ${style} operation a preset can use` };
@@ -161,6 +178,8 @@ export function presetShape(
               : (presetOperationProblem(description, named) ?? `${target.operation} cannot be a preset`),
       };
     }
+    const wrongForm = modelIdProblem(operation, target.model);
+    if (wrongForm !== null) return { ok: false, path: at("model"), message: wrongForm };
     if (index === 0 && preset.max_output_tokens !== undefined && operation.policy?.outputCap === undefined) {
       return { ok: false, path: "max_output_tokens", message: `${operation.name} has no output to cap` };
     }
