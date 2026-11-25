@@ -125,7 +125,9 @@ export const CurrentUserResponseSchema = z
       requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
       requests_per_minute: z.number().nullable().meta({ description: "The per-minute limit on each install (App Attest) or user (server). Null means unlimited." }),
       requests_per_day: z.number().nullable().meta({ description: "The per-day limit on each install (App Attest) or user (server). Null means unlimited." }),
-      monthly_cost_usd: z.number().meta({ description: "Spent so far in the current UTC month against the budget below, by whoever budget_scope names." }),
+      monthly_cost_usd: z.number().nullable().meta({
+        description: "Spent so far in the current UTC month against the budget below, by whoever budget_scope names. Null when the total could not be read in time.",
+      }),
       monthly_budget_usd: z.number().nullable().meta({ description: "The monthly budget on each Apple Account, install or user. Null means unlimited." }),
       budget_scope: z.enum(BUDGET_SCOPES).meta({ description: "Whose month monthly_cost_usd is: apple_account, install or user." }),
       blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),

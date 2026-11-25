@@ -75,15 +75,19 @@ async function appExists(db: D1Database, accountId: string, appId: string): Prom
 /**
  * The users the ledger has seen in one app that may have no user row in D1:
  * those named on its charges or refusals, recorded under the caller's account
- * (`?2`). `?1` is the app id; with `oneUser`, `?3` is the user id and nothing
- * is scanned; otherwise `?3` is an optional `LIKE` pattern on the id.
- * `+account_id` keeps the planner on the app-and-user indexes. A refusal with
- * no account (recorded before events carried one) is never read.
+ * (`?2`). `?1` is the app id. `+account_id` keeps the planner on the
+ * app-and-user indexes. A refusal with no account (recorded before events
+ * carried one) is never read.
+ *
+ * - `one`: `?3` is the user id, and nothing is scanned.
+ * - `page`: `?3` is an optional `LIKE` pattern on the id; the page is in id
+ *   order, `?4` rows from `?5`.
+ * - `count`: how many such users there are, under the same pattern.
  */
-function seenSql(oneUser: boolean): string {
+function seenSql(kind: "one" | "page" | "count"): string {
   const refusals = "app_rejection_event WHERE app_id = ?1 AND account_id = ?2";
   const charges = "charge WHERE app_id = ?1 AND +account_id = ?2";
-  const named = oneUser
+  const named = kind === "one"
     ? `named(user_id) AS (
          SELECT ?3 WHERE EXISTS (SELECT 1 FROM ${charges} AND end_user_id = ?3)
                       OR EXISTS (SELECT 1 FROM ${refusals} AND user_id = ?3)
@@ -105,6 +109,8 @@ function seenSql(oneUser: boolean): string {
          UNION
          SELECT user_id FROM refused WHERE user_id IS NOT NULL
        )`;
+  const pattern = "WHERE ?3 IS NULL OR named.user_id LIKE ?3 ESCAPE '\\'";
+  if (kind === "count") return `WITH RECURSIVE ${named} SELECT COUNT(*) AS n FROM named ${pattern}`;
   return `WITH RECURSIVE ${named}
     SELECT named.user_id AS id,
            (SELECT MIN(used_at) FROM ${charges} AND end_user_id = named.user_id) AS used_first,
@@ -112,7 +118,7 @@ function seenSql(oneUser: boolean): string {
            (SELECT MIN(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_first,
            (SELECT MAX(created_at) FROM ${refusals} AND user_id = named.user_id) AS refused_last
       FROM named
-     ${oneUser ? "" : "WHERE ?3 IS NULL OR named.user_id LIKE ?3 ESCAPE '\\'"}`;
+     ${kind === "one" ? "" : `${pattern} ORDER BY named.user_id LIMIT ?4 OFFSET ?5`}`;
 }
 
 interface SeenRow {
@@ -156,17 +162,29 @@ async function knownUsers(db: D1Database, appId: string, ids: readonly string[])
 }
 
 /**
- * The users the ledger has seen in an app with no user row in D1, newest
- * first. Each is `active`, so a `blocked` filter finds none.
+ * One page of the users the ledger has seen in an app, in id order, paged
+ * inside the account's ledger object, and how many there are. The ids D1
+ * already lists are dropped from the page, so a page can come back shorter
+ * than asked, and `total` counts such a user twice (plan, step 8f: a
+ * relaxed promise, so the list is never loaded whole). Each is `active`, so a
+ * `blocked` filter finds none.
  */
-async function seenOnly(env: Env, accountId: string, appId: string, status: string | null, pattern: string | null): Promise<IdentityRow[]> {
-  if (status !== null && status !== "active") return [];
-  const { results } = await ledgerDb(env, accountId).prepare(seenSql(false)).bind(appId, accountId, pattern).all<SeenRow>();
-  const known = await knownUsers(env.DB, appId, results.map((row) => row.id));
-  return results
-    .filter((row) => !known.has(row.id))
-    .map(seenIdentity)
-    .sort((a, b) => (b.last_seen_at ?? b.created_at ?? 0) - (a.last_seen_at ?? a.created_at ?? 0) || a.id.localeCompare(b.id));
+async function seenPage(
+  env: Env,
+  accountId: string,
+  appId: string,
+  filter: { readonly status: string | null; readonly pattern: string | null; readonly limit: number; readonly offset: number },
+): Promise<{ readonly rows: IdentityRow[]; readonly total: number }> {
+  if (filter.status !== null && filter.status !== "active") return { rows: [], total: 0 };
+  const ledger = ledgerDb(env, accountId);
+  const [count, page] = await ledger.batch([
+    ledger.prepare(seenSql("count")).bind(appId, accountId, filter.pattern),
+    ...(filter.limit > 0 ? [ledger.prepare(seenSql("page")).bind(appId, accountId, filter.pattern, filter.limit, filter.offset)] : []),
+  ]);
+  const total = Number((count?.results[0] as { n?: number } | undefined)?.n ?? 0);
+  const seen = (page?.results ?? []) as SeenRow[];
+  const known = await knownUsers(env.DB, appId, seen.map((row) => row.id));
+  return { rows: seen.filter((row) => !known.has(row.id)).map(seenIdentity), total };
 }
 
 /** Each listed user's usage in a month, from the ledger. One bound list, so any page size fits D1's limit on bound values. Exported for the retention tests. */
@@ -224,8 +242,8 @@ export async function listAppUsers(c: AdminContext): Promise<Response> {
   await appExists(c.env.DB, actor.accountId, appId);
   const month = query.month ?? currentMonth();
   // Two lists, each paged on its own (plan, step 8f): D1's users first, newest
-  // first, then the users only the ledger has seen. There is no single sort
-  // across both.
+  // first, then the users the ledger has seen, in id order (`seenPage`). There
+  // is no single sort across both.
   const filter = `WHERE users.app_id = ?1 AND (?2 IS NULL OR users.status = ?2) AND (?3 IS NULL OR users.id LIKE ?3 ESCAPE '\\')`;
   const pattern = query.query ? likePattern(query.query) : null;
   const binds = [appId, query.status ?? null, pattern];
@@ -237,15 +255,20 @@ export async function listAppUsers(c: AdminContext): Promise<Response> {
     ).bind(...binds, query.limit, query.offset),
   ]);
   const usersTotal = (total?.results[0] as { value?: number } | undefined)?.value ?? 0;
-  const seen = await seenOnly(c.env, actor.accountId, appId, query.status ?? null, pattern);
-  const fromSeen = Math.max(0, query.offset - usersTotal);
   const listed = [...((rows?.results ?? []) as IdentityRow[])];
-  listed.push(...seen.slice(fromSeen, fromSeen + query.limit - listed.length));
+  // The rest of the page from the ledger's list, at the same position past D1's users.
+  const seen = await seenPage(c.env, actor.accountId, appId, {
+    status: query.status ?? null,
+    pattern,
+    limit: query.limit - listed.length,
+    offset: Math.max(0, query.offset - usersTotal),
+  });
+  listed.push(...seen.rows);
   const usage = await usageByUser(ledgerDb(c.env, actor.accountId), actor.accountId, appId, listed.map((row) => row.id), month);
   return c.json({
     app_id: appId,
     month,
-    total: usersTotal + seen.length,
+    total: usersTotal + seen.total,
     limit: query.limit,
     offset: query.offset,
     users: listed.map((row) => userView(row, usage.get(row.id))),
@@ -261,7 +284,7 @@ export async function getAppUser(c: AdminContext): Promise<Response> {
   const month = query.month ?? currentMonth();
   let row = await c.env.DB.prepare(`${USER_ROWS} WHERE users.app_id = ?1 AND users.id = ?2`).bind(appId, userId).first<IdentityRow>();
   if (row === null) {
-    const seen = await ledgerDb(c.env, actor.accountId).prepare(seenSql(true)).bind(appId, actor.accountId, userId).first<SeenRow>();
+    const seen = await ledgerDb(c.env, actor.accountId).prepare(seenSql("one")).bind(appId, actor.accountId, userId).first<SeenRow>();
     row = seen === null ? null : seenIdentity(seen);
   }
   if (row === null) throw new GatewayError(404, "not_found", "User was not found");

@@ -20,6 +20,7 @@
  *   written in one D1 batch (S9), and is dated on the day the session ended
  *   (S12).
  */
+import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { UNRESOLVED_FIRST_TRY_MS } from "../proxy/call-charge.ts";
 import { log } from "../core/log.ts";
@@ -298,8 +299,16 @@ export async function writeCheckpoint(
 }
 
 /**
+ * How long a checkpoint waits for its two settings from D1. Past it, both
+ * checks are skipped, so a slow D1 never holds up the ledger transaction and
+ * its stop decisions.
+ */
+export const CHECKPOINT_SETTINGS_DEADLINE_MS = 1_000;
+
+/**
  * The checkpoint's two checks on settings in D1: the end user blocked, the
- * connection gone or disabled. Null when D1 cannot answer: both are skipped.
+ * connection gone or disabled. Null when D1 cannot answer in time: both are
+ * skipped.
  */
 async function settingsStanding(
   settings: D1Database,
@@ -315,7 +324,7 @@ async function settingsStanding(
   if (reads.length === 0) return { userBlocked: false, keyRemoved: false };
   let results: D1Result[];
   try {
-    results = await settings.batch(reads);
+    results = await withDeadline(settings.batch(reads), CHECKPOINT_SETTINGS_DEADLINE_MS, "reading the checkpoint's settings");
   } catch (error) {
     log("warn", "checkpoint_settings_unchecked", { app: session.appId, session: session.id, error: errorFacts(error) });
     return null;

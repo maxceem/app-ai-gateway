@@ -421,8 +421,11 @@
                 "description": "The per-day limit on each install (App Attest) or user (server). Null means unlimited."
               },
               "monthly_cost_usd": {
-                "type": "number",
-                "description": "Spent so far in the current UTC month against the budget below, by whoever budget_scope names."
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Spent so far in the current UTC month against the budget below, by whoever budget_scope names. Null when the total could not be read in time."
               },
               "monthly_budget_usd": {
                 "type": [

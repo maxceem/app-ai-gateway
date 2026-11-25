@@ -16,8 +16,7 @@ import {
   settleSession,
   STALE_SESSION_GRACE_MS,
   writeCheckpoint,
-  type SessionRow,
-} from "../src/ledger/sessions.ts";
+  type SessionRow, CHECKPOINT_SETTINGS_DEADLINE_MS } from "../src/ledger/sessions.ts";
 import { OPEN_WORK_HANDLERS, runSweep, SWEEP_MAX_TRIES, type OpenWorkHandler } from "../src/ledger/sweep.ts";
 import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
 import { recordLedgerEntry, utcDay, type ChargeRow } from "../src/ledger/write.ts";
@@ -362,6 +361,18 @@ describe("checkpoints", () => {
     expect(answer).toEqual({ decision: "stop", reasons: ["allowance_used_up", "user_blocked", "key_removed"], written: true });
     await ledger().prepare("UPDATE session SET replaced_by = 'newer' WHERE id = ?").bind(session.id).run();
     expect(await checkpoint(session, 2, 100)).toMatchObject({ decision: "stop", reasons: expect.arrayContaining(["replaced"]) });
+  });
+
+  it("skips only the two settings checks when D1 does not answer in time, and still writes the slice (step 8f)", async () => {
+    quiet();
+    const session = sessionRow({ endUserId: "u1" });
+    const stalled = { prepare: (sql: string) => env.DB.prepare(sql), batch: () => new Promise<never>(() => undefined) } as unknown as D1Database;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const answer = writeCheckpoint(ledger(), stalled, { session, slice: slice(session, 1, 100), budgets: [], planMinutes: null, now: T0 });
+    await vi.advanceTimersByTimeAsync(CHECKPOINT_SETTINGS_DEADLINE_MS);
+    vi.useRealTimers();
+    expect(await answer).toEqual({ decision: "continue", written: true });
+    expect(await chargesOf(session.id)).toHaveLength(1);
   });
 
   it("12: a failed checkpoint batch lets the session continue, and leaves the slice to the relay's journal", async () => {

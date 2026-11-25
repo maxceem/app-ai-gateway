@@ -73,7 +73,7 @@ export function nextNightly(now: number, lastDay: string | null): number {
 /** Whether the ledger holds anything the nightly maintenance looks after. */
 const HOLDS_ROWS = `SELECT EXISTS (SELECT 1 FROM charge) OR EXISTS (SELECT 1 FROM usage_day) OR EXISTS (SELECT 1 FROM usage_month)
   OR EXISTS (SELECT 1 FROM budget_day) OR EXISTS (SELECT 1 FROM session) OR EXISTS (SELECT 1 FROM app_auth_event)
-  OR EXISTS (SELECT 1 FROM app_rejection_event) AS held`;
+  OR EXISTS (SELECT 1 FROM app_rejection_event) OR EXISTS (SELECT 1 FROM open_work) AS held`;
 
 export class AccountLedger extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {

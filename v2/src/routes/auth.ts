@@ -264,7 +264,9 @@ export async function failureHandler(c: AuthContext): Promise<Response> {
     });
   if (issued === undefined) return c.json({ recorded: false } satisfies OperationResponse<"appAuthFailure">);
   const issuedAt = issued.expiresAt - CHALLENGE_TTL_SECONDS * 1000;
-  await recordAuthEvent({
+  // The challenge is spent: the report is accepted. The event is written after the answer, as
+  // token and registration attempts are, so a slow ledger never fails the report.
+  c.executionCtx.waitUntil(recordAuthEvent({
     env: c.env,
     appId,
     accountId: app.accountId,
@@ -276,7 +278,7 @@ export async function failureHandler(c: AuthContext): Promise<Response> {
     network: clientNetwork(c.req.raw),
     // From the challenge to the report: how long the device spent on the step that failed.
     latencyMs: Math.max(0, Date.now() - issuedAt),
-  });
+  }));
   return c.json({ recorded: true } satisfies OperationResponse<"appAuthFailure">);
 }
 

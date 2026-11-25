@@ -23,7 +23,8 @@ export interface LedgerStatement {
 
 /** What the object answers for one statement. */
 export interface LedgerResult {
-  readonly rows: Record<string, unknown>[];
+  /** Each row's values in column order, so two columns of one name both come through `raw`. */
+  readonly values: unknown[][];
   readonly columns: string[];
   readonly changes: number;
   readonly rowsRead: number;
@@ -63,8 +64,8 @@ export function ledgerDb(env: Env, accountId: string): D1Database {
 export function runLedgerStatements(storage: DurableObjectStorage, statements: readonly LedgerStatement[], transaction: boolean): LedgerResult[] {
   const one = (statement: LedgerStatement): LedgerResult => {
     const cursor = storage.sql.exec(statement.sql, ...statement.params);
-    const rows = cursor.toArray() as Record<string, unknown>[];
-    return { rows, columns: cursor.columnNames, changes: cursor.rowsWritten, rowsRead: cursor.rowsRead };
+    const values = [...cursor.raw()] as unknown[][];
+    return { values, columns: cursor.columnNames, changes: cursor.rowsWritten, rowsRead: cursor.rowsRead };
   };
   return transaction ? storage.transactionSync(() => statements.map(one)) : statements.map(one);
 }
@@ -93,9 +94,14 @@ export function shapedLikeD1(run: LedgerRunner): D1Database {
   return database as unknown as D1Database;
 }
 
+/** Rows as objects, as D1 answers them: of two columns with one name, the last wins. */
+function rowsOf(result: LedgerResult): Record<string, unknown>[] {
+  return result.values.map((values) => Object.fromEntries(result.columns.map((column, index) => [column, values[index]])));
+}
+
 function d1Result<T>(result: LedgerResult): D1Result<T> {
   return {
-    results: result.rows as T[],
+    results: rowsOf(result) as T[],
     success: true,
     meta: {
       duration: 0,
@@ -140,7 +146,7 @@ class Statement {
   }
 
   async first<T = Record<string, unknown>>(column?: string): Promise<T | null> {
-    const row = (await this.one()).rows[0];
+    const row = rowsOf(await this.one())[0];
     if (row === undefined) return null;
     if (column === undefined) return row as T;
     if (!(column in row)) throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${column})`);
@@ -157,7 +163,7 @@ class Statement {
 
   async raw<T = unknown[]>(options?: { columnNames?: boolean }): Promise<T[]> {
     const result = await this.one();
-    const rows = result.rows.map((row) => result.columns.map((column) => row[column])) as T[];
+    const rows = result.values as T[];
     return options?.columnNames === true ? [result.columns as T, ...rows] : rows;
   }
 }

@@ -694,9 +694,9 @@ describe("end users", () => {
     const listed = await request(key, "GET", `/v2/admin/apps/${appId}/users?month=${thisMonth}`);
     expect(listed.status).toBe(200);
     expect(listed.body.total).toBe(4);
-    // D1's users first, then the users only the ledger has seen, each newest first (step 8f).
-    expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "header-user", "100%_user", "refused-only"]);
-    const header = listed.body.users[1];
+    // D1's users first, newest first, then the users the ledger has seen, in id order (step 8f).
+    expect(listed.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user", "header-user", "refused-only"]);
+    const header = listed.body.users[2];
     expect(header).toMatchObject({
       is_virtual: true,
       status: "active",
@@ -713,10 +713,15 @@ describe("end users", () => {
     const searched = await request(key, "GET", `/v2/admin/apps/${appId}/users?query=${encodeURIComponent("0%_")}`);
     expect(searched.body.users.map((user: { id: string }) => user.id)).toEqual(["100%_user"]);
     const page = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=1&offset=2`);
-    expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 2, users: [{ id: "100%_user" }] });
-    // A page across the two lists: the last of D1's users, then the first only the ledger has seen.
+    expect(page.body).toMatchObject({ total: 4, limit: 1, offset: 2, users: [{ id: "header-user" }] });
+    // A page across the two lists: the last of D1's users, then the first the ledger has seen.
     const across = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=2&offset=0`);
-    expect(across.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "header-user"]);
+    expect(across.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user"]);
+    // A user in both lists is listed once: D1's row wins, and the ledger's page comes back one short.
+    await seedCharge(appId, "signed-in", { usedAt: now - 1_000 });
+    const both = await request(key, "GET", `/v2/admin/apps/${appId}/users?limit=10`);
+    expect(both.body.users.map((user: { id: string }) => user.id)).toEqual(["signed-in", "100%_user", "header-user", "refused-only"]);
+    expect(both.body.total).toBe(5);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users?month=2026-13`)).status).toBe(400);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/nobody`)).status).toBe(404);
     expect((await request(key, "GET", `/v2/admin/apps/${appId}/users/their-user`)).status).toBe(404);

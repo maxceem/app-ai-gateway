@@ -362,12 +362,11 @@ export function withLedgerDb(base: Env, make: (real: D1Database, accountId: stri
         const db = make(ledger(accountId), accountId);
         const prepared = statements.map((statement) => db.prepare(statement.sql).bind(...statement.params));
         const results = transaction ? await db.batch(prepared) : [await prepared[0]!.all()];
-        return results.map((result) => ({
-          rows: result.results as Record<string, unknown>[],
-          columns: Object.keys((result.results[0] ?? {}) as object),
-          changes: result.meta.changes ?? 0,
-          rowsRead: 0,
-        }));
+        return results.map((result) => {
+          const columns = Object.keys((result.results[0] ?? {}) as object);
+          const values = (result.results as Record<string, unknown>[]).map((row) => columns.map((column) => row[column]));
+          return { values, columns, changes: result.meta.changes ?? 0, rowsRead: 0 };
+        });
       },
     }),
   };

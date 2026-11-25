@@ -111,6 +111,24 @@ describe("POST /v2/apps/{app}/auth/challenge", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/failure", () => {
+  it("answers once the challenge is spent, and writes the event after the answer, so a stalled ledger never holds it (step 8f)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const challenge = await challengeFor(appId);
+    const stalled = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise(() => undefined) }) } } as unknown as Env;
+    const report = { challenge, step: "attest_key", error: { domain: "com.apple.devicecheck.error", code: 3 } };
+    // The background work is never awaited: the stalled event write would never end.
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/auth/failure`, {
+        method: "POST",
+        body: JSON.stringify(report),
+        headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.10" },
+      }),
+      stalled,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toEqual({ recorded: true });
+  });
+
   it("records one report per challenge, as a challenge auth event", async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);
@@ -339,6 +357,24 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
 });
 
 describe("GET /v2/apps/{app}/me", () => {
+  it("answers without the month's spend when the account's ledger cannot give it, with a warning (step 8f)", async () => {
+    const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });
+    const key = await seedAppKey(appId);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const down = () => Promise.reject(new Error("ledger down"));
+    const ledgerDown = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: down }) } } as unknown as Env;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${key.key}`, "x-end-user-id": "user-8", "cf-connecting-ip": "198.51.100.9" } }),
+      ledgerDown,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { limits: { monthly_cost_usd: number | null } }).limits.monthly_cost_usd).toBeNull();
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"budget_total_unread"'))).toBe(true);
+  });
+
   it("names the user an app key and header give, and whether they are blocked", async () => {
     const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });
     const key = await seedAppKey(appId);

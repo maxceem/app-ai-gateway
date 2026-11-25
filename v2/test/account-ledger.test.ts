@@ -47,6 +47,9 @@ describe("the ledger object", () => {
     const db = ledger("acc_shape");
     expect(await db.prepare("SELECT ?2 AS b, ?1 AS a").bind("x", "y").first()).toEqual({ b: "y", a: "x" });
     expect(await db.prepare("SELECT 1 AS one, 2 AS two").raw({ columnNames: true })).toEqual([["one", "two"], [1, 2]]);
+    // Two columns of one name: `raw` keeps both, an object keeps the last, as D1 does.
+    expect(await db.prepare("SELECT 1 AS same, 2 AS same").raw()).toEqual([[1, 2]]);
+    expect(await db.prepare("SELECT 1 AS same, 2 AS same").first()).toEqual({ same: 2 });
     expect(await db.prepare("SELECT 1 AS one WHERE 0").first()).toBeNull();
     // A batch is one transaction: a failing statement leaves nothing of the batch behind.
     const work = (id: string, kind: string) =>
@@ -78,12 +81,16 @@ describe("the ledger object", () => {
     // This test lets the object set its alarm.
     vi.restoreAllMocks();
     const db = ledger("acc_alarm");
+    const stub = ledgerObject(env, "acc_alarm");
+    // Tonight's maintenance is done, so the alarm is the work's alone.
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO ledger_meta (key, value) VALUES ('nightly_day', ?)", new Date().toISOString().slice(0, 10));
+    });
     const due = Date.now() + 3_600_000;
     await db
       .prepare("INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, due_at, tries, created_at) VALUES ('unresolved:gone', 'unresolved', 'acc_alarm', 'a', 'call', 'o', NULL, ?, 0, 1)")
       .bind(due)
       .run();
-    const stub = ledgerObject(env, "acc_alarm");
     // The write set the alarm for the row (no rows besides it, so no nightly run).
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(due);
     await runInDurableObject(stub, (_instance, state) => {
@@ -92,6 +99,21 @@ describe("the ledger object", () => {
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     // An `unresolved` row with no charge is done at once, and with no work left no alarm is set.
     expect(await db.prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0);
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("keeps its nightly alarm for an account whose only rows are given-up work, so retention still deletes them", async () => {
+    vi.restoreAllMocks();
+    const stub = ledgerObject(env, "acc_given_up");
+    await ledger("acc_given_up")
+      .prepare(
+        "INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, tries, gave_up_at, created_at) VALUES ('w', 'unresolved', 'acc_given_up', 'a', 'call', 'o', 1, 20, 1, 1)",
+      )
+      .run();
+    // The write set the alarm for the nightly run, due at once on a new object, which deletes
+    // work given up more than 90 days ago.
+    await runDurableObjectAlarm(stub);
+    expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0);
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
   });
 
