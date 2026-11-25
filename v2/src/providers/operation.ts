@@ -881,6 +881,7 @@ export interface ProviderDescription {
   /**
    * Request fields naming more models the provider may serve the request
    * with: Vercel's fallback list (`providerOptions.gateway.models[]`),
+   * OpenRouter's `models[]` (and `fallbacks[].model` on Messages),
    * Perplexity's Agent API `models[]`, and the models its Orchestrator's
    * `routing` block chooses among. Each path is dot-separated, and `[]` after
    * a name reads every item of that list. Each model is judged as the
@@ -899,36 +900,15 @@ export interface ProviderDescription {
      * model the gateway judged (`src/proxy/alternatives.ts`).
      */
     readonly pinWhen?: { readonly fields: readonly string[]; readonly list: string };
-    /**
-     * The paths above that name the models a model in `choosingModels` picks
-     * among. Absent, every path does (Perplexity's `routing` block). Empty,
-     * none does: a fallback list is not one (OpenRouter's `models`).
-     */
-    readonly choosingAmong?: readonly string[];
-    /**
-     * Request fields that bring models of their own which the gateway cannot
-     * judge, such as a saved OpenRouter preset or a server tool that calls
-     * another model: a request sending one is refused where its models are
-     * limited (an app's list, or a preset's model). With `containing`, only
-     * when a value there, ignoring letter case, contains one of these words.
-     * With `unless`, not when the object holding the value has that field at
-     * that value (an OpenRouter plugin sent with `enabled: false` is off). A
-     * path reads as in `paths` (`src/proxy/alternatives.ts`).
-     */
-    readonly refusedWhen?: readonly {
-      readonly path: string;
-      readonly containing?: readonly string[];
-      readonly unless?: { readonly field: string; readonly value: string | number | boolean | null };
-    }[];
   };
   /**
    * Model names that are not a model but ask the provider to choose one
-   * (Perplexity's `perplexity/auto`, OpenRouter's routers). One the app's
-   * list or a preset names itself is the customer's choice, and is served.
-   * Otherwise, where the app limits its models, a request naming one is
-   * served only when it names, in `alternativeModels.choosingAmong`, the
-   * models the provider may choose among, each judged; the first stands for
-   * it (`src/proxy/alternatives.ts`).
+   * (Perplexity's `perplexity/auto`). One the app's list or a preset names
+   * itself, or the app's own rewrite targets, is the customer's choice, and
+   * is served. Otherwise, where the app limits its models, a request naming
+   * one is served only when it names, in `alternativeModels`, the models the
+   * provider may choose among, each judged; the first stands for it
+   * (`src/proxy/alternatives.ts`).
    */
   readonly choosingModels?: readonly string[];
   /**

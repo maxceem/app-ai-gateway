@@ -1000,11 +1000,6 @@ describe("saving rewrites and presets", () => {
     expect((await save({ routing: { model_rewrites: { house: "some-router-model-zz" } } })).status).toBe(200);
   });
 
-  it("accepts a preset that fixes a router: naming it is the customer's choice to let the provider pick", async () => {
-    const slug = await connection("openrouter");
-    expect((await save({ presets: { a: { provider: slug, operation: "openrouter.chat", model: "openrouter/auto" } } })).status).toBe(200);
-  });
-
   it("accepts a service mode in a preset's params on an operation that reports its own cost", async () => {
     const slug = await connection("xai");
     expect((await save({ presets: { a: { provider: slug, operation: "xai.chat", model: "grok-4.6", params: { service_tier: "priority" } } } })).status).toBe(200);

@@ -120,27 +120,22 @@ request runs on your own provider key added in OpenRouter, the cost is
 OpenRouter's fee plus the provider's cost it reports: both came out of your
 accounts.
 
-Every model an OpenRouter request names must be one your app allows:
+What your app's model list checks on OpenRouter:
 
-- Each model in a `models` fallback list is checked like `model`. The request
-  is charged as the model that answered.
-- A router that picks the model for you, such as `openrouter/auto`, is
-  served when your app lists it, one of your app's rewrites names it, or a
-  preset names it: you chose to let OpenRouter pick. The same holds for a
-  saved OpenRouter preset as the model (`@preset/...`). When your app lists its models but not the router, the
-  router is refused, as a fallback too, because the gateway can't check
-  which model it picks.
-- When your app lists its models, or a preset fixes the model, a `preset`
-  field that loads a preset (`@preset/...`), a server tool that calls
-  another model (an advisor, a subagent, a fusion panel or image
-  generation) and the `fusion` plugin are refused for the same reason.
-  Other tools and plugins, such as web search, are sent as they are, and so
-  is a bare preset name, which OpenRouter ignores, and a plugin sent with
-  `enabled: false`.
-- When your app lists no models, all of these are sent as they are, and
-  charged at the cost OpenRouter reports.
-- A model that is itself a preset (`@preset/...`) or a variant (`...:nitro`)
-  is served only when your app lists that exact name.
+- `model`, as the request sends it, and each model in a `models` fallback
+  list (`fallbacks` on the Messages API). Each must be on your list. The
+  request is charged as the model that answered.
+- A router such as `openrouter/auto`, or a saved preset as the model
+  (`@preset/...`), is a model name like any other: served when your list
+  names it, refused when it doesn't. A target of one of your app's rewrites
+  is your choice too, and is served.
+
+What is passed through as it is, with no check: a `preset` field, plugins
+such as Fusion, and server tools such as an advisor, a subagent or image
+generation. These OpenRouter features can call other models, also ones
+your list doesn't name. Those calls are part of the cost OpenRouter reports
+for the request, which is what the request is charged, and they count
+toward your app's spending limits like any other cost.
 
 **Perplexity** has two kinds of model name, served at different paths:
 

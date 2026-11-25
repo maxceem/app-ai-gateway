@@ -725,93 +725,47 @@ describe("OpenRouter's other models", () => {
     expect(await chargesOf(appId)).toMatchObject([{ model: LUNA }]);
   });
 
-  it("refuses a router the app does not list, where it lists its models, also as a fallback", async () => {
-    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
-    fetchSpy.mockResolvedValue(answer(LUNA));
-    for (const [body, status] of [
-      [{ model: "openrouter/auto", messages: [] }, 400],
-      [{ model: "openrouter/auto", models: [LUNA], messages: [] }, 400],
-      [{ model: "openrouter/auto", plugins: [{ id: "auto-router", allowed_models: [LUNA] }], messages: [] }, 400],
-      [{ model: LUNA, models: ["openrouter/auto"], messages: [] }, 403],
-    ] as const) {
-      const { response } = await post(chat(appId, slug), key, body);
-      expect(response.status, JSON.stringify(body)).toBe(status);
-    }
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("serves a router the app lists, the customer's choice to let OpenRouter pick, charged at the cost it reports", async () => {
+  it("judges a router as the plain model name it is: served where the app lists it, refused where it does not, as a fallback too", async () => {
     const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA, "openrouter/auto"] });
-    for (const [index, body] of [
+    fetchSpy.mockImplementation(async () => answer(SOL));
+    for (const body of [
       { model: "openrouter/auto", messages: [] },
       { model: LUNA, models: ["openrouter/auto"], messages: [] },
-    ].entries()) {
-      fetchSpy.mockResolvedValueOnce(answer(SOL));
+    ]) {
       const { response, ctx } = await post(chat(appId, slug), key, body);
       expect(response.status, JSON.stringify(body)).toBe(200);
       await response.text();
       await waitOnExecutionContext(ctx);
-      expect(sent(index).body).toEqual(body);
     }
     for (const charge of await chargesOf(appId)) expect(charge).toMatchObject({ price_source: "provider_usd", cost_nano: fromDollars(0.0012) });
-  });
-
-  it("refuses a saved OpenRouter preset sent beside the model, and a server tool that calls another model, in any spelling", async () => {
-    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
-    fetchSpy.mockResolvedValue(answer(LUNA));
+    const calls = fetchSpy.mock.calls.length;
     for (const body of [
-      { model: LUNA, preset: "@preset/writer", messages: [] },
-      { model: LUNA, plugins: [{ id: "fusion", analysis_models: [SOL] }], messages: [] },
-      { model: LUNA, tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }], messages: [] },
-      { model: LUNA, tools: [{ type: "openrouter:subagent" }], messages: [] },
-      { model: LUNA, tools: [{ type: "openrouter:fusion" }], messages: [] },
-      { model: LUNA, tools: [{ type: "openrouter:image_generation" }], messages: [] },
-      { model: LUNA, tools: [{ type: "advisor_20260301", name: "advisor", model: SOL }], messages: [] },
-      { model: LUNA, tools: [{ type: "OpenRouter:Advisor" }], messages: [] },
-      { model: LUNA, Preset: "@preset/writer", messages: [] },
+      { model: "openrouter/free", messages: [] },
+      { model: LUNA, models: ["openrouter/free"], messages: [] },
     ]) {
       const { response } = await post(chat(appId, slug), key, body);
-      expect(response.status).toBe(400);
+      expect(response.status, JSON.stringify(body)).toBe(403);
     }
-    expect(fetchSpy).not.toHaveBeenCalled();
-    // A tool or plugin that calls no other model, and a bare preset slug, which OpenRouter ignores, are sent as they came.
-    fetchSpy.mockResolvedValueOnce(answer(LUNA));
-    const kept = {
-      model: LUNA,
-      tools: [{ type: "function", function: { name: "lookup" } }, { type: "openrouter:web_search" }],
-      plugins: [{ id: "response-healing" }],
-      preset: "writer",
-      messages: [],
-    };
-    const served = await post(chat(appId, slug), key, kept);
-    expect(served.response.status).toBe(200);
-    await served.response.text();
-    await waitOnExecutionContext(served.ctx);
-    expect(sent(0).body).toEqual(kept);
+    expect(fetchSpy.mock.calls.length).toBe(calls);
   });
 
-  it("serves a router, a preset field and a model-calling tool as they came when the app lists no models: there is no list to get around", async () => {
-    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
-    const bodies = [
-      { model: "openrouter/auto", messages: [] },
-      { model: LUNA, models: ["openrouter/auto"], messages: [] },
-      { model: LUNA, preset: "@preset/writer", messages: [] },
-      { model: LUNA, tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }], messages: [] },
-      { model: LUNA, tools: [{ type: "advisor_20260301", name: "advisor", model: SOL }], messages: [] },
-      { model: LUNA, plugins: [{ id: "fusion", analysis_models: [SOL] }], messages: [] },
-    ];
-    for (const [index, body] of bodies.entries()) {
-      fetchSpy.mockResolvedValueOnce(answer(SOL));
-      const { response, ctx } = await post(chat(appId, slug), key, body);
-      expect(response.status, JSON.stringify(body)).toBe(200);
-      await response.text();
-      await waitOnExecutionContext(ctx);
-      expect(sent(index).body).toEqual(body);
-    }
-    // Charged at the cost OpenRouter reports, as every OpenRouter call is.
-    const charges = await chargesOf(appId);
-    expect(charges).toHaveLength(bodies.length);
-    for (const charge of charges) expect(charge).toMatchObject({ price_source: "provider_usd", cost_nano: fromDollars(0.0012) });
+  it("passes OpenRouter's own features through unchecked, even where the app lists its models: a preset field, plugins and server tools", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
+    fetchSpy.mockResolvedValueOnce(answer(LUNA));
+    const body = {
+      model: LUNA,
+      preset: "@preset/writer",
+      plugins: [{ id: "fusion", analysis_models: [SOL] }],
+      tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }, { type: "openrouter:image_generation" }],
+      messages: [],
+    };
+    const { response, ctx } = await post(chat(appId, slug), key, body);
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body).toEqual(body);
+    // Charged at the cost OpenRouter reports, which covers its server tools.
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "provider_usd", cost_nano: fromDollars(0.0012) }]);
   });
 
   it("serves the app's own rewrite to a router or a saved preset, the customer's choice, as the target it names", async () => {
@@ -828,37 +782,18 @@ describe("OpenRouter's other models", () => {
       await waitOnExecutionContext(ctx);
       expect(sent(index).body.model).toBe(target);
     }
-    // The caller naming the router itself, which the app does not list, is still refused.
-    expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(400);
+    // The caller naming the target itself, which the app does not list, is judged as sent.
+    expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(403);
   });
 
-  it("serves the fusion plugin sent turned off, which OpenRouter does not run", async () => {
-    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
-    fetchSpy.mockResolvedValue(answer(LUNA));
-    const off = { model: LUNA, plugins: [{ id: "fusion", enabled: false, analysis_models: [SOL] }], messages: [] };
-    const { response, ctx } = await post(chat(appId, slug), key, off);
-    expect(response.status).toBe(200);
-    await response.text();
-    await waitOnExecutionContext(ctx);
-    expect(sent(0).body).toEqual(off);
-    // On, or in another letter case beside it, it is refused.
-    expect((await post(chat(appId, slug), key, { ...off, plugins: [{ id: "fusion", enabled: true }] })).response.status).toBe(400);
-    expect((await post(chat(appId, slug), key, { ...off, plugins: [{ id: "fusion", enabled: false, Enabled: true }] })).response.status).toBe(400);
-  });
-
-  it("judges an OpenRouter preset's fixed parameters by the same rule when it is saved", () => {
+  it("judges an OpenRouter preset's fixed fallback list by the same rule when it is saved", () => {
     const description = BUILT_IN_PROVIDERS.openrouter!;
     const operation = description.operations.find((op) => op.name === "openrouter.chat")!;
     const sources = priceSources({ type: "openrouter", rates: null });
     expect(savedAlternativesProblem(description, operation, { models: [SOL] }, LUNA, sources)).toMatch(/fixes its model/);
-    expect(savedAlternativesProblem(description, operation, { models: ["openrouter/auto"] }, LUNA, sources)).toMatch(/fixes its model/);
-    // A preset that fixes a router is the customer's choice, its own model as a fallback too.
-    expect(savedAlternativesProblem(description, operation, { models: ["openrouter/auto"] }, "openrouter/auto", sources)).toBeNull();
-    expect(savedAlternativesProblem(description, operation, { preset: "writer" }, LUNA, sources)).toBeNull();
-    expect(savedAlternativesProblem(description, operation, { plugins: [{ id: "fusion" }] }, LUNA, sources)).toMatch(/cannot check/);
-    expect(savedAlternativesProblem(description, operation, { preset: "@preset/writer" }, LUNA, sources)).toMatch(/cannot check/);
-    expect(savedAlternativesProblem(description, operation, { tools: [{ type: "openrouter:fusion" }] }, LUNA, sources)).toMatch(/cannot check/);
-    expect(savedAlternativesProblem(description, operation, { models: [LUNA], tools: [{ type: "openrouter:web_search" }] }, LUNA, sources)).toBeNull();
+    expect(savedAlternativesProblem(description, operation, { models: [LUNA] }, LUNA, sources)).toBeNull();
+    // Passed through: OpenRouter's own features are not judged.
+    expect(savedAlternativesProblem(description, operation, { preset: "@preset/writer", tools: [{ type: "openrouter:fusion" }] }, LUNA, sources)).toBeNull();
   });
 });
 
