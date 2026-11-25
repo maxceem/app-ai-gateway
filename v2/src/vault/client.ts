@@ -77,18 +77,22 @@ export function setVaultForTests(factory: ((env: Env) => VaultClient) | null): v
  * A provider answer, or the vault's own refusal as a gateway error: 502
  * `provider_unavailable`, the same as a key that cannot be opened always was.
  */
+/** The codes the vault refuses with (`v2/vault/src/call.js`): only these are logged by name. */
+const VAULT_REFUSALS: ReadonlySet<string> = new Set(["bad_request", "destination_refused", "credential_unavailable", "misconfigured"]);
+
 export function vaultAnswer(response: Response): Response {
   const code = response.headers.get(VAULT_ERROR_HEADER);
   if (code === null) return response;
-  log("error", "provider_secret_unavailable", { vault: code });
+  log("error", "provider_secret_unavailable", { vault: VAULT_REFUSALS.has(code) ? code : "unknown" });
   throw new GatewayError(502, "provider_unavailable", "The provider credential could not be used");
 }
 
 function bindingClient(binding: VaultBinding): VaultClient {
   return {
-    seal: (kind, identity, plaintext) => binding.seal(kind, [...identity], plaintext),
-    reseal: (kind, from, to, blob) => binding.reseal(kind, [...from], [...to], blob),
-    holds: (credentials, texts) => binding.holds(credentials, [...texts]),
+    // Awaited inside, so callers get a plain promise rather than the binding's own thenable.
+    seal: async (kind, identity, plaintext) => await binding.seal(kind, [...identity], plaintext),
+    reseal: async (kind, from, to, blob) => await binding.reseal(kind, [...from], [...to], blob),
+    holds: async (credentials, texts) => await binding.holds(credentials, [...texts]),
     call: async (input) => {
       const headers = new Headers(input.headers);
       headers.set(VAULT_CALL_HEADER, JSON.stringify(input.credentials));

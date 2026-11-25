@@ -27,7 +27,10 @@ export default defineConfig({
                 SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
               },
               outboundService: async (request: Request) =>
-                Response.json(
+                // A provider answer that carries the vault's own headers: the vault must drop them.
+                new URL(request.url).pathname.endsWith("/reserved")
+                  ? new Response("ok", { headers: { "x-agw-vault-error": "destination_refused", "x-agw-vault": "{}" } })
+                  : Response.json(
                   { url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: await request.text() },
                   { headers: { "x-echo": "1", authorization: request.headers.get("authorization") ?? "" } },
                 ),

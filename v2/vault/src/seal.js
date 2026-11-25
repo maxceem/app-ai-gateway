@@ -217,8 +217,12 @@ export async function open(env, kind, identity, blob) {
 }
 
 /**
- * Seals again under a new identity, without the key ever leaving this Worker:
- * for a connection whose address changes back to one its key may go to.
+ * Seals a provider key again for the provider's own address, without the key
+ * ever leaving this Worker: for a connection whose base URL or Cloudflare
+ * gateway is removed. The vault enforces the rule itself, whatever the caller
+ * asks: the same account, connection and provider type, and only to "" (the
+ * provider's own hosts, which this Worker knows). A key is never moved to an
+ * address someone names; that needs the key again.
  * @param {VaultEnv} env
  * @param {string} kind
  * @param {unknown} from
@@ -227,5 +231,10 @@ export async function open(env, kind, identity, blob) {
  * @returns {Promise<string>}
  */
 export async function reseal(env, kind, from, to, blob) {
+  if (kind !== "providerKey") throw new VaultBlobError("only a provider key can be sealed again");
+  const source = secretContext(kind, from);
+  const target = secretContext(kind, to);
+  const same = ["accountId", "connectionId", "providerType"].every((name) => source[name] === target[name]);
+  if (!same || target.baseUrl !== "") throw new VaultBlobError("a key can only be sealed again for its provider's own address");
   return seal(env, kind, to, await open(env, kind, from, blob));
 }

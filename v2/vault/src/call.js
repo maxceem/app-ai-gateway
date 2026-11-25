@@ -46,6 +46,8 @@ export const VAULT_ERROR_HEADER = "x-agw-vault-error";
 const CLOUDFLARE_AI_GATEWAY_ORIGIN = "https://gateway.ai.cloudflare.com/";
 const CLOUDFLARE_TOKEN_HEADER = "cf-aig-authorization";
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/u;
+/** Headers the vault keeps for itself (`x-agw-vault`, `x-agw-vault-error`): never taken from a provider's answer. */
+const RESERVED_HEADER = /^x-agw-vault/iu;
 const SECRET_CACHE_TTL_MS = 10 * 60_000;
 const SECRET_CACHE_MAX = 10_000;
 
@@ -230,9 +232,13 @@ export async function callProvider(env, call) {
   if (call.signal !== undefined) init.signal = call.signal;
   const upstream = await fetch(target, init);
   // The key header never goes back, whatever the provider echoed.
-  if (!keyHeaders.some((name) => upstream.headers.has(name))) return upstream;
+  // The key header never goes back, whatever the provider echoed, and neither does
+  // a header the vault keeps for itself: a provider cannot fake a vault refusal.
+  const names = [...upstream.headers.keys()];
+  const dropped = names.filter((name) => keyHeaders.includes(name) || RESERVED_HEADER.test(name));
+  if (dropped.length === 0) return upstream;
   const answer = new Response(upstream.body, upstream);
-  for (const name of keyHeaders) answer.headers.delete(name);
+  for (const name of dropped) answer.headers.delete(name);
   return answer;
 }
 
