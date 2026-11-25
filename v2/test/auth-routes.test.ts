@@ -11,7 +11,6 @@ import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
 import {
   ACCOUNT_ID,
   attestAuthentication,
-  seedHuman,
   authEvents,
   clearCaches,
   registerTestInstall,
@@ -132,17 +131,22 @@ describe("POST /v2/apps/{app}/auth/failure", () => {
     expect(await authEvents(appId)).toEqual([expect.objectContaining({ user_id: "u-unread", outcome: "ok", claim_delay_ms: null })]);
   });
 
-  // Seeds a second account, which takes a few seconds under load.
-  it("counts every account's abandoned challenges once all their writes are in (step 8f)", { timeout: 30_000 }, async () => {
+  it("counts every account's abandoned challenges once all their writes are in (step 8f)", async () => {
     const now = Date.now();
     const mine = await seedApp(attestAuthentication());
-    const other = await seedHuman();
+    // A second account, written directly: signing one up is slow.
+    const other = `acc_two_${crypto.randomUUID().slice(0, 8)}`;
     const theirs = `theirs-${crypto.randomUUID().slice(0, 8)}`;
-    await env.DB.prepare(
-      "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Theirs', '{}', 1, 'active', 0, 0)",
-    )
-      .bind(theirs, other.accountId)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Two', 'usr_test', ?, ?)").bind(
+        other,
+        new Date(now).toISOString(),
+        new Date(now).toISOString(),
+      ),
+      env.DB.prepare(
+        "INSERT INTO app (id, account_id, name, config_json, revision, status, created_at, updated_at) VALUES (?, ?, 'Theirs', '{}', 1, 'active', 0, 0)",
+      ).bind(theirs, other),
+    ]);
     await env.DB.prepare("DELETE FROM app_auth_challenge").run();
     await env.DB.batch(
       [mine, mine, theirs].map((appId, index) =>
