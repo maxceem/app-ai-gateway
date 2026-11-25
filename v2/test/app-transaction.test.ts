@@ -3,7 +3,7 @@ import { X509Certificate } from "node:crypto";
 import { CompactSign } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import { verifyAppTransaction } from "../src/client-auth/app-transaction.ts";
-import { issue, tlv } from "./app-attest-fixtures.ts";
+import { issue, newKeys, tlv } from "./app-attest-fixtures.ts";
 
 /**
  * Apple will not sign anything for a test, so these build a stand-in for the
@@ -24,12 +24,19 @@ interface Chain {
   leafKey: CryptoKey;
 }
 
-async function chain(options: { leafMarker?: string | null; intermediateMarker?: string | null; leafExpires?: number } = {}): Promise<Chain> {
+async function chain(options: {
+  leafMarker?: string | null;
+  intermediateMarker?: string | null;
+  leafExpires?: number;
+  /** Signs the leaf with an attacker's key under the intermediate's name. */
+  forgeLeaf?: boolean;
+  intermediateCa?: boolean;
+} = {}): Promise<Chain> {
   const root = await issue({ name: "Test Root CA - G3", ca: true });
   const intermediate = await issue({
     name: "Test WWDR",
     issuer: root,
-    ca: true,
+    ca: options.intermediateCa ?? true,
     ...(options.intermediateMarker === null ? {} : { extensions: marker(options.intermediateMarker ?? WWDR_INTERMEDIATE_OID) }),
   });
   const leaf = await issue({
@@ -38,6 +45,7 @@ async function chain(options: { leafMarker?: string | null; intermediateMarker?:
     ca: false,
     ...(options.leafMarker === null ? {} : { extensions: marker(options.leafMarker ?? RECEIPT_SIGNING_LEAF_OID) }),
     ...(options.leafExpires === undefined ? {} : { notAfter: options.leafExpires }),
+    ...(options.forgeLeaf ? { forgedBy: await newKeys() } : {}),
   });
   return {
     root: root.certificate,
@@ -119,6 +127,13 @@ describe("an App Store transaction", () => {
     const swapped = await chain({ leafMarker: WWDR_INTERMEDIATE_OID, intermediateMarker: RECEIPT_SIGNING_LEAF_OID });
     await expect(verify(await sign(swapped, transaction()), swapped.root))
       .resolves.toMatchObject({ rejection: "chain" });
+  });
+
+  it("refuses a leaf signed by another key under the intermediate's name, and an intermediate that is not a CA", async () => {
+    const forged = await chain({ forgeLeaf: true });
+    await expect(verify(await sign(forged, transaction()), forged.root)).resolves.toMatchObject({ rejection: "chain" });
+    const notCa = await chain({ intermediateCa: false });
+    await expect(verify(await sign(notCa, transaction()), notCa.root)).resolves.toMatchObject({ rejection: "chain" });
   });
 
   it("refuses a signature the leaf did not make, and a chain of the wrong length", async () => {

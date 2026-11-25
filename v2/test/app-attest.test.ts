@@ -51,13 +51,27 @@ type Options = {
   shape?: (parts: { authData: Buffer; leaf: Buffer; intermediate: Buffer }) => CborInput;
   otherRoot?: boolean;
   leafExpired?: boolean;
+  intermediateExpired?: boolean;
+  /** Signs the credential certificate, or the intermediate, with an attacker's key under the real issuer's name. */
+  forge?: "leaf" | "intermediate";
+  /** The credential id's length field. */
+  credentialLength?: number;
+  /** The key id and credential id name one key; the certificate holds another. */
+  otherCertificateKey?: boolean;
 };
 
 async function attestation(options: Options = {}): Promise<Attestation> {
   const root = await issue({ name: "Test App Attestation Root CA", ca: true });
-  const intermediate = await issue({ name: "Test App Attestation CA 1", issuer: root, ca: true });
+  const attacker = await newKeys();
+  const intermediate = await issue({
+    name: "Test App Attestation CA 1",
+    issuer: root,
+    ca: true,
+    ...(options.forge === "intermediate" ? { forgedBy: attacker } : {}),
+    ...(options.intermediateExpired ? { notBefore: Date.now() - 2 * 86_400_000, notAfter: Date.now() - 86_400_000 } : {}),
+  });
   const keys = await newKeys();
-  const point = await rawPublicKey(keys);
+  const point = await rawPublicKey(options.otherCertificateKey ? await newKeys() : keys);
   const keyHash = await digest(point);
 
   const authData = Buffer.alloc(87 + 77);
@@ -65,7 +79,7 @@ async function attestation(options: Options = {}): Promise<Attestation> {
   authData[32] = 0x40;
   authData.writeUInt32BE(options.counter ?? 0, 33);
   (options.aaguid ?? Buffer.from("appattestdevelop")).copy(authData, 37);
-  authData.writeUInt16BE(32, 53);
+  authData.writeUInt16BE(options.credentialLength ?? 32, 53);
   (options.credentialId ?? keyHash).copy(authData, 55);
 
   const nonce = await digest(Buffer.concat([authData, await digest(Buffer.from(options.challenge ?? CHALLENGE, "base64"))]));
@@ -77,6 +91,7 @@ async function attestation(options: Options = {}): Promise<Attestation> {
     issuer: intermediate,
     ca: false,
     keys,
+    ...(options.forge === "leaf" ? { forgedBy: attacker } : {}),
     ...(extensionValue === null ? {} : { extensions: [{ oid: NONCE_OID, value: extensionValue }] }),
     ...(options.leafExpired ? { notBefore: Date.now() - 2 * 86_400_000, notAfter: Date.now() - 86_400_000 } : {}),
   });
@@ -128,6 +143,18 @@ describe("an App Attest attestation", () => {
     await expect(verify(await attestation({
       nonceExtension: (nonce) => sequence(tlv(0xa1, octets(nonce)), octets(nonce)),
     }))).rejects.toMatchObject(refused);
+    // Another tag in place of [1].
+    await expect(verify(await attestation({ nonceExtension: (nonce) => sequence(tlv(0xa2, octets(nonce))) })))
+      .rejects.toMatchObject(refused);
+    // Another type in place of the OCTET STRING.
+    await expect(verify(await attestation({ nonceExtension: (nonce) => sequence(tlv(0xa1, tlv(0x0c, nonce))) })))
+      .rejects.toMatchObject(refused);
+    // A second element inside [1].
+    await expect(verify(await attestation({ nonceExtension: (nonce) => sequence(tlv(0xa1, octets(nonce), octets(nonce))) })))
+      .rejects.toMatchObject(refused);
+    // The nonce one level deeper, under [0].
+    await expect(verify(await attestation({ nonceExtension: (nonce) => sequence(tlv(0xa1, tlv(0xa0, octets(nonce)))) })))
+      .rejects.toMatchObject(refused);
     // Trailing bytes after the extension's value.
     await expect(verify(await attestation({
       nonceExtension: (nonce) => Buffer.concat([sequence(tlv(0xa1, octets(nonce))), Buffer.from([0])]),
@@ -152,6 +179,15 @@ describe("an App Attest attestation", () => {
   it("refuses a key id that is not the certificate's key, and a credential id that is not the key id", async () => {
     await expect(verify(valid, { keyId: Buffer.alloc(32, 7).toString("base64") })).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ credentialId: Buffer.alloc(32, 7) }))).rejects.toMatchObject(refused);
+    // Apple's step 5: the key id and the credential id agree, but the certificate holds another key.
+    await expect(verify(await attestation({ otherCertificateKey: true }))).rejects.toMatchObject(refused);
+    // A credential id whose length is not 32.
+    await expect(verify(await attestation({ credentialLength: 31 }))).rejects.toMatchObject(refused);
+  });
+
+  it("refuses certificates signed by another key under the real issuer's name", async () => {
+    await expect(verify(await attestation({ forge: "leaf" }))).rejects.toMatchObject(refused);
+    await expect(verify(await attestation({ forge: "intermediate" }))).rejects.toMatchObject(refused);
   });
 
   it("refuses a chain to another root, the certificates swapped, and an expired credential certificate", async () => {
@@ -162,6 +198,7 @@ describe("an App Attest attestation", () => {
       }),
     }))).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ leafExpired: true }))).rejects.toMatchObject(refused);
+    await expect(verify(await attestation({ intermediateExpired: true }))).rejects.toMatchObject(refused);
   });
 
   it("refuses another format, a missing receipt, one certificate, and CBOR that is cut short or runs on", async () => {
@@ -169,6 +206,9 @@ describe("an App Attest attestation", () => {
       ({ authData, leaf, intermediate }) => ({ fmt: "packed", attStmt: { x5c: [leaf, intermediate], receipt: Buffer.from("r") }, authData }),
       ({ authData, leaf, intermediate }) => ({ fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate] }, authData }),
       ({ authData, leaf }) => ({ fmt: "apple-appattest", attStmt: { x5c: [leaf], receipt: Buffer.from("r") }, authData }),
+      ({ authData, leaf, intermediate }) => ({
+        fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate, intermediate], receipt: Buffer.from("r") }, authData,
+      }),
     ];
     for (const shape of shapes) await expect(verify(await attestation({ shape }))).rejects.toMatchObject(refused);
     const bytes = Buffer.from(valid.attestation, "base64");
@@ -216,7 +256,10 @@ describe("the CBOR reader", () => {
       ["invalid UTF-8", [0x61, 0xff]],
       ["trailing bytes", [0x40, 0x40]],
       ["nothing", []],
-      ["containers four deep", [0x81, 0x81, 0x81, 0x81, 0x40]],
+      ["arrays four deep", [0x81, 0x81, 0x81, 0x81, 0x40]],
+      ["maps four deep", [0xa1, 0x61, 0x61, 0xa1, 0x61, 0x61, 0xa1, 0x61, 0x61, 0xa1, 0x61, 0x61, 0x40]],
+      ["an array of nine", [0x89, ...Array<number>(9).fill(0x40)]],
+      ["a map of nine", [0xa9, ...Array.from({ length: 9 }, (_, index) => [0x61, 0x61 + index, 0x40]).flat()]],
     ];
     for (const [label, bytes] of cases) {
       expect(() => decodeCbor(Uint8Array.from(bytes)), label).toThrow(CborError);
@@ -244,12 +287,34 @@ describe("the DER reader", () => {
     expect(Buffer.from(appAttestNonce(fields.extensions.get(NONCE_OID)!))).toEqual(Buffer.alloc(32, 9));
   });
 
-  it("refuses a certificate cut short, with trailing bytes, or with an indefinite length", () => {
+  it("refuses a certificate cut short, with trailing bytes, with an indefinite length, or with a length not in its shortest form", () => {
     expect(() => certificateFields(leaf.der.subarray(0, leaf.der.byteLength - 1))).toThrow(DerError);
     expect(() => certificateFields(Buffer.concat([leaf.der, Buffer.from([0])]))).toThrow(DerError);
-    expect(() => certificateFields(Buffer.from([0x30, 0x80, 0x00, 0x00]))).toThrow(DerError);
-    // A length in more bytes than it needs.
-    expect(() => certificateFields(Buffer.from([0x30, 0x81, 0x01, 0x05]))).toThrow(DerError);
+    // The same certificate, its outer length re-encoded. It starts 30 82 <two length bytes>.
+    expect([leaf.der[0], leaf.der[1]]).toEqual([0x30, 0x82]);
+    const content = leaf.der.subarray(4);
+    // BER's indefinite length, ended by two zero bytes.
+    expect(() => certificateFields(Buffer.concat([Buffer.from([0x30, 0x80]), content, Buffer.from([0, 0])]))).toThrow(DerError);
+    // Three length bytes where two are enough.
+    expect(() => certificateFields(Buffer.concat([Buffer.from([0x30, 0x83, 0x00]), leaf.der.subarray(2)]))).toThrow(DerError);
+    // A long form for a length that fits the short form.
+    const nonce = sequence(tlv(0xa1, octets(Buffer.alloc(32, 9))));
+    expect(Buffer.from(appAttestNonce(nonce))).toEqual(Buffer.alloc(32, 9));
+    expect(() => appAttestNonce(Buffer.concat([Buffer.from([0x30, 0x81, nonce[1]!]), nonce.subarray(2)]))).toThrow(DerError);
+  });
+
+  it("reads the nonce only in Apple's shape, SEQUENCE { [1] { OCTET STRING } }", () => {
+    const value = Buffer.alloc(32, 9);
+    const shapes = [
+      sequence(tlv(0xa2, octets(value))),
+      sequence(tlv(0xa1, tlv(0x0c, value))),
+      sequence(tlv(0xa1, octets(value), octets(value))),
+      sequence(tlv(0xa1, tlv(0xa0, octets(value)))),
+      sequence(tlv(0xa0, tlv(0xa1, octets(value)))),
+      sequence(tlv(0xa1, octets(value)), octets(value)),
+      octets(value),
+    ];
+    for (const shape of shapes) expect(() => appAttestNonce(shape)).toThrow(DerError);
   });
 
   it("refuses the same extension twice", async () => {
@@ -266,7 +331,8 @@ describe("the DER reader", () => {
 
 /**
  * Apple's own sample attestation, read with the same readers. The full
- * verifier rightly refuses it: its certificates expired in April 2026, and
+ * verifier rightly refuses it: its credential certificate expired on 23 April
+ * 2026 (its intermediate is valid until 13 March 2030), and
  * Apple's guide builds its nonce from the literal challenge, not its SHA-256
  * as App Attest does. So this checks each step the readers take against the
  * values Apple gives, which confirms the nonce's shape against Apple's real
@@ -303,7 +369,7 @@ describe("Apple's sample attestation", () => {
     expect(Buffer.from(leafDer).toString("base64")).toBe(APPLE_SAMPLE.leaf);
     expect(Buffer.from(intermediateDer).toString("base64")).toBe(APPLE_SAMPLE.intermediate);
 
-    // The signatures, not the dates: the sample's certificates have expired.
+    // The signatures, not the dates: the sample's credential certificate has expired.
     const root = new X509Certificate(APPLE_ROOT_PEM);
     const leaf = new X509Certificate(leafDer);
     const intermediate = new X509Certificate(intermediateDer);

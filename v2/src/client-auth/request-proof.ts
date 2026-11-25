@@ -21,6 +21,7 @@
  */
 
 import { and, eq } from "drizzle-orm";
+import { MAX_ASSERTION_LENGTH } from "../contracts/auth.ts";
 import { GatewayError } from "../core/errors.ts";
 import { readOrKnown, STALE_READ_MAX_MS } from "../core/stale-read.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
@@ -33,9 +34,6 @@ export const PROOF_HEADER = "x-appattest-proof";
 
 /** The first line of every client data string, which names this format and its version. */
 export const REQUEST_PROOF_DOMAIN = "appaigateway-request-v1";
-
-/** Far above any real assertion (a few hundred bytes), and well below a header's limit. */
-const MAX_ASSERTION_LENGTH = 8192;
 
 const encoder = new TextEncoder();
 

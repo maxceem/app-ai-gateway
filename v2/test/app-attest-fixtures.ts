@@ -122,6 +122,8 @@ export async function issue(input: {
   notAfter?: number;
   /** The subject's key pair, when the caller needs it before the certificate exists. */
   keys?: CryptoKeyPair;
+  /** Signs with this key instead of the issuer's, keeping the issuer's name: a forgery. */
+  forgedBy?: CryptoKeyPair;
 }): Promise<Issued> {
   const keys = input.keys ?? await newKeys();
   const spki = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey) as ArrayBuffer);
@@ -144,7 +146,7 @@ export async function issue(input: {
     spki,
     tlv(0xa3, sequence(...extensions)),
   );
-  const signer = input.issuer?.keys.privateKey ?? keys.privateKey;
+  const signer = input.forgedBy?.privateKey ?? input.issuer?.keys.privateKey ?? keys.privateKey;
   const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer, Uint8Array.from(tbs)) as ArrayBuffer);
   const signature = sequence(unsigned(raw.subarray(0, 32)), unsigned(raw.subarray(32)));
   const der = sequence(tbs, ECDSA_SHA256, tlv(0x03, Buffer.from([0]), signature));

@@ -5,7 +5,8 @@
  *
  * It replaces `cbor-x`, so no npm package reads a device's proof. It reads
  * only what those shapes use: maps with text keys, arrays, byte strings and
- * text strings, with definite lengths, at most three levels deep, and the
+ * text strings, with definite lengths, at most three levels deep and eight
+ * entries wide, and the
  * whole input consumed. Anything else (integers, tags, floats, indefinite
  * lengths, duplicate keys, trailing bytes) throws `CborError`, and callers
  * refuse.
@@ -17,6 +18,13 @@ export type CborValue = Uint8Array | string | CborValue[] | { [key: string]: Cbo
 
 /** The attestation object nests three deep: the outer map, `attStmt`, `x5c`. */
 const MAX_DEPTH = 3;
+
+/**
+ * The most entries an array or map holds in the real shapes (the outer map
+ * has three). Anything longer is refused before it is read, so a body full of
+ * empty byte strings can never make the decoder allocate much.
+ */
+const MAX_ENTRIES = 8;
 
 // `ignoreBOM` keeps a leading U+FEFF, so "\uFEFFapple-appattest" never reads as "apple-appattest".
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -61,15 +69,14 @@ function item(bytes: Uint8Array, state: { offset: number }, depth: number): Cbor
     }
     case 4: {
       if (depth >= MAX_DEPTH + 1) throw new CborError("too deep");
-      // Each element takes at least one byte, so a count past what is left is a lie.
-      if (length > bytes.byteLength - state.offset) throw new CborError("truncated");
+      if (length > MAX_ENTRIES) throw new CborError("too many entries");
       const items: CborValue[] = [];
       for (let index = 0; index < length; index += 1) items.push(item(bytes, state, depth + 1));
       return items;
     }
     case 5: {
       if (depth >= MAX_DEPTH + 1) throw new CborError("too deep");
-      if (length * 2 > bytes.byteLength - state.offset) throw new CborError("truncated");
+      if (length > MAX_ENTRIES) throw new CborError("too many entries");
       const map: { [key: string]: CborValue } = Object.create(null) as { [key: string]: CborValue };
       for (let index = 0; index < length; index += 1) {
         const key = item(bytes, state, depth + 1);
