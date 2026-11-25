@@ -57,18 +57,12 @@ wrong than to fail it.
 
 ## Code
 
+- Before adding a table, Durable Object, Worker or binding, or changing where
+  data is kept or how the docs deploy, read `ARCHITECTURE.md`.
 - Every API operation is declared once in `src/contracts/catalog.ts`; the
   OpenAPI document, clients and server mounts derive from it. Never edit
   `openapi/openapi.json` manually; run `pnpm run openapi:generate` instead.
 - Keep provider proxy bodies permissive: they preserve provider-native formats.
-- Reach `@maxceem/cf-auth` only through `cfAuth()` in `src/auth/identity.ts` and
-  never import `better-auth` directly: a static import puts them on every
-  proxied request's cold start. Type-only imports are fine.
-- Keep one Workers `compatibility_date`, in `wrangler.jsonc`, for every
-  deployment, self-hosted, hosted and tests alike. Don't set another in a
-  deployment profile overlay unless it is absolutely necessary and the user
-  has confirmed it; the release's prebuilt deploy refuses one anyway.
-- There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
 
 ## Compatibility with older clients
 
@@ -100,11 +94,6 @@ never break an older CLI's work.
 - Never write "organization", "tenant" or "operator" in a guide, and do not
   document billing or plans there. Say "you", "your account" or "all your
   apps" instead.
-- Keep docs out of the gateway Worker and keep their deployment static-only: no
-  route handlers, SSR, OpenNext, `run_worker_first` or Worker `main` entry
-  without explicit approval.
-- A custom docs domain belongs in a gitignored
-  `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked config.
 
 ## Security
 
