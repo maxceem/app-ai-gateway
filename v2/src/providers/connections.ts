@@ -3,9 +3,7 @@
  * cached in the isolate with a fallback to the last known record when D1 is
  * slow (`known_record_served`), as v1's provider store does.
  *
- * The opened key is cached in memory too, keyed by the blob it came from, so
- * a rotated key is never served from the cache. It is never logged or
- * returned.
+ * Keys stay sealed here: only the vault Worker opens them (plan step 8i).
  */
 import { and, eq } from "drizzle-orm";
 import { errorFacts } from "../core/error-facts.ts";
@@ -16,7 +14,7 @@ import { ttlCache } from "../core/ttl-cache.ts";
 import { database } from "../db/index.ts";
 import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
-import { openSecret, type SecretIdentity, type SecretKind } from "../vault/secrets.ts";
+import type { SecretIdentity } from "../vault/secrets.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
 import { CUSTOM_PROVIDER_TYPE, customDescription } from "./custom.ts";
@@ -74,14 +72,12 @@ export function readCloudflareGateway(stored: unknown): CloudflareGatewaySetting
 }
 
 const CONNECTION_CACHE_TTL_MS = 60_000;
-const SECRET_CACHE_TTL_MS = 10 * 60_000;
 
 const connectionCache = ttlCache<string, ConnectionRecord | null>({
   name: "provider_connection",
   ttlMs: CONNECTION_CACHE_TTL_MS,
   maxEntries: 10_000,
 });
-const secretCache = ttlCache<string, string>({ name: "provider_secret", ttlMs: SECRET_CACHE_TTL_MS, maxEntries: 10_000 });
 
 function cacheKey(accountId: string, slug: string): string {
   return `${accountId}\u0000${slug}`;
@@ -226,88 +222,9 @@ export function cloudflareTokenIdentity(
 }
 
 /**
- * What a connection's requests authenticate with: the provider's key, and
- * the Cloudflare AI Gateway token when its traffic goes through Cloudflare.
- * Either may be absent where the other is enough: a connection through
- * Cloudflare may keep its provider keys in Cloudflare's own key store (v1).
- */
-export interface UpstreamCredentials {
-  readonly providerKey: string | null;
-  readonly cloudflareToken: string | null;
-}
-
-/**
- * One sealed credential, opened once and cached by the blob and the whole
- * identity it is sealed to. A rotated key is never served from the cache, and
- * neither is a warm key for a row whose account, type or destination changed
- * without the key being sealed again: the cached copy follows only the exact
- * binding that opened it.
- */
-async function opened<K extends SecretKind>(
-  env: Env,
-  connection: ConnectionRecord,
-  kind: K,
-  identity: SecretIdentity<K>,
-  blob: string,
-): Promise<string> {
-  const key = [kind, ...identity, blob].join("\u0000");
-  const cached = secretCache.get(key);
-  if (cached !== undefined) return cached;
-  try {
-    const secret = await openSecret(env, kind, identity, blob);
-    secretCache.set(key, secret);
-    return secret;
-  } catch (error) {
-    log("error", "provider_secret_unavailable", {
-      account: connection.accountId,
-      connection: connection.id,
-      providerType: connection.type,
-      credential: kind,
-      error: errorFacts(error),
-    });
-    throw new GatewayError(502, "provider_unavailable", "The provider credential could not be opened");
-  }
-}
-
-/**
- * Opens a connection's credentials. A failure is a 502: the request cannot be
- * sent without them. A connection with neither a key nor a Cloudflare token
- * has nothing to send.
- */
-export async function connectionCredentials(env: Env, connection: ConnectionRecord): Promise<UpstreamCredentials> {
-  const gateway = connection.cloudflareGateway;
-  // Saving never allows both. A row that has them anyway and stores a provider
-  // key is refused before the key is opened: the key is sealed for one
-  // destination (`keyOrigin`, the base URL) while its requests would go to
-  // the other (Cloudflare). A row whose provider keys stay in Cloudflare has
-  // no key here to protect, and keeps going through Cloudflare as before.
-  if (connection.baseUrl !== null && gateway !== null && connection.secretBlob !== null) {
-    log("error", "provider_connection_unusable", {
-      account: connection.accountId,
-      connection: connection.id,
-      providerType: connection.type,
-      reason: "base_url_and_cloudflare_gateway",
-    });
-    throw new GatewayError(502, "provider_unavailable", "The provider connection cannot be used as stored");
-  }
-  if (connection.secretBlob === null && gateway === null) {
-    throw new GatewayError(502, "provider_unavailable", "Provider credential is missing");
-  }
-  const providerKey =
-    connection.secretBlob === null
-      ? null
-      : await opened(env, connection, "providerKey", providerKeyIdentity(connection), connection.secretBlob);
-  const cloudflareToken =
-    gateway === null
-      ? null
-      : await opened(env, connection, "cloudflareGatewayToken", cloudflareTokenIdentity(connection.accountId, connection.id, gateway), gateway.tokenBlob);
-  return { providerKey, cloudflareToken };
-}
-
-/**
  * A connection's credentials, still sealed, for a call the vault sends
- * (`src/vault/client.ts`): the same checks as `connectionCredentials`, with
- * nothing opened here. The vault opens them, under the same ids.
+ * (`src/vault/client.ts`). Nothing is opened here: this Worker cannot
+ * open a key (plan step 8i). The vault opens them, under the same ids.
  */
 export interface SealedCredentials {
   readonly providerKey: { readonly blob: string; readonly identity: SecretIdentity<"providerKey"> } | null;

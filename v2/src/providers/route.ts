@@ -22,7 +22,6 @@ import {
   upstreamOrigin,
   type ConnectionRecord,
   type SealedCredentials,
-  type UpstreamCredentials,
 } from "./connections.ts";
 import type { SealedCallCredentials, SealedCloudflareToken, SealedProviderKey } from "../vault/client.ts";
 import type { ApiStyle, ProviderAuth, ProviderDescription } from "./operation.ts";
@@ -46,7 +45,6 @@ export interface UpstreamRequestInput {
   readonly query: string;
   /** The operation's API style, which may choose how the key is sent (`authByStyle`). None for a key test. */
   readonly style?: ApiStyle;
-  readonly credentials: UpstreamCredentials;
   /**
    * The app's request headers, for the Cloudflare headers it may send, with
    * the gateway's own credentials and end-user ids already taken out: a header
@@ -57,14 +55,6 @@ export interface UpstreamRequestInput {
   readonly userId: string | null;
   /** A listed passthrough path: it always goes to the connection's base URL, if one is set. */
   readonly passthrough?: boolean;
-}
-
-export interface UpstreamRequest {
-  readonly url: string;
-  /** Set on the outgoing headers last, over anything else. */
-  readonly headers: Readonly<Record<string, string>>;
-  /** The header the provider key is sent in (`keyAuth`): never forwarded from the client, never passed back to it. */
-  readonly keyHeader: string;
 }
 
 /**
@@ -81,10 +71,6 @@ export function keyAuth(
   return (style !== undefined ? description.cloudflareGateway?.authByStyle?.[style] : undefined) ?? description.auth;
 }
 
-/** The provider's key, in the header and format given. A callback, so a key with `$&` is sent as it is. */
-function providerAuth(auth: ProviderAuth, key: string): Record<string, string> {
-  return { [auth.header]: auth.format.replace("{key}", () => key) };
-}
 
 /**
  * JSON with every character past ASCII escaped, so it can be a header value:
@@ -146,7 +132,7 @@ interface UpstreamTarget {
 function upstreamTarget(
   connection: ConnectionRecord,
   description: ProviderDescription,
-  input: Omit<UpstreamRequestInput, "credentials"> & { readonly hasProviderKey: boolean; readonly hasCloudflareToken: boolean },
+  input: UpstreamRequestInput & { readonly hasProviderKey: boolean; readonly hasCloudflareToken: boolean },
 ): UpstreamTarget {
   const gateway = connection.cloudflareGateway;
   if (gateway === null) {
@@ -170,28 +156,6 @@ function upstreamTarget(
   return { url, headers, keyAuth: input.hasProviderKey ? keyAuth(connection, description, input.style) : null, cloudflare: true };
 }
 
-/**
- * The URL and headers of one request to a connection's provider, with the
- * opened credentials in them: for the work that does not go through the vault
- * yet (jobs, the key test). Calls go through `sealedUpstreamRequest`.
- */
-export function upstreamRequest(
-  connection: ConnectionRecord,
-  description: ProviderDescription,
-  input: UpstreamRequestInput,
-): UpstreamRequest {
-  const { credentials } = input;
-  const target = upstreamTarget(connection, description, {
-    ...input,
-    hasProviderKey: credentials.providerKey !== null,
-    hasCloudflareToken: credentials.cloudflareToken !== null,
-  });
-  const headers = { ...target.headers };
-  if (target.cloudflare && credentials.cloudflareToken !== null) headers["cf-aig-authorization"] = `Bearer ${credentials.cloudflareToken}`;
-  if (target.keyAuth !== null && credentials.providerKey !== null) Object.assign(headers, providerAuth(target.keyAuth, credentials.providerKey));
-  return { url: target.url, headers, keyHeader: (target.keyAuth ?? keyAuth(connection, description, input.style)).header.toLowerCase() };
-}
-
 /** One request whose credentials stay sealed: the vault adds them (`src/vault/client.ts`). */
 export interface SealedUpstreamRequest {
   readonly url: string;
@@ -206,7 +170,7 @@ export interface SealedUpstreamRequest {
 export function sealedUpstreamRequest(
   connection: ConnectionRecord,
   description: ProviderDescription,
-  input: Omit<UpstreamRequestInput, "credentials"> & { readonly credentials: SealedCredentials },
+  input: UpstreamRequestInput & { readonly credentials: SealedCredentials },
 ): SealedUpstreamRequest {
   const { credentials } = input;
   const target = upstreamTarget(connection, description, {

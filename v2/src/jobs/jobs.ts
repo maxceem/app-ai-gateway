@@ -38,14 +38,15 @@ import { utcDay, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkR
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
-import { connectionCredentials, connectionDescription, loadConnection, readConnection, type ConnectionRecord } from "../providers/connections.ts";
+import { connectionDescription, loadConnection, readConnection, sealedCredentials, type ConnectionRecord } from "../providers/connections.ts";
 import { UNITS, type JobRequest, type JobSpec, type OperationDescription, type ProviderDescription, type Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
 import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
-import { upstreamRequest, upstreamUrl } from "../providers/route.ts";
+import { sealedUpstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
 import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
+import { vault } from "../vault/client.ts";
 
 /** When the sweep first checks a job. fal keeps results for an hour, large ones for 6 minutes (T15). */
 export const JOB_FIRST_CHECK_MS = 2 * 60 * 1000;
@@ -318,8 +319,9 @@ export async function jobContext(env: Env, claims: JobClaims, options: { readonl
 
 /**
  * A follow-up request to the provider, with the connection's key, never
- * following a redirect. `userId` is the polling caller's own end user, or
- * null from the sweep: a job id carries only its digest.
+ * following a redirect. The vault adds the key and sends it (plan step 8i):
+ * this Worker never opens it. `userId` is the polling caller's own end user,
+ * or null from the sweep: a job id carries only its digest.
  */
 export async function fetchJob(
   env: Env,
@@ -333,12 +335,11 @@ export async function fetchJob(
   const request = jobRequestFor(context.spec, which);
   // Once the sweep's time for the item is up, no more provider calls start.
   signal?.throwIfAborted();
-  const credentials = await connectionCredentials(env, context.connection);
-  const target = upstreamRequest(context.connection, context.description, {
+  const target = sealedUpstreamRequest(context.connection, context.description, {
     hostKey: request.host ?? "main",
     path: jobRequestPath(request, claims),
     query,
-    credentials,
+    credentials: sealedCredentials(context.connection),
     client: new Headers(),
     appId: claims.appId,
     userId,
@@ -348,16 +349,23 @@ export async function fetchJob(
   // the reader's own deadline: an item that runs out of time never cuts off a
   // final result it already has.
   // So does the poll's own time limit: a slow body read is never cut off by it.
-  // Opening the key can take long enough for the item's time to run out.
-  signal?.throwIfAborted();
   const untilHeaders = new AbortController();
   const stop = () => untilHeaders.abort(signal?.reason);
   signal?.addEventListener("abort", stop, { once: true });
   const timer = setTimeout(() => untilHeaders.abort(new Error("job poll timed out")), JOB_POLL_TIMEOUT_MS);
   try {
-    const response = await fetch(target.url, { method: request.method, headers: target.headers, redirect: "manual", signal: untilHeaders.signal });
+    const response = await vault(env).call({
+      url: target.url,
+      method: request.method,
+      headers: new Headers(target.headers),
+      body: null,
+      signal: untilHeaders.signal,
+      credentials: target.credentials,
+    });
     return { response, keyHeader: target.keyHeader, url: target.url };
   } catch (error) {
+    // The vault's own refusal (the key does not open, or the address is not one it is sealed for) is already a 502.
+    if (error instanceof GatewayError) throw error;
     log("warn", "job_poll_failed", { app: claims.appId, providerSlug: claims.slug, which, error: errorFacts(error) });
     throw new GatewayError(502, "provider_error", "Provider request failed");
   } finally {

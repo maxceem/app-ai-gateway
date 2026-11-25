@@ -19,7 +19,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { connectionCredentials, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { connectionCredentials } from "../test/opened-request.ts";
 import { secretVault } from "../src/vault/index.ts";
 import { VAULT_SERVICE } from "../src/vault/types.ts";
 import { checkAgainstV2, insertStatements, readFirst, reportMarkdown } from "./migrate/output.ts";
@@ -260,7 +261,7 @@ const credentials = (id: string) => {
     secretBlob: moved.secret_blob,
     cloudflareGateway: readCloudflareGateway(moved.cloudflare_gateway_json),
   } as unknown as ConnectionRecord;
-  return connectionCredentials(V2_VAULT as unknown as Env, record);
+  return connectionCredentials(V2_VAULT, record);
 };
 
 // ---------------------------------------------------------------- accounts and people

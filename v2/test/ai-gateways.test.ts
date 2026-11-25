@@ -10,11 +10,11 @@ import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
-import { connectionCredentials, keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { connectionCredentials, upstreamRequest } from "./opened-request.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
-import { upstreamRequest } from "../src/providers/route.ts";
 import { requestedServiceMode } from "../src/proxy/meter.ts";
 import {
   clearCaches,
@@ -25,6 +25,7 @@ import {
   seedRoutedApp,
   ledger,
 } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -139,10 +140,10 @@ describe("where a request goes (route.ts)", () => {
       const label = `https://gateway.ai.cloudflare.com/v1/acct/${encodeURIComponent(gatewayId)}/`;
       const setting = { accountId: "acct", gatewayId };
       expect(keyOrigin({ type: "openai", baseUrl: null, cloudflareGateway: setting })).toBe(label);
-      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label, "", ""], PROVIDER_KEY);
-      const tokenBlob = await sealSecret(env, "cloudflareGatewayToken", ["acc", "conn", setting.accountId, setting.gatewayId], CF_TOKEN);
+      const secretBlob = await sealSecret(TEST_VAULT_ENV, "providerKey", ["acc", "conn", "openai", label, "", ""], PROVIDER_KEY);
+      const tokenBlob = await sealSecret(TEST_VAULT_ENV, "cloudflareGatewayToken", ["acc", "conn", setting.accountId, setting.gatewayId], CF_TOKEN);
       const stored = record({ secretBlob, cloudflareGateway: { ...setting, tokenBlob, tokenHint: null } });
-      expect(await connectionCredentials(env, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
+      expect(await connectionCredentials(TEST_VAULT_ENV, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
       expect(() =>
         upstreamRequest(stored, BUILT_IN_PROVIDERS.openai!, { ...base, path: "v1/chat/completions", credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN } }),
       ).toThrow(/not plain path segments/u);

@@ -8,6 +8,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker from "../src/index.ts";
 import { clearCaches, seedManagementKey, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, ledger } from "./helpers.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
+import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
+import { setVaultForTests, type VaultCall } from "../src/vault/client.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -114,12 +116,44 @@ describe("provider connections", () => {
       const id = saved.body.provider.id as string;
       // A key stored before the rule: three characters.
       const row = await env.DB.prepare("SELECT account_id FROM provider_connection WHERE id = ?").bind(id).first<{ account_id: string }>();
-      const blob = await sealSecret(env, "providerKey", [row!.account_id, id, "openai", "", "", ""], "abc");
+      const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [row!.account_id, id, "openai", "", "", ""], "abc");
       await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(blob, id).run();
       const renamed = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, name: "Renamed" });
       expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
       expect(renamed.body.provider.name).toBe("Renamed");
     });
+  });
+
+  it("tests a key through the vault: sealed first, and never added to a request by this Worker (plan step 8i)", async () => {
+    const key = await seedManagementKey();
+    const secret = "sk-live-key-under-test";
+    const sealed: string[] = [];
+    const calls: VaultCall[] = [];
+    setVaultForTests((vaultEnv) => {
+      const inner = localVault(vaultEnv);
+      return {
+        ...inner,
+        seal: (kind, identity, plaintext) => (sealed.push(kind), inner.seal(kind, identity, plaintext)),
+        call: (input) => (calls.push(input), inner.call(input)),
+      };
+    });
+    const seen: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      seen.push(new Headers(init?.headers));
+      return Response.json({ data: [] });
+    });
+    try {
+      const tested = await request(key, "POST", "/v2/admin/providers/test", { type: "openai", secret });
+      expect(tested.status).toBe(200);
+      expect(tested.body).toEqual({ validated: true });
+    } finally {
+      setVaultForTests(localVault);
+    }
+    expect(sealed).toEqual(["providerKey"]);
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls[0]!.credentials)).not.toContain(secret);
+    expect([...calls[0]!.headers.values()].join(" ")).not.toContain(secret);
+    expect(seen[0]?.get("authorization")).toBe(`Bearer ${secret}`);
   });
 
   it("seals the key and returns only its hint", async () => {

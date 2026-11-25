@@ -24,6 +24,8 @@ import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger } from "./helpers.ts";
+import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
+import { setVaultForTests, type VaultCall } from "../src/vault/client.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-fal-key-4321";
@@ -36,7 +38,7 @@ async function setup(rates: Record<string, unknown> | null = null, baseUrl: stri
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `fal-${id.slice(0, 6)}`;
   // The key is sealed to where it is sent: the base URL, or the provider's own hosts.
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -878,7 +880,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
       const { appId, slug, key, connectionId } = await setup();
       falAnswers({});
       const jobId = String((await submit(appId, slug, key)).json!.request_id);
-      const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], "sk-another-account-key");
+      const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], "sk-another-account-key");
       const update = env.DB.prepare(`UPDATE provider_connection SET ${change} WHERE slug = ?`);
       await (change.includes("?") ? update.bind(blob, slug) : update.bind(slug)).run();
       clearCaches();
@@ -1622,30 +1624,41 @@ describe("a final result's body after the sweep item's time, and the provider's 
     expect(urls.some((url) => url.includes("/queue/"))).toBe(false);
   });
 
-  it("starts no provider request when the item's time runs out while the key is opened", async () => {
+  it("starts no provider request once the item's time is up", async () => {
     const { appId, slug, key } = await setup();
     falAnswers({});
     const submitted = await submit(appId, slug, key);
     const claims = (await readJobId(env.JWT_SECRET, String(submitted.json!.request_id)))!;
     const context = (await jobContext(env, claims))!;
     fetchSpy.mockClear();
-    // Not yet out of time when fetchJob starts; out of time once the key is open.
-    let checks = 0;
     const reason = new Error("the item's time is up");
-    const signal = {
-      get aborted() {
-        return checks > 1;
-      },
-      reason,
-      throwIfAborted() {
-        checks += 1;
-        if (checks > 1) throw reason;
-      },
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
-    } as unknown as AbortSignal;
-    await expect(fetchJob(env, context, "status", claims, null, signal)).rejects.toBe(reason);
+    await expect(fetchJob(env, context, "status", claims, null, AbortSignal.abort(reason))).rejects.toBe(reason);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("polls through the vault: this Worker sends only the sealed key, which the vault adds (plan step 8i)", async () => {
+    const { appId, slug, key } = await setup();
+    falAnswers({});
+    const submitted = await submit(appId, slug, key);
+    const claims = (await readJobId(env.JWT_SECRET, String(submitted.json!.request_id)))!;
+    const context = (await jobContext(env, claims))!;
+    const calls: VaultCall[] = [];
+    setVaultForTests((vaultEnv) => {
+      const inner = localVault(vaultEnv);
+      return { ...inner, call: (input) => (calls.push(input), inner.call(input)) };
+    });
+    try {
+      fetchSpy.mockClear();
+      await fetchJob(env, context, "status", claims, null);
+    } finally {
+      setVaultForTests(localVault);
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.credentials.providerKey?.blob).toBe(context.connection.secretBlob);
+    expect(JSON.stringify(calls[0]!.credentials)).not.toContain(SECRET);
+    expect([...calls[0]!.headers.values()].join(" ")).not.toContain(SECRET);
+    // The vault added the key on its way to fal.
+    expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe(`Key ${SECRET}`);
   });
 
   it("keeps sending other hosts under the base URL for a custom proxy", async () => {

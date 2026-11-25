@@ -1,9 +1,6 @@
 # Secrets of the v2 Worker. Never commit real values.
 # JWT_SECRET signs gateway tokens: at least 32 bytes, for example `openssl rand -base64 32`.
 JWT_SECRET=
-# The local vault key that seals provider keys: 32 bytes, base64, for example
-# `openssl rand -base64 32`. Back it up: without it, stored provider keys cannot be opened.
-SECRET_VAULT_LOCAL_KEK_V1=
 # Signs people's console sessions and derives the keys that seal OAuth codes: at least 32 bytes,
 # for example `openssl rand -base64 32`. Changing it signs everyone out.
 BETTER_AUTH_SECRET=

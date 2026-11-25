@@ -1,23 +1,28 @@
 /**
- * Provider connections as the request path opens them: the opened key is
- * cached, but never for a blob, a destination or an account other than the
- * one it was sealed for.
+ * Provider connections as the request path sends them: the key stays sealed
+ * in this Worker and only the vault opens it (plan step 8i), under the exact
+ * binding it was sealed for: never for a blob, a destination, a type or an
+ * account other than its own.
  *
  * Ported from v1's `provider-store.test.ts`. The stale-key fallback through a
  * vault outage was dropped in v2 (owner, 2026-11-23), so its cases are not
- * here. The cache's own bounds and eviction order are in `ttl-cache.test.ts`.
+ * here. The vault's own cache is covered in `vault-worker.test.ts`.
  */
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import {
-  connectionCredentials,
   invalidateConnection,
   loadConnection,
+  sealedCredentials,
   type ConnectionRecord,
 } from "../src/providers/connections.ts";
+import { sealedUpstreamRequest } from "../src/providers/route.ts";
+import { vault } from "../src/vault/client.ts";
 import { secretVault } from "../src/vault/index.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const SECRET = "sk-provider-connection-secret";
 
@@ -25,7 +30,7 @@ async function seedConnection(baseUrl: string | null = null): Promise<{ id: stri
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `openai-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? "", "", ""], SECRET);
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -46,7 +51,36 @@ async function load(slug: string): Promise<ConnectionRecord> {
 beforeEach(() => clearCaches());
 afterEach(() => vi.restoreAllMocks());
 
-describe("opening a connection's key", () => {
+/** What reached the provider when a call went through the vault: its credential headers. */
+async function connectionCredentials(_env: Env, connection: ConnectionRecord): Promise<{ providerKey: string | null; cloudflareToken: string | null }> {
+  const sent: Headers[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    sent.push(new Headers(init?.headers));
+    return new Response("{}");
+  });
+  const target = sealedUpstreamRequest(connection, BUILT_IN_PROVIDERS.openai!, {
+    hostKey: "main",
+    path: "v1/models",
+    query: "",
+    credentials: sealedCredentials(connection),
+    appId: "app_test",
+    userId: null,
+  });
+  try {
+    await vault(env).call({ url: target.url, method: "GET", headers: new Headers(target.headers), body: null, credentials: target.credentials });
+  } finally {
+    vi.mocked(globalThis.fetch).mockRestore();
+  }
+  const headers = sent[0]!;
+  const authorization = headers.get("authorization");
+  const cloudflare = headers.get("cf-aig-authorization");
+  return {
+    providerKey: authorization === null ? null : authorization.replace(/^Bearer /u, ""),
+    cloudflareToken: cloudflare === null ? null : cloudflare.replace(/^Bearer /u, ""),
+  };
+}
+
+describe("sending with a connection's key, through the vault", () => {
   it("opens the sealed key", async () => {
     const { slug } = await seedConnection();
     await expect(connectionCredentials(env, await load(slug))).resolves.toEqual({ providerKey: SECRET, cloudflareToken: null });
@@ -82,7 +116,7 @@ describe("opening a connection's key", () => {
     const { id, slug } = await seedConnection();
     await connectionCredentials(env, await load(slug));
 
-    const replaced = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], "sk-replaced-key");
+    const replaced = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], "sk-replaced-key");
     await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(replaced, id).run();
     invalidateConnection(ACCOUNT_ID, slug);
 
@@ -92,17 +126,12 @@ describe("opening a connection's key", () => {
   it("refuses a key sealed before its type and destination were bound, without logging it", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { id, slug } = await seedConnection();
-    const legacy = await secretVault(env).encryptSecret(SECRET, { service: "app-ai-gateway", accountId: ACCOUNT_ID, connectionId: id });
+    const legacy = await secretVault(TEST_VAULT_ENV).encryptSecret(SECRET, { service: "app-ai-gateway", accountId: ACCOUNT_ID, connectionId: id });
     await env.DB.prepare("UPDATE provider_connection SET secret_blob = ? WHERE id = ?").bind(legacy, id).run();
 
     await expect(connectionCredentials(env, await load(slug))).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
     const lines = errors.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
-    expect(lines).toContainEqual(expect.objectContaining({
-      message: "provider_secret_unavailable",
-      connection: id,
-      credential: "providerKey",
-      error: expect.objectContaining({ class: "SecretVaultBlobError" }),
-    }));
+    expect(lines).toContainEqual(expect.objectContaining({ message: "provider_secret_unavailable", vault: "credential_unavailable" }));
     expect(errors.mock.calls.flat().join(" ")).not.toContain(SECRET);
   });
 
@@ -114,7 +143,7 @@ describe("opening a connection's key", () => {
   });
 
   async function addCloudflareGateway(id: string): Promise<void> {
-    const token = await sealSecret(env, "cloudflareGatewayToken", [ACCOUNT_ID, id, "cf-account", "cf-gateway"], "cf-token");
+    const token = await sealSecret(TEST_VAULT_ENV, "cloudflareGatewayToken", [ACCOUNT_ID, id, "cf-account", "cf-gateway"], "cf-token");
     await env.DB.prepare("UPDATE provider_connection SET cloudflare_gateway_json = ? WHERE id = ?")
       .bind(JSON.stringify({ account_id: "cf-account", gateway_id: "cf-gateway", token_blob: token }), id)
       .run();
@@ -127,12 +156,11 @@ describe("opening a connection's key", () => {
     await addCloudflareGateway(id);
     invalidateConnection(ACCOUNT_ID, slug);
     const connection = await load(slug);
-    // With a cold cache, opening the key would decrypt. The tests' local vault
-    // decrypts with `crypto.subtle`, so no call proves the refusal comes first.
-    const decrypt = cache === "cold" ? vi.spyOn(crypto.subtle, "decrypt") : null;
+    // The refusal comes before anything reaches the vault: nothing is decrypted.
+    const decrypt = vi.spyOn(crypto.subtle, "decrypt");
 
     await expect(connectionCredentials(env, connection)).rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
-    if (decrypt !== null) expect(decrypt).not.toHaveBeenCalled();
+    expect(decrypt).not.toHaveBeenCalled();
     const lines = errors.mock.calls.flat().map((line) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(lines).toContainEqual(expect.objectContaining({ message: "provider_connection_unusable", connection: id, reason: "base_url_and_cloudflare_gateway" }));
     expect(errors.mock.calls.flat().join(" ")).not.toContain(SECRET);

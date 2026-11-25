@@ -32,7 +32,7 @@ import { presetHandler } from "./proxy/presets.ts";
 import { proxyHandler } from "./proxy/serve.ts";
 import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
-import { vaultStatus } from "./vault/index.ts";
+import { vaultStatus } from "./vault/client.ts";
 import { runHourly } from "./maintenance/nightly.ts";
 import { requestIdOf } from "./core/request-id.ts";
 
@@ -100,12 +100,12 @@ function routePath(name: ClientOperationName): string {
   return honoPath(CLIENT_CATALOG[name].path);
 }
 
-app.get(routePath("getHealth"), (c) =>
+app.get(routePath("getHealth"), async (c) =>
   c.json({
     ok: true,
     service: "app-ai-gateway",
     api: "v2",
-    vault: vaultStatus(c.env),
+    vault: await vaultStatus(c.env),
     email: emailSetup(c.env).state,
   } satisfies ClientOperationResponse<"getHealth">),
 );

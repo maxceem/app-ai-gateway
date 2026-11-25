@@ -15,6 +15,7 @@ import { requestFacts } from "../src/proxy/request-fields.ts";
 import { deepgramListenUsage } from "../src/usage/readers.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-4321";
@@ -23,7 +24,7 @@ async function setup(type: "deepgram" | "fal", routing: Record<string, unknown>,
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

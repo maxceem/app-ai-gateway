@@ -5,7 +5,6 @@
  * Ported from v1's `vault.test.ts` and `vault-secrets.test.ts`. The health
  * check's `vault` field is covered in `worker.test.ts`.
  */
-import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SecretVaultBlobError,
@@ -21,6 +20,7 @@ import {
   SECRET_KINDS,
   type SecretKind,
 } from "../src/vault/secrets.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const TEST_KEK_V1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const TEST_KEK_V2 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
@@ -254,18 +254,18 @@ describe("secret contexts", () => {
 describe("sealed secrets", () => {
   it.each(SECRET_KINDS)("opens a sealed %s under the same identity", async (kind) => {
     const ids = identity(kind) as never;
-    const blob = await sealSecret(env, kind, ids, "secret-value");
-    await expect(openSecret(env, kind, ids, blob)).resolves.toBe("secret-value");
+    const blob = await sealSecret(TEST_VAULT_ENV, kind, ids, "secret-value");
+    await expect(openSecret(TEST_VAULT_ENV, kind, ids, blob)).resolves.toBe("secret-value");
   });
 
   it.each(SECRET_KINDS)("will not open a %s under another identity", async (kind) => {
-    const blob = await sealSecret(env, kind, identity(kind) as never, "secret-value");
-    await expect(openSecret(env, kind, identity(kind, "other") as never, blob)).rejects.toThrow();
+    const blob = await sealSecret(TEST_VAULT_ENV, kind, identity(kind) as never, "secret-value");
+    await expect(openSecret(TEST_VAULT_ENV, kind, identity(kind, "other") as never, blob)).rejects.toThrow();
   });
 
   it("refuses a provider key moved to another account, type or destination", async () => {
     const original = ["account-a", "conn-a", "custom", "https://first.example.test/v1/", "x-my-key", "{key}"] as const;
-    const blob = await sealSecret(env, "providerKey", [...original], "secret-value");
+    const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [...original], "secret-value");
     for (const changed of [
       ["account-b", original[1], original[2], original[3], original[4], original[5]],
       [original[0], original[1], "anthropic", original[3], original[4], original[5]],
@@ -274,7 +274,7 @@ describe("sealed secrets", () => {
       [original[0], original[1], original[2], original[3], "origin", original[5]],
       [original[0], original[1], original[2], original[3], original[4], "Bearer {key}"],
     ] as const) {
-      await expect(openSecret(env, "providerKey", [...changed], blob)).rejects.toThrow();
+      await expect(openSecret(TEST_VAULT_ENV, "providerKey", [...changed], blob)).rejects.toThrow();
     }
   });
 });

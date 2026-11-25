@@ -17,6 +17,7 @@ import { priceSources } from "../src/pricing/billability.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-5678";
@@ -30,7 +31,7 @@ async function setup(
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
   const baseUrl = options.baseUrl ?? null;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? "", "", ""], SECRET);
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, baseUrl ?? "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

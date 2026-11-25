@@ -7,11 +7,16 @@
  * answer, a 404 from a custom base URL, a provider with no free call), proves
  * nothing either way, and must never stop someone from saving a key they know
  * is right. Saving never runs this test, as v1.
+ *
+ * The key to test is sealed first, under a connection id of "", and sent
+ * through the vault like any live call (plan step 8i): this Worker never
+ * adds a key to a request itself.
  */
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
-import type { UpstreamRequest } from "../providers/route.ts";
+import type { SealedUpstreamRequest } from "../providers/route.ts";
+import { vault } from "../vault/client.ts";
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -25,18 +30,20 @@ export type ProbeResult =
  * (`src/providers/route.ts`), so the test reaches the same host with the
  * same credentials. `probe` is null for a provider with no probe.
  */
-export async function probeProviderKey(description: ProviderDescription, probe: UpstreamRequest | null): Promise<ProbeResult> {
+export async function probeProviderKey(env: Env, description: ProviderDescription, probe: SealedUpstreamRequest | null): Promise<ProbeResult> {
   if (description.probe === undefined || probe === null) return { validated: false, reason: "no_probe" };
   const headers = new Headers(description.probe.headers);
   for (const [name, value] of Object.entries(probe.headers)) headers.set(name, value);
   let response: Response;
   try {
-    response = await fetch(probe.url, {
+    // The vault never follows a redirect: it could take the key to another host.
+    response = await vault(env).call({
+      url: probe.url,
       method: "GET",
       headers,
-      // Never follow a redirect: it could take the key to another host.
-      redirect: "manual",
+      body: null,
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      credentials: probe.credentials,
     });
   } catch (error) {
     log("warn", "provider_probe_unreachable", { providerType: description.type, error: errorFacts(error) });

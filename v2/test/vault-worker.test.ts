@@ -4,16 +4,17 @@
  * provider descriptions, its contexts match the gateway's, and an answer
  * never carries the key header back.
  */
-import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowedUrl, callProvider, holds, keyHeaderAllowed, readCredentials, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
 import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
-import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext } from "../vault/src/seal.js";
+import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext, vaultStatus } from "../vault/src/seal.js";
+import { createKmsClient } from "@maxceem/cf-kms/client";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { openSecret, sealSecret, secretContext, SECRET_KINDS, secretIdentityLength } from "../src/vault/secrets.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
-const vaultEnv = env as unknown as Record<string, unknown>;
+const vaultEnv = TEST_VAULT_ENV as Record<string, unknown>;
 const KEY = "sk-test-vault-key-1234";
 
 afterEach(() => vi.restoreAllMocks());
@@ -138,8 +139,8 @@ describe("the vault's tables", () => {
       const identity = Array.from({ length: secretIdentityLength(kind) }, (_, index) => `id-${index}`);
       expect(vaultContext(kind, identity)).toEqual(secretContext(kind, identity as never));
       // A blob either side seals opens on the other.
-      expect(await openSecret(env, kind, identity as never, await seal(vaultEnv, kind, identity, "s1"))).toBe("s1");
-      expect(await open(vaultEnv, kind, identity, await sealSecret(env, kind, identity as never, "s2"))).toBe("s2");
+      expect(await openSecret(TEST_VAULT_ENV, kind, identity as never, await seal(vaultEnv, kind, identity, "s1"))).toBe("s1");
+      expect(await open(vaultEnv, kind, identity, await sealSecret(TEST_VAULT_ENV, kind, identity as never, "s2"))).toBe("s2");
     }
   });
 
@@ -262,5 +263,101 @@ describe("a call", () => {
     });
     expect(malformed.headers.get(VAULT_ERROR_HEADER)).toBe("bad_request");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A stand-in cf-kms deployment: it issues data keys, wraps each under an id
+ * with a dot in it (as cf-kms's own wrapped keys have), and unwraps one only
+ * for the context it was issued for and the right token.
+ */
+function fakeKms(token = "kms-token") {
+  const issued = new Map<string, { key: string; context: string }>();
+  const canonical = (context: Record<string, string>) => JSON.stringify(Object.fromEntries(Object.entries(context).sort(([a], [b]) => (a < b ? -1 : 1))));
+  const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+  const calls: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    calls.push(url.pathname);
+    if (new Headers(init?.headers).get("authorization") !== `Bearer ${token}`) return Response.json({ error: { code: "unauthorized" } }, { status: 401 });
+    const body = JSON.parse(String(init?.body)) as { encryptionContext: Record<string, string>; wrappedKey?: string };
+    if (url.pathname === "/v1/generate-data-key") {
+      const key = b64url(crypto.getRandomValues(new Uint8Array(32)));
+      const wrappedKey = `v1.${crypto.randomUUID()}`;
+      issued.set(wrappedKey, { key, context: canonical(body.encryptionContext) });
+      return Response.json({ plaintextKey: key, wrappedKey, kekVersion: 1 });
+    }
+    const found = issued.get(body.wrappedKey ?? "");
+    if (found === undefined || found.context !== canonical(body.encryptionContext)) return Response.json({ error: { code: "decrypt_failed" } }, { status: 400 });
+    return Response.json({ plaintextKey: found.key, kekVersion: 1 });
+  });
+  return { calls };
+}
+
+const KMS_ENV: Record<string, unknown> = { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "https://kms.example.test", SECRET_VAULT_KMS_TOKEN: "kms-token" };
+const IDS = ["acct_kms", "conn_kms", "openai", "", "", ""];
+
+describe("kms mode", () => {
+  it("seals and opens through cf-kms, only under the identity it is sealed to", async () => {
+    fakeKms();
+    const env = { ...KMS_ENV };
+    const blob = await seal(env, "providerKey", IDS, KEY);
+    expect(blob).toMatch(/^cfkms-env1\./u);
+    expect(blob).not.toContain(KEY);
+    expect(await open(env, "providerKey", IDS, blob)).toBe(KEY);
+    await expect(open(env, "providerKey", ["acct_kms", "conn_other", "openai", "", "", ""], blob)).rejects.toThrow(/does not open/u);
+  });
+
+  it("reads and writes the same envelope as the cf-kms package the migration script uses", async () => {
+    fakeKms();
+    const env = { ...KMS_ENV };
+    const context = vaultContext("providerKey", IDS);
+    const packaged = createKmsClient({ url: "https://kms.example.test", token: "kms-token" });
+    expect(await open(env, "providerKey", IDS, await packaged.encryptSecret(KEY, context))).toBe(KEY);
+    expect(await packaged.decryptSecret(await seal(env, "providerKey", IDS, KEY), context)).toBe(KEY);
+  });
+
+  it("keeps the two modes' blobs apart", async () => {
+    fakeKms();
+    const local = await seal(vaultEnv, "providerKey", IDS, KEY);
+    const kms = await seal({ ...KMS_ENV }, "providerKey", IDS, KEY);
+    await expect(open({ ...KMS_ENV }, "providerKey", IDS, local)).rejects.toThrow(/kms mode/u);
+    await expect(open(vaultEnv, "providerKey", IDS, kms)).rejects.toThrow(/local mode/u);
+  });
+
+  it("sends a call with a key it opens through cf-kms", async () => {
+    const kms = fakeKms();
+    // Sealed by another isolate's client, so this one has to ask cf-kms to open it.
+    const blob = await seal({ ...KMS_ENV }, "providerKey", IDS, KEY);
+    const env = { ...KMS_ENV };
+    const sent: Headers[] = [];
+    const fetchKms = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      if (String(input).startsWith("https://kms.example.test/")) return fetchKms(input, init);
+      sent.push(new Headers(init?.headers));
+      return new Response("ok");
+    });
+    const answer = await callProvider(env, {
+      url: "https://api.openai.com/v1/models",
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      credentials: { providerKey: { blob, identity: IDS, header: "authorization", format: "Bearer {key}" } },
+    });
+    expect(answer.status).toBe(200);
+    expect(sent[0]?.get("authorization")).toBe(`Bearer ${KEY}`);
+    expect(kms.calls).toContain("/v1/decrypt");
+  });
+
+  it.each([
+    ["complete local settings", vaultEnv, "ok"],
+    ["complete kms settings", KMS_ENV, "ok"],
+    ["no mode", {}, "misconfigured"],
+    ["a local mode with no key", { SECRET_VAULT_MODE: "local" }, "misconfigured"],
+    ["kms over plain http", { ...KMS_ENV, SECRET_VAULT_KMS_URL: "http://kms.example.test" }, "misconfigured"],
+    ["kms without a token", { SECRET_VAULT_MODE: "kms", SECRET_VAULT_KMS_URL: "https://kms.example.test" }, "misconfigured"],
+    ["kms with a local key left over", { ...KMS_ENV, SECRET_VAULT_LOCAL_KEK_V1: "x" }, "misconfigured"],
+  ])("reports %s as %s", (_name, settings, expected) => {
+    expect(vaultStatus({ ...settings })).toBe(expected);
   });
 });
