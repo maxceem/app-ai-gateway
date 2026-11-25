@@ -50,7 +50,7 @@ import type { ApiStyle, OperationDescription, ProviderDescription } from "../pro
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
 import { keyAuth } from "../providers/route.ts";
 import type { CallAttempt } from "./call-charge.ts";
-import { judgedAlternatives } from "./alternatives.ts";
+import { judgedAlternatives, pinnedModels } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { removeOutbound, removeOutboundForm, requestFacts } from "./request-fields.ts";
@@ -195,6 +195,8 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
       if (location.in === "body") body[location.field] = model;
       // The path names the model; the body names none, as v1.
       else delete body.model;
+      // A field that brings its own models (an Agent API `effort`) is sent with the preset's model as its only one.
+      pinnedModels(description, operation, body, model);
       // Webhook fields, and fetch fields the operation does not need, never reach the provider.
       removeOutbound(operation, body, new URLSearchParams());
       return body;
@@ -305,7 +307,7 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(502, "provider_unavailable", `The preset's operation ${preset.operation} is not served`);
       }
       // The body is read as the first target's own operation reads it, never as the name's stand-in.
-      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation)) ?? declared;
+      const resolved = (firstDescription === null ? null : presetOperation(firstDescription, style, preset.operation, preset.model)) ?? declared;
       const body = await presetBody(caller, c.req.header("content-type") ?? "", preset, style, resolved);
       const streaming = style === "gemini-generate" && new URL(c.req.url).searchParams.get("alt") === "sse";
       const requestId = timeOrderedId(startedAt);

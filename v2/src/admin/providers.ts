@@ -486,7 +486,7 @@ export function passthroughJson(
   for (const { where, key, listed, compiled, isNew } of checked) {
     // A path new or changed in this save is judged for its style: one already listed keeps working.
     if (isNew && subject.kind === "custom" && listed.style !== undefined && isCustomStyle(listed.style)) {
-      const problem = customStyleProblem(listed.style, subject.baseUrl);
+      const problem = customStyleProblem(listed.style, subject.baseUrl, listed.path);
       if (problem !== null) throw new GatewayError(400, "invalid_request", `${where}.style: ${problem}`);
       // On a known provider's host, a path its declared operation serves speaks that operation's style:
       // another style's reader would miss what its answers report.

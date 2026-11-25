@@ -10,7 +10,7 @@
  * with no usage, and the result and its cost arrive only on a later poll the
  * gateway does not serve.
  */
-import type { BackgroundOption, OperationDescription, OutputCap, ProviderCostReport, UsageHeader } from "./operation.ts";
+import type { BackgroundOption, CacheWriteKeptFor, OperationDescription, OutputCap, ProviderCostReport, UsageHeader } from "./operation.ts";
 import { defineOperation } from "./operation.ts";
 
 /**
@@ -32,6 +32,8 @@ interface TextOptions {
   readonly costOnly?: true;
   /** Token counts its answers report in headers (`usageHeaders`). */
   readonly usageHeaders?: readonly UsageHeader[];
+  /** The request field that says how long its cache writes are kept (`cacheWriteKeptFor`). */
+  readonly cacheWriteKeptFor?: CacheWriteKeptFor;
   /** Its request may also be an upload (`uploads`), as an image edit is. */
   readonly uploads?: true;
 }
@@ -43,6 +45,7 @@ function meter(style: OperationDescription["style"] & string, options: TextOptio
     ...(options.providerCost !== undefined ? { providerCost: options.providerCost } : {}),
     ...(options.costOnly !== undefined ? { costOnly: options.costOnly } : {}),
     ...(options.usageHeaders !== undefined ? { usageHeaders: options.usageHeaders } : {}),
+    ...(options.cacheWriteKeptFor !== undefined ? { cacheWriteKeptFor: options.cacheWriteKeptFor } : {}),
   } as const;
 }
 

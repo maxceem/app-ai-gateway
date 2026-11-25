@@ -520,7 +520,7 @@ export function resolvePresetTarget(
     readonly select?: { readonly params: Readonly<Record<string, unknown>>; readonly baseUrl: string | null } | undefined;
   },
 ): PresetTargetResolution {
-  const chosen = presetOperation(description, style, target.operation);
+  const chosen = presetOperation(description, style, target.operation, target.model);
   if (chosen === null) return { kind: "refused", reason: "no_operation" };
   const operation = (options.streaming && streamingSibling(description, chosen)) || chosen;
   const model = target.model;
@@ -790,6 +790,15 @@ export function rewriteTargetBillable(
  * connection's own rate, else ours. Its stored measures decide the unit, so
  * any price counts here; null when there is none yet.
  */
+/**
+ * The provider's own list price for a model, at our list's rates, never a
+ * customer's: what a provider's rounded cost report is judged against
+ * (`../proxy/call-charge.ts`), since the provider rounds its own figure.
+ */
+export function providerListPrice(providerType: string, model: string): ModelPrice | null {
+  return listPrice(providerType, model);
+}
+
 export function billingForCharge(connection: PriceSources, model: string): ResolvedPrice | null {
   return resolve(connection, model);
 }

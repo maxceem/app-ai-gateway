@@ -35,8 +35,11 @@ import type { GatewayIdentity } from "../core/types.ts";
 import type { ChargeStatus, Measured, PriceSource } from "../ledger/labels.ts";
 import { utcDay, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { fromDollars, MoneyError, type NanoDollars, type RateNanoPerMillion } from "../money.ts";
+import { providerListPrice } from "../pricing/billability.ts";
 import type { ModelPrice, PriceSourceKind } from "../pricing/prices.ts";
 import { chargedMeasure, priceInServedMode } from "../pricing/tokens.ts";
+import { declaredOperation } from "../providers/presets.ts";
+import { costReportStep } from "../usage/cost-reports.ts";
 import { usageMeasures, type EstimateReason } from "../usage/measures.ts";
 import { hasMeasure, withoutReport, type UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, type ServiceMode, type ServiceModeValue } from "../usage/service-modes.ts";
@@ -92,6 +95,8 @@ export interface CallAttempt {
   readonly perChannel?: true;
   /** The provider may bill more than the request's measure (`inDoubtWhen`, `./meter.ts`). */
   readonly measureInDoubt?: true;
+  /** The cache-write variant the answer's one cache-write count bills as (`cacheWriteKeptFor`). */
+  readonly cacheWriteVariant?: "1h";
 }
 
 export interface AttemptOutcome {
@@ -120,6 +125,66 @@ function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceM
   }
 }
 
+/**
+ * The usage with its cache writes billed as the variant the request asked
+ * for (`cacheWriteKeptFor`), where the answer reports them as one count and
+ * no split of its own.
+ */
+function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefined): UsageObservation | null {
+  if (usage === null || variant === undefined || usage.cacheWriteTokens <= 0) return usage;
+  const variants = usage.tokenVariants as Partial<Record<string, Partial<Record<string, number>>>> | undefined;
+  if (variants?.cache_write !== undefined && Object.keys(variants.cache_write).length > 0) return usage;
+  return { ...usage, tokenVariants: { ...usage.tokenVariants, cache_write: { [variant]: usage.cacheWriteTokens } } as UsageObservation["tokenVariants"] };
+}
+
+/**
+ * Rounding matters only on small figures: under this many steps of the
+ * provider's rounding, one step is a large share of the call. A figure above
+ * it stands as exact.
+ */
+const ROUNDING_MATTERS_BELOW_STEPS = 100;
+
+/**
+ * Whether a provider's figure is rounded (`costReportStep`) below what the
+ * call cost, and what to charge then; null when the figure stands, exact.
+ *
+ * Only a small figure, under `ROUNDING_MATTERS_BELOW_STEPS` steps, is judged.
+ * Perplexity rounds each part of its cost, not only the total, so a small
+ * call can read $0 though its parts cost more than one step. Such a figure
+ * below the provider's own list rate at the tier that served is taken as
+ * rounded, and that list rate is charged instead, as an estimate, so never
+ * below the standard rate nor below the figure (`replace`). Never the
+ * customer's own rate: the figure it stands in for is the provider's, which a
+ * customer's rate never changes elsewhere. With no list rate, a figure under
+ * one step says nothing exact (`unknown`): it is charged as an answer that
+ * reported no cost.
+ */
+function roundedFigure(
+  attempt: CallAttempt,
+  reported: number,
+  usage: UsageObservation | null,
+  served: ServiceMode,
+): { readonly kind: "replace"; readonly pricing: NonNullable<ReturnType<typeof priceInServedMode>> } | { readonly kind: "unknown" } | null {
+  if (usage === null) return null;
+  const meter = declaredOperation(attempt.operation)?.meter;
+  const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
+  if (step === null || reported >= step * ROUNDING_MATTERS_BELOW_STEPS) return null;
+  const listed = providerListPrice(attempt.providerType, attempt.model);
+  try {
+    const figure = fromDollars(reported);
+    if (listed === null) return figure < fromDollars(step) && hasMeasure(usage) ? { kind: "unknown" } : null;
+    const listedCost = pricedOrNull(listed, usage, served, false)?.cost ?? null;
+    if (listedCost === null || listedCost <= figure) return null;
+    // At the list rate, as an estimate: the dearer of the served tier's price and the standard one.
+    const pricing = pricedOrNull(listed, usage, served, true);
+    if (pricing === null) return null;
+    return { kind: "replace", pricing: pricing.cost < figure ? { ...pricing, cost: figure } : pricing };
+  } catch (error) {
+    if (error instanceof MoneyError) return null;
+    throw error;
+  }
+}
+
 export function chargeId(requestId: string, seq: number): string {
   return `${requestId}:${seq}`;
 }
@@ -133,14 +198,19 @@ interface Costed {
 
 export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = Date.now()): LedgerEntry {
   const id = chargeId(attempt.requestId, attempt.seq);
-  let { usage } = outcome;
+  let usage = keptCacheWrites(outcome.usage, attempt.cacheWriteVariant);
   const servedMode = outcome.servedMode ?? attempt.requestedMode;
   const succeeded = outcome.status === "ok" || outcome.status === "client_aborted";
   // The provider said yes (2xx), so an answer cut short may have been billed.
   const answered = outcome.httpStatus !== null && outcome.httpStatus >= 200 && outcome.httpStatus < 300;
   const facts = { app: attempt.appId, charge: id, providerType: attempt.providerType, providerSlug: attempt.providerSlug, model: attempt.model };
 
-  const reported = outcome.providerCostUsd ?? null;
+  const figure = outcome.providerCostUsd ?? null;
+  const rounded = figure === null ? null : roundedFigure(attempt, figure, usage, servedMode);
+  // A rounded figure with no price to charge in its place says nothing exact
+  // (a $0 may be any amount under one step): the answer is charged as one
+  // that reported no cost.
+  const reported = rounded?.kind === "unknown" ? null : figure;
   // Every reason a charge is an estimate, each judged and logged on its own,
   // never skipped because an earlier one already applies:
   // - a mode value the gateway does not know, in the request or the response;
@@ -148,7 +218,9 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   //   or, where the provider may change the model, did not name the billed one;
   // - an option billed on top at a price the gateway does not have;
   // - a stream whose final event was cut, its usage read from an earlier event;
-  // - a measure the reader worked out, not one the answer reported.
+  // - a measure the reader worked out, not one the answer reported;
+  // - an answer that should have carried the provider's own cost and did not.
+  const costNotReported = attempt.reportsCost && reported === null && usage !== null;
   const judged: [EstimateReason, boolean][] = [
     ["service_mode", attempt.requestedModeUnknown !== undefined || outcome.servedModeUnknown !== undefined],
     ["served_model", attempt.servedModelUnknown === true],
@@ -156,11 +228,14 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
     ["final_event_unread", usage?.finalEventUnread === true],
     ["measure_worked_out", usage?.measureWorkedOut === true],
     ["served_model", usage !== null && servedModelInDoubt(attempt, usage, facts)],
+    ["cost_not_reported", costNotReported],
   ];
   const reasons = [...new Set(judged.filter(([, applies]) => applies).map(([reason]) => reason))];
   const modeUnknown = reasons.length > 0;
   if (usage?.finalEventUnread === true) log("warn", "usage_final_event_unread", facts);
   if (usage?.measureWorkedOut === true) log("warn", "usage_measure_worked_out", facts);
+  // Priced at our rates instead, as an estimate, when a price exists; logged as unresolved below when none does.
+  if (costNotReported && attempt.price !== null) log("warn", "provider_cost_not_reported", facts);
   // A key the answer was to name and did not bills at its dearest value, as an estimate (`keyCandidates`).
   const unanswered = (attempt.answeredKeys ?? []).filter(
     (key) => usage !== null && usage.priceKeys?.[key] === undefined && usage.priceKeyChoices?.[key] === undefined,
@@ -184,7 +259,16 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  if (reported !== null) {
+  if (reported !== null && rounded?.kind === "replace") {
+    // The provider's figure is rounded coarser than the call costs (a small
+    // Perplexity call reads $0): its usage at the provider's list rate is
+    // charged instead, as an estimate, never below the standard rate.
+    priced = rounded.pricing;
+    costed = { costNano: rounded.pricing.cost, priceSource: "list_rate", estimate: true, rates: rounded.pricing.rates };
+    measured = outcome.cut ? "partial" : "complete";
+    reasons.push("cost_rounded");
+    log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });
+  } else if (reported !== null) {
     // What the provider charged wins: it is the whole figure, discounts included.
     costed = { costNano: fromDollars(reported), priceSource: "provider_usd", estimate: false, rates: null };
     measured = outcome.cut ? "partial" : "complete";

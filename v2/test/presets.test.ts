@@ -58,7 +58,7 @@ async function connection(type: string, status: "active" | "disabled" = "active"
 
 /** Removes the account's connections that report their own cost, which can bill any rewrite target. */
 async function withoutCostReporters(): Promise<void> {
-  await env.DB.prepare("DELETE FROM provider_connection WHERE account_id = ? AND type IN ('openrouter', 'xai')").bind(ACCOUNT_ID).run();
+  await env.DB.prepare("DELETE FROM provider_connection WHERE account_id = ? AND type IN ('openrouter', 'xai', 'perplexity')").bind(ACCOUNT_ID).run();
 }
 
 /** An app with this config (authentication added), and an app key for it. */
@@ -228,11 +228,31 @@ describe("model rewrites on the proxy", () => {
 describe("presets", () => {
   it("defaults a target with no operation to the provider's own path, before the paths v1 served by their shape", () => {
     // Groq documents only openai/v1/...: v1/audio/transcriptions is a 404 there.
-    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", undefined)?.name).toBe("groq.transcription.openai");
-    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-chat", undefined)?.name).toBe("groq.chat");
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", undefined, "whisper-large-v3")?.name).toBe("groq.transcription.openai");
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-chat", undefined, "llama-3.3-70b-versatile")?.name).toBe("groq.chat");
     // A provider's own operation always comes first, and a named one is used as named.
-    expect(presetOperation(BUILT_IN_PROVIDERS.openai!, "openai-transcription", undefined)?.name).toBe("openai.transcription");
-    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", "groq.transcription")?.name).toBe("groq.transcription");
+    expect(presetOperation(BUILT_IN_PROVIDERS.openai!, "openai-transcription", undefined, "whisper-1")?.name).toBe("openai.transcription");
+    expect(presetOperation(BUILT_IN_PROVIDERS.groq!, "openai-transcription", "groq.transcription", "whisper-large-v3")?.name).toBe("groq.transcription");
+  });
+
+  it("defaults a Perplexity target to the API that serves its model's id: Sonar for its own names, the Orchestrator or Agent API for maker/model ids", () => {
+    const perplexity = BUILT_IN_PROVIDERS.perplexity!;
+    expect(presetOperation(perplexity, "openai-chat", undefined, "sonar-pro")?.name).toBe("perplexity.chat");
+    expect(presetOperation(perplexity, "openai-chat", undefined, "openai/gpt-6.2-sol")?.name).toBe("perplexity.orchestrator.chat");
+    expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-6.2-sol")?.name).toBe("perplexity.agent");
+    expect(presetOperation(perplexity, "anthropic-messages", undefined, "perplexity/glm-5.3")?.name).toBe("perplexity.orchestrator.messages");
+    // A named operation is used as named: saving judges its model, serving never starts refusing it.
+    expect(presetOperation(perplexity, "openai-chat", "perplexity.chat", "openai/gpt-6.2-sol")?.name).toBe("perplexity.chat");
+    // An Agent-only model goes to the Agent API for Responses. For Chat Completions no Perplexity API serves
+    // it: serving sends it where it always went, and saving refuses it (below).
+    expect(presetOperation(perplexity, "openai-responses", undefined, "perplexity/sonar")?.name).toBe("perplexity.agent");
+    expect(presetOperation(perplexity, "openai-chat", undefined, "perplexity/sonar")?.name).toBe("perplexity.chat");
+    // An Orchestrator-only model goes to the Orchestrator for Responses, not to the Agent API.
+    expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-5.4-mini")?.name).toBe("perplexity.orchestrator.responses");
+    // One the Agent API's own pages show it serving, though its model list does not, counts as served there.
+    expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-6.1-terra")?.name).toBe("perplexity.agent");
+    // Every other provider's operations serve any id.
+    expect(presetOperation(BUILT_IN_PROVIDERS.openrouter!, "openai-chat", undefined, "openai/gpt-4o")?.name).toBe("openrouter.chat");
   });
 
   it("bills a target with the same request facts as a direct call: options billed on top, answered keys, switch keys", () => {
@@ -331,6 +351,56 @@ describe("presets", () => {
     expect(rows[1]!.cost_nano).toBeGreaterThan(0);
     expect(rows[0]!.owner_id).toBe(rows[1]!.owner_id);
     expect(rows.map((row) => row.preset)).toEqual(["chat", "chat"]);
+  });
+
+  it("sends a Perplexity fallback with a maker/model id to the Orchestrator API, not to Sonar's chat/completions", async () => {
+    const first = await connection("openai");
+    const second = await connection("perplexity");
+    const { appId, key } = await appWith({
+      presets: {
+        chat: { provider: first, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: second, model: "openai/gpt-6.2-sol" }] },
+      },
+    });
+    fetchSpy
+      .mockImplementationOnce(async () => Response.json({ error: { code: "server_overloaded", message: "busy" } }, { status: 503 }))
+      .mockImplementationOnce(async () => CHAT_OK());
+    const { response } = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [] });
+    expect(response.status).toBe(200);
+    expect(sent(1).url).toBe("https://api.perplexity.ai/orchestrator/v1/chat/completions");
+    expect(sent(1).body.model).toBe("openai/gpt-6.2-sol");
+    const rows = await charges(appId);
+    expect(rows[1]).toMatchObject({ seq: 2, status: "ok", model: "openai/gpt-6.2-sol", operation: "perplexity.orchestrator.chat" });
+    expect(rows[1]!.cost_nano).toBeGreaterThan(0);
+  });
+
+  it("refuses a Perplexity Agent preset call whose models list names another model than the preset's", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { agent: { provider: slug, operation: "perplexity.agent", model: "openai/gpt-6-luna" } } });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    // Perplexity reads models before model, so it would serve the dearer one.
+    const other = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi", models: ["anthropic/claude-fable-5-2"] });
+    expect(other.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const same = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi", models: ["openai/gpt-6-luna"] });
+    expect(same.response.status).toBe(200);
+  });
+
+  it("sends a Perplexity Agent preset whose fixed parameters name an effort with its own model as the only one", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { agent: { provider: slug, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { effort: "low" } } } });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.00002 } } }));
+    const answer = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi" });
+    expect(answer.response.status).toBe(200);
+    expect(sent(0).body).toMatchObject({ effort: "low", model: "openai/gpt-6-luna", models: ["openai/gpt-6-luna"] });
+  });
+
+  it("refuses a Perplexity Orchestrator preset call whose routing block names another model than the preset's", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { chat: { provider: slug, operation: "perplexity.orchestrator.chat", model: "perplexity/glm-5.3-flash" } } });
+    const routing = { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] };
+    const answer = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [], routing });
+    expect(answer.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("falls back when the provider cannot be reached, and on a 429", async () => {
@@ -949,8 +1019,11 @@ describe("saving rewrites and presets", () => {
   it("checks every target of a preset", async () => {
     const openai = await connection("openai");
     const anthropic = await connection("anthropic");
+    const perplexity = await connection("perplexity");
     const ok = { provider: openai, operation: "openai.chat", model: "gpt-4o-mini" };
     expect((await save({ presets: { a: { ...ok, fallback: [{ provider: anthropic, model: "claude-haiku-4-5" }] } } })).status).toBe(200);
+    expect((await save({ presets: { a: { ...ok, fallback: [{ provider: perplexity, model: "openai/gpt-6.2-sol" }] } } })).status).toBe(200);
+    expect((await save({ presets: { a: { provider: perplexity, operation: "perplexity.agent", model: "perplexity/sonar" } } })).status).toBe(200);
     const cases: [Record<string, unknown>, string][] = [
       [{ ...ok, provider: "missing-zz" }, "no provider connection"],
       [{ ...ok, operation: "openai.realtime" }, "not an operation a preset can use"],
@@ -961,6 +1034,19 @@ describe("saving rewrites and presets", () => {
       [{ provider: openai, operation: "openai.embeddings", model: "text-embedding-3-small", max_output_tokens: 5 }, "has no output to cap"],
       [{ ...ok, max_output_tokens: 100, params: { max_completion_tokens: 200 } }, "exceeds the configured max_output_tokens"],
       [{ provider: openai, operation: "openai.responses", model: "gpt-4o-mini", params: { background: true } }, "Background"],
+      // Sonar's chat/completions serves only Perplexity's own names; the Orchestrator API only maker/model ids.
+      [{ provider: perplexity, operation: "perplexity.chat", model: "openai/gpt-6.2-sol" }, "serves only the provider's own model names"],
+      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "sonar-pro" }, "serves only maker/model ids"],
+      [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.chat", model: "openai/gpt-6.2-sol" }] }, "serves only the provider's own model names"],
+      // perplexity/sonar is on the Agent API only: no Chat Completions operation serves it.
+      [{ ...ok, fallback: [{ provider: perplexity, model: "perplexity/sonar" }] }, "has no openai-chat operation a preset can use that serves perplexity/sonar"],
+      [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/sonar" }] }, "does not serve perplexity/sonar"],
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
+      // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
+      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
+      // Fixed parameters naming another model than the preset's would refuse every call: refused by the save-time rule.
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { models: ["openai/gpt-6.2-sol"] } }, "a preset fixes its model to openai/gpt-6-luna"],
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { Models: ["openai/gpt-6.2-sol"] } }, "Models must be spelled models"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });

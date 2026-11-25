@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import worker from "../src/index.ts";
 import { fromDollars } from "../src/money.ts";
 import { listPrice } from "../src/pricing/prices.ts";
+import BUILT_IN_PRICES from "../src/pricing/models.json";
 import { priceTokens } from "../src/pricing/tokens.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { ProviderMatcher } from "../src/providers/matcher.ts";
@@ -256,6 +257,64 @@ describe("text APIs through the proxy", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
+  it("charges an xAI answer that leaves out its cost at our price, marked an estimate: every provider that reports its cost", async () => {
+    const { appId, slug, key } = await setup("xai", { operations: ["xai.chat"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, key, { model: "grok-4.5" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1 });
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_not_reported");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_not_reported"));
+  });
+
+  it("refuses a model key in another letter case, which a provider may read as the model while the gateway judges another", async () => {
+    const openaiApp = await setup("openai", { operations: ["openai.chat"] });
+    const agentApp = await setup("perplexity", { operations: ["perplexity.agent", "perplexity.orchestrator.chat"] });
+    // Were one sent, the provider would answer.
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], output: [], usage: { prompt_tokens: 1, completion_tokens: 1, input_tokens: 1, output_tokens: 1 } }));
+    const cases: [typeof openaiApp, string, Record<string, unknown>, string][] = [
+      [openaiApp, "v1/chat/completions", { model: "gpt-4o-mini", Model: "gpt-4o" }, "Model must be spelled model"],
+      [agentApp, "v1/agent", { model: "openai/gpt-6-luna", MODELS: ["anthropic/claude-fable-5-2"], input: "hi" }, "MODELS must be spelled models"],
+      [agentApp, "orchestrator/v1/chat/completions", { model: "perplexity/glm-5.3-flash", Routing: { default_model: "anthropic/claude-fable-5-2" }, messages: [] }, "Routing must be spelled routing"],
+      [
+        agentApp,
+        "orchestrator/v1/chat/completions",
+        { model: "perplexity/auto", routing: { default_model: "perplexity/glm-5.3-flash", Routes: [{ name: "a", description: "x", model: "anthropic/claude-fable-5-2" }] }, messages: [] },
+        "Routes must be spelled routes",
+      ],
+    ];
+    for (const [{ appId, slug, key }, path, body, message] of cases) {
+      const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/${path}`, key, body);
+      expect(response.status, message).toBe(400);
+      expect(((await response.json()) as { error: { message: string } }).error.message).toContain(message);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses an Agent API effort or profile in another letter case, which would skip the model the gateway adds", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    for (const field of ["Effort", "PROFILE", "Preset"]) {
+      const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", [field]: "high", input: "hi" });
+      expect(response.status, field).toBe(400);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a model key a case-blind decoder folds to the same, such as the long s in modelſ", async () => {
+    // The Workers runtime's NFKC maps ſ (U+017F) to s and the Kelvin sign to k, as Go's case folding does.
+    expect("modelſ".normalize("NFKC")).toBe("models");
+    expect("\u212Aey".normalize("NFKC").toLowerCase()).toBe("key");
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", "modelſ": ["anthropic/claude-fable-5-2"], input: "hi" });
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("bills xAI's chat at the ticks it reports, and its Messages API at our price", async () => {
     const { appId, slug, key } = await setup("xai", { operations: ["xai.chat", "xai.messages"] });
     fetchSpy.mockResolvedValueOnce(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost_in_usd_ticks: 25_000_000 } }));
@@ -263,6 +322,320 @@ describe("text APIs through the proxy", () => {
     await chat.response.text();
     await waitOnExecutionContext(chat.ctx);
     expect(await chargesOf(appId)).toMatchObject([{ operation: "xai.chat", price_source: "provider_usd", cost_nano: fromDollars(0.0025) }]);
+  });
+});
+
+describe("Perplexity", () => {
+  it("bills its Agent API at the cost it reports, its web search included, streamed or not", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent", "perplexity.responses"] });
+    const usage = { input_tokens: 100, output_tokens: 20, total_tokens: 120, cost: { currency: "USD", input_cost: 0.0002, output_cost: 0.0002, tool_calls_cost: 0.005, total_cost: 0.0054 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "resp_1", object: "response", model: "openai/gpt-6.2-sol", output: [], usage }));
+    const plain = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi", tools: [{ type: "web_search" }] });
+    await plain.response.text();
+    await waitOnExecutionContext(plain.ctx);
+    const events = sse([
+      { type: "response.created", response: { id: "resp_2", usage: null } },
+      { type: "response.completed", response: { id: "resp_2", model: "openai/gpt-6.2-sol", usage } },
+    ]);
+    fetchSpy.mockResolvedValueOnce(new Response(events, { headers: { "content-type": "text/event-stream" } }));
+    const streamed = await post(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, key, { model: "openai/gpt-6.2-sol", input: "hi", stream: true });
+    await streamed.response.text();
+    await waitOnExecutionContext(streamed.ctx);
+    expect(sent(0).url).toBe("https://api.perplexity.ai/v1/agent");
+    // Our token price alone would leave the search out.
+    expect(listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 20 })).toBeLessThan(fromDollars(0.0054));
+    expect(await chargesOf(appId)).toMatchObject([
+      { operation: "perplexity.agent", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
+      { operation: "perplexity.responses", price_source: "provider_usd", cost_nano: fromDollars(0.0054), input_tokens: 100 },
+    ]);
+  });
+
+  it("bills Sonar at the cost it reports, its request fee included", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.chat"] });
+    // As a real answer gave it (T30): 11 tokens in, 7 out, and a $0.0025 request fee.
+    const cost = { input_tokens_cost: 0.00158, output_tokens_cost: 0.00003, request_cost: 0.0025, total_cost: 0.00411 };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "sonar", choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, cost } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, { model: "sonar", messages: [] });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ operation: "perplexity.chat", price_source: "provider_usd", cost_nano: fromDollars(0.00411) }]);
+  });
+
+  it("never charges Perplexity's figure, rounded to five decimals, below our price for the call's usage", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // As a real answer gave it (T30): 33 tokens in and 5 out of openai/gpt-6-luna read $0.
+    const usage = { input_tokens: 33, output_tokens: 5, total_tokens: 38, cost: { currency: "USD", input_cost: 0, output_cost: 0, total_cost: 0 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6-luna", output: [], usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1 });
+    expect(charge!.cost_nano).toBe(listedCost("perplexity", "openai/gpt-6-luna", { inputTokens: 33, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 5 }));
+    expect(charge!.cost_nano).toBeGreaterThan(0);
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_rounded");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
+  });
+
+  it("charges the list rate for a small call Perplexity reads as $0, though its rounded parts lose more than one step", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 90 in and 19 out of gpt-6-luna cost $0.0000185 at the list, but each part rounds to $0, and so does the total.
+    const usage = { input_tokens: 90, output_tokens: 19, cost: { currency: "USD", input_cost: 0, output_cost: 0, total_cost: 0 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6-luna", output: [], usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const listed = listedCost("perplexity", "openai/gpt-6-luna", { inputTokens: 90, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 19 });
+    expect(listed).toBeGreaterThan(fromDollars(0.00001));
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "list_rate", cost_nano: listed, price_is_estimate: 1 }]);
+  });
+
+  it("takes a large Perplexity figure as exact, even one rounding step below the list", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 100,000 input tokens at $2 a million, $0.2: a figure one step ($0.00001) below is Perplexity's, not rounding that matters.
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 100_000, output_tokens: 0, cost: { currency: "USD", total_cost: 0.19999 } } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi" });
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "provider_usd", cost_nano: fromDollars(0.19999), price_is_estimate: 0 }]);
+    expect(warns.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining("provider_cost_rounded_below_price"));
+  });
+
+  it("charges an Agent API answer that reports no cost at our price, marked an estimate and logged", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 1,000 of the 1,100 input tokens are cache writes, in the Agent API's own spelling.
+    const usage = { input_tokens: 1100, output_tokens: 20, total_tokens: 1120, input_tokens_details: { cached_tokens: 0, cache_creation_input_tokens: 1000 } };
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ price_source: "list_rate", price_is_estimate: 1, input_tokens: 100, cache_write_tokens: 1000 });
+    expect(charge!.cost_nano).toBe(listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 1000, outputTokens: 20 }));
+    expect(JSON.parse(String(charge!.measures_json)).estimate_reasons).toContain("cost_not_reported");
+    expect(warns.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("provider_cost_not_reported"));
+  });
+
+  it("takes a large figure below the list as Perplexity's own, and floors a rounded small one at the standard rate", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const agentCall = async (usage: Record<string, unknown>, body: Record<string, unknown> = {}) => {
+      fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage }));
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6.2-sol", input: "hi", ...body });
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    };
+    // 1M input tokens at $2: a figure of $1, half our price, is Perplexity's own (a cheaper tier), not rounding.
+    await agentCall({ input_tokens: 1_000_000, output_tokens: 0, cost: { currency: "USD", total_cost: 1 } });
+    // A small flex call that reads $0: our flex price is half the standard one, but an estimate is never below standard.
+    await agentCall({ input_tokens: 2, output_tokens: 0, service_tier: "flex", cost: { currency: "USD", total_cost: 0 } }, { service_tier: "flex" });
+    const standard = listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 });
+    // A small flex call whose figure, $0.00001, is within a rounding step of our flex price ($0.000012) but not of
+    // the standard one ($0.000024): rounding explains it, so our price stands in, at no less than standard.
+    await agentCall({ input_tokens: 2, output_tokens: 2, service_tier: "flex", cost: { currency: "USD", total_cost: 0.00001 } }, { service_tier: "flex" });
+    const smallStandard = listedCost("perplexity", "openai/gpt-6.2-sol", { inputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 });
+    expect(await chargesOf(appId)).toMatchObject([
+      { price_source: "provider_usd", cost_nano: fromDollars(1), price_is_estimate: 0 },
+      { price_source: "list_rate", cost_nano: standard, price_is_estimate: 1 },
+      { price_source: "list_rate", cost_nano: smallStandard, price_is_estimate: 1 },
+    ]);
+  });
+
+  it("serves an Agent API request that names only a models list, judging each and charging the one that served", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/gpt-6.2-sol"] });
+    const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { models: ["openai/gpt-6-luna", "anthropic/claude-fable-5-2"], input: "hi" });
+    expect(refused.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.001 } } }));
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { models: ["openai/gpt-6-luna", "openai/gpt-6.2-sol"], input: "hi" });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    // Sent as the client sent it: no model added.
+    expect(sent(0).body.model).toBeUndefined();
+    expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-6.2-sol", cost_nano: fromDollars(0.001) }]);
+  });
+
+  it("serves an Agent API effort or profile beside the model it names, and refuses one that names no model", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna"] });
+    // With no model named, Perplexity would run the effort's own models, which the gateway cannot judge.
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", input: "hi" });
+    expect(bare.response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // A field sent beside effort overrides the effort's own. The effort may bring a models chain, which
+    // Perplexity reads before model, so the request goes with the judged model as its only one.
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 10, output_tokens: 2, cost: { currency: "USD", total_cost: 0.001 } } }));
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { effort: "low", model: "openai/gpt-6-luna", input: "hi" });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(sent(0).body).toMatchObject({ effort: "low", model: "openai/gpt-6-luna", models: ["openai/gpt-6-luna"] });
+    // A request with its own list keeps it: the one rule judged it.
+    const listed = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { profile: "profile_1", models: ["openai/gpt-6-luna"], input: "hi" });
+    expect(listed.response.status).toBe(200);
+    await listed.response.text();
+    await waitOnExecutionContext(listed.ctx);
+    expect(sent(1).body).toEqual({ profile: "profile_1", models: ["openai/gpt-6-luna"], input: "hi" });
+    // A request with neither effort nor profile is sent as it came.
+    const plain = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", input: "hi" });
+    await plain.response.text();
+    await waitOnExecutionContext(plain.ctx);
+    expect(sent(2).body.models).toBeUndefined();
+  });
+
+  it("never books an Agent API answer with no cost, for a model with no price, as free", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/brand-new-model"] });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/brand-new-model", output: [], usage: { input_tokens: 10, output_tokens: 2 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/brand-new-model", input: "hi" });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ price_source: "unresolved", cost_nano: null }]);
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
+  });
+
+  it("judges Perplexity's rounded figure against its own list rate, charges that rate in its place, and leaves a rounded $0 with no price unresolved", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/brand-new-model"] });
+    // The customer's own rate for gpt-6-luna is half the list's.
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "openai/gpt-6-luna": { input: 50_000_000, output: 250_000_000 } }), slug)
+      .run();
+    clearCaches();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const call = async (model: string, total: number) => {
+      fetchSpy.mockResolvedValueOnce(Response.json({ model, output: [], usage: { input_tokens: 33, output_tokens: 5, cost: { currency: "USD", total_cost: total } } }));
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model, input: "hi" });
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    };
+    // At the list's $0.10/$0.50, 33 in and 5 out cost $0.0000058: $0 is rounding. The figure stands for
+    // Perplexity's charge, so the list's rate stands in for it, not the customer's half: a rounded call is
+    // charged as a call Perplexity reports in full would be.
+    await call("openai/gpt-6-luna", 0);
+    // No price at all: a rounded $0 may be any amount under one step, so it is charged as an answer
+    // that reported no cost: unresolved, logged, and priced later once a rate exists. Never a booked $0.
+    await call("openai/brand-new-model", 0);
+    const charges = await chargesOf(appId);
+    expect(charges).toMatchObject([
+      { price_source: "list_rate", cost_nano: 5_800, price_is_estimate: 1 },
+      { price_source: "unresolved", cost_nano: null },
+    ]);
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charges[1]!.id).first()).toEqual({ kind: "unresolved" });
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
+  });
+
+  it("judges a rewrite to perplexity/auto as perplexity/auto: served only with a routing block whose models are allowed", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["house", "perplexity/glm-5.3-flash"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ house: "perplexity/auto" }), appId)
+      .run();
+    clearCaches();
+    // Were it sent, the provider would answer.
+    fetchSpy.mockImplementation(async () => Response.json({ model: "perplexity/glm-5.3-flash", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
+    expect(bare.response.status).toBe(400);
+    const outside = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, {
+      model: "house",
+      routing: { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] },
+      messages: [],
+    });
+    expect(outside.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("serves perplexity/auto only with a routing block, judging every model it names and charging the one that served", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["perplexity/glm-5.3-flash", "perplexity/glm-5.3"] });
+    const routing = (model: string) => ({ default_model: "perplexity/glm-5.3-flash", routes: [{ name: "hard", description: "Hard questions.", model }] });
+    // Without routing, the Orchestrator chooses among models the request does not name.
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", messages: [] });
+    expect(bare.response.status).toBe(400);
+    const outside = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", routing: routing("anthropic/claude-fable-5-2"), messages: [] });
+    expect(outside.response.status).toBe(403);
+    expect(await outside.response.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", routing: routing("perplexity/glm-5.3"), messages: [] });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(sent(0).body.model).toBe("perplexity/auto");
+    expect(await chargesOf(appId)).toMatchObject([
+      { model: "perplexity/glm-5.3", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 }) },
+    ]);
+  });
+
+  it("bills the Orchestrator's one cache-write count as one-hour writes when the request asks for them", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    const usage = { prompt_tokens: 1_000_000, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 1_000_000 } };
+    for (const ttl of ["1h", undefined]) {
+      fetchSpy.mockResolvedValueOnce(Response.json({ model: "anthropic/claude-sonnet-5-5", choices: [], usage }));
+      const body = { model: "anthropic/claude-sonnet-5-5", messages: [], ...(ttl === undefined ? {} : { prompt_cache_options: { ttl } }) };
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, body);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    // A million writes: kept an hour at 2 × $2 input, else at the five-minute $2.50.
+    expect(await chargesOf(appId)).toMatchObject([{ cost_nano: fromDollars(4) }, { cost_nano: fromDollars(2.5) }]);
+  });
+
+  it("judges every model of an Agent API models list as the request's own, and charges the one that served", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"], models: ["openai/gpt-6-luna", "openai/gpt-6.2-sol"] });
+    // Perplexity reads models before model: a model the app does not allow is refused there too.
+    const refused = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", models: ["anthropic/claude-fable-5-2"], input: "hi" });
+    expect(refused.response.status).toBe(403);
+    expect(await refused.response.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "openai/gpt-6.2-sol", output: [], usage: { input_tokens: 10, output_tokens: 2 } }));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const served = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", models: ["openai/gpt-6.2-sol"], input: "hi" });
+    expect(served.response.status).toBe(200);
+    await served.response.text();
+    await waitOnExecutionContext(served.ctx);
+    expect(await chargesOf(appId)).toMatchObject([{ model: "openai/gpt-6.2-sol" }]);
+  });
+
+  it("bills one-hour cache writes on the Orchestrator's Messages API at twice the input rate", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.messages"] });
+    fetchSpy.mockResolvedValueOnce(
+      Response.json({
+        type: "message",
+        model: "anthropic/claude-sonnet-5-5",
+        content: [],
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 } },
+      }),
+    );
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/messages`, key, { model: "anthropic/claude-sonnet-5-5", max_tokens: 10, messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    // A million one-hour write tokens at 2 × $2 input, not at the five-minute $2.50.
+    expect(await chargesOf(appId)).toMatchObject([{ cost_nano: fromDollars(4) }]);
+    // Every Anthropic model Perplexity serves has the rate, never left to fall back to the cheaper one.
+    const anthropicModels = Object.keys(BUILT_IN_PRICES.perplexity ?? {}).filter((model) => model.startsWith("anthropic/"));
+    expect(anthropicModels.length).toBeGreaterThan(0);
+    for (const model of anthropicModels) expect(listPrice("perplexity", model)?.rates.cache_write_1h, model).toBeGreaterThan(0);
+  });
+
+  it("serves the Orchestrator API at its documented paths, and still at the router paths it first used", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat", "perplexity.router.chat"] });
+    fetchSpy.mockImplementation(async () => Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+    for (const path of ["orchestrator/v1/chat/completions", "router/v1/chat/completions"]) {
+      const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/${path}`, key, { model: "perplexity/glm-5.3", messages: [] });
+      expect(response.status).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+    }
+    expect([sent(0).url, sent(1).url]).toEqual(["https://api.perplexity.ai/orchestrator/v1/chat/completions", "https://api.perplexity.ai/router/v1/chat/completions"]);
+    expect(await chargesOf(appId)).toMatchObject([
+      { operation: "perplexity.orchestrator.chat", price_source: "list_rate", cost_nano: listedCost("perplexity", "perplexity/glm-5.3", { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 }) },
+      { operation: "perplexity.router.chat" },
+    ]);
   });
 });
 

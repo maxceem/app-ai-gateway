@@ -407,7 +407,7 @@ export async function getAppSnippet(c: AdminContext): Promise<Response> {
     }
     // The operation the preset's connection actually runs.
     const style = declaredOperation(preset.operation)?.style;
-    const operation = style === undefined ? null : presetOperation(description, style, preset.operation);
+    const operation = style === undefined ? null : presetOperation(description, style, preset.operation, preset.model);
     if (operation === null || !covered(description, operation)) {
       notes.push(`The preset ${slug} has no example here. Send its request as its provider's own API reference describes, without a model, to ${origin}/v2/apps/${row.id}/presets/${slug}.`);
       continue;

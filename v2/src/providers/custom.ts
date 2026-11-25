@@ -24,7 +24,7 @@ import type { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
 import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
-import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
+import { readingRules, type ApiStyle, type OperationDescription, type ProviderAuth, type ProviderDescription, type ReadingRules } from "./operation.ts";
 import type { PassthroughPath } from "./matcher.ts";
 import { meterCases } from "../pricing/units.ts";
 import { hasMeasure } from "../usage/observation.ts";
@@ -127,6 +127,9 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   meter: "replaced",
   priceKeys: "kept",
   modelKinds: "kept",
+  // A custom path is the customer's own: it serves whatever model ids they send.
+  modelIds: "replaced",
+  unservedModels: "replaced",
   rawBody: "kept",
   unpricedOptions: "kept",
   responseDeadlineMs: "kept",
@@ -143,22 +146,45 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   responseJsonLines: "kept",
 };
 
-/** A provider's own operation of `style`: the first that is a POST with its model in the body or a form field. */
-function definitionOf(provider: ProviderDescription, style: CustomStyle): OperationDescription | null {
-  return (
-    provider.operations.find(
-      (operation) =>
-        operation.style === style && operation.match.method === "POST" && (operation.model.in === "body" || operation.model.in === "form"),
-    ) ?? null
+/**
+ * A provider's own operation of `style`: a POST with its model in the body or
+ * a form field. The one declared at `path`, the path on the provider's host
+ * the custom path sends to, when there is one (Perplexity's
+ * `orchestrator/v1/responses` is not its Agent API, though both speak
+ * Responses); else the first of the style.
+ */
+function definitionOf(provider: ProviderDescription, style: CustomStyle, path: string | null): OperationDescription | null {
+  const usable = provider.operations.filter(
+    (operation) => operation.style === style && operation.match.method === "POST" && (operation.model.in === "body" || operation.model.in === "form"),
   );
+  return usable.find((operation) => operation.match.path === path) ?? usable[0] ?? null;
 }
 
-/** Where a custom path of `style` takes its definition and rules from: the base URL's own provider where it declares the style, else the style's home provider. */
-export function styleSource(style: CustomStyle, owner: ProviderDescription | null): { readonly provider: ProviderDescription; readonly definition: OperationDescription | null } {
-  const own = owner === null ? null : definitionOf(owner, style);
+/** The path on the base URL's host a custom path sends to: the base URL's own path, then the listed one, without a leading slash. */
+export function hostPath(baseUrl: string, path: string): string | null {
+  try {
+    const prefix = new URL(baseUrl).pathname.replace(/^\/+|\/+$/gu, "");
+    const listed = path.replace(/^\/+/u, "");
+    return prefix === "" ? listed : `${prefix}/${listed}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a custom path of `style` takes its definition and rules from: the
+ * base URL's own provider where it declares the style (its operation at
+ * `path` on its host, where it declares one), else the style's home provider.
+ */
+export function styleSource(
+  style: CustomStyle,
+  owner: ProviderDescription | null,
+  path: string | null = null,
+): { readonly provider: ProviderDescription; readonly definition: OperationDescription | null } {
+  const own = owner === null ? null : definitionOf(owner, style, path);
   if (own !== null) return { provider: owner!, definition: own };
   const home = BUILT_IN_PROVIDERS[STYLE_HOME[style]]!;
-  return { provider: home, definition: definitionOf(home, style) };
+  return { provider: home, definition: definitionOf(home, style, null) };
 }
 
 /**
@@ -170,14 +196,15 @@ export function styleSource(style: CustomStyle, owner: ProviderDescription | nul
  *   (`meterCases`): with no provider dollar report, such an answer could
  *   never be charged, as xAI's images, which report only their cost.
  */
-export function customStyleProblem(style: CustomStyle, baseUrl: string): string | null {
+export function customStyleProblem(style: CustomStyle, baseUrl: string, path: string): string | null {
   const owner = knownHostOwner(baseUrl);
-  const { provider, definition } = styleSource(style, owner);
+  const at = hostPath(baseUrl, path);
+  const { provider, definition } = styleSource(style, owner, at);
   if (definition !== null) {
     const refused = (Object.keys(CARRIED) as (keyof OperationDescription)[]).find((field) => CARRIED[field] === "refused" && definition[field] !== undefined);
     if (refused !== undefined) return `${provider.label} serves ${style} in a way a listed path cannot (${refused}); use its built-in connection instead`;
   }
-  const unmetered = meterCases(customOperation(style, style, owner)).some((way) => way.some((usage) => !hasMeasure(usage)));
+  const unmetered = meterCases(customOperation(style, style, owner, at)).some((way) => way.some((usage) => !hasMeasure(usage)));
   if (unmetered) return `${provider.label}'s ${style} answers can report only their cost, which a custom path does not bill; use its built-in connection instead`;
   return null;
 }
@@ -188,9 +215,9 @@ export function customStyleProblem(style: CustomStyle, baseUrl: string): string 
  * field (`CARRIED`), at the listed path, with that provider's rules for
  * reading it (`rules`). Its meter bills at the connection's rates only.
  */
-export function customOperation(style: CustomStyle, path: string, owner: ProviderDescription | null = null): OperationDescription {
+export function customOperation(style: CustomStyle, path: string, owner: ProviderDescription | null = null, at: string | null = null): OperationDescription {
   const name = customOperationName(style);
-  const { provider: source, definition: found } = styleSource(style, owner);
+  const { provider: source, definition: found } = styleSource(style, owner, at);
   const definition = found ?? STYLE_BUILDERS[style](name, path);
   const carried: Record<string, unknown> = {};
   for (const field of Object.keys(CARRIED) as (keyof OperationDescription)[]) {
@@ -209,14 +236,20 @@ export function customOperation(style: CustomStyle, path: string, owner: Provide
     ...(style === "openai-images" ? { uploads: true as const } : {}),
     // No list price or provider report to fall back on: every way its answers come out needs a rate.
     pricedEveryWay: true,
-    rules: {
-      serviceModes: source.serviceModes,
-      ...(source.servedModes !== undefined ? { servedModes: source.servedModes } : {}),
-      ...(source.transcriptionFormats !== undefined ? { transcriptionFormats: source.transcriptionFormats } : {}),
-      ...(source.countedInputModalities !== undefined ? { countedInputModalities: source.countedInputModalities } : {}),
-      ...(source.alternativeModels !== undefined ? { alternativeModels: source.alternativeModels } : {}),
-      ...(source.modelNamespaces !== undefined ? { modelNamespaces: source.modelNamespaces } : {}),
-    },
+    rules: rulesOf(readingRules(source, definition)),
+  };
+}
+
+/** The reading rules a custom path carries: its definition's, field by field. */
+function rulesOf(rules: ReadingRules): ReadingRules {
+  return {
+    serviceModes: rules.serviceModes,
+    ...(rules.servedModes !== undefined ? { servedModes: rules.servedModes } : {}),
+    ...(rules.transcriptionFormats !== undefined ? { transcriptionFormats: rules.transcriptionFormats } : {}),
+    ...(rules.countedInputModalities !== undefined ? { countedInputModalities: rules.countedInputModalities } : {}),
+    ...(rules.alternativeModels !== undefined ? { alternativeModels: rules.alternativeModels } : {}),
+    ...(rules.choosingModels !== undefined ? { choosingModels: rules.choosingModels } : {}),
+    ...(rules.modelNamespaces !== undefined ? { modelNamespaces: rules.modelNamespaces } : {}),
   };
 }
 
@@ -275,7 +308,9 @@ export function customDescription(setting: CustomSetting): ProviderDescription {
   const owner = knownHostOwner(setting.baseUrl);
   const host = hostOf(setting.baseUrl) ?? "";
   const operations = setting.paths.flatMap((listed) =>
-    listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST" ? [customOperation(listed.style, listed.path, owner)] : [],
+    listed.style !== undefined && isCustomStyle(listed.style) && listed.method === "POST"
+      ? [customOperation(listed.style, listed.path, owner, hostPath(setting.baseUrl, listed.path))]
+      : [],
   );
   return {
     type: CUSTOM_PROVIDER_TYPE,

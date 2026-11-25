@@ -236,6 +236,8 @@ export interface RequestFacts {
   readonly perChannel?: true;
   /** The provider may bill more than the request's measure (`inDoubtWhen`). */
   readonly measureInDoubt?: true;
+  /** The cache-write variant the answer's one cache-write count bills as (`cacheWriteKeptFor`). */
+  readonly cacheWriteVariant?: "1h";
 }
 
 /**
@@ -259,6 +261,9 @@ export function requestFacts(
   const perChannel = meter.kind === "response_json" && meter.perChannelWhen !== undefined && switchedOn(fields, meter.perChannelWhen, "flag");
   const doubtWhen = meter.kind === "response_header" ? meter.inDoubtWhen : undefined;
   const inDoubt = doubtWhen !== undefined && switchedOn(fields, doubtWhen, doubtWhen.kind);
+  const keptFor = meter.kind === "response_json" ? meter.cacheWriteKeptFor : undefined;
+  const kept = keptFor === undefined ? undefined : fieldValue(fields, keptFor.field);
+  const cacheWriteVariant = keptFor !== undefined && typeof kept === "string" && Object.hasOwn(keptFor.variants, kept) ? keptFor.variants[kept] : undefined;
   return {
     ...(measured !== null ? { requestUsage: measured } : {}),
     ...(priceKeys !== undefined ? { priceKeys } : {}),
@@ -267,6 +272,7 @@ export function requestFacts(
     ...(served !== null ? { servedModels: served } : {}),
     ...(perChannel ? { perChannel: true as const } : {}),
     ...(inDoubt ? { measureInDoubt: true as const } : {}),
+    ...(cacheWriteVariant !== undefined ? { cacheWriteVariant } : {}),
   };
 }
 

@@ -6,7 +6,10 @@
  * - a preset whose first connection fails with 503 answers from its
  *   fallback, and writes two charges, the failed one with no cost;
  * - a preset whose first connection answers 400 is not retried: the error is
- *   passed through, and one charge is written.
+ *   passed through, and one charge is written;
+ * - a Perplexity fallback with a maker/model id is sent to Perplexity's
+ *   Orchestrator API, not to Sonar's `chat/completions` (the mock answers
+ *   only the first).
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \
@@ -29,6 +32,7 @@ const providerIds: string[] = [];
 let appId = "";
 let appKey = "";
 const slugs = { working: uniqueSlug("smoke-ok"), busy: uniqueSlug("smoke-503"), refusing: uniqueSlug("smoke-400") };
+const perplexitySlug = uniqueSlug("smoke-pplx");
 
 before(async () => {
   if (skip !== false) return;
@@ -45,6 +49,15 @@ before(async () => {
     expectStatus(created, 201, "created");
     providerIds.push(checkId(created.body.provider?.id, "the provider"));
   }
+  const perplexity = await admin("POST", "/v2/admin/providers", {
+    type: "perplexity",
+    name: "Smoke presets perplexity",
+    slug: perplexitySlug,
+    secret: "sk-mock-smoke-key",
+    baseUrl: mock,
+  });
+  expectStatus(perplexity, 201, "created");
+  providerIds.push(checkId(perplexity.body.provider?.id, "the provider"));
   const app = await admin("POST", "/v2/admin/apps", {
     name: "Smoke presets",
     config: {
@@ -56,6 +69,7 @@ before(async () => {
       presets: {
         chain: { provider: slugs.busy, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: slugs.working, model: "gpt-4o-mini" }] },
         strict: { provider: slugs.refusing, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: slugs.working, model: "gpt-4o-mini" }] },
+        maker: { provider: slugs.busy, operation: "openai.chat", model: "gpt-4o-mini", fallback: [{ provider: perplexitySlug, model: "openai/gpt-6.2-sol" }] },
       },
     },
   });
@@ -118,6 +132,17 @@ test("a preset is not retried after a 400: the error is passed through, one char
   same(usage.charges, 1, "usage.charges is not 1");
   same(usage.failed, 1, "usage.failed is not 1");
   same(usage.cost_nano, 0, "usage.cost_nano is not 0");
+});
+
+test("a Perplexity fallback with a maker/model id goes to the Orchestrator API", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  const user = `maker-${run}`;
+  const answer = await post(`/v2/apps/${appId}/presets/maker`, { messages: [{ role: "user", content: "hi" }] }, user);
+  // Sent to Sonar's chat/completions instead, the mock would answer 404.
+  expectStatus(answer, 200, "answer");
+  check(answer.body.model === "openai/gpt-6.2-sol", "the answer is not from the fallback's model");
+  const usage = await usageOf(user, 2);
+  same(usage.charges, 2, "usage.charges is not 2");
+  check(usage.cost_nano > 0, "billed at the fallback model's price");
 });
 
 // A request the app's own settings refuse is answered as before and shows up

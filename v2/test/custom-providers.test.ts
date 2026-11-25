@@ -154,9 +154,12 @@ describe("a custom provider's description", () => {
         const { providerCost: _report, ...meter } = definition.meter as typeof definition.meter & { providerCost?: unknown };
         expect(custom.meter, `${provider.type} ${style} meter`).toEqual(meter);
         expect(reportsCost(custom)).toBe(false);
-        expect(custom.rules?.serviceModes).toBe(provider.serviceModes);
-        expect(custom.rules?.alternativeModels).toBe(provider.alternativeModels);
-        expect(custom.rules?.modelNamespaces).toBe(provider.modelNamespaces);
+        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's.
+        const rules = readingRules(provider, definition);
+        expect(custom.rules?.serviceModes).toBe(rules.serviceModes);
+        expect(custom.rules?.alternativeModels).toBe(rules.alternativeModels);
+        expect(custom.rules?.choosingModels).toBe(rules.choosingModels);
+        expect(custom.rules?.modelNamespaces).toBe(rules.modelNamespaces);
       }
     }
     expect(judged).toBeGreaterThan(CUSTOM_STYLES.length);
@@ -168,7 +171,7 @@ describe("a custom provider's description", () => {
       const baseUrl = owner === null ? BASE : `https://${owner.hosts.main.split("/")[0]}/`;
       for (const style of CUSTOM_STYLES) {
         const unmetered = meterCases(customOperation(style, style, owner)).some((way) => way.some((usage) => !hasMeasure(usage)));
-        const problem = customStyleProblem(style, baseUrl);
+        const problem = customStyleProblem(style, baseUrl, style);
         expect(problem !== null, `${owner?.type ?? "unknown"} ${style}`).toBe(unmetered || (problem?.includes("cannot (") ?? false));
         if (problem !== null) refused.push(`${owner?.type ?? "unknown"} ${style}`);
       }
@@ -181,6 +184,20 @@ describe("a custom provider's description", () => {
     const description = customDescription({ baseUrl: "https://api.moonshot.ai/", auth: AUTH, paths: [{ method: "POST", path: "v1/chat/completions", style: "openai-chat" }] });
     const meter = description.operations[0]!.meter;
     expect(meter.kind === "response_json" ? meter.usageHeaders : undefined).toEqual([{ header: "msh-usage-cache-write-tokens-1h", bucket: "cache_write", name: "1h" }]);
+  });
+
+  it("takes a path's own definition on a known host where one is declared there, before the first of its style", () => {
+    const paths = [
+      { method: "POST" as const, path: "orchestrator/v1/responses", style: "openai-responses" },
+      { method: "POST" as const, path: "v1/agent", style: "openai-responses" },
+    ];
+    const [orchestratorOp, agentOp] = customDescription({ baseUrl: "https://api.perplexity.ai/", auth: AUTH, paths }).operations as [OperationDescription, OperationDescription];
+    // Perplexity's Orchestrator Responses is not its Agent API: no `models` list, its own unserved models.
+    expect(orchestratorOp.rules?.alternativeModels?.paths).toEqual(["routing.default_model", "routing.routes[].model"]);
+    expect(agentOp.rules?.alternativeModels?.paths).toEqual(["models[]"]);
+    // The same path under a base URL that holds its prefix.
+    const prefixed = customDescription({ baseUrl: "https://api.perplexity.ai/orchestrator/v1/", auth: AUTH, paths: [{ method: "POST", path: "responses", style: "openai-responses" }] });
+    expect(prefixed.operations[0]!.rules?.choosingModels).toEqual(["perplexity/auto"]);
   });
 
   it("bills an xAI chat path at the connection's rates, never at xAI's own dollar report", () => {
