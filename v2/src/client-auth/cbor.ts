@@ -18,7 +18,8 @@ export type CborValue = Uint8Array | string | CborValue[] | { [key: string]: Cbo
 /** The attestation object nests three deep: the outer map, `attStmt`, `x5c`. */
 const MAX_DEPTH = 3;
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+// `ignoreBOM` keeps a leading U+FEFF, so "\uFEFFapple-appattest" never reads as "apple-appattest".
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function decodeCbor(bytes: Uint8Array): CborValue {
   const state = { offset: 0 };

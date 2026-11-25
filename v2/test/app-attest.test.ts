@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { X509Certificate } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { verifyAppAttestation } from "../src/client-auth/app-attest.ts";
 import { CborError, decodeCbor } from "../src/client-auth/cbor.ts";
@@ -14,6 +15,7 @@ import {
   sequence,
   tlv,
 } from "./app-attest-fixtures.ts";
+import { APPLE_SAMPLE } from "./apple-attestation-sample.ts";
 
 /**
  * Apple will not attest anything for a test, and publishes no attestation
@@ -186,6 +188,17 @@ describe("the CBOR reader", () => {
     expect(decodeCbor(encodeCbor({ a: { b: [Buffer.alloc(300), "text"] } }))).toEqual({ a: { b: [new Uint8Array(300), "text"] } });
   });
 
+  it("keeps a leading byte order mark, so a format or key with one never reads as the real one", async () => {
+    const bom = "\uFEFF";
+    expect(decodeCbor(encodeCbor(`${bom}apple-appattest`))).toBe(`${bom}apple-appattest`);
+    expect(Object.keys(decodeCbor(encodeCbor({ [`${bom}authData`]: Buffer.from([1]) })) as object)).toEqual([`${bom}authData`]);
+    await expect(verify(await attestation({
+      shape: ({ authData, leaf, intermediate }) => ({
+        fmt: `${bom}apple-appattest`, attStmt: { x5c: [leaf, intermediate], receipt: Buffer.from("r") }, authData,
+      }),
+    }))).rejects.toMatchObject(refused);
+  });
+
   it("refuses what those shapes never hold", () => {
     const cases: Array<[string, number[]]> = [
       ["an integer", [0x01]],
@@ -248,5 +261,68 @@ describe("the DER reader", () => {
       extensions: [{ oid: NONCE_OID, value: sequence() }, { oid: NONCE_OID, value: sequence() }],
     });
     expect(() => certificateFields(twice.der)).toThrow(DerError);
+  });
+});
+
+/**
+ * Apple's own sample attestation, read with the same readers. The full
+ * verifier rightly refuses it: its certificates expired in April 2026, and
+ * Apple's guide builds its nonce from the literal challenge, not its SHA-256
+ * as App Attest does. So this checks each step the readers take against the
+ * values Apple gives, which confirms the nonce's shape against Apple's real
+ * encoding.
+ */
+describe("Apple's sample attestation", () => {
+  const APPLE_ROOT_PEM = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw",
+    "JAYDVQQDDB1BcHBsZSBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTETMBEGA1UECgwK",
+    "QXBwbGUgSW5jLjETMBEGA1UECAwKQ2FsaWZvcm5pYTAeFw0yMDAzMTgxODMyNTNa",
+    "Fw00NTAzMTUwMDAwMDBaMFIxJjAkBgNVBAMMHUFwcGxlIEFwcCBBdHRlc3RhdGlv",
+    "biBSb290IENBMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9y",
+    "bmlhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAERTHhmLW07ATaFQIEVwTtT4dyctdh",
+    "NbJhFs/Ii2FdCgAHGbpphY3+d8qjuDngIN3WVhQUBHAoMeQ/cLiP1sOUtgjqK9au",
+    "Yen1mMEvRq9Sk3Jm5X8U62H+xTD3FE9TgS41o0IwQDAPBgNVHRMBAf8EBTADAQH/",
+    "MB0GA1UdDgQWBBSskRBTM72+aEH/pwyp5frq5eWKoTAOBgNVHQ8BAf8EBAMCAQYw",
+    "CgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn",
+    "53O5+FRXgeLhpJ06ysC5PrOyAjEAp5U4xDgEgllF7En3VcE3iexZZtKeYnpqtijV",
+    "oyFraWVIyd/dganmrduC1bmTBGwD",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+
+  it("decodes, chains to Apple's root, and reads Apple's nonce and key from the credential certificate", async () => {
+    const decoded = decodeCbor(Buffer.from(APPLE_SAMPLE.attestation, "base64")) as {
+      fmt: string;
+      attStmt: { x5c: Uint8Array[]; receipt: Uint8Array };
+      authData: Uint8Array;
+    };
+    expect(decoded.fmt).toBe("apple-appattest");
+    expect(decoded.attStmt.x5c).toHaveLength(2);
+    expect(decoded.attStmt.receipt).toBeInstanceOf(Uint8Array);
+    const [leafDer, intermediateDer] = decoded.attStmt.x5c as [Uint8Array, Uint8Array];
+    expect(Buffer.from(leafDer).toString("base64")).toBe(APPLE_SAMPLE.leaf);
+    expect(Buffer.from(intermediateDer).toString("base64")).toBe(APPLE_SAMPLE.intermediate);
+
+    // The signatures, not the dates: the sample's certificates have expired.
+    const root = new X509Certificate(APPLE_ROOT_PEM);
+    const leaf = new X509Certificate(leafDer);
+    const intermediate = new X509Certificate(intermediateDer);
+    expect(leaf.checkIssued(intermediate) && leaf.verify(intermediate.publicKey)).toBe(true);
+    expect(intermediate.checkIssued(root) && intermediate.verify(root.publicKey)).toBe(true);
+
+    const fields = certificateFields(leaf.raw);
+    const nonce = appAttestNonce(fields.extensions.get(NONCE_OID)!);
+    expect(Buffer.from(nonce).toString("base64")).toBe(APPLE_SAMPLE.nonce);
+
+    const jwk = leaf.publicKey.export({ format: "jwk" });
+    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, "base64url"), Buffer.from(jwk.y!, "base64url")]);
+    expect(Buffer.from(fields.publicKey)).toEqual(point);
+    // The key's hash is the sample's key id, as the verifier checks. (The guide also lists a different
+    // "public key SHA256 hash"; it matches neither the key id nor the credential id the guide gives, so it is not used.)
+    expect((await digest(fields.publicKey)).toString("base64")).toBe(APPLE_SAMPLE.keyId);
+    expect(Buffer.from(decoded.authData.subarray(55, 87)).toString("base64")).toBe(APPLE_SAMPLE.keyId);
+
+    expect(Buffer.from(decoded.authData.subarray(0, 32)).toString("base64")).toBe(APPLE_SAMPLE.appIdHash);
+    expect((await digest(Buffer.from(APPLE_SAMPLE.appId))).toString("base64")).toBe(APPLE_SAMPLE.appIdHash);
   });
 });
