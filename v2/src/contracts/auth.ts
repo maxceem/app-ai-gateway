@@ -11,9 +11,11 @@ export const MAX_APP_TRANSACTION_LENGTH = 16_384;
 
 /**
  * The longest App Attest attestation (base64) the gateway reads. A real one,
- * with its receipt, is about 6 to 8 KB; Apple's published sample is 7.9 KB.
+ * with its receipt, is about 6 to 8 KB (Apple's published sample is 7.9 KB),
+ * but its size is Apple's to grow, so the cap leaves plenty of room. The CBOR
+ * reader's entry cap is what bounds the memory it can use.
  */
-export const MAX_ATTESTATION_LENGTH = 16_384;
+export const MAX_ATTESTATION_LENGTH = 65_536;
 
 /**
  * The longest App Attest assertion (base64 or base64url) the gateway reads, in

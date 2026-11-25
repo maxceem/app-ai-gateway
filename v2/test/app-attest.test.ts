@@ -292,9 +292,11 @@ describe("the DER reader", () => {
     expect(() => certificateFields(Buffer.concat([leaf.der, Buffer.from([0])]))).toThrow(DerError);
     // The same certificate, its outer length re-encoded. It starts 30 82 <two length bytes>.
     expect([leaf.der[0], leaf.der[1]]).toEqual([0x30, 0x82]);
-    const content = leaf.der.subarray(4);
-    // BER's indefinite length, ended by two zero bytes.
-    expect(() => certificateFields(Buffer.concat([Buffer.from([0x30, 0x80]), content, Buffer.from([0, 0])]))).toThrow(DerError);
+    // BER's indefinite length, 0x80, followed by exactly 128 bytes that would be well formed if 0x80 were read
+    // as a length of 128: SEQUENCE { [1] { OCTET STRING (124 bytes) } }.
+    const indefinite = Buffer.concat([Buffer.from([0x30, 0x80, 0xa1, 0x7e, 0x04, 0x7c]), Buffer.alloc(124, 9)]);
+    expect(indefinite.byteLength).toBe(2 + 128);
+    expect(() => appAttestNonce(indefinite)).toThrow(DerError);
     // Three length bytes where two are enough.
     expect(() => certificateFields(Buffer.concat([Buffer.from([0x30, 0x83, 0x00]), leaf.der.subarray(2)]))).toThrow(DerError);
     // A long form for a length that fits the short form.

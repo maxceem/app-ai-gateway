@@ -32,13 +32,13 @@ export function readTlv(bytes: Uint8Array, offset: number, limit = bytes.byteLen
   if ((tag & 0x1f) === 0x1f) throw new DerError("long tag");
   let length = bytes[offset + 1]!;
   let start = offset + 2;
-  if (length > 0x80) {
+  if (length >= 0x80) {
     const size = length & 0x7f;
     if (size > 3 || start + size > limit) throw new DerError("length");
     length = 0;
     for (let index = 0; index < size; index += 1) length = length * 256 + bytes[start + index]!;
     // DER uses the shortest form. This also refuses 0x80, BER's indefinite
-    // length, which has no length bytes and so reads as a long form of zero.
+    // length: it has no length bytes, so it reads as a long form of zero.
     if (length < 0x80 || bytes[start] === 0) throw new DerError("length not minimal");
     start += size;
   }
