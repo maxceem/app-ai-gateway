@@ -30,11 +30,11 @@
 #   publish-archive   GitHub token                    contents: write    deploy-gateway
 #   publish-npm       npm identity by OIDC (release)  id-token: write    publish-archive
 #   post-deploy-check POST_DEPLOY_CHECK_TOKEN         none               deploy-gateway
-#                     (release)
+#                     (notify)
 #   follow-prices     GitHub token                    actions: write     deploy-gateway,
 #                                                                        publish-archive,
 #                                                                        publish-npm
-#   refresh-context7  CONTEXT7_API_KEY (release)      none               deploy-docs
+#   refresh-context7  CONTEXT7_API_KEY (notify)       none               deploy-docs
 #
 # Every job after `build` downloads the one artifact `build` uploaded, by its
 # id, so no other upload with the same name can take its place.
@@ -63,10 +63,13 @@
 #   docs        holds a Cloudflare token that can deploy Workers but not touch
 #               D1, R2 or routes. No reviewer: its job runs after the approved
 #               gateway deploy.
-#   release     holds the lesser secrets, and is what npm's trusted publisher
-#               names. No reviewer, for the same reason. The prices deploy
-#               (.github/workflows/deploy-prices.yml) uses it for its
-#               post-deploy check too.
+#   release     holds no secret. It is what npm's trusted publisher names, so
+#               only `publish-npm` can publish the CLI. No reviewer, for the
+#               same reason.
+#   notify      holds the two low-value tokens that tell outside services a
+#               release happened. Its jobs run no package installs. No
+#               reviewer. The prices deploy (.github/workflows/deploy-prices.yml)
+#               uses it for its post-deploy check too.
 #
 # `production` environment secrets, required:
 #   CLOUDFLARE_API_TOKEN         D1: Edit, Workers Scripts: Edit and Workers R2 Storage: Edit
@@ -82,7 +85,7 @@
 #                                no D1, no R2
 #   CLOUDFLARE_ACCOUNT_ID        the same account
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
-# `release` environment secrets, optional:
+# `notify` environment secrets, optional:
 #   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
 #                                refresh the documentation
 #   POST_DEPLOY_CHECK_TOKEN      bearer token for POST_DEPLOY_CHECK_URL
@@ -469,7 +472,7 @@ jobs:
     needs: [build, deploy-gateway]
     if: github.repository == 'maxceem/app-ai-gateway' && vars.POST_DEPLOY_CHECK_URL != ''
     runs-on: ubuntu-latest
-    environment: release
+    environment: notify
     continue-on-error: true
     permissions: {}
     steps:
@@ -523,7 +526,7 @@ jobs:
     needs: deploy-docs
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
-    environment: release
+    environment: notify
     continue-on-error: true
     permissions: {}
     steps:

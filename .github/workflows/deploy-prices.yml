@@ -17,7 +17,7 @@
 #   deploy  installs only Wrangler (deploy/), takes only those built files and
 #           deploys them; its Wrangler config and D1 migrations come from the
 #           tag's checkout.
-#   post-deploy-check  runs in the `release` environment and holds only
+#   post-deploy-check  runs in the `notify` environment and holds only
 #           POST_DEPLOY_CHECK_TOKEN. It asks the outside monitor to check what
 #           `deploy` deployed, and never fails the run.
 #
@@ -29,7 +29,7 @@
 #   CLOUDFLARE_API_TOKEN      the same permissions the release's deploy uses
 #   CLOUDFLARE_ACCOUNT_ID     the account the gateway Worker lives in
 #   WRANGLER_CLOUD_OVERLAY    contents of wrangler.cloud.overlay.jsonc
-# POST_DEPLOY_CHECK_TOKEN lives in the `release` environment, as in
+# POST_DEPLOY_CHECK_TOKEN lives in the `notify` environment, as in
 # .github/workflows/release.yml, never beside the Cloudflare token.
 name: Deploy the model prices
 
@@ -205,7 +205,7 @@ jobs:
         run: echo "Deployed the price list from ${PRICES_REVISION} (${PRICES_UPDATED}) with ${TAG}." >> "$GITHUB_STEP_SUMMARY"
 
   # Its own job and environment, so the Cloudflare token and the monitor's
-  # token never share one. The `release` environment is the one the release's
+  # token never share one. The `notify` environment is the one the release's
   # post-deploy check uses (see release.yml). It asks the outside monitor to
   # run the smoke checks against what was just deployed, and never fails the
   # deploy.
@@ -213,7 +213,7 @@ jobs:
     needs: [build, deploy]
     if: vars.POST_DEPLOY_CHECK_URL != ''
     runs-on: ubuntu-latest
-    environment: release
+    environment: notify
     continue-on-error: true
     permissions: {}
     steps:
