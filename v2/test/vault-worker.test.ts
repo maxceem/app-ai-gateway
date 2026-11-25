@@ -13,6 +13,7 @@ import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { openSecret, sealSecret, secretContext, SECRET_KINDS, secretIdentityLength } from "../src/vault/secrets.ts";
 import { TEST_VAULT_ENV } from "./local-vault.ts";
+import { vaultAnswer } from "../src/vault/client.ts";
 
 const vaultEnv = TEST_VAULT_ENV as Record<string, unknown>;
 const KEY = "sk-test-vault-key-1234";
@@ -357,6 +358,45 @@ describe("kms mode", () => {
     });
     await expect(seal({ ...KMS_ENV, SECRET_VAULT_KMS_URL: "https://kms.example.test/#setup" }, "providerKey", IDS, KEY)).rejects.toThrow(/https URL/u);
     expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["answers 5xx", () => Response.json({ error: { code: "internal" } }, { status: 503 })],
+    ["fails on the network", () => Promise.reject(new TypeError("network down"))],
+  ] as const)("sends nothing to the provider, and answers a refusal the gateway turns into 502, when cf-kms %s", async (_name, answer) => {
+    // Sealed while cf-kms worked; opened by a fresh isolate's client, which must ask it.
+    fakeKms();
+    const blob = await seal({ ...KMS_ENV }, "providerKey", IDS, KEY);
+    const sent: string[] = [];
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      if (String(input).startsWith("https://kms.example.test/")) return answer();
+      sent.push(String(input));
+      return new Response("ok");
+    });
+    const response = await callProvider({ ...KMS_ENV }, {
+      url: "https://api.openai.com/v1/models",
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      credentials: { providerKey: { blob, identity: IDS, header: "authorization", format: "Bearer {key}" } },
+    });
+    expect(response.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
+    expect(() => vaultAnswer(response)).toThrow(expect.objectContaining({ status: 502, code: "provider_unavailable" }));
+    expect(sent).toEqual([]);
+  });
+
+  it("answers `misconfigured` when cf-kms refuses the vault's token", async () => {
+    fakeKms();
+    const blob = await seal({ ...KMS_ENV }, "providerKey", IDS, KEY);
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json({ error: { code: "unauthorized" } }, { status: 401 }));
+    const response = await callProvider({ ...KMS_ENV }, {
+      url: "https://api.openai.com/v1/models",
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      credentials: { providerKey: { blob, identity: IDS, header: "authorization", format: "Bearer {key}" } },
+    });
+    expect(response.headers.get(VAULT_ERROR_HEADER)).toBe("misconfigured");
   });
 
   it("never follows a redirect from cf-kms, so the token is never sent anywhere else", async () => {

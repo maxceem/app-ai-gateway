@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { setVaultForTests } from "../src/vault/client.ts";
+import { describe, expect, it, vi } from "vitest";
+import { setVaultForTests, vaultStatus } from "../src/vault/client.ts";
 import { SecretVaultConfigurationError } from "../src/vault/index.ts";
 import { openSecret, sealSecret } from "../src/vault/secrets.ts";
 import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
@@ -22,6 +22,25 @@ describe("the v2 Worker", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ ok: true, vault: "misconfigured" });
     } finally {
+      setVaultForTests(localVault);
+    }
+  });
+
+  it("reports a vault whose status never answers as misconfigured, at the 1 s limit", async () => {
+    setVaultForTests((vaultEnv) => ({ ...localVault(vaultEnv), status: () => new Promise(() => undefined) }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The health answer's own reading of the vault (`vaultStatus`), run here so the fake clock reaches it.
+      const pending = vaultStatus(env);
+      await vi.advanceTimersByTimeAsync(999);
+      let settled = false;
+      void pending.then(() => (settled = true));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(await pending).toBe("misconfigured");
+    } finally {
+      vi.useRealTimers();
       setVaultForTests(localVault);
     }
   });

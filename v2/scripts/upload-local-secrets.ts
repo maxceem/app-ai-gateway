@@ -4,9 +4,13 @@
  *
  *   node --experimental-strip-types scripts/upload-local-secrets.ts -c <wrangler config> [--env <name>] [--dir <folder>]
  *
- * - It overwrites the Worker's values with the local ones, the vault key
- *   included: a new local `SECRET_VAULT_LOCAL_KEK_V1` uploaded to a deployment
- *   that already stores provider keys makes those keys unreadable.
+ * - It overwrites the Worker's values with the local ones.
+ * - The vault's settings (`SECRET_VAULT_*`) go only to the vault Worker, the
+ *   one whose config runs `vault/src/index.js` (plan step 8i): for any other
+ *   Worker they are left out and named, so an old `.dev.vars` that still holds
+ *   the vault key never puts it back on the gateway. Uploaded to the vault, a
+ *   new local `SECRET_VAULT_LOCAL_KEK_V1` makes the provider keys a deployment
+ *   already stores unreadable.
  * - The Worker is the one the config (and `--env`, which the config must
  *   define) names: there is no default. It stops when `CLOUDFLARE_ENV` is set
  *   without `--env`. The rest of the operator's shell and `.env` settings are
@@ -55,15 +59,17 @@ const shellEnv = process.env.CLOUDFLARE_ENV;
 if (shellEnv !== undefined && shellEnv !== "" && envName === undefined) {
   refuse(`CLOUDFLARE_ENV is set (${shellEnv}): name the environment with --env, so the Worker is never taken from the shell`);
 }
-if (envName !== undefined) {
-  const { experimental_readRawConfig } = await import("wrangler");
-  const raw = experimental_readRawConfig({ config }) as { rawConfig: { env?: Record<string, unknown> } };
-  if (raw.rawConfig.env?.[envName] === undefined) refuse(`${config} defines no environment ${envName}; nothing was uploaded.`);
-}
+const { experimental_readRawConfig } = await import("wrangler");
+const raw = experimental_readRawConfig({ config }) as { rawConfig: { main?: unknown; env?: Record<string, unknown> } };
+if (envName !== undefined && raw.rawConfig.env?.[envName] === undefined) refuse(`${config} defines no environment ${envName}; nothing was uploaded.`);
+/** Whether the config is the vault Worker's: it runs `vault/src/index.js`. */
+const isVault = typeof raw.rawConfig.main === "string" && resolve(dirname(config), raw.rawConfig.main) === join(V2_DIR, "vault", "src", "index.js");
 
-const values = Object.fromEntries(
-  Object.entries(parseEnv(readFileSync(join(dir, ".dev.vars"), "utf8"))).filter(([, value]) => value !== undefined && value.trim() !== ""),
-);
+const set = Object.entries(parseEnv(readFileSync(join(dir, ".dev.vars"), "utf8"))).filter(([, value]) => value !== undefined && value.trim() !== "");
+const VAULT_SETTING = /^SECRET_VAULT_/u;
+const kept = isVault ? [] : set.filter(([name]) => VAULT_SETTING.test(name)).map(([name]) => name).sort();
+const values = Object.fromEntries(isVault ? set : set.filter(([name]) => !VAULT_SETTING.test(name)));
+if (kept.length > 0) console.log(`Left out ${kept.join(", ")}: only the vault Worker holds the vault's settings.`);
 const names = Object.keys(values).sort();
 if (names.length === 0) {
   console.error(".dev.vars holds no values to upload; run setup-local-secrets.ts first.");

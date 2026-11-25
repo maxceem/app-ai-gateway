@@ -1,0 +1,5 @@
+# Secrets of the vault Worker (`v2/vault/`). Never commit real values.
+# The only Worker that holds them: the gateway Worker holds none (plan step 8i).
+# The local vault key that seals provider keys: 32 bytes, base64, for example
+# `openssl rand -base64 32`. Back it up: without it, stored provider keys cannot be opened.
+SECRET_VAULT_LOCAL_KEK_V1=
