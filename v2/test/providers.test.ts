@@ -294,6 +294,27 @@ describe("text APIs through the proxy", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("refuses an Agent API effort or profile in another letter case, which would skip the model the gateway adds", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    for (const field of ["Effort", "PROFILE", "Preset"]) {
+      const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", [field]: "high", input: "hi" });
+      expect(response.status, field).toBe(400);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a model key a case-blind decoder folds to the same, such as the long s in modelſ", async () => {
+    // The Workers runtime's NFKC maps ſ (U+017F) to s and the Kelvin sign to k, as Go's case folding does.
+    expect("modelſ".normalize("NFKC")).toBe("models");
+    expect("\u212Aey".normalize("NFKC").toLowerCase()).toBe("key");
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.agent"] });
+    fetchSpy.mockImplementation(async () => Response.json({ model: "openai/gpt-6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, cost: { currency: "USD", total_cost: 0.00001 } } }));
+    const { response } = await post(`/v2/apps/${appId}/proxy/${slug}/v1/agent`, key, { model: "openai/gpt-6-luna", "modelſ": ["anthropic/claude-fable-5-2"], input: "hi" });
+    expect(response.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("bills xAI's chat at the ticks it reports, and its Messages API at our price", async () => {
     const { appId, slug, key } = await setup("xai", { operations: ["xai.chat", "xai.messages"] });
     fetchSpy.mockResolvedValueOnce(Response.json({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost_in_usd_ticks: 25_000_000 } }));

@@ -142,17 +142,27 @@ export function savedAlternativesProblem(
 }
 
 /**
+ * A key as a decoder that matches keys regardless of case may compare it:
+ * Go folds compatibility forms too, so `ſ` (U+017F) reads as `s` and the
+ * Kelvin sign as `k`. NFKC maps both before lower-casing.
+ */
+function folded(key: string): string {
+  return key.normalize("NFKC").toLowerCase();
+}
+
+/**
  * Refuses a body that names a model under a key the operation reads in
  * another letter case, such as `Model` or `ROUTING`: a provider whose JSON
  * decoder matches keys regardless of case (Perplexity's look like Go's) would
  * read it, and the gateway, reading the exact key, would judge another model
  * or none. Checked at every level a model is read at: the model field, each
- * `alternativeModels` path and each object on it. A well-formed request never
- * has one.
+ * `alternativeModels` path and each object on it, and the fields that bring
+ * models of their own (`pinWhen`). A well-formed request never has one.
  */
 function refuseMiscasedModelKeys(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): void {
   const field = modelBodyField(operation);
-  const paths = [...(field === null ? [] : [field]), ...(readingRules(description, operation).alternativeModels?.paths ?? [])];
+  const alternatives = readingRules(description, operation).alternativeModels;
+  const paths = [...(field === null ? [] : [field]), ...(alternatives?.paths ?? []), ...(alternatives?.pinWhen?.fields ?? [])];
   for (const path of paths) {
     let level: unknown[] = [body];
     for (const segment of path.split(".")) {
@@ -160,7 +170,7 @@ function refuseMiscasedModelKeys(description: ProviderDescription, operation: Op
       const next: unknown[] = [];
       for (const value of level) {
         if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-        const miscased = Object.keys(value).find((name) => name !== key && name.toLowerCase() === key.toLowerCase());
+        const miscased = Object.keys(value).find((name) => name !== key && folded(name) === folded(key));
         if (miscased !== undefined) throw new GatewayError(400, "invalid_request", `${miscased} must be spelled ${key}`);
         if (!Object.hasOwn(value, key)) continue;
         const found = (value as Record<string, unknown>)[key];
