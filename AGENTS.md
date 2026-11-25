@@ -68,7 +68,7 @@ wrong than to fail it.
   deployment, self-hosted, hosted and tests alike. Don't set another in a
   deployment profile overlay unless it is absolutely necessary and the user
   has confirmed it; the release's prebuilt deploy refuses one anyway.
-- There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
+- Don't confuse the two kinds of limits: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) is what the hosted gateway lets each customer use, and app limits (`app_*`, `src/do/UserLimiter.ts`) are what a customer lets each user of their app do.
 
 ## Compatibility with older clients
 
