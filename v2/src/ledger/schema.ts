@@ -286,4 +286,6 @@ BEGIN
     session_ms = session_ms + excluded.session_ms;
 END`,
   ],
+  // Version 2 (step 8f, Sol round 6): the next work still being tried, without reading given-up rows.
+  ["CREATE INDEX `open_work_due_pending` ON `open_work` (`due_at`) WHERE gave_up_at IS NULL"],
 ];

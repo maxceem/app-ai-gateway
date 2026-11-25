@@ -75,10 +75,10 @@ const HOLDS_ROWS = `SELECT EXISTS (SELECT 1 FROM charge) OR EXISTS (SELECT 1 FRO
   OR EXISTS (SELECT 1 FROM budget_day) OR EXISTS (SELECT 1 FROM session) OR EXISTS (SELECT 1 FROM app_auth_event)
   OR EXISTS (SELECT 1 FROM app_rejection_event) OR EXISTS (SELECT 1 FROM open_work) AS held`;
 
-export class AccountLedger extends DurableObject<Env> {
-  /** When the alarm last ran, while this object stays in memory. */
-  private lastRunAt = 0;
+/** The earliest work still being tried, through `open_work_due_pending` (schema version 2). */
+export const NEXT_DUE_SQL = "SELECT MIN(due_at) AS due FROM open_work WHERE gave_up_at IS NULL";
 
+export class AccountLedger extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
@@ -100,7 +100,12 @@ export class AccountLedger extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     const now = Date.now();
-    this.lastRunAt = now;
+    try {
+      // Kept in storage, not memory: the object sleeps between runs, and the pause must outlast that.
+      writeMeta(this.ctx.storage, "last_run_at", String(now));
+    } catch (error) {
+      log("warn", "ledger_run_unmarked", { error: errorFacts(error) });
+    }
     const ledger = shapedLikeD1(async (statements, transaction) => runLedgerStatements(this.ctx.storage, statements, transaction));
     try {
       const kept: Promise<unknown>[] = [];
@@ -138,12 +143,13 @@ export class AccountLedger extends DurableObject<Env> {
    */
   private async planWork(fresh = false): Promise<void> {
     const sql = this.ctx.storage.sql;
-    const due = sql.exec<{ due: number | null }>("SELECT MIN(due_at) AS due FROM open_work WHERE gave_up_at IS NULL").one().due;
+    const due = sql.exec<{ due: number | null }>(NEXT_DUE_SQL).one().due;
     const held = sql.exec<{ held: number }>(HOLDS_ROWS).one().held === 1;
     const now = Date.now();
     const times = [...(due === null ? [] : [due]), ...(held ? [nextNightly(now, readMeta(this.ctx.storage, "nightly_day"))] : [])];
     if (times.length === 0) return;
-    const next = Math.max(now, this.lastRunAt + WORK_EVERY_MS, Math.min(...times));
+    const lastRunAt = Number(readMeta(this.ctx.storage, "last_run_at") ?? "0");
+    const next = Math.max(now, lastRunAt + WORK_EVERY_MS, Math.min(...times));
     const current = fresh ? null : await this.ctx.storage.getAlarm();
     if (current === null || current > next) await this.ctx.storage.setAlarm(next);
   }

@@ -7,7 +7,7 @@ import { seenSql } from "../src/admin/users.ts";
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { migrateLedger, nextNightly } from "../src/do/AccountLedger.ts";
+import { AccountLedger, migrateLedger, NEXT_DUE_SQL, nextNightly } from "../src/do/AccountLedger.ts";
 import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
 import { allowLedgerWork, ledger } from "./helpers.ts";
@@ -180,6 +180,36 @@ describe("the ledger object", () => {
     await work("second", 0);
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(after);
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
+  it("keeps the minute after a run when the object wakes again from storage (step 8f)", async () => {
+    allowLedgerWork();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = ledgerObject(env, "acc_wake");
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO ledger_meta (key, value) VALUES ('nightly_day', ?)", new Date().toISOString().slice(0, 10));
+      await state.storage.setAlarm(Date.now() + 3_600_000);
+    });
+    // Run now, as Cloudflare would once it is due.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    // Work due at once arrives after the object slept: a new instance on the same storage plans it.
+    const planned = await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.deleteAlarm();
+      state.storage.sql.exec(
+        "INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, tries, created_at) VALUES ('w', 'unresolved', 'acc_wake', 'a', 'call', 'o', 0, 0, 1)",
+      );
+      const woken = new AccountLedger(state, env) as unknown as { planWork(): Promise<void> };
+      await woken.planWork();
+      return state.storage.getAlarm();
+    });
+    expect(planned).not.toBeNull();
+    expect(planned!).toBeGreaterThanOrEqual(Date.now() + 50_000);
+    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
+  it("finds its next work through the index of work still being tried (step 8f)", async () => {
+    const plan = (await ledger().prepare(`EXPLAIN QUERY PLAN ${NEXT_DUE_SQL}`).all<{ detail: string }>()).results.map((row) => row.detail).join("\n");
+    expect(plan).toContain("open_work_due_pending");
   });
 
   it("runs the nightly maintenance once a day, after its hour", () => {

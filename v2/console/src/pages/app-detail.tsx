@@ -812,8 +812,9 @@ function SeenUsers({ appId, search }: { appId: string; search: string }) {
   const next = seen.data?.next_cursor ?? null;
   const first = cursors.length === 1;
   useEffect(() => setCursors([undefined]), [search]);
-  // Shown once the first page has someone, or a next page; a later page keeps the section while it loads.
-  if (seen.isError || (first && (seen.isPending || (list.length === 0 && next === null)))) return null;
+  // Shown once the first page has someone, or a next page. A later page keeps the section, with
+  // Previous and Next, while it loads and when it fails.
+  if (first && (seen.isPending || seen.isError || (list.length === 0 && next === null))) return null;
 
   return (
     <section className="space-y-2" aria-label="Also seen in usage">
@@ -834,6 +835,12 @@ function SeenUsers({ appId, search }: { appId: string; search: string }) {
               <TableRow>
                 <TableCell colSpan={4}>
                   <Skeleton className="h-5 w-full" />
+                </TableCell>
+              </TableRow>
+            ) : seen.isError ? (
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-sm text-destructive">
+                  Could not load this page. {seen.error instanceof Error ? seen.error.message : ""}
                 </TableCell>
               </TableRow>
             ) : list.length === 0 ? (
