@@ -80,15 +80,16 @@ async function appExists(db: D1Database, accountId: string, appId: string): Prom
  * carried one) is never read.
  *
  * - `one`: `?3` is the user id, and nothing is scanned.
- * - `page`: in id order, after `?4` (null for the first page), at most `?5`,
- *   with an optional `LIKE` pattern `?3` on the id. Each list walks its index
- *   from the cursor, so a page never reads the users before it.
+ * - `first` and `after`: a page in id order, at most `?5`; `after` starts
+ *   after the id `?4`. Each list walks its index from there, so a page never
+ *   reads the users before it: two plain queries, not one with an optional
+ *   cursor, so SQLite seeks the index by the cursor.
  */
-function seenSql(kind: "one" | "page"): string {
+export function seenSql(kind: "one" | "first" | "after"): string {
   const refusals = "app_rejection_event WHERE app_id = ?1 AND account_id = ?2";
   const charges = "charge WHERE app_id = ?1 AND +account_id = ?2";
-  const after = "(?4 IS NULL OR end_user_id > ?4)";
-  const afterRefusal = "(?4 IS NULL OR user_id > ?4)";
+  const after = kind === "after" ? "end_user_id > ?4" : "?4 IS NULL";
+  const afterRefusal = kind === "after" ? "user_id > ?4" : "?4 IS NULL";
   const named = kind === "one"
     ? `named(user_id) AS (
          SELECT ?3 WHERE EXISTS (SELECT 1 FROM ${charges} AND end_user_id = ?3)
@@ -175,7 +176,10 @@ async function seenPage(
   appId: string,
   page: { readonly cursor: string | null; readonly limit: number; readonly query: string | null },
 ): Promise<{ readonly rows: IdentityRow[]; readonly nextCursor: string | null }> {
-  const { results } = await ledgerDb(env, accountId).prepare(seenSql("page")).bind(appId, accountId, null, page.cursor, page.limit).all<SeenRow>();
+  const { results } = await ledgerDb(env, accountId)
+    .prepare(seenSql(page.cursor === null ? "first" : "after"))
+    .bind(appId, accountId, null, page.cursor, page.limit)
+    .all<SeenRow>();
   const known = await knownUsers(env.DB, appId, results.map((row) => row.id));
   const needle = page.query?.toLowerCase() ?? null;
   const rows = results

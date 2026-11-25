@@ -14,9 +14,9 @@
  * - The request is never failed or delayed by any of this: callers run it
  *   after the response is sent.
  */
-import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
+import { chargeStore } from "../do/ChargeStore.ts";
 import { ledgerDb } from "./database.ts";
 import { ON_TIME_SQL, onTimeCondition } from "./late-booking.ts";
 import type { NanoDollars } from "../money.ts";
@@ -242,13 +242,13 @@ export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<v
     // A write that stalls must not outlast the request's waitUntil window:
     // past the deadline the entry (its charge and its open work, together) goes
     // to the store too. Its ids are stable, so a late commit is harmless.
-    await withDeadline(writeToLedger(ledgerDb(env, entry.charge.accountId), [entry], Date.now()), LEDGER_D1_DEADLINE_MS, "writing the charge");
+    await writeToLedger(ledgerDb(env, entry.charge.accountId, { deadlineMs: LEDGER_D1_DEADLINE_MS }), [entry], Date.now());
     return;
   } catch (error) {
     log("warn", "ledger_write_failed", { app: entry.charge.appId, charge: entry.charge.id, error: errorFacts(error) });
   }
   try {
-    await env.CHARGE_STORE.getByName(entry.charge.appId).keep([entry]);
+    await chargeStore(env, entry.charge.appId).keep([entry]);
     return;
   } catch (error) {
     logLostEntry(entry, error);

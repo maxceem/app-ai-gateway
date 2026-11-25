@@ -52,12 +52,13 @@ export async function retryStored(
   now: number,
 ): Promise<number> {
   // An app belongs to one account, but a store outlives a move: group by the account each entry names.
+  // Each write has the ledger's deadline (`ledgerDb`), so a stalled one rejects into the alarm's backoff.
   let changes = 0;
   for (const [accountId, group] of byAccount(entries, (entry) => entry.charge.accountId)) {
-    changes += await withDeadline(writeToLedger(ledger(accountId), group, now), LEDGER_D1_DEADLINE_MS, "retrying stored charges");
+    changes += await writeToLedger(ledger(accountId), group, now);
   }
   for (const [accountId, group] of byAccount(rows, (row) => row.accountId)) {
-    changes += await withDeadline(writeOpenWork(ledger(accountId), group), LEDGER_D1_DEADLINE_MS, "retrying stored open work");
+    changes += await writeOpenWork(ledger(accountId), group);
   }
   return changes;
 }
@@ -70,6 +71,22 @@ function byAccount<T>(items: readonly T[], account: (item: T) => string): Map<st
     groups.set(account(item), list);
   }
   return groups;
+}
+
+/** How long one call to an app's failed-write store may take before it counts as failed. */
+export const CHARGE_STORE_DEADLINE_MS = 5_000;
+
+/**
+ * An app's failed-write store, each call under a deadline (plan, step 8f:
+ * every call that crosses to another store has one). A call that runs out
+ * rejects, so the caller's last resort, the logs, still runs in time.
+ */
+export function chargeStore(env: Env, appId: string, deadlineMs = CHARGE_STORE_DEADLINE_MS) {
+  const store = env.CHARGE_STORE.getByName(appId);
+  return {
+    keep: (entries: readonly LedgerEntry[]) => withDeadline(store.keep(entries), deadlineMs, "keeping the charge"),
+    keepWork: (rows: readonly OpenWorkRow[]) => withDeadline(store.keepWork(rows), deadlineMs, "keeping the open work"),
+  };
 }
 
 export class ChargeStore extends DurableObject<Env> {
@@ -148,7 +165,7 @@ export class ChargeStore extends DurableObject<Env> {
     let d1Changes: number;
     try {
       d1Changes = await retryStored(
-        (accountId) => ledgerDb(this.env, accountId),
+        (accountId) => ledgerDb(this.env, accountId, { deadlineMs: LEDGER_D1_DEADLINE_MS }),
         rows.map((row) => JSON.parse(row.entry) as LedgerEntry),
         work.map((one) => JSON.parse(one.row) as OpenWorkRow),
         now,

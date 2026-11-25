@@ -15,6 +15,8 @@
  * included, as D1 counts them.
  */
 
+import { withDeadline } from "../core/background.ts";
+
 /** One statement as it travels to the object: its SQL and its bound values. */
 export interface LedgerStatement {
   readonly sql: string;
@@ -54,10 +56,21 @@ export function ledgerObject(env: Env, accountId: string): DurableObjectStub<imp
   return hint === undefined ? namespace.get(id) : namespace.get(id, { locationHint: hint });
 }
 
-/** The account's ledger, with D1's shape. */
-export function ledgerDb(env: Env, accountId: string): D1Database {
+/**
+ * How long one call to an account's ledger object may take, by default
+ * (plan, step 8f: every call that crosses to another store has a deadline).
+ * Past it the call rejects like any other failure, so the caller's fallback
+ * and its warning run. A caller that needs another limit passes `deadlineMs`.
+ */
+export const LEDGER_CALL_DEADLINE_MS = 10_000;
+
+/** The account's ledger, with D1's shape. Each statement or batch is one call to the object, under its deadline. */
+export function ledgerDb(env: Env, accountId: string, options: { readonly deadlineMs?: number } = {}): D1Database {
   const object = ledgerObject(env, accountId);
-  return shapedLikeD1((statements, transaction) => object.query(statements as LedgerStatement[], transaction));
+  const deadlineMs = options.deadlineMs ?? LEDGER_CALL_DEADLINE_MS;
+  return shapedLikeD1((statements, transaction) =>
+    withDeadline(object.query(statements as LedgerStatement[], transaction), deadlineMs, "calling the account's ledger"),
+  );
 }
 
 /** Runs statements on an object's own database. A transaction is one `transactionSync`. */

@@ -17,7 +17,6 @@ import { useAssertionCounter } from "../client-auth/replay.ts";
 import { appUserBlocked } from "../client-auth/user-status.ts";
 import { scopeHasLimits } from "../contracts/app-config.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -88,7 +87,7 @@ export const ME_SPEND_DEADLINE_MS = 1_000;
  */
 async function monthSpent(env: Env, key: SpendKey, now: number): Promise<number | null> {
   try {
-    return await withDeadline(monthlySpendNano(ledgerDb(env, key.accountId), key, now), ME_SPEND_DEADLINE_MS, "reading the month's spend");
+    return await monthlySpendNano(ledgerDb(env, key.accountId, { deadlineMs: ME_SPEND_DEADLINE_MS }), key, now);
   } catch (error) {
     log("warn", "budget_total_unread", { app: key.appId, scope: key.scope, error: errorFacts(error) });
     return null;

@@ -24,6 +24,7 @@
  * A submission whose answer was lost is never sent again: it keeps its
  * estimate, marked `estimated`, and is logged (T15).
  */
+import { chargeStore } from "../do/ChargeStore.ts";
 import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -763,7 +764,7 @@ export async function keepFigure(env: Env, ledger: D1Database, ref: JobRef, fact
     log("warn", "job_figure_save_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });
   }
   try {
-    await env.CHARGE_STORE.getByName(ref.appId).keepWork([row]);
+    await chargeStore(env, ref.appId).keepWork([row]);
     return true;
   } catch (error) {
     log("warn", "job_figure_store_failed", { app: ref.appId, job: ref.job, error: errorFacts(error) });

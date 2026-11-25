@@ -5,7 +5,8 @@
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
+import { CHARGE_STORE_DEADLINE_MS, MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
+import { ledgerDb } from "../src/ledger/database.ts";
 import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
 import { nano, type NanoDollars } from "../src/money.ts";
 import { ledger, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
@@ -204,8 +205,9 @@ describe("the failed-write store", () => {
   it("gives up a stalled retry at the ledger's deadline, so the alarm reaches its backoff", async () => {
     vi.useFakeTimers();
     try {
-      const stalled = { prepare: (query: string) => ledger("acc_ledger").prepare(query), batch: () => new Promise<never>(() => undefined) } as unknown as D1Database;
-      const retry = retryStored(() => stalled, [entry()], [], 0);
+      // The ledger object never answers; the store's alarm reaches it as `ledgerDb`, with the write deadline.
+      const stalledLedgers = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise<never>(() => undefined) }) } } as unknown as Env;
+      const retry = retryStored((accountId) => ledgerDb(stalledLedgers, accountId, { deadlineMs: LEDGER_D1_DEADLINE_MS }), [entry()], [], 0);
       const outcome = retry.then(
         () => "written",
         (error: unknown) => (error as Error).message,
@@ -216,10 +218,45 @@ describe("the failed-write store", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
-      expect(await outcome).toMatch(/retrying stored charges took longer than/);
+      expect(await outcome).toMatch(/calling the account's ledger took longer than/);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("ends a write to a stalled ledger at its deadline, and keeps the charge in the store, with a warning (step 8f)", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const one = entry();
+    const kept: unknown[] = [];
+    const stalled = {
+      ...env,
+      ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => new Promise<never>(() => undefined) }) },
+      CHARGE_STORE: { getByName: () => ({ keep: async (entries: unknown[]) => void kept.push(...entries) }) },
+    } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const recording = recordLedgerEntry(stalled, one);
+    await vi.advanceTimersByTimeAsync(LEDGER_D1_DEADLINE_MS);
+    vi.useRealTimers();
+    await recording;
+    expect(warned.mock.calls.some(([line]) => String(line).includes('"message":"ledger_write_failed"'))).toBe(true);
+    expect(kept).toHaveLength(1);
+  });
+
+  it("ends a stalled failed-write store at its deadline, and logs the whole charge (step 8f)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const one = entry();
+    const stalled = {
+      ...env,
+      ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: () => Promise.reject(new Error("ledger down")) }) },
+      CHARGE_STORE: { getByName: () => ({ keep: () => new Promise<never>(() => undefined) }) },
+    } as unknown as Env;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const recording = recordLedgerEntry(stalled, one);
+    await vi.advanceTimersByTimeAsync(CHARGE_STORE_DEADLINE_MS);
+    vi.useRealTimers();
+    await recording;
+    expect(errors.mock.calls.some(([line]) => String(line).includes('"message":"usage_record_failed"'))).toBe(true);
   });
 
   it("has a size limit", () => {

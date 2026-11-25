@@ -3,6 +3,7 @@
  * shape the ledger code uses over it, and the rollup trigger inside a Durable
  * Object's SQLite.
  */
+import { seenSql } from "../src/admin/users.ts";
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
@@ -115,6 +116,43 @@ describe("the ledger object", () => {
     await runDurableObjectAlarm(stub);
     expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0);
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("runs its clean-up even when it cannot write, and still sets its next alarm (step 8f)", async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stub = ledgerObject(env, "acc_full");
+    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+    const old = Date.now() - 200 * 86_400_000;
+    await ledger("acc_full")
+      .prepare(
+        "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, created_at) VALUES ('old', 'a', 'acc_full', 'challenge', 'abandoned', ?), ('new', 'a', 'acc_full', 'challenge', 'abandoned', ?)",
+      )
+      .bind(old, Date.now())
+      .run();
+    // As on a full ledger: deletes work, inserts and updates fail.
+    await runInDurableObject(stub, (_instance, state) => {
+      const exec = state.storage.sql.exec.bind(state.storage.sql);
+      vi.spyOn(state.storage.sql, "exec").mockImplementation(((query: string, ...bindings: unknown[]) => {
+        if (/^\s*(INSERT|UPDATE)/iu.test(query)) throw new Error("database or disk is full: SQLITE_FULL");
+        return exec(query, ...bindings);
+      }) as typeof state.storage.sql.exec);
+    });
+    await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now()));
+    await runDurableObjectAlarm(stub);
+    vi.restoreAllMocks();
+    expect(await ledger("acc_full").prepare("SELECT id FROM app_auth_event").all().then((r) => r.results)).toEqual([{ id: "new" }]);
+    // The night was not marked, so the next run is set: it tries again.
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).not.toBeNull();
+    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
+  it("reads a later page of the users only usage names by seeking its indexes from the cursor (step 8f)", async () => {
+    const plan = (await ledger().prepare(`EXPLAIN QUERY PLAN ${seenSql("after")}`).bind("app", "acct", null, "cursor", 10).all<{ detail: string }>()).results
+      .map((row) => row.detail)
+      .join("\n");
+    expect(plan).toMatch(/charge_app_user_used \(app_id=\? AND end_user_id>\?\)/u);
+    expect(plan).toMatch(/app_rejection_event_app_user_created \(app_id=\? AND user_id>\?\)/u);
   });
 
   it("runs the nightly maintenance once a day, after its hour", () => {

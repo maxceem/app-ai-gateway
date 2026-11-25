@@ -98,20 +98,29 @@ export class AccountLedger extends DurableObject<Env> {
   override async alarm(): Promise<void> {
     const now = Date.now();
     const ledger = shapedLikeD1(async (statements, transaction) => runLedgerStatements(this.ctx.storage, statements, transaction));
-    const kept: Promise<unknown>[] = [];
     try {
-      await runSweep(this.env, ledger, { now, waitUntil: (work) => kept.push(work.catch(() => undefined)) });
-    } catch (error) {
-      log("error", "sweep_failed", { error: errorFacts(error) });
+      const kept: Promise<unknown>[] = [];
+      try {
+        await runSweep(this.env, ledger, { now, waitUntil: (work) => kept.push(work.catch(() => undefined)) });
+      } catch (error) {
+        log("error", "sweep_failed", { error: errorFacts(error) });
+      }
+      await Promise.all(kept);
+      if (nextNightly(now, readMeta(this.ctx.storage, "nightly_day")) <= now) {
+        // The clean-up first: on a full ledger whose writes fail, its deletes are what free the space.
+        // Logs each job itself, and never throws.
+        await runLedgerNightly(ledger, now, maintenanceStatementBudget(this.env), maintenanceRowLimit(this.env));
+        try {
+          writeMeta(this.ctx.storage, "nightly_day", utcDay(now));
+        } catch (error) {
+          // Run again on the next alarm, at least a minute away.
+          log("warn", "ledger_nightly_unmarked", { error: errorFacts(error) });
+        }
+      }
+    } finally {
+      // Whatever failed above, the next run is set. Only a failure to set it is let through, so Cloudflare retries.
+      await this.planWork(true);
     }
-    await Promise.all(kept);
-    if (nextNightly(now, readMeta(this.ctx.storage, "nightly_day")) <= now) {
-      // Marked first: a run that fails part way is not repeated until the next night.
-      writeMeta(this.ctx.storage, "nightly_day", utcDay(now));
-      // Logs each job itself, and never throws.
-      await runLedgerNightly(ledger, now, maintenanceStatementBudget(this.env), maintenanceRowLimit(this.env));
-    }
-    await this.planWork(true);
   }
 
   /**

@@ -135,12 +135,13 @@ async function recordAttempt(input: AuthEventInput & { accountId: string }, id: 
 }
 
 /**
- * How long one try at writing an event may take. Events are written after the
- * answer, inside the request's `waitUntil`, which ends about 30 s after it:
- * every try of a success fits well inside, so a stalled ledger ends in a
- * logged warning, never a silent loss.
+ * How long the whole recording of one attempt may take: the D1 read of the
+ * user's wait, every try at the event, and the D1 change. It runs after the
+ * answer, inside the request's `waitUntil`, which ends about 30 s after it,
+ * so this ends well before and its warning is always logged. Each ledger
+ * call also has the ledger's own deadline (`ledgerDb`).
  */
-export const AUTH_EVENT_WRITE_DEADLINE_MS = 5_000;
+export const AUTH_EVENT_JOB_DEADLINE_MS = 20_000;
 
 /** The event itself, in the account's ledger, once: its id is stable. A success gets a few tries; a failure is logged and skipped. */
 async function writeEvent(input: AuthEventInput & { accountId: string }, id: string, now: number, delayMs: number | null): Promise<void> {
@@ -149,7 +150,7 @@ async function writeEvent(input: AuthEventInput & { accountId: string }, id: str
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await withDeadline(ledger
+      await ledger
         .prepare(
           `INSERT INTO app_auth_event
              (id, app_id, account_id, user_id, event, auth_method, outcome, reason, app_version, client_sdk,
@@ -174,7 +175,7 @@ async function writeEvent(input: AuthEventInput & { accountId: string }, id: str
           delayMs,
           now,
         )
-        .run(), AUTH_EVENT_WRITE_DEADLINE_MS, "writing the auth event");
+        .run();
       return;
     } catch (error) {
       lastError = error;
@@ -195,10 +196,10 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
   const id = timeOrderedId();
   const now = Date.now();
   try {
-    const delayMs = await recordAttempt({ ...input, accountId: input.accountId }, id, now);
+    const delayMs = await withDeadline(recordAttempt({ ...input, accountId: input.accountId }, id, now), AUTH_EVENT_JOB_DEADLINE_MS, "recording the auth event");
     if (delayMs !== null) log("info", "claim_propagation_recovered", { app: input.appId, delayMs });
   } catch (error) {
-    log("error", "auth_event_record_failed", { id, appId: input.appId, event: input.event, outcome: input.outcome, error: errorFacts(error) });
+    log("warn", "auth_event_record_failed", { id, appId: input.appId, event: input.event, outcome: input.outcome, error: errorFacts(error) });
   }
 }
 
