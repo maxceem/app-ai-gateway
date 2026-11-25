@@ -89,8 +89,9 @@ Retention runs in two places.
 
 A cron trigger runs every hour, at minute 17, for what D1 holds:
 
-- Expired App Attest challenges are deleted, a bounded batch per run, so a
-  large backlog waits for later runs. One that nothing used is first recorded
+- Expired App Attest challenges are deleted, up to five batches of 1,000 a
+  run (one batch in the 03:17 and 04:17 runs), so a large backlog waits for
+  later runs. One that nothing used is first recorded
   as a [challenge auth event](/applications/auth-events#unused-challenges); if
   that event can't be written, the challenge is still deleted and a warning is
   logged.
@@ -108,7 +109,7 @@ in order on its own alarm:
 | --- | --- |
 | Pending work, such as job results still to fetch | Checked when it is due, at most once a minute. |
 | Authentication and rejection events | Deleted after 90 days, in a nightly run after 04:00 UTC. |
-| Usage | In the same nightly run, per-request rows older than 90 days are deleted; their daily totals stay. Once a whole month is older than 400 days, its daily totals are folded into one monthly total. |
+| Usage | In the same nightly run, per-request rows older than 90 days are deleted once any pending work on them is done; their daily totals stay. Once a whole month is older than 400 days, its daily totals are folded into monthly totals, still split by app, provider, model and outcome. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.
@@ -126,16 +127,20 @@ Usage history is not in D1. Charges, usage totals, sessions and sign-in
 events live in one Durable Object per account, each with its own storage, so
 `wrangler d1 export` does not include them.
 
-Cloudflare limits how much Durable Objects may do each day on its Free plan.
-Every Durable Object the gateway uses shares those limits. Past them, until
-they reset:
+Cloudflare limits how much Durable Objects may do each day on its Free plan,
+per kind of operation, such as rows read or rows written. Past a limit, until
+it resets, only the operations of that kind fail, and each part of the
+gateway answers on its own:
 
-- Calls are still served, but their charges can't be recorded. Each one is
-  written to the logs as `usage_record_failed` instead.
-- Per-user and per-app limits are not enforced. Each call logs
+- **Charges.** A call is still served. Its charge goes to the store kept for
+  failed writes, which retries it later. Only when that store fails too is
+  the charge written to the logs as `usage_record_failed`.
+- **Per-user and per-app limits.** For an app with limits set, a limit check
+  that fails or runs out of time lets the call through, and the call logs
   `app_limits_unchecked`.
-- App Attest requests are refused with a `503` the app may retry: the replay
-  check, the token exchange and `/me` all need a Durable Object.
+- **App Attest replay check, sign-in and token exchange.** These are refused
+  with a `503` the app may retry. The replay check and the sign-in flood limit
+  both need a Durable Object, and the gateway won't skip them.
 
 ## Reprice stored usage
 
