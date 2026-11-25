@@ -9,7 +9,7 @@ import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { encode } from "cbor-x";
-import { vi } from "vitest";
+import { onTestFinished, vi } from "vitest";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { base64url, requestClientData } from "../src/client-auth/request-proof.ts";
@@ -373,13 +373,24 @@ export function withLedgerDb(base: Env, make: (real: D1Database, accountId: stri
   return { ...base, ACCOUNT_LEDGER: namespace } as unknown as Env;
 }
 
+/** The ledger object's own `planWork`, kept so a test can let alarms be set again. */
+const PLAN_WORK = (AccountLedger.prototype as unknown as { planWork(fresh?: boolean): Promise<void> }).planWork;
+
 /**
- * Keeps the ledger objects from setting their alarms until the test ends, for
- * tests that run the sweep, settlement or retention themselves at their own
- * times: an alarm would otherwise run the real sweep at the real time.
+ * Keeps the ledger objects from setting their alarms, for every test unless
+ * it calls `allowLedgerWork`: an alarm would run the real sweep and nightly
+ * clean-up at the real time, over rows each test dates at its own, and an
+ * alarm left set keeps the run from ending. Patched on the class itself, not
+ * spied, so `vi.restoreAllMocks()` in a test never turns alarms back on.
  */
 export function pauseLedgerWork(): void {
-  vi.spyOn(AccountLedger.prototype as unknown as { planWork(): Promise<void> }, "planWork").mockResolvedValue(undefined);
+  (AccountLedger.prototype as unknown as { planWork(): Promise<void> }).planWork = async () => undefined;
+}
+
+/** Lets the ledger objects set their alarms until the test ends. */
+export function allowLedgerWork(): void {
+  (AccountLedger.prototype as unknown as { planWork(fresh?: boolean): Promise<void> }).planWork = PLAN_WORK;
+  onTestFinished(() => pauseLedgerWork());
 }
 
 /** An account's ledger, with D1's shape, as the code reads and writes it (step 8f). */

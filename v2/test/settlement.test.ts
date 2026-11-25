@@ -21,7 +21,7 @@ import { OPEN_WORK_HANDLERS, runSweep, SWEEP_MAX_TRIES, type OpenWorkHandler } f
 import { LEDGER_LATE_BOOKING_DAYS } from "../src/ledger/late-booking.ts";
 import { recordLedgerEntry, utcDay, type ChargeRow } from "../src/ledger/write.ts";
 import { nano } from "../src/money.ts";
-import { ACCOUNT_ID, ledger, seedAccount, seedApp, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
+import { ACCOUNT_ID, allowLedgerWork, ledger, seedAccount, seedApp, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-19T10:00:00Z");
 let counter = 0;
@@ -883,7 +883,7 @@ describe("the ledger object's alarm", () => {
   it("runs the sweep of its open work", async () => {
     quiet();
     // This test lets the object set its alarm.
-    vi.restoreAllMocks();
+    allowLedgerWork();
     const id = unique("cron");
     // Work for a session that does not exist is finished at once.
     await ledger().prepare(

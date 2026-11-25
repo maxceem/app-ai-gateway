@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { migrateLedger, nextNightly } from "../src/do/AccountLedger.ts";
 import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
-import { ledger } from "./helpers.ts";
+import { allowLedgerWork, ledger } from "./helpers.ts";
 
 describe("the ledger object", () => {
   it("runs the rollup trigger inside the object's SQLite, once per charge", async () => {
@@ -80,7 +80,7 @@ describe("the ledger object", () => {
 
   it("sets its alarm for open work, and its sweep takes the due rows", async () => {
     // This test lets the object set its alarm.
-    vi.restoreAllMocks();
+    allowLedgerWork();
     const db = ledger("acc_alarm");
     const stub = ledgerObject(env, "acc_alarm");
     // Tonight's maintenance is done, so the alarm is the work's alone.
@@ -104,7 +104,7 @@ describe("the ledger object", () => {
   });
 
   it("keeps its nightly alarm for an account whose only rows are given-up work, so retention still deletes them", async () => {
-    vi.restoreAllMocks();
+    allowLedgerWork();
     const stub = ledgerObject(env, "acc_given_up");
     await ledger("acc_given_up")
       .prepare(
@@ -119,7 +119,7 @@ describe("the ledger object", () => {
   });
 
   it("runs its clean-up even when it cannot write, and still sets its next alarm (step 8f)", async () => {
-    vi.restoreAllMocks();
+    allowLedgerWork();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const stub = ledgerObject(env, "acc_full");
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
@@ -156,7 +156,7 @@ describe("the ledger object", () => {
   });
 
   it("never lets a write pull its alarm into the minute after a run (step 8f)", async () => {
-    vi.restoreAllMocks();
+    allowLedgerWork();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const stub = ledgerObject(env, "acc_pause");

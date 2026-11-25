@@ -7,7 +7,7 @@ beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 
-// The ledger objects set no alarm unless a test lets them (`vi.restoreAllMocks()`):
+// The ledger objects set no alarm unless a test lets them (`allowLedgerWork()`):
 // an alarm would run the real sweep and nightly clean-up at the real time, over
 // rows each test dates at its own, and an alarm left set keeps the run from
 // ending. Paused from the start, so writes in `beforeAll` set none either.
