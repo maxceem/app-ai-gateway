@@ -8,7 +8,6 @@ import { ledgerDb, type LedgerResult, type LedgerStatement } from "../src/ledger
 import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
-import { encode } from "cbor-x";
 import { onTestFinished, vi } from "vitest";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
@@ -17,6 +16,7 @@ import { appCache } from "../src/apps/app-records.ts";
 import { clearAllCaches } from "../src/core/ttl-cache.ts";
 import { resetStallHold } from "../src/core/stale-read.ts";
 import { writeToLedger, type LedgerEntry } from "../src/ledger/write.ts";
+import { encodeCbor } from "./app-attest-fixtures.ts";
 
 export const ACCOUNT_ID = "acc_test";
 export const TEAM_ID = "AAAAAAAAAA";
@@ -132,7 +132,7 @@ export async function testAssertion(input: {
   );
   const signer = createSign("SHA256");
   signer.update(nonce);
-  return Buffer.from(encode({ signature: signer.sign(input.privateKey), authenticatorData }));
+  return Buffer.from(encodeCbor({ signature: signer.sign(input.privateKey), authenticatorData }));
 }
 
 /** The `X-AppAttest-Proof` a device sends with one request. */

@@ -1,10 +1,9 @@
 import { Buffer } from "node:buffer";
 import { X509Certificate } from "node:crypto";
-import * as asn1js from "asn1js";
 import { CompactSign } from "jose";
-import * as pkijs from "pkijs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { verifyAppTransaction } from "../src/client-auth/app-transaction.ts";
+import { issue, tlv } from "./app-attest-fixtures.ts";
 
 /**
  * Apple will not sign anything for a test, so these build a stand-in for the
@@ -14,56 +13,10 @@ import { verifyAppTransaction } from "../src/client-auth/app-transaction.ts";
  */
 const RECEIPT_SIGNING_LEAF_OID = "1.2.840.113635.100.6.11.1";
 const WWDR_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.1";
-const ALGORITHM = { name: "ECDSA", namedCurve: "P-256" } as const;
 const YEAR_MS = 365 * 24 * 60 * 60_000;
 
-// The workers runtime's `crypto` is a full WebCrypto, but its declared type
-// is not the DOM one pkijs is typed against.
-pkijs.setEngine("test", new pkijs.CryptoEngine({ name: "test", crypto: crypto as never }) as unknown as pkijs.ICryptoEngine);
-
-interface Issued {
-  certificate: pkijs.Certificate;
-  keys: CryptoKeyPair;
-}
-
-let serial = 1;
-
-async function issue(input: {
-  name: string;
-  issuer?: Issued;
-  ca: boolean;
-  marker?: string;
-  notBefore?: number;
-  notAfter?: number;
-}): Promise<Issued> {
-  const keys = await crypto.subtle.generateKey(ALGORITHM, true, ["sign", "verify"]) as CryptoKeyPair;
-  const certificate = new pkijs.Certificate();
-  certificate.version = 2;
-  certificate.serialNumber = new asn1js.Integer({ value: serial++ });
-  const name = (text: string) => new pkijs.RelativeDistinguishedNames({
-    typesAndValues: [new pkijs.AttributeTypeAndValue({ type: "2.5.4.3", value: new asn1js.Utf8String({ value: text }) })],
-  });
-  certificate.subject = name(input.name);
-  certificate.issuer = input.issuer ? input.issuer.certificate.subject : name(input.name);
-  certificate.notBefore.value = new Date(input.notBefore ?? Date.now() - YEAR_MS);
-  certificate.notAfter.value = new Date(input.notAfter ?? Date.now() + YEAR_MS);
-  certificate.extensions = [
-    new pkijs.Extension({
-      extnID: "2.5.29.19",
-      critical: true,
-      extnValue: new pkijs.BasicConstraints({ cA: input.ca }).toSchema().toBER(false),
-      parsedValue: new pkijs.BasicConstraints({ cA: input.ca }),
-    }),
-    ...(input.marker === undefined ? [] : [
-      new pkijs.Extension({ extnID: input.marker, critical: false, extnValue: new asn1js.Null().toBER(false) }),
-    ]),
-  ];
-  await certificate.subjectPublicKeyInfo.importKey(keys.publicKey);
-  await certificate.sign((input.issuer ?? { keys }).keys.privateKey, "SHA-256");
-  return { certificate, keys };
-}
-
-const der = (issued: Issued): Buffer => Buffer.from(issued.certificate.toSchema(true).toBER(false));
+/** Apple's markers hold an ASN.1 NULL. */
+const marker = (oid: string) => [{ oid, value: tlv(0x05) }];
 
 interface Chain {
   root: X509Certificate;
@@ -77,18 +30,18 @@ async function chain(options: { leafMarker?: string | null; intermediateMarker?:
     name: "Test WWDR",
     issuer: root,
     ca: true,
-    ...(options.intermediateMarker === null ? {} : { marker: options.intermediateMarker ?? WWDR_INTERMEDIATE_OID }),
+    ...(options.intermediateMarker === null ? {} : { extensions: marker(options.intermediateMarker ?? WWDR_INTERMEDIATE_OID) }),
   });
   const leaf = await issue({
     name: "Test Receipt Signing",
     issuer: intermediate,
     ca: false,
-    ...(options.leafMarker === null ? {} : { marker: options.leafMarker ?? RECEIPT_SIGNING_LEAF_OID }),
+    ...(options.leafMarker === null ? {} : { extensions: marker(options.leafMarker ?? RECEIPT_SIGNING_LEAF_OID) }),
     ...(options.leafExpires === undefined ? {} : { notAfter: options.leafExpires }),
   });
   return {
-    root: new X509Certificate(der(root)),
-    x5c: [der(leaf), der(intermediate), der(root)].map((bytes) => bytes.toString("base64")),
+    root: root.certificate,
+    x5c: [leaf.der, intermediate.der, root.der].map((bytes) => bytes.toString("base64")),
     leafKey: leaf.keys.privateKey,
   };
 }

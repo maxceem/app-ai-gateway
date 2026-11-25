@@ -1,8 +1,7 @@
 import { Buffer } from "node:buffer";
 import { X509Certificate } from "node:crypto";
-import * as asn1js from "asn1js";
-import { decode } from "cbor-x";
-import { Certificate } from "pkijs";
+import { decodeCbor } from "./cbor.ts";
+import { appAttestNonce, certificateFields } from "./der.ts";
 import { GatewayError } from "../core/errors.ts";
 import type { AppAttestEnvironment } from "../contracts/app-config.ts";
 import { bytesEqual, decodeBase64, fail, sha256, uint32 } from "./app-assertion.ts";
@@ -21,6 +20,9 @@ CgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn
 53O5+FRXgeLhpJ06ysC5PrOyAjEAp5U4xDgEgllF7En3VcE3iexZZtKeYnpqtijV
 oyFraWVIyd/dganmrduC1bmTBGwD
 -----END CERTIFICATE-----`;
+
+/** The extension Apple puts the attestation's nonce in. */
+const APP_ATTEST_NONCE_OID = "1.2.840.113635.100.8.2";
 
 let appleAppAttestRoot: X509Certificate | undefined;
 
@@ -69,24 +71,6 @@ function certificateIsCurrent(certificate: X509Certificate): boolean {
   return now >= Date.parse(certificate.validFrom) && now <= Date.parse(certificate.validTo);
 }
 
-function findNonce(value: unknown, expected: Uint8Array): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  const valueBlock = record.valueBlock;
-  if (typeof valueBlock === "object" && valueBlock !== null) {
-    const block = valueBlock as Record<string, unknown>;
-    if (block.valueHexView instanceof Uint8Array && bytesEqual(block.valueHexView, expected)) return true;
-    if (Array.isArray(block.value) && block.value.some((child) => findNonce(child, expected))) return true;
-  }
-  return false;
-}
-
-function parsePkiCertificate(certificate: X509Certificate): Certificate {
-  const parsed = asn1js.fromBER(Uint8Array.from(certificate.raw).buffer);
-  if (parsed.offset === -1) fail();
-  return new Certificate({ schema: parsed.result });
-}
-
 function assertAttestationShape(value: unknown): {
   authData: Buffer;
   certificateDer: Buffer;
@@ -118,10 +102,12 @@ export async function verifyAppAttestation(input: {
   keyId: string;
   challenge: string;
   attestation: string;
+  /** For tests, which cannot get Apple to attest anything. */
+  root?: X509Certificate;
 }): Promise<{ publicKeyPem: string; environment: AppAttestEnvironment }> {
   let decoded: unknown;
   try {
-    decoded = decode(decodeBase64(input.attestation, "attestation"));
+    decoded = decodeCbor(decodeBase64(input.attestation, "attestation"));
   } catch (error) {
     if (error instanceof GatewayError) throw error;
     return fail();
@@ -135,7 +121,7 @@ export async function verifyAppAttestation(input: {
   } catch {
     return fail();
   }
-  const root = appleAppAttestRootCertificate();
+  const root = input.root ?? appleAppAttestRootCertificate();
   if (
     !certificateIsCurrent(credential) ||
     !certificateIsCurrent(intermediate) ||
@@ -147,13 +133,19 @@ export async function verifyAppAttestation(input: {
 
   const challengeHash = await sha256(decodeBase64(input.challenge, "challenge"));
   const nonce = await sha256(Buffer.concat([proof.authData, challengeHash]));
-  const pkiCertificate = parsePkiCertificate(credential);
-  const extension = pkiCertificate.extensions?.find((item) => item.extnID === "1.2.840.113635.100.8.2");
-  if (!extension) fail();
-  const parsedExtension = asn1js.fromBER(Uint8Array.from(extension.extnValue.valueBlock.valueHexView).buffer);
-  if (parsedExtension.offset === -1 || !findNonce(parsedExtension.result, nonce)) fail();
-
-  const publicKeyBytes = pkiCertificate.subjectPublicKeyInfo.subjectPublicKey.valueBlock.valueHexView;
+  let publicKeyBytes: Uint8Array;
+  let certificateNonce: Uint8Array;
+  try {
+    const fields = certificateFields(credential.raw);
+    const extension = fields.extensions.get(APP_ATTEST_NONCE_OID);
+    if (extension === undefined) return fail();
+    certificateNonce = appAttestNonce(extension);
+    publicKeyBytes = fields.publicKey;
+  } catch (error) {
+    if (error instanceof GatewayError) throw error;
+    return fail();
+  }
+  if (!bytesEqual(certificateNonce, nonce)) fail();
   if ((await sha256(publicKeyBytes)).toString("base64") !== input.keyId) fail();
   const expectedRpId = await sha256(Buffer.from(input.appId));
   if (!bytesEqual(proof.authData.subarray(0, 32), expectedRpId)) fail();

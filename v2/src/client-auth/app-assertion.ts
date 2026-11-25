@@ -2,19 +2,19 @@
  * App Attest assertion verification, on its own.
  *
  * Split from `./app-attest` because the two are paid for at different rates.
- * Attestation runs once per install and needs a certificate chain parsed —
- * `pkijs` and `asn1js` — while an assertion is checked on every request an App
- * Attest application serves, and needs only CBOR and an ECDSA verify. Keeping
- * them apart keeps the certificate libraries off the proxy path entirely.
+ * Attestation runs once per install and needs a certificate chain read, while
+ * an assertion is checked on every request an App Attest application serves,
+ * and needs only CBOR and an ECDSA verify. Keeping them apart keeps the
+ * certificate code off the proxy path entirely.
  * Still imported dynamically by its callers, so a server application's isolate
  * never parses even this.
  */
 
 import { Buffer } from "node:buffer";
 import { createPublicKey, createVerify, type KeyObject } from "node:crypto";
-import { decode } from "cbor-x";
 import { GatewayError } from "../core/errors.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
+import { decodeCbor } from "./cbor.ts";
 
 interface AssertionObject {
   signature?: unknown;
@@ -114,7 +114,7 @@ export async function verifyAppAssertion(input: {
 }): Promise<number> {
   let decoded: unknown;
   try {
-    decoded = decode(decodeBase64(input.assertion, "assertion"));
+    decoded = decodeCbor(decodeBase64(input.assertion, "assertion"));
   } catch (error) {
     if (error instanceof GatewayError) throw error;
     return fail();

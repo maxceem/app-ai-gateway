@@ -26,12 +26,9 @@
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "@maxceem/worker-mailer": "https://github.com/maxceem/worker-mailer/releases/download/v1.4.4/maxceem-worker-mailer-1.4.4.tgz",
     "@modelcontextprotocol/server": "2.2.0",
-    "asn1js": "^3.0.7",
-    "cbor-x": "^1.6.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.9.0",
     "jose": "^6.0.0",
-    "pkijs": "^3.3.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {

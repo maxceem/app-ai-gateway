@@ -1,8 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync } from "node:crypto";
-import { encode } from "cbor-x";
 import { describe, expect, it } from "vitest";
 import { assertionClientData, verifyAppAssertion } from "../src/client-auth/app-assertion.ts";
+import { encodeCbor } from "./app-attest-fixtures.ts";
 
 async function digest(value: Uint8Array): Promise<Buffer> {
   return Buffer.from(await crypto.subtle.digest("SHA-256", Uint8Array.from(value).buffer));
@@ -26,7 +26,7 @@ async function assertionFixture(input: {
   signer.update(nonce);
   const signature = signer.sign(pair.privateKey);
   return {
-    assertion: Buffer.from(encode({ signature, authenticatorData })).toString("base64"),
+    assertion: Buffer.from(encodeCbor({ signature, authenticatorData })).toString("base64"),
     publicKeyPem: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
     clientDataHash,
   };
