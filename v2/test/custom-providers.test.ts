@@ -889,6 +889,26 @@ describe("serving a custom provider", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("serves a fallback with no price when the app lists no models, and leaves its answer unresolved if it is the one that answers", async () => {
+    const { appId, slug, key } = await setup(
+      [{ method: "POST", path: "chat/completions", style: "openai-chat" }],
+      ["custom.openai-chat"],
+      "https://ai-gateway.vercel.sh/v1/",
+      { "openai/gpt-4o-mini": { input: 150_000_000, output: 600_000_000 } },
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchSpy.mockResolvedValueOnce(Response.json({ id: "c1", model: "openai/gpt-4o", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/chat/completions`, key, {
+      body: JSON.stringify({ model: "openai/gpt-4o-mini", messages: [], providerOptions: { gateway: { models: ["openai/gpt-4o"] } } }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(response.status, text).toBe(200);
+    const [charge] = await chargesOf(appId);
+    expect(charge).toMatchObject({ model: "openai/gpt-4o", price_source: "unresolved", cost_nano: null });
+    expect(await env.DB.prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(charge!.id).first()).toEqual({ kind: "unresolved" });
+    expect(errors.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it("judges an OpenRouter Messages path's fallbacks with OpenRouter's own fields, and charges the fallback that answered at its rate", async () => {
     const rates = { "anthropic/claude-haiku-4.5": { input: 1_000_000_000, output: 5_000_000_000 }, "anthropic/claude-sonnet-4.5": { input: 3_000_000_000, output: 15_000_000_000 } };
     const listedOne = await setup([{ method: "POST", path: "v1/messages", style: "anthropic-messages" }], ["custom.anthropic-messages"], "https://openrouter.ai/api/", rates, [

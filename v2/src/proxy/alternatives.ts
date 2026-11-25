@@ -146,7 +146,16 @@ function choosingRefusal(model: string): GatewayError {
  */
 function refuseUnjudgedFields(description: ProviderDescription, operation: OperationDescription, body: Record<string, unknown>): void {
   for (const rule of readingRules(description, operation).alternativeModels?.refusedWhen ?? []) {
-    const values = valuesAt(body, rule.path, () => {});
+    // Read from the objects that hold the value, so `unless` can look beside it.
+    const cut = rule.path.lastIndexOf(".");
+    const holders = cut < 0 ? [body] : valuesAt(body, rule.path.slice(0, cut), () => {});
+    const last = rule.path.slice(cut + 1);
+    const values = holders.flatMap((holder) => {
+      if (typeof holder !== "object" || holder === null || Array.isArray(holder)) return [];
+      const record = holder as Record<string, unknown>;
+      if (rule.unless !== undefined && record[rule.unless.field] === rule.unless.value) return [];
+      return valuesAt(record, last, () => {});
+    });
     const words = rule.containing?.map(folded);
     const hit = values.find((value) => words === undefined || (typeof value === "string" && words.some((word) => folded(value).includes(word))));
     if (hit === undefined) continue;
@@ -232,7 +241,12 @@ function refuseMiscasedModelKeys(description: ProviderDescription, operation: Op
     ...(field === null ? [] : [field]),
     ...(alternatives?.paths ?? []),
     ...(alternatives?.pinWhen?.fields ?? []),
-    ...(alternatives?.refusedWhen ?? []).map((rule) => rule.path),
+    ...(alternatives?.refusedWhen ?? []).flatMap((rule) => {
+      // The field `unless` reads sits beside the value: its letter case matters as much.
+      if (rule.unless === undefined) return [rule.path];
+      const cut = rule.path.lastIndexOf(".");
+      return [rule.path, cut < 0 ? rule.unless.field : `${rule.path.slice(0, cut)}.${rule.unless.field}`];
+    }),
   ];
   for (const path of paths) {
     let level: unknown[] = [body];
@@ -274,8 +288,10 @@ export function judgedAlternatives(
   const judged = new Map<string, Alternative>();
   const allowed = modelSet(policy.allowed);
   for (const [model, field] of named) {
-    // Resolved by the one rule saving runs too (`resolveAlternative`).
-    const call = resolveAlternative(operation, policy.sources, model, allowed);
+    // Resolved by the one rule saving runs too (`resolveAlternative`). A
+    // missing price never refuses: the model may never answer, and one that
+    // does with no price is left unresolved, as any unpriced answer.
+    const call = resolveAlternative(operation, policy.sources, model, allowed, { forgivingPrice: true });
     if (call.kind === "refused") {
       if (call.reason === "model_not_allowed") {
         throw new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model, field } });

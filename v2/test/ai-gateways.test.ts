@@ -616,13 +616,14 @@ describe("calls through the gateways, end to end", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     const open = await routed({ type: "vercel", secret: PROVIDER_KEY }, "vercel.chat", undefined);
+    // With no list, a fallback with no price is sent: it may never answer, and one that does is left unresolved.
     const unpriced = await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
       model: "openai/gpt-4o-mini",
       messages: [],
       providerOptions: { gateway: { models: ["nobody/model"] } },
     });
-    expect(unpriced.status).toBe(400);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(unpriced.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
 
     fetchSpy.mockResolvedValue(Response.json({ id: "c2", model: "anthropic/claude-sonnet-5", choices: [], usage }));
     const served = await call(open.slug, open.appKey, open.appId, "v1/chat/completions", {
@@ -632,10 +633,11 @@ describe("calls through the gateways, end to end", () => {
     });
     expect(served.status).toBe(200);
     const rows = await charges(open.appId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.model).toBe("anthropic/claude-sonnet-5");
+    // The unpriced call above, answered by the request's own model, and this one.
+    expect(rows).toHaveLength(2);
+    const sonnet = rows.find((row) => row.model === "anthropic/claude-sonnet-5")!;
     const expected = priceTokens(listPrice("anthropic", "claude-sonnet-5")!, { inputTokens: 1000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
-    expect(Number(rows[0]!.cost_nano)).toBe(expected);
+    expect(Number(sonnet.cost_nano)).toBe(expected);
   });
 
   it("finds the served model at the root of a large answer, kept or not, and marks a charge it cannot tell as an estimate (S4)", async () => {

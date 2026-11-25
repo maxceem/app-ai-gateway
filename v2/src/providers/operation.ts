@@ -911,9 +911,15 @@ export interface ProviderDescription {
      * another model: a request sending one is refused where its models are
      * limited (an app's list, or a preset's model). With `containing`, only
      * when a value there, ignoring letter case, contains one of these words.
-     * A path reads as in `paths` (`src/proxy/alternatives.ts`).
+     * With `unless`, not when the object holding the value has that field at
+     * that value (an OpenRouter plugin sent with `enabled: false` is off). A
+     * path reads as in `paths` (`src/proxy/alternatives.ts`).
      */
-    readonly refusedWhen?: readonly { readonly path: string; readonly containing?: readonly string[] }[];
+    readonly refusedWhen?: readonly {
+      readonly path: string;
+      readonly containing?: readonly string[];
+      readonly unless?: { readonly field: string; readonly value: string | number | boolean | null };
+    }[];
   };
   /**
    * Model names that are not a model but ask the provider to choose one

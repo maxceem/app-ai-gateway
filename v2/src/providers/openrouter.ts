@@ -51,7 +51,8 @@ export const openrouter = defineProvider({
     refusedWhen: [
       { path: "preset", containing: ["@preset/"] },
       { path: "tools[].type", containing: ["advisor", "subagent", "fusion", "image"] },
-      { path: "plugins[].id", containing: ["fusion"] },
+      // A plugin sent with `enabled: false` is turned off (docs: guides/features/plugins).
+      { path: "plugins[].id", containing: ["fusion"], unless: { field: "enabled", value: false } },
     ],
   },
   choosingModels: [

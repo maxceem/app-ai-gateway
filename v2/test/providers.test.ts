@@ -532,16 +532,17 @@ describe("Perplexity", () => {
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("no_cost_reported"));
   });
 
-  it("judges a rewrite to perplexity/auto as perplexity/auto: served only with a routing block whose models are allowed", async () => {
+  it("serves the app's own rewrite to perplexity/auto, the customer's choice, while judging the routing models the caller names", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["house", "perplexity/glm-5.3-flash"] });
     await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
       .bind(JSON.stringify({ house: "perplexity/auto" }), appId)
       .run();
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "perplexity/auto": { input: 1_000_000_000, output: 2_000_000_000 } }), slug)
+      .run();
     clearCaches();
-    // Were it sent, the provider would answer.
     fetchSpy.mockImplementation(async () => Response.json({ model: "perplexity/glm-5.3-flash", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
-    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
-    expect(bare.response.status).toBe(400);
+    // The caller's routing names a model the app does not list.
     const outside = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, {
       model: "house",
       routing: { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] },
@@ -549,6 +550,11 @@ describe("Perplexity", () => {
     });
     expect(outside.response.status).toBe(403);
     expect(fetchSpy).not.toHaveBeenCalled();
+    const bare = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "house", messages: [] });
+    expect(bare.response.status).toBe(200);
+    await bare.response.text();
+    await waitOnExecutionContext(bare.ctx);
+    expect(sent(0).body.model).toBe("perplexity/auto");
   });
 
   it("serves perplexity/auto only with a routing block, judging every model it names and charging the one that served", async () => {
@@ -806,6 +812,38 @@ describe("OpenRouter's other models", () => {
     const charges = await chargesOf(appId);
     expect(charges).toHaveLength(bodies.length);
     for (const charge of charges) expect(charge).toMatchObject({ price_source: "provider_usd", cost_nano: fromDollars(0.0012) });
+  });
+
+  it("serves the app's own rewrite to a router or a saved preset, the customer's choice, as the target it names", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: ["house", "writer"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ house: "openrouter/auto", writer: "@preset/writer" }), appId)
+      .run();
+    clearCaches();
+    for (const [index, [alias, target]] of [["house", "openrouter/auto"], ["writer", "@preset/writer"]].entries()) {
+      fetchSpy.mockResolvedValueOnce(answer(SOL));
+      const { response, ctx } = await post(chat(appId, slug), key, { model: alias, messages: [] });
+      expect(response.status, alias).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(sent(index).body.model).toBe(target);
+    }
+    // The caller naming the router itself, which the app does not list, is still refused.
+    expect((await post(chat(appId, slug), key, { model: "openrouter/auto", messages: [] })).response.status).toBe(400);
+  });
+
+  it("serves the fusion plugin sent turned off, which OpenRouter does not run", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
+    fetchSpy.mockResolvedValue(answer(LUNA));
+    const off = { model: LUNA, plugins: [{ id: "fusion", enabled: false, analysis_models: [SOL] }], messages: [] };
+    const { response, ctx } = await post(chat(appId, slug), key, off);
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body).toEqual(off);
+    // On, or in another letter case beside it, it is refused.
+    expect((await post(chat(appId, slug), key, { ...off, plugins: [{ id: "fusion", enabled: true }] })).response.status).toBe(400);
+    expect((await post(chat(appId, slug), key, { ...off, plugins: [{ id: "fusion", enabled: false, Enabled: true }] })).response.status).toBe(400);
   });
 
   it("judges an OpenRouter preset's fixed parameters by the same rule when it is saved", () => {
