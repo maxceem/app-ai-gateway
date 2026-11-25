@@ -125,6 +125,9 @@ export async function verifyAppAttestation(input: {
   if (
     !certificateIsCurrent(credential) ||
     !certificateIsCurrent(intermediate) ||
+    // checkIssued compares names only; a certificate the root issued for an
+    // end entity must not stand in as the intermediate.
+    !intermediate.ca ||
     !credential.checkIssued(intermediate) ||
     !credential.verify(intermediate.publicKey) ||
     !intermediate.checkIssued(root) ||

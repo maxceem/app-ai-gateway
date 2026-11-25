@@ -79,4 +79,32 @@ describe("App Attest assertions", () => {
       }),
     ).rejects.toMatchObject({ code: "attest_failed" });
   });
+
+  it("refuses a malformed assertion with attest_failed, never a server error", async () => {
+    const input = {
+      gatewayAppId: "dev-app",
+      rpId: "AAAAAAAAAA.com.example.app",
+      challenge: Buffer.from("one-time-challenge").toString("base64"),
+      keyId: Buffer.alloc(32, 9).toString("base64"),
+      counter: 3,
+    };
+    const fixture = await assertionFixture(input);
+    const bytes = Buffer.from(fixture.assertion, "base64");
+    const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const signature = createSign("SHA256").update("x").sign(pair.privateKey);
+    const malformed = [
+      bytes.subarray(0, bytes.byteLength - 1),
+      Buffer.concat([bytes, Buffer.from([0x40])]),
+      encodeCbor({ signature, authenticatorData: Buffer.alloc(36) }),
+      encodeCbor({ authenticatorData: Buffer.alloc(37) }),
+    ];
+    for (const assertion of malformed) {
+      await expect(verifyAppAssertion({
+        rpId: input.rpId,
+        assertion: Buffer.from(assertion).toString("base64"),
+        publicKeyPem: fixture.publicKeyPem,
+        clientDataHash: fixture.clientDataHash,
+      })).rejects.toMatchObject({ status: 403, code: "attest_failed" });
+    }
+  });
 });

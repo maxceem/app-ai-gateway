@@ -52,6 +52,11 @@ type Options = {
   otherRoot?: boolean;
   leafExpired?: boolean;
   intermediateExpired?: boolean;
+  /** Valid from tomorrow. */
+  leafNotYetValid?: boolean;
+  intermediateNotYetValid?: boolean;
+  /** The intermediate as an end-entity certificate the root issued. */
+  intermediateNotCa?: boolean;
   /** Signs the credential certificate, or the intermediate, with an attacker's key under the real issuer's name. */
   forge?: "leaf" | "intermediate";
   /** The credential id's length field. */
@@ -66,7 +71,8 @@ async function attestation(options: Options = {}): Promise<Attestation> {
   const intermediate = await issue({
     name: "Test App Attestation CA 1",
     issuer: root,
-    ca: true,
+    ca: !options.intermediateNotCa,
+    ...(options.intermediateNotYetValid ? { notBefore: Date.now() + 86_400_000, notAfter: Date.now() + 2 * 86_400_000 } : {}),
     ...(options.forge === "intermediate" ? { forgedBy: attacker } : {}),
     ...(options.intermediateExpired ? { notBefore: Date.now() - 2 * 86_400_000, notAfter: Date.now() - 86_400_000 } : {}),
   });
@@ -94,6 +100,7 @@ async function attestation(options: Options = {}): Promise<Attestation> {
     ...(options.forge === "leaf" ? { forgedBy: attacker } : {}),
     ...(extensionValue === null ? {} : { extensions: [{ oid: NONCE_OID, value: extensionValue }] }),
     ...(options.leafExpired ? { notBefore: Date.now() - 2 * 86_400_000, notAfter: Date.now() - 86_400_000 } : {}),
+    ...(options.leafNotYetValid ? { notBefore: Date.now() + 86_400_000, notAfter: Date.now() + 2 * 86_400_000 } : {}),
   });
   const parts = { authData, leaf: leaf.der, intermediate: intermediate.der };
   const object = options.shape
@@ -199,6 +206,12 @@ describe("an App Attest attestation", () => {
     }))).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ leafExpired: true }))).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ intermediateExpired: true }))).rejects.toMatchObject(refused);
+    await expect(verify(await attestation({ leafNotYetValid: true }))).rejects.toMatchObject(refused);
+    await expect(verify(await attestation({ intermediateNotYetValid: true }))).rejects.toMatchObject(refused);
+  });
+
+  it("refuses an end-entity certificate from the root standing in as the intermediate", async () => {
+    await expect(verify(await attestation({ intermediateNotCa: true }))).rejects.toMatchObject(refused);
   });
 
   it("refuses another format, a missing receipt, one certificate, and CBOR that is cut short or runs on", async () => {
@@ -208,6 +221,10 @@ describe("an App Attest attestation", () => {
       ({ authData, leaf }) => ({ fmt: "apple-appattest", attStmt: { x5c: [leaf], receipt: Buffer.from("r") }, authData }),
       ({ authData, leaf, intermediate }) => ({
         fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate, intermediate], receipt: Buffer.from("r") }, authData,
+      }),
+      // authData too short to hold a credential id, refused before it is read.
+      ({ authData, leaf, intermediate }) => ({
+        fmt: "apple-appattest", attStmt: { x5c: [leaf, intermediate], receipt: Buffer.from("r") }, authData: authData.subarray(0, 54),
       }),
     ];
     for (const shape of shapes) await expect(verify(await attestation({ shape }))).rejects.toMatchObject(refused);
@@ -377,6 +394,7 @@ describe("Apple's sample attestation", () => {
     const intermediate = new X509Certificate(intermediateDer);
     expect(leaf.checkIssued(intermediate) && leaf.verify(intermediate.publicKey)).toBe(true);
     expect(intermediate.checkIssued(root) && intermediate.verify(root.publicKey)).toBe(true);
+    expect(intermediate.ca).toBe(true);
 
     const fields = certificateFields(leaf.raw);
     const nonce = appAttestNonce(fields.extensions.get(NONCE_OID)!);
