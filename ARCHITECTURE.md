@@ -1,8 +1,14 @@
 # Architecture rules
 
-These rules matter only for rarer changes: a new table, Durable Object,
-Worker or binding, a new place to keep data, or a change to how the docs
-deploy. Everyday rules live in `AGENTS.md`.
+These rules matter only for rarer changes. Everyday rules live in
+`AGENTS.md`. Read this file before you:
+
+- add a table, Durable Object, Worker or binding, or change where data is
+  kept;
+- change sign-in code, or what imports the sign-in library;
+- change request limits or the plan allowance;
+- change a compatibility date;
+- change how the docs deploy.
 
 Paths are for v2 (`v2/`). While v1 still lives at the root of this branch, its
 matching files are named in brackets.
@@ -50,7 +56,9 @@ Don't confuse the two kinds of limits. They never read each other.
   [v1: `src/do/OrgQuota.ts`]
 - **App limits** (`app_*`, `v2/src/do/AppLimiter.ts`,
   `v2/src/do/EndUserLimiter.ts` and `v2/src/do/request-limits.ts`) are what a
-  customer lets each user of their app do.
+  customer lets their app do: each user of the app (`EndUserLimiter`), and the
+  app as a whole, with its request limits and monthly spending cap
+  (`AppLimiter`).
   [v1: `src/do/UserLimiter.ts`]
 
 ## Sign-in library
@@ -63,11 +71,13 @@ imports are fine.
 ## One compatibility date
 
 Keep one Workers `compatibility_date` for every deployment: self-hosted,
-hosted and tests alike. Every Worker's wrangler config in this branch
-(`v2/wrangler.jsonc` [v1: `wrangler.jsonc`]) carries that same date, and they
-change together. Don't set another in a deployment profile overlay unless it
-is absolutely necessary and the owner has confirmed it. The release's
-prebuilt deploy refuses one anyway.
+hosted and tests alike. Every gateway Worker's wrangler config in this branch
+carries that same date, and they change together: `v2/wrangler.jsonc`, the
+smoke Workers under `v2/smoke/` [v1: `wrangler.jsonc`]. Don't set another in
+a deployment profile overlay unless it is absolutely necessary and the user
+has confirmed it; the release's prebuilt deploy refuses one anyway. The
+static docs deployment (`docs/wrangler.jsonc`) is separate and keeps its own
+date.
 
 ## Docs deployment
 

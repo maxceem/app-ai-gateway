@@ -57,8 +57,10 @@ wrong than to fail it.
 
 ## Code
 
-- Before adding a table, Durable Object, Worker or binding, or changing where
-  data is kept or how the docs deploy, read `ARCHITECTURE.md`.
+- Read `ARCHITECTURE.md` before you add a table, Durable Object, Worker or
+  binding, change where data is kept, change sign-in code or its imports,
+  change request limits or the plan allowance, change a compatibility date,
+  or change how the docs deploy.
 - Every API operation is declared once in `src/contracts/catalog.ts`; the
   OpenAPI document, clients and server mounts derive from it. Never edit
   `openapi/openapi.json` manually; run `pnpm run openapi:generate` instead.
