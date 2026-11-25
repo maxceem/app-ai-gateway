@@ -85,25 +85,32 @@ an explicit, deliberate step.
 
 ## Retention
 
-A single cron trigger runs every hour, at minute 17. Each run settles
-expired App Attest challenges, and the 03:17 UTC run also does the nightly
-maintenance. Together they keep the database bounded:
+Retention runs in two places.
+
+A cron trigger runs every hour, at minute 17, for what D1 holds:
+
+- Expired App Attest challenges are deleted within the hour after their
+  five-minute window has passed. One that nothing used is first recorded as
+  a [challenge auth event](/applications/auth-events#unused-challenges).
+- Finished CLI and browser sign-ins are cleaned up.
+- At 03:17 UTC, where `CONVERSATIONS` is bound, each app's stored days older
+  than its `conversations.retention_days` are deleted with their images, and
+  everything of an app that no longer exists. A run that reaches its budget
+  continues the next night.
+
+Usage history lives in one Durable Object per account, and each one keeps
+itself in order on its own alarm:
 
 | Data | Rule |
 | --- | --- |
-| Authentication events | Deleted after 90 days. |
-| App Attest challenges | Deleted within the hour after their five-minute window has passed. One that nothing used is first recorded as a [challenge auth event](/applications/auth-events#unused-challenges). An expired challenge cannot be redeemed, so nothing a client sees changes. |
-| Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
-| CLI authorizations | A finished browser handoff is deleted, and the short-lived copy of a one-time CLI response is cleared once its recovery window has passed. |
-| Conversation history | Where `CONVERSATIONS` is bound: each app's stored days older than its `conversations.retention_days` are deleted with their images, and everything of an app that no longer exists. A run that reaches its budget continues the next night, starting after the last app it finished. |
+| Pending work, such as job results still to fetch | Checked when it is due, at most once a minute. |
+| Authentication and rejection events | Deleted after 90 days, in a nightly run after 04:00 UTC. |
+| Usage | Per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.
-The nightly run is sized for the D1 limits of Cloudflare's Free plan and
-clears about 55,000 events a night, which comfortably exceeds what a million
-requests a month produces. A backlog larger than one night is continued the
-next one; on the Workers Paid plan,
-[`MAINTENANCE_QUERY_BUDGET`](/self-hosting/configuration) lets one run do more.
+Each account's nightly run has its own limit, sized for Cloudflare's Free
+plan. A backlog larger than one night is continued the next one.
 
 ## Backups and usage history
 
