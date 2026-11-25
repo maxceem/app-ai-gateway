@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,19 +34,26 @@ test("the setup makes each missing secret in .dev.vars, readable only by its own
   withFolder((dir) => {
     const first = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(first.code, 0, first.output);
-    assert.match(first.output, /Made BETTER_AUTH_SECRET, JWT_SECRET, SECRET_VAULT_LOCAL_KEK_V1 in \.dev\.vars\./u);
+    assert.match(first.output, /Made BETTER_AUTH_SECRET, JWT_SECRET in \.dev\.vars\./u);
+    assert.match(first.output, /Made SECRET_VAULT_LOCAL_KEK_V1 in vault\/\.dev\.vars\./u);
     assert.match(first.output, /Back up SECRET_VAULT_LOCAL_KEK_V1/u);
     const path = join(dir, ".dev.vars");
+    const vaultPath = join(dir, "vault", ".dev.vars");
     assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(statSync(vaultPath).mode & 0o777, 0o600);
     const values = parseEnv(readFileSync(path, "utf8"));
+    const vaultValues = parseEnv(readFileSync(vaultPath, "utf8"));
     assert.ok(values.JWT_SECRET!.length >= 43);
     assert.ok(values.BETTER_AUTH_SECRET!.length >= 43);
-    assert.equal(Buffer.from(values.SECRET_VAULT_LOCAL_KEK_V1!, "base64").length, 32);
-    for (const value of Object.values(values)) assert.ok(!first.output.includes(value!), "a value was printed");
+    // The vault's key is only the vault's: never in the gateway Worker's file (plan step 8i).
+    assert.equal(values.SECRET_VAULT_LOCAL_KEK_V1, undefined);
+    assert.equal(Buffer.from(vaultValues.SECRET_VAULT_LOCAL_KEK_V1!, "base64").length, 32);
+    for (const value of [...Object.values(values), ...Object.values(vaultValues)]) assert.ok(!first.output.includes(value!), "a value was printed");
     // Run again: everything is there, and nothing changes.
     const second = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.match(second.output, /nothing changed/u);
     assert.deepEqual(parseEnv(readFileSync(path, "utf8")), values);
+    assert.deepEqual(parseEnv(readFileSync(vaultPath, "utf8")), vaultValues);
   });
 });
 
@@ -56,7 +63,7 @@ test("the setup keeps a value already set and fills only the empty ones", () => 
     writeFileSync(path, "JWT_SECRET=mine-and-long-enough-for-the-test-0123456789\nBETTER_AUTH_SECRET=\nOTHER=kept\n");
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
-    assert.match(run.output, /Made BETTER_AUTH_SECRET, SECRET_VAULT_LOCAL_KEK_V1 in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
     const values = parseEnv(readFileSync(path, "utf8"));
     assert.equal(values.JWT_SECRET, "mine-and-long-enough-for-the-test-0123456789");
     assert.equal(values.OTHER, "kept");
@@ -67,17 +74,22 @@ test("the setup keeps a value already set and fills only the empty ones", () => 
 test("the setup reads the file as a dotenv parser does: spaced and quoted values count, and no key is defined twice", () => {
   withFolder((dir) => {
     const path = join(dir, ".dev.vars");
-    writeFileSync(path, 'JWT_SECRET = "spaced-and-quoted-0123456789"\nexport BETTER_AUTH_SECRET = ""\nSECRET_VAULT_LOCAL_KEK_V1=\n');
+    writeFileSync(path, 'JWT_SECRET = "spaced-and-quoted-0123456789"\nexport BETTER_AUTH_SECRET = ""\n');
+    mkdirSync(join(dir, "vault"));
+    const vaultPath = join(dir, "vault", ".dev.vars");
+    writeFileSync(vaultPath, "SECRET_VAULT_LOCAL_KEK_V1=\n");
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
     // The spaced, quoted value is set; the quoted empty one and the bare empty one are filled in place.
-    assert.match(run.output, /Made BETTER_AUTH_SECRET, SECRET_VAULT_LOCAL_KEK_V1 in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
+    assert.match(run.output, /Made SECRET_VAULT_LOCAL_KEK_V1 in vault\/\.dev\.vars\./u);
     const text = readFileSync(path, "utf8");
+    const vaultText = readFileSync(vaultPath, "utf8");
     const values = parseEnv(text);
     assert.equal(values.JWT_SECRET, "spaced-and-quoted-0123456789");
     assert.ok(values.BETTER_AUTH_SECRET!.length >= 43);
-    for (const name of ["JWT_SECRET", "BETTER_AUTH_SECRET", "SECRET_VAULT_LOCAL_KEK_V1"]) {
-      assert.equal(text.match(new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`, "gmu"))?.length, 1, `${name} is defined more than once`);
+    for (const [name, file] of [["JWT_SECRET", text], ["BETTER_AUTH_SECRET", text], ["SECRET_VAULT_LOCAL_KEK_V1", vaultText]] as const) {
+      assert.equal(file.match(new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`, "gmu"))?.length, 1, `${name} is defined more than once`);
     }
   });
 });
@@ -97,6 +109,16 @@ test("the setup refuses a listed secret defined twice or over several lines, and
       assert.match(run.output, /Nothing changed\./u);
       assert.equal(readFileSync(path, "utf8"), text);
     }
+    // A problem in the vault's file stops both: the gateway's file is left as it was.
+    rmSync(path);
+    mkdirSync(join(dir, "vault"));
+    const vaultText = "SECRET_VAULT_LOCAL_KEK_V1=a\nSECRET_VAULT_LOCAL_KEK_V1=b\n";
+    writeFileSync(join(dir, "vault", ".dev.vars"), vaultText);
+    const run = script("setup-local-secrets.ts", ["--dir", dir]);
+    assert.equal(run.code, 1, run.output);
+    assert.match(run.output, /SECRET_VAULT_LOCAL_KEK_V1 is defined 2 times in vault\/\.dev\.vars/u);
+    assert.throws(() => readFileSync(path));
+    assert.equal(readFileSync(join(dir, "vault", ".dev.vars"), "utf8"), vaultText);
   });
 });
 
@@ -107,7 +129,7 @@ test("the upload needs the Worker's config, and sends every set value to Wrangle
     chmodSync(join(dir, "pnpm"), 0o755);
     writeFileSync(join(dir, "wrangler.stand-in.jsonc"), JSON.stringify({ name: "stand-in", main: "index.ts", compatibility_date: "2026-01-01", env: { staging: {} } }));
     const config = join(dir, "wrangler.stand-in.jsonc");
-    writeFileSync(join(dir, ".dev.vars"), "JWT_SECRET=jwt-value-0123456789\nBETTER_AUTH_SECRET=auth-value-0123456789\nSECRET_VAULT_LOCAL_KEK_V1=\n");
+    writeFileSync(join(dir, ".dev.vars"), "JWT_SECRET=jwt-value-0123456789\nBETTER_AUTH_SECRET=auth-value-0123456789\nEMPTY_ONE=\n");
     // A shell that asks Wrangler for its unsanitized logs; `pnpm run` starts the script in its own folder, the caller's in INIT_CWD.
     const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, WRANGLER_LOG_SANITIZE: "false", INIT_CWD: dir, CLOUDFLARE_ENV: "" };
 
@@ -147,8 +169,71 @@ test("the setup takes a quoted value with a comment after it, and makes an exist
     chmodSync(path, 0o644);
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
-    assert.match(run.output, /Made BETTER_AUTH_SECRET, SECRET_VAULT_LOCAL_KEK_V1 in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.equal(parseEnv(readFileSync(path, "utf8")).JWT_SECRET, "quoted-and-long-enough-0123456789");
+  });
+});
+
+test("the upload leaves the vault's settings out for any Worker but the vault, and sends them to the vault", () => {
+  withFolder((dir) => {
+    writeFileSync(join(dir, "pnpm"), `#!/bin/sh\ncat > "${join(dir, "stdin")}"\n`);
+    chmodSync(join(dir, "pnpm"), 0o755);
+    const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, INIT_CWD: dir, CLOUDFLARE_ENV: "" };
+    // An old gateway .dev.vars that still holds the vault key.
+    writeFileSync(join(dir, ".dev.vars"), "JWT_SECRET=jwt-value-0123456789\nSECRET_VAULT_LOCAL_KEK_V1=kek-value-0123456789\nSECRET_VAULT_KMS_TOKEN=kms-value-0123456789\n");
+    writeFileSync(join(dir, "wrangler.gateway.jsonc"), JSON.stringify({ name: "gateway", main: "src/index.ts", compatibility_date: "2026-01-01" }));
+    const gateway = script("upload-local-secrets.ts", ["-c", "wrangler.gateway.jsonc", "--dir", "."], env);
+    assert.equal(gateway.code, 0, gateway.output);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { JWT_SECRET: "jwt-value-0123456789" });
+    assert.match(gateway.output, /Left out SECRET_VAULT_KMS_TOKEN, SECRET_VAULT_LOCAL_KEK_V1: only the vault Worker holds the vault's settings\./u);
+    assert.ok(!gateway.output.includes("kek-value") && !gateway.output.includes("kms-value"), "a value was printed");
+
+    // The vault's own config (it runs vault/src/index.js) gets them.
+    const vaultConfig = join(dir, "wrangler.vault.jsonc");
+    writeFileSync(vaultConfig, JSON.stringify({ name: "vault", main: join(V2_DIR, "vault", "src", "index.js"), compatibility_date: "2026-01-01" }));
+    writeFileSync(join(dir, ".dev.vars"), "SECRET_VAULT_LOCAL_KEK_V1=kek-value-0123456789\n");
+    const vault = script("upload-local-secrets.ts", ["-c", vaultConfig, "--dir", "."], env);
+    assert.equal(vault.code, 0, vault.output);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { SECRET_VAULT_LOCAL_KEK_V1: "kek-value-0123456789" });
+    assert.doesNotMatch(vault.output, /Left out/u);
+  });
+});
+
+test("after the setup, each Worker gets its own secrets: the gateway its file, the vault only its key from vault/.dev.vars", () => {
+  withFolder((dir) => {
+    writeFileSync(join(dir, "pnpm"), `#!/bin/sh\ncat > "${join(dir, "stdin")}"\n`);
+    chmodSync(join(dir, "pnpm"), 0o755);
+    const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, INIT_CWD: dir, CLOUDFLARE_ENV: "" };
+    assert.equal(script("setup-local-secrets.ts", ["--dir", dir]).code, 0);
+    const gatewayValues = parseEnv(readFileSync(join(dir, ".dev.vars"), "utf8"));
+    const vaultValues = parseEnv(readFileSync(join(dir, "vault", ".dev.vars"), "utf8"));
+    writeFileSync(join(dir, "wrangler.gateway.jsonc"), JSON.stringify({ name: "gateway", main: "src/index.ts", compatibility_date: "2026-01-01" }));
+    const vaultConfig = join(dir, "wrangler.vault.jsonc");
+    writeFileSync(vaultConfig, JSON.stringify({ name: "vault", main: join(V2_DIR, "vault", "src", "index.js"), compatibility_date: "2026-01-01" }));
+
+    assert.equal(script("upload-local-secrets.ts", ["-c", "wrangler.gateway.jsonc", "--dir", "."], env).code, 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { JWT_SECRET: gatewayValues.JWT_SECRET, BETTER_AUTH_SECRET: gatewayValues.BETTER_AUTH_SECRET });
+
+    // The vault reads the file the setup made for it (`vault/.dev.vars`, its default without --dir):
+    const fromVaultDir = script("upload-local-secrets.ts", ["-c", vaultConfig, "--dir", "vault"], env);
+    assert.equal(fromVaultDir.code, 0, fromVaultDir.output);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { SECRET_VAULT_LOCAL_KEK_V1: vaultValues.SECRET_VAULT_LOCAL_KEK_V1 });
+  });
+});
+
+test("an old combined .dev.vars uploaded to the vault sends only the vault's settings, and names the rest", () => {
+  withFolder((dir) => {
+    writeFileSync(join(dir, "pnpm"), `#!/bin/sh\ncat > "${join(dir, "stdin")}"\n`);
+    chmodSync(join(dir, "pnpm"), 0o755);
+    const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, INIT_CWD: dir, CLOUDFLARE_ENV: "" };
+    writeFileSync(join(dir, ".dev.vars"), "JWT_SECRET=jwt-value-0123456789\nBETTER_AUTH_SECRET=auth-value-0123456789\nSECRET_VAULT_LOCAL_KEK_V1=kek-value-0123456789\n");
+    const vaultConfig = join(dir, "wrangler.vault.jsonc");
+    writeFileSync(vaultConfig, JSON.stringify({ name: "vault", main: join(V2_DIR, "vault", "src", "index.js"), compatibility_date: "2026-01-01" }));
+    const run = script("upload-local-secrets.ts", ["-c", vaultConfig, "--dir", "."], env);
+    assert.equal(run.code, 0, run.output);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { SECRET_VAULT_LOCAL_KEK_V1: "kek-value-0123456789" });
+    assert.match(run.output, /Left out BETTER_AUTH_SECRET, JWT_SECRET: the vault Worker holds only the vault's settings\./u);
+    assert.ok(!run.output.includes("jwt-value") && !run.output.includes("auth-value") && !run.output.includes("kek-value"), "a value was printed");
   });
 });

@@ -10,7 +10,12 @@
  * The format is the one the gateway used before the vault Worker existed:
  * `local1.<kek version>.<iv>.<ciphertext>`, base64url, with the context as
  * JSON with sorted keys. So a blob sealed by either side opens on the other.
+ *
+ * In `kms` mode the KEK lives in a cf-kms deployment instead
+ * (`SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN`), and a blob is cf-kms's
+ * envelope (`./kms.js`), with the same context as additional data.
  */
+import { ENVELOPE_PREFIX, KmsError, createKmsClient, secureKmsUrl } from "./kms.js";
 
 /** @typedef {{ readonly [name: string]: unknown }} VaultEnv */
 
@@ -131,9 +136,6 @@ const importedKeks = new Map();
  * @param {VaultEnv} env
  */
 function keks(env) {
-  if (env.SECRET_VAULT_MODE !== "local") {
-    throw new VaultConfigurationError("SECRET_VAULT_MODE must be local; kms is not supported by this vault yet");
-  }
   /** @type {Map<number, string>} */
   const materials = new Map();
   for (const [name, value] of Object.entries(env)) {
@@ -150,10 +152,8 @@ function keks(env) {
   return { materials, current };
 }
 
-/** @param {string} material @returns {Promise<CryptoKey>} */
-function importKek(material) {
-  const cached = importedKeks.get(material);
-  if (cached) return cached;
+/** A KEK's bytes: valid base64 of exactly 32 bytes. @param {string} material @returns {Uint8Array<ArrayBuffer>} */
+function kekBytes(material) {
   /** @type {Uint8Array<ArrayBuffer>} */
   let bytes;
   try {
@@ -162,12 +162,71 @@ function importKek(material) {
     throw new VaultConfigurationError("a KEK is not valid base64");
   }
   if (bytes.length !== KEK_BYTES) throw new VaultConfigurationError(`a KEK must decode to ${KEK_BYTES} bytes`);
+  return bytes;
+}
+
+/** @param {string} material @returns {Promise<CryptoKey>} */
+function importKek(material) {
+  const cached = importedKeks.get(material);
+  if (cached) return cached;
+  const bytes = kekBytes(material);
   const imported = crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]).catch((error) => {
     importedKeks.delete(material);
     throw error;
   });
   importedKeks.set(material, imported);
   return imported;
+}
+
+const LOCAL_SETTINGS = "SECRET_VAULT_LOCAL_";
+const KMS_SETTINGS = "SECRET_VAULT_KMS_";
+
+/**
+ * This Worker's mode, `local` or `kms`. Settings of the other mode are
+ * refused, so a half-moved deployment fails loudly rather than seal with the
+ * wrong key.
+ * @param {VaultEnv} env
+ * @returns {"local" | "kms"}
+ */
+function vaultMode(env) {
+  const mode = env.SECRET_VAULT_MODE;
+  if (mode !== "local" && mode !== "kms") throw new VaultConfigurationError("SECRET_VAULT_MODE must be local or kms");
+  const other = mode === "kms" ? LOCAL_SETTINGS : KMS_SETTINGS;
+  if (Object.keys(env).some((name) => name.startsWith(other))) throw new VaultConfigurationError(`${other}* settings are not allowed in ${mode} mode`);
+  return mode;
+}
+
+/** @type {WeakMap<object, ReturnType<typeof createKmsClient>>} */
+const kmsClients = new WeakMap();
+
+/** @param {VaultEnv} env */
+function kms(env) {
+  const cached = kmsClients.get(env);
+  if (cached) return cached;
+  const url = env.SECRET_VAULT_KMS_URL;
+  const token = env.SECRET_VAULT_KMS_TOKEN;
+  if (typeof url !== "string" || url.trim() === "") throw new VaultConfigurationError("SECRET_VAULT_KMS_URL is required in kms mode");
+  if (typeof token !== "string" || token.trim() === "") throw new VaultConfigurationError("SECRET_VAULT_KMS_TOKEN is required in kms mode");
+  if (!secureKmsUrl(url.trim())) throw new VaultConfigurationError("SECRET_VAULT_KMS_URL must be an https URL");
+  const client = createKmsClient({ url: url.trim(), token: token.trim() });
+  kmsClients.set(env, client);
+  return client;
+}
+
+/**
+ * Whether this Worker can seal and open: its settings are complete and agree.
+ * Nothing is sent to cf-kms.
+ * @param {VaultEnv} env
+ * @returns {"ok" | "misconfigured"}
+ */
+export function vaultStatus(env) {
+  try {
+    if (vaultMode(env) === "kms") kms(env);
+    else for (const material of keks(env).materials.values()) kekBytes(material);
+    return "ok";
+  } catch {
+    return "misconfigured";
+  }
 }
 
 /**
@@ -181,6 +240,7 @@ function importKek(material) {
 export async function seal(env, kind, identity, plaintext) {
   if (typeof plaintext !== "string" || plaintext === "") throw new VaultBlobError("nothing to seal");
   const context = secretContext(kind, identity);
+  if (vaultMode(env) === "kms") return kms(env).encryptSecret(plaintext, context);
   const { materials, current } = keks(env);
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const key = await importKek(/** @type {string} */ (materials.get(current)));
@@ -196,11 +256,24 @@ export async function seal(env, kind, identity, plaintext) {
  * @param {string} kind
  * @param {unknown} identity
  * @param {unknown} blob
+ * @param {AbortSignal} [signal] the caller's, for the call to cf-kms in kms mode
+ * @param {number} [until] when to stop waiting on cf-kms, in epoch ms
  * @returns {Promise<string>}
  */
-export async function open(env, kind, identity, blob) {
+export async function open(env, kind, identity, blob, signal, until) {
   const context = secretContext(kind, identity);
   if (typeof blob !== "string") throw new VaultBlobError("invalid blob");
+  if (vaultMode(env) === "kms") {
+    if (!blob.startsWith(`${ENVELOPE_PREFIX}.`)) throw new VaultBlobError("blob was not sealed in kms mode");
+    try {
+      return await kms(env).decryptSecret(blob, context, signal, until);
+    } catch (error) {
+      if (!(error instanceof KmsError)) throw error;
+      if (error.code === "decrypt_failed" || error.code === "invalid_envelope") throw new VaultBlobError("blob does not open under this identity");
+      if (error.code === "unauthorized") throw new VaultConfigurationError("SECRET_VAULT_KMS_TOKEN is refused by cf-kms");
+      throw error;
+    }
+  }
   const parts = blob.split(".");
   if (parts.length !== 4 || parts[0] !== BLOB_PREFIX) throw new VaultBlobError("blob was not sealed in local mode");
   const version = Number(parts[1]);

@@ -11,7 +11,7 @@ import { callGap, resolvePassthrough } from "../src/pricing/billability.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { compilePassthrough, ProviderMatcher, upstreamRoute, upstreamTargets } from "../src/providers/matcher.ts";
 import { matchTemplate, parseTemplate } from "../src/providers/path.ts";
-import { upstreamRequest } from "../src/providers/route.ts";
+import { upstreamRequest } from "./opened-request.ts";
 import { openai } from "../src/providers/openai.ts";
 import { readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
 import { isExtraClientHeader, mayCarryCredential } from "../src/proxy/headers.ts";
@@ -20,6 +20,7 @@ import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, ledger } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-4321";
@@ -386,7 +387,7 @@ async function setup(
   const baseUrl = connection.baseUrl ?? null;
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, keyOrigin({ type, baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, keyOrigin({ type, baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

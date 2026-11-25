@@ -35,7 +35,31 @@ export default defineConfig({
                   { headers: { "x-echo": "1", authorization: request.headers.get("authorization") ?? "" } },
                 ),
             },
+            {
+              // The same vault in kms mode, for the deadline tests (`test/vault-deadline.test.ts`):
+              // its cf-kms stand-in hands out one fixed data key, and never answers a decrypt for a
+              // wrapped key named "stall". Providers answer 503, so a held answer can be kept.
+              name: "app-ai-gateway-v2-vault-kms",
+              modules: true,
+              modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+              scriptPath: path.join(import.meta.dirname, "vault/src/index.js"),
+              compatibilityDate: "2026-07-24",
+              compatibilityFlags: ["enable_request_signal"],
+              bindings: {
+                SECRET_VAULT_MODE: "kms",
+                SECRET_VAULT_KMS_URL: "https://kms.example.test",
+                SECRET_VAULT_KMS_TOKEN: "kms-token",
+              },
+              outboundService: async (request: Request) => {
+                const url = new URL(request.url);
+                if (url.host !== "kms.example.test") return Response.json({ error: { code: "busy" } }, { status: 503 });
+                const body = (await request.json()) as { wrappedKey?: string };
+                if (url.pathname.endsWith("/v1/decrypt") && body.wrappedKey === "stall") return new Promise<Response>(() => undefined);
+                return Response.json({ plaintextKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", wrappedKey: "fixed", kekVersion: 1 });
+              },
+            },
           ],
+          serviceBindings: { VAULT_KMS: "app-ai-gateway-v2-vault-kms" },
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
           bindings: {
@@ -43,8 +67,6 @@ export default defineConfig({
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-32-bytes",
             // The console and the OAuth issuer (`https://console.gateway.test/v2`).
             CONSOLE_ORIGIN: "https://console.gateway.test",
-            // A test-only vault key: 32 zero bytes.
-            SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             TEST_MIGRATIONS: migrations,
           },
         },

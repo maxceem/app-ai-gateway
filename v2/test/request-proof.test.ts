@@ -25,6 +25,7 @@ import {
   tokenForInstall,
   type TestInstall,
 } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const BODY = JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] });
@@ -157,7 +158,7 @@ async function attestApp(options: { environment?: "production" | "development"; 
   await seedAccount();
   const connectionId = crypto.randomUUID().replaceAll("-", "");
   const slug = `openai-${connectionId.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, connectionId, "openai", "", "", ""], "sk-proof-test");
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, connectionId, "openai", "", "", ""], "sk-proof-test");
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection (id, account_id, type, slug, name, status, secret_blob, secret_hint, revision, created_by, created_at, updated_at)

@@ -1,6 +1,9 @@
 import { env, exports } from "cloudflare:workers";
-import { createExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { setVaultForTests, vaultStatus } from "../src/vault/client.ts";
+import { SecretVaultConfigurationError } from "../src/vault/index.ts";
+import { openSecret, sealSecret } from "../src/vault/secrets.ts";
+import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
 
 describe("the v2 Worker", () => {
   it("answers the health check", async () => {
@@ -9,12 +12,44 @@ describe("the v2 Worker", () => {
     expect(await response.json()).toEqual({ ok: true, service: "app-ai-gateway", api: "v2", vault: "ok", email: "off" });
   });
 
-  it("reports a key vault that is not set up as misconfigured, and still answers", async () => {
-    const { default: worker } = await import("../src/index.ts");
-    const broken = { ...env, SECRET_VAULT_MODE: "neither" } as unknown as Env;
-    const response = await worker.fetch(new Request("https://gateway.test/v2/healthz"), broken, createExecutionContext());
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, vault: "misconfigured" });
+  it.each([
+    ["reports misconfigured", () => Promise.resolve("misconfigured" as const)],
+    ["cannot be reached", () => Promise.reject(new Error("binding gone"))],
+  ])("reports a vault that %s as misconfigured, and still answers", async (_name, status) => {
+    setVaultForTests((vaultEnv) => ({ ...localVault(vaultEnv), status }));
+    try {
+      const response = await exports.default.fetch("https://gateway.test/v2/healthz");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true, vault: "misconfigured" });
+    } finally {
+      setVaultForTests(localVault);
+    }
+  });
+
+  it("reports a vault whose status never answers as misconfigured, at the 1 s limit", async () => {
+    setVaultForTests((vaultEnv) => ({ ...localVault(vaultEnv), status: () => new Promise(() => undefined) }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The health answer's own reading of the vault (`vaultStatus`), run here so the fake clock reaches it.
+      const pending = vaultStatus(env);
+      await vi.advanceTimersByTimeAsync(999);
+      let settled = false;
+      void pending.then(() => (settled = true));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(await pending).toBe("misconfigured");
+    } finally {
+      vi.useRealTimers();
+      setVaultForTests(localVault);
+    }
+  });
+
+  it("holds none of the vault's settings, so it cannot open a key (plan step 8i)", async () => {
+    expect(Object.keys(env).filter((name) => name.startsWith("SECRET_VAULT"))).toEqual([]);
+    const identity: [string, string, string, string, string, string] = ["acct", "conn", "openai", "", "", ""];
+    const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", identity, "sk-only-the-vault-opens-this");
+    await expect(Promise.resolve().then(() => openSecret(env, "providerKey", identity, blob))).rejects.toBeInstanceOf(SecretVaultConfigurationError);
   });
 
   it.each(["/v2", "/v2/", "/v2/apps/a/nothing", "/v1/healthz", "/"])(

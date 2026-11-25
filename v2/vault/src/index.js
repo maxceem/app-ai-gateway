@@ -8,11 +8,12 @@
  *   `x-agw-vault` header (`./call.js`);
  * - `holds`: which texts echo a call's credentials, for stored conversations;
  * - `seal`: a new credential, sealed as soon as it arrives;
- * - `reseal`: a credential sealed again for a new address, without leaving.
+ * - `reseal`: a credential sealed again for a new address, without leaving;
+ * - `status`: whether its settings let it seal and open, for the health check.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { callFromRequest, holds } from "./call.js";
-import { reseal, seal } from "./seal.js";
+import { reseal, seal, vaultStatus } from "./seal.js";
 
 /** @extends {WorkerEntrypoint<import("./seal.js").VaultEnv>} */
 export default class Vault extends WorkerEntrypoint {
@@ -49,5 +50,9 @@ export default class Vault extends WorkerEntrypoint {
    */
   reseal(kind, from, to, blob) {
     return reseal(this.env, kind, from, to, blob);
+  }
+
+  status() {
+    return vaultStatus(this.env);
   }
 }

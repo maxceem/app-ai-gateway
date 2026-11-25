@@ -125,8 +125,13 @@ export function secretContext<K extends SecretKind>(
   return assertUsable(kind, { ...build(...identity), service: VAULT_SERVICE });
 }
 
+/**
+ * Sealing and opening with the vault settings given: for the migration script
+ * and the tests. The gateway Worker never holds those settings (plan step 8i);
+ * it reaches the vault Worker (`./client.ts`).
+ */
 export function sealSecret<K extends SecretKind>(
-  env: Env,
+  env: unknown,
   kind: K,
   identity: SecretIdentity<K>,
   plaintext: string,
@@ -135,7 +140,7 @@ export function sealSecret<K extends SecretKind>(
 }
 
 export function openSecret<K extends SecretKind>(
-  env: Env,
+  env: unknown,
   kind: K,
   identity: SecretIdentity<K>,
   blob: string,

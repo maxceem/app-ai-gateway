@@ -30,6 +30,10 @@ describe.each([
   ["through the binding", bound],
   ["as a local call", () => localVault(env)],
 ])("the vault %s", (_name, client) => {
+  it("reports its own settings as ok", async () => {
+    expect(await client().status()).toBe("ok");
+  });
+
   it("seals, sends with the key, and passes the answer back without the key header", async () => {
     const vaultClient = client();
     const blob = await vaultClient.seal("providerKey", IDENTITY, KEY);

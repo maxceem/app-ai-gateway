@@ -52,15 +52,10 @@
     { "tag": "v4", "new_sqlite_classes": ["ConversationLog"] },
     { "tag": "v5", "new_sqlite_classes": ["AccountLedger"] }
   ],
-  // The vault that seals provider keys. `local` keeps the key in the Worker's
-  // secrets (SECRET_VAULT_LOCAL_KEK_V<n>); `kms` uses a separate cf-kms
-  // deployment (SECRET_VAULT_KMS_URL and SECRET_VAULT_KMS_TOKEN).
-  "vars": {
-    "SECRET_VAULT_MODE": "local",
-    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
-  },
   // The vault Worker (`vault/`, plan step 8i): it seals provider keys and
-  // sends every call that carries one. The gateway never holds them.
+  // sends every call that carries one. It alone holds the vault's settings
+  // and secrets (SECRET_VAULT_*, `vault/wrangler.jsonc`); this Worker holds
+  // none, so it cannot open a key.
   "services": [{ "binding": "VAULT", "service": "app-ai-gateway-v2-vault" }],
   "d1_databases": [
     {

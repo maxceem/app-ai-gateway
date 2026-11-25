@@ -19,6 +19,7 @@ import { sealSecret } from "../src/vault/secrets.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -101,7 +102,7 @@ async function connection(type = "openai"): Promise<string> {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(env, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], "sk-test-provider-key-5678");
+  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], "sk-test-provider-key-5678");
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

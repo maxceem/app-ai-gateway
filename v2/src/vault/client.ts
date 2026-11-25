@@ -18,6 +18,8 @@ import type { SecretIdentity, SecretKind } from "./secrets.ts";
 export const VAULT_CALL_HEADER = "x-agw-vault";
 /** Set on an answer the vault gives itself, never on a provider's. Its value is a code. */
 export const VAULT_ERROR_HEADER = "x-agw-vault-error";
+/** The caller's deadline over the binding, in epoch ms, as the vault reads it (`v2/vault/src/call.js`). */
+export const VAULT_DEADLINE_HEADER = "x-agw-vault-deadline";
 
 /** A provider key, sealed, with the header and format it is sent in. */
 export interface SealedProviderKey {
@@ -46,6 +48,13 @@ export interface VaultCall {
   readonly headers: Headers;
   readonly body: BodyInit | null;
   readonly signal?: AbortSignal;
+  /**
+   * When this Worker gives up on the call, in epoch ms: the same deadline its
+   * signal aborts on. The vault stops waiting on cf-kms before it, so a stall
+   * comes back as the vault's refusal (nothing sent, nothing charged), never
+   * as this Worker giving up on a call it cannot tell apart.
+   */
+  readonly deadline?: number;
   readonly credentials: SealedCallCredentials;
 }
 
@@ -56,6 +65,8 @@ export interface VaultClient {
   call(input: VaultCall): Promise<Response>;
   /** For each text, whether it holds one of the credentials: only yes or no comes back. */
   holds(credentials: SealedCallCredentials, texts: readonly string[]): Promise<boolean[]>;
+  /** Whether the vault's settings let it seal and open keys. */
+  status(): Promise<"ok" | "misconfigured">;
 }
 
 /** The vault Worker's entrypoint as the binding exposes it. */
@@ -64,6 +75,7 @@ interface VaultBinding {
   seal(kind: string, identity: string[], plaintext: string): Promise<string>;
   reseal(kind: string, from: string[], to: string[], blob: string): Promise<string>;
   holds(credentials: SealedCallCredentials, texts: string[]): Promise<boolean[]>;
+  status(): Promise<"ok" | "misconfigured">;
 }
 
 let testVault: ((env: Env) => VaultClient) | null = null;
@@ -93,9 +105,11 @@ function bindingClient(binding: VaultBinding): VaultClient {
     seal: async (kind, identity, plaintext) => await binding.seal(kind, [...identity], plaintext),
     reseal: async (kind, from, to, blob) => await binding.reseal(kind, [...from], [...to], blob),
     holds: async (credentials, texts) => await binding.holds(credentials, [...texts]),
+    status: async () => await binding.status(),
     call: async (input) => {
       const headers = new Headers(input.headers);
       headers.set(VAULT_CALL_HEADER, JSON.stringify(input.credentials));
+      if (input.deadline !== undefined) headers.set(VAULT_DEADLINE_HEADER, String(input.deadline));
       const request = new Request(input.url, {
         method: input.method,
         headers,
@@ -117,4 +131,24 @@ export function vault(env: Env): VaultClient {
     throw new GatewayError(503, "service_unavailable", "The vault is not reachable");
   }
   return bindingClient(binding);
+}
+
+const VAULT_STATUS_DEADLINE_MS = 1_000;
+
+/**
+ * The vault's own report for the health check: `misconfigured` when its
+ * settings are missing or wrong, or when it cannot be reached in time.
+ */
+export async function vaultStatus(env: Env): Promise<"ok" | "misconfigured"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const late = new Promise<"misconfigured">((resolve) => {
+      timer = setTimeout(() => resolve("misconfigured"), VAULT_STATUS_DEADLINE_MS);
+    });
+    return await Promise.race([vault(env).status(), late]);
+  } catch {
+    return "misconfigured";
+  } finally {
+    clearTimeout(timer);
+  }
 }

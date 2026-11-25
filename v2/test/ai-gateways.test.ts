@@ -10,11 +10,11 @@ import worker from "../src/index.ts";
 import { billing, priceSources } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { priceInServedMode, priceTokens } from "../src/pricing/tokens.ts";
-import { connectionCredentials, keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { keyOrigin, readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
+import { connectionCredentials, upstreamRequest } from "./opened-request.ts";
 import { sealSecret } from "../src/vault/secrets.ts";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { listedAs } from "../src/providers/listing.ts";
-import { upstreamRequest } from "../src/providers/route.ts";
 import { requestedServiceMode } from "../src/proxy/meter.ts";
 import {
   clearCaches,
@@ -25,6 +25,7 @@ import {
   seedRoutedApp,
   ledger,
 } from "./helpers.ts";
+import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -139,10 +140,10 @@ describe("where a request goes (route.ts)", () => {
       const label = `https://gateway.ai.cloudflare.com/v1/acct/${encodeURIComponent(gatewayId)}/`;
       const setting = { accountId: "acct", gatewayId };
       expect(keyOrigin({ type: "openai", baseUrl: null, cloudflareGateway: setting })).toBe(label);
-      const secretBlob = await sealSecret(env, "providerKey", ["acc", "conn", "openai", label, "", ""], PROVIDER_KEY);
-      const tokenBlob = await sealSecret(env, "cloudflareGatewayToken", ["acc", "conn", setting.accountId, setting.gatewayId], CF_TOKEN);
+      const secretBlob = await sealSecret(TEST_VAULT_ENV, "providerKey", ["acc", "conn", "openai", label, "", ""], PROVIDER_KEY);
+      const tokenBlob = await sealSecret(TEST_VAULT_ENV, "cloudflareGatewayToken", ["acc", "conn", setting.accountId, setting.gatewayId], CF_TOKEN);
       const stored = record({ secretBlob, cloudflareGateway: { ...setting, tokenBlob, tokenHint: null } });
-      expect(await connectionCredentials(env, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
+      expect(await connectionCredentials(TEST_VAULT_ENV, stored)).toEqual({ providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN });
       expect(() =>
         upstreamRequest(stored, BUILT_IN_PROVIDERS.openai!, { ...base, path: "v1/chat/completions", credentials: { providerKey: PROVIDER_KEY, cloudflareToken: CF_TOKEN } }),
       ).toThrow(/not plain path segments/u);
@@ -480,6 +481,24 @@ describe("Cloudflare AI Gateway on a connection, through the management API", ()
     expect(headers.get("cf-aig-authorization")).toBe(`Bearer ${CF_TOKEN}`);
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
     expect(headers.get("x-api-key")).toBeNull();
+  });
+});
+
+describe("testing a key through Cloudflare AI Gateway, with both credentials (8i review)", () => {
+  it("seals the provider key for the gateway it is tested through, so the vault sends it", async () => {
+    const key = await seedManagementKey();
+    fetchSpy.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await admin(key, "POST", "/v2/admin/providers/test", {
+      type: "openai",
+      secret: PROVIDER_KEY,
+      cloudflareGateway: { accountId: "acct", gatewayId: "gw", token: CF_TOKEN },
+    });
+    expect(result.body).toEqual({ validated: true });
+    const [input, init] = fetchSpy.mock.calls[0]!;
+    expect(String(input)).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai/models");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe(`Bearer ${PROVIDER_KEY}`);
+    expect(headers.get("cf-aig-authorization")).toBe(`Bearer ${CF_TOKEN}`);
   });
 });
 
