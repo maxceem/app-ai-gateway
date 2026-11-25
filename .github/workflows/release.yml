@@ -24,36 +24,49 @@
 #   verify            none                            contents: read     -
 #   build             none                            contents: read     -
 #   deploy-gateway    Cloudflare token, account,      contents: read     verify, build
-#                     gateway overlay
-#   deploy-docs       Cloudflare token, account,      contents: read     verify, build
-#                     docs overlay
+#                     gateway overlay (production)
+#   deploy-docs       docs Cloudflare token, account, contents: read     deploy-gateway
+#                     docs overlay (docs)
 #   publish-archive   GitHub token                    contents: write    deploy-gateway
-#   publish-npm       npm identity (OIDC)             id-token: write    publish-archive
+#   publish-npm       npm identity by OIDC (release)  id-token: write    publish-archive
 #   post-deploy-check POST_DEPLOY_CHECK_TOKEN         none               deploy-gateway
-#   follow-prices     GitHub token                    actions: write     deploy-gateway
-#   refresh-context7  CONTEXT7_API_KEY                none               deploy-docs
+#                     (release)
+#   follow-prices     GitHub token                    actions: write     deploy-gateway,
+#                                                                        publish-archive,
+#                                                                        publish-npm
+#   refresh-context7  CONTEXT7_API_KEY (release)      none               deploy-docs
+#
+# Every job after `build` downloads the one artifact `build` uploaded, by its
+# id, so no other upload with the same name can take its place.
 #
 # The order keeps today's gates:
-#   - each deploy job checks its configuration with a dry run before it
-#     deploys, and nothing is published before the gateway's dry run and
-#     deploy succeed;
+#   - the gateway job checks its configuration with a dry run before it
+#     deploys, and nothing is published before that dry run and deploy succeed;
+#     the docs job also checks its own configuration before deploying;
 #   - the gateway archive is on the GitHub release before the CLI reaches npm,
 #     because an installed CLI refuses to run until it can download exactly
 #     that archive;
-#   - main's price list is deployed, when it is newer, only after the gateway;
+#   - main's price list is deployed, when it is newer, only after the gateway,
+#     the archive and npm all succeeded;
 #   - the post-deploy check and the Context7 refresh are best effort and never
 #     fail the release.
 #
-# The two deploy jobs run in the `production` environment. It holds the
-# Cloudflare secrets, admits `v*` tags only, and holds each run until the
-# project owner approves it, with no admin bypass. Both deploy jobs wait at the
-# same moment, so one approval covers a release, and every later job runs only
-# after them. A repository secret would be handed to any workflow on any branch
-# a writer pushes; an environment secret only to a job the environment admits.
-#
-# The `release` environment holds the lesser secrets for the jobs after the
-# deploys. It admits `v*` tags only and has no reviewer: those jobs already
-# wait for the approved deploys.
+# Environments. Each admits `v*` tags only, and only the project owner can
+# create those. A repository secret would be handed to any workflow on any
+# branch a writer pushes; an environment secret only to a job the environment
+# admits.
+#   production  holds the Cloudflare token the gateway deploy needs. It holds
+#               each run until the project owner approves it, with no admin
+#               bypass. Only `deploy-gateway` uses it, so one approval covers a
+#               release, and every later job runs only after that job
+#               succeeded.
+#   docs        holds a Cloudflare token that can deploy Workers but not touch
+#               D1, R2 or routes. No reviewer: its job runs after the approved
+#               gateway deploy.
+#   release     holds the lesser secrets, and is what npm's trusted publisher
+#               names. No reviewer, for the same reason. The prices deploy
+#               (.github/workflows/deploy-prices.yml) uses it for its
+#               post-deploy check too.
 #
 # `production` environment secrets, required:
 #   CLOUDFLARE_API_TOKEN         D1: Edit, Workers Scripts: Edit and Workers R2 Storage: Edit
@@ -63,6 +76,11 @@
 #                                change how the Worker is built (`BUILD_KEYS` in
 #                                scripts/wrangler-config.mjs), since `build` builds
 #                                from wrangler.jsonc alone
+# `docs` environment secrets, required:
+#   DOCS_CLOUDFLARE_API_TOKEN    Workers Scripts: Edit on the account, plus what the
+#                                docs overlay's custom domain needs on its zone;
+#                                no D1, no R2
+#   CLOUDFLARE_ACCOUNT_ID        the same account
 #   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
 # `release` environment secrets, optional:
 #   CONTEXT7_API_KEY             Context7 API key; unset, Context7 is not asked to
@@ -75,8 +93,8 @@
 #   POST_DEPLOY_CHECK_URL        where to ask for the smoke checks after the
 #                                deploy; unset, none are asked for
 # npm needs no token: `@maxceem/agw` is published through npm trusted publishing,
-# which authenticates this workflow file by OIDC and signs the provenance. If
-# npm's trusted publisher names an environment, it must name `release`.
+# which authenticates this workflow file by OIDC and signs the provenance. Its
+# trusted publisher names the `release` environment.
 name: Release
 
 on:
@@ -142,6 +160,9 @@ jobs:
     outputs:
       prices_revision: ${{ steps.prices.outputs.revision }}
       prices_updated: ${{ steps.prices.outputs.updated }}
+      # Every later job downloads exactly this upload, by its id, never a
+      # same-named artifact from another job or run.
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,7 +200,8 @@ jobs:
           DOCS_SITE_SCRIPT: ${{ vars.DOCS_SITE_SCRIPT }}
         run: pnpm --filter @app-ai-gateway/docs static:build
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release
           path: |
@@ -192,7 +214,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The two deploy jobs wait for the same approval at the same moment.
+  # The only job that waits for the owner's approval; every job after it runs
+  # only once it succeeded.
   deploy-gateway:
     needs: [verify, build]
     if: github.repository == 'maxceem/app-ai-gateway'
@@ -212,7 +235,8 @@ jobs:
       # checkout does not have, and a symbolic link stops the job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
       - name: Take only the built gateway from the artifact
         env:
@@ -271,11 +295,15 @@ jobs:
           PRICES_UPDATED: ${{ needs.build.outputs.prices_updated }}
         run: echo "Deployed ${TAG} with the price list from ${PRICES_REVISION} (${PRICES_UPDATED})." >> "$GITHUB_STEP_SUMMARY"
 
+  # After the gateway, so a release whose gateway failed never changes the
+  # docs. Its own environment, with no reviewer and a token that can deploy
+  # Workers but not touch D1, R2 or the gateway's routes: the approval for
+  # `deploy-gateway` already covers it.
   deploy-docs:
-    needs: [verify, build]
+    needs: [build, deploy-gateway]
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
-    environment: production
+    environment: docs
     permissions:
       contents: read
     steps:
@@ -288,7 +316,8 @@ jobs:
       # site is copied out.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
       - name: Take only the built documentation from the artifact
         env:
@@ -334,7 +363,7 @@ jobs:
       # static assets.
       - name: Deploy the documentation
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.DOCS_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: node scripts/wrangler.mjs --profile cloud --cwd docs deploy
@@ -357,7 +386,8 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
       - name: Take only the gateway archive from the artifact
         env:
@@ -394,7 +424,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
       - name: Take only the CLI package from the artifact
         env:
@@ -465,7 +496,7 @@ jobs:
   # release, unless a newer release exists: running an older release again is
   # a rollback.
   follow-prices:
-    needs: [build, deploy-gateway]
+    needs: [build, deploy-gateway, publish-archive, publish-npm]
     if: github.repository == 'maxceem/app-ai-gateway'
     runs-on: ubuntu-latest
     permissions:
