@@ -128,21 +128,37 @@ accounts.
   `perplexity/sonar`, on its Agent API (`v1/agent`, or `v1/responses` for
   OpenAI's SDKs) and its Orchestrator API (`orchestrator/v1/`).
 
-A few models, such as `perplexity/sonar`, are on the Agent API only.
+A few models are on one of the two only: `perplexity/sonar` is on the Agent
+API only, `openai/gpt-5.4-mini` on the Orchestrator API only.
 
 A preset fallback that names no operation goes to the path that serves its
 model's name: Sonar's for a Sonar name, the Orchestrator API for Chat
-Completions or Messages, and the Agent API for Responses. A preset whose model
+Completions or Messages, and the Agent API for Responses, unless only the
+Orchestrator API serves the model. A preset whose model
 no path of its kind serves, or that names an operation that does not serve its
 model, is refused when you save it.
+
+Models a request names besides its own are checked like its own model: each
+must be one the app allows, with a price.
+
+- The Agent API's `models` list, which it tries before `model`. A request may
+  send the list without `model`.
+- The Agent API's `effort` and `profile` bring models of their own, so a request
+  with either is served only with its own `models` list.
+- On the Orchestrator API, `perplexity/auto` lets Perplexity choose the model.
+  It is served only with a `routing` block, and the `default_model` and each
+  route's `model` in it are checked. A preset can't use `perplexity/auto`.
+
+The charge is for the model that served the request.
+
+One-hour cache writes on the Orchestrator API (`prompt_cache_options.ttl:
+"1h"`, or `cache_control` on Messages) are charged at the one-hour rate.
 
 Sonar and the Agent API report what each request cost, including Sonar's
 request fee and the Agent API's tools such as web search, and that figure is
 what is charged. Perplexity rounds it to five decimals, so a very small
 request can read $0: it is then charged at the model's price, marked as an
-estimate. So is an answer that comes without the figure. The Agent API also takes
-a `models` list it tries before `model`: each model on it must be one the app
-allows, as `model` must.
+estimate. So is an answer that comes without the figure.
 
 **xAI** reports what each Chat Completions, Responses, legacy completions and
 image request cost, and that figure is what is charged. Its Messages API,

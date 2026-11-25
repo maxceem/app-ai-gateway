@@ -10,11 +10,38 @@ import { defineProvider, type OperationDescription, type ProviderDescription, ty
 import { NO_SERVICE_TIERS } from "../usage/service-modes.ts";
 
 /**
- * Models on Perplexity's Agent API that its Orchestrator API does not serve,
- * from the two model lists (docs.perplexity.ai, agent-api/models and
- * orchestrator/models, read 2026-11-25).
+ * The models each of Perplexity's APIs serves by a `maker/model` id, from its
+ * two model lists (docs.perplexity.ai, agent-api/models and
+ * orchestrator/models, read 2026-11-25). Each API leaves out the models only
+ * the other lists (`unservedModels`); a model neither lists, such as one
+ * added since, is judged by its price alone.
  */
-const AGENT_ONLY_MODELS = ["perplexity/sonar", "perplexity/nemotron-3.5-super-120b-a12b", "google/gemini-4-argon", "google/gemini-4-carbon"];
+const AGENT_MODELS = [
+  "anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
+  "openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna",
+  "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "openai/gpt-5.5",
+  "google/gemini-4-argon", "google/gemini-4-carbon", "google/gemini-4-hydrogen", "google/gemini-4-neon",
+  "google/gemini-3.8-flash", "google/gemini-3.7-flash", "google/gemini-3.6-flash",
+  "xai/grok-4.7", "xai/grok-4.6", "xai/grok-4.5",
+  "perplexity/glm-5.3", "perplexity/glm-5.3-flash", "perplexity/deepseek-v4-pro-0813", "perplexity/kimi-k3",
+  "perplexity/nemotron-3.5-super-120b-a12b", "perplexity/sonar",
+];
+const ORCHESTRATOR_MODELS = [
+  "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5",
+  "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-5-5", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7",
+  "anthropic/claude-opus-4-6", "anthropic/claude-opus-4-5", "anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5", "anthropic/claude-haiku-4-5",
+  "openai/gpt-6.2-astra", "openai/gpt-6.2-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna",
+  "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+  "openai/gpt-5.3-codex", "openai/gpt-5.2", "openai/gpt-5.1", "openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano",
+  "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-3.8-flash", "google/gemini-3.7-flash", "google/gemini-3.6-flash",
+  "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite",
+  "xai/grok-4.7", "xai/grok-4.6", "xai/grok-4.5",
+  "perplexity/glm-5.3", "perplexity/glm-5.3-flash", "perplexity/deepseek-v4-pro-0813", "perplexity/kimi-k3",
+  // Not a model: it asks the Orchestrator to choose one (`ORCHESTRATOR_RULES`).
+  "perplexity/auto",
+];
+const AGENT_ONLY = AGENT_MODELS.filter((model) => !ORCHESTRATOR_MODELS.includes(model));
+const ORCHESTRATOR_ONLY = ORCHESTRATOR_MODELS.filter((model) => !AGENT_MODELS.includes(model));
 
 /** `fast` is Perplexity's alias for priority. */
 const PERPLEXITY_SERVICE_MODES: ProviderDescription["serviceModes"] = [
@@ -26,12 +53,42 @@ const PERPLEXITY_SERVICE_MODES: ProviderDescription["serviceModes"] = [
 ];
 
 /**
- * The Agent API's reading rules: Perplexity's, plus its `models` list, a
- * fallback chain it reads before `model` (agent-api/model-fallback). Each
- * model on it is judged as the request's own model is (`alternativeModels`):
- * the app's model list, a preset's one model, and a price.
+ * The Agent API's reading rules: Perplexity's, plus the models a request may
+ * be served with besides its own.
+ *
+ * - `models`, a fallback chain it reads before `model`
+ *   (agent-api/model-fallback). Each model on it is judged as the request's
+ *   own model is (`alternativeModels`): the app's model list, a preset's one
+ *   model, and a price. With no `model`, the list alone names the models.
+ * - `effort`, `profile` and `preset` (effort's old name) bring a model or a
+ *   model chain of their own. Perplexity's docs say a field sent beside them
+ *   overrides theirs, but not that `model` replaces a chain they bring in
+ *   `models`, which Perplexity reads first. So a request with one of them is
+ *   served only with its own `models` list, which replaces theirs and is
+ *   judged (`providerChoice`).
  */
-const AGENT_RULES: ReadingRules = { serviceModes: PERPLEXITY_SERVICE_MODES, alternativeModels: { field: "models" } };
+const AGENT_RULES: ReadingRules = {
+  serviceModes: PERPLEXITY_SERVICE_MODES,
+  alternativeModels: { paths: ["models[]"] },
+  providerChoice: { fields: ["effort", "profile", "preset"] },
+};
+
+/**
+ * The Orchestrator API's reading rules: Perplexity's, plus `perplexity/auto`,
+ * which has the Orchestrator choose the model (orchestrator/routing-and-
+ * reliability). Without a `routing` block it chooses by a policy of its own,
+ * among models the request does not name. So it is served only with a
+ * `routing` block, whose `default_model` and each route's `model` are judged
+ * as the request's own model is (`alternativeModels`, `providerChoice`).
+ */
+const ORCHESTRATOR_RULES: ReadingRules = {
+  serviceModes: PERPLEXITY_SERVICE_MODES,
+  alternativeModels: { paths: ["routing.default_model", "routing.routes[].model"] },
+  providerChoice: { models: ["perplexity/auto"] },
+};
+
+/** The Orchestrator's Chat Completions and Responses report a one-hour cache write in their one count, asked for with `prompt_cache_options.ttl`. */
+const ONE_HOUR_CACHE = { cacheWriteKeptFor: { field: { in: "body", field: "prompt_cache_options.ttl" }, variants: { "1h": "1h" } } } as const;
 
 export const perplexity = defineProvider({
   type: "perplexity",
@@ -49,22 +106,22 @@ export const perplexity = defineProvider({
   //   Agent API (`v1/agent`, and `v1/responses` for OpenAI's SDKs) and on the
   //   Orchestrator API under `orchestrator/v1/`, which it first served under
   //   `router/v1/` and still does.
-  // Some models are on the Agent API only (`unservedModels` on the
-  // Orchestrator's operations). Sonar and the Agent API report their own
-  // cost (`providerCost`), with Sonar's request fee and the Agent's tools,
-  // which our token prices leave out. The Agent API reads a `models` list
-  // before `model` (`AGENT_RULES`).
+  // Some models are on one of the two only (`unservedModels`). Sonar and the
+  // Agent API report their own cost (`providerCost`), with Sonar's request
+  // fee and the Agent's tools, which our token prices leave out. Both the
+  // Agent and the Orchestrator can be served by models the request names
+  // besides its own (`AGENT_RULES`, `ORCHESTRATOR_RULES`).
   operations: withV1Paths("perplexity", [
     plain(chat("perplexity.chat", "chat/completions", { providerCost: "perplexity" })),
     plain(chat("perplexity.chat.v1", "v1/chat/completions", { providerCost: "perplexity" })),
     plain(chat("perplexity.sonar", "v1/sonar", { providerCost: "perplexity" })),
     agent(responses("perplexity.agent", "v1/agent", { providerCost: "perplexity" })),
     agent(responses("perplexity.responses", "v1/responses", { providerCost: "perplexity" })),
-    orchestrator(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions")),
-    orchestrator(responses("perplexity.orchestrator.responses", "orchestrator/v1/responses")),
+    orchestrator(chat("perplexity.orchestrator.chat", "orchestrator/v1/chat/completions", ONE_HOUR_CACHE)),
+    orchestrator(responses("perplexity.orchestrator.responses", "orchestrator/v1/responses", ONE_HOUR_CACHE)),
     orchestrator(messages("perplexity.orchestrator.messages", "orchestrator/v1/messages")),
-    orchestrator(chat("perplexity.router.chat", "router/v1/chat/completions")),
-    orchestrator(responses("perplexity.router.responses", "router/v1/responses")),
+    orchestrator(chat("perplexity.router.chat", "router/v1/chat/completions", ONE_HOUR_CACHE)),
+    orchestrator(responses("perplexity.router.responses", "router/v1/responses", ONE_HOUR_CACHE)),
     orchestrator(messages("perplexity.router.messages", "router/v1/messages")),
     embeddings("perplexity.embeddings", "v1/embeddings"),
     embeddings("perplexity.embeddings.contextualized", "v1/contextualizedembeddings"),
@@ -76,14 +133,14 @@ function plain(operation: OperationDescription): OperationDescription {
   return { ...operation, modelIds: "plain" };
 }
 
-/** An Orchestrator API operation: `maker/model` ids, except the Agent API's own. */
+/** An Orchestrator API operation: `maker/model` ids, except the Agent API's own, with its reading rules. */
 function orchestrator(operation: OperationDescription): OperationDescription {
-  return { ...namespaced(operation), unservedModels: AGENT_ONLY_MODELS };
+  return { ...namespaced(operation), unservedModels: AGENT_ONLY, rules: ORCHESTRATOR_RULES };
 }
 
-/** An Agent API operation: `maker/model` ids, with the Agent API's reading rules. */
+/** An Agent API operation: `maker/model` ids, except the Orchestrator's own, with its reading rules. */
 function agent(operation: OperationDescription): OperationDescription {
-  return { ...namespaced(operation), rules: AGENT_RULES };
+  return { ...namespaced(operation), unservedModels: ORCHESTRATOR_ONLY, rules: AGENT_RULES };
 }
 
 /** An operation that serves only `maker/model` ids (`modelIds`). */

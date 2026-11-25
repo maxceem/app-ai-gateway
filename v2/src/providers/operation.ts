@@ -199,6 +199,15 @@ export type Meter =
        */
       readonly usageHeaders?: readonly UsageHeader[];
       /**
+       * A request field that says how long its cache writes are kept, where
+       * the answer reports them as one count: Perplexity's Orchestrator Chat
+       * Completions and Responses report a one-hour write in
+       * `cache_write_tokens`, asked for with `prompt_cache_options.ttl: "1h"`.
+       * Each value names the cache-write variant (`../usage/token-rates.ts`)
+       * the whole count then bills at.
+       */
+      readonly cacheWriteKeptFor?: CacheWriteKeptFor;
+      /**
        * Its answers may report only the provider's own cost (`providerCost`),
        * with no usage at all: xAI's images. A path that bills at the customer's
        * rates cannot meter it (`../providers/custom.ts`).
@@ -270,6 +279,12 @@ export type Meter =
   | { readonly kind: "wall_clock" }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
   | { readonly kind: "provider_event"; readonly adapter: string };
+
+/** A request field naming how long its cache writes are kept, and the variant each value bills as (`cacheWriteKeptFor`). */
+export interface CacheWriteKeptFor {
+  readonly field: FieldRef;
+  readonly variants: Readonly<Record<string, "1h">>;
+}
 
 /** A token count a response header carries: the header (lowercase), and the bucket share it is. */
 export interface UsageHeader {
@@ -660,7 +675,7 @@ export interface OperationDescription {
  */
 export type ReadingRules = Pick<
   ProviderDescription,
-  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "modelNamespaces"
+  "serviceModes" | "servedModes" | "transcriptionFormats" | "countedInputModalities" | "alternativeModels" | "providerChoice" | "modelNamespaces"
 >;
 
 /**
@@ -864,13 +879,25 @@ export interface ProviderDescription {
    */
   readonly modelNamespaces?: Readonly<Record<string, string>>;
   /**
-   * A request field listing more models the provider may serve the request
-   * with when the first cannot (Vercel's `providerOptions.gateway.models`).
-   * Each one is judged as the request's own model is: the app's model list,
-   * and a price (`src/proxy/alternatives.ts`). The charge is priced at the
-   * model the answer says served it.
+   * Request fields naming more models the provider may serve the request
+   * with: Vercel's fallback list (`providerOptions.gateway.models[]`),
+   * Perplexity's Agent API `models[]`, and the models its Orchestrator's
+   * `routing` block chooses among. Each path is dot-separated, and `[]` after
+   * a name reads every item of that list. Each model is judged as the
+   * request's own model is: the app's model list, and a price
+   * (`src/proxy/alternatives.ts`). The charge is priced at the model the
+   * answer says served it.
    */
-  readonly alternativeModels?: { readonly field: string };
+  readonly alternativeModels?: { readonly paths: readonly string[] };
+  /**
+   * Ways a request lets the provider choose the model itself: request fields
+   * that bring their own models (Perplexity's Agent API `effort`, `profile`,
+   * and `preset`, its old name), and model names that ask it to choose
+   * (`perplexity/auto`). Such a request is served only when it names the
+   * models the provider may choose among, in `alternativeModels`, so each can
+   * be judged (`src/proxy/alternatives.ts`).
+   */
+  readonly providerChoice?: { readonly fields?: readonly string[]; readonly models?: readonly string[] };
   /**
    * A request field that limits which providers serve the request (Vercel's
    * `providerOptions.gateway.only`). A connection may pin it

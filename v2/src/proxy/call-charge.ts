@@ -94,6 +94,8 @@ export interface CallAttempt {
   readonly perChannel?: true;
   /** The provider may bill more than the request's measure (`inDoubtWhen`, `./meter.ts`). */
   readonly measureInDoubt?: true;
+  /** The cache-write variant the answer's one cache-write count bills as (`cacheWriteKeptFor`). */
+  readonly cacheWriteVariant?: "1h";
 }
 
 export interface AttemptOutcome {
@@ -123,18 +125,43 @@ function pricedOrNull(price: ModelPrice, usage: UsageObservation, mode: ServiceM
 }
 
 /**
- * Whether a provider's figure is rounded (`costReportStep`) and below what our
- * price says the call's usage costs, so charging it would charge too little.
+ * The usage with its cache writes billed as the variant the request asked
+ * for (`cacheWriteKeptFor`), where the answer reports them as one count and
+ * no split of its own.
  */
-function roundedBelowPrice(attempt: CallAttempt, reported: number, priced: { readonly cost: NanoDollars } | null): boolean {
-  if (priced === null || attempt.price === null) return false;
-  const report = declaredOperation(attempt.operation)?.meter;
-  const step = report?.kind === "response_json" && report.providerCost !== undefined ? costReportStep(report.providerCost) : null;
-  if (step === null) return false;
+function keptCacheWrites(usage: UsageObservation | null, variant: "1h" | undefined): UsageObservation | null {
+  if (usage === null || variant === undefined || usage.cacheWriteTokens <= 0) return usage;
+  const variants = usage.tokenVariants as Partial<Record<string, Partial<Record<string, number>>>> | undefined;
+  if (variants?.cache_write !== undefined && Object.keys(variants.cache_write).length > 0) return usage;
+  return { ...usage, tokenVariants: { ...usage.tokenVariants, cache_write: { [variant]: usage.cacheWriteTokens } } as UsageObservation["tokenVariants"] };
+}
+
+/**
+ * What to charge in place of a provider's rounded figure (`costReportStep`),
+ * or null to charge the figure. Only where the figure is below our price for
+ * the call's usage by no more than the rounding can explain (a small
+ * Perplexity call reads $0): then our price is charged, as an estimate, so
+ * never below the model's standard rate. A figure further below is the
+ * provider's own, a discount or a cheaper tier, and stands.
+ */
+function roundedReplacement(
+  attempt: CallAttempt,
+  reported: number,
+  usage: UsageObservation | null,
+  served: ServiceMode,
+): NonNullable<ReturnType<typeof priceInServedMode>> | null {
+  if (usage === null || attempt.price === null) return null;
+  const meter = declaredOperation(attempt.operation)?.meter;
+  const step = meter?.kind === "response_json" && meter.providerCost !== undefined ? costReportStep(meter.providerCost) : null;
+  if (step === null) return null;
+  // Priced as an estimate: the dearer of the served mode's price and the model's standard one.
+  const estimate = pricedOrNull(attempt.price.price, usage, served, true);
+  if (estimate === null) return null;
   try {
-    return priced.cost > fromDollars(reported);
+    const gap = estimate.cost - fromDollars(reported);
+    return gap > 0 && gap <= fromDollars(step) ? estimate : null;
   } catch (error) {
-    if (error instanceof MoneyError) return false;
+    if (error instanceof MoneyError) return null;
     throw error;
   }
 }
@@ -152,7 +179,7 @@ interface Costed {
 
 export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = Date.now()): LedgerEntry {
   const id = chargeId(attempt.requestId, attempt.seq);
-  let { usage } = outcome;
+  let usage = keptCacheWrites(outcome.usage, attempt.cacheWriteVariant);
   const servedMode = outcome.servedMode ?? attempt.requestedMode;
   const succeeded = outcome.status === "ok" || outcome.status === "client_aborted";
   // The provider said yes (2xx), so an answer cut short may have been billed.
@@ -208,11 +235,13 @@ export function callCharge(attempt: CallAttempt, outcome: AttemptOutcome, now = 
   let costed: Costed;
   let measured: Measured;
   const openWork: OpenWorkRow[] = [];
-  if (reported !== null && roundedBelowPrice(attempt, reported, priced)) {
+  const rounded = reported === null ? null : roundedReplacement(attempt, reported, usage, servedMode);
+  if (reported !== null && rounded !== null) {
     // The provider's figure is rounded coarser than the call costs (a small
     // Perplexity call reads $0): its usage at our price is charged instead,
-    // as an estimate, never less.
-    costed = { costNano: priced!.cost, priceSource: attempt.price!.source, estimate: true, rates: priced!.rates };
+    // as an estimate, never below the standard rate.
+    priced = rounded;
+    costed = { costNano: rounded.cost, priceSource: attempt.price!.source, estimate: true, rates: rounded.rates };
     measured = outcome.cut ? "partial" : "complete";
     reasons.push("cost_rounded");
     log("warn", "provider_cost_rounded_below_price", { ...facts, reportedUsd: reported });

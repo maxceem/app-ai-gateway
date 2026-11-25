@@ -64,7 +64,7 @@ import { keyAuth, upstreamRequest } from "../providers/route.ts";
 import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
-import { chargedAs, judgedAlternatives } from "./alternatives.ts";
+import { chargedAs, chosenAmong, judgedAlternatives } from "./alternatives.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { clientResponseHeaders, noStore, upstreamHeaders, withoutHeaders } from "./headers.ts";
 import { authDone, providerAnswered, timedAdmission, timingsOf } from "./timing.ts";
@@ -337,14 +337,20 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const parsed = await requestBody(bytes, contentType, operation, description);
       const body = parsed.kind === "json" ? parsed.body : parsed.kind === "form" ? formFields(parsed.fields) : {};
       if (parsed.kind === "json") refuseBackground(operation, body);
-      const requested = requestModel(operation, body, match.parts, url.searchParams);
+      // Where the provider chooses among models the request names besides its
+      // own (Perplexity's `models` with no `model`, or `perplexity/auto` with
+      // `routing`), the first of them is judged and charged as the request's
+      // model, never rewritten; every one of them is judged below.
+      const own = ownModel(operation, body);
+      const chosen = chosenAmong(description, operation, body, own);
+      const requested = chosen ?? requestModel(operation, body, match.parts, url.searchParams);
       // The caller's text: a refusal's diagnostic keeps it only when it names a
       // model the gateway knows, checked then, so a served request never pays.
       caller.facts.model = requested;
       caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested);
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
-      const call = resolveCall(routing, app.routing.model_rewrites, priceSources(connection), operation, requested);
+      const call = resolveCall(routing, chosen === null ? app.routing.model_rewrites : undefined, priceSources(connection), operation, requested);
       if (call.kind === "refused") throw callRefusal(call, operation);
       const { model, bill } = call;
       const price = bill.price;
@@ -788,6 +794,14 @@ export function requestModel(
     throw new GatewayError(400, "invalid_request", `Request body must name a model in ${location.field}`);
   }
   return value;
+}
+
+/** The model a JSON or form body names in the operation's model field, or undefined where it names none there. */
+function ownModel(operation: OperationDescription, body: Record<string, unknown>): string | undefined {
+  const field = modelBodyField(operation);
+  if (field === null) return "";
+  const value = Object.hasOwn(body, field) ? body[field] : undefined;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 /** A provider error's own code, from `error.code` or `error.type`, if its body names one. */

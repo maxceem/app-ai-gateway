@@ -154,9 +154,12 @@ describe("a custom provider's description", () => {
         const { providerCost: _report, ...meter } = definition.meter as typeof definition.meter & { providerCost?: unknown };
         expect(custom.meter, `${provider.type} ${style} meter`).toEqual(meter);
         expect(reportsCost(custom)).toBe(false);
-        expect(custom.rules?.serviceModes).toBe(provider.serviceModes);
-        expect(custom.rules?.alternativeModels).toBe(provider.alternativeModels);
-        expect(custom.rules?.modelNamespaces).toBe(provider.modelNamespaces);
+        // The definition's own reading rules where it has them (Perplexity's Agent API), else its provider's.
+        const rules = readingRules(provider, definition);
+        expect(custom.rules?.serviceModes).toBe(rules.serviceModes);
+        expect(custom.rules?.alternativeModels).toBe(rules.alternativeModels);
+        expect(custom.rules?.providerChoice).toBe(rules.providerChoice);
+        expect(custom.rules?.modelNamespaces).toBe(rules.modelNamespaces);
       }
     }
     expect(judged).toBeGreaterThan(CUSTOM_STYLES.length);

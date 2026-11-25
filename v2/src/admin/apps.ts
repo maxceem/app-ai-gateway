@@ -42,6 +42,7 @@ import { PASSTHROUGH, readCustomAuth, readPassthrough } from "../providers/passt
 import type { CustomerRates } from "../pricing/prices.ts";
 import { attemptCopy, presetShape } from "../providers/presets.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
+import { chosenAmong } from "../proxy/alternatives.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { applyAppPatch } from "./app-patch.ts";
@@ -595,6 +596,8 @@ async function checkPreset(
       try {
         refuseBackground(operation, judged);
         applyOutputCap(operation, judged, preset.max_output_tokens);
+        // Fixed parameters that have the provider choose the model (`effort`) need the list it chooses among.
+        chosenAmong(description, operation, judged, operation.model.in === "body" ? target.model : "");
       } catch (error) {
         if (!(error instanceof GatewayError)) throw error;
         throw invalid(`${where}.params: ${error.message}${index === 0 ? "" : ` (for ${label})`}`, { slug });

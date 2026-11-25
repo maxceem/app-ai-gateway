@@ -50,7 +50,7 @@ import type { ApiStyle, OperationDescription, ProviderDescription } from "../pro
 import { attemptCopy, declaredOperation, presetOperation, presetUpstream } from "../providers/presets.ts";
 import { keyAuth } from "../providers/route.ts";
 import type { CallAttempt } from "./call-charge.ts";
-import { judgedAlternatives } from "./alternatives.ts";
+import { chosenAmong, judgedAlternatives } from "./alternatives.ts";
 import { requestedServiceMode } from "./meter.ts";
 import { applyOutputCap, pinServingProviders, refuseBackground, requestStreamUsage } from "./policy.ts";
 import { removeOutbound, removeOutboundForm, requestFacts } from "./request-fields.ts";
@@ -204,7 +204,9 @@ export function targetAttempt(input: TargetInput): PreparedAttempt {
     refuseBackground(operation, judged);
     applyOutputCap(operation, judged, preset.max_output_tokens);
     // A preset fixes its model: another the provider could serve instead is
-    // allowed only when it is that same model.
+    // allowed only when it is that same model, and a field that has the
+    // provider choose its own (`effort`) only with such a list.
+    chosenAmong(description, operation, judged, location.in === "body" ? model : "");
     judgedAlternatives(description, operation, judged, { allowed: [model], sources: priceSources(connection), baseUrl: connection.baseUrl });
     fields = judged;
     build = () => {

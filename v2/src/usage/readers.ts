@@ -178,7 +178,7 @@ export function openAiUsage(value: unknown, countedInput: readonly Modality[] = 
   const details = asRecord(usage.input_tokens_details) ?? asRecord(usage.prompt_tokens_details);
   if (
     inexact(usage, [...OPENAI_COUNTS, "cached_tokens", "prompt_cache_hit_tokens"]) ||
-    inexact(details, ["cached_tokens", "cache_write_tokens"])
+    inexact(details, ["cached_tokens", "cache_write_tokens", "cache_creation_input_tokens"])
   ) {
     return null;
   }
@@ -189,7 +189,10 @@ export function openAiUsage(value: unknown, countedInput: readonly Modality[] = 
   // A missed one would bill the cache at the full input rate.
   const cached =
     (details ? numberAt(details, "cached_tokens") : 0) || numberAt(usage, "cached_tokens") || numberAt(usage, "prompt_cache_hit_tokens");
-  const cacheWrite = details ? numberAt(details, "cache_write_tokens") : 0;
+  // Cache writes: `cache_write_tokens` in OpenAI's spelling, and Perplexity's
+  // Agent API names them `cache_creation_input_tokens`. Both are inside the
+  // input total.
+  const cacheWrite = details ? numberAt(details, "cache_write_tokens") || numberAt(details, "cache_creation_input_tokens") : 0;
   const outputTotal = numberAt(usage, "output_tokens") || numberAt(usage, "completion_tokens");
   const input = openAiModalities(details, inputTotal, countedInput);
   const output = openAiModalities(asRecord(usage.output_tokens_details) ?? asRecord(usage.completion_tokens_details), outputTotal);

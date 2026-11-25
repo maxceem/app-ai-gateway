@@ -24,7 +24,7 @@ import type { CUSTOM_PATH_STYLES } from "../contracts/admin.ts";
 import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
 import { BUILT_IN_PROVIDERS } from "./index.ts";
 import { chat, completions, embeddings, images, messages, responses, speech, transcription } from "./llm.ts";
-import type { ApiStyle, OperationDescription, ProviderAuth, ProviderDescription } from "./operation.ts";
+import { readingRules, type ApiStyle, type OperationDescription, type ProviderAuth, type ProviderDescription, type ReadingRules } from "./operation.ts";
 import type { PassthroughPath } from "./matcher.ts";
 import { meterCases } from "../pricing/units.ts";
 import { hasMeasure } from "../usage/observation.ts";
@@ -212,14 +212,20 @@ export function customOperation(style: CustomStyle, path: string, owner: Provide
     ...(style === "openai-images" ? { uploads: true as const } : {}),
     // No list price or provider report to fall back on: every way its answers come out needs a rate.
     pricedEveryWay: true,
-    rules: {
-      serviceModes: source.serviceModes,
-      ...(source.servedModes !== undefined ? { servedModes: source.servedModes } : {}),
-      ...(source.transcriptionFormats !== undefined ? { transcriptionFormats: source.transcriptionFormats } : {}),
-      ...(source.countedInputModalities !== undefined ? { countedInputModalities: source.countedInputModalities } : {}),
-      ...(source.alternativeModels !== undefined ? { alternativeModels: source.alternativeModels } : {}),
-      ...(source.modelNamespaces !== undefined ? { modelNamespaces: source.modelNamespaces } : {}),
-    },
+    rules: rulesOf(readingRules(source, definition)),
+  };
+}
+
+/** The reading rules a custom path carries: its definition's, field by field. */
+function rulesOf(rules: ReadingRules): ReadingRules {
+  return {
+    serviceModes: rules.serviceModes,
+    ...(rules.servedModes !== undefined ? { servedModes: rules.servedModes } : {}),
+    ...(rules.transcriptionFormats !== undefined ? { transcriptionFormats: rules.transcriptionFormats } : {}),
+    ...(rules.countedInputModalities !== undefined ? { countedInputModalities: rules.countedInputModalities } : {}),
+    ...(rules.alternativeModels !== undefined ? { alternativeModels: rules.alternativeModels } : {}),
+    ...(rules.providerChoice !== undefined ? { providerChoice: rules.providerChoice } : {}),
+    ...(rules.modelNamespaces !== undefined ? { modelNamespaces: rules.modelNamespaces } : {}),
   };
 }
 

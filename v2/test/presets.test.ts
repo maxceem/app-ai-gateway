@@ -247,6 +247,8 @@ describe("presets", () => {
     // it: serving sends it where it always went, and saving refuses it (below).
     expect(presetOperation(perplexity, "openai-responses", undefined, "perplexity/sonar")?.name).toBe("perplexity.agent");
     expect(presetOperation(perplexity, "openai-chat", undefined, "perplexity/sonar")?.name).toBe("perplexity.chat");
+    // An Orchestrator-only model goes to the Orchestrator for Responses, not to the Agent API.
+    expect(presetOperation(perplexity, "openai-responses", undefined, "openai/gpt-5.4-mini")?.name).toBe("perplexity.orchestrator.responses");
     // Every other provider's operations serve any id.
     expect(presetOperation(BUILT_IN_PROVIDERS.openrouter!, "openai-chat", undefined, "openai/gpt-4o")?.name).toBe("openrouter.chat");
   });
@@ -379,6 +381,15 @@ describe("presets", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     const same = await post(`/v2/apps/${appId}/presets/agent`, key, { input: "hi", models: ["openai/gpt-6-luna"] });
     expect(same.response.status).toBe(200);
+  });
+
+  it("refuses a Perplexity Orchestrator preset call whose routing block names another model than the preset's", async () => {
+    const slug = await connection("perplexity");
+    const { appId, key } = await appWith({ presets: { chat: { provider: slug, operation: "perplexity.orchestrator.chat", model: "perplexity/glm-5.3-flash" } } });
+    const routing = { default_model: "anthropic/claude-fable-5-2", routes: [{ name: "a", description: "Anything.", model: "anthropic/claude-fable-5-2" }] };
+    const answer = await post(`/v2/apps/${appId}/presets/chat`, key, { messages: [], routing });
+    expect(answer.response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("falls back when the provider cannot be reached, and on a 429", async () => {
@@ -1019,6 +1030,11 @@ describe("saving rewrites and presets", () => {
       // perplexity/sonar is on the Agent API only: no Chat Completions operation serves it.
       [{ ...ok, fallback: [{ provider: perplexity, model: "perplexity/sonar" }] }, "has no openai-chat operation a preset can use that serves perplexity/sonar"],
       [{ ...ok, fallback: [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/sonar" }] }, "does not serve perplexity/sonar"],
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-5.4-mini" }, "does not serve openai/gpt-5.4-mini"],
+      // A preset fixes its model; perplexity/auto has the Orchestrator choose one.
+      [{ provider: perplexity, operation: "perplexity.orchestrator.chat", model: "perplexity/auto" }, "has the provider choose the model"],
+      // Fixed parameters that have the Agent API choose its models need the list it chooses among.
+      [{ provider: perplexity, operation: "perplexity.agent", model: "openai/gpt-6-luna", params: { effort: "low" } }, "lets the provider choose the model"],
     ];
     for (const [preset, message] of cases) {
       const answer = await save({ presets: { a: preset } });
