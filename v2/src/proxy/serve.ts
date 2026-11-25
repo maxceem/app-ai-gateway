@@ -61,7 +61,7 @@ import { ProviderMatcher, upstreamRoute, type PassthroughPath, type UpstreamTarg
 import { applyFieldSettings, compiledPassthrough, isPassthrough, PASSTHROUGH } from "../providers/passthrough.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { keyAuth, upstreamRequest } from "../providers/route.ts";
-import { modelBodyField, readingRules, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
+import { modelBodyField, readingRules, rewrittenModel, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import type { Parts } from "../providers/path.ts";
 import { chargeId, safeCharge, type AttemptOutcome, type CallAttempt } from "./call-charge.ts";
 import { chargedAs, judgedAlternatives, pinnedModels, standingModels } from "./alternatives.ts";
@@ -345,7 +345,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       // billed stands for it, never rewritten (`standingModels`).
       const field = modelBodyField(operation);
       const named = field === null ? undefined : bodyModel(body, field);
-      const standing = field === null ? null : standingModels(description, operation, body, named, routing.models);
+      // The app's own rewrite is the customer's choice, and always applied.
+      const rewritten = named !== undefined && rewrittenModel(operation, named, app.routing.model_rewrites) !== named;
+      const standing = field === null ? null : standingModels(description, operation, body, named, routing.models, rewritten);
       // The route a request takes to a price is resolved in one place, which
       // saving runs over every call a route allows (`resolveCall`).
       const resolved = (requested: string) =>

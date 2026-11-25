@@ -601,6 +601,22 @@ describe("Perplexity", () => {
     ]);
   });
 
+  it("always applies the app's own rewrite of perplexity/auto, even beside a routing block and with no model list", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, '$.routing.model_rewrites', json(?)) WHERE id = ?")
+      .bind(JSON.stringify({ "perplexity/auto": "perplexity/glm-5.3" }), appId)
+      .run();
+    clearCaches();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const routing = { default_model: "perplexity/glm-5.3-flash", routes: [{ name: "hard", description: "Hard questions.", model: "perplexity/glm-5.3-flash" }] };
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", routing, messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body.model).toBe("perplexity/glm-5.3");
+    expect(await chargesOf(appId)).toMatchObject([{ model: "perplexity/glm-5.3" }]);
+  });
+
   it("serves perplexity/auto the app lists itself, with no routing block, at its price: the customer's choice", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"], models: ["perplexity/auto"] });
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
@@ -764,6 +780,8 @@ describe("OpenRouter's other models", () => {
     fetchSpy.mockResolvedValueOnce(answer(LUNA));
     const body = {
       model: LUNA,
+      // The Messages API's fallback list, which Chat Completions does not read.
+      fallbacks: [{ model: SOL }],
       preset: "@preset/writer",
       plugins: [{ id: "fusion", analysis_models: [SOL] }],
       tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }, { type: "openrouter:image_generation" }],

@@ -90,8 +90,9 @@ export function namedAlternatives(description: ProviderDescription, operation: O
  * pick a model the gateway cannot judge. That holds only where `allowed`,
  * the app's model list, limits it: without a list there is nothing to get
  * around, and the model stands as written. `own` is the model as the caller
- * sent it; one the list names itself is the customer's choice, and stands
- * as any listed model does.
+ * sent it; one the list names itself, or one the app's own rewrite replaces
+ * (`rewritten`), is the customer's choice, and stands as any listed model
+ * does, so the rewrite is always applied.
  */
 export function standingModels(
   description: ProviderDescription,
@@ -99,11 +100,12 @@ export function standingModels(
   body: Record<string, unknown>,
   own: string | undefined,
   allowed: readonly string[] | undefined,
+  rewritten = false,
 ): readonly string[] | null {
   // A key in another letter case is refused first, before the model it hides is judged or priced.
   refuseMiscasedModelKeys(description, operation, body);
   const rules = readingRules(description, operation);
-  const choosing = own !== undefined && rules.choosingModels?.includes(own) === true && allowed?.includes(own) !== true;
+  const choosing = own !== undefined && !rewritten && rules.choosingModels?.includes(own) === true && allowed?.includes(own) !== true;
   if (own !== undefined && !choosing) return null;
   const named = [...namedAlternatives(description, operation, body).keys()];
   if (named.length > 0) return named;
