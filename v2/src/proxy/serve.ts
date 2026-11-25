@@ -345,7 +345,7 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       const field = modelBodyField(operation);
       const named = field === null ? undefined : bodyModel(body, field);
       const rewritten = named === undefined ? undefined : rewrittenModel(operation, named, app.routing.model_rewrites);
-      const chosen = field === null ? null : standingModel(description, operation, body, rewritten);
+      const chosen = field === null ? null : standingModel(description, operation, body, rewritten, routing.models !== undefined);
       // A rewrite to a model that has the provider choose is sent as written.
       const chosenRewritten = chosen !== null && named !== undefined && rewritten !== named;
       if (chosenRewritten) body[field!] = rewritten;

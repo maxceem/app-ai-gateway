@@ -141,18 +141,32 @@ test("OpenRouter is billed at the cost its answer reports", { skip, timeout: TES
   same(usage.cost_nano, reported.prompt_tokens * 1000, "usage.cost_nano is not reported.prompt_tokens * 1000");
 });
 
-test("an OpenRouter router, and a server tool that calls another model, are refused before they reach the provider", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
-  for (const body of [
-    { model: "openrouter/auto", messages: [{ role: "user", content: "Hi" }] },
-    { model: "mock-lab/unlisted-model", tools: [{ type: "openrouter:advisor" }], messages: [{ role: "user", content: "Hi" }] },
-  ]) {
-    const response = await send(`/v2/apps/${appId}/proxy/${slugs.openrouter}/v1/chat/completions`, base, {
-      method: "POST",
-      headers: { authorization: `Bearer ${appKey}`, "content-type": "application/json", "x-end-user-id": `smoke-router-${run}` },
-      body: JSON.stringify(body),
-    });
-    await expectResponse(response, 400, "the OpenRouter request");
-    expectCode(await readJson(response), "invalid_request", "response");
+test("an OpenRouter router, and a server tool that calls another model, are refused where the app lists its models", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  // An app of its own that lists its models: with no list there is nothing to get around, and these are served.
+  const listed = await admin("POST", "/v2/admin/apps", {
+    name: "Smoke OpenRouter models",
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [slugs.openrouter!]: { operations: ["openrouter.chat"], models: ["mock-lab/unlisted-model", "openrouter/auto"] } } },
+    },
+  });
+  expectStatus(listed, 201, "app");
+  const listedId = checkId(listed.body.app?.id, "the app");
+  try {
+    for (const body of [
+      { model: "openrouter/auto", messages: [{ role: "user", content: "Hi" }] },
+      { model: "mock-lab/unlisted-model", tools: [{ type: "openrouter:advisor" }], messages: [{ role: "user", content: "Hi" }] },
+    ]) {
+      const response = await send(`/v2/apps/${listedId}/proxy/${slugs.openrouter}/v1/chat/completions`, base, {
+        method: "POST",
+        headers: { authorization: `Bearer ${listed.body.api_key.key}`, "content-type": "application/json", "x-end-user-id": `smoke-router-${run}` },
+        body: JSON.stringify(body),
+      });
+      await expectResponse(response, 400, "the OpenRouter request");
+      expectCode(await readJson(response), "invalid_request", "response");
+    }
+  } finally {
+    await cleanUp([() => admin("DELETE", `/v2/admin/apps/${listedId}?confirm=${listedId}`)]);
   }
 });
 

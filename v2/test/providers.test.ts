@@ -572,6 +572,21 @@ describe("Perplexity", () => {
     ]);
   });
 
+  it("serves perplexity/auto without a routing block when the app lists no models, at its price", async () => {
+    const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE slug = ?")
+      .bind(JSON.stringify({ "perplexity/auto": { input: 1_000_000_000, output: 2_000_000_000 } }), slug)
+      .run();
+    clearCaches();
+    fetchSpy.mockResolvedValueOnce(Response.json({ model: "perplexity/glm-5.3", choices: [], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
+    const { response, ctx } = await post(`/v2/apps/${appId}/proxy/${slug}/orchestrator/v1/chat/completions`, key, { model: "perplexity/auto", messages: [] });
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(sent(0).body.model).toBe("perplexity/auto");
+    expect(await chargesOf(appId)).toMatchObject([{ model: "perplexity/auto" }]);
+  });
+
   it("bills the Orchestrator's one cache-write count as one-hour writes when the request asks for them", async () => {
     const { appId, slug, key } = await setup("perplexity", { operations: ["perplexity.orchestrator.chat"] });
     const usage = { prompt_tokens: 1_000_000, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 1_000_000 } };
@@ -695,7 +710,7 @@ describe("OpenRouter's other models", () => {
   });
 
   it("refuses a saved OpenRouter preset sent beside the model, and a server tool that calls another model, in any spelling", async () => {
-    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"], models: [LUNA] });
     fetchSpy.mockResolvedValue(answer(LUNA));
     for (const body of [
       { model: LUNA, preset: "@preset/writer", messages: [] },
@@ -719,6 +734,29 @@ describe("OpenRouter's other models", () => {
     await served.response.text();
     await waitOnExecutionContext(served.ctx);
     expect(sent(0).body.tools).toEqual(tools);
+  });
+
+  it("serves a router, a preset field and a model-calling tool as they came when the app lists no models: there is no list to get around", async () => {
+    const { appId, slug, key } = await setup("openrouter", { operations: ["openrouter.chat"] });
+    const bodies = [
+      { model: "openrouter/auto", messages: [] },
+      { model: LUNA, models: ["openrouter/auto"], messages: [] },
+      { model: LUNA, preset: "@preset/writer", messages: [] },
+      { model: LUNA, tools: [{ type: "openrouter:advisor", parameters: { model: SOL } }], messages: [] },
+      { model: LUNA, tools: [{ type: "advisor_20260301", name: "advisor", model: SOL }], messages: [] },
+    ];
+    for (const [index, body] of bodies.entries()) {
+      fetchSpy.mockResolvedValueOnce(answer(SOL));
+      const { response, ctx } = await post(chat(appId, slug), key, body);
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      await response.text();
+      await waitOnExecutionContext(ctx);
+      expect(sent(index).body).toEqual(body);
+    }
+    // Charged at the cost OpenRouter reports, as every OpenRouter call is.
+    const charges = await chargesOf(appId);
+    expect(charges).toHaveLength(bodies.length);
+    for (const charge of charges) expect(charge).toMatchObject({ price_source: "provider_usd", cost_nano: fromDollars(0.0012) });
   });
 
   it("judges an OpenRouter preset's fixed parameters by the same rule when it is saved", () => {
