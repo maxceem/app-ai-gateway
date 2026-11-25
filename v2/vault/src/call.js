@@ -9,7 +9,7 @@
  * opens the key, adds it, and streams the answer back without the key header.
  * It never follows a redirect, never logs a key and never returns one.
  */
-import { BUILT_IN_KEY_HEADERS, PROVIDER_HOSTS } from "./hosts.js";
+import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS, RESERVED_KEY_HEADER_PREFIXES, RESERVED_KEY_HEADERS } from "./hosts.js";
 import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
 
 /** @typedef {import("./seal.js").VaultEnv} VaultEnv */
@@ -111,6 +111,24 @@ export function under(url, base) {
 }
 
 /**
+ * Whether a key of `providerType` may be sent in `header`. A built-in type's
+ * key goes only in a header its own provider takes keys in: a header such as
+ * `origin` could come back in an answer (`access-control-allow-origin`) with
+ * the key, and fal passes other headers on to the apps it runs. A custom
+ * provider's key goes in the customer's own header, never one the gateway
+ * refuses when saving a custom provider.
+ * @param {string} providerType
+ * @param {string} header lower-cased
+ */
+export function keyHeaderAllowed(providerType, header) {
+  if (Object.hasOwn(KEY_HEADERS, providerType)) {
+    return /** @type {readonly string[]} */ (KEY_HEADERS[/** @type {keyof typeof KEY_HEADERS} */ (providerType)]).includes(header);
+  }
+  if (Object.hasOwn(PROVIDER_HOSTS, providerType)) return false;
+  return !RESERVED_KEY_HEADERS.includes(header) && !RESERVED_KEY_HEADER_PREFIXES.some((prefix) => header.startsWith(prefix));
+}
+
+/**
  * Where a call may go with these credentials, or null. A provider key goes
  * only under the address it is sealed for, or, sealed for "", only to its
  * provider type's own hosts. A Cloudflare token goes only under the account
@@ -127,7 +145,11 @@ export function allowedUrl(url, credentials) {
   if (key === undefined && token === undefined) return null;
   if (key !== undefined) {
     const [, , providerType = "", baseUrl = ""] = key.identity;
-    if (baseUrl !== "") {
+    if (baseUrl.startsWith(CLOUDFLARE_AI_GATEWAY_ORIGIN)) {
+      // Sealed for a Cloudflare AI Gateway: only under this provider's own path there.
+      const slug = Object.hasOwn(CLOUDFLARE_SLUGS, providerType) ? CLOUDFLARE_SLUGS[/** @type {keyof typeof CLOUDFLARE_SLUGS} */ (providerType)] : undefined;
+      target = slug === undefined ? null : under(url, `${baseUrl}${slug}/`);
+    } else if (baseUrl !== "") {
       target = under(url, baseUrl);
     } else {
       const hosts = Object.hasOwn(PROVIDER_HOSTS, providerType) ? PROVIDER_HOSTS[/** @type {keyof typeof PROVIDER_HOSTS} */ (providerType)] : [];
@@ -166,10 +188,7 @@ export function readCredentials(value) {
     const identity = identityOf(key.identity);
     if (typeof key.blob !== "string" || identity === null || typeof key.header !== "string" || typeof key.format !== "string") return null;
     if (!HEADER_NAME.test(key.header) || !key.format.includes("{key}") || key.format.length > 256) return null;
-    // A built-in type's key goes only in a header its providers take keys in: a header such
-    // as `origin` could come back in an answer (`access-control-allow-origin`), with the key.
-    // A custom provider's key goes in the customer's own header.
-    if (Object.hasOwn(PROVIDER_HOSTS, identity[2] ?? "") && !BUILT_IN_KEY_HEADERS.includes(key.header.toLowerCase())) return null;
+    if (!keyHeaderAllowed(identity[2] ?? "", key.header.toLowerCase())) return null;
     credentials.providerKey = { blob: key.blob, identity, header: key.header, format: key.format };
   }
   if (record.cloudflareToken !== undefined) {

@@ -6,8 +6,9 @@
  */
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { allowedUrl, callProvider, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
-import { BUILT_IN_KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
+import { allowedUrl, callProvider, holds, keyHeaderAllowed, readCredentials, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
+import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS, RESERVED_KEY_HEADER_PREFIXES, RESERVED_KEY_HEADERS } from "../vault/src/hosts.js";
+import { RESERVED_KEY_HEADERS as SAVE_RESERVED_KEY_HEADERS, customAuthProblem } from "../src/providers/custom.ts";
 import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext } from "../vault/src/seal.js";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
@@ -75,6 +76,18 @@ describe("where a key may go", () => {
     expect(allowedUrl(`${gateway}openai/x`, {})).toBeNull();
   });
 
+  it("sends a key sealed for a Cloudflare AI Gateway only under its own provider's path there", () => {
+    const gateway = "https://gateway.ai.cloudflare.com/v1/cf-acct/cf-gw/";
+    const key = (type: string) => ({ blob: "k", identity: ["a", "c", type, gateway], header: "authorization", format: "Bearer {key}" });
+    expect(allowedUrl(`${gateway}openai/chat/completions`, { providerKey: key("openai") })).toBe(`${gateway}openai/chat/completions`);
+    // AI Gateway passes `/fal/...` on to fal: an OpenAI key never goes there.
+    expect(allowedUrl(`${gateway}fal/fal-ai/flux`, { providerKey: key("openai") })).toBeNull();
+    expect(allowedUrl(`${gateway}google-ai-studio/v1beta/models`, { providerKey: key("openai") })).toBeNull();
+    // A type with no AI Gateway path is never sent through it.
+    expect(allowedUrl(`${gateway}fal/fal-ai/flux`, { providerKey: key("fal") })).toBeNull();
+    expect(allowedUrl(`${gateway}google-ai-studio/v1beta/models`, { providerKey: { ...key("gemini"), header: "x-goog-api-key", format: "{key}" } })).not.toBeNull();
+  });
+
   it("seals a base URL that is exactly one of the provider's own hosts for the provider's own address", () => {
     expect(keyOrigin({ type: "fal", baseUrl: "https://queue.fal.run/", cloudflareGateway: null })).toBe("");
     expect(keyOrigin({ type: "openrouter", baseUrl: "https://openrouter.ai/api/", cloudflareGateway: null })).toBe("");
@@ -93,13 +106,37 @@ describe("the vault's tables", () => {
     expect(table).toEqual(declared);
   });
 
-  it("takes a built-in key only in the headers the provider descriptions use for keys", () => {
-    const declared = new Set<string>();
-    for (const provider of Object.values(BUILT_IN_PROVIDERS)) {
-      declared.add(provider.auth.header.toLowerCase());
-      for (const auth of Object.values(provider.cloudflareGateway?.authByStyle ?? {})) declared.add(auth!.header.toLowerCase());
+  it("takes each built-in type's key only in the headers its own description uses for keys", () => {
+    const declared = Object.fromEntries(
+      Object.values(BUILT_IN_PROVIDERS).map((provider) => {
+        const headers = new Set([provider.auth.header.toLowerCase()]);
+        for (const auth of Object.values(provider.cloudflareGateway?.authByStyle ?? {})) headers.add(auth!.header.toLowerCase());
+        return [provider.type, [...headers].sort()];
+      }),
+    );
+    const table = Object.fromEntries(Object.entries(KEY_HEADERS).map(([type, headers]) => [type, [...headers].sort()]));
+    expect(table).toEqual(declared);
+    // fal runs other people's apps and passes other headers on: its key goes only in `authorization`.
+    expect(keyHeaderAllowed("fal", "authorization")).toBe(true);
+    expect(keyHeaderAllowed("fal", "x-api-key")).toBe(false);
+    expect(keyHeaderAllowed("gemini", "authorization")).toBe(false);
+  });
+
+  it("names each built-in type's Cloudflare AI Gateway path as its description does", () => {
+    const declared = Object.fromEntries(
+      Object.values(BUILT_IN_PROVIDERS).flatMap((provider) => (provider.cloudflareGateway === undefined ? [] : [[provider.type, provider.cloudflareGateway.slug]])),
+    );
+    expect({ ...CLOUDFLARE_SLUGS }).toEqual(declared);
+  });
+
+  it("refuses a custom provider's key in the headers saving a custom provider refuses", () => {
+    expect([...RESERVED_KEY_HEADERS].sort()).toEqual([...SAVE_RESERVED_KEY_HEADERS].sort());
+    for (const header of [...RESERVED_KEY_HEADERS, "cf-aig-authorization", "x-agw-anything", "sec-fetch-site"]) {
+      expect(keyHeaderAllowed("custom", header), header).toBe(false);
+      expect(customAuthProblem({ header, format: "{key}" }), header).not.toBeNull();
     }
-    expect([...BUILT_IN_KEY_HEADERS].sort()).toEqual([...declared].sort());
+    expect(RESERVED_KEY_HEADER_PREFIXES).toEqual(["cf-", "x-agw-", "sec-"]);
+    expect(keyHeaderAllowed("custom", "x-my-key")).toBe(true);
   });
 
   it("seals and opens under the same contexts as the gateway", async () => {
@@ -121,6 +158,10 @@ describe("the vault's tables", () => {
     await expect(open(vaultEnv, "providerKey", ["a", "other", "openai", from[3]], blob)).rejects.toThrow(/does not open/u);
     const moved = await reseal(vaultEnv, "providerKey", from, to, blob);
     expect(await open(vaultEnv, "providerKey", to, moved)).toBe(KEY);
+    // A Cloudflare token is never sealed again.
+    const tokenIdentity = ["a", "c", "cf-acct", "cf-gw"];
+    const token = await seal(vaultEnv, "cloudflareGatewayToken", tokenIdentity, "cf-token-abcdefgh");
+    await expect(reseal(vaultEnv, "cloudflareGatewayToken", tokenIdentity, tokenIdentity, token)).rejects.toThrow();
   });
 });
 
@@ -155,6 +196,32 @@ describe("a call", () => {
     const answer = await callProvider(vaultEnv, { url: "https://evil.example.com/v1", method: "GET", headers: new Headers(), body: null, credentials: moved });
     expect(answer.headers.get(VAULT_ERROR_HEADER)).toBe("credential_unavailable");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never passes an echoed Cloudflare token back", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) =>
+      new Response("ok", { headers: { "cf-aig-authorization": new Headers(init?.headers).get("cf-aig-authorization") ?? "" } }));
+    const identity = ["a", "c", "cf-acct", "cf-gw"];
+    const cloudflareToken = { blob: await seal(vaultEnv, "cloudflareGatewayToken", identity, "cf-token-abcdefgh"), identity };
+    const answer = await callProvider(vaultEnv, {
+      url: "https://gateway.ai.cloudflare.com/v1/cf-acct/cf-gw/openai/chat/completions",
+      method: "POST",
+      headers: new Headers(),
+      body: "{}",
+      credentials: { cloudflareToken },
+    });
+    expect(answer.status).toBe(200);
+    expect(answer.headers.get("cf-aig-authorization")).toBeNull();
+  });
+
+  it("answers `holds` only for well-formed credentials that open under their own identity", async () => {
+    const sealed = await providerKey(["a", "c", "openai", ""]);
+    expect(await holds(vaultEnv, sealed, [`x ${KEY} y`, "no"])).toEqual([true, false]);
+    const tampered = { providerKey: { ...sealed.providerKey, identity: ["a", "other", "openai", ""] } };
+    await expect(holds(vaultEnv, tampered, [KEY])).rejects.toThrow();
+    await expect(holds(vaultEnv, { providerKey: { blob: 1 } }, [KEY])).rejects.toThrow();
+    await expect(holds(vaultEnv, sealed, [1])).rejects.toThrow();
+    expect(readCredentials({})).toBeNull();
   });
 
   it("refuses, sending nothing, a call to another address or with a key that does not open", async () => {

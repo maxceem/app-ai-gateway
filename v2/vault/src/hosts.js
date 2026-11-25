@@ -33,10 +33,76 @@ export const PROVIDER_HOSTS = Object.freeze({
 });
 
 /**
- * The only headers a built-in provider type's key may be sent in: the ones
- * the provider descriptions name for keys (`auth`, and Cloudflare AI
- * Gateway's `authByStyle`). Any other header, such as `origin`, could be
- * echoed back in an answer with the key in it, so the vault refuses it. A test
- * in the gateway fails when this list and the descriptions differ.
+ * The headers each built-in provider type's key may be sent in: the ones its
+ * description names for keys (`auth`, and Cloudflare AI Gateway's
+ * `authByStyle`). Any other header could be echoed back in an answer with the
+ * key in it, or passed on by a host that runs other people's apps (fal), so
+ * the vault refuses it. A test in the gateway fails when this table and the
+ * descriptions differ.
  */
-export const BUILT_IN_KEY_HEADERS = Object.freeze(["authorization", "x-api-key", "x-goog-api-key", "xi-api-key"]);
+export const KEY_HEADERS = Object.freeze({
+  anthropic: ["authorization", "x-api-key"],
+  baseten: ["authorization"],
+  bytedance: ["authorization"],
+  cerebras: ["authorization"],
+  deepgram: ["authorization"],
+  deepseek: ["authorization"],
+  elevenlabs: ["xi-api-key"],
+  fal: ["authorization"],
+  fireworks: ["authorization"],
+  gemini: ["x-goog-api-key"],
+  groq: ["authorization"],
+  huggingface: ["authorization"],
+  mistral: ["authorization"],
+  moonshot: ["authorization"],
+  openai: ["authorization"],
+  openrouter: ["authorization"],
+  perplexity: ["authorization"],
+  together: ["authorization"],
+  vercel: ["authorization"],
+  xai: ["authorization"],
+});
+
+/**
+ * Each built-in type's path in Cloudflare AI Gateway's address space. A key
+ * sealed for a Cloudflare AI Gateway goes only under its own provider's path
+ * there, never another provider's (AI Gateway passes `/fal/...` on to fal). A
+ * type with no path here is not sent through AI Gateway. A test in the
+ * gateway fails when this table and the descriptions differ.
+ */
+export const CLOUDFLARE_SLUGS = Object.freeze({
+  anthropic: "anthropic",
+  gemini: "google-ai-studio",
+  openai: "openai",
+  perplexity: "perplexity-ai",
+  xai: "grok",
+});
+
+/**
+ * Header names a custom provider's key may never be sent in, as the gateway
+ * refuses them when a custom provider is saved (`v2/src/providers/custom.ts`,
+ * `RESERVED_KEY_HEADERS`), plus any name starting `cf-`, `x-agw-` or `sec-`.
+ * A test in the gateway fails when the two lists differ.
+ */
+export const RESERVED_KEY_HEADERS = Object.freeze([
+  "accept",
+  "accept-encoding",
+  "access-control-request-headers",
+  "access-control-request-method",
+  "connection",
+  "content-encoding",
+  "content-length",
+  "content-type",
+  "cookie",
+  "expect",
+  "host",
+  "keep-alive",
+  "origin",
+  "referer",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "user-agent",
+]);
+export const RESERVED_KEY_HEADER_PREFIXES = Object.freeze(["cf-", "x-agw-", "sec-"]);
