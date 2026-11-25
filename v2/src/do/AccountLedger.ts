@@ -79,6 +79,9 @@ const HOLDS_ROWS = `SELECT EXISTS (SELECT 1 FROM charge) OR EXISTS (SELECT 1 FRO
 export const NEXT_DUE_SQL = "SELECT MIN(due_at) AS due FROM open_work WHERE gave_up_at IS NULL";
 
 export class AccountLedger extends DurableObject<Env> {
+  /** When the alarm last ran in this instance: counts even when storing it failed. */
+  private lastRunAt = 0;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
@@ -100,8 +103,9 @@ export class AccountLedger extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     const now = Date.now();
+    this.lastRunAt = now;
     try {
-      // Kept in storage, not memory: the object sleeps between runs, and the pause must outlast that.
+      // Kept in storage too: the object sleeps between runs, and the pause must outlast that.
       writeMeta(this.ctx.storage, "last_run_at", String(now));
     } catch (error) {
       log("warn", "ledger_run_unmarked", { error: errorFacts(error) });
@@ -148,7 +152,8 @@ export class AccountLedger extends DurableObject<Env> {
     const now = Date.now();
     const times = [...(due === null ? [] : [due]), ...(held ? [nextNightly(now, readMeta(this.ctx.storage, "nightly_day"))] : [])];
     if (times.length === 0) return;
-    const lastRunAt = Number(readMeta(this.ctx.storage, "last_run_at") ?? "0");
+    // The later of the stored time and this instance's own: a run whose write failed still counts.
+    const lastRunAt = Math.max(this.lastRunAt, Number(readMeta(this.ctx.storage, "last_run_at") ?? "0"));
     const next = Math.max(now, lastRunAt + WORK_EVERY_MS, Math.min(...times));
     const current = fresh ? null : await this.ctx.storage.getAlarm();
     if (current === null || current > next) await this.ctx.storage.setAlarm(next);

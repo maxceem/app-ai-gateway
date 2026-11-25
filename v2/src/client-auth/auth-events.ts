@@ -254,16 +254,18 @@ export async function settleExpiredChallenges(
     list.push(row);
     byAccount.set(row.account_id, list);
   }
-  let abandoned = 0;
-  await Promise.all(
+  // Each account's count, summed once all are in: `+=` across awaits would lose some.
+  const counts = await Promise.all(
     [...byAccount].map(async ([accountId, challenges]) => {
       try {
-        abandoned += await writeAbandonedChallenges(ledgerDb(env, accountId), challenges);
+        return await writeAbandonedChallenges(ledgerDb(env, accountId), challenges);
       } catch (error) {
         log("warn", "auth_event_record_failed", { event: "challenge", account: accountId, count: challenges.length, error: errorFacts(error) });
+        return 0;
       }
     }),
   );
+  const abandoned = counts.reduce((sum, count) => sum + count, 0);
   // `expires_at < now` again: only ever an expired challenge, whatever happened since the read.
   const deleted = await db
     .prepare("DELETE FROM app_auth_challenge WHERE challenge IN (SELECT value FROM json_each(?1)) AND expires_at < ?2")

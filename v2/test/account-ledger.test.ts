@@ -3,6 +3,7 @@
  * shape the ledger code uses over it, and the rollup trigger inside a Durable
  * Object's SQLite.
  */
+import { SWEEP_BATCH } from "../src/ledger/sweep.ts";
 import { seenSql } from "../src/admin/users.ts";
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
@@ -204,6 +205,35 @@ describe("the ledger object", () => {
     });
     expect(planned).not.toBeNull();
     expect(planned!).toBeGreaterThanOrEqual(Date.now() + 50_000);
+    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
+  });
+
+  it("keeps the minute after a run even when the run could not store its time (step 8f)", async () => {
+    allowLedgerWork();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = ledgerObject(env, "acc_unstored");
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO ledger_meta (key, value) VALUES ('nightly_day', ?)", new Date().toISOString().slice(0, 10));
+      // More work due at once than one sweep takes, so some is still due when the run ends.
+      state.storage.sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${SWEEP_BATCH + 5})
+         INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, due_at, tries, created_at)
+         SELECT 'w' || i, 'unresolved', 'acc_unstored', 'a', 'call', 'o' || i, 'missing', 0, 0, 1 FROM n`,
+      );
+      await state.storage.setAlarm(Date.now() + 3_600_000);
+      // Storing the run's time fails; everything else works.
+      const exec = state.storage.sql.exec.bind(state.storage.sql);
+      vi.spyOn(state.storage.sql, "exec").mockImplementation(((query: string, ...bindings: unknown[]) => {
+        if (query.startsWith("INSERT INTO ledger_meta") && bindings[0] === "last_run_at") throw new Error("database or disk is full: SQLITE_FULL");
+        return exec(query, ...bindings);
+      }) as typeof state.storage.sql.exec);
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    const next = await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm());
+    vi.restoreAllMocks();
+    expect(next).not.toBeNull();
+    expect(next!).toBeGreaterThanOrEqual(Date.now() + 50_000);
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
   });
 

@@ -205,6 +205,17 @@ describe("AppDetailPage", () => {
     expect(await within(section).findByText(/none on this page/i)).toBeTruthy();
   });
 
+  it("shows the second users list with its error when its first page fails", async () => {
+    stub({
+      "GET /v2/admin/apps/my-app/users?limit=50&offset=0": { body: { ...USERS, total: 1, users: [USERS.users[0]] } },
+      "GET /v2/admin/apps/my-app/seen-users?limit=50": { status: 503, body: { error: { code: "service_unavailable", message: "busy" } } },
+    });
+    renderTab("users");
+
+    const section = await screen.findByRole("region", { name: "Also seen in usage" });
+    expect(await within(section).findByText(/could not load this page/i)).toBeTruthy();
+  });
+
   it("lists the app's jobs with their estimate, correction, total and state", async () => {
     stub({
       "GET /v2/admin/apps/my-app/jobs?limit=50&offset=0": {
