@@ -103,17 +103,22 @@ export function runStep(name, command, args, { cwd, silenceMs = 0, graceMs = KIL
 
 // Every watched group that may still have members, by its id.
 const groups = new Map();
+let shutdown = false;
+
+/** Whether this process was told to stop. No new step should start then. */
+export function shuttingDown() {
+  return shutdown;
+}
 
 /**
  * Tracks a watched step's process group until it has no members left. Its
  * `stop()` sends SIGTERM, then SIGKILL after the grace period, with a single
  * timer however often it is called. That timer is kept referenced, so this
- * process waits for it rather than leave a process running.
+ * process does not exit before sending SIGKILL.
  */
 function trackGroup(pid, graceMs) {
   let killer = null;
   const group = {
-    graceMs,
     stop() {
       if (killer) return;
       signalGroup(pid, "SIGTERM");
@@ -135,28 +140,20 @@ function trackGroup(pid, graceMs) {
 }
 
 // A watched step is in its own process group, so Ctrl-C in the terminal no
-// longer reaches it. When this process is told to stop, it stops every
-// watched group the same way the watchdog does, then exits with the signal's
-// usual code. It sends SIGTERM rather than the signal it got, because a step
-// started from a background shell ignores SIGINT.
+// longer reaches it. When this process is told to stop, it starts no new
+// step, sends SIGKILL to every watched group before exiting, and exits with
+// the signal's usual code. It does not wait for the system to clear the
+// processes away.
 let stopsOnExit = false;
 
 function stopGroupsOnExit() {
   if (stopsOnExit) return;
   stopsOnExit = true;
-  let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => {
-      if (stopping) return; // A second Ctrl-C does not cut the clean-up short.
-      stopping = true;
-      for (const group of groups.values()) group.stop();
-      // Exits once every group is gone, which each group's SIGKILL ensures.
-      const exitWhenGone = () => {
-        for (const group of [...groups.values()]) group.closed();
-        if (groups.size === 0) process.exit(128 + constants.signals[signal]);
-        else setTimeout(exitWhenGone, 100);
-      };
-      exitWhenGone();
+      shutdown = true;
+      for (const pid of groups.keys()) signalGroup(pid, "SIGKILL");
+      process.exit(128 + constants.signals[signal]);
     });
   }
 }

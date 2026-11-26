@@ -31,18 +31,29 @@ ${wrapperExits ? "process.exit(0);" : `setInterval(() => undefined, 1000); setTi
 // The watchdog needs process groups, so it is off on Windows.
 const noGroups = process.platform === "win32";
 
-const running = (pid) => {
+// Only the system's own answer proves a process is gone: `kill(pid, 0)`
+// failing with ESRCH. Any other error is surfaced, never read as "gone".
+const exists = (pid) => {
   try {
     process.kill(pid, 0);
-  } catch {
-    return false;
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
   }
-  // A process that has ended still answers until its parent collects it. Once
-  // its own parent is gone, that parent is init, which may take a moment.
+};
+
+const running = (pid) => {
+  if (!exists(pid)) return false;
+  // A process that has ended (state Z) still answers until its parent
+  // collects it. Once its own parent is gone, that parent is init, which may
+  // take a moment.
   try {
-    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
-  } catch {
-    return false; // `ps` found no such process.
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().startsWith("Z");
+  } catch (error) {
+    // `ps` finds nothing once the process was collected in the meantime.
+    if (!exists(pid)) return false;
+    throw error;
   }
 };
 
@@ -93,14 +104,15 @@ test("a child that ignores SIGTERM and prints on it gets one timeout and is then
   assert.equal(await stops(child), true, "SIGKILL ended the child that ignored SIGTERM");
 });
 
-test("Ctrl-C stops a watched step's group, even a process that ignores SIGTERM, and then exits 130", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async (t) => {
+test("Ctrl-C sends SIGKILL to a watched step's group, so even a process that ignores SIGTERM goes, and exits 130", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "check-step-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pidFile = path.join(dir, "pid");
-  const fixture = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on("SIGTERM", () => undefined); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`;
+  // It writes its pid only once it ignores SIGTERM, so the test never signals it too early.
+  const fixture = `process.on("SIGTERM", () => undefined); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`;
   const runner = `
 import { runStep } from ${JSON.stringify(new URL("../scripts/check-step.mjs", import.meta.url).href)};
-await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixture)}], { silenceMs: 60_000, graceMs: 1_000 });
+await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixture)}], { silenceMs: 60_000 });
 `;
   const parent = spawn(process.execPath, ["--input-type=module", "-e", runner], { stdio: "ignore" });
   const exited = new Promise((resolve) => parent.on("exit", (code, signal) => resolve(code ?? signal)));
@@ -116,7 +128,7 @@ await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixt
   assert.ok(child > 0, "the watched step started");
   parent.kill("SIGINT");
   assert.equal(await exited, 130);
-  assert.equal(await stops(child), true, "the process that ignored SIGTERM was killed before the runner exited");
+  assert.equal(await stops(child), true, "the process that ignored SIGTERM got SIGKILL");
 });
 
 test("a step that keeps printing is never stopped, however long it runs in all", { timeout: TEST_TIMEOUT_MS }, async () => {

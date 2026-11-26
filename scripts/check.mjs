@@ -1,6 +1,6 @@
 import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
-import { runStep, silenceLimitMs } from "./check-step.mjs";
+import { runStep, shuttingDown, silenceLimitMs } from "./check-step.mjs";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -100,8 +100,9 @@ let failed = false;
 await Promise.all(
   Array.from({ length: slots }, async () => {
     // Stop taking work once something has failed: the run already has to be
-    // fixed and repeated, so later steps would only add noise and delay.
-    while (queue.length > 0 && !failed) {
+    // fixed and repeated, so later steps would only add noise and delay. The
+    // same once this process is told to stop.
+    while (queue.length > 0 && !failed && !shuttingDown()) {
       const result = await run(queue.shift());
       results.push(result);
       if (!result.ok) failed = true;
