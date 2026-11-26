@@ -107,8 +107,15 @@ const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 const config = args[args.indexOf("--config") + 1] || "";
+const worker = config.includes("/vault/") ? "vault" : config.includes("/relay/") ? "relay" : "gateway";
 if (args[0] === "deployments") { process.stdout.write("[]"); process.exit(0); }
-if (args[0] === "deploy" && config.includes("/relay/")) console.log("  https://app-ai-gateway-v2-relay.team-1.workers.dev");
+if (args[0] === "secret" && args[1] === "list") {
+  const secrets = JSON.parse(process.env.FAKE_SECRETS || "{}")[worker];
+  if (secrets === undefined) { console.error("This Worker does not exist on your account. [code: 10007]"); process.exit(1); }
+  process.stdout.write(JSON.stringify(secrets.map((name) => ({ name, type: "secret_text" }))));
+  process.exit(0);
+}
+if (args[0] === "deploy" && worker === "relay" && !process.env.FAKE_NO_RELAY_URL) console.log("  https://app-ai-gateway-v2-relay.team-1.workers.dev");
 `,
   );
   chmodSync(bin, 0o755);
@@ -132,12 +139,28 @@ function prebuiltDir(dir: string): string {
   return out;
 }
 
-function deploy(args: string[], bin: string) {
+function deploy(args: string[], bin: string, extra: Record<string, string> = {}) {
+  const env: NodeJS.ProcessEnv = { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: bin, ...extra };
+  if (!("CLOUDFLARE_ENV" in extra)) delete env.CLOUDFLARE_ENV;
   return spawnSync(process.execPath, ["--experimental-strip-types", join(V2_DIR, "scripts", "deploy.ts"), ...args], {
     cwd: V2_DIR,
     encoding: "utf8",
-    env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: bin },
+    env,
   });
+}
+
+/** Copies of the three tracked configs as a temporary profile, removed after the test. */
+function profileCopies(t: { after: (fn: () => void) => void }): { profile: string; edit: (worker: "main" | "vault" | "relay", change: (text: string) => string) => void } {
+  const profile = `t${process.pid}${Math.random().toString(36).slice(2, 7)}`;
+  const files = { main: "wrangler.jsonc", vault: "vault/wrangler.jsonc", relay: "relay/wrangler.jsonc" };
+  const copies = Object.fromEntries(
+    Object.entries(files).map(([worker, file]) => [worker, join(V2_DIR, file.replace("wrangler.jsonc", `wrangler.${profile}.jsonc`))]),
+  ) as Record<keyof typeof files, string>;
+  t.after(() => {
+    for (const copy of Object.values(copies)) rmSync(copy, { force: true });
+  });
+  for (const [worker, file] of Object.entries(files)) cpSync(join(V2_DIR, file), copies[worker as keyof typeof files]);
+  return { profile, edit: (worker, change) => writeFileSync(copies[worker], change(readFileSync(copies[worker], "utf8"))) };
 }
 
 const kind = (call: string[]): string => {
@@ -152,7 +175,7 @@ test("a deploy goes vault, migrations, gateway, relay, and gives the gateway the
   // Prebuilt, so the test doesn't build the console.
   const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin);
   assert.equal(run.status, 0, run.stderr);
-  const deploys = fake.calls().filter((call) => call[0] !== "deployments" && call[0] !== "versions");
+  const deploys = fake.calls().filter((call) => !["deployments", "versions", "secret"].includes(call[0]!));
   assert.deepEqual(deploys.map(kind), ["deploy vault", "d1 migrations apply gateway", "deploy gateway", "deploy relay", "deploy gateway"]);
   // A first install: the gateway learns the relay's address once the relay exists.
   assert.ok(!deploys[2]!.includes("--var"));
@@ -189,4 +212,75 @@ test("a profile whose relay drops its code-update setting deploys nothing", (t) 
   assert.equal(run.status, 2);
   assert.match(run.stderr, /Nothing was deployed/u);
   assert.match(run.stderr, /code_update_strategy/u);
+});
+
+test("the tracked relay config never turns the echo on", () => {
+  assert.equal(tracked().relay.vars?.RELAY_ECHO, undefined);
+});
+
+test("a relay with no address to give the gateway is refused, unless RELAY_URL is set", () => {
+  const { main, vault, relay } = tracked();
+  const hidden = { ...relay, workers_dev: false };
+  assert.match(deployProblems(main, vault, hidden).join("\n"), /set RELAY_URL/u);
+  assert.deepEqual(deployProblems({ ...main, vars: { RELAY_URL: "https://relay.example.com" } }, vault, hidden), []);
+  assert.deepEqual(deployProblems(main, vault, { ...hidden, routes: [{ pattern: "relay.example.com", custom_domain: true }] }), []);
+});
+
+test("a deploy refuses CLOUDFLARE_ENV", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = deploy(["--dry-run"], fakeWrangler(dir).bin, { CLOUDFLARE_ENV: "production" });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /CLOUDFLARE_ENV is set/u);
+});
+
+test("a prebuilt deploy refuses a build command or base_dir in any of the three configs", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const out = prebuiltDir(dir);
+  for (const [worker, setting] of [["relay", '"build": { "command": "echo hi" },'], ["vault", '"base_dir": "..",'], ["main", '"build": { "command": "echo hi" },']] as const) {
+    const copies = profileCopies(t);
+    copies.edit(worker, (text) => text.replace('"main":', `${setting} "main":`));
+    const run = deploy(["--profile", copies.profile, "--prebuilt", out, "--dry-run"], fake.bin);
+    assert.equal(run.status, 2, worker);
+    assert.match(run.stderr, /build command|base_dir/u);
+  }
+});
+
+test("a deploy stops, deleting nothing, when a vault secret is already on the wrong Worker", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const out = prebuiltDir(dir);
+  const run = deploy(["--prebuilt", out], fake.bin, {
+    FAKE_SECRETS: JSON.stringify({ gateway: ["JWT_SECRET", "SECRET_VAULT_LOCAL_KEK_V1"], vault: ["SECRET_VAULT_LOCAL_KEK_V1"] }),
+  });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /The gateway holds the secret SECRET_VAULT_LOCAL_KEK_V1\. Delete it with: pnpm exec wrangler secret delete SECRET_VAULT_LOCAL_KEK_V1/u);
+  assert.doesNotMatch(run.stderr, /JWT_SECRET/u);
+  // Only secret names were listed: nothing deployed, nothing deleted.
+  assert.ok(fake.calls().every((call) => call[0] === "secret" && call[1] === "list"));
+});
+
+test("a kms vault already holding a local secret is stopped too; a Worker that doesn't exist yet is skipped", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const out = prebuiltDir(dir);
+  const copies = profileCopies(t);
+  copies.edit("vault", (text) => text.replace(/"vars":\s*\{[^}]*\}/u, '"vars": { "SECRET_VAULT_MODE": "kms" }'));
+  const run = deploy(["--profile", copies.profile, "--prebuilt", out], fake.bin, { FAKE_SECRETS: JSON.stringify({ vault: ["SECRET_VAULT_KMS_TOKEN", "SECRET_VAULT_LOCAL_KEK_V1"] }) });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /The kms vault holds the secret SECRET_VAULT_LOCAL_KEK_V1/u);
+  assert.doesNotMatch(run.stderr, /SECRET_VAULT_KMS_TOKEN/u);
+});
+
+test("a deploy fails when the relay's address can't be found", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_NO_RELAY_URL: "1" });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /relay's address was not found/u);
 });

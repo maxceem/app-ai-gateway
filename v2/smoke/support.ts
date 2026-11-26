@@ -17,6 +17,7 @@
  */
 import { AssertionError } from "node:assert";
 import { randomUUID } from "node:crypto";
+import { USER_AGENT } from "./user-agent.ts";
 
 /**
  * A message the compiler can see is fixed text: a string literal, or a choice
@@ -263,3 +264,41 @@ export async function cleanUp(steps: readonly (() => Promise<{ status: number }>
   }
   if (failed.length > 0) stop(`clean-up failed: ${failed.join(", ")}`);
 }
+
+/**
+ * Opens a WebSocket to `path` on `base` with the smoke checks' `user-agent`,
+ * sends `frames`, and gives back the first `count` frames that come back, as
+ * text or bytes. Anything else fails with fixed text: Node's own error can
+ * quote the URL.
+ */
+export async function exchangeFrames(path: string, base: string, frames: (string | Uint8Array)[], count: number): Promise<(string | Uint8Array)[]> {
+  const url = new URL(path, base);
+  url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+  let socket: WebSocket;
+  try {
+    // Node's WebSocket takes headers in its options; the DOM type does not know them.
+    socket = new WebSocket(url, { headers: { "user-agent": USER_AGENT } } as unknown as string[]);
+  } catch {
+    stop("a WebSocket could not be opened");
+  }
+  socket.binaryType = "arraybuffer";
+  const received: (string | Uint8Array)[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const done = await new Promise<"ok" | "error" | "timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), REQUEST_TIMEOUT_MS);
+    socket.addEventListener("open", () => {
+      for (const frame of frames) socket.send(frame);
+    });
+    socket.addEventListener("message", (event) => {
+      received.push(typeof event.data === "string" ? event.data : new Uint8Array(event.data as ArrayBuffer));
+      if (received.length === count) resolve("ok");
+    });
+    socket.addEventListener("error", () => resolve("error"));
+    socket.addEventListener("close", () => resolve(received.length === count ? "ok" : "error"));
+  }).finally(() => clearTimeout(timer));
+  socket.close(1000, "done");
+  if (done === "timeout") stop("the WebSocket answered too few frames in time");
+  if (done === "error") stop("the WebSocket failed or closed early");
+  return received;
+}
+

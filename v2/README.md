@@ -62,7 +62,8 @@ Inside `v2/`:
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
   The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
-  The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway.
+  The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway, and
+  `V2_RELAY_ECHO=1` for a relay with its echo on; without it they check the echo is refused.
   Every request the checks send names itself with the `user-agent` `agw-smoke/<version>`
   (`smoke/user-agent.ts`, which `pnpm run smoke` loads first).
 - `node --experimental-strip-types --import ./smoke/user-agent.ts --test smoke/email.smoke.ts`: the email check, run on its own. It
@@ -197,7 +198,8 @@ v2 is three Workers, each with its own `wrangler.jsonc`:
 
 - the gateway (this folder);
 - the vault (`vault/`), the only Worker that opens provider keys outside a live session;
-- the relay (`relay/`), for live sessions. For now its session object only echoes frames.
+- the relay (`relay/`), for live sessions. For now its session object only echoes frames, and
+  only where the relay's profile sets `RELAY_ECHO` to `"1"`, which only a test deployment does.
 
 Each `wrangler.jsonc` holds what every deployment shares. A deployment's own Worker names,
 database id, domains and placement go in a gitignored `wrangler.<profile>.jsonc` next to each,
@@ -226,7 +228,14 @@ Before deploying anything, it refuses configs that don't fit together:
 - a binding that names the wrong Worker;
 - a relay without `code_update_strategy` `{ "mode": "deferred", "max_delay": 2400 }`;
 - a vault in `kms` mode with a local setting;
-- a vault setting on the gateway or the relay.
+- a vault setting on the gateway or the relay;
+- a relay with no custom domain and no workers.dev address, unless the gateway config sets
+  `RELAY_URL`.
+
+It also lists each deployed Worker's secret names (never values) and stops, deleting nothing, if
+the gateway or the relay already holds a `SECRET_VAULT_*` secret, or a `kms` vault holds a
+`SECRET_VAULT_LOCAL_*` one. It prints the command that deletes each. `CLOUDFLARE_ENV` must be
+unset: the profiles are files, not Wrangler environments.
 
 Without that relay setting, a deploy cuts open sessions after 300 s. With it, open sessions keep
 the old code for up to 40 minutes. So deploy the relay only with this command, never from the
@@ -236,7 +245,9 @@ dashboard or with `wrangler deploy` alone. Deploy the gateway with this command 
 `--dry-run` checks the configs and runs `wrangler deploy --dry-run` for each Worker, and changes
 nothing. The release's deploy uses `--prebuilt <dir>`, with a folder that `build:prebuilt` made
 in a job without deploy secrets. It first checks that the vault's and the relay's files there
-are exactly the ones in git at `HEAD`, so they match the release tag.
+are exactly the ones in git at `HEAD`, so they match the release tag, and refuses a config with a
+build command or `base_dir`. A relative path is from the folder the command runs in, which is
+`v2/` through `pnpm run`.
 
 Secrets are not part of the deploy; `secrets:upload` puts them on each Worker. The relay holds
 none yet.

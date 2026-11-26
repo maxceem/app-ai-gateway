@@ -20,7 +20,8 @@ import { fileURLToPath } from "node:url";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const REPO_DIR = dirname(V2_DIR);
-const out = resolve(process.env.INIT_CWD ?? process.cwd(), process.argv[2] ?? join(V2_DIR, "dist", "prebuilt"));
+// A relative path starts at the folder it runs in (`v2/` through `pnpm run`), as in `deploy.ts`.
+const out = resolve(process.cwd(), process.argv[2] ?? join(V2_DIR, "dist", "prebuilt"));
 
 function run(command: string, args: string[], cwd: string): void {
   const result = spawnSync(command, args, { cwd, stdio: "inherit", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });

@@ -6,7 +6,9 @@
  *
  * For now its session object only echoes WebSocket frames, so the deploy, the
  * binding to the gateway and the code-update setting can be tested before any
- * session logic exists. Tickets, `open`, `close` and forwarding come next.
+ * session logic exists. The echo is off unless the deployment sets
+ * `RELAY_ECHO` to "1", which only a test deployment does; the tracked config
+ * never sets it. Tickets, `open`, `close` and forwarding come next.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -24,6 +26,7 @@ export const ECHO_LIFETIME_MS = 60_000;
  * @typedef {object} RelayEnv
  * @property {DurableObjectNamespace<Session>} SESSION
  * @property {Fetcher} MAIN the gateway Worker
+ * @property {string} [RELAY_ECHO] "1" on a test deployment only: turns the echo on
  */
 
 export default {
@@ -36,7 +39,8 @@ export default {
     if (pathname === HEALTH_PATH && request.method === "GET") {
       return Response.json({ ok: true, service: "app-ai-gateway-relay" });
     }
-    if (pathname === ECHO_PATH) {
+    // Checked before any session object is created: off, the echo is a 404 like any other path.
+    if (pathname === ECHO_PATH && env.RELAY_ECHO === "1") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return Response.json({ error: { code: "websocket_required" } }, { status: 426 });
       }

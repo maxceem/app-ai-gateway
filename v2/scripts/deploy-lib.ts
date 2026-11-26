@@ -17,6 +17,8 @@ export interface WorkerConfig {
   services?: { binding?: unknown; service?: unknown }[];
   routes?: unknown[];
   workers_dev?: unknown;
+  build?: unknown;
+  base_dir?: unknown;
   durable_objects?: { code_update_strategy?: { mode?: unknown; max_delay?: unknown } };
 }
 
@@ -54,11 +56,63 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
       problems.push(`A vault in kms mode must hold no local setting; remove ${local.join(", ")} from its vars.`);
     }
   }
+  const configuredUrl = typeof main.vars?.RELAY_URL === "string" && main.vars.RELAY_URL !== "";
+  if (!configuredUrl && relayUrlFromConfig(relay) === undefined && !hasWorkersDev(relay)) {
+    problems.push("The relay has no custom domain and no workers.dev address; set RELAY_URL in the gateway config.");
+  }
   for (const [label, config] of [["gateway", main], ["relay", relay]] as const) {
     const leaked = Object.keys(config.vars ?? {}).filter((name) => name.startsWith("SECRET_VAULT_"));
     if (leaked.length > 0) problems.push(`Only the vault holds the vault's settings; remove ${leaked.join(", ")} from the ${label} config.`);
   }
   return problems;
+}
+
+/** Whether Wrangler gives the Worker a workers.dev address (its default when it has no routes). */
+export function hasWorkersDev(config: WorkerConfig): boolean {
+  return config.workers_dev === true || (config.workers_dev === undefined && (config.routes ?? []).length === 0);
+}
+
+/**
+ * Why these configs can't take a prebuilt deploy: one that builds at deploy
+ * time, or moves where modules are collected from, would upload something
+ * other than the files the deploy checked.
+ */
+export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[] {
+  const problems: string[] = [];
+  for (const [label, config] of Object.entries(configs)) {
+    if (config.build !== undefined) problems.push(`The ${label} config has a build command; a prebuilt deploy runs no build.`);
+    if (config.base_dir !== undefined) problems.push(`The ${label} config sets base_dir; a prebuilt deploy collects modules only from the checked files.`);
+  }
+  return problems;
+}
+
+/**
+ * Secrets already deployed on the wrong Worker, by name: a vault setting on the
+ * gateway or the relay, or a local setting on a vault in kms mode. Each comes
+ * with the command that deletes it. Nothing is deleted here.
+ */
+export function deployedSecretProblems(
+  names: { main?: string[]; vault?: string[]; relay?: string[] },
+  configPaths: { main: string; vault: string; relay: string },
+  vaultMode: unknown,
+): string[] {
+  const problems: string[] = [];
+  const wrong = (label: string, list: string[] | undefined, path: string, test: (name: string) => boolean) => {
+    for (const name of (list ?? []).filter(test)) {
+      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${path}`);
+    }
+  };
+  wrong("gateway", names.main, configPaths.main, (name) => name.startsWith("SECRET_VAULT_"));
+  wrong("relay", names.relay, configPaths.relay, (name) => name.startsWith("SECRET_VAULT_"));
+  if (vaultMode === "kms") wrong("kms vault", names.vault, configPaths.vault, (name) => name.startsWith("SECRET_VAULT_LOCAL_"));
+  return problems;
+}
+
+/** Secret names from `wrangler secret list --format json`. */
+export function secretNames(listJson: string): string[] {
+  const list = JSON.parse(listJson) as { name?: unknown }[];
+  if (!Array.isArray(list)) throw new Error("Unexpected Wrangler secret list");
+  return list.map((entry) => entry.name).filter((name): name is string => typeof name === "string");
 }
 
 /** The relay's address from its config, when it has a custom domain. */

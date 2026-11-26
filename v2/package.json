@@ -10,7 +10,7 @@
     "deploy": "node --experimental-strip-types scripts/deploy.ts",
     "deploy:dry-run": "node --experimental-strip-types scripts/deploy.ts --dry-run",
     "build:prebuilt": "node --experimental-strip-types scripts/build-prebuilt.ts",
-    "deploy:prebuilt:dry-run": "node --experimental-strip-types scripts/build-prebuilt.ts && node --experimental-strip-types scripts/deploy.ts --prebuilt dist/prebuilt --dry-run",
+    "deploy:prebuilt:dry-run": "node --experimental-strip-types scripts/build-prebuilt.ts dist/prebuilt && node --experimental-strip-types scripts/deploy.ts --prebuilt dist/prebuilt --dry-run",
     "db:generate": "drizzle-kit generate",
     "db:check": "drizzle-kit check",
     "openapi:generate": "node --experimental-strip-types scripts/openapi.ts",
