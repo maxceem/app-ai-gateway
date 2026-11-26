@@ -2,10 +2,6 @@
  * The pure parts of the v2 deploy (`deploy.ts`), kept apart so they can be
  * tested without Wrangler or an account.
  */
-import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
-
 /** The setting the relay must always be deployed with (plan section 5.1). */
 export const RELAY_CODE_UPDATE = { mode: "deferred", max_delay: 2400 } as const;
 
@@ -19,6 +15,7 @@ export interface WorkerConfig {
   workers_dev?: unknown;
   build?: unknown;
   base_dir?: unknown;
+  no_bundle?: unknown;
   durable_objects?: { code_update_strategy?: { mode?: unknown; max_delay?: unknown } };
 }
 
@@ -51,6 +48,9 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
         "without it a deploy cuts open sessions after 300 s.",
     );
   }
+  for (const [label, config] of [["vault", vault], ["relay", relay]] as const) {
+    if (config.no_bundle !== true) problems.push(`The ${label} config must set no_bundle: its plain files are uploaded as they are.`);
+  }
   const vars = vault.vars ?? {};
   if (vars.SECRET_VAULT_MODE === "kms") {
     const local = Object.keys(vars).filter((name) => name.startsWith("SECRET_VAULT_LOCAL_"));
@@ -77,7 +77,7 @@ export function hasWorkersDev(config: WorkerConfig): boolean {
 /**
  * Why these configs can't take a prebuilt deploy: one that builds at deploy
  * time, or moves where modules are collected from, would upload something
- * other than the files the deploy checked.
+ * other than the built gateway and the checked-out vault and relay files.
  */
 export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[] {
   const problems: string[] = [];
@@ -86,40 +86,6 @@ export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[
     if (config.base_dir !== undefined) problems.push(`The ${label} config sets base_dir; a prebuilt deploy collects modules only from the checked files.`);
   }
   return problems;
-}
-
-/** One shell word: single quotes, with any single quote inside closed and escaped. */
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
-/**
- * Secrets already deployed on the wrong Worker, by name: a vault setting on the
- * gateway or the relay, or a local setting on a vault in kms mode. Each comes
- * with the command that deletes it. Nothing is deleted here.
- */
-export function deployedSecretProblems(
-  names: { main?: string[]; vault?: string[]; relay?: string[] },
-  configPaths: { main: string; vault: string; relay: string },
-  vaultMode: unknown,
-): string[] {
-  const problems: string[] = [];
-  const wrong = (label: string, list: string[] | undefined, path: string, test: (name: string) => boolean) => {
-    for (const name of (list ?? []).filter(test)) {
-      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${shellQuote(path)} --env ""`);
-    }
-  };
-  wrong("gateway", names.main, configPaths.main, (name) => name.startsWith("SECRET_VAULT_"));
-  wrong("relay", names.relay, configPaths.relay, (name) => name.startsWith("SECRET_VAULT_"));
-  if (vaultMode === "kms") wrong("kms vault", names.vault, configPaths.vault, (name) => name.startsWith("SECRET_VAULT_LOCAL_"));
-  return problems;
-}
-
-/** Secret names from `wrangler secret list --format json`. */
-export function secretNames(listJson: string): string[] {
-  const list = JSON.parse(listJson) as { name?: unknown }[];
-  if (!Array.isArray(list)) throw new Error("Unexpected Wrangler secret list");
-  return list.map((entry) => entry.name).filter((name): name is string => typeof name === "string");
 }
 
 /** The relay's address from its config, when it has a custom domain. */
@@ -154,32 +120,4 @@ export function latestVersionIds(listJson: string): string[] {
   if (deployments.length === 0) return [];
   const latest = deployments.reduce((a, b) => (Date.parse(String(a.created_on)) >= Date.parse(String(b.created_on)) ? a : b));
   return [...new Set((latest.versions ?? []).map((v) => v.version_id).filter((id): id is string => typeof id === "string" && id !== ""))];
-}
-
-/**
- * The SHA-256 of every file under `dir`, by its path relative to `dir`. The
- * release compares these for the vault's and the relay's plain files.
- */
-export function fileHashes(dir: string): Map<string, string> {
-  const hashes = new Map<string, string>();
-  const walk = (folder: string): void => {
-    for (const entry of readdirSync(folder).sort()) {
-      const path = join(folder, entry);
-      if (statSync(path).isDirectory()) walk(path);
-      else hashes.set(relative(dir, path), createHash("sha256").update(readFileSync(path)).digest("hex"));
-    }
-  };
-  walk(dir);
-  return hashes;
-}
-
-/** How two sets of file hashes differ, or an empty list when they match. */
-export function hashDifferences(expected: Map<string, string>, actual: Map<string, string>): string[] {
-  const differences: string[] = [];
-  for (const [path, hash] of expected) {
-    if (!actual.has(path)) differences.push(`missing ${path}`);
-    else if (actual.get(path) !== hash) differences.push(`changed ${path}`);
-  }
-  for (const path of actual.keys()) if (!expected.has(path)) differences.push(`extra ${path}`);
-  return differences;
 }

@@ -221,7 +221,8 @@ It deploys in the order the bindings need:
 It also gives the gateway `RELAY_URL`, the address apps reach the relay at. That is the
 gateway config's own `RELAY_URL` if set, else the relay's custom domain, else its workers.dev
 address. On a first install the gateway is deployed a second time, once the relay's address is
-known.
+known. The address the gateway has now is read before anything is deployed; if it can't be read
+for a gateway that exists, nothing is deployed.
 
 Before deploying anything, it refuses configs that don't fit together:
 
@@ -229,13 +230,13 @@ Before deploying anything, it refuses configs that don't fit together:
 - a relay without `code_update_strategy` `{ "mode": "deferred", "max_delay": 2400 }`;
 - a vault in `kms` mode with a local setting;
 - a vault setting on the gateway or the relay;
+- a vault or a relay without `no_bundle`;
+- two Workers with the same name;
 - a relay with no custom domain and no workers.dev address, unless the gateway config sets
   `RELAY_URL`.
 
-It also lists each deployed Worker's secret names (never values) and stops, deleting nothing, if
-the gateway or the relay already holds a `SECRET_VAULT_*` secret, or a `kms` vault holds a
-`SECRET_VAULT_LOCAL_*` one. It prints the command that deletes each. `CLOUDFLARE_ENV` must be
-unset: the profiles are files, not Wrangler environments.
+Every Wrangler call it makes passes `--env ""`, so a `CLOUDFLARE_ENV` in the shell or a `.env`
+file never picks another environment: the profiles are files, not Wrangler environments.
 
 Without that relay setting, a deploy cuts open sessions after 300 s. With it, open sessions keep
 the old code for up to 40 minutes. So deploy the relay only with this command, never from the
@@ -243,11 +244,11 @@ dashboard or with `wrangler deploy` alone. Deploy the gateway with this command 
 `wrangler deploy` drops its `RELAY_URL`.
 
 `--dry-run` checks the configs and runs `wrangler deploy --dry-run` for each Worker, and changes
-nothing. The release's deploy uses `--prebuilt <dir>`, with a folder that `build:prebuilt` made
-in a job without deploy secrets. It first checks that the vault's and the relay's files there
-are exactly the ones in git at `HEAD`, so they match the release tag, and refuses a config with a
-build command or `base_dir`. A relative path is from the folder the command runs in, which is
-`v2/` through `pnpm run`.
+nothing. The release's deploy uses `--prebuilt <dir>`, with the gateway bundle and console that
+`build:prebuilt` made in a job without deploy secrets, and refuses a config with a build command
+or `base_dir`. The vault and the relay have no build: they are uploaded straight from the
+checkout, which in the release's deploy job is the tag, so they match it by construction. A
+relative path is from the folder the command runs in, which is `v2/` through `pnpm run`.
 
 Secrets are not part of the deploy; `secrets:upload` puts them on each Worker. The relay holds
 none yet.

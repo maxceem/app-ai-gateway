@@ -10,46 +10,44 @@
  * - `--profile <name>` uses each Worker's gitignored `wrangler.<name>.jsonc`
  *   (a full copy of its `wrangler.jsonc`); without it, the tracked files.
  * - `--prebuilt <dir>` (relative to the folder it runs in, `v2/` through
- *   `pnpm run`) deploys what `build-prebuilt.ts` built, and first checks
- *   that the vault's and the relay's files there are exactly the ones in git at
- *   `HEAD`: the release runs this from the tag, so they match the tag.
+ *   `pnpm run`) deploys the gateway that `build-prebuilt.ts` built. The vault
+ *   and the relay have no build: they are uploaded straight from this checkout.
+ *   The release's deploy job checks out the tag fresh, so the vault and relay
+ *   files it uploads are the tag's, by construction.
  * - `--dry-run` checks the configs and runs `wrangler deploy --dry-run` for
  *   each Worker. It changes nothing and needs no account.
  *
  * Before anything is deployed it refuses configs that don't fit together: a
  * binding that names the wrong Worker, a relay without its code-update setting
  * (without it a deploy cuts open sessions after 300 s), a kms vault with local
- * settings, a vault setting on the gateway or the relay, or a relay with no
- * address to give the gateway. It also refuses a vault secret already deployed
- * on the gateway or the relay, or a local one on a kms vault, by name, with the
- * command that deletes it; it deletes nothing itself. A prebuilt deploy also
- * refuses a config with a build command or `base_dir`. `CLOUDFLARE_ENV` must be
- * unset: profiles are files, not Wrangler environments.
+ * settings, a vault setting on the gateway or the relay, a vault or relay that
+ * would be bundled, two Workers with one name, or a relay with no address to
+ * give the gateway. A prebuilt deploy also refuses a config with a build
+ * command or `base_dir`. Every Wrangler call passes `--env ""`, so a
+ * `CLOUDFLARE_ENV` in the shell or a `.env` file never picks another
+ * environment: the profiles are files, not Wrangler environments.
  *
  * `RELAY_URL` tells the gateway where apps reach the relay. It comes from the
  * gateway config's own `RELAY_URL` if set, else the relay's custom domain, else
- * what the gateway has now. When the relay's actual workers.dev address differs
- * (on a first install), the gateway is deployed once more with it.
+ * what the gateway has now, read before anything is deployed. If that can't be
+ * read for a gateway that exists, nothing is deployed. When the relay's actual
+ * workers.dev address differs (on a first install), the gateway is deployed once
+ * more with it.
  *
  * Secrets are not handled here: `secrets:upload` puts them on each Worker.
  */
-import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
-  deployedSecretProblems,
   deployedVar,
   deployProblems,
-  fileHashes,
-  hashDifferences,
   latestVersionIds,
   prebuiltProblems,
   relayUrlFromConfig,
   relayUrlFromDeployOutput,
-  secretNames,
   type WorkerConfig,
 } from "./deploy-lib.ts";
 
@@ -59,8 +57,6 @@ const REPO_DIR = dirname(V2_DIR);
 /** Where relative paths start: the folder the command runs in (`v2/` through `pnpm run`). */
 const CALLER_DIR = process.cwd();
 const PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]*$/iu;
-/** The plain-file Workers the prebuilt deploy uploads as they are. */
-const PLAIN_WORKERS = ["vault", "relay"] as const;
 
 function refuse(message: string): never {
   console.error(message);
@@ -82,10 +78,6 @@ const profile = options.profile;
 if (profile !== undefined && !PROFILE_PATTERN.test(profile)) refuse(`Invalid profile name "${profile}"`);
 const prebuilt = options.prebuilt === undefined ? undefined : resolve(CALLER_DIR, options.prebuilt);
 const dryRun = options["dry-run"] === true;
-const shellEnv = process.env.CLOUDFLARE_ENV;
-if (shellEnv !== undefined && shellEnv !== "") {
-  refuse(`CLOUDFLARE_ENV is set (${shellEnv}). v2's profiles are separate files, not Wrangler environments; unset it.`);
-}
 
 const wranglerBin = [process.env.APP_AI_GATEWAY_WRANGLER_BIN, join(V2_DIR, "node_modules/.bin/wrangler"), join(REPO_DIR, "node_modules/.bin/wrangler")]
   .find((path): path is string => path !== undefined && path !== "" && existsSync(path));
@@ -108,17 +100,27 @@ const problems = deployProblems(configs.main, configs.vault, configs.relay);
 if (problems.length > 0) refuse(["Nothing was deployed:", ...problems.map((p) => `- ${p}`)].join("\n"));
 
 /**
- * The config, pinned to its top level. Wrangler reads `CLOUDFLARE_ENV` from a
- * `.env` file in each run, even when the shell has none, and would then act on
- * that environment; `--env ""` makes it use the top-level config.
+ * The config, pinned to its top level. Wrangler reads `CLOUDFLARE_ENV` from the
+ * shell or a `.env` file in each run and would then act on that environment;
+ * `--env ""` makes it use the top-level config either way.
  */
 function pinned(config: string): string[] {
   return ["--config", config, "--env", ""];
 }
 
+/** A failed Wrangler run, with what it printed. */
+class WranglerError extends Error {
+  readonly output: string;
+  constructor(message: string, output: string) {
+    super(message);
+    this.output = output;
+  }
+}
+
 /**
  * Runs Wrangler with `config`. `output: "show"` prints as it goes; "echo" also
- * returns what was printed; "quiet" returns standard output without printing.
+ * returns what was printed; "quiet" returns standard output and prints nothing,
+ * not even an error (the caller decides; the error carries the output).
  */
 function wrangler(args: string[], config: string, output: "show" | "echo" | "quiet" = "show"): string {
   const result = spawnSync(wranglerBin!, [...args, ...pinned(config)], {
@@ -133,8 +135,7 @@ function wrangler(args: string[], config: string, output: "show" | "echo" | "qui
     process.stderr.write(result.stderr ?? "");
   }
   if (result.status !== 0) {
-    if (output === "quiet") process.stderr.write(result.stderr ?? "");
-    throw new Error(`wrangler ${args.join(" ")} failed (${result.status})`);
+    throw new WranglerError(`wrangler ${args.join(" ")} failed (${result.status})`, `${result.stdout ?? ""}\n${result.stderr ?? ""}`);
   }
   return output === "echo" ? `${result.stdout ?? ""}\n${result.stderr ?? ""}` : (result.stdout ?? "");
 }
@@ -147,21 +148,11 @@ function generated(original: string, change: (config: Record<string, unknown>) =
   return path;
 }
 
-/** The SHA-256 of every file under `dir` as git has it at `HEAD`. */
-function gitHashes(dir: string): Map<string, string> {
-  const prefix = relative(REPO_DIR, dir);
-  const files = execFileSync("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", prefix], { cwd: REPO_DIR, encoding: "utf8" })
-    .split("\n")
-    .filter((line) => line !== "");
-  return new Map(
-    files.map((file) => [
-      relative(prefix, file),
-      createHash("sha256").update(execFileSync("git", ["show", `HEAD:${file}`], { cwd: REPO_DIR, maxBuffer: 64 * 1024 * 1024 })).digest("hex"),
-    ]),
-  );
-}
-
-/** The configs to deploy: the profile's, or ones pointed at the prebuilt files. */
+/**
+ * The configs to deploy: the profile's, with the gateway pointed at the
+ * prebuilt bundle for a prebuilt deploy. The vault and the relay are always
+ * the checked-out files, unbundled.
+ */
 function deployConfigs(): typeof paths {
   if (prebuilt === undefined) return paths;
   const worker = join(prebuilt, "worker", "index.js");
@@ -169,11 +160,6 @@ function deployConfigs(): typeof paths {
   if (!existsSync(worker) || !existsSync(assets)) refuse(`${prebuilt} is not a prebuilt v2; build one with scripts/build-prebuilt.ts`);
   const buildProblems = prebuiltProblems({ gateway: configs.main, vault: configs.vault, relay: configs.relay });
   if (buildProblems.length > 0) refuse(["Nothing was deployed:", ...buildProblems.map((p) => `- ${p}`)].join("\n"));
-  for (const name of PLAIN_WORKERS) {
-    const differences = hashDifferences(gitHashes(join(V2_DIR, name, "src")), fileHashes(join(prebuilt, name, "src")));
-    if (differences.length > 0) refuse([`The prebuilt ${name} files are not the ones in git at HEAD:`, ...differences.map((d) => `- ${d}`)].join("\n"));
-  }
-  console.log("The prebuilt vault and relay files match git at HEAD.");
   return {
     main: generated(paths.main, (config) => ({
       ...config,
@@ -181,36 +167,27 @@ function deployConfigs(): typeof paths {
       no_bundle: true,
       assets: { ...(config.assets as object), directory: relative(dirname(paths.main), assets) },
     })),
-    // No bundling: modules are collected only beside the checked index.js.
-    vault: generated(paths.vault, (config) => ({ ...config, no_bundle: true, main: relative(dirname(paths.vault), join(prebuilt, "vault", "src", "index.js")) })),
-    relay: generated(paths.relay, (config) => ({ ...config, no_bundle: true, main: relative(dirname(paths.relay), join(prebuilt, "relay", "src", "index.js")) })),
+    vault: paths.vault,
+    relay: paths.relay,
   };
 }
 
-/** A Worker's deployed secret names, or `undefined` when the Worker doesn't exist yet. Never values. */
-function deployedSecrets(config: string): string[] | undefined {
-  const result = spawnSync(wranglerBin!, ["secret", "list", "--format", "json", ...pinned(config)], {
-    cwd: dirname(config),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
-  });
-  if (result.error) throw result.error;
-  if (result.status === 0) return secretNames(result.stdout);
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  if (/\[code: 10007\]|does not exist|not found/iu.test(output)) return undefined;
-  throw new Error("Could not list a Worker's secrets; check Wrangler's sign-in and try again");
-}
-
-/** The `RELAY_URL` the gateway has now, if it is deployed. */
+/**
+ * The `RELAY_URL` the gateway has now, or `undefined` when it has none: a first
+ * install, or a gateway only `secrets:upload` has made so far. Any other
+ * failure to read it is thrown, so a deploy never drops the gateway's address.
+ */
 function currentRelayUrl(mainConfig: string): string | undefined {
+  let list: string;
   try {
-    const id = latestVersionIds(wrangler(["deployments", "list", "--json"], mainConfig, "quiet"))[0];
-    return id === undefined ? undefined : deployedVar(wrangler(["versions", "view", id, "--json"], mainConfig, "quiet"), "RELAY_URL");
-  } catch {
-    // A first install has no deployment yet; the relay's address is learned below.
-    return undefined;
+    list = wrangler(["deployments", "list", "--json"], mainConfig, "quiet");
+  } catch (error) {
+    // Cloudflare's "this Worker does not exist" code: a first install.
+    if (error instanceof WranglerError && /\[code: 10007\]/u.test(error.output)) return undefined;
+    throw new Error("Could not read the gateway's current RELAY_URL, so nothing was deployed; check Wrangler's sign-in and try again.");
   }
+  const id = latestVersionIds(list)[0];
+  return id === undefined ? undefined : deployedVar(wrangler(["versions", "view", id, "--json"], mainConfig, "quiet"), "RELAY_URL");
 }
 
 try {
@@ -221,20 +198,15 @@ try {
     console.log("Dry run passed: vault, gateway and relay.");
   } else {
     if (profile !== undefined) console.log(`Deploying v2 with the "${profile}" profile.`);
-    const secretProblems = deployedSecretProblems(
-      { main: deployedSecrets(paths.main), vault: deployedSecrets(paths.vault), relay: deployedSecrets(paths.relay) },
-      paths,
-      configs.vault.vars?.SECRET_VAULT_MODE,
-    );
-    if (secretProblems.length > 0) refuse(["Nothing was deployed:", ...secretProblems.map((p) => `- ${p}`)].join("\n"));
+    // Read before anything changes: a failure here stops the deploy with nothing deployed.
+    const configured = typeof configs.main.vars?.RELAY_URL === "string" && configs.main.vars.RELAY_URL !== "" ? configs.main.vars.RELAY_URL : undefined;
+    const known = configured ?? relayUrlFromConfig(configs.relay) ?? currentRelayUrl(paths.main) ?? "";
     if (prebuilt === undefined) {
       const build = spawnSync("pnpm", ["--filter", "@app-ai-gateway/console-v2", "build"], { cwd: REPO_DIR, stdio: "inherit" });
       if (build.status !== 0) throw new Error("The console build failed");
     }
     wrangler(["deploy"], deploy.vault);
     wrangler(["d1", "migrations", "apply", "DB", "--remote"], paths.main);
-    const configured = typeof configs.main.vars?.RELAY_URL === "string" && configs.main.vars.RELAY_URL !== "" ? configs.main.vars.RELAY_URL : undefined;
-    const known = configured ?? relayUrlFromConfig(configs.relay) ?? currentRelayUrl(paths.main) ?? "";
     wrangler(["deploy", ...(known === "" ? [] : ["--var", `RELAY_URL:${known}`])], deploy.main);
     const relayOutput = wrangler(["deploy"], deploy.relay, "echo");
     const actual = configured ?? relayUrlFromConfig(configs.relay) ?? relayUrlFromDeployOutput(relayOutput, String(configs.relay.name));

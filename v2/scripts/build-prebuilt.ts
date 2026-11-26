@@ -5,10 +5,10 @@
  *
  * writes
  * - `<dir>/worker/index.js`: the gateway, bundled from the tracked `wrangler.jsonc`;
- * - `<dir>/console`: the console's static files;
- * - `<dir>/vault/src` and `<dir>/relay/src`: the vault's and the relay's plain
- *   files, copied as they are. They have no build; the deploy checks they are
- *   the ones in git before it uploads them.
+ * - `<dir>/console`: the console's static files.
+ *
+ * The vault and the relay have no build: the deploy uploads them straight from
+ * its own checkout, which in the release is the tag.
  *
  * The release runs this in a job without deploy secrets, so no package code
  * runs where the secrets are.
@@ -44,7 +44,6 @@ try {
   await rm(join(out, "worker", "index.js.map"), { force: true });
   await rm(join(out, "worker", "README.md"), { force: true });
   await cp(join(V2_DIR, "console", "dist"), join(out, "console"), { recursive: true });
-  for (const name of ["vault", "relay"]) await cp(join(V2_DIR, name, "src"), join(out, name, "src"), { recursive: true });
   console.log(`Built v2 into ${out}.`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
