@@ -13,6 +13,8 @@ import { ledgerDb } from "../src/ledger/database.ts";
 import { openSession, settleSession, STALE_SESSION_GRACE_MS } from "../src/ledger/sessions.ts";
 import { MAX_STORED_COPY_MS } from "../vault/src/call.js";
 import { sessionKey } from "../vault/src/relay.js";
+import { connectProvider } from "../relay/src/provider.js";
+import { SessionCore } from "../relay/src/start.js";
 import { base64url, parseTicket } from "../relay/src/ticket.js";
 import { TEST_VAULT_ENV } from "./local-vault.ts";
 import { TEST_TICKET_PUBLIC_KEY } from "./relay-keys.ts";
@@ -117,6 +119,39 @@ describe(`session tickets (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     // A built-in type's seal ("") goes only to its own hosts.
     const offHost = await request({ url: "https://llm.example.com/v1/realtime" });
     await expect(sessionKey(VAULT_ENV, (await issueTicket(env, offHost)).ticket)).rejects.toThrow("destination_refused");
+  });
+
+  it("put the credential only on the sealed address when open and the seal disagree: the relay dials what the vault names (Sol round 1)", async () => {
+    const sealed = "https://llm.example.com/proxy/";
+    const issued = await issueTicket(env, await request({ url: `${sealed}v1/realtime` }, sealed), Date.now());
+    const { payload } = parseTicket(issued.ticket)!;
+    const dialed: { url: string; authorization: string | null }[] = [];
+    const send = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      dialed.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") });
+      const [client] = Object.values(new WebSocketPair());
+      return new Response(null, { status: 101, webSocket: client });
+    }) as typeof fetch;
+    const data = new Map<string, unknown>();
+    const core = new SessionCore({
+      name: issued.sessionId,
+      log: () => undefined,
+      store: {
+        get: async (keys) => new Map(keys.filter((key) => data.has(key)).map((key) => [key, data.get(key)])),
+        put: async (entries) => {
+          for (const [key, value] of Object.entries(entries)) data.set(key, value);
+        },
+        deleteAll: async () => data.clear(),
+      },
+      vault: { sessionKey: (ticket, options) => sessionKey(VAULT_ENV, ticket, options) },
+      // `open` names another address than the seal's: the relay never uses it.
+      main: {
+        open: async (ticket) => ({ ...(await openForRelay(env, ticket)), url: "https://evil.example.com/v1/realtime", upstream: "https://evil.example.com/" }) as never,
+        close: async () => ({ version: 1 }),
+      },
+      provider: { connect: async (key) => ({ callId: (await connectProvider(key, send)).callId }) },
+    });
+    expect(await core.start(issued.ticket, payload)).toMatchObject({ ok: true });
+    expect(dialed).toEqual([{ url: `${sealed}v1/realtime`, authorization: `Bearer ${KEY}` }]);
   });
 
   it("open only a session seal, and only for the ticket's own account, even when the ticket is signed (wrong account)", async () => {

@@ -221,6 +221,9 @@ test("only the relay is bound to the vault's key-opening entrypoint, and it reac
   const { main, vault, relay } = tracked();
   const gatewayOnRelayKeys = { ...main, services: (main.services ?? []).map((s) => (s.binding === "VAULT" ? { ...s, entrypoint: "RelayKeys" } : s)) };
   assert.match(deployProblems(gatewayOnRelayKeys, vault, relay).join("\n"), /never RelayKeys/u);
+  // A second binding next to the normal VAULT one, under another name (Sol round 1).
+  const secondBinding = { ...main, services: [...(main.services ?? []), { binding: "KEYS", service: vault.name, entrypoint: "RelayKeys" }] };
+  assert.match(deployProblems(secondBinding, vault, relay).join("\n"), /no binding to the vault's RelayKeys entrypoint, under any name/u);
   const relayOnDefault = { ...relay, services: (relay.services ?? []).map((s) => (s.binding === "VAULT" ? { binding: s.binding, service: s.service } : s)) };
   assert.match(deployProblems(main, vault, relayOnDefault).join("\n"), /entrypoint RelayKeys/u);
   const relayOnMainDefault = { ...relay, services: (relay.services ?? []).map((s) => (s.binding === "MAIN" ? { binding: s.binding, service: s.service } : s)) };

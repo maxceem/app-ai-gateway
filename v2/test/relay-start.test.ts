@@ -80,7 +80,10 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
   const store = new MemoryStore();
   const calls = { vault: 0, open: 0, connect: 0, close: [] as { endReason: string; finalSlice: number }[] };
   const logs: Record<string, unknown>[] = [];
+  /** What each side was told when the session ended: the client's reason, the provider's close. */
+  const ended = { client: [] as string[], provider: [] as [number, string][] };
   const parts = () => ({
+    onEnd: (reason: string) => ended.client.push(reason),
     name: "ses_1",
     store,
     now: () => now,
@@ -104,7 +107,8 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     provider: {
       connect: async () => {
         calls.connect += 1;
-        return await (options.connect?.() ?? Promise.resolve({ callId: null }));
+        const call = await (options.connect?.() ?? Promise.resolve({ callId: null }));
+        return { ...call, close: (code: number, reason: string) => ended.provider.push([code, reason]) };
       },
     },
   });
@@ -113,6 +117,7 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     store,
     calls,
     logs,
+    ended,
     text,
     ticket,
     /** A new instance over the same storage: a fresh object, or the restarted one. */
@@ -131,7 +136,8 @@ describe("a session's start", () => {
     expect(result).toMatchObject({ ok: true, deadline: s.ticket.start + s.ticket.cap });
     expect(s.calls).toMatchObject({ vault: 1, open: 1, connect: 1 });
     expect(s.store.data.get("state")).toBe("active");
-    expect(s.store.alarm).toBe(s.ticket.start + s.ticket.cap);
+    // The first wakeup comes one checkpoint interval in (row 13).
+    expect(s.store.alarm).toBe(s.now() + 60_000);
     // Only the reconnect secret's hash is stored.
     expect([...s.store.data.values()].map((value) => JSON.stringify(value)).join()).not.toContain((result as { reconnectSecret: string }).reconnectSecret);
   });
@@ -229,21 +235,69 @@ describe("a session's start", () => {
     expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 0 }]);
   });
 
-  it("row 13, relayed: a restart after active lost the provider socket: the session ends", async () => {
+  it("row 13, relayed: a restart after active lost the provider socket: the session ends with error at the first wakeup, well before the deadline (Sol round 1)", async () => {
     const s = setup();
     await s.instance().start(s.text, s.ticket);
-    s.tick(1_000);
+    const wakeup = s.store.alarm!;
+    // One checkpoint interval in, not the deadline.
+    expect(wakeup).toBe(s.now() + 60_000);
+    expect(wakeup).toBeLessThan(s.ticket.start + s.ticket.cap);
+    s.tick(wakeup - s.now());
     await s.instance().alarm();
     expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 0 }]);
   });
 
-  it("ends at its deadline with time_cap", async () => {
+  it("a slow provider handshake never brings back a session the alarm ended meanwhile; the provider's side is hung up (Sol round 1)", async () => {
+    let release: (value: { callId: string | null }) => void = () => undefined;
+    const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    const started = core.start(s.text, s.ticket);
+    await until(() => s.calls.connect === 1);
+    // The ticket expires while the handshake is open, and the alarm ends the session.
+    s.tick(60_000);
+    await core.alarm();
+    expect(s.store.data.get("state")).toBe("ended");
+    release({ callId: "call_late" });
+    expect(await started).toEqual({ ok: false, code: "session_ended" });
+    expect(s.store.data.get("state")).toBe("ended");
+    expect(s.store.data.get("callId")).toBeUndefined();
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    expect(s.calls.close).toHaveLength(1);
+  });
+
+  it("checks the ticket's expiry again right before dialing: a slow open past it never reaches the provider (Sol round 1)", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const s = setup({ open: () => new Promise((resolve) => (release = resolve)) });
+    const started = s.instance().start(s.text, s.ticket);
+    await until(() => s.calls.open === 1);
+    s.tick(60_000);
+    release({ deadline: s.ticket.start + s.ticket.cap, mode: "relayed", operation: "openai.realtime", checkpointIntervalMs: 60_000, version: 1 });
+    expect(await started).toEqual({ ok: false, code: "ticket_expired" });
+    expect(s.calls.connect).toBe(0);
+    expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 0 }]);
+  });
+
+  it("ends at its deadline with time_cap, and both peers are told: the provider's side hung up, the client's closed with the reason (Sol round 1)", async () => {
     const s = setup();
     const core = s.instance();
     await core.start(s.text, s.ticket);
-    s.tick(s.ticket.cap);
+    // The first wakeup finds the provider still there and waits for the deadline.
+    s.tick(s.store.alarm! - s.now());
+    await core.alarm();
+    expect(s.store.alarm).toBe(s.ticket.start + s.ticket.cap);
+    s.tick(s.store.alarm! - s.now());
     await core.alarm();
     expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+    expect(s.ended).toEqual({ client: ["time_cap"], provider: [[1000, "session ended"]] });
+  });
+
+  it("when the provider hangs up first, the client's socket is closed too, with the reason (Sol round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket);
+    await core.end("provider_closed");
+    expect(s.ended.client).toEqual(["provider_closed"]);
+    expect(s.calls.close).toEqual([{ endReason: "provider_closed", finalSlice: 0 }]);
   });
 });
 

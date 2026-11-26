@@ -16,8 +16,9 @@
  * checkpoints after it (part 2), and observed mode in part 3.
  */
 import { DurableObject } from "cloudflare:workers";
-import { HEALTH_PATH, PROVIDER_CONNECT_TIMEOUT_MS, SESSION_PATH } from "./constants.js";
-import { ProviderRefused, SessionCore } from "./start.js";
+import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
+import { connectProvider } from "./provider.js";
+import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
 
 /**
@@ -66,28 +67,6 @@ export default {
 };
 
 /**
- * Connects to the provider with the key the vault opened, only at the address
- * the vault named. A refusal with an answer is known; a throw or a timeout is
- * an unknown outcome (`./start.js`).
- * @param {import("./start.js").SessionKey} key
- * @returns {Promise<{ callId: string | null, socket: WebSocket }>}
- */
-async function connectProvider(key) {
-  const headers = new Headers({ upgrade: "websocket" });
-  // A callback, so a key with `$&` goes as it is.
-  if (key.key !== undefined) headers.set(key.key.header, key.key.format.replace("{key}", () => /** @type {NonNullable<typeof key.key>} */ (key.key).value));
-  if (key.cloudflareToken !== undefined) headers.set("cf-aig-authorization", `Bearer ${key.cloudflareToken}`);
-  const response = await fetch(key.target, { headers, redirect: "manual", signal: AbortSignal.timeout(PROVIDER_CONNECT_TIMEOUT_MS) });
-  const socket = response.webSocket;
-  if (response.status !== 101 || socket === null) {
-    await response.body?.cancel();
-    throw new ProviderRefused(response.status);
-  }
-  socket.accept();
-  return { callId: null, socket };
-}
-
-/**
  * One session: its start, its end, and its alarm. The client's WebSocket is
  * answered at once; the start runs after, and its result goes to the client
  * as a message (the reconnect secret) or a close with a code.
@@ -100,8 +79,8 @@ export class Session extends DurableObject {
    */
   constructor(ctx, env) {
     super(ctx, env);
-    /** @type {WebSocket | null} */
-    this.providerSocket = null;
+    /** @type {WebSocket | null} The client's socket, while a session runs in this instance. */
+    this.clientSocket = null;
     const storage = ctx.storage;
     this.core = new SessionCore({
       name: ctx.id.name ?? "",
@@ -113,20 +92,24 @@ export class Session extends DurableObject {
           if (alarmAt !== null) writes.push(storage.setAlarm(alarmAt));
           await Promise.all(writes);
         },
-        deleteAll: async () => {
-          await storage.deleteAlarm();
-          await storage.deleteAll();
-        },
+        // With this compatibility date, deleteAll() removes the alarm too.
+        deleteAll: () => storage.deleteAll(),
       },
       vault: env.VAULT,
       main: env.MAIN,
       provider: {
         connect: async (key) => {
           const { callId, socket } = await connectProvider(key);
-          this.providerSocket = socket;
+          // The provider hung up first: the session ends, and the client is told.
           socket.addEventListener("close", () => void this.core.end("provider_closed"));
-          return { callId };
+          return { callId, close: (code, reason) => socket.close(code, reason) };
         },
+      },
+      // The session ended (deadline, error, the provider's close): the client's socket closes too, with the reason.
+      onEnd: (reason) => {
+        const client = this.clientSocket;
+        this.clientSocket = null;
+        client?.close(1000, reason);
       },
     });
   }
@@ -159,9 +142,11 @@ export class Session extends DurableObject {
       client.close(4000, result.code);
       return;
     }
+    this.clientSocket = client;
     client.send(JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
+    // The client hung up: the provider's side is hung up too (in `end`).
     client.addEventListener("close", () => {
-      this.providerSocket?.close(1000, "client closed");
+      if (this.clientSocket === client) this.clientSocket = null;
       void this.core.end("client_closed");
     });
   }
@@ -169,6 +154,5 @@ export class Session extends DurableObject {
   /** @override */
   async alarm() {
     await this.core.alarm();
-    if (this.core.connected === false) this.providerSocket = null;
   }
 }

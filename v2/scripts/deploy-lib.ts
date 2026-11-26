@@ -73,6 +73,10 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
   }
   // The vault's key-opening entrypoint is the relay's alone (plan step 9a).
   if (entrypointFor(main, "VAULT") !== undefined) problems.push("The gateway's VAULT binding must use the vault's default entrypoint, never RelayKeys.");
+  // Whatever its name: no gateway binding may reach the entrypoint that hands out keys.
+  if ((main.services ?? []).some((service) => service.entrypoint === "RelayKeys")) {
+    problems.push("The gateway must have no binding to the vault's RelayKeys entrypoint, under any name: only the relay may use it.");
+  }
   if (serviceFor(relay, "MAIN") !== main.name || entrypointFor(relay, "MAIN") !== "RelayContract") {
     problems.push(`The relay's MAIN binding must name the gateway Worker (${String(main.name)}) with the entrypoint RelayContract.`);
   }

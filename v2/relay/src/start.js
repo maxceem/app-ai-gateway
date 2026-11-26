@@ -44,10 +44,12 @@ export const CLOSE_RETRY_EVERY_MS = 30_000;
  *   open(ticket: string): Promise<Settings>,
  *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null }): Promise<unknown>,
  * }} MainPort
- * @typedef {{ callId: string | null }} ProviderCall
+ * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
+ * `close` hangs up the provider's side of a relayed session.
  * @typedef {{ connect(key: SessionKey): Promise<ProviderCall> }} ProviderPort
  * `connect` throws `ProviderRefused` for a known refusal; anything else is an unknown outcome.
  * @typedef {(event: Record<string, unknown>) => void} Logger
+ * @typedef {(reason: string) => void} EndHook what the session object does when the session ends: closes the client's socket
  */
 
 /** The provider said no, with an answer: nothing was started there (crash table row 12). */
@@ -88,7 +90,7 @@ function codeOf(error) {
 
 export class SessionCore {
   /**
-   * @param {{ name: string, store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger }} parts
+   * @param {{ name: string, store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger, onEnd?: EndHook }} parts
    */
   constructor(parts) {
     this.name = parts.name;
@@ -98,6 +100,9 @@ export class SessionCore {
     this.provider = parts.provider;
     this.now = parts.now ?? (() => Date.now());
     this.log = parts.log ?? ((event) => console.log(JSON.stringify(event)));
+    this.onEnd = parts.onEnd ?? (() => undefined);
+    /** @type {ProviderCall | null} The provider's side, while this instance holds it. */
+    this.call = null;
     /** A start is in flight in this instance: a second connection with the ticket gets an error (row 8). */
     this.starting = false;
     /** The provider connection is live in this instance's memory. A restart loses it. */
@@ -159,6 +164,12 @@ export class SessionCore {
         await this.store.put({ state: "starting", ticket: ticketText, settings }, ticket.exp);
       }
 
+      // Checked again right before dialing: the waits above may have taken the ticket or the session past its time.
+      const deadline = deadlineOf(ticket);
+      if (this.now() >= ticket.exp || this.now() >= deadline) {
+        await this.end("error", { log: "relay_start_too_late" });
+        return { ok: false, code: "ticket_expired" };
+      }
       await this.store.put({ connecting: true }, null);
       /** @type {ProviderCall} */
       let call;
@@ -173,10 +184,22 @@ export class SessionCore {
         }
         return { ok: false, code: "provider_unavailable" };
       }
+      // A slow handshake: the alarm may have ended the session meanwhile, or its time run out.
+      // Then the provider's side is hung up, and an ended session is never brought back.
+      const current = await this.store.get(["state"]);
+      if (current.get("state") !== "starting" || this.now() >= deadline) {
+        call.close?.(1000, "session ended");
+        if (current.get("state") === "starting") await this.end("error", { log: "relay_start_too_late" });
+        return { ok: false, code: "session_ended" };
+      }
       this.connected = true;
+      this.call = call;
       const reconnectSecret = newSecret();
-      const deadline = deadlineOf(ticket);
-      await this.store.put({ state: "active", callId: call.callId, reconnect: await hashOf(reconnectSecret) }, deadline);
+      const interval = settings.checkpointIntervalMs > 0 ? settings.checkpointIntervalMs : deadline;
+      // The first wakeup comes one checkpoint interval in, not at the deadline: a restarted
+      // object that lost its provider socket then ends soon (row 13). The fixed tick per
+      // session comes with frame forwarding (step 9a part 1, fourth review).
+      await this.store.put({ state: "active", callId: call.callId, reconnect: await hashOf(reconnectSecret) }, Math.min(deadline, this.now() + interval));
       return { ok: true, reconnectSecret, call, deadline };
     } finally {
       this.starting = false;
@@ -198,6 +221,11 @@ export class SessionCore {
     }
     this.connected = false;
     await this.store.put({ state: "ended", end: { reason, at, finalSlice: details.finalSlice ?? 0 } }, at + CLOSE_RETRY_EVERY_MS);
+    // Both sides are closed, with the reason: the provider's hung up, the client told why.
+    const call = this.call;
+    this.call = null;
+    call?.close?.(1000, "session ended");
+    this.onEnd(reason);
     await this.sendClose();
   }
 
@@ -251,6 +279,7 @@ export class SessionCore {
       // A relayed session lost its provider socket with its instance: it ends (row 13, relayed).
       // An observed session reattaches instead (part 3): until then it waits for its deadline.
       if (!this.connected && settings?.mode !== "observed") return this.end("error", { log: "relay_provider_lost" });
+      // Seam: the fixed tick per session comes with frame forwarding (fourth review).
       return this.store.put({}, deadline);
     }
     // Ended: retry `close` for a while, then give up and log; then clean up once the ticket has expired.
