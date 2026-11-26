@@ -20,6 +20,7 @@ const SPLIT_KEY_FILES = [
   "test/media.test.ts",
   "test/providers.test.ts",
   "test/pricing-units.test.ts",
+  "test/relay-tickets.test.ts",
 ];
 
 /**
@@ -53,6 +54,8 @@ const workers = (splitKeys: boolean) =>
                 SECRET_VAULT_MODE: "local",
                 SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
                 SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                // The test ticket key's public half (\`test/relay-keys.ts\`).
+                RELAY_TICKET_PUBLIC_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU",
               },
               outboundService: async (request: Request) =>
                 // A provider answer that carries the vault's own headers: the vault must drop them.
@@ -87,11 +90,14 @@ const workers = (splitKeys: boolean) =>
               },
             },
           ],
-          serviceBindings: { VAULT_KMS: "app-ai-gateway-v2-vault-kms" },
+          // The vault's relay-only entrypoint, so its tests go through the binding the relay uses (step 9a).
+          serviceBindings: { VAULT_KMS: "app-ai-gateway-v2-vault-kms", VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" } },
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
+            // A test-only ticket key (\`test/relay-keys.ts\`): \`<x>.<d>\`.
+            RELAY_TICKET_PRIVATE_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU.qZrzCuwpthFVTEuYxPsSryqsfCjHpI-bAwHSFzgzy3o",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-32-bytes",
             // The console and the OAuth issuer (`https://console.gateway.test/v2`).
             CONSOLE_ORIGIN: "https://console.gateway.test",

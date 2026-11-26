@@ -34,9 +34,14 @@ test("the setup makes each missing secret in .dev.vars, readable only by its own
   withFolder((dir) => {
     const first = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(first.code, 0, first.output);
-    assert.match(first.output, /Made BETTER_AUTH_SECRET, JWT_SECRET in \.dev\.vars\./u);
+    assert.match(first.output, /Made BETTER_AUTH_SECRET, JWT_SECRET, RELAY_TICKET_PRIVATE_KEY in \.dev\.vars\./u);
     assert.match(first.output, /Made SECRET_VAULT_LOCAL_KEK_V1 in vault\/\.dev\.vars\./u);
     assert.match(first.output, /Back up SECRET_VAULT_LOCAL_KEK_V1/u);
+    // The ticket key's public half is printed, for the relay's and the vault's profiles; its private half never.
+    const [ticketX, ticketD] = (parseEnv(readFileSync(join(dir, ".dev.vars"), "utf8")).RELAY_TICKET_PRIVATE_KEY ?? "").split(".");
+    assert.match(first.output, new RegExp(`RELAY_TICKET_PUBLIC_KEY="${ticketX}"`, "u"));
+    assert.equal(Buffer.from(ticketD!, "base64url").length, 32);
+    assert.ok(!first.output.includes(ticketD!), "the private half was printed");
     const path = join(dir, ".dev.vars");
     const vaultPath = join(dir, "vault", ".dev.vars");
     assert.equal(statSync(path).mode & 0o777, 0o600);
@@ -63,7 +68,7 @@ test("the setup keeps a value already set and fills only the empty ones", () => 
     writeFileSync(path, "JWT_SECRET=mine-and-long-enough-for-the-test-0123456789\nBETTER_AUTH_SECRET=\nOTHER=kept\n");
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
-    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET, RELAY_TICKET_PRIVATE_KEY in \.dev\.vars\./u);
     const values = parseEnv(readFileSync(path, "utf8"));
     assert.equal(values.JWT_SECRET, "mine-and-long-enough-for-the-test-0123456789");
     assert.equal(values.OTHER, "kept");
@@ -81,7 +86,7 @@ test("the setup reads the file as a dotenv parser does: spaced and quoted values
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
     // The spaced, quoted value is set; the quoted empty one and the bare empty one are filled in place.
-    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET, RELAY_TICKET_PRIVATE_KEY in \.dev\.vars\./u);
     assert.match(run.output, /Made SECRET_VAULT_LOCAL_KEK_V1 in vault\/\.dev\.vars\./u);
     const text = readFileSync(path, "utf8");
     const vaultText = readFileSync(vaultPath, "utf8");
@@ -169,7 +174,7 @@ test("the setup takes a quoted value with a comment after it, and makes an exist
     chmodSync(path, 0o644);
     const run = script("setup-local-secrets.ts", ["--dir", dir]);
     assert.equal(run.code, 0, run.output);
-    assert.match(run.output, /Made BETTER_AUTH_SECRET in \.dev\.vars\./u);
+    assert.match(run.output, /Made BETTER_AUTH_SECRET, RELAY_TICKET_PRIVATE_KEY in \.dev\.vars\./u);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.equal(parseEnv(readFileSync(path, "utf8")).JWT_SECRET, "quoted-and-long-enough-0123456789");
   });
@@ -213,7 +218,20 @@ test("after the setup, each Worker gets its own secrets: the gateway its file, t
     writeFileSync(vaultConfig, JSON.stringify({ name: "vault", main: join(V2_DIR, "vault", "src", "index.js"), compatibility_date: "2026-01-01" }));
 
     assert.equal(script("upload-local-secrets.ts", ["-c", "wrangler.gateway.jsonc", "--dir", "."], env).code, 0);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { JWT_SECRET: gatewayValues.JWT_SECRET, BETTER_AUTH_SECRET: gatewayValues.BETTER_AUTH_SECRET });
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), {
+      JWT_SECRET: gatewayValues.JWT_SECRET,
+      BETTER_AUTH_SECRET: gatewayValues.BETTER_AUTH_SECRET,
+      RELAY_TICKET_PRIVATE_KEY: gatewayValues.RELAY_TICKET_PRIVATE_KEY,
+    });
+
+    // The relay holds no secrets: an upload to it is refused, and nothing reaches Wrangler (step 9a).
+    writeFileSync(join(dir, "stdin"), "");
+    const relayConfig = join(dir, "wrangler.relay.jsonc");
+    writeFileSync(relayConfig, JSON.stringify({ name: "relay", main: join(V2_DIR, "relay", "src", "index.js"), compatibility_date: "2026-01-01" }));
+    const relay = script("upload-local-secrets.ts", ["-c", relayConfig, "--dir", "."], env);
+    assert.equal(relay.code, 2, relay.output);
+    assert.match(relay.output, /the relay holds no secrets/u);
+    assert.equal(readFileSync(join(dir, "stdin"), "utf8"), "");
 
     // The vault reads the file the setup made for it (`vault/.dev.vars`, its default without --dir):
     const fromVaultDir = script("upload-local-secrets.ts", ["-c", vaultConfig, "--dir", "vault"], env);

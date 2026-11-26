@@ -4,3 +4,7 @@ JWT_SECRET=
 # Signs people's console sessions and derives the keys that seal OAuth codes: at least 32 bytes,
 # for example `openssl rand -base64 32`. Changing it signs everyone out.
 BETTER_AUTH_SECRET=
+# Signs live-session tickets (plan step 9a): an Ed25519 key as `<x>.<d>`, each 32 bytes of base64url.
+# `setup-local-secrets.ts` makes one and prints its public half, `<x>`, which goes in the relay's and
+# the vault's profile `vars` as RELAY_TICKET_PUBLIC_KEY.
+RELAY_TICKET_PRIVATE_KEY=

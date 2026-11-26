@@ -43,6 +43,7 @@ export { AppLimiter } from "./do/AppLimiter.ts";
 export { AccountLimiter } from "./do/AccountLimiter.ts";
 export { AccountLedger } from "./do/AccountLedger.ts";
 export { ConversationLog } from "./do/ConversationLog.ts";
+export { RelayContract } from "./relay/entrypoint.ts";
 
 type Env2 = { Bindings: Env; Variables: DeadlineVariables };
 

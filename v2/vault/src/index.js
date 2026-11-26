@@ -15,11 +15,16 @@
  * - `credentialMatches`: whether an app's credential (an iOS share) is the one
  *   its keyslot was made for (split keys, phase 3);
  * - `status`: whether its settings let it seal and open, for the health check.
+ *
+ * The relay reaches it through another entrypoint, `RelayKeys`, that only the
+ * relay is bound to: it opens a live session's key (`./relay.js`). The deploy
+ * refuses a gateway bound to it.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { callFromRequest, holds, storeCopy } from "./call.js";
 import { reseal, seal, vaultStatus } from "./seal.js";
 import { credentialMatches } from "./split.js";
+import { sessionKey } from "./relay.js";
 
 /** @extends {WorkerEntrypoint<import("./seal.js").VaultEnv>} */
 export default class Vault extends WorkerEntrypoint {
@@ -77,5 +82,20 @@ export default class Vault extends WorkerEntrypoint {
 
   status() {
     return vaultStatus(this.env);
+  }
+}
+
+/**
+ * The relay's own entrypoint (plan step 9a): the key for a live session, from
+ * its ticket. Only the relay is bound to it.
+ * @extends {WorkerEntrypoint<import("./seal.js").VaultEnv>}
+ */
+export class RelayKeys extends WorkerEntrypoint {
+  /**
+   * @param {string} ticket
+   * @param {{ restart?: boolean }} [options] a restart may go on past the ticket's expiry, not past the seal's
+   */
+  sessionKey(ticket, options) {
+    return sessionKey(this.env, ticket, { restart: options?.restart === true });
   }
 }

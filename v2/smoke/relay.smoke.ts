@@ -5,16 +5,16 @@
  *   pnpm --filter @app-ai-gateway/gateway-v2 smoke
  *
  * V2_RELAY_URL is the `RELAY_URL` the deploy gave the gateway. Skipped when it
- * is not set. For now the relay's session object only echoes frames, and only
- * on a test deployment that sets `RELAY_ECHO`: set `V2_RELAY_ECHO=1` for one.
- * Without it, the check is that the echo is refused.
+ * is not set. A session starts only with a ticket the gateway signed; the
+ * endpoint that issues one comes with the leases (step 9a part 1, third
+ * review), so these checks cover what is visible before it: a made-up ticket
+ * creates nothing.
  */
 import { test } from "node:test";
-import { check, exchangeFrames, expectCode, expectResponse, readJson, same, send, TEST_TIMEOUT_MS } from "./support.ts";
+import { check, expectCode, expectResponse, readJson, same, send, TEST_TIMEOUT_MS, websocketHandshake } from "./support.ts";
 
 const relay = process.env.V2_RELAY_URL ?? "";
 const skip = relay === "" ? "V2_RELAY_URL is needed" : false;
-const echoOn = process.env.V2_RELAY_ECHO === "1";
 
 test("the relay's health check answers", { skip }, async () => {
   const response = await send("/v2/relay/healthz", relay);
@@ -28,20 +28,13 @@ test("the relay answers JSON 404 for a path it doesn't serve", { skip }, async (
   expectCode(await readJson(missing), "not_found", "a path the relay doesn't serve");
 });
 
-test("a relay without RELAY_ECHO refuses the echo", { skip: skip || (echoOn ? "V2_RELAY_ECHO=1: this deployment's echo is on" : false) }, async () => {
-  // A plain GET tells the two apart: 404 when the echo is off, 426 when it is on.
-  // (Node's fetch refuses an `upgrade` header, so none is sent.)
-  const refused = await send("/v2/relay/echo", relay);
-  same(refused.status, 404, "the echo on a relay without RELAY_ECHO");
-  expectCode(await readJson(refused), "not_found", "the echo on a relay without RELAY_ECHO");
-});
-
-test("the relay's session object echoes text and binary frames", { skip: skip || (echoOn ? false : "V2_RELAY_ECHO=1 is needed"), timeout: TEST_TIMEOUT_MS }, async () => {
-  const plain = await send("/v2/relay/echo", relay);
-  same(plain.status, 426, "the echo without a WebSocket");
-  expectCode(await readJson(plain), "websocket_required", "the echo without a WebSocket");
-  const [text, bytes] = await exchangeFrames("/v2/relay/echo", relay, ["hello relay", new Uint8Array([1, 2, 3])], 2);
-  check(text === "hello relay", "the relay's echo changed a text frame");
-  check(bytes instanceof Uint8Array, "the relay's echo answered a binary frame with text");
-  same([...bytes], [1, 2, 3], "the relay's echo changed a binary frame");
+test("a session needs a WebSocket, and a made-up ticket is refused at the handshake", { skip, timeout: TEST_TIMEOUT_MS }, async () => {
+  // (Node's fetch refuses an `upgrade` header, so a plain request shows the first refusal.)
+  const plain = await send("/v2/relay/session", relay);
+  same(plain.status, 426, "a session without a WebSocket");
+  expectCode(await readJson(plain), "websocket_required", "a session without a WebSocket");
+  const forged = await websocketHandshake("/v2/relay/session", relay, { authorization: "Bearer eyJ2IjoxfQ.AAAA" });
+  check(forged === "refused", "the relay opened a session for a made-up ticket");
+  const none = await websocketHandshake("/v2/relay/session", relay, {});
+  check(none === "refused", "the relay opened a session with no ticket");
 });
