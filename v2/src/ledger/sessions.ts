@@ -172,17 +172,19 @@ export type StopReason = "replaced" | "ended" | "budget_stop" | "allowance_used_
  * the session even when the write failed; with no stop, a failed write means
  * the session continues and the relay sends the slice again.
  */
-export type CheckpointAnswer = (
+export type CheckpointAnswer =
   | { readonly decision: "continue"; readonly written: boolean }
-  | { readonly decision: "stop"; readonly reasons: readonly StopReason[]; readonly written: boolean }
-) & {
-  /**
-   * The slice was not booked because the session's saved price differs from
-   * the one it was priced with: this is the saved one, for the caller to
-   * price the slice again with (`written` is false).
-   */
-  readonly priceChanged?: string;
-};
+  | { readonly decision: "stop"; readonly reasons: readonly StopReason[]; readonly written: boolean };
+
+/**
+ * A slice priced inside the transaction: its charge id, and its charge row
+ * at the session's saved price (`../relay/session-price.ts`; null when none
+ * is saved).
+ */
+export interface SliceAtSavedPrice {
+  readonly id: string;
+  readonly priceAt: (saved: string | null) => ChargeRow;
+}
 
 /** The checkpoint's two checks on settings, read before the ledger transaction: null when they could not be read. */
 export interface CheckpointStanding {
@@ -205,7 +207,10 @@ export interface CheckpointStanding {
  * lives in the account's limiter object, which the caller asks itself.
  *
  * The slice and the totals are one transaction in the account's ledger
- * object (`db`, step 8f). The end user's and the connection's status are
+ * object (`db`, step 8f). A slice given as `SliceAtSavedPrice` is priced
+ * there with the session's saved price: run inside the object
+ * (`AccountLedger.checkpoint`), the read of the price, the pricing and the
+ * write have no other request between them. The end user's and the connection's status are
  * settings, read from D1 (`settings`) just before it. If that read fails,
  * only those two checks are skipped: the slice is still written, and the
  * ledger's own stop decisions still apply.
@@ -215,7 +220,7 @@ export async function writeCheckpoint(
   settings: D1Database,
   input: {
     readonly session: SessionRow;
-    readonly slice: ChargeRow | null;
+    readonly slice: ChargeRow | SliceAtSavedPrice | null;
     readonly budgets: readonly CheckpointBudget[];
     readonly planMinutes: CheckpointPlanMinutes | null;
     readonly now: number;
@@ -226,29 +231,43 @@ export async function writeCheckpoint(
     /** How many crash gaps this slice carries: added to the session's count when the slice is really written. */
     readonly gaps?: number;
     /**
-     * The price the slice was priced with, saved form
-     * (`../relay/session-price.ts`). The first checkpoint saves it on the
-     * session; after that, the slice is booked only when it equals the saved
-     * one, in the same transaction (else `priceChanged`). Undefined checks
-     * nothing.
+     * Today's price, saved form, saved on the session when none is yet (its
+     * first checkpoint). Undefined when today's price couldn't be read: then
+     * nothing is saved.
      */
     readonly price?: string;
-    /** Whether `price` may be saved when none is yet: not when it was priced without the connection's own rates. */
-    readonly savePrice?: boolean;
   },
 ): Promise<CheckpointAnswer> {
-  const { session, slice, now } = input;
+  const { session, now } = input;
   const month = utcMonthDays(now);
+  // Read first: no other request may come between the price read below and the write.
+  const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, session);
+  const savePrice =
+    input.price === undefined ? [] : [db.prepare("UPDATE session SET rates_json = ? WHERE id = ? AND rates_json IS NULL").bind(input.price, session.id)];
+  let slice: ChargeRow | null = null;
+  if (input.slice !== null && "priceAt" in input.slice) {
+    // The session row and today's price first, then the saved price, and whether this slice is in.
+    const read = await db.batch([
+      ...insertSessionStatements(db, session, now),
+      ...savePrice,
+      db.prepare("SELECT rates_json FROM session WHERE id = ?").bind(session.id),
+      db.prepare("SELECT EXISTS (SELECT 1 FROM charge WHERE id = ?) AS booked").bind(input.slice.id),
+    ]);
+    const saved = read.at(-2)?.results[0] as { rates_json?: unknown } | undefined;
+    const booked = (read.at(-1)?.results[0] as { booked?: unknown } | undefined)?.booked === 1;
+    // Booked already (a retry after a slow first commit): nothing changes, and the stops still run (S1, S14).
+    if (!booked) slice = input.slice.priceAt(typeof saved?.rates_json === "string" ? saved.rates_json : null);
+  } else {
+    slice = input.slice;
+  }
   const statements: D1PreparedStatement[] = [
     // The first checkpoint writes the session row if its own write failed.
     ...insertSessionStatements(db, session, now),
     db
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
+    ...savePrice,
   ];
-  if (input.price !== undefined && input.savePrice !== false) {
-    statements.push(db.prepare("UPDATE session SET rates_json = ? WHERE id = ? AND rates_json IS NULL").bind(input.price, session.id));
-  }
   if ((input.providerCallId ?? null) !== null) {
     statements.push(
       db
@@ -268,10 +287,7 @@ export async function writeCheckpoint(
         now,
         "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
         [session.id, slice.costNano],
-        // Only at the session's saved price: the check and the insert are one transaction.
-        input.price === undefined
-          ? { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] }
-          : { sql: "EXISTS (SELECT 1 FROM session WHERE id = ? AND rates_json = ?)", params: [session.id, input.price] },
+        { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
       ),
     );
     // Its crash gaps count on the session once, only when the insert just above really wrote it.
@@ -305,7 +321,7 @@ export async function writeCheckpoint(
     );
   }
   const stateAt = statements.length;
-  statements.push(db.prepare("SELECT state, rates_json FROM session WHERE id = ?").bind(session.id));
+  statements.push(db.prepare("SELECT state FROM session WHERE id = ?").bind(session.id));
   for (const budget of input.budgets) {
     statements.push(
       db
@@ -323,7 +339,6 @@ export async function writeCheckpoint(
         .bind(session.accountId, input.planMinutes.fromDay, input.planMinutes.toDay),
     );
   }
-  const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, session);
   // The stops settings already know: kept even when the transaction fails (crash table row 16).
   const known: StopReason[] = [];
   if (standing?.userBlocked === true) known.push("user_blocked");
@@ -361,13 +376,7 @@ export async function writeCheckpoint(
     if (ms >= input.planMinutes.limitMs) reasons.push("allowance_used_up");
   }
   reasons.push(...known);
-  // Booked only at the saved price. When it differs, the caller prices the slice again with it;
-  // with none saved (this one couldn't be), the relay sends the slice again later.
-  const saved = typeof state.rates_json === "string" ? state.rates_json : null;
-  const checked = slice !== null && input.price !== undefined && saved !== input.price;
-  const priceChanged = checked && saved !== null ? { priceChanged: saved } : {};
-  const written = !checked;
-  return reasons.length === 0 ? { decision: "continue", written, ...priceChanged } : { decision: "stop", reasons, written, ...priceChanged };
+  return reasons.length === 0 ? { decision: "continue", written: true } : { decision: "stop", reasons, written: true };
 }
 
 /**

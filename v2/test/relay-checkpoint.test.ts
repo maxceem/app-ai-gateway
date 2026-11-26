@@ -104,26 +104,99 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(await charges(ticket.sid)).toHaveLength(1);
   });
 
-  it("books every slice at the price the first checkpoint saved: a checkpoint that proposes a new price is priced again with the saved one (Sol round 3)", async () => {
+  /** A connection with its own rate for `house-realtime`: `input` nano-dollars per million tokens, in and out. */
+  async function houseConnection(input: number | string): Promise<{ connectionId: string; setRates: (next: number | string) => Promise<unknown> }> {
     await seedAccount();
     const connectionId = `conn_${crypto.randomUUID().replaceAll("-", "")}`;
-    const rates = (input: number) => JSON.stringify({ "house-realtime": { input, output: input } });
+    const rates = (rate: number | string) => (typeof rate === "string" ? rate : JSON.stringify({ "house-realtime": { input: rate, output: rate } }));
     await env.DB.prepare(
       "INSERT INTO provider_connection (id, account_id, type, slug, name, status, rates_json, created_by, created_at, updated_at) VALUES (?, ?, 'openai', ?, 'T', 'active', ?, 't', ?, ?)",
     )
-      .bind(connectionId, ACCOUNT_ID, connectionId.slice(0, 40), rates(1_000_000_000), Date.now(), Date.now())
+      .bind(connectionId, ACCOUNT_ID, connectionId.slice(0, 40), rates(input), Date.now(), Date.now())
       .run();
+    return {
+      connectionId,
+      setRates: (next) => env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind(rates(next), connectionId).run(),
+    };
+  }
+
+  it("books at the saved price A when a checkpoint proposes B, in one call to the ledger (Sol round 4)", async () => {
+    const { connectionId, setRates } = await houseConnection(1_000_000_000);
     const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
     // The first checkpoint, empty, saves price A: $1 per million tokens.
     await checkpointForRelay(env, text, live(null));
     expect(await savedPrice(ticket.sid)).toContain('"source":"customer_rate"');
-    // The connection changes to price B; the next checkpoint proposes B, and is booked at A.
-    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind(rates(5_000_000_000), connectionId).run();
+    await setRates(5_000_000_000);
+    const calls = vi.spyOn(env.ACCOUNT_LEDGER, "get");
     expect(await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })))).toMatchObject({ decision: "continue", written: true });
+    expect(calls).toHaveBeenCalledTimes(1);
     expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000, price_source: "customer_rate" }]);
   });
 
-  it("books every slice at the price the first checkpoint saved: a new price list mid-session changes nothing (Sol rounds 2 and 3)", async () => {
+  it("acknowledges a slice already booked, changing nothing, when its retry comes after a slow first commit (Sol round 4)", async () => {
+    const { connectionId, setRates } = await houseConnection(1_000_000_000);
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const one = slice(ticket, 1, { input_tokens: 1_000 });
+    // The first commit lands; its reply is lost. Meanwhile the price changes.
+    await checkpointForRelay(env, text, live(one));
+    await setRates(5_000_000_000);
+    const warned = vi.spyOn(console, "warn");
+    expect(await checkpointForRelay(env, text, live(one))).toEqual({ version: 2, decision: "continue", reasons: [], written: true });
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000 }]);
+    expect(warned.mock.calls.map((call) => String(call[0])).join()).not.toContain("price");
+  });
+
+  it("keeps a stop the ledger gives: there is no second call to lose it (Sol round 4)", async () => {
+    const { connectionId, setRates } = await houseConnection(1_000_000_000);
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    await checkpointForRelay(env, text, live(null));
+    await closeSession(ledger(), { session: sessionRowOf(ticket), finalSlice: 1, endReason: "time_cap", endedAt: Date.now(), now: Date.now() });
+    // A new price is proposed, and the session has ended: the live checkpoint is booked at A and stops.
+    // Any second call to the ledger fails, as a retry past its deadline would.
+    await setRates(5_000_000_000);
+    let calls = 0;
+    const failing = { prepare: (sql: string) => ledger().prepare(sql), batch: () => Promise.reject(new Error("ledger down")) } as unknown as D1Database;
+    const once = withLedgerDb(env, (real) => (calls++ === 0 ? real : failing));
+    expect(await checkpointForRelay(once, text, live(slice(ticket, 1, { input_tokens: 1_000 })))).toEqual({
+      version: 2,
+      decision: "stop",
+      reasons: ["ended"],
+      written: true,
+    });
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000 }]);
+  });
+
+  it("uses today's price, with a warning, when the saved price can't price the slice (a cost too large to store) (Sol round 4)", async () => {
+    const { text, ticket } = await ticketFor();
+    await openSession(ledger(), sessionRowOf(ticket), Date.now());
+    const huge = { source: "list_rate", price: { ...listPrice("openai", "gpt-4o-mini")!, rates: { input: 9_000_000_000_000_000, output: 9_000_000_000_000_000 } } };
+    await ledger().prepare("UPDATE session SET rates_json = ? WHERE id = ?").bind(JSON.stringify(huge), ticket.sid).run();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000_000_000 })));
+    const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1_000_000_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 })!.cost;
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: expected, price_source: "list_rate" }]);
+    expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_saved_price_unusable");
+  });
+
+  it("saves nothing while today's rates can't be read, booking unresolved; a later readable checkpoint saves the price (Sol round 4)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
+    expect(await savedPrice(ticket.sid)).toBeNull();
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: null, price_source: "unresolved" }]);
+    const logged = warned.mock.calls.map((call) => String(call[0])).join();
+    expect(logged).toContain("checkpoint_price_unread");
+    expect(logged).toContain("checkpoint_price_unsaved");
+    await setRates(1_000_000_000);
+    await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 }, { from: ticket.start + 60_000, to: ticket.start + 120_000 })));
+    expect(await savedPrice(ticket.sid)).toContain('"source":"customer_rate"');
+    expect(await charges(ticket.sid)).toMatchObject([{ price_source: "unresolved" }, { cost_nano: 1_000_000, price_source: "customer_rate" }]);
+  });
+
+  it("books every slice at the price the first checkpoint saved: a new price list mid-session changes nothing (Sol rounds 2 to 4)", async () => {
     const { text, ticket } = await ticketFor();
     await checkpointForRelay(env, text, live(null));
     const usage = { input_tokens: 1_000, output_tokens: 200 };

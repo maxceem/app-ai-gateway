@@ -103,6 +103,30 @@ export class AccountLedger extends DurableObject<Env> {
     return results;
   }
 
+  /**
+   * Books one live-session checkpoint (`../relay/checkpoint.ts`): the
+   * session's saved price is read, the slice priced with it and booked, with
+   * no other request in between. Its code loads on first use.
+   */
+  async checkpoint(input: import("../relay/checkpoint.ts").LedgerCheckpointInput): Promise<import("../ledger/sessions.ts").CheckpointAnswer> {
+    const { bookCheckpoint } = await import("../relay/checkpoint.ts");
+    let wrote = false;
+    const db = shapedLikeD1(async (statements, transaction) => {
+      const results = runLedgerStatements(this.ctx.storage, statements, transaction);
+      if (results.some((result) => result.changes > 0)) wrote = true;
+      return results;
+    });
+    const answer = await bookCheckpoint(db, this.env.DB, input);
+    if (wrote) {
+      try {
+        await this.planWork();
+      } catch (error) {
+        log("warn", "ledger_alarm_unset", { error: errorFacts(error) });
+      }
+    }
+    return answer;
+  }
+
   /** The schema version this object is at. For tests and diagnostics. */
   async schemaVersion(): Promise<number> {
     return Number(readMeta(this.ctx.storage, "schema_version") ?? "0");

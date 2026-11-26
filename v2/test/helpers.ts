@@ -5,6 +5,7 @@
  */
 import { AccountLedger } from "../src/do/AccountLedger.ts";
 import { ledgerDb, type LedgerResult, type LedgerStatement } from "../src/ledger/database.ts";
+import type { LedgerCheckpointInput } from "../src/relay/checkpoint.ts";
 import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { env } from "cloudflare:workers";
@@ -396,6 +397,11 @@ export function withLedgerDb(base: Env, make: (real: D1Database, accountId: stri
           const values = (result.results as Record<string, unknown>[]).map((row) => columns.map((column) => row[column]));
           return { values, columns, changes: result.meta.changes ?? 0, rowsRead: 0 };
         });
+      },
+      // The object's checkpoint, over the stand-in.
+      checkpoint: async (input: LedgerCheckpointInput) => {
+        const { bookCheckpoint } = await import("../src/relay/checkpoint.ts");
+        return await bookCheckpoint(make(ledger(accountId), accountId), base.DB, input);
       },
     }),
   };
