@@ -3,8 +3,8 @@
  * settlement with its barrier (plan sections 4.2 and 4.3; rules S6–S9, S12,
  * S14 in v2-prep/admission-and-settlement.md).
  *
- * - A checkpoint is ONE D1 batch, which D1 runs as one transaction: it writes
- *   the slice charge, then reads the totals the stop decision needs, so a big
+ * - A checkpoint is one transaction in the account's ledger object (step 8f):
+ *   it writes the slice charge, then reads the totals the stop decision needs, so a big
  *   turn counts at once. A repeated checkpoint id skips the insert but still
  *   reads the totals and answers, so a lost "stop" is not turned into
  *   "continue" by the retry (S14). If the batch fails, the session continues:
@@ -362,6 +362,8 @@ export async function closeSession(
     readonly endReason: SessionEndReason;
     readonly endedAt: number;
     readonly now: number;
+    /** The provider's id for the call, when the relay knows it: a session that ended before its first checkpoint still settles with it (crash table row 13). */
+    readonly providerCallId?: string | null;
   },
 ): Promise<void> {
   const sessionId = input.session.id;
@@ -373,10 +375,11 @@ export async function closeSession(
            end_reason = COALESCE(end_reason, ?),
            ended_at = COALESCE(ended_at, ?),
            final_slice = COALESCE(final_slice, ?),
+           provider_call_id = COALESCE(provider_call_id, ?),
            updated_at = ?
          WHERE id = ? AND state != 'ended'`,
       )
-      .bind(input.endReason, input.endedAt, input.finalSlice, input.now, sessionId),
+      .bind(input.endReason, input.endedAt, input.finalSlice, input.providerCallId ?? null, input.now, sessionId),
     // Only the close that ended the session moves the next try earlier.
     // `changes()` is the rows the update just above changed, in this same
     // batch: 0 for a repeated close, which must not pull the sweep's last try
@@ -499,7 +502,9 @@ export async function settleSession(
     const capEnds = stored.started_at + stored.time_cap_ms;
     if (now < capEnds + STALE_SESSION_GRACE_MS) return "not_closed";
     // A lost close: the session held its slot until the cap, and ends there.
-    await closeSession(db, { session: sessionFromStored(stored), finalSlice: await lastSlice(), endReason: "time_cap", endedAt: capEnds, now });
+    // A session still `starting` never connected (crash table rows 2, 4–6): it ends with `error`.
+    const endReason = stored.state === "starting" ? "error" : "time_cap";
+    await closeSession(db, { session: sessionFromStored(stored), finalSlice: await lastSlice(), endReason, endedAt: capEnds, now });
     stored = await db.prepare("SELECT * FROM session WHERE id = ?").bind(sessionId).first<StoredSession>();
     if (stored === null || stored.ended_at === null || stored.final_slice === null) return "missing";
   }

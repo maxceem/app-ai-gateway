@@ -62,8 +62,7 @@ Inside `v2/`:
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
   The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
-  The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway, and
-  `V2_RELAY_ECHO=1` for a relay with its echo on; without it they check the echo is refused.
+  The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway.
   Every request the checks send names itself with the `user-agent` `agw-smoke/<version>`
   (`smoke/user-agent.ts`, which `pnpm run smoke` loads first).
 - `node --experimental-strip-types --import ./smoke/user-agent.ts --test smoke/email.smoke.ts`: the email check, run on its own. It
@@ -198,13 +197,20 @@ v2 is three Workers, each with its own `wrangler.jsonc`:
 
 - the gateway (this folder);
 - the vault (`vault/`), the only Worker that opens provider keys outside a live session;
-- the relay (`relay/`), for live sessions. For now its session object only echoes frames, and
-  only where the relay's profile sets `RELAY_ECHO` to `"1"`, which only a test deployment does.
+- the relay (`relay/`), for live sessions. It holds no secrets.
 
 Each `wrangler.jsonc` holds what every deployment shares. A deployment's own Worker names,
 database id, domains and placement go in a gitignored `wrangler.<profile>.jsonc` next to each,
 a full copy of that Worker's `wrangler.jsonc`. The gateway's profile names the vault in its
-`VAULT` binding, and the relay's profile names the gateway in its `MAIN` binding.
+`VAULT` binding. The relay's profile names the gateway in its `MAIN` binding (the
+`RelayContract` entrypoint) and the vault in its `VAULT` binding (the `RelayKeys` entrypoint,
+which only the relay may use).
+
+Live sessions start with a ticket the gateway signs (plan step 9a). The gateway's secret
+`RELAY_TICKET_PRIVATE_KEY` holds the signing key; `setup-local-secrets.ts` makes one and prints
+its public half. Put that public half in both the relay's and the vault's profile `vars` as
+`RELAY_TICKET_PUBLIC_KEY`: each checks tickets on its own. It is not a secret. The relay gets no
+secrets at all: `secrets:upload` refuses the relay's config.
 
 Deploy all three with one command:
 
@@ -231,6 +237,9 @@ Before deploying anything, it refuses configs that don't fit together:
 - a vault in `kms` mode with a local setting;
 - a vault setting on the gateway or the relay;
 - a vault or a relay without `no_bundle`;
+- a gateway bound to the vault's `RelayKeys` entrypoint, or a relay not bound to `RelayKeys` and
+  `RelayContract`;
+- a relay and a vault without the same `RELAY_TICKET_PUBLIC_KEY`;
 - two Workers with the same name;
 - a relay with no custom domain and no workers.dev address, unless the gateway config sets
   `RELAY_URL`.

@@ -36,7 +36,7 @@ export interface WorkerConfig {
   name?: unknown;
   main?: unknown;
   vars?: Record<string, unknown>;
-  services?: { binding?: unknown; service?: unknown }[];
+  services?: { binding?: unknown; service?: unknown; entrypoint?: unknown }[];
   routes?: unknown[];
   workers_dev?: unknown;
   build?: unknown;
@@ -49,6 +49,13 @@ function serviceFor(config: WorkerConfig, binding: string): string | undefined {
   const found = config.services?.find((service) => service.binding === binding)?.service;
   return typeof found === "string" ? found : undefined;
 }
+
+function entrypointFor(config: WorkerConfig, binding: string): unknown {
+  return config.services?.find((service) => service.binding === binding)?.entrypoint;
+}
+
+/** The relay's and the vault's ticket key: the public half of the gateway's `RELAY_TICKET_PRIVATE_KEY`, 32 bytes of base64url. */
+const TICKET_PUBLIC_KEY = /^[A-Za-z0-9_-]{43}$/u;
 
 /**
  * Why these three configs can't be deployed together, or an empty list. Each
@@ -64,8 +71,25 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
   if (serviceFor(main, "VAULT") !== vault.name) {
     problems.push(`The gateway's VAULT binding must name the vault Worker (${String(vault.name)}).`);
   }
-  if (serviceFor(relay, "MAIN") !== main.name) {
-    problems.push(`The relay's MAIN binding must name the gateway Worker (${String(main.name)}).`);
+  // The vault's key-opening entrypoint is the relay's alone (plan step 9a).
+  if (entrypointFor(main, "VAULT") !== undefined) problems.push("The gateway's VAULT binding must use the vault's default entrypoint, never RelayKeys.");
+  // Whatever its name: no gateway binding may reach the entrypoint that hands out keys.
+  if ((main.services ?? []).some((service) => service.entrypoint === "RelayKeys")) {
+    problems.push("The gateway must have no binding to the vault's RelayKeys entrypoint, under any name: only the relay may use it.");
+  }
+  if (serviceFor(relay, "MAIN") !== main.name || entrypointFor(relay, "MAIN") !== "RelayContract") {
+    problems.push(`The relay's MAIN binding must name the gateway Worker (${String(main.name)}) with the entrypoint RelayContract.`);
+  }
+  if (serviceFor(relay, "VAULT") !== vault.name || entrypointFor(relay, "VAULT") !== "RelayKeys") {
+    problems.push(`The relay's VAULT binding must name the vault Worker (${String(vault.name)}) with the entrypoint RelayKeys.`);
+  }
+  const relayKey = relay.vars?.RELAY_TICKET_PUBLIC_KEY;
+  const vaultKey = vault.vars?.RELAY_TICKET_PUBLIC_KEY;
+  if (typeof relayKey !== "string" || !TICKET_PUBLIC_KEY.test(relayKey) || relayKey !== vaultKey) {
+    problems.push(
+      "The relay and the vault must both set RELAY_TICKET_PUBLIC_KEY in their vars, to the same value: the public half of the gateway's " +
+        "RELAY_TICKET_PRIVATE_KEY, which setup-local-secrets.ts prints.",
+    );
   }
   const strategy = relay.durable_objects?.code_update_strategy;
   if (strategy?.mode !== RELAY_CODE_UPDATE.mode || strategy.max_delay !== RELAY_CODE_UPDATE.max_delay) {

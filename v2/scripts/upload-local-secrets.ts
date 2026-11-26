@@ -64,6 +64,10 @@ if (shellEnv !== undefined && shellEnv !== "" && envName === undefined) {
 const { experimental_readRawConfig } = await import("wrangler");
 const raw = experimental_readRawConfig({ config }) as { rawConfig: { main?: unknown; env?: Record<string, unknown> } };
 if (envName !== undefined && raw.rawConfig.env?.[envName] === undefined) refuse(`${config} defines no environment ${envName}; nothing was uploaded.`);
+// The relay holds no secrets (plan section 5.1): its ticket public key is a plain `vars` value.
+if (typeof raw.rawConfig.main === "string" && resolve(dirname(config), raw.rawConfig.main) === join(V2_DIR, "relay", "src", "index.js")) {
+  refuse(`${config} is the relay's: the relay holds no secrets, so nothing was uploaded.`);
+}
 /** Whether the config is the vault Worker's: it runs `vault/src/index.js`. */
 const isVault = typeof raw.rawConfig.main === "string" && resolve(dirname(config), raw.rawConfig.main) === join(V2_DIR, "vault", "src", "index.js");
 

@@ -20,6 +20,8 @@ const SPLIT_KEY_FILES = [
   "test/media.test.ts",
   "test/providers.test.ts",
   "test/pricing-units.test.ts",
+  "test/relay-tickets.test.ts",
+  "test/relay-session.test.ts",
 ];
 
 /**
@@ -53,6 +55,8 @@ const workers = (splitKeys: boolean) =>
                 SECRET_VAULT_MODE: "local",
                 SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
                 SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                // The test ticket key's public half (\`test/relay-keys.ts\`).
+                RELAY_TICKET_PUBLIC_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU",
               },
               outboundService: async (request: Request) =>
                 // A provider answer that carries the vault's own headers: the vault must drop them.
@@ -86,12 +90,69 @@ const workers = (splitKeys: boolean) =>
                 return Response.json({ plaintextKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", wrappedKey: "fixed", kekVersion: 1 });
               },
             },
+            {
+              // The relay Worker as it is uploaded, with its real session object (\`test/relay-session.test.ts\`):
+              // the vault's RelayKeys for keys, a stand-in for the gateway's RelayContract, and a provider
+              // stand-in that answers every connect with a WebSocket.
+              name: "app-ai-gateway-v2-relay-test",
+              modules: true,
+              modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+              scriptPath: path.join(import.meta.dirname, "relay/src/index.js"),
+              compatibilityDate: "2026-07-24",
+              durableObjects: { SESSION: "Session" },
+              bindings: { RELAY_TICKET_PUBLIC_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU" },
+              serviceBindings: {
+                MAIN: { name: "app-ai-gateway-v2-relay-main-stub", entrypoint: "RelayContract" },
+                VAULT: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
+              },
+              outboundService: "app-ai-gateway-v2-provider-stub",
+            },
+            {
+              // Every provider connect the test relay makes: a WebSocket that stays open.
+              name: "app-ai-gateway-v2-provider-stub",
+              modules: true,
+              // It keeps the key header of the last connect, which the test reads back at /last-key-header.
+              script: [
+                "let lastKeyHeader = null;",
+                "export default {",
+                "  fetch(request) {",
+                "    if (new URL(request.url).pathname === \"/last-key-header\") return Response.json({ authorization: lastKeyHeader });",
+                "    lastKeyHeader = request.headers.get(\"authorization\");",
+                "    const [client, server] = Object.values(new WebSocketPair());",
+                "    server.accept();",
+                "    return new Response(null, { status: 101, webSocket: client });",
+                "  },",
+                "};",
+              ].join("\n"),
+              compatibilityDate: "2026-07-24",
+            },
+            {
+              name: "app-ai-gateway-v2-relay-main-stub",
+              modules: true,
+              script: [
+                'import { WorkerEntrypoint } from "cloudflare:workers";',
+                "export class RelayContract extends WorkerEntrypoint {",
+                "  async open() { return { version: 1, deadline: Date.now() + 60000, mode: \"relayed\", operation: \"openai.realtime\", checkpointIntervalMs: 60000 }; }",
+                "  async close() { return { version: 1 }; }",
+                "}",
+                "export default { fetch() { return new Response(null, { status: 404 }); } };",
+              ].join("\n"),
+              compatibilityDate: "2026-07-24",
+            },
           ],
-          serviceBindings: { VAULT_KMS: "app-ai-gateway-v2-vault-kms" },
+          // The vault's relay-only entrypoint, so its tests go through the binding the relay uses (step 9a).
+          serviceBindings: {
+            VAULT_KMS: "app-ai-gateway-v2-vault-kms",
+            VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
+            RELAY_TEST: "app-ai-gateway-v2-relay-test",
+            PROVIDER_STUB: "app-ai-gateway-v2-provider-stub",
+          },
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
+            // A test-only ticket key (\`test/relay-keys.ts\`): \`<x>.<d>\`.
+            RELAY_TICKET_PRIVATE_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU.qZrzCuwpthFVTEuYxPsSryqsfCjHpI-bAwHSFzgzy3o",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-32-bytes",
             // The console and the OAuth issuer (`https://console.gateway.test/v2`).
             CONSOLE_ORIGIN: "https://console.gateway.test",

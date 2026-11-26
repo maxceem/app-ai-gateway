@@ -25,10 +25,13 @@ import {
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const { experimental_readRawConfig } = await import("wrangler");
 const read = (path: string): WorkerConfig => (experimental_readRawConfig({ config: path }) as { rawConfig: WorkerConfig }).rawConfig;
+/** A ticket public key as a profile sets it: the tracked configs can't hold a deployment's own. */
+const TICKET_KEY = "A".repeat(43);
+const withTicketKey = (config: WorkerConfig): WorkerConfig => ({ ...config, vars: { ...config.vars, RELAY_TICKET_PUBLIC_KEY: TICKET_KEY } });
 const tracked = () => ({
   main: read(join(V2_DIR, "wrangler.jsonc")),
-  vault: read(join(V2_DIR, "vault", "wrangler.jsonc")),
-  relay: read(join(V2_DIR, "relay", "wrangler.jsonc")),
+  vault: withTicketKey(read(join(V2_DIR, "vault", "wrangler.jsonc"))),
+  relay: withTicketKey(read(join(V2_DIR, "relay", "wrangler.jsonc"))),
 });
 
 test("the tracked configs fit together, and the relay keeps open sessions through a deploy", () => {
@@ -54,11 +57,11 @@ test("bindings must name the Workers deployed with them", () => {
 
 test("a kms vault holds no local setting, and only the vault holds vault settings", () => {
   const { main, vault, relay } = tracked();
-  const kms = { ...vault, vars: { SECRET_VAULT_MODE: "kms", SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1" } };
+  const kms = { ...vault, vars: { SECRET_VAULT_MODE: "kms", SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1", RELAY_TICKET_PUBLIC_KEY: TICKET_KEY } };
   assert.match(deployProblems(main, kms, relay).join("\n"), /SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION/u);
-  assert.deepEqual(deployProblems(main, { ...vault, vars: { SECRET_VAULT_MODE: "kms" } }, relay), []);
+  assert.deepEqual(deployProblems(main, { ...vault, vars: { SECRET_VAULT_MODE: "kms", RELAY_TICKET_PUBLIC_KEY: TICKET_KEY } }, relay), []);
   assert.match(deployProblems({ ...main, vars: { SECRET_VAULT_MODE: "local" } }, vault, relay).join("\n"), /from the gateway config/u);
-  assert.match(deployProblems(main, vault, { ...relay, vars: { SECRET_VAULT_MODE: "local" } }).join("\n"), /from the relay config/u);
+  assert.match(deployProblems(main, vault, { ...relay, vars: { ...relay.vars, SECRET_VAULT_MODE: "local" } }).join("\n"), /from the relay config/u);
 });
 
 test("the relay's address comes from its custom domain or from Wrangler's output", () => {
@@ -154,7 +157,11 @@ function profileCopies(t: { after: (fn: () => void) => void }): { profile: strin
     for (const copy of Object.values(copies)) rmSync(copy, { force: true });
   });
   for (const [worker, file] of Object.entries(files)) cpSync(join(V2_DIR, file), copies[worker as keyof typeof files]);
-  return { profile, edit: (worker, change) => writeFileSync(copies[worker], change(readFileSync(copies[worker], "utf8"))) };
+  const edit = (worker: keyof typeof files, change: (text: string) => string) => writeFileSync(copies[worker], change(readFileSync(copies[worker], "utf8")));
+  // Each profile sets the ticket key, as a real one does.
+  edit("vault", (text) => text.replace('"vars": {', `"vars": { "RELAY_TICKET_PUBLIC_KEY": "${TICKET_KEY}",`));
+  edit("relay", (text) => text.replace('"name": "app-ai-gateway-v2-relay",', `"name": "app-ai-gateway-v2-relay",\n  "vars": { "RELAY_TICKET_PUBLIC_KEY": "${TICKET_KEY}" },`));
+  return { profile, edit };
 }
 
 const kind = (call: string[]): string => {
@@ -167,7 +174,7 @@ test("a deploy goes vault, migrations, gateway, relay, and gives the gateway the
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
   // Prebuilt, so the test doesn't build the console.
-  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin);
+  const run = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin);
   assert.equal(run.status, 0, run.stderr);
   const deploys = fake.calls().filter((call) => !["deployments", "versions"].includes(call[0]!));
   assert.deepEqual(deploys.map(kind), ["deploy vault", "d1 migrations apply gateway", "deploy gateway", "deploy relay", "deploy gateway"]);
@@ -199,8 +206,28 @@ test("a profile whose relay drops its code-update setting deploys nothing", (t) 
   assert.match(run.stderr, /code_update_strategy/u);
 });
 
-test("the tracked relay config never turns the echo on", () => {
-  assert.equal(tracked().relay.vars?.RELAY_ECHO, undefined);
+test("the relay and the vault must carry the same ticket key, which a deployment sets, never the tracked config (step 9a)", () => {
+  const raw = { main: read(join(V2_DIR, "wrangler.jsonc")), vault: read(join(V2_DIR, "vault", "wrangler.jsonc")), relay: read(join(V2_DIR, "relay", "wrangler.jsonc")) };
+  assert.equal(raw.vault.vars?.RELAY_TICKET_PUBLIC_KEY, undefined);
+  assert.equal(raw.relay.vars?.RELAY_TICKET_PUBLIC_KEY, undefined);
+  assert.match(deployProblems(raw.main, raw.vault, raw.relay).join("\n"), /RELAY_TICKET_PUBLIC_KEY/u);
+  const { main, vault, relay } = tracked();
+  const other = { ...relay, vars: { RELAY_TICKET_PUBLIC_KEY: "B".repeat(43) } };
+  assert.match(deployProblems(main, vault, other).join("\n"), /RELAY_TICKET_PUBLIC_KEY/u);
+  assert.match(deployProblems(main, vault, { ...relay, vars: { RELAY_TICKET_PUBLIC_KEY: "short" } }).join("\n"), /RELAY_TICKET_PUBLIC_KEY/u);
+});
+
+test("only the relay is bound to the vault's key-opening entrypoint, and it reaches the gateway's contract (step 9a)", () => {
+  const { main, vault, relay } = tracked();
+  const gatewayOnRelayKeys = { ...main, services: (main.services ?? []).map((s) => (s.binding === "VAULT" ? { ...s, entrypoint: "RelayKeys" } : s)) };
+  assert.match(deployProblems(gatewayOnRelayKeys, vault, relay).join("\n"), /never RelayKeys/u);
+  // A second binding next to the normal VAULT one, under another name (Sol round 1).
+  const secondBinding = { ...main, services: [...(main.services ?? []), { binding: "KEYS", service: vault.name, entrypoint: "RelayKeys" }] };
+  assert.match(deployProblems(secondBinding, vault, relay).join("\n"), /no binding to the vault's RelayKeys entrypoint, under any name/u);
+  const relayOnDefault = { ...relay, services: (relay.services ?? []).map((s) => (s.binding === "VAULT" ? { binding: s.binding, service: s.service } : s)) };
+  assert.match(deployProblems(main, vault, relayOnDefault).join("\n"), /entrypoint RelayKeys/u);
+  const relayOnMainDefault = { ...relay, services: (relay.services ?? []).map((s) => (s.binding === "MAIN" ? { binding: s.binding, service: s.service } : s)) };
+  assert.match(deployProblems(main, vault, relayOnMainDefault).join("\n"), /entrypoint RelayContract/u);
 });
 
 test("a relay with no address to give the gateway is refused, unless RELAY_URL is set", () => {
@@ -229,7 +256,7 @@ test("a deploy fails when the relay's address can't be found", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
-  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_NO_RELAY_URL: "1" });
+  const run = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_NO_RELAY_URL: "1" });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /relay's address was not found/u);
 });
@@ -253,12 +280,14 @@ test("a prebuilt deploy uploads the vault and the relay from the checkout, unbun
   const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
-  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin);
+  const { profile } = profileCopies(t);
+  const run = deploy(["--profile", profile, "--prebuilt", prebuiltDir(dir)], fake.bin);
   assert.equal(run.status, 0, run.stderr);
   const configOf = (call: string[]) => call[call.indexOf("--config") + 1];
   const deploys = fake.calls().filter((call) => call[0] === "deploy");
-  assert.equal(configOf(deploys.find((call) => configOf(call)?.includes("/vault/"))!), join(V2_DIR, "vault", "wrangler.jsonc"));
-  assert.equal(configOf(deploys.find((call) => configOf(call)?.includes("/relay/"))!), join(V2_DIR, "relay", "wrangler.jsonc"));
+  // The profile's own configs, whose main is the checkout's file.
+  assert.equal(configOf(deploys.find((call) => configOf(call)?.includes("/vault/"))!), join(V2_DIR, "vault", `wrangler.${profile}.jsonc`));
+  assert.equal(configOf(deploys.find((call) => configOf(call)?.includes("/relay/"))!), join(V2_DIR, "relay", `wrangler.${profile}.jsonc`));
   const { vault, relay } = tracked();
   assert.match(deployProblems(tracked().main, { ...vault, no_bundle: false }, relay).join("\n"), /vault config must set no_bundle/u);
   assert.match(deployProblems(tracked().main, vault, { ...relay, no_bundle: undefined }).join("\n"), /relay config must set no_bundle/u);
@@ -268,7 +297,7 @@ test("a gateway whose RELAY_URL can't be read stops the deploy before the vault 
   const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
-  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "offline" });
+  const run = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "offline" });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /Could not read the gateway's current relay address; nothing was deployed/u);
   // Wrangler's own words show the real cause.
@@ -281,13 +310,13 @@ test("an existing gateway keeps its RELAY_URL; one only secrets:upload made coun
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
   const relay = "https://app-ai-gateway-v2-relay.team-1.workers.dev";
-  const kept = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: relay });
+  const kept = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: relay });
   assert.equal(kept.status, 0, kept.stderr);
   const gatewayDeploys = () => fake.calls().filter((call) => call[0] === "deploy" && kind(call) === "deploy gateway");
   // Deployed once, with the address it already had.
   assert.equal(gatewayDeploys().length, 1);
   assert.ok(gatewayDeploys()[0]!.includes(`RELAY_URL:${relay}`));
-  const fresh = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "secrets-only" });
+  const fresh = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "secrets-only" });
   assert.equal(fresh.status, 0, fresh.stderr);
   // Like a first install: deployed without the address, then again once the relay's is known.
   assert.equal(gatewayDeploys().length, 3);
@@ -298,7 +327,7 @@ test("a failed read of the gateway's current version also stops the deploy befor
   const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = fakeWrangler(dir);
-  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "view-fails" });
+  const run = deploy(["--profile", profileCopies(t).profile, "--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "view-fails" });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /Could not read the gateway's current relay address; nothing was deployed/u);
   assert.match(run.stderr, /Authentication error/u);
@@ -339,3 +368,6 @@ test("a prebuilt deploy refuses a gateway profile that builds it differently fro
   assert.ok(!existsSync(join(dir, "calls.jsonl")));
 });
 
+test("the relay and the vault read tickets with the same file: the two Workers are uploaded apart and share none (step 9a)", () => {
+  assert.equal(readFileSync(join(V2_DIR, "vault", "src", "ticket.js"), "utf8"), readFileSync(join(V2_DIR, "relay", "src", "ticket.js"), "utf8"));
+});

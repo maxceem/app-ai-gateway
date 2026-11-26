@@ -11,10 +11,12 @@
  *
  * - It writes only those two files under the v2 folder (or `--dir`), which git
  *   ignores, readable only by this user. Nothing is committed or uploaded.
- * - It prints the names of the secrets it made, never their values.
+ * - It prints the names of the secrets it made, never their values. For the
+ *   ticket key it also prints the public half, which is not a secret: the relay
+ *   and the vault need it in their profile `vars`.
  * - If either file has a problem, neither is changed.
  */
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fchmodSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +31,11 @@ const MAKERS: Readonly<Record<string, () => string>> = {
   BETTER_AUTH_SECRET: () => randomBytes(48).toString("base64url"),
   // The vault Worker's key: exactly 32 bytes, base64.
   SECRET_VAULT_LOCAL_KEK_V1: () => randomBytes(32).toString("base64"),
+  // Signs live-session tickets: an Ed25519 key as `<x>.<d>`, base64url (plan step 9a).
+  RELAY_TICKET_PRIVATE_KEY: () => {
+    const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
+    return `${jwk.x}.${jwk.d}`;
+  },
 };
 
 function refuse(message: string): never {
@@ -131,6 +138,12 @@ if (made.length === 0) {
   console.log("Every secret is already set; nothing changed.");
 } else {
   for (const file of made) console.log(`Made ${file.made.join(", ")} in ${file.label}.`);
+  const ticketFile = made.find((file) => file.made.includes("RELAY_TICKET_PRIVATE_KEY"));
+  if (ticketFile !== undefined) {
+    // The public half only: it is not a secret, and the relay and the vault need it to check tickets.
+    const publicKey = (parseEnv(ticketFile.contents).RELAY_TICKET_PRIVATE_KEY ?? "").split(".")[0];
+    console.log(`Put RELAY_TICKET_PUBLIC_KEY="${publicKey}" in the relay's and the vault's profile vars: it is the public half of RELAY_TICKET_PRIVATE_KEY.`);
+  }
   if (made.some((file) => file.made.includes("SECRET_VAULT_LOCAL_KEK_V1"))) {
     console.log("Back up SECRET_VAULT_LOCAL_KEK_V1 before you store provider keys: without it, they cannot be opened.");
   }

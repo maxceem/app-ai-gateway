@@ -1,6 +1,7 @@
 // The relay Worker (plan step 9): live sessions. Plain JavaScript modules,
-// uploaded as they are, with no build and no npm packages. For now its session
-// object only echoes frames; tickets, `open` and forwarding come next (9a).
+// uploaded as they are, with no build and no npm packages. It holds no secrets:
+// it checks tickets with the main Worker's public key, `RELAY_TICKET_PUBLIC_KEY`,
+// set in the profile's `vars` (`scripts/setup-local-secrets.ts` prints it).
 // A deployment's own name goes in a gitignored `wrangler.<profile>.jsonc` next
 // to this file, never here.
 //
@@ -20,9 +21,13 @@
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true, "logs": { "enabled": true, "head_sampling_rate": 1 } },
-  // The gateway Worker. The relay calls it; the gateway never calls the relay,
-  // so the gateway is deployed first.
-  "services": [{ "binding": "MAIN", "service": "app-ai-gateway-v2" }],
+  // The gateway Worker's `RelayContract` (`open`, `close`) and the vault's
+  // `RelayKeys`, which only the relay is bound to. The relay calls them; neither
+  // calls the relay, so both are deployed first.
+  "services": [
+    { "binding": "MAIN", "service": "app-ai-gateway-v2", "entrypoint": "RelayContract" },
+    { "binding": "VAULT", "service": "app-ai-gateway-v2-vault", "entrypoint": "RelayKeys" }
+  ],
   "durable_objects": {
     "bindings": [{ "name": "SESSION", "class_name": "Session" }],
     // Open sessions keep the old code for up to 40 minutes after a deploy.

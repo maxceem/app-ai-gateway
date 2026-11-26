@@ -5,10 +5,8 @@
 
 /** The paths this Worker answers. Everything else is a 404. */
 export const HEALTH_PATH = "/v2/relay/healthz";
-export const ECHO_PATH = "/v2/relay/echo";
+/** Where an app starts a live session, with its ticket in the `authorization` header. */
+export const SESSION_PATH = "/v2/relay/session";
 
-/** An echo frame larger than this closes the socket. */
-export const MAX_ECHO_FRAME_BYTES = 64 * 1024;
-
-/** An echo session ends by itself after this long. */
-export const ECHO_LIFETIME_MS = 60_000;
+/** How long a provider connect may take before its outcome counts as unknown. */
+export const PROVIDER_CONNECT_TIMEOUT_MS = 15_000;

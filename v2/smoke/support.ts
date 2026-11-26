@@ -266,6 +266,33 @@ export async function cleanUp(steps: readonly (() => Promise<{ status: number }>
 }
 
 /**
+ * Whether a WebSocket to `path` opens, with these extra headers: "refused"
+ * when the server answers the handshake with anything but a WebSocket. Fails
+ * only with fixed messages.
+ */
+export async function websocketHandshake(path: string, base: string, headers: Record<string, string>): Promise<"opened" | "refused"> {
+  let socket: WebSocket;
+  try {
+    const url = new URL(path, base);
+    url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+    // Node's WebSocket takes headers in its options; the DOM type does not know them.
+    socket = new WebSocket(url, { headers: { "user-agent": USER_AGENT, ...headers } } as unknown as string[]);
+  } catch {
+    stop("a WebSocket could not be opened");
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await new Promise<"opened" | "refused" | "timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), REQUEST_TIMEOUT_MS);
+    socket.addEventListener("open", () => resolve("opened"));
+    socket.addEventListener("error", () => resolve("refused"));
+    socket.addEventListener("close", () => resolve("refused"));
+  }).finally(() => clearTimeout(timer));
+  socket.close(1000, "done");
+  if (outcome === "timeout") stop("the WebSocket handshake got no answer in time");
+  return outcome;
+}
+
+/**
  * Opens a WebSocket to `path` on `base` with the smoke checks' `user-agent`,
  * sends `frames`, and gives back the first `count` frames that come back, as
  * text or bytes. Anything else fails with fixed text: Node's own error can

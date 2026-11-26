@@ -1,0 +1,20 @@
+/**
+ * The entrypoint the relay is bound to (`MAIN`, plan section 5.1). Its
+ * methods load their code on first use, so a proxied request's cold start
+ * does not pay for it. A refusal reaches the relay as an error whose message
+ * is a code (`./contract.ts`).
+ */
+import { WorkerEntrypoint } from "cloudflare:workers";
+import type { CloseInput } from "./contract.ts";
+
+export class RelayContract extends WorkerEntrypoint<Env> {
+  async open(ticket: string) {
+    const { openForRelay } = await import("./contract.ts");
+    return await openForRelay(this.env, ticket);
+  }
+
+  async close(ticket: string, input: CloseInput) {
+    const { closeForRelay } = await import("./contract.ts");
+    return await closeForRelay(this.env, ticket, input);
+  }
+}
