@@ -229,7 +229,7 @@ function everyOption(slug: string, mock: string, storage: Storage): Record<strin
       limits: {
         // A server app's budget can only be per user: the scope is still written, so it must survive.
         per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_nano: 5_000_000_000, scope: "user" } },
-        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 } },
+        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 }, sessions: { conversational: 4, streaming: 20 } },
       },
       presets,
       ...conversations,
@@ -244,7 +244,7 @@ function everyOption(slug: string, mock: string, storage: Storage): Record<strin
       limits: {
         // An iOS app's budget is per Apple Account by default: per install is away from it.
         per_user: { requests: { per_minute: 30, per_day: 1000 }, spending: { monthly_nano: 5_000_000_000, scope: "install" } },
-        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 } },
+        per_app: { requests: { per_minute: 600, per_day: 20_000 }, spending: { monthly_nano: 50_000_000_000 }, sessions: { conversational: 4, streaming: 20 } },
       },
       presets,
       ...conversations,

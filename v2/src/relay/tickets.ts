@@ -11,9 +11,8 @@
  * and to an expiry a few minutes past the session's deadline. So this Worker
  * never sees the key, and the relay gets it only from the vault.
  *
- * The client endpoint that asks for a session, with its admission and lease,
- * comes with the leases (step 9a part 1, third review): this module is what
- * it calls.
+ * The client endpoint that asks for a session (`./start-session.ts`) admits
+ * it and takes its leases, then calls this module.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -119,15 +118,24 @@ export interface IssuedTicket {
   readonly session: SessionRow;
 }
 
+/** A new session id. The endpoint takes the session's slots under it before the ticket is signed. */
+export function newSessionId(): string {
+  return `ses_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
 /**
  * Seals the session's copy of the credentials and signs its ticket. The
  * session's row is the caller's to write after the reply.
  */
-export async function issueTicket(env: Env, request: TicketRequest, now: number = Date.now()): Promise<IssuedTicket> {
+export async function issueTicket(
+  env: Env,
+  request: TicketRequest,
+  now: number = Date.now(),
+  sessionId: string = newSessionId(),
+): Promise<IssuedTicket> {
   if (!Number.isSafeInteger(request.capMs) || request.capMs <= 0 || request.capMs > MAX_SESSION_CAP_MS) {
     throw new GatewayError(500, "internal_error", "A session's time cap is out of range");
   }
-  const sessionId = `ses_${crypto.randomUUID().replaceAll("-", "")}`;
   const expiresAt = now + TICKET_TTL_MS;
   const sealUntil = expiresAt + request.capMs + SEAL_GRACE_MS;
   const { providerKey, cloudflareToken, credential } = request.credentials;

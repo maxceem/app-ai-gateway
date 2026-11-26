@@ -10,11 +10,11 @@ import type { CloseInput } from "./contract.ts";
 export class RelayContract extends WorkerEntrypoint<Env> {
   async open(ticket: string) {
     const { openForRelay } = await import("./contract.ts");
-    return await openForRelay(this.env, ticket);
+    return await openForRelay(this.env, ticket, Date.now(), (promise) => this.ctx.waitUntil(promise));
   }
 
   async close(ticket: string, input: CloseInput) {
     const { closeForRelay } = await import("./contract.ts");
-    return await closeForRelay(this.env, ticket, input);
+    return await closeForRelay(this.env, ticket, input, Date.now(), (promise) => this.ctx.waitUntil(promise));
   }
 }

@@ -373,12 +373,32 @@ const RequestLimitsSchema = z
   .object({ per_minute: RequestLimitSchema.default(null), per_day: RequestLimitSchema.default(null) })
   .strict();
 
+/** How many live sessions of each kind an app may have at once, by default (D15). */
+export const APP_SESSION_CAPS = { conversational: 10, streaming: 50 } as const;
+/** The most an app may set: a guard against a typo, far above any app's need. */
+const MAX_APP_SESSIONS = 10_000;
+
+const SessionCapSchema = z.number().int().positive().max(MAX_APP_SESSIONS).optional();
+
+/**
+ * The app's live-session caps (D15), each left out while it is the default.
+ * At the cap a new session is refused and the customer sees it in the console.
+ */
+const AppSessionCapsSchema = z
+  .object({
+    conversational: SessionCapSchema.meta({ description: `Conversational sessions (realtime voice, agents) open at once across the app. Default ${APP_SESSION_CAPS.conversational}.` }),
+    streaming: SessionCapSchema.meta({ description: `Streaming text-to-speech and speech-to-text sessions open at once across the app. Default ${APP_SESSION_CAPS.streaming}.` }),
+  })
+  .strict();
+
 const LimitScopeSchema = z
   .object({
     requests: RequestLimitsSchema.prefault({}),
     spending: z.object({ monthly_nano: BudgetNanoSchema.default(null) }).strict().prefault({}),
   })
   .strict();
+
+const AppLimitScopeSchema = LimitScopeSchema.extend({ sessions: AppSessionCapsSchema.optional() }).strict();
 
 /**
  * The limits on each of an app's callers. On an App Attest app, requests are
@@ -400,10 +420,16 @@ const PerUserLimitScopeSchema = z
  * reading, the plan allowance (`billing_*`).
  */
 export const LimitsConfigSchema = z
-  .object({ per_user: PerUserLimitScopeSchema.prefault({}), per_app: LimitScopeSchema.prefault({}) })
+  .object({ per_user: PerUserLimitScopeSchema.prefault({}), per_app: AppLimitScopeSchema.prefault({}) })
   .strict();
 
 export type LimitScope = z.output<typeof LimitScopeSchema>;
+export type AppLimitScope = z.output<typeof AppLimitScopeSchema>;
+
+/** The app's cap on live sessions of one kind: its own setting, or the default. */
+export function appSessionCap(limits: LimitsConfig, kind: keyof typeof APP_SESSION_CAPS): number {
+  return limits.per_app.sessions?.[kind] ?? APP_SESSION_CAPS[kind];
+}
 export type PerUserLimitScope = z.output<typeof PerUserLimitScopeSchema>;
 export type LimitsConfig = z.output<typeof LimitsConfigSchema>;
 

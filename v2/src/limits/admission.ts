@@ -97,17 +97,21 @@ export function userLimiterName(appId: string, userId: string): string {
   return `${appId}:user:${userId}`;
 }
 
-/** An RPC call's result, typed as the object method returns it (stub types are not). */
-function rpc<T>(call: unknown): Promise<T> {
-  return Promise.resolve(call) as Promise<T>;
+/**
+ * An RPC call's result, typed as the object method returns it (stub types are
+ * not). The call is made inside a promise, so one that throws at once, from
+ * `getByName()` or the call itself, is a failed answer like any other.
+ */
+export function rpc<T>(make: () => unknown): Promise<T> {
+  return Promise.resolve().then(make) as Promise<T>;
 }
 
-type Timed<T> = { kind: "answer"; value: T } | { kind: "late" } | { kind: "failed"; error: unknown };
+export type Timed<T> = { kind: "answer"; value: T } | { kind: "late" } | { kind: "failed"; error: unknown };
 
 const LATE = { kind: "late" } as const;
 
 /** Waits for `promise` until `ms` from now. A late call keeps running in the background. */
-async function within<T>(promise: Promise<T>, ms: number, waitUntil: (p: Promise<unknown>) => void): Promise<Timed<T>> {
+export async function within<T>(promise: Promise<T>, ms: number, waitUntil: (p: Promise<unknown>) => void): Promise<Timed<T>> {
   if (ms <= 0) {
     waitUntil(promise.catch(() => undefined));
     return { kind: "late" };
@@ -167,7 +171,7 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
   // 1b. The user's limits.
   if (caller !== null && userHasLimits) {
     const answer = remaining() <= 0 ? LATE : await within(
-      rpc<RequestLimitResult>(env.END_USER_LIMITER.getByName(caller.name).checkRequest({ ...userLimits, spend: caller.spend })),
+      rpc<RequestLimitResult>(() => env.END_USER_LIMITER.getByName(caller.name).checkRequest({ ...userLimits, spend: caller.spend })),
       remaining(),
       input.waitUntil,
     );
@@ -180,7 +184,7 @@ export async function admitRequest(input: AdmissionInput): Promise<void> {
   if (scopeHasLimits(perApp)) {
     // A limiter whose turn comes after the deadline is skipped, not called.
     const answer = remaining() <= 0 ? LATE : await within(
-      rpc<RequestLimitResult>(
+      rpc<RequestLimitResult>(() =>
         env.APP_LIMITER.getByName(app.id).checkRequest({
           now,
           rpm: perApp.requests.per_minute,

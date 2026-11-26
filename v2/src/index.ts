@@ -29,7 +29,7 @@ import { serverTiming } from "./proxy/timing.ts";
 import { appAuthFloodLimit, challengeHandler, failureHandler, registerHandler, tokenHandler } from "./routes/auth.ts";
 import { meHandler } from "./routes/me.ts";
 import { presetHandler } from "./proxy/presets.ts";
-import { proxyHandler } from "./proxy/serve.ts";
+import { proxyHandler, type ProxyContext } from "./proxy/serve.ts";
 import { jobCancelHandler, jobResultHandler, jobStatusHandler, pollNoStore } from "./jobs/poll.ts";
 import { lazyRoutes } from "./http/lazy.ts";
 import { vaultStatus } from "./vault/client.ts";
@@ -139,6 +139,10 @@ app.get(routePath("getJobStatus"), serverTiming, pollNoStore, jobStatusHandler);
 app.get(routePath("getJobResult"), serverTiming, pollNoStore, jobResultHandler);
 app.put(routePath("cancelJob"), serverTiming, pollNoStore, jobCancelHandler);
 app.post("/v2/apps/:app/presets/:slug", serverTiming, presetHandler);
+// A live session's start: checks, slots, then the ticket for the relay (plan
+// section 4.3). Loaded on first use, so it adds nothing to a call's cold start.
+const startSession = async (c: ProxyContext) => (await import("./relay/start-session.ts")).startSessionHandler(c);
+app.post(routePath("startSession"), serverTiming, startSession);
 
 app.notFound(async (c) => {
   // A page of the console, such as `/v2/access` or `/v2/oauth/consent`: no

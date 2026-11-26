@@ -119,7 +119,7 @@ export function matcherFor(description: ProviderDescription): ProviderMatcher {
 }
 
 /** The answer to a call serving refuses (`resolveCall`). */
-function callRefusal(call: CallRefusal, operation: OperationDescription): GatewayError {
+export function callRefusal(call: CallRefusal, operation: OperationDescription): GatewayError {
   const { model } = call;
   if (call.reason === "not_served") return new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
   // A path naming a model outside its closed list was never declared.

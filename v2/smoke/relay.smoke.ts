@@ -5,10 +5,9 @@
  *   pnpm --filter @app-ai-gateway/gateway-v2 smoke
  *
  * V2_RELAY_URL is the `RELAY_URL` the deploy gave the gateway. Skipped when it
- * is not set. A session starts only with a ticket the gateway signed; the
- * endpoint that issues one comes with the leases (step 9a part 1, third
- * review), so these checks cover what is visible before it: a made-up ticket
- * creates nothing.
+ * is not set. A session starts only with a ticket the gateway signed: these
+ * checks show a made-up ticket creates nothing, and `sessions.smoke.ts` that
+ * a ticket the gateway issued is taken.
  */
 import { test } from "node:test";
 import { check, expectCode, expectResponse, readJson, same, send, TEST_TIMEOUT_MS, websocketHandshake } from "./support.ts";

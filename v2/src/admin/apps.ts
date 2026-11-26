@@ -17,7 +17,7 @@ import {
   CUSTOM_PROVIDER_TYPE,
 } from "../contracts/admin.ts";
 import type { OperationResponse } from "../contracts/catalog.ts";
-import { AppConfigSchema, conversationsAreDefault, parseAppConfig as parseStoredConfig, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
+import { APP_SESSION_CAPS, AppConfigSchema, conversationsAreDefault, parseAppConfig as parseStoredConfig, providerKeyHeaderProblem, type AppConfig } from "../contracts/app-config.ts";
 import { requirePlanFeature } from "../billing/access.ts";
 import { conversationsBucket } from "../conversations/storage.ts";
 import { GatewayError } from "../core/errors.ts";
@@ -121,6 +121,13 @@ export function parseAppConfig(raw: unknown): AppConfig {
   }
   if (config.presets !== undefined && Object.keys(config.presets).length === 0) delete config.presets;
   if (config.conversations !== undefined && conversationsAreDefault(config.conversations)) delete config.conversations;
+  const sessions = config.limits.per_app.sessions;
+  if (sessions !== undefined) {
+    for (const kind of ["conversational", "streaming"] as const) {
+      if (sessions[kind] === APP_SESSION_CAPS[kind]) delete sessions[kind];
+    }
+    if (Object.keys(sessions).length === 0) delete config.limits.per_app.sessions;
+  }
   return config;
 }
 

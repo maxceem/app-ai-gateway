@@ -472,6 +472,63 @@
           "limits"
         ]
       },
+      "StartSessionResponse": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string",
+            "description": "Single use. Send it to the relay in the Authorization header as `Bearer <ticket>`, never in a URL."
+          },
+          "relay_url": {
+            "type": "string",
+            "description": "Where to open the session's WebSocket."
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "When the ticket stops starting a session. An ISO 8601 time."
+          },
+          "ends_at": {
+            "type": "string",
+            "description": "When the session ends at the latest: the ticket's start plus the session's time cap. An ISO 8601 time."
+          }
+        },
+        "required": [
+          "session_id",
+          "ticket",
+          "relay_url",
+          "expires_at",
+          "ends_at"
+        ]
+      },
+      "StartSessionRequest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "The provider's own live-session path, as the app would call it, such as `v1/realtime`."
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The model the session runs. Required where the provider names it on the connection, as OpenAI does."
+          },
+          "takes_over": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "The session this one replaces, such as one whose network dropped. It counts only when it is this user's own open conversational session; otherwise the request is an ordinary new session."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
       "JobAnswer": {
         "type": "object",
         "additionalProperties": {},
@@ -1075,6 +1132,24 @@
                           }
                         },
                         "default": {},
+                        "additionalProperties": false
+                      },
+                      "sessions": {
+                        "type": "object",
+                        "properties": {
+                          "conversational": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 10000,
+                            "description": "Conversational sessions (realtime voice, agents) open at once across the app. Default 10."
+                          },
+                          "streaming": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 10000,
+                            "description": "Streaming text-to-speech and speech-to-text sessions open at once across the app. Default 50."
+                          }
+                        },
                         "additionalProperties": false
                       }
                     },
@@ -7542,6 +7617,135 @@
           },
           "503": {
             "description": "The gateway could not finish the check in time. Retry shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/apps/{app}/sessions/{provider}": {
+      "post": {
+        "tags": [
+          "Live sessions"
+        ],
+        "operationId": "startSession",
+        "summary": "Start a live session",
+        "description": "Checks the caller, the app's settings and limits, takes the session's slot, and answers a single-use ticket and the relay's address. The app then opens the session's WebSocket at the relay with the ticket. Starting a session uses no request and no plan allowance; its minutes count while it runs.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The app id."
+            },
+            "required": true,
+            "description": "The app id.",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The provider connection's slug, as in the app's routing."
+            },
+            "required": true,
+            "description": "The provider connection's slug, as in the app's routing.",
+            "name": "provider",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The session's ticket and the relay's address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, or names no model where the provider needs one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The App Attest proof was rejected or replayed, the user is blocked, the app is disabled, or the app does not allow this live session or model.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The app does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The user or the app has the most live sessions it allows (`session_limit`), or a spending budget is used up. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider connection is missing or turned off, or its credential cannot be used.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Live sessions are not set up on this deployment, or the gateway could not finish the check in time. Retry shortly.",
             "content": {
               "application/json": {
                 "schema": {

@@ -58,6 +58,7 @@ const REJECTION_SCOPE_LABELS: Record<RejectionScope, string> = {
 export const REJECTION_REASON_LABELS: Record<string, string> = {
   blocked_app_rate: "App rate limit",
   blocked_app_budget: "App budget",
+  blocked_session_limit: "Live session limit",
   blocked_billing: "Account allowance",
   blocked_user: "Blocked user",
   blocked_replay: "Replayed App Attest proof",

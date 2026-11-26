@@ -22,6 +22,7 @@ const SPLIT_KEY_FILES = [
   "test/pricing-units.test.ts",
   "test/relay-tickets.test.ts",
   "test/relay-session.test.ts",
+  "test/session-leases.test.ts",
 ];
 
 /**

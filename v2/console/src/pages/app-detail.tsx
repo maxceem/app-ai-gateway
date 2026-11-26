@@ -622,12 +622,16 @@ function LimitsTab({ app }: { app: App }) {
 
   const submit = async () => {
     if (!user || !whole) return;
+    // Only what this tab edits is rebuilt: anything else under limits, such as
+    // the app's session caps set through the API or agw, is kept as it is.
     const next = {
+      ...limits,
       per_user: {
+        ...limits.per_user,
         requests: user.requests,
         spending: { monthly_nano: user.monthly_nano, ...(budgetScope ? { scope: budgetScope } : {}) },
       },
-      per_app: { requests: whole.requests, spending: { monthly_nano: whole.monthly_nano } },
+      per_app: { ...limits.per_app, requests: whole.requests, spending: { monthly_nano: whole.monthly_nano } },
     };
     await save({ config: { ...app.config, limits: next } }, "Limits saved");
   };
