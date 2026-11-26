@@ -952,7 +952,7 @@ describe("a session's close (step 9a part 3)", () => {
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
-    await until(() => core.draining);
+    await until(() => core.turnWaiter !== null);
     expect(timer.asked).toEqual([10_000]);
     // The client is told at once; the provider's side stays up for the answer.
     expect(s.ended.client).toEqual(["client_closed"]);
@@ -974,7 +974,7 @@ describe("a session's close (step 9a part 3)", () => {
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
-    await until(() => core.draining);
+    await until(() => core.turnWaiter !== null);
     await core.recordUsage(usage("known", 5, 6), "per_turn");
     timer.fire();
     await ending;
@@ -994,7 +994,7 @@ describe("a session's close (step 9a part 3)", () => {
     // 3 s before the deadline: the wait asks for those 3 s, not 10.
     s.tick(30 * 60_000 - 3_000);
     const ending = core.end("client_closed");
-    await until(() => core.draining);
+    await until(() => core.turnWaiter !== null);
     expect(near.asked).toEqual([3_000]);
     near.fire();
     await ending;
@@ -1018,13 +1018,13 @@ describe("a session's close (step 9a part 3)", () => {
     await core.start(s.text, s.ticket, s.client());
     s.tick(5_000);
     const ending = core.end("client_closed");
-    await until(() => core.draining);
+    await until(() => core.turnWaiter !== null);
     s.tick(2_000);
     // Time passes after the hang-up, before the end writes: it is not the session's time.
     s.hooks.onProviderClose = () => s.tick(4_000);
     void core.providerGone(core.call as never);
     await ending;
-    expect(core.draining).toBe(false);
+    expect(core.turnWaiter).toBeNull();
     expect(finalSliceOf(s)).toMatchObject({ sessionMs: 7_000, gaps: 1 });
     expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
   });
@@ -1079,7 +1079,7 @@ describe("a session's close (step 9a part 3)", () => {
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
-    await until(() => core.draining);
+    await until(() => core.turnWaiter !== null);
     expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
     timer.fire();
     await ending;

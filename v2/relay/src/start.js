@@ -207,21 +207,13 @@ export class SessionCore {
     this.turnOpen = parts.turnOpen ?? (() => false);
     /** @type {(ms: number) => Promise<void>} */
     this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    /** The end is waiting for the provider's answer to finish: usage still counts meanwhile. */
-    this.draining = false;
-    /** @type {(() => void) | null} Ends the closing wait when the answer is done. */
+    /**
+     * @type {(() => void) | null} Ends the closing wait when the answer is done. Set only
+     * during the wait: the end is waiting for the provider's answer, and usage still counts.
+     */
     this.turnWaiter = null;
-    /** @type {number | null} When the provider connection ended (`connectionEnded`): the session's time ends there. */
-    this.connectionEndAt = null;
-  }
-
-  /**
-   * The provider connection ended now: it hung up, or the relay hangs it up.
-   * The session's time ends here, not when the end gets to write: the storage
-   * reads after it are not connection time. The first call counts.
-   */
-  connectionEnded() {
-    this.connectionEndAt ??= this.now();
+    /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
+    this.deadline = Infinity;
   }
 
   /** The provider finished an answer: a closing wait for it ends now. */
@@ -237,10 +229,8 @@ export class SessionCore {
    */
   async drainTurn() {
     if (!this.turnOpen()) return;
-    const deadline = /** @type {Settings | undefined} */ ((await this.store.get(["settings"])).get("settings"))?.deadline;
-    const limit = Math.min(CLOSE_DRAIN_MS, (deadline ?? Infinity) - this.now());
+    const limit = Math.min(CLOSE_DRAIN_MS, this.deadline - this.now());
     if (limit <= 0) return;
-    this.draining = true;
     try {
       await new Promise((resolve) => {
         this.turnWaiter = () => resolve(undefined);
@@ -248,7 +238,6 @@ export class SessionCore {
       });
     } finally {
       this.turnWaiter = null;
-      this.draining = false;
     }
   }
 
@@ -355,6 +344,7 @@ export class SessionCore {
       const reconnectSecret = newSecret();
       const reconnect = await hashOf(reconnectSecret);
       const deadline = deadlineOf(ticket);
+      this.deadline = deadline;
       // A slow handshake: the alarm may have ended the session, the client may have gone, or
       // the time run out. Then the provider's side is hung up, and an ended session stays ended.
       // Nothing waits between this check and the `active` write.
@@ -448,7 +438,6 @@ export class SessionCore {
   async providerGone(call) {
     if (call !== this.call) return;
     // A closing wait ends now too.
-    this.connectionEnded();
     this.turnWaiter?.();
     await this.end("provider_closed");
   }
@@ -505,24 +494,20 @@ export class SessionCore {
     const cut = this.call !== null && this.turnOpen();
     const call = this.call;
     this.call = null;
-    if (call !== null) this.connectionEnded();
+    // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
+    // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
+    const endedAt = this.now();
     call?.close?.(1000, "session ended");
-    const connectionEndAt = this.connectionEndAt;
-    this.connectionEndAt = null;
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
-    const at = this.now();
     if (details.log !== undefined) {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const journal = readJournal(stored.get(JOURNAL_KEY));
-    // Never past the deadline: an instance that wakes late bills nothing after the cap. Never past
-    // the end of the provider connection either (`connectionEnded`).
+    // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
-    const sliceEnd = Math.min(at, deadline ?? Infinity, connectionEndAt ?? Infinity);
-    /** When the session ended, for the ledger: when the provider connection ended, if it has. */
-    const endedAt = Math.min(at, connectionEndAt ?? Infinity);
+    const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
     if (journal !== null && cut) {
       // The cut answer's usage is unknown: the final slice is booked with a gap, so it is
       // `partial`, keeping the cost that is known (plan 4.2).
@@ -534,7 +519,7 @@ export class SessionCore {
     /** @type {Record<string, unknown>} */
     const entries = { state: "ended", end: { reason, at: endedAt, finalSlice: finalSliceOf(journal) } };
     if (journal !== null) entries[JOURNAL_KEY] = journal;
-    await this.store.put(entries, at + CLOSE_RETRY_EVERY_MS);
+    await this.store.put(entries, this.now() + CLOSE_RETRY_EVERY_MS);
     await this.flushEnded();
   }
 
@@ -558,7 +543,7 @@ export class SessionCore {
    */
   async recordUsage(event, shape) {
     // During the closing wait, the last answer's usage still counts.
-    if (this.call === null || (this.ending !== null && !this.draining)) return;
+    if (this.call === null || (this.ending !== null && this.turnWaiter === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null || !addUsage(journal, event, shape, now)) return;
