@@ -21,10 +21,11 @@ import {
 } from "../contracts/auth.ts";
 import type { AppAttestEndUser, AppAttestEnvironment, IssuerAuthentication } from "../contracts/app-config.ts";
 import { database } from "../db/index.ts";
-import { appAttestKey, appAuthChallenge, appEndUser } from "../db/schema.ts";
+import { accountKeyRoot, appAttestKey, appAuthChallenge, appEndUser, appKeyShare } from "../db/schema.ts";
 import { lookupApiKeyUncached } from "./api-keys.ts";
 import type { ExchangeType, TokenExchange } from "./client-auth.ts";
 import { issueGatewayToken } from "./gateway-token.ts";
+import { checkShare } from "./key-shares.ts";
 import { verifyIssuerToken } from "./issuer.ts";
 import { useAssertionCounter } from "./replay.ts";
 import { invalidateRegisteredKey } from "./request-proof.ts";
@@ -230,7 +231,16 @@ const API_KEY_ISSUER: ExchangeHandler<"api_key_issuer"> = {
     const { userId } = await verifyIssuerToken(body.issuer_token, exchange.issuer);
     attempt.userId = userId;
     await storeIssuerUser(env, appId, userId);
-    return issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "api_key", apiKeyId: apiKeyRecord.id });
+    return issueGatewayToken(env.JWT_SECRET, {
+      appId,
+      userId,
+      authMethod: "api_key",
+      apiKeyId: apiKeyRecord.id,
+      // Split keys (plan step 8j): a key with a keyslot is the credential that
+      // opens it, so the token carries it, sealed. Its hash just matched, so
+      // it is the key the keyslot was made for.
+      ...(apiKeyRecord.slot === null ? {} : { keyShare: body.api_key }),
+    });
   },
 };
 
@@ -273,15 +283,25 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     const { userId, trusted } = await attestedUserId(body);
     if (trusted) attempt.userId = userId;
     const db = database(env.DB);
-    const [user, key] = await Promise.all([
+    const accountId = attempt.accountId;
+    const [user, [key]] = await Promise.all([
       db.query.appEndUser.findFirst({
         columns: { status: true },
         where: and(eq(appEndUser.appId, appId), eq(appEndUser.id, userId)),
       }),
-      db.query.appAttestKey.findFirst({
-        columns: { publicKey: true, environment: true, userId: true },
-        where: and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id)),
-      }),
+      // The account's split-key mode comes with the key, in the same query,
+      // so an account with split keys off pays no extra read (plan step 8j).
+      db
+        .select({
+          publicKey: appAttestKey.publicKey,
+          environment: appAttestKey.environment,
+          userId: appAttestKey.userId,
+          splitKeyMode: accountKeyRoot.mode,
+        })
+        .from(appAttestKey)
+        .leftJoin(accountKeyRoot, eq(accountKeyRoot.accountId, accountId ?? ""))
+        .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id)))
+        .limit(1),
     ]);
     if (user !== undefined && user.status !== "active") throw new GatewayError(403, "auth_required", "User is blocked");
     if (!key || key.userId !== userId) throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
@@ -304,6 +324,18 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     // The token exchange signs with the same key as request proofs, so it
     // uses the same counter sequence, and its replay check is never skipped.
     await useAssertionCounter(env, appId, body.key_id, counter);
+    // Split keys (plan step 8j): with them on, the install's requests can open
+    // the account's keys only with the app's share, so a missing or wrong one
+    // is refused here, before any call. With them off the field is ignored.
+    let shareId: string | null = null;
+    let keyShare: string | undefined;
+    if (key.splitKeyMode === "on" && accountId !== null) {
+      if (typeof body.key_share !== "string" || body.key_share === "") {
+        throw new GatewayError(401, "auth_required", "This app needs its key share: split keys are on for its account");
+      }
+      keyShare = body.key_share;
+      shareId = await checkShare(env, appId, accountId, keyShare);
+    }
     const now = Date.now();
     waitUntil(
       contained(
@@ -317,6 +349,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
             .update(appEndUser)
             .set({ lastSeenAt: now })
             .where(and(eq(appEndUser.appId, appId), eq(appEndUser.id, userId))),
+          ...(shareId === null ? [] : [db.update(appKeyShare).set({ lastUsedAt: now }).where(eq(appKeyShare.id, shareId))]),
         ]),
       ),
     );
@@ -329,6 +362,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
       authMethod: "attest",
       installId: body.key_id,
       appleAccountId,
+      ...(shareId === null || keyShare === undefined ? {} : { keyShare }),
     });
   },
 };

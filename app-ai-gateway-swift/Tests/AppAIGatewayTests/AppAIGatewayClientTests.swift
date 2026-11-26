@@ -1218,6 +1218,38 @@ struct AppAIGatewayClientTests {
         #expect(transactions.calls.snapshot() == 1)
     }
 
+    /// Split keys: the app's share goes in the exchange body when it is
+    /// configured, and nowhere else; the assertion signs what it always has.
+    @Test
+    func theExchangeSendsTheKeyShareOnlyWhenConfigured() async throws {
+        for keyShare in ["shr_abcdefghij0123456789.share-secret", nil] as [String?] {
+            let tokenBodies = TokenBodyLog()
+            let signatures = SignatureLog()
+            MockURLProtocol.handler = { request in
+                if request.url!.path.hasSuffix("/auth/challenge") {
+                    return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+                }
+                tokenBodies.record(request)
+                return response(request, status: 200, body: #"{"access_token":"token","expires_in":3600}"#)
+            }
+            let client = AppAIGatewayClient(
+                appID: "test-app",
+                baseURL: URL(string: "https://gateway.test")!,
+                authMode: .appAttestInstall,
+                keyShare: keyShare,
+                attestProvider: MockAttestProvider(signatures: signatures),
+                appTransactionProvider: FakeAppTransactionProvider(returnsNil: true),
+                credentialStore: MemoryCredentialStore(keyID: "existing-key"),
+                session: session()
+            )
+            #expect(try await client.gatewayAccessToken() == "token")
+            let body = try #require(tokenBodies.snapshot().first)
+            #expect(body["key_share"] == keyShare)
+            let expected = AppAIGatewayClient.assertionClientData(app: "test-app", challenge: "Y2hhbGxlbmdl", keyID: "existing-key")
+            #expect(signatures.snapshot().map(\.hash) == [expected.sha256])
+        }
+    }
+
     /// Without a transaction — offline, no App Store, a simulator — the
     /// exchange goes ahead exactly as it always has.
     @Test

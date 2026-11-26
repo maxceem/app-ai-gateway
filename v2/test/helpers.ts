@@ -17,7 +17,7 @@ import { clearAllCaches } from "../src/core/ttl-cache.ts";
 import { resetStallHold } from "../src/core/stale-read.ts";
 import { writeToLedger, type LedgerEntry } from "../src/ledger/write.ts";
 import { encodeCbor } from "./app-attest-fixtures.ts";
-import { addKeySlot, enableSplitKeys, hasSplitKeys, splitKeysOn } from "./split-keys.ts";
+import { addKeySlot, enableSplitKeys, hasSplitKeys, shareForApp, splitKeysOn } from "./split-keys.ts";
 
 export const ACCOUNT_ID = "acc_test";
 export const TEAM_ID = "AAAAAAAAAA";
@@ -110,14 +110,37 @@ export async function registerTestInstall(
   return { appId, userId, keyId, privateKey: pair.privateKey, publicKeyPem, counter: 0 };
 }
 
-/** A gateway token for a registered install, as `/auth/token` would issue it. */
+/**
+ * A gateway token for a registered install, as `/auth/token` would issue it:
+ * with the app's iOS share sealed in when its account has split keys on.
+ */
 export async function tokenForInstall(install: TestInstall): Promise<string> {
+  const share = await shareForApp(install.appId);
   const issued = await issueGatewayToken(env.JWT_SECRET, {
     appId: install.appId,
     userId: install.userId,
     authMethod: "attest",
     installId: install.keyId,
     appleAccountId: null,
+    ...(share === null ? {} : { keyShare: share }),
+  });
+  return issued.token;
+}
+
+/**
+ * A gateway token exchanged with an app key, as `/auth/token` issues it: the
+ * key sealed in when it has a keyslot (split keys on for its account).
+ */
+export async function tokenForAppKey(appId: string, userId: string, appKey: { id: string; key: string }): Promise<string> {
+  const slot = await env.DB.prepare("SELECT 1 AS found FROM key_slot WHERE credential_kind = 'api_key' AND credential_id = ?")
+    .bind(appKey.id)
+    .first<{ found: number }>();
+  const issued = await issueGatewayToken(env.JWT_SECRET, {
+    appId,
+    userId,
+    authMethod: "api_key",
+    apiKeyId: appKey.id,
+    ...(slot === null ? {} : { keyShare: appKey.key }),
   });
   return issued.token;
 }

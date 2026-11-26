@@ -51,6 +51,15 @@ export const AppAttestTokenRequestSchema = z
       description:
         "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify names no account, and the install is counted on its own.",
     }),
+    // Any value is accepted here: with split keys off the field is ignored
+    // entirely, as it was before it existed (an older client may send null or
+    // anything else), so it is checked only when split keys are on (401, not
+    // 400). The document still describes it as a string.
+    key_share: z.unknown().optional().meta({
+      type: "string",
+      description:
+        "The app's key share, for an account with split keys on: it lets the gateway open your provider keys for this install's requests. Required when split keys are on, and a missing or wrong one is refused with 401 before any call. Ignored when split keys are off.",
+    }),
   })
   .meta({ id: "AppAttestTokenRequest" });
 

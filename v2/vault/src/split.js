@@ -94,6 +94,23 @@ export async function credentialPublicKey(secret) {
   return toBase64Url((await credentialKeyPair(secret)).publicKey);
 }
 
+/**
+ * Whether a credential's secret is the one a keyslot was made for: its public
+ * key, derived again, is the stored one. The gateway asks this when an app
+ * sends an iOS share at `/auth/token`, so a wrong share is refused there,
+ * before any call. Only yes or no leaves the vault.
+ * @param {unknown} secret
+ * @param {unknown} publicKey
+ */
+export async function credentialMatches(secret, publicKey) {
+  if (typeof secret !== "string" || secret === "" || typeof publicKey !== "string") return false;
+  try {
+    return (await credentialPublicKey(secret)) === toBase64Url(readPublicKey(publicKey));
+  } catch {
+    return false;
+  }
+}
+
 /** A new root key and its public key. Only ever kept inside keyslots. */
 export async function newRoot() {
   const privateKey = crypto.getRandomValues(new Uint8Array(ROOT_BYTES));

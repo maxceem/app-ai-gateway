@@ -12,11 +12,14 @@
  * - `storeCopy`: copies of a call's credentials for work with no app request
  *   (split keys, plan step 8j);
  * - `reseal`: a credential sealed again for a new address, without leaving;
+ * - `credentialMatches`: whether an app's credential (an iOS share) is the one
+ *   its keyslot was made for (split keys, phase 3);
  * - `status`: whether its settings let it seal and open, for the health check.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { callFromRequest, holds, storeCopy } from "./call.js";
 import { reseal, seal, vaultStatus } from "./seal.js";
+import { credentialMatches } from "./split.js";
 
 /** @extends {WorkerEntrypoint<import("./seal.js").VaultEnv>} */
 export default class Vault extends WorkerEntrypoint {
@@ -62,6 +65,14 @@ export default class Vault extends WorkerEntrypoint {
    */
   reseal(kind, from, to, blob) {
     return reseal(this.env, kind, from, to, blob);
+  }
+
+  /**
+   * @param {string} secret
+   * @param {string} publicKey
+   */
+  credentialMatches(secret, publicKey) {
+    return credentialMatches(secret, publicKey);
   }
 
   status() {

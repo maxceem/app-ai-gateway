@@ -98,6 +98,12 @@ export interface VaultClient {
   call(input: VaultCall): Promise<Response>;
   /** For each text, whether it holds one of the credentials: only yes or no comes back. */
   holds(credentials: SealedCallCredentials, texts: readonly string[]): Promise<boolean[]>;
+  /**
+   * Whether an app's credential (an iOS share) is the one its keyslot was
+   * made for: its public key, derived in the vault, is `publicKey` (plan
+   * step 8j, phase 3). Only yes or no comes back.
+   */
+  credentialMatches(secret: string, publicKey: string): Promise<boolean>;
   /** Whether the vault's settings let it seal and open keys. */
   status(): Promise<"ok" | "misconfigured">;
 }
@@ -109,6 +115,7 @@ interface VaultBinding {
   storeCopy(credentials: CopyRequest, expiresAt: number): Promise<StoredCopies>;
   reseal(kind: string, from: string[], to: string[], blob: string): Promise<string>;
   holds(credentials: SealedCallCredentials, texts: string[]): Promise<boolean[]>;
+  credentialMatches(secret: string, publicKey: string): Promise<boolean>;
   status(): Promise<"ok" | "misconfigured">;
 }
 
@@ -141,6 +148,7 @@ function bindingClient(binding: VaultBinding): VaultClient {
     storeCopy: async (credentials, expiresAt) => await binding.storeCopy(credentials, expiresAt),
     reseal: async (kind, from, to, blob) => await binding.reseal(kind, [...from], [...to], blob),
     holds: async (credentials, texts) => await binding.holds(credentials, [...texts]),
+    credentialMatches: async (secret, publicKey) => await binding.credentialMatches(secret, publicKey),
     status: async () => await binding.status(),
     call: async (input) => {
       const headers = new Headers(input.headers);

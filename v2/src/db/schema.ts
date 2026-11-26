@@ -205,6 +205,30 @@ export const appKey = sqliteTable(
   ],
 );
 
+/**
+ * An iOS share (plan step 8j, phase 3): a secret an App Attest app ships in
+ * its configuration and sends at `/auth/token`, so an account with split keys
+ * on can open its keys for the app's requests. Only its keyslot (credential
+ * kind `ios_share`) and public key are stored; the share itself is the
+ * customer's alone. An app can have more than one, so shares can be rotated
+ * through app releases.
+ */
+export const appKeyShare = sqliteTable(
+  "app_key_share",
+  {
+    /** `shr_` and 20 lower-case letters or digits: the start of the share itself. */
+    id: text("id").primaryKey(),
+    appId: text("app_id")
+      .notNull()
+      .references(() => app.id),
+    name: text("name").notNull(),
+    status: text("status").$type<AppKeyStatus>().notNull().default("active"),
+    createdAt: integer("created_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+  },
+  (table) => [index("app_key_share_app").on(table.appId), check("app_key_share_status", oneOf(table.status, ["active", "revoked"]))],
+);
+
 export type SplitKeyMode = "off" | "migrating" | "on";
 
 /**
@@ -229,7 +253,7 @@ export const accountKeyRoot = sqliteTable(
   (table) => [check("account_key_root_mode", oneOf(table.mode, ["off", "migrating", "on"]))],
 );
 
-/** What holds a keyslot: an app key now; iOS shares and passkeys in later phases. */
+/** What holds a keyslot: an app key, an iOS share (`app_key_share`), and passkeys in a later phase. */
 export type KeySlotCredentialKind = "api_key" | "ios_share" | "passkey";
 
 /**
@@ -245,7 +269,7 @@ export const keySlot = sqliteTable(
       .notNull()
       .references(() => mgmtOrganization.id),
     credentialKind: text("credential_kind").$type<KeySlotCredentialKind>().notNull(),
-    /** The app key's id, for `api_key`. */
+    /** The app key's id for `api_key`, the share's id for `ios_share`. */
     credentialId: text("credential_id").notNull(),
     /** The credential's X25519 public key, base64url. */
     publicKey: text("public_key").notNull(),

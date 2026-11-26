@@ -127,6 +127,9 @@ public actor AppAIGatewayClient {
     /// The signed-in user this client is for, as the app names them, when it
     /// gave one: which of the install's keys is theirs.
     private let signedInUserID: String?
+    /// The app's key share, sent at the App Attest token exchange when the
+    /// app's account has split keys on.
+    private let keyShare: String?
     private let attestProvider: any AppAttestProviding
     private let appTransactionProvider: any AppTransactionProviding
     private let credentialStore: any GatewayCredentialStoring
@@ -178,6 +181,7 @@ public actor AppAIGatewayClient {
         endUserHeader: String = "X-End-User-ID",
         issuerRejectionRecovery: IssuerRejectionRecovery? = nil,
         signedInUserID: String? = nil,
+        keyShare: String? = nil,
         attestProvider: any AppAttestProviding = SystemAppAttestProvider(),
         appTransactionProvider: any AppTransactionProviding = SystemAppTransactionProvider(),
         credentialStore: any GatewayCredentialStoring = KeychainGatewayCredentialStore(),
@@ -190,6 +194,7 @@ public actor AppAIGatewayClient {
         self.endUserHeader = endUserHeader
         self.issuerRejectionRecovery = issuerRejectionRecovery
         self.signedInUserID = signedInUserID
+        self.keyShare = keyShare
         self.attestProvider = attestProvider
         self.appTransactionProvider = appTransactionProvider
         self.credentialStore = credentialStore
@@ -1382,6 +1387,10 @@ public actor AppAIGatewayClient {
         ]
         if let issuerToken { body["issuer_token"] = issuerToken }
         if let appTransaction = signed.appTransaction { body["app_transaction"] = appTransaction }
+        // Split keys: the gateway opens the account's provider keys for this
+        // install only with the app's share. A gateway or an account without
+        // split keys ignores it.
+        if let keyShare { body["key_share"] = keyShare }
         return body
     }
 
