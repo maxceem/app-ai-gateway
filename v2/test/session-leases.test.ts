@@ -407,8 +407,8 @@ describe("Sol 9a3 round 1", () => {
     return new Promise((resolve) => setTimeout(() => resolve(10 * MINUTE), 2_500)); // real-timer: must come after the endpoint's own 2 s deadline, which runs on the real clock
   }
 
-  function hosted(minutes: number | undefined, usedMs: number | null | "slow"): Env {
-    const plan = { planKey: "p", planName: "P", isDefault: true, limits: minutes === undefined ? {} : { maxSessionMinutesPerMonth: minutes } };
+  function hosted(minutes: number | undefined, usedMs: number | null | "slow", otherLimits: Record<string, unknown> = {}): Env {
+    const plan = { planKey: "p", planName: "P", isDefault: true, limits: { ...otherLimits, ...(minutes === undefined ? {} : { maxSessionMinutesPerMonth: minutes }) } };
     return {
       ...RELAY_ENV,
       BILLING: { getTenantAccess: async () => ({ plan, subscription: null }) },
@@ -439,6 +439,25 @@ describe("Sol 9a3 round 1", () => {
     clearCaches();
     // Minutes that never answer: the shared 2 s deadline lets the session start.
     expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-3", hosted(1, "slow"))).status).toBe(201);
+  });
+
+  it("reads only the plan's session limit: a bad request limit doesn't stop it (Sol 9a3 round 2)", async () => {
+    const { appId, slug, key } = await setup();
+    clearCaches();
+    const refused = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-1", hosted(1, 60_000, { maxRequestsPerMonth: null }));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ error: { code: "billing_request_quota_exceeded" } });
+  });
+
+  it("starts the session when a limiter call throws at once, before any answer exists (Sol 9a3 round 2)", async () => {
+    const { appId, slug, key } = await setup();
+    const throwing = {
+      getByName: () => {
+        throw new Error("limiter binding broken");
+      },
+    };
+    const environment = { ...RELAY_ENV, END_USER_LIMITER: throwing, APP_LIMITER: throwing } as unknown as Env;
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-7", environment)).status).toBe(201);
   });
 
   it("saves no session cap equal to its default, and no sessions block when nothing is left", () => {

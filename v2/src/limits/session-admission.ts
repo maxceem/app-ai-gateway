@@ -61,6 +61,15 @@ function rpc<T>(call: unknown): Promise<T> {
   return Promise.resolve(call) as Promise<T>;
 }
 
+/**
+ * A limiter call made inside a promise: one that throws at once, from
+ * `getByName()` or the call itself, becomes a failed answer, which the
+ * caller treats like any other (logged, and the session goes on).
+ */
+function limiterCall<T>(make: () => unknown): Promise<T> {
+  return Promise.resolve().then(make) as Promise<T>;
+}
+
 /** `promise`'s answer, or null when it fails or is later than `ms`. A late call keeps running in the background. */
 async function within<T>(promise: Promise<T>, ms: number, waitUntil: (p: Promise<unknown>) => void): Promise<{ value: T } | { missed: "deadline" | "failed"; error?: unknown }> {
   if (ms <= 0) {
@@ -104,7 +113,7 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
   // 1. The end user: the user's budget, a streaming slot, the bound of 4 (T3, T14).
   if (caller !== null) {
     const answer = await within(
-      rpc<UserSessionAdmission>(
+      limiterCall<UserSessionAdmission>(() =>
         env.END_USER_LIMITER.getByName(caller.name).admitSession({
           ...claim,
           now,
@@ -130,7 +139,7 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
   // full app the customer is told in the console (a rejection event), and it
   // is logged.
   const answer = await within(
-    rpc<AppSessionAdmission>(
+    limiterCall<AppSessionAdmission>(() =>
       env.APP_LIMITER.getByName(app.id).admitSession({
         ...claim,
         now,
@@ -204,7 +213,7 @@ async function checkSessionMinutes(input: SessionAdmissionInput, remaining: () =
   if (quota.kind === "unmetered") return;
   const { period } = quota;
   const usedAnswer = await within(
-    rpc<number | null>(
+    limiterCall<number | null>(() =>
       env.ACCOUNT_LIMITER.getByName(app.accountId).sessionMs({
         accountId: app.accountId,
         fromDay: period.periodStart.slice(0, 10),
@@ -347,7 +356,7 @@ async function leaseCall(scope: "user" | "app", appId: string, call: () => Promi
 export async function replacementAtCheckpoint(env: Env, owner: LeaseOwner, input: SessionCheckpointInput, waitUntil: (p: Promise<unknown>) => void): Promise<"continue" | "replaced"> {
   const limiter = sessionLimiterName(owner.appId, owner.installId, owner.endUserId);
   if (limiter === null) return "continue";
-  const answer = await within(rpc<SessionCheckpointAnswer>(env.END_USER_LIMITER.getByName(limiter).sessionCheckpoint(input)), LEASE_DEADLINE_MS, waitUntil);
+  const answer = await within(limiterCall<SessionCheckpointAnswer>(() => env.END_USER_LIMITER.getByName(limiter).sessionCheckpoint(input)), LEASE_DEADLINE_MS, waitUntil);
   if (!("value" in answer)) {
     log("warn", "session_replacement_unchecked", { app: owner.appId, reason: answer.missed, ...(answer.missed === "failed" ? { error: errorFacts(answer.error) } : {}) });
     return "continue";

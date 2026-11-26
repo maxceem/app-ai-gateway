@@ -84,7 +84,8 @@ export async function sessionQuotaFor(
   now: number = Date.now(),
 ): Promise<SessionQuota> {
   if (access.state !== "billed" || access.plan === null) return { kind: "unmetered" };
-  const minutes = billingPlanLimits(access).maxSessionMinutesPerMonth;
+  // Only its own limit: a bad request limit never stops the session limit from being read.
+  const minutes = billingPlanLimits(access, ["maxSessionMinutesPerMonth"]).maxSessionMinutesPerMonth;
   if (minutes === undefined) return { kind: "unmetered" };
   const planSchedule = schedule(access, await accountCreatedAt(env, accountId));
   if (planSchedule.anchorAt > now) throw invalidSchedule("future billing anchor");
