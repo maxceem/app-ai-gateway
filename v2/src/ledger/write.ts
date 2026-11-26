@@ -262,15 +262,29 @@ export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<v
  */
 export const KEY_COPIES_FIELD = "keyCopies";
 
+/** What stands in for key copies taken off a row: its check then ends, the estimate kept (`../jobs/jobs.ts`). */
+export const KEY_COPIES_REMOVED = "removed";
+
 /**
- * An open-work row as it may be logged: everything needed to write it by
- * hand, without its key copies. The one place every log of open work goes
- * through.
+ * An open-work row without its key copies, everything else kept. The one
+ * place that knows what a copy is, for every row that leaves the ledger
+ * object: one that is logged, and one the failed-write store keeps
+ * (`../do/ChargeStore.ts`), so a copy never outlives the ledger's own clean-up.
  */
+export function withoutKeyCopies(row: OpenWorkRow): OpenWorkRow {
+  const copies = row.detail?.[KEY_COPIES_FIELD];
+  if (copies === undefined || copies === null || typeof copies !== "object") return row;
+  return { ...row, detail: { ...row.detail, [KEY_COPIES_FIELD]: KEY_COPIES_REMOVED } };
+}
+
+/** An entry without its key copies (`withoutKeyCopies`). */
+export function entryWithoutKeyCopies(entry: LedgerEntry): LedgerEntry {
+  return entry.openWork.some((row) => withoutKeyCopies(row) !== row) ? { ...entry, openWork: entry.openWork.map(withoutKeyCopies) } : entry;
+}
+
+/** An open-work row as it may be logged: everything needed to write it by hand, never its key copies. */
 export function openWorkForLog(row: OpenWorkRow): Record<string, unknown> {
-  if (row.detail === null || !(KEY_COPIES_FIELD in row.detail)) return row as unknown as Record<string, unknown>;
-  const { [KEY_COPIES_FIELD]: _copies, ...detail } = row.detail;
-  return { ...row, detail };
+  return withoutKeyCopies(row) as unknown as Record<string, unknown>;
 }
 
 /** The last resort: the whole charge in the logs, so it can be written by hand. Never a secret. */

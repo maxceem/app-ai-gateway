@@ -22,7 +22,7 @@ import { log } from "../core/log.ts";
 import { priceUnresolvedCharge } from "./corrections.ts";
 import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
-import { KEY_COPIES_FIELD } from "./write.ts";
+import { KEY_COPIES_FIELD, KEY_COPIES_REMOVED } from "./write.ts";
 import { checkJob } from "../jobs/jobs.ts";
 
 
@@ -167,7 +167,7 @@ function paceOf(item: OpenWorkItem): { readonly maxTries: number; readonly delay
  * a check that ends is deleted with them, and one that gives up keeps only
  * this. A row with no copies is left as it is.
  */
-const WITHOUT_KEY_COPIES = `CASE WHEN json_type(detail_json, '$.${KEY_COPIES_FIELD}') = 'object' THEN json_set(detail_json, '$.${KEY_COPIES_FIELD}', 'removed') ELSE detail_json END`;
+const WITHOUT_KEY_COPIES = `CASE WHEN json_type(detail_json, '$.${KEY_COPIES_FIELD}') = 'object' THEN json_set(detail_json, '$.${KEY_COPIES_FIELD}', '${KEY_COPIES_REMOVED}') ELSE detail_json END`;
 
 /** Removes every key copy past its expiry (the last id of its identity). The check that had it then ends, its estimate kept. */
 export async function removeExpiredKeyCopies(ledger: D1Database, now: number): Promise<void> {
