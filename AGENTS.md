@@ -143,6 +143,10 @@ Rules that follow from these:
 - `pnpm run verify` — both of the above, once, before a commit or hand-off. It
   costs essentially no more than `pnpm run test` alone, because the checks run
   alongside the suites rather than after them.
+- `test` and `verify` stop a Worker test suite (`test:worker`, `v2:test`) that
+  prints nothing for 5 minutes, and fail it as a silence timeout, naming the
+  last test file it printed. `CHECK_SILENCE_MINUTES` changes the limit; `0`
+  turns it off.
 - `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`, and
   `pnpm run deploy:prebuilt:dry-run` for the release's prebuilt deploy) or
   `docs/` (`pnpm run docs:build`).

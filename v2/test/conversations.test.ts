@@ -6,7 +6,7 @@
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { conversationRecord, type CaptureHints, type ConversationCapture } from "../src/conversations/record.ts";
 import { RETENTION_CURSOR, RETENTION_D1_QUERIES, runConversationRetention } from "../src/conversations/retention.ts";
@@ -1064,6 +1064,8 @@ describe("conversation storage through the gateway", () => {
 
   it("stores nothing once storage is turned off, even through an isolate that cached the app with it on (Sol round 5)", async () => {
     const { slug, appId, key } = await storingApp();
+    // The stored call sets the log's flush alarm; it must not fire during a later test.
+    onTestFinished(() => runInDurableObject(env.CONVERSATION_LOG.getByName(appFolderName(ACCOUNT_ID, appId)), (_instance, state) => state.storage.deleteAlarm()));
     providerAnswers();
     // The first call warms this isolate's app cache with storage on.
     await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, responsesRequest(key));

@@ -44,6 +44,7 @@
     "test:price-update": "node --test test/price-update.node.mjs",
     "test:indexnow": "node --test test/indexnow.node.mjs",
     "test:test-ledger": "node --test test/test-ledger.node.mjs",
+    "test:check-script": "node --test --test-force-exit test/check-step.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:dev": "node cli/scripts/dev.mjs",
