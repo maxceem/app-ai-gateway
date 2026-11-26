@@ -112,17 +112,23 @@ function chainVerifies(x5c: unknown, root: X509Certificate, at: number): X509Cer
   } catch {
     return null;
   }
-  const verified = validAt(leaf, at)
-    && validAt(intermediate, at)
-    && validAt(root, at)
-    && intermediate.ca
-    && leaf.checkIssued(intermediate)
-    && leaf.verify(intermediate.publicKey)
-    && intermediate.checkIssued(root)
-    && intermediate.verify(root.publicKey)
-    && hasExtension(leaf, RECEIPT_SIGNING_LEAF_OID)
-    && hasExtension(intermediate, WWDR_INTERMEDIATE_OID);
-  return verified ? leaf : null;
+  try {
+    const verified = validAt(leaf, at)
+      && validAt(intermediate, at)
+      && validAt(root, at)
+      && intermediate.ca
+      && leaf.checkIssued(intermediate)
+      && leaf.verify(intermediate.publicKey)
+      && intermediate.checkIssued(root)
+      && intermediate.verify(root.publicKey)
+      && hasExtension(leaf, RECEIPT_SIGNING_LEAF_OID)
+      && hasExtension(intermediate, WWDR_INTERMEDIATE_OID);
+    return verified ? leaf : null;
+  } catch {
+    // A certificate whose public key does not parse throws here; it is a
+    // broken chain like any other.
+    return null;
+  }
 }
 
 /**
