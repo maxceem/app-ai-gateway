@@ -93,6 +93,11 @@ export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[
  * gateway or the relay, or a local setting on a vault in kms mode. Each comes
  * with the command that deletes it. Nothing is deleted here.
  */
+/** One shell word: single quotes, with any single quote inside closed and escaped. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 export function deployedSecretProblems(
   names: { main?: string[]; vault?: string[]; relay?: string[] },
   configPaths: { main: string; vault: string; relay: string },
@@ -101,7 +106,7 @@ export function deployedSecretProblems(
   const problems: string[] = [];
   const wrong = (label: string, list: string[] | undefined, path: string, test: (name: string) => boolean) => {
     for (const name of (list ?? []).filter(test)) {
-      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${path} --env ""`);
+      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${shellQuote(path)} --env ""`);
     }
   };
   wrong("gateway", names.main, configPaths.main, (name) => name.startsWith("SECRET_VAULT_"));
