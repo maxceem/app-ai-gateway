@@ -348,8 +348,11 @@ beforeAll(async () => {
   // that gets past the bearer gate: two to four seconds on a busy run. The
   // rows this makes are gone before the first test (`beforeEach`).
   const testEnv = runtime();
-  const { tokens } = await connected(testEnv);
-  await callTool(testEnv, tokens.access_token, "get_account");
+  const { human, tokens } = await connected(testEnv);
+  // A tool error also answers 200, so the result is checked as well.
+  const account = await callTool(testEnv, tokens.access_token, "get_account");
+  expect(account.isError, account.content[0]?.text).toBeFalsy();
+  expect(account.structuredContent.account).toMatchObject({ id: human.organizationId });
 }, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 describe("OAuth discovery", () => {
