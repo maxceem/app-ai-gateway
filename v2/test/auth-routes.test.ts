@@ -350,6 +350,36 @@ describe("POST /v2/apps/{app}/auth/token with App Attest", () => {
     expect(JSON.stringify(claims)).not.toContain(sent.split(".")[1]);
   });
 
+  it("ignores an empty or malformed share when split keys are off, and refuses it with 401 when they are on (Sol round 1)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const install = await registerTestInstall(appId);
+    let counter = 0;
+    for (const sent of ["", "x".repeat(5_000)]) {
+      counter += 1;
+      const body = await exchangeBody(install, await challengeFor(appId), counter);
+      const response = await post(`/v2/apps/${appId}/auth/token`, { ...body, key_share: sent });
+      expect(response.status, `${sent.length} characters`).toBe(splitKeysOn ? 401 : 200);
+      if (splitKeysOn) expect(await response.json()).toMatchObject({ error: { code: "auth_required" } });
+    }
+  });
+
+  it("reads the account's split-key mode in the same query as the install's key: no extra read (Sol round 1)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const install = await registerTestInstall(appId);
+    const body = await exchangeBody(install, await challengeFor(appId), 1);
+    const statements: string[] = [];
+    const prepare = env.DB.prepare.bind(env.DB);
+    vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    });
+    expect((await post(`/v2/apps/${appId}/auth/token`, body)).status).toBe(200);
+    const modeReads = statements.filter((sql) => /account_key_root/u.test(sql));
+    expect(modeReads.length).toBeGreaterThan(0);
+    // Every statement that reads the mode is the install key's own query.
+    for (const sql of modeReads) expect(sql).toMatch(/from "app_attest_key"/u);
+  });
+
   it("refuses a replayed counter, a used challenge, and an assertion for another key", async () => {
     const appId = await seedApp(attestAuthentication());
     const install = await registerTestInstall(appId);

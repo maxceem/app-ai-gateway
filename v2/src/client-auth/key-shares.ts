@@ -16,7 +16,7 @@ import { GatewayError } from "../core/errors.ts";
 import { readOrKnown } from "../core/stale-read.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
 import { database, type Database } from "../db/index.ts";
-import { accountKeyRoot, appKeyShare, keySlot } from "../db/schema.ts";
+import { appKeyShare, keySlot } from "../db/schema.ts";
 import { vault } from "../vault/client.ts";
 import type { SealedKeySlot } from "../vault/key-share.ts";
 
@@ -67,15 +67,6 @@ export async function lookupActiveShareById(env: Env, id: string): Promise<Share
     shareCache.set(id, value, { storedAt: startedAt, ttlMs: value ? HIT_TTL_MS : MISS_TTL_MS });
     return value;
   });
-}
-
-/** Whether the account has split keys on, so its App Attest apps must send a share. */
-export async function splitKeysOn(env: Env, accountId: string): Promise<boolean> {
-  const row = await database(env.DB).query.accountKeyRoot.findFirst({
-    columns: { mode: true },
-    where: eq(accountKeyRoot.accountId, accountId),
-  });
-  return row?.mode === "on";
 }
 
 function shareRefused(): GatewayError {

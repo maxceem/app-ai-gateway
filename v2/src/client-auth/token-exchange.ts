@@ -21,11 +21,11 @@ import {
 } from "../contracts/auth.ts";
 import type { AppAttestEndUser, AppAttestEnvironment, IssuerAuthentication } from "../contracts/app-config.ts";
 import { database } from "../db/index.ts";
-import { appAttestKey, appAuthChallenge, appEndUser, appKeyShare } from "../db/schema.ts";
+import { accountKeyRoot, appAttestKey, appAuthChallenge, appEndUser, appKeyShare } from "../db/schema.ts";
 import { lookupApiKeyUncached } from "./api-keys.ts";
 import type { ExchangeType, TokenExchange } from "./client-auth.ts";
 import { issueGatewayToken } from "./gateway-token.ts";
-import { checkShare, splitKeysOn } from "./key-shares.ts";
+import { checkShare } from "./key-shares.ts";
 import { verifyIssuerToken } from "./issuer.ts";
 import { useAssertionCounter } from "./replay.ts";
 import { invalidateRegisteredKey } from "./request-proof.ts";
@@ -284,16 +284,24 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     if (trusted) attempt.userId = userId;
     const db = database(env.DB);
     const accountId = attempt.accountId;
-    const [user, key, splitKeys] = await Promise.all([
+    const [user, [key]] = await Promise.all([
       db.query.appEndUser.findFirst({
         columns: { status: true },
         where: and(eq(appEndUser.appId, appId), eq(appEndUser.id, userId)),
       }),
-      db.query.appAttestKey.findFirst({
-        columns: { publicKey: true, environment: true, userId: true },
-        where: and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id)),
-      }),
-      accountId === null ? false : splitKeysOn(env, accountId),
+      // The account's split-key mode comes with the key, in the same query,
+      // so an account with split keys off pays no extra read (plan step 8j).
+      db
+        .select({
+          publicKey: appAttestKey.publicKey,
+          environment: appAttestKey.environment,
+          userId: appAttestKey.userId,
+          splitKeyMode: accountKeyRoot.mode,
+        })
+        .from(appAttestKey)
+        .leftJoin(accountKeyRoot, eq(accountKeyRoot.accountId, accountId ?? ""))
+        .where(and(eq(appAttestKey.appId, appId), eq(appAttestKey.keyId, body.key_id)))
+        .limit(1),
     ]);
     if (user !== undefined && user.status !== "active") throw new GatewayError(403, "auth_required", "User is blocked");
     if (!key || key.userId !== userId) throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
@@ -320,8 +328,8 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     // the account's keys only with the app's share, so a missing or wrong one
     // is refused here, before any call. With them off the field is ignored.
     let shareId: string | null = null;
-    if (splitKeys && accountId !== null) {
-      if (body.key_share === undefined) {
+    if (key.splitKeyMode === "on" && accountId !== null) {
+      if (body.key_share === undefined || body.key_share === "") {
         throw new GatewayError(401, "auth_required", "This app needs its key share: split keys are on for its account");
       }
       shareId = await checkShare(env, appId, accountId, body.key_share);
