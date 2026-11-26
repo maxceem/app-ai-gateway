@@ -205,18 +205,21 @@ names it.
 - Its own profile is a gitignored `vault/wrangler.<profile>.jsonc`, a copy of
   `vault/wrangler.jsonc` with the deployment's Worker name. It is uploaded as it is, with no
   build. The gateway's profile names that Worker in its `VAULT` service binding.
-- Its secrets go only to it: `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc`.
-  The gateway Worker holds no `SECRET_VAULT_*` setting.
-- In `kms` mode, the vault must hold no `SECRET_VAULT_LOCAL_*` setting, or health reports
-  `vault: "misconfigured"`:
-  - its profile's `vars` hold only `SECRET_VAULT_MODE: "kms"`, without
-    `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`;
-  - its secrets are `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, in a `.dev.vars` of a
-    folder of its own that holds only those two, for example `vault/kms-<profile>/.dev.vars`
-    (gitignored, readable only by you). Upload with
-    `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc --dir vault/kms-<profile>`.
-    Without `--dir`, the upload reads `vault/.dev.vars`, where `secrets:setup-local` puts a local
-    key.
+- Its secrets go only to it. The gateway Worker holds no `SECRET_VAULT_*` setting. Run the one
+  upload that matches the vault's mode:
+  - **`local` mode:** `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc`. It reads
+    `vault/.dev.vars`, where `secrets:setup-local` puts the local key.
+  - **`kms` mode:** don't run the `local` upload; it would put the local key on the vault. The
+    vault must hold no `SECRET_VAULT_LOCAL_*` setting, or health reports
+    `vault: "misconfigured"`:
+    - its profile's `vars` hold only `SECRET_VAULT_MODE: "kms"`, without
+      `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`;
+    - its secrets are `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, in a `.dev.vars` of a
+      folder of its own that holds only those two, for example `vault/kms-<profile>/.dev.vars`
+      (gitignored, readable only by you). Upload with
+      `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc --dir vault/kms-<profile>`.
+    - If the local key was uploaded by mistake, delete each `SECRET_VAULT_LOCAL_KEK_*` secret
+      from the vault Worker with `wrangler secret delete`.
 
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,
