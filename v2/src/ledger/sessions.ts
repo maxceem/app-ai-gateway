@@ -371,10 +371,11 @@ function checkpointStatements(
       );
     }
   }
-  if (slice !== null && slice.priceSource === "unresolved") {
+  if (slice !== null && slice.priceSource === "unresolved" && hasTokens(slice)) {
     // An unpriced slice is queued for pricing in the same batch (S17), only
     // when the insert just above really wrote it: `changes()` is 0 for a
-    // repeated checkpoint.
+    // repeated checkpoint. A slice with no tokens (a gap alone) has nothing to
+    // price: the sweep would book it at $0 and undo its unknown cost.
     statements.push(
       db
         .prepare(
@@ -414,6 +415,11 @@ function checkpointStatements(
     );
   }
   return { statements, stateAt };
+}
+
+/** Whether a charge holds tokens to price. */
+function hasTokens(charge: ChargeRow): boolean {
+  return [charge.inputTokens, charge.cachedInputTokens, charge.cacheWriteTokens, charge.outputTokens].some((count) => (count ?? 0) > 0);
 }
 
 /** The answer, from each statement's first row. */

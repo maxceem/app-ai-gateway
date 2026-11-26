@@ -402,13 +402,29 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(priceSlice({}, null)).toMatchObject({ costNano: 0, priceSource: "list_rate" });
   });
 
-  it("writes the session row on an empty checkpoint, with the provider's call id, and marks a gap's slice partial (rows 13, 14)", async () => {
-    const { text, ticket } = await ticketFor();
+  it("writes the session row on an empty checkpoint, with the provider's call id, and books a gap alone as unknown cost (rows 13, 14; Gemini Neon round 1)", async () => {
+    // Its own app, so the day's unpriced count is this slice's alone.
+    const { text, ticket } = await ticketFor({ appId: `app_gap_${crypto.randomUUID().slice(0, 8)}` });
     await checkpointForRelay(env, text, { ...live(null), providerCallId: "call_9" });
     expect(await ledger().prepare("SELECT state, provider_call_id FROM session WHERE id = ?").bind(ticket.sid).first()).toEqual({ state: "active", provider_call_id: "call_9" });
     await checkpointForRelay(env, text, live(slice(ticket, 1, {}, { sessionMs: 0, gapMs: 30_000, gaps: 1 })));
-    expect(await charges(ticket.sid)).toMatchObject([{ measured: "partial", session_ms: 0 }]);
     expect(await ledger().prepare("SELECT gaps FROM session WHERE id = ?").bind(ticket.sid).first()).toEqual({ gaps: 1 });
+    // A gap alone is an unknown cost, never $0 (plan 4.2, 5.2), and has no tokens for the sweep to price.
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: null, price_source: "unresolved", measured: "partial", session_ms: 0 }]);
+    const day = await ledger().prepare("SELECT usage_day FROM charge WHERE id = ?").bind(`${ticket.sid}:slice:1`).first<{ usage_day: string }>();
+    const unpriced = await ledger()
+      .prepare("SELECT SUM(unpriced_charges) AS n FROM usage_day WHERE account_id = ? AND app_id = ? AND day = ?")
+      .bind(ACCOUNT_ID, ticket.app, day!.usage_day)
+      .first();
+    expect(unpriced).toEqual({ n: 1 });
+    expect(await ledger().prepare("SELECT id FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toBeNull();
+  });
+
+  it("books a clean slice with no tokens and no gap at $0, complete (Gemini Neon round 1)", async () => {
+    const { text, ticket } = await ticketFor();
+    await checkpointForRelay(env, text, live(slice(ticket, 1)));
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 0, price_source: "list_rate", measured: "complete", session_ms: 60_000 }]);
+    expect(await ledger().prepare("SELECT id FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toBeNull();
   });
 
   it("refuses a forged ticket and any input it would book unchecked", async () => {

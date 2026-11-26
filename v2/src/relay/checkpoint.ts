@@ -176,8 +176,17 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
   };
 }
 
-/** The slice's charge row. Its id and usage date come from the ticket and the slice number, never from the relay alone. */
+/**
+ * The slice's charge row. Its id and usage date come from the ticket and the
+ * slice number, never from the relay alone. A gap is never booked as zero
+ * cost (plan 4.2 and 5.2): a slice with a gap and no tokens has an unknown
+ * cost, `unresolved` with no tokens for the sweep to price.
+ */
 export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
+  const gap = slice.gapMs > 0 || slice.gaps > 0;
+  if (gap && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
+    price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
+  }
   // Dated by its start (D18), inside the session's own time: never before its start, never after
   // its deadline. A slice that crosses midnight counts on the day, and in the period, it began.
   const usedAt = Math.min(Math.max(slice.from, ticket.start), deadlineOf(ticket));
@@ -210,7 +219,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     errorCode: null,
     costNano: price.costNano,
     // A gap means some usage may be missing: never `complete` (plan 4.2).
-    measured: slice.gapMs > 0 || slice.gaps > 0 ? "partial" : price.measured,
+    measured: gap ? "partial" : price.measured,
     priceSource: price.priceSource,
     priceIsEstimate: price.estimated,
     inputTokens: tokens.input_tokens,
