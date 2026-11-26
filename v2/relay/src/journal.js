@@ -28,8 +28,10 @@ export const SEEN_IDS = 64;
 export const JOURNAL_MAX_CHARS = 16 * 1024;
 /**
  * Whether the journal's per-event write lets frames go out before the write
- * is confirmed (Cloudflare's `allowUnconfirmed`). T12 decides (plan 5.2 rule
- * 3): `research/2026-11-18-v2-architecture/tests/t35-relay-journal/`.
+ * is confirmed (Cloudflare's `allowUnconfirmed`; plan 5.2 rule 3). T12's
+ * second run measured no difference either way, so frames never wait: a write
+ * lost in a crash is counted as a gap from the last saved write, never
+ * silently (`research/2026-11-18-v2-architecture/tests/t35-relay-journal/`).
  */
 export const JOURNAL_ALLOW_UNCONFIRMED = true;
 
