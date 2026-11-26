@@ -11,16 +11,7 @@
  * never sets it. Tickets, `open`, `close` and forwarding come next.
  */
 import { DurableObject } from "cloudflare:workers";
-
-/** The paths this Worker answers. Everything else is a 404. */
-export const HEALTH_PATH = "/v2/relay/healthz";
-export const ECHO_PATH = "/v2/relay/echo";
-
-/** An echo frame larger than this closes the socket. */
-export const MAX_ECHO_FRAME_BYTES = 64 * 1024;
-
-/** An echo session ends by itself after this long. */
-export const ECHO_LIFETIME_MS = 60_000;
+import { ECHO_LIFETIME_MS, ECHO_PATH, HEALTH_PATH, MAX_ECHO_FRAME_BYTES } from "./constants.js";
 
 /**
  * @typedef {object} RelayEnv

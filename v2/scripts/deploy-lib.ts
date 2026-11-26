@@ -3,6 +3,30 @@
  * tested without Wrangler or an account.
  */
 import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+
+/**
+ * The keys that decide how Wrangler builds a Worker, not how it runs it. The
+ * same list as v1's `BUILD_KEYS` in `scripts/wrangler-config.mjs`, copied
+ * because that module needs a package the release's deploy job doesn't install.
+ */
+export const BUILD_KEYS = [
+  "main",
+  "compatibility_date",
+  "compatibility_flags",
+  "build",
+  "alias",
+  "define",
+  "rules",
+  "no_bundle",
+  "minify",
+  "find_additional_modules",
+  "base_dir",
+  "preserve_file_names",
+  "tsconfig",
+  "jsx_factory",
+  "jsx_fragment",
+] as const;
 
 /** The setting the relay must always be deployed with (plan section 5.1). */
 export const RELAY_CODE_UPDATE = { mode: "deferred", max_delay: 2400 } as const;
@@ -98,8 +122,18 @@ export function hasWorkersDev(config: WorkerConfig): boolean {
  * time, or moves where modules are collected from, would upload something
  * other than the built gateway and the checked-out vault and relay files.
  */
-export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[] {
+export function prebuiltProblems(configs: Record<string, WorkerConfig>, gateway?: { profile: WorkerConfig; tracked: WorkerConfig }): string[] {
   const problems: string[] = [];
+  // The gateway was bundled from the tracked wrangler.jsonc alone, so a profile that builds it
+  // differently would deploy code built for other settings.
+  if (gateway !== undefined) {
+    const record = (config: WorkerConfig) => config as Record<string, unknown>;
+    for (const key of BUILD_KEYS) {
+      if (!isDeepStrictEqual(record(gateway.profile)[key], record(gateway.tracked)[key])) {
+        problems.push(`The gateway config changes "${key}", but a prebuilt gateway is built from wrangler.jsonc alone; set it there or deploy without --prebuilt.`);
+      }
+    }
+  }
   for (const [label, config] of Object.entries(configs)) {
     if (config.build !== undefined) problems.push(`The ${label} config has a build command; a prebuilt deploy runs no build.`);
     if (config.base_dir !== undefined) problems.push(`The ${label} config sets base_dir; a prebuilt deploy collects modules only from the checked files.`);

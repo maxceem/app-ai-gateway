@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import {
   deployedVar,
   deployProblems,
   latestVersionIds,
+  prebuiltProblems,
   RELAY_CODE_UPDATE,
   sourceProblems,
   relayUrlFromConfig,
@@ -316,5 +317,25 @@ test("the vault and the relay must run this checkout's vault/src and relay/src",
   // A config file somewhere else whose main still names this checkout's file passes; one beside a copy does not.
   assert.deepEqual(sourceProblems(V2_DIR, { ...workers("src/index.js", "src/index.js"), vault: { path: "/elsewhere/wrangler.jsonc", config: { ...vault, main: join(V2_DIR, "vault", "src", "index.js") } } }), []);
   assert.match(sourceProblems(V2_DIR, workers("src/index.js", "src/index.js", "/copy/v2")).join("\n"), /vault config's main/u);
+});
+
+test("a prebuilt deploy refuses a gateway profile that builds it differently from wrangler.jsonc", (t) => {
+  const { main, vault, relay } = tracked();
+  const workers = { gateway: main, vault, relay };
+  assert.deepEqual(prebuiltProblems(workers, { profile: main, tracked: main }), []);
+  const define = { ...main, define: { __FLAG__: "1" } } as WorkerConfig;
+  assert.match(prebuiltProblems(workers, { profile: define, tracked: main }).join("\n"), /changes "define"/u);
+  const date = { ...main, compatibility_date: "2026-01-01" } as WorkerConfig;
+  assert.match(prebuiltProblems(workers, { profile: date, tracked: main }).join("\n"), /changes "compatibility_date"/u);
+  // Through the deploy itself: nothing reaches Wrangler.
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const copies = profileCopies(t);
+  copies.edit("main", (text) => text.replace('"compatibility_date": "2026-07-24"', '"compatibility_date": "2026-07-24", "define": { "__FLAG__": "1" }'));
+  const run = deploy(["--profile", copies.profile, "--prebuilt", prebuiltDir(dir), "--dry-run"], fake.bin);
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /changes "define"/u);
+  assert.ok(!existsSync(join(dir, "calls.jsonl")));
 });
 

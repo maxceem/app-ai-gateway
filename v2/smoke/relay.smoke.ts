@@ -29,7 +29,9 @@ test("the relay answers JSON 404 for a path it doesn't serve", { skip }, async (
 });
 
 test("a relay without RELAY_ECHO refuses the echo", { skip: skip || (echoOn ? "V2_RELAY_ECHO=1: this deployment's echo is on" : false) }, async () => {
-  const refused = await send("/v2/relay/echo", relay, { headers: { upgrade: "websocket" } });
+  // A plain GET tells the two apart: 404 when the echo is off, 426 when it is on.
+  // (Node's fetch refuses an `upgrade` header, so none is sent.)
+  const refused = await send("/v2/relay/echo", relay);
   same(refused.status, 404, "the echo on a relay without RELAY_ECHO");
   expectCode(await readJson(refused), "not_found", "the echo on a relay without RELAY_ECHO");
 });

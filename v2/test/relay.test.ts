@@ -4,7 +4,8 @@
  * is created.
  */
 import { describe, expect, it } from "vitest";
-import relay, { ECHO_PATH, HEALTH_PATH } from "../relay/src/index.js";
+import { ECHO_PATH, HEALTH_PATH } from "../relay/src/constants.js";
+import relay from "../relay/src/index.js";
 
 /** A session namespace that records whether anything reached it. */
 function sessions(answer = new Response("from the session", { status: 200 })) {

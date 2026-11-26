@@ -162,7 +162,10 @@ function deployConfigs(): typeof paths {
   const worker = join(prebuilt, "worker", "index.js");
   const assets = join(prebuilt, "console");
   if (!existsSync(worker) || !existsSync(assets)) refuse(`${prebuilt} is not a prebuilt v2; build one with scripts/build-prebuilt.ts`);
-  const buildProblems = prebuiltProblems({ gateway: configs.main, vault: configs.vault, relay: configs.relay });
+  const buildProblems = prebuiltProblems(
+    { gateway: configs.main, vault: configs.vault, relay: configs.relay },
+    { profile: configs.main, tracked: readConfig(join(V2_DIR, "wrangler.jsonc")) },
+  );
   if (buildProblems.length > 0) refuse(["Nothing was deployed:", ...buildProblems.map((p) => `- ${p}`)].join("\n"));
   return {
     main: generated(paths.main, (config) => ({
