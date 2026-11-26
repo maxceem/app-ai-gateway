@@ -84,12 +84,19 @@ describe(`the relay's session object (Fable F3; split keys ${splitKeysOn ? "on" 
     expect(JSON.parse(second!)).toEqual({ type: "session.created" });
     // The provider got the key, in its own header, from the vault's seal (Fable round 2).
     expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
-    // The relay answers its own heartbeat and never forwards it: the next frame back is the echo.
+    // The relay answers its own heartbeat and drops a report: neither reaches the provider, which
+    // would echo it. So exactly these four come back, in this order (Gemini Neon, #260 round 1).
     session.socket.send(JSON.stringify({ type: "agw.heartbeat" }));
+    session.socket.send(JSON.stringify({ type: "agw.received", bytes: 0 }));
     session.socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }));
-    const [, , heartbeat, echo] = await session.received(4);
-    expect(JSON.parse(heartbeat!)).toEqual({ type: "agw.heartbeat" });
-    expect(JSON.parse(echo!)).toEqual({ type: "input_audio_buffer.append", audio: "AAAA" });
+    const four = await session.received(4);
+    expect(four.slice(0, 4).map((message) => (JSON.parse(message) as { type: string }).type)).toEqual([
+      "agw.session.started",
+      "session.created",
+      "agw.heartbeat",
+      "input_audio_buffer.append",
+    ]);
+    expect(JSON.parse(four[3]!)).toEqual({ type: "input_audio_buffer.append", audio: "AAAA" });
     session.socket.close(1000, "done");
   });
 

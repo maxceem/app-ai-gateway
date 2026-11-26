@@ -166,14 +166,16 @@ describe("reports and the start (Sol, #260 round 1)", () => {
     }
   });
 
-  it("catches our SDK stalling before its first report: it is tracked from the first provider frame", () => {
+  it("catches our SDK stalling before its first report: it is tracked from the first provider frame (Gemini Neon, #260 round 1)", () => {
     const f = frames({ relayMessages: true });
-    let verdict: ReturnType<SessionFrames["fromClient"]> = { kind: "forward" };
-    for (let second = 0; second < 12 && verdict.kind !== "end"; second += 1) {
+    // No report at all: the client only sends heartbeats, so the heartbeat rule stays quiet.
+    let reason: string | null = null;
+    for (let second = 0; second < 15 && reason === null; second += 1) {
       oneSecondOfAudio(f);
-      verdict = f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: 0 }));
+      expect(f.state.fromClient(JSON.stringify({ type: "agw.heartbeat" })).kind).toBe("answer");
+      reason = f.state.check(f.now());
     }
-    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow" });
+    expect(reason).toBe("client_too_slow");
   });
 });
 
