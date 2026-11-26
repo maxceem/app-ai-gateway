@@ -17,6 +17,8 @@
  * connection's rates are malformed) is not "no price": nothing is saved.
  */
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
+import type { ModelPrice } from "../pricing/prices.ts";
+import type { UsageObservation } from "../usage/observation.ts";
 import type { Ticket } from "./tickets.ts";
 
 /**
@@ -49,4 +51,32 @@ export function decodeSessionPrice(text: string): ResolvedPrice | null {
   const parsed = JSON.parse(text) as Partial<ResolvedPrice> | null;
   if (parsed?.source !== "customer_rate" && parsed?.source !== "list_rate") throw new Error("not a saved session price");
   return parsed as ResolvedPrice;
+}
+
+/** The rates a price may bill connection time with (`../pricing/units.ts`): the wall clock meter. */
+const TIME_RATES = ["per_second", "per_minute", "per_hour"] as const;
+
+/** Whether a price bills connection time: a provider metered by the wall clock (plan 3, meter kinds). */
+export function billsTime(price: ModelPrice): boolean {
+  const rates = price.rates as Readonly<Record<string, unknown>>;
+  return TIME_RATES.some((field) => rates[field] !== undefined);
+}
+
+/**
+ * A session slice's usage as `price` bills it. Its connection time
+ * (`units.session_seconds`, at the milli scale: a millisecond count) is billed
+ * only when the price has a time rate; otherwise it is dropped. Time alone
+ * bills with no tokens. The checkpoint and the pricing sweep both price a
+ * slice this way.
+ */
+export function sliceUsage(usage: UsageObservation, price: ModelPrice): UsageObservation {
+  const seconds = usage.units?.session_seconds;
+  if (seconds === undefined) return usage;
+  const { units, noTokens: _noTokens, ...rest } = usage;
+  if (seconds > 0 && billsTime(price)) {
+    const tokens = rest.inputTokens + rest.cachedInputTokens + rest.cacheWriteTokens + rest.outputTokens > 0;
+    return { ...rest, units: { session_seconds: seconds }, ...(tokens ? {} : { noTokens: true as const }) };
+  }
+  const { session_seconds: _seconds, ...others } = units ?? {};
+  return Object.keys(others).length > 0 ? { ...rest, units: others } : rest;
 }

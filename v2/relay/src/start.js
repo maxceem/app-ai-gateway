@@ -26,12 +26,14 @@
  * (crash table rows 14–18). Only one is unconfirmed at a time.
  *
  * The end: the client is told at once. If the provider is in the middle of an
- * answer, the relay waits for it to finish, up to `CLOSE_DRAIN_MS`, so the last
- * answer's usage is counted (plan 5.1); nothing more goes to the client or the
- * provider meanwhile. Then the provider is hung up, and one write stores
- * `ended`, the reason, the final slice and the journal with the rest of the
- * usage frozen; then the unsent slices are delivered, as accounting only, and
- * `close` is sent. The alarm retries both. Storage is deleted once both are
+ * answer, the relay waits for it to finish, up to `CLOSE_DRAIN_MS` and never
+ * past the deadline, so the last answer's usage is counted (plan 5.1); nothing
+ * more goes to the client or the provider meanwhile. There is no wait at the
+ * time cap or when the provider hung up. An answer still open after the wait
+ * was cut off: the final slice is booked `partial`. Then the provider is hung
+ * up, and one write stores `ended`, the reason, the final slice and the
+ * journal with the rest of the usage frozen; then the unsent slices are
+ * delivered, as accounting only, and `close` is sent. The alarm retries both. Storage is deleted once both are
  * done (or given up on, with the slices logged) and the ticket has expired;
  * until then the `ended` marker refuses the ticket again (rows 25–28).
  *
@@ -209,6 +211,8 @@ export class SessionCore {
     this.draining = false;
     /** @type {(() => void) | null} Ends the closing wait when the answer is done. */
     this.turnWaiter = null;
+    /** @type {number | null} When the provider hung up during the closing wait: the session's time ends there. */
+    this.goneAt = null;
   }
 
   /** The provider finished an answer: a closing wait for it ends now. */
@@ -217,16 +221,21 @@ export class SessionCore {
   }
 
   /**
-   * Waits, up to `CLOSE_DRAIN_MS`, for the provider's answer in progress to
-   * finish, so its usage is counted before the provider is hung up.
+   * Waits for the provider's answer in progress to finish, so its usage is
+   * counted before the provider is hung up: up to `CLOSE_DRAIN_MS`, and never
+   * past the session's deadline, so the paid connection never outlives its
+   * cap. It ends early when the answer is done or the provider hangs up.
    */
   async drainTurn() {
     if (!this.turnOpen()) return;
+    const deadline = /** @type {Settings | undefined} */ ((await this.store.get(["settings"])).get("settings"))?.deadline;
+    const limit = Math.min(CLOSE_DRAIN_MS, (deadline ?? Infinity) - this.now());
+    if (limit <= 0) return;
     this.draining = true;
     try {
       await new Promise((resolve) => {
         this.turnWaiter = () => resolve(undefined);
-        void this.wait(CLOSE_DRAIN_MS).then(() => resolve(undefined));
+        void this.wait(limit).then(() => resolve(undefined));
       });
     } finally {
       this.turnWaiter = null;
@@ -429,6 +438,11 @@ export class SessionCore {
    */
   async providerGone(call) {
     if (call !== this.call) return;
+    // During the closing wait: the wait ends now, and so does the session's time.
+    if (this.draining) {
+      this.goneAt = this.now();
+      this.turnWaiter?.();
+    }
     await this.end("provider_closed");
   }
 
@@ -478,8 +492,12 @@ export class SessionCore {
     // `1000 "error"` from here.
     if (!this.starting) owner?.close(CLIENT_END_CODES[reason] ?? 1000, reason);
     // An answer in progress is let finish, so its usage counts (plan 5.1). Not when the provider
-    // hung up itself, and not for a start that never got its call.
-    if (this.call !== null && reason !== "provider_closed") await this.drainTurn();
+    // hung up itself, not at the time cap, and not for a start that never got its call.
+    if (this.call !== null && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
+    // An answer still open now was cut off: its usage is missing.
+    const cut = this.call !== null && this.turnOpen();
+    const goneAt = this.goneAt;
+    this.goneAt = null;
     const call = this.call;
     this.call = null;
     call?.close?.(1000, "session ended");
@@ -491,9 +509,16 @@ export class SessionCore {
     }
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const journal = readJournal(stored.get(JOURNAL_KEY));
-    // Never past the deadline: an instance that wakes late bills nothing after the cap.
+    // Never past the deadline: an instance that wakes late bills nothing after the cap. Never past
+    // the provider's hang-up during the closing wait either.
     const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
-    const sliceEnd = deadline === undefined ? at : Math.min(at, deadline);
+    const sliceEnd = Math.min(at, deadline ?? Infinity, goneAt ?? Infinity);
+    if (journal !== null && cut) {
+      // The cut answer's usage is unknown: the final slice is booked with a gap, so it is
+      // `partial`, keeping the cost that is known (plan 4.2).
+      journal.droppedFrom ??= sliceEnd;
+      this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
+    }
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */

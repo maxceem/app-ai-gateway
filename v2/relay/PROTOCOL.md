@@ -66,10 +66,17 @@ SDK sees only the provider's frames.
 A session is `starting`, then `active`, then `ended`, and never reopens. Frames
 pass only while it is `active`. Its time cap counts from the ticket's start.
 
-When a session ends for any reason but the provider hanging up, the client is
-told at once. If the provider is in the middle of an answer, the relay waits for
-that answer to finish, up to 10 s, so its usage is counted; nothing more reaches
-the client meanwhile. Then the provider's side is hung up.
+When a session ends, the client is told at once. If the provider is in the
+middle of an answer, the relay waits for that answer to finish, up to 10 s, so
+its usage is counted; nothing more reaches the client meanwhile. Then the
+provider's side is hung up.
+
+- There is no wait when the provider hung up, or at the time cap. The wait never
+  runs past the cap.
+- If the provider hangs up during the wait, the wait ends there, and so does the
+  session's time.
+- An answer that never finished was cut off. Its usage is missing, so the
+  session's last charge is marked partial.
 
 ## Reconnecting
 

@@ -371,11 +371,12 @@ function checkpointStatements(
       );
     }
   }
-  if (slice !== null && slice.priceSource === "unresolved" && hasTokens(slice)) {
+  if (slice !== null && slice.priceSource === "unresolved" && (hasTokens(slice) || billableTime(slice))) {
     // An unpriced slice is queued for pricing in the same batch (S17), only
     // when the insert just above really wrote it: `changes()` is 0 for a
-    // repeated checkpoint. A slice with no tokens (a gap alone) has nothing to
-    // price: the sweep would book it at $0 and undo its unknown cost.
+    // repeated checkpoint. A slice with neither tokens nor connection time to
+    // bill (a gap alone) has nothing to price: the sweep would book it at $0
+    // and undo its unknown cost.
     statements.push(
       db
         .prepare(
@@ -415,6 +416,12 @@ function checkpointStatements(
     );
   }
   return { statements, stateAt };
+}
+
+/** Whether a slice holds connection time that may be billed (`sliceCharge` keeps it as usage). */
+function billableTime(charge: ChargeRow): boolean {
+  const ms = charge.measures.units_session_seconds;
+  return typeof ms === "number" && ms > 0;
 }
 
 /** Whether a charge holds tokens to price. */
