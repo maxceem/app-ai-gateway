@@ -420,6 +420,27 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(await ledger().prepare("SELECT id FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toBeNull();
   });
 
+  it("bills connection time at a price's time rate: the wall clock meter (step 9a part 3)", async () => {
+    // A plain per-minute price, as a provider billed by connection time states it (Deepgram's base rate, no options).
+    const { keyed: _keyed, keyedAdditions: _additions, ...base } = listPrice("deepgram", "nova-3")!;
+    const timed = { source: "list_rate" as const, price: base };
+    // $0.0043 a minute: one minute is 4,300,000 nano-dollars.
+    expect(priceSlice({}, timed, MINUTE)).toMatchObject({ costNano: 4_300_000, priceSource: "list_rate", unit: "session_seconds" });
+    expect(priceSlice({}, timed, 90_000)).toMatchObject({ costNano: 6_450_000 });
+    // No time, nothing to bill; a model billed by tokens never bills connection time.
+    expect(priceSlice({}, timed, 0)).toMatchObject({ costNano: 0 });
+    const tokens = { source: "list_rate" as const, price: listPrice("openai", "gpt-4o-mini")! };
+    expect(priceSlice({}, tokens, MINUTE)).toMatchObject({ costNano: 0, unit: null });
+    // A gap in a slice billed by time keeps the price of the time it knows, marked partial, never $0.
+    const { ticket } = await ticketFor();
+    const withGap = slice(ticket, 1, {}, { sessionMs: 30_000, gapMs: 30_000, gaps: 1 });
+    expect(sliceCharge(ticket, withGap, priceSlice({}, timed, withGap.sessionMs), Date.now())).toMatchObject({
+      costNano: 2_150_000,
+      priceSource: "list_rate",
+      measured: "partial",
+    });
+  });
+
   it("books a clean slice with no tokens and no gap at $0, complete (Gemini Neon round 1)", async () => {
     const { text, ticket } = await ticketFor();
     await checkpointForRelay(env, text, live(slice(ticket, 1)));

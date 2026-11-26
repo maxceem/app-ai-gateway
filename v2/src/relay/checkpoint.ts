@@ -146,16 +146,29 @@ interface SlicePrice {
   readonly units: number | null;
 }
 
+/** The rates a price may bill connection time with (`../pricing/units.ts`): the wall clock meter. */
+const TIME_RATES = ["per_second", "per_minute", "per_hour"] as const;
+
+/** Whether a price bills connection time: a provider metered by the wall clock (plan 3, meter kinds). */
+function billsTime(resolved: ResolvedPrice | null): boolean {
+  const rates = resolved?.price.rates as Readonly<Record<string, unknown>> | undefined;
+  return rates !== undefined && TIME_RATES.some((field) => rates[field] !== undefined);
+}
+
 /**
- * Prices a slice's tokens with the session's price (`./session-price.ts`):
- * the connection's own rate, else ours, as they were when it opened. A slice
- * with no tokens (connection time only) costs nothing: there is no usage to
- * price. Tokens with no price are booked `unresolved`, priced later by the
- * sweep, never billed as free (AGENTS.md).
+ * Prices a slice with the session's price (`./session-price.ts`): the
+ * connection's own rate, else ours, as they were when it opened. Tokens are
+ * priced by their rates. A price with a time rate (the wall clock meter: a
+ * provider billed per minute of connection) also bills the slice's connection
+ * time, `sessionMs`, as session seconds. A slice with neither (connection time
+ * on a model billed by tokens) costs nothing: there is no usage to price.
+ * Tokens with no price are booked `unresolved`, priced later by the sweep,
+ * never billed as free (AGENTS.md).
  */
-export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null): SlicePrice {
+export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null, sessionMs = 0): SlicePrice {
   const hasTokens = SLICE_MEASURES.some((name) => (measures[name] ?? 0) > 0);
-  if (!hasTokens) return { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
+  const timed = sessionMs > 0 && billsTime(resolved);
+  if (!hasTokens && !timed) return { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   const unresolved: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   if (resolved === null) return unresolved;
   const priced = priceInServedMode(resolved.price, {
@@ -163,6 +176,8 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
     cachedInputTokens: measures.cached_input_tokens ?? 0,
     cacheWriteTokens: measures.cache_write_tokens ?? 0,
     outputTokens: measures.output_tokens ?? 0,
+    // Session seconds are stored at the milli scale: a millisecond count is the unit count.
+    ...(timed ? { units: { session_seconds: sessionMs }, ...(hasTokens ? {} : { noTokens: true as const }) } : {}),
   });
   if (priced === null) return unresolved;
   return {
@@ -184,7 +199,8 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
  */
 export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
   const gap = slice.gapMs > 0 || slice.gaps > 0;
-  if (gap && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
+  // A slice billed by time keeps the price of the time it knows, marked `partial` below.
+  if (gap && price.unit !== "session_seconds" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
     price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
   }
   // Dated by its start (D18), inside the session's own time: never before its start, never after
@@ -320,7 +336,7 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
       } else if (saved !== "") {
         try {
-          price = priceSlice(slice.measures, decodeSessionPrice(saved));
+          price = priceSlice(slice.measures, decodeSessionPrice(saved), slice.sessionMs);
         } catch {
           price = unpriced;
         }

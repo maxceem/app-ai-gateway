@@ -13,6 +13,7 @@ import { USER_STARTING_BOUND, USER_STREAMING_LIMIT, type SessionCheckpointAnswer
 import type { AppSessionAdmission } from "../src/do/AppLimiter.ts";
 import type { SlotClaim } from "../src/do/session-slots.ts";
 import { closeForRelay, openForRelay } from "../src/relay/contract.ts";
+import { checkpointForRelay } from "../src/relay/checkpoint.ts";
 import { loadRequestApp } from "../src/apps/app-records.ts";
 import { admitSession, releaseSessionLeases } from "../src/limits/session-admission.ts";
 import { refusal } from "../src/proxy/serve.ts";
@@ -501,6 +502,35 @@ describe("the leases follow the session: open activates them, close frees them (
     await closeForRelay(env, first.ticket, { finalSlice: 0, endReason: "client_closed", endedAt: later });
     await closeForRelay(env, first.ticket, { finalSlice: 0, endReason: "client_closed", endedAt: later });
     expect(await appLimiter(appId).admitSession({ ...claim("ses_probe2", later), now: later, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: true });
+  });
+
+  it("a named takeover, end to end: the new session's first connected checkpoint replaces the old one, whose next checkpoint stops (row 21; step 9a part 3)", async () => {
+    const { appId, slug, key } = await setup();
+    const body = { path: "v1/realtime", model: "gpt-realtime" };
+    const old = (await (await start(appId, slug, key, body, "user-take")).json()) as Record<string, string>;
+    const oldTicket = parseTicket(old.ticket!)!.payload;
+    await openForRelay(env, old.ticket, oldTicket.start + 1_000);
+    const live = (seq: number, from: number) => ({
+      slice: { seq, measures: {}, sessionMs: 1_000, gapMs: 0, gaps: 0, from, to: from + 1_000 },
+      connected: true,
+      accounting: false,
+      relayVersion: 2,
+    });
+    expect(await checkpointForRelay(env, old.ticket, live(1, oldTicket.start), oldTicket.start + 2_000)).toMatchObject({ decision: "continue" });
+    // The phone lost its link: the app asks for a new session that names the old one.
+    const fresh = (await (await start(appId, slug, key, { ...body, takes_over: old.session_id }, "user-take")).json()) as Record<string, string>;
+    const freshTicket = parseTicket(fresh.ticket!)!.payload;
+    await openForRelay(env, fresh.ticket, freshTicket.start + 1_000);
+    expect(await checkpointForRelay(env, fresh.ticket, live(1, freshTicket.start), freshTicket.start + 2_000)).toMatchObject({ decision: "continue" });
+    // The old session, if its object is still alive, stops at its next checkpoint, as replaced.
+    expect(await checkpointForRelay(env, old.ticket, live(2, oldTicket.start + 1_000), freshTicket.start + 3_000)).toMatchObject({
+      decision: "stop",
+      reasons: ["replaced"],
+    });
+    await closeForRelay(env, old.ticket, { finalSlice: 2, endReason: "replaced", endedAt: freshTicket.start + 3_000 });
+    expect(await ledger().prepare("SELECT state, end_reason FROM session WHERE id = ?").bind(old.session_id).first()).toEqual({ state: "ended", end_reason: "replaced" });
+    // The new session goes on.
+    expect(await checkpointForRelay(env, fresh.ticket, live(2, freshTicket.start + 1_000), freshTicket.start + 4_000)).toMatchObject({ decision: "continue" });
   });
 
   it("open still answers when the limiters can't be reached (crash row 7)", async () => {

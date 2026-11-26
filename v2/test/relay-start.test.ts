@@ -107,6 +107,8 @@ function setup(
     checkpoint?: (input: CheckpointSeen) => Promise<Reply>;
     proof?: () => boolean;
     checkpointTimeoutMs?: number;
+    turnOpen?: () => boolean;
+    wait?: (ms: number) => Promise<void>;
   } = {},
 ) {
   let now = 1_000_000;
@@ -123,6 +125,8 @@ function setup(
     ...(options.liveness === undefined ? {} : { liveness: options.liveness }),
     ...(options.proof === undefined ? {} : { proof: options.proof }),
     ...(options.checkpointTimeoutMs === undefined ? {} : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+    ...(options.turnOpen === undefined ? {} : { turnOpen: options.turnOpen }),
+    ...(options.wait === undefined ? {} : { wait: options.wait }),
     log: (event: Record<string, unknown>) => logs.push(event),
     vault: {
       sessionKey: async () => {
@@ -738,6 +742,8 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
       await core.start(s.text, s.ticket, s.client());
       await core.checkpoint();
       expect(s.calls.close).toEqual([{ endReason, finalSlice: 0 }]);
+      // A normal close with the reason: an official SDK does not reconnect on its own (`PROTOCOL.md`).
+      expect([s.ended.clientCodes, s.ended.client]).toEqual([[1000], [endReason]]);
     }
   });
 
@@ -917,5 +923,81 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
     s.tick(60_000);
     await core.alarm();
     expect(s.store.data.size).toBe(0);
+  });
+});
+
+describe("a session's close (step 9a part 3)", () => {
+  const usage = (id: string, input = 10, output = 20) => ({ id, measures: { input_tokens: input, output_tokens: output } });
+
+  /** A timer the test fires itself: no real wait. */
+  function heldWait() {
+    const pending: (() => void)[] = [];
+    return { wait: () => new Promise<void>((resolve) => pending.push(resolve)), fire: () => pending.splice(0).forEach((resolve) => resolve()) };
+  }
+
+  it("waits for the provider's answer in progress, counts its usage, then hangs up: the client is told at once (plan 5.1)", async () => {
+    let answering = true;
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => answering, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => core.draining);
+    // The client is told at once; the provider's side stays up for the answer.
+    expect(s.ended.client).toEqual(["client_closed"]);
+    expect(s.ended.provider).toEqual([]);
+    // The last answer's usage arrives during the wait and still counts.
+    await core.recordUsage(usage("last", 30, 40), "per_turn");
+    answering = false;
+    core.turnDone();
+    await ending;
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    const finalSlice = s.calls.checkpoints.find((seen) => seen.accounting)?.slice;
+    expect(finalSlice?.measures).toEqual({ input_tokens: 30, output_tokens: 40 });
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
+  });
+
+  it("hangs up when the answer doesn't finish within the wait, and a usage event after the end is not counted", async () => {
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => true, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("time_cap");
+    await until(() => core.draining);
+    timer.fire();
+    await ending;
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    await core.recordUsage(usage("too-late"), "per_turn");
+    expect(s.calls.checkpoints.every((seen) => seen.slice === null || Object.keys(seen.slice.measures).length === 0)).toBe(true);
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+  });
+
+  it("doesn't wait when no answer is in progress, or when the provider hung up itself", async () => {
+    for (const [answering, reason] of [
+      [false, "client_closed"],
+      [true, "provider_closed"],
+    ] as const) {
+      const timer = heldWait();
+      const s = setup({ turnOpen: () => answering, wait: timer.wait });
+      const core = s.instance();
+      await core.start(s.text, s.ticket, s.client());
+      await core.end(reason);
+      expect(core.draining).toBe(false);
+      expect(s.calls.close).toEqual([{ endReason: reason, finalSlice: 0 }]);
+    }
+  });
+
+  it("refuses a new start while it waits for the answer, and the ended session never reopens", async () => {
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => true, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => core.draining);
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    timer.fire();
+    await ending;
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
+    expect(await s.instance().start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
   });
 });

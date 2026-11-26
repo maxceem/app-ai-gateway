@@ -114,6 +114,29 @@ test("a session's usage is booked once as a slice when it ends, even when the pr
   }
 });
 
+test("a client that hangs up during an answer still has that answer's usage booked (step 9a part 3)", { skip, timeout: 90_000 }, async () => {
+  const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
+  await expectResponse(response, 201, "starting a session to close during an answer");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the session's id");
+  // The mock opens an answer, streams it for a second and reports its usage last.
+  // The client hangs up as soon as the answer opens: the relay waits for it to finish.
+  const answer = JSON.stringify({ type: "mock.answer", event_id: "smoke-answer-1", usage: { input_tokens: 70, output_tokens: 40 }, seconds: 1 });
+  const got = await exchangeFrames("/v2/relay/session", relay, [answer], 2, { authorization: `Bearer ${String(body?.ticket)}` });
+  same((JSON.parse(typeof got[1] === "string" ? got[1] : "{}") as { type?: string }).type, "response.created", "the frame the client hung up after");
+  type Charge = { input_tokens: number | null; output_tokens: number | null };
+  let charges: Charge[] = [];
+  for (let tries = 0; tries < 30; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${created.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the session's charges");
+    charges = (listed.body?.charges ?? []) as Charge[];
+    if (charges.some((charge) => (charge.input_tokens ?? 0) > 0)) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  same(charges.reduce((sum, charge) => sum + (charge.input_tokens ?? 0), 0), 70, "the answer's input tokens");
+  same(charges.reduce((sum, charge) => sum + (charge.output_tokens ?? 0), 0), 40, "the answer's output tokens");
+});
+
 test("a session the app doesn't allow, or a path that isn't a live session, is refused", { skip }, async () => {
   const notSession = await startSession({ path: "v1/chat/completions", model: "gpt-4o-mini" });
   same(notSession.status, 403, "a path that isn't a live session");

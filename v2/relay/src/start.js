@@ -25,12 +25,31 @@
  * sends it; the slice stays until the main Worker says it is written
  * (crash table rows 14–18). Only one is unconfirmed at a time.
  *
- * The end: one write stores `ended`, the reason, the final slice and the
- * journal with the rest of the usage frozen; then the unsent slices are
- * delivered, as accounting only, and `close` is sent. The alarm retries both.
- * Storage is deleted once both are done (or given up on, with the slices
- * logged) and the ticket has expired; until then the `ended` marker refuses
- * the ticket again (rows 25–28).
+ * The end: the client is told at once. If the provider is in the middle of an
+ * answer, the relay waits for it to finish, up to `CLOSE_DRAIN_MS`, so the last
+ * answer's usage is counted (plan 5.1); nothing more goes to the client or the
+ * provider meanwhile. Then the provider is hung up, and one write stores
+ * `ended`, the reason, the final slice and the journal with the rest of the
+ * usage frozen; then the unsent slices are delivered, as accounting only, and
+ * `close` is sent. The alarm retries both. Storage is deleted once both are
+ * done (or given up on, with the slices logged) and the ticket has expired;
+ * until then the `ended` marker refuses the ticket again (rows 25–28).
+ *
+ * The session's states (plan 4.3), the only ones there are. The object keeps
+ * its state in its own storage:
+ *
+ * | State      | Entered when                              | Leaves for | Never      |
+ * | ---------- | ----------------------------------------- | ---------- | ---------- |
+ * | (none)     | nothing stored yet                        | `starting` |            |
+ * | `starting` | `open` succeeded (start step 3)           | `active`, `ended` |     |
+ * | `active`   | the provider's side is up (start step 5)  | `ended`    | `starting` |
+ * | `ended`    | any end: a stop, the cap, a hang-up, …   | (cleanup)  | any other  |
+ *
+ * Only `active` sends checkpoints, and only `active` forwards frames. An ended
+ * session never reopens: its ticket is refused until it expires, then its
+ * storage is deleted. Takeover: a checkpoint's `replaced` stop ends the old
+ * session like any other stop; the client gets `1000 replaced`, a normal
+ * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
 import { confirm, finalSliceOf, freeze, JOURNAL_KEY, newJournal, readJournal, addUsage } from "./journal.js";
@@ -51,6 +70,9 @@ function stopReason(reasons) {
   const first = reasons[0] ?? "error";
   return first === "ended" ? "error" : first;
 }
+
+/** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
+export const CLOSE_DRAIN_MS = 10_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
@@ -141,8 +163,11 @@ export class SessionCore {
    * @param {{
    *   store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger,
    *   liveness?: Liveness, proof?: () => boolean, checkpointTimeoutMs?: number,
+   *   turnOpen?: () => boolean, wait?: (ms: number) => Promise<void>,
    * }} parts
    * `proof`: whether a client message came since the start (crash table row 20), for a live checkpoint.
+   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`).
+   * `wait`: a timer, for the closing wait; tests give their own.
    */
   constructor(parts) {
     this.store = parts.store;
@@ -176,6 +201,37 @@ export class SessionCore {
     this.journal = null;
     /** @type {Promise<unknown> | null} A checkpoint in flight: one at a time. */
     this.checkpointing = null;
+    /** @type {() => boolean} */
+    this.turnOpen = parts.turnOpen ?? (() => false);
+    /** @type {(ms: number) => Promise<void>} */
+    this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    /** The end is waiting for the provider's answer to finish: usage still counts meanwhile. */
+    this.draining = false;
+    /** @type {(() => void) | null} Ends the closing wait when the answer is done. */
+    this.turnWaiter = null;
+  }
+
+  /** The provider finished an answer: a closing wait for it ends now. */
+  turnDone() {
+    this.turnWaiter?.();
+  }
+
+  /**
+   * Waits, up to `CLOSE_DRAIN_MS`, for the provider's answer in progress to
+   * finish, so its usage is counted before the provider is hung up.
+   */
+  async drainTurn() {
+    if (!this.turnOpen()) return;
+    this.draining = true;
+    try {
+      await new Promise((resolve) => {
+        this.turnWaiter = () => resolve(undefined);
+        void this.wait(CLOSE_DRAIN_MS).then(() => resolve(undefined));
+      });
+    } finally {
+      this.turnWaiter = null;
+      this.draining = false;
+    }
   }
 
   /**
@@ -416,14 +472,17 @@ export class SessionCore {
    */
   async endOnce(reason, details) {
     const owner = this.owner;
-    const call = this.call;
     this.owner = null;
-    this.call = null;
-    // Both sides are told, with the reason: the provider hung up, the client closed. A client
-    // whose start is still in flight is told by that start, with its code (`4000`), when it
-    // finds the session ended: never a bare `1000 "error"` from here.
-    call?.close?.(1000, "session ended");
+    // The client is told at once, with the reason. A client whose start is still in flight is
+    // told by that start, with its code (`4000`), when it finds the session ended: never a bare
+    // `1000 "error"` from here.
     if (!this.starting) owner?.close(CLIENT_END_CODES[reason] ?? 1000, reason);
+    // An answer in progress is let finish, so its usage counts (plan 5.1). Not when the provider
+    // hung up itself, and not for a start that never got its call.
+    if (this.call !== null && reason !== "provider_closed") await this.drainTurn();
+    const call = this.call;
+    this.call = null;
+    call?.close?.(1000, "session ended");
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
     const at = this.now();
@@ -463,7 +522,8 @@ export class SessionCore {
    * @param {"per_turn" | "running_total"} shape
    */
   async recordUsage(event, shape) {
-    if (this.call === null || this.ending !== null) return;
+    // During the closing wait, the last answer's usage still counts.
+    if (this.call === null || (this.ending !== null && !this.draining)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null || !addUsage(journal, event, shape, now)) return;

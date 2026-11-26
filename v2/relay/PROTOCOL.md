@@ -52,7 +52,35 @@ SDK sees only the provider's frames.
   reports count too.
 - `1008` with an adapter's code: an adapter refused a client frame.
 - `1000` with the end's reason (for example `time_cap`, `client_closed`,
-  `provider_closed`): the session ended normally.
+  `provider_closed`, `budget_stop`, `allowance_used_up`): the session ended
+  normally.
+- `1000 replaced`: a newer session of the same user took this one's place (a
+  takeover, or the oldest session past the user's limit). A normal close, so
+  an official SDK does not reconnect on its own; the newer session goes on.
 - `1011 internal_error`: the relay failed.
 - `4000` with a start's code (for example `ticket_expired`, `start_queue_full`):
   the session never started.
+
+## The session's life
+
+A session is `starting`, then `active`, then `ended`, and never reopens. Frames
+pass only while it is `active`. Its time cap counts from the ticket's start.
+
+When a session ends for any reason but the provider hanging up, the client is
+told at once. If the provider is in the middle of an answer, the relay waits for
+that answer to finish, up to 10 s, so its usage is counted; nothing more reaches
+the client meanwhile. Then the provider's side is hung up.
+
+## Reconnecting
+
+There are two kinds, kept apart (plan 5.1):
+
+- **A new session.** The app asks the gateway for a new session, naming the old
+  one in `takes_over`. The new session takes the old one's place once it is
+  connected; the old one, if it is still running, ends with `1000 replaced`.
+  An app that names nothing gets the same at the user's limit: the oldest
+  session is replaced. This is what works today.
+- **The same session again**, with the reconnect secret from
+  `agw.session.started`, while the relay still holds the provider's side. This
+  comes in a later step. Until then, a client that loses its link starts a new
+  session.
