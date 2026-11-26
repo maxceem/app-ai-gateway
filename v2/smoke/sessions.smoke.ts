@@ -15,7 +15,7 @@
  * Skipped when any of these is not set.
  */
 import { after, before, test } from "node:test";
-import { admin, check, checkId, expectCode, expectResponse, readJson, same, send, uniqueSlug, websocketHandshake } from "./support.ts";
+import { admin, check, checkId, exchangeFrames, expectCode, expectResponse, readJson, same, send, uniqueSlug, websocketHandshake } from "./support.ts";
 
 const base = process.env.V2_BASE_URL ?? "";
 const mockUrl = process.env.V2_MOCK_URL ?? "";
@@ -71,6 +71,19 @@ test("a session starts with a ticket the gateway issues, and the relay takes tha
   same(relayUrl.host, new URL(relay).host, "the session's relay address is not this deployment's relay");
   const opened = await websocketHandshake("/v2/relay/session", relay, { authorization: `Bearer ${body.ticket}` });
   check(opened === "opened", "the relay refused the ticket the gateway issued");
+});
+
+test("a started session forwards frames both ways, and our SDK gets the relay's own messages (step 9a part 1, fourth review)", { skip }, async () => {
+  const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
+  await expectResponse(response, 201, "starting a session to forward frames");
+  const body = await readJson(response);
+  const frame = JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" });
+  // Sent at once: the relay holds it while the session starts, then forwards it. The mock echoes it.
+  const got = await exchangeFrames("/v2/relay/session", relay, [frame], 3, { authorization: `Bearer ${String(body?.ticket)}`, "x-agw-relay-messages": "1" });
+  const texts = got.map((item) => (typeof item === "string" ? item : ""));
+  same((JSON.parse(texts[0] ?? "{}") as { type?: string }).type, "agw.session.started", "the first frame our SDK gets");
+  same((JSON.parse(texts[1] ?? "{}") as { type?: string }).type, "session.created", "the provider's first event");
+  same(texts[2], frame, "the frame the provider echoed");
 });
 
 test("a session the app doesn't allow, or a path that isn't a live session, is refused", { skip }, async () => {

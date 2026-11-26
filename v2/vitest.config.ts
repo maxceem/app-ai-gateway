@@ -112,7 +112,8 @@ const workers = (splitKeys: boolean) =>
               // Every provider connect the test relay makes: a WebSocket that stays open.
               name: "app-ai-gateway-v2-provider-stub",
               modules: true,
-              // It keeps the key header of the last connect, which the test reads back at /last-key-header.
+              // It keeps the key header of the last connect, which the test reads back at /last-key-header,
+              // sends one event at once and echoes every frame.
               script: [
                 "let lastKeyHeader = null;",
                 "export default {",
@@ -120,7 +121,11 @@ const workers = (splitKeys: boolean) =>
                 "    if (new URL(request.url).pathname === \"/last-key-header\") return Response.json({ authorization: lastKeyHeader });",
                 "    lastKeyHeader = request.headers.get(\"authorization\");",
                 "    const [client, server] = Object.values(new WebSocketPair());",
+                "    server.binaryType = \"arraybuffer\";",
                 "    server.accept();",
+                // Like a provider: an event at once, then each frame echoed back (frame forwarding's test).
+                "    server.send(JSON.stringify({ type: \"session.created\" }));",
+                "    server.addEventListener(\"message\", (event) => server.send(event.data));",
                 "    return new Response(null, { status: 101, webSocket: client });",
                 "  },",
                 "};",

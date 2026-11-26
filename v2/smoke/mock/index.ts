@@ -543,6 +543,7 @@ const mock = {
 async function answer(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") return Response.json({ ok: true });
+  if (url.pathname.endsWith("/v1/realtime") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return realtimeSession();
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -643,3 +644,51 @@ async function answer(request: Request): Promise<Response> {
 }
 
 export default mock;
+
+/**
+ * A stand-in for a provider's live session (step 9a, frame forwarding and
+ * T12): it sends `session.created` at once and echoes every frame. Two of its
+ * own messages drive load tests:
+ * - `{"type":"mock.stream","seconds":N}` streams N seconds of "audio" at a real
+ *   rate: 20 frames a second of about 3.2 KB each, like 24 kHz PCM16 in base64;
+ * - `{"type":"mock.big"}` sends one large frame with `type` at its end, the
+ *   shape of an ElevenLabs audio event (plan, T12).
+ */
+function realtimeSession(): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  // Binary frames as bytes, so an echo sends back what came.
+  server.binaryType = "arraybuffer";
+  server.accept();
+  server.send(JSON.stringify({ type: "session.created" }));
+  const audio = "A".repeat(3_200);
+  server.addEventListener("message", (event) => {
+    const data = event.data;
+    if (typeof data === "string" && data.startsWith('{"type":"mock.')) {
+      const message = JSON.parse(data) as { type: string; seconds?: number };
+      if (message.type === "mock.big") {
+        server.send(`{"audio_base_64":"${"B".repeat(512 * 1024)}","isFinal":false,"type":"audio"}`);
+      } else if (message.type === "mock.stream") {
+        const frames = Math.max(0, Math.min(20 * 600, Math.round((message.seconds ?? 1) * 20)));
+        let sent = 0;
+        const timer = setInterval(() => {
+          try {
+            server.send(JSON.stringify({ type: "response.output_audio.delta", n: sent, at: Date.now(), delta: audio }));
+          } catch {
+            clearInterval(timer);
+            return;
+          }
+          sent += 1;
+          if (sent >= frames) {
+            clearInterval(timer);
+            server.send(JSON.stringify({ type: "mock.stream.done", frames: sent }));
+          }
+        }, 50);
+        server.addEventListener("close", () => clearInterval(timer));
+      }
+      return;
+    }
+    server.send(data);
+  });
+  return new Response(null, { status: 101, webSocket: client });
+}

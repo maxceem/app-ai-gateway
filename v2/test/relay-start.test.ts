@@ -8,6 +8,7 @@
  * restarted object. The clock is the test's.
  */
 import { describe, expect, it } from "vitest";
+import { TICK_MS } from "../relay/src/frames.js";
 import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, ProviderRefused, SessionCore } from "../relay/src/start.js";
 import { base64url, type Ticket } from "../relay/src/ticket.js";
 
@@ -81,7 +82,15 @@ function ticketFor(now: number, overrides: Partial<Ticket> = {}): { text: string
   return { ticket, text: `${base64url(new TextEncoder().encode(JSON.stringify(ticket)))}.${base64url(new Uint8Array(64))}` };
 }
 
-function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<unknown>; connect?: () => Promise<{ callId: string | null }>; close?: () => Promise<unknown> } = {}) {
+function setup(
+  options: {
+    vault?: () => Promise<unknown>;
+    open?: () => Promise<unknown>;
+    connect?: () => Promise<{ callId: string | null }>;
+    close?: () => Promise<unknown>;
+    liveness?: (now: number) => string | null;
+  } = {},
+) {
   let now = 1_000_000;
   const store = new MemoryStore();
   const calls = { vault: 0, open: 0, connect: 0, close: [] as { endReason: string; finalSlice: number }[] };
@@ -89,10 +98,11 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
   /** A test's way to run something when the provider's socket closes, as the session object's listener does. */
   const hooks: { onProviderClose?: (call: unknown) => void } = {};
   /** What each side was told when the session ended: the client's reason, the provider's close. */
-  const ended = { client: [] as string[], provider: [] as [number, string][] };
+  const ended = { client: [] as string[], provider: [] as [number, string][], clientCodes: [] as number[] };
   const parts = () => ({
     store,
     now: () => now,
+    ...(options.liveness === undefined ? {} : { liveness: options.liveness }),
     log: (event: Record<string, unknown>) => logs.push(event),
     vault: {
       sessionKey: async () => {
@@ -134,7 +144,12 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     ended,
     hooks,
     /** A client connection: what it is told when the session ends is recorded. */
-    client: () => ({ close: (_code: number, reason: string) => ended.client.push(reason) }),
+    client: () => ({
+      close: (code: number, reason: string) => {
+        ended.client.push(reason);
+        ended.clientCodes.push(code);
+      },
+    }),
     text,
     ticket,
     /** A new instance over the same storage: a fresh object, or the restarted one. */
@@ -153,8 +168,8 @@ describe("a session's start", () => {
     expect(result).toMatchObject({ ok: true, deadline: s.ticket.start + s.ticket.cap });
     expect(s.calls).toMatchObject({ vault: 1, open: 1, connect: 1 });
     expect(s.store.data.get("state")).toBe("active");
-    // The first wakeup comes one checkpoint interval in (row 13).
-    expect(s.store.alarm).toBe(s.now() + 60_000);
+    // The first tick comes one `TICK_MS` in (plan section 5; row 13).
+    expect(s.store.alarm).toBe(s.now() + TICK_MS);
     // Only the reconnect secret's hash is stored.
     expect([...s.store.data.values()].map((value) => JSON.stringify(value)).join()).not.toContain((result as { reconnectSecret: string }).reconnectSecret);
   });
@@ -252,8 +267,8 @@ describe("a session's start", () => {
     const s = setup();
     await s.instance().start(s.text, s.ticket);
     const wakeup = s.store.alarm!;
-    // One checkpoint interval in, not the deadline.
-    expect(wakeup).toBe(s.now() + 60_000);
+    // The first tick, not the deadline.
+    expect(wakeup).toBe(s.now() + TICK_MS);
     expect(wakeup).toBeLessThan(s.ticket.start + s.ticket.cap);
     s.tick(wakeup - s.now());
     await s.instance().alarm();
@@ -271,7 +286,8 @@ describe("a session's start", () => {
     await core.alarm();
     expect(s.store.data.get("state")).toBe("ended");
     release({ callId: "call_late" });
-    expect(await started).toEqual({ ok: false, code: "session_ended" });
+    // The alarm ended it because the ticket expired: the client is told that (Fable, #258 round 3).
+    expect(await started).toEqual({ ok: false, code: "ticket_expired" });
     expect(s.store.data.get("state")).toBe("ended");
     expect(s.store.data.get("callId")).toBeUndefined();
     expect(s.ended.provider).toEqual([[1000, "session ended"]]);
@@ -294,14 +310,16 @@ describe("a session's start", () => {
     const s = setup();
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
-    // The first wakeup finds the provider still there and waits for the deadline.
-    s.tick(s.store.alarm! - s.now());
-    await core.alarm();
-    expect(s.store.alarm).toBe(s.ticket.start + s.ticket.cap);
-    s.tick(s.store.alarm! - s.now());
-    await core.alarm();
+    // Each tick finds the provider still there and arms the next one, until the deadline.
+    const deadline = s.ticket.start + s.ticket.cap;
+    for (let ticks = 0; s.store.data.get("state") === "active" && ticks < 100; ticks += 1) {
+      expect(s.store.alarm).toBe(Math.min(deadline, s.now() + TICK_MS));
+      s.tick(s.store.alarm! - s.now());
+      await core.alarm();
+    }
+    expect(s.now()).toBe(deadline);
     expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
-    expect(s.ended).toEqual({ client: ["time_cap"], provider: [[1000, "session ended"]] });
+    expect(s.ended).toEqual({ client: ["time_cap"], provider: [[1000, "session ended"]], clientCodes: [1000] });
   });
 
   it("when the provider hangs up first, the client's socket is closed too, with the reason (Sol round 1)", async () => {
@@ -516,5 +534,72 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await until(() => s.calls.close.length === 1);
     release({ version: 1 });
     await ending;
+  });
+
+  it("the alarm ticks every TICK_MS while the session runs, arming the next tick before its checks (crash table row 29)", async () => {
+    let failing = true;
+    const s = setup({
+      liveness: () => {
+        if (failing) throw new Error("a check failed");
+        return null;
+      },
+    });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    s.tick(TICK_MS);
+    // The check throws: the next tick is armed already, so the session keeps its tick.
+    await expect(core.alarm()).rejects.toThrow("a check failed");
+    expect(s.store.alarm).toBe(s.now() + TICK_MS);
+    expect(s.store.data.get("state")).toBe("active");
+    failing = false;
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.store.alarm).toBe(s.now() + TICK_MS);
+    expect(s.calls.close).toEqual([]);
+  });
+
+  it("a tick ends the session with the reason the live session's checks give: a silent client, a client too far behind", async () => {
+    for (const reason of ["heartbeat_timeout", "client_too_slow"]) {
+      const s = setup({ liveness: () => reason });
+      const core = s.instance();
+      await core.start(s.text, s.ticket, s.client());
+      s.tick(TICK_MS);
+      await core.alarm();
+      expect(s.calls.close).toEqual([{ endReason: reason, finalSlice: 0 }]);
+      expect(s.ended.client).toEqual([reason]);
+      // One place sets the code, for the tick and the report path alike: 4000 with the reason (Sol and Fable, #260).
+      expect(s.ended.clientCodes).toEqual([4000]);
+      expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    }
+  });
+
+  it("when the alarm ends a session whose start is still in flight, the client is told by the start, with 4000 and the reason, never a bare 1000 error (Fable, #258 round 3)", async () => {
+    let release: (value: { callId: string | null }) => void = () => undefined;
+    const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    const started = core.start(s.text, s.ticket, s.client());
+    await until(() => s.calls.connect === 1);
+    s.tick(60_000);
+    await core.alarm();
+    // The alarm closed nothing on the client's side: the start does, with its code.
+    expect(s.ended.client).toEqual([]);
+    release({ callId: null });
+    expect(await started).toEqual({ ok: false, code: "ticket_expired" });
+    expect(s.ended.client).toEqual([]);
+  });
+
+  it("an activation whose write is held past the deadline ends the session with time_cap, not a running session (Sol, #260 round 1)", async () => {
+    const s = setup();
+    const deadline = s.ticket.start + s.ticket.cap;
+    // The `active` write takes so long that the deadline passes during it.
+    s.store.beforePut = (entries) => {
+      if (entries.state === "active") s.tick(deadline - s.now());
+    };
+    const result = await s.instance().start(s.text, s.ticket, s.client());
+    expect(result).toEqual({ ok: false, code: "session_ended" });
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    // The start tells the client, with its code: nothing closed it from the end.
+    expect(s.ended.client).toEqual([]);
   });
 });
