@@ -211,7 +211,7 @@ export class SessionCore {
     this.draining = false;
     /** @type {(() => void) | null} Ends the closing wait when the answer is done. */
     this.turnWaiter = null;
-    /** @type {number | null} When the provider hung up during the closing wait: the session's time ends there. */
+    /** @type {number | null} When the current provider hung up: the session's time ends there. */
     this.goneAt = null;
   }
 
@@ -438,11 +438,9 @@ export class SessionCore {
    */
   async providerGone(call) {
     if (call !== this.call) return;
-    // During the closing wait: the wait ends now, and so does the session's time.
-    if (this.draining) {
-      this.goneAt = this.now();
-      this.turnWaiter?.();
-    }
+    // The session's time ends now, not when the end gets to write. A closing wait ends now too.
+    this.goneAt ??= this.now();
+    this.turnWaiter?.();
     await this.end("provider_closed");
   }
 
@@ -510,9 +508,11 @@ export class SessionCore {
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const journal = readJournal(stored.get(JOURNAL_KEY));
     // Never past the deadline: an instance that wakes late bills nothing after the cap. Never past
-    // the provider's hang-up during the closing wait either.
+    // the provider's hang-up either: the storage reads after it are not connection time.
     const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
     const sliceEnd = Math.min(at, deadline ?? Infinity, goneAt ?? Infinity);
+    /** When the session ended, for the ledger: the provider's hang-up, if it came first. */
+    const endedAt = Math.min(at, goneAt ?? Infinity);
     if (journal !== null && cut) {
       // The cut answer's usage is unknown: the final slice is booked with a gap, so it is
       // `partial`, keeping the cost that is known (plan 4.2).
@@ -522,7 +522,7 @@ export class SessionCore {
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */
-    const entries = { state: "ended", end: { reason, at, finalSlice: finalSliceOf(journal) } };
+    const entries = { state: "ended", end: { reason, at: endedAt, finalSlice: finalSliceOf(journal) } };
     if (journal !== null) entries[JOURNAL_KEY] = journal;
     await this.store.put(entries, at + CLOSE_RETRY_EVERY_MS);
     await this.flushEnded();

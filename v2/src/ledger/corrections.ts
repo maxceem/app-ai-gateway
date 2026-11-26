@@ -88,7 +88,7 @@ export function correctionOf(
     /** The unit the correction's cost is in, where the price bills another than the charge recorded. */
     readonly unit?: string;
     /** How complete the measure the correction billed is: a pricing correction's comes from its pricing result. */
-    readonly measured?: "complete" | "estimated";
+    readonly measured?: "complete" | "estimated" | "partial";
   },
 ): ChargeRow {
   return {
@@ -383,7 +383,10 @@ export async function priceUnresolvedCharge(
   // never $0 (plan 4.2). Nothing more to price.
   const toBill = usageAt(resolved);
   const empty = toBill.units === undefined && toBill.inputTokens + toBill.cachedInputTokens + toBill.cacheWriteTokens + toBill.outputTokens === 0;
-  if (original.ownerType === "session" && empty && original.measured === "partial") return { status: "already" };
+  if (original.ownerType === "session" && empty && original.measured === "partial") {
+    // Unless a checkpoint saved the session's price meanwhile: it may bill the time (Sol round 2).
+    return (await sessionPriceMoved(db, sessionPrice)) ? { status: "price_changed" } : { status: "already" };
+  }
   // The unit and count the price billed, from the pricing result itself.
   const billed = { unit: priced.unit, units: priced.units };
   const correction = correctionOf(original, {
@@ -398,16 +401,20 @@ export async function priceUnresolvedCharge(
     unit: billed.unit,
     now: input.now,
     estimate: priced.estimated,
-    measured: priced.measured,
+    // A slice with usage missing (a gap, a cut-off answer) stays `partial` in its correction too.
+    measured: original.measured === "partial" ? "partial" : priced.measured,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.
   const written = await writeCorrection(db, correction, input.now, priced.cost, input.doneWork ?? null, true, null, sessionPrice);
   if (written !== null) return { status: "priced", correction: written };
-  if (sessionPrice !== null) {
-    // A checkpoint saved the session's price while the current rate was read (Sol round 6).
-    const now = await db.prepare("SELECT rates_json FROM session WHERE id = ?").bind(sessionPrice.sessionId).first<{ rates_json: string | null }>();
-    if (now !== null && now.rates_json !== sessionPrice.ratesJson) return { status: "price_changed" };
-  }
-  return { status: "already" };
+  // A checkpoint saved the session's price while the current rate was read (Sol round 6).
+  return (await sessionPriceMoved(db, sessionPrice)) ? { status: "price_changed" } : { status: "already" };
+}
+
+/** Whether the session's saved price changed since `read` took it. */
+async function sessionPriceMoved(db: D1Database, read: { readonly sessionId: string; readonly ratesJson: string | null } | null): Promise<boolean> {
+  if (read === null) return false;
+  const now = await db.prepare("SELECT rates_json FROM session WHERE id = ?").bind(read.sessionId).first<{ rates_json: string | null }>();
+  return now !== null && now.rates_json !== read.ratesJson;
 }

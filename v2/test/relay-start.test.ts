@@ -1029,6 +1029,26 @@ describe("a session's close (step 9a part 3)", () => {
     expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
   });
 
+  it("ends the session's time when the provider hangs up, not after the end's storage reads (Sol round 2)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    s.tick(7_000);
+    // The end's first storage read takes 4 s.
+    const read = s.store.get.bind(s.store);
+    let slow = true;
+    s.store.get = async (keys: string[]) => {
+      if (slow) {
+        slow = false;
+        s.tick(4_000);
+      }
+      return read(keys);
+    };
+    await core.providerGone(core.call as never);
+    expect(finalSliceOf(s)).toMatchObject({ sessionMs: 7_000 });
+    expect(s.store.data.get("end")).toMatchObject({ reason: "provider_closed", at: s.ticket.start + 7_000 });
+  });
+
   it("doesn't wait when no answer is in progress, or when the provider hung up itself", async () => {
     for (const [answering, reason, finalSlice] of [
       [false, "client_closed", 0],

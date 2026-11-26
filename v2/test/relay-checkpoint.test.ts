@@ -462,6 +462,46 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     });
   });
 
+  it("the sweep keeps a cut-off slice's correction partial (Sol round 2)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // An answer cut off at the end: its known tokens, and a gap with no gap time.
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 }, { gaps: 1 })));
+    await setRates(1_000_000_000);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 1_000_000, measured: "partial" },
+    });
+  });
+
+  it("the sweep keeps a partial time slice queued when a checkpoint saves a time rate while it reads a token-only one (Sol round 2)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1, {}, { sessionMs: 30_000, gaps: 1 })));
+    await setRates(perMinute(4_300_000));
+    // The sweep reads no saved price; while it fetches a token-only rate, a checkpoint saves the time rate.
+    const settings = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => {
+            await checkpointForRelay(env, text, live(slice(ticket, 2)));
+            return { rates_json: JSON.stringify({ "house-realtime": { input: 1_000_000_000, output: 1_000_000_000 } }) };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    expect(await priceUnresolvedCharge(ledger(), settings, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toEqual({ status: "price_changed" });
+    // The next sweep prices its 30 s at the saved time rate, still partial.
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 2_150_000, measured: "partial" },
+    });
+  });
+
   it("the sweep books connection time at $0 when the price turns out to bill tokens only, but a slice with a gap stays an unknown cost (Sol round 1)", async () => {
     const { connectionId, setRates } = await houseConnection("{not json");
     const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
