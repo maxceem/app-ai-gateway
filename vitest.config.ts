@@ -41,7 +41,7 @@ export default defineConfig({
     // Vitest's defaults (5 s a test, 10 s a hook) are hit by tests that are only
     // slow because the machine is busy, and each such failure costs a rerun. A
     // test that is really stuck still fails, only later. The console suites use
-    // the same limit.
+    // the same 20 s test limit.
     testTimeout: 20_000,
     hookTimeout: 30_000,
     // The frozen price list first, so it is in place before the next setup

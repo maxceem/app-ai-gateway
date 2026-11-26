@@ -26,7 +26,7 @@ const SPLIT_KEY_FILES = [
  * Time limits for a test and for a setup hook. Vitest's defaults (5 s and 10 s)
  * are hit by tests that are only slow because the machine is busy, for example
  * when several full runs share it, and every such failure costs a rerun. A test
- * that is really stuck still fails, only later. The console suites use the same.
+ * that is really stuck still fails, only later. The console suites use the same 20 s test limit.
  */
 const TIME_LIMITS = { testTimeout: 20_000, hookTimeout: 30_000 };
 
