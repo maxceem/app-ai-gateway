@@ -53,6 +53,34 @@ const SECRET_CONTEXTS = {
     gatewayAccountId,
     gatewayId,
   }),
+  /**
+   * Split keys (plan step 8j): an account's root key for one credential,
+   * bound to the account, the credential and its kind. Only the vault seals
+   * and opens it.
+   */
+  keySlot: (accountId: string, credentialId: string, credentialKind: string) => ({ accountId, credentialId, credentialKind }),
+  /**
+   * Split keys: a copy of a provider key for work with no app request (the
+   * sweep's job checks), bound as the key is, and to when it stops opening.
+   * Only the vault seals and opens it.
+   */
+  storedProviderKey: (
+    accountId: string,
+    connectionId: string,
+    providerType: string,
+    baseUrl: string,
+    keyHeader: string,
+    keyFormat: string,
+    expiresAt: string,
+  ) => ({ accountId, connectionId, providerType, baseUrl, keyHeader, keyFormat, expiresAt }),
+  /** Split keys: the same, for a Cloudflare AI Gateway token. */
+  storedCloudflareToken: (accountId: string, connectionId: string, gatewayAccountId: string, gatewayId: string, expiresAt: string) => ({
+    accountId,
+    connectionId,
+    gatewayAccountId,
+    gatewayId,
+    expiresAt,
+  }),
 } as const satisfies Record<string, (...args: string[]) => Record<string, string>>;
 
 export type SecretKind = keyof typeof SECRET_CONTEXTS;

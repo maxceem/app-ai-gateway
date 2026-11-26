@@ -17,7 +17,7 @@ import { DurableObject } from "cloudflare:workers";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
-import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { entryWithoutKeyCopies, LEDGER_D1_DEADLINE_MS, logLostEntry, openWorkForLog, withoutKeyCopies, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
  * How many entries one store holds before the oldest go to the logs. One
@@ -91,14 +91,18 @@ export class ChargeStore extends DurableObject<Env> {
     });
   }
 
-  /** Keeps entries for retry. An entry already kept is not kept twice. */
+  /**
+   * Keeps entries for retry. An entry already kept is not kept twice. A job's
+   * key copies are never kept (split keys, plan step 8j): its check then ends
+   * with the estimate kept.
+   */
   async keep(entries: readonly LedgerEntry[]): Promise<void> {
     const now = Date.now();
     for (const entry of entries) {
       this.ctx.storage.sql.exec(
         "INSERT INTO pending (id, entry, stored_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
         entry.charge.id,
-        JSON.stringify(entry),
+        JSON.stringify(entryWithoutKeyCopies(entry)),
         now,
       );
     }
@@ -108,14 +112,14 @@ export class ChargeStore extends DurableObject<Env> {
     }
   }
 
-  /** Keeps open-work rows that have no charge, for retry. A row already kept is not kept twice, nor changed. */
+  /** Keeps open-work rows that have no charge, for retry, never their key copies. A row already kept is not kept twice, nor changed. */
   async keepWork(rows: readonly OpenWorkRow[]): Promise<void> {
     const now = Date.now();
     for (const row of rows) {
       this.ctx.storage.sql.exec(
         "INSERT INTO pending_work (id, row, stored_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
         row.id,
-        JSON.stringify(row),
+        JSON.stringify(withoutKeyCopies(row)),
         now,
       );
     }
@@ -209,7 +213,7 @@ export class ChargeStore extends DurableObject<Env> {
   }
 
   private dropWork(id: string, row: string): void {
-    log("error", "open_work_unrecorded", { work: id, row: JSON.parse(row) as Record<string, unknown> });
+    log("error", "open_work_unrecorded", { work: id, row: openWorkForLog(JSON.parse(row) as OpenWorkRow) });
     this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", id);
   }
 

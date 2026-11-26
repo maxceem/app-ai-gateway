@@ -346,9 +346,10 @@ export async function presetHandler(c: ProxyContext): Promise<Response> {
           // connection with none is refused before anything is spent, as v1. A
           // fallback's are checked only when the chain reaches it. They stay
           // sealed: the vault opens them when it sends the call (plan step 8i).
-          const checked = primary ? sealedCredentials(connection) : null;
+          const share = caller.identity.keyShare;
+          const checked = primary ? sealedCredentials(connection, share) : null;
           const open = connection;
-          const credentials = checked !== null ? () => Promise.resolve(checked) : () => Promise.resolve().then(() => sealedCredentials(open));
+          const credentials = checked !== null ? () => Promise.resolve(checked) : () => Promise.resolve().then(() => sealedCredentials(open, share));
           attempts.push(
             targetAttempt({
               slug,

@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowedUrl, callProvider, holds, keyHeaderAllowed, readCredentials, under, VAULT_ERROR_HEADER } from "../vault/src/call.js";
 import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "../vault/src/hosts.js";
-import { CONTEXT_NAMES, open, reseal, seal, secretContext as vaultContext, vaultStatus } from "../vault/src/seal.js";
+import { CONTEXT_NAMES, open, reseal, seal, sealAs, secretContext as vaultContext, vaultStatus } from "../vault/src/seal.js";
 import { createKmsClient } from "@maxceem/cf-kms/client";
 import { KMS_TIMEOUT_MS } from "../vault/src/kms.js";
 import { BUILT_IN_PROVIDERS } from "../src/providers/index.ts";
@@ -141,7 +141,7 @@ describe("the vault's tables", () => {
       const identity = Array.from({ length: secretIdentityLength(kind) }, (_, index) => `id-${index}`);
       expect(vaultContext(kind, identity)).toEqual(secretContext(kind, identity as never));
       // A blob either side seals opens on the other.
-      expect(await openSecret(TEST_VAULT_ENV, kind, identity as never, await seal(vaultEnv, kind, identity, "s1"))).toBe("s1");
+      expect(await openSecret(TEST_VAULT_ENV, kind, identity as never, await sealAs(vaultEnv, kind, identity, "s1"))).toBe("s1");
       expect(await open(vaultEnv, kind, identity, await sealSecret(TEST_VAULT_ENV, kind, identity as never, "s2"))).toBe("s2");
     }
   });

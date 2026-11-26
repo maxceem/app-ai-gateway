@@ -1,3 +1,4 @@
+import type { KeyShare } from "../vault/key-share.ts";
 import type { AuthenticationConfig, ConversationsConfig, LimitsConfig, PresetsConfig, RoutingConfig } from "../contracts/app-config.ts";
 
 /** How the client first proved itself. A gateway token carries this over from its exchange. */
@@ -34,6 +35,12 @@ interface GatewayIdentityFields {
   credentialType: "api_key" | "gateway_token";
   /** The app key that authenticated the request, or that the gateway token was exchanged with. */
   apiKeyId?: string;
+  /**
+   * For an account with split keys on, the credential that opens its
+   * provider keys for this request (plan step 8j). Set only when the
+   * credential has a keyslot; it never prints.
+   */
+  keyShare?: KeyShare;
 }
 
 /**

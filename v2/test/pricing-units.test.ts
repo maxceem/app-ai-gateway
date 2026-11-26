@@ -27,9 +27,8 @@ import { priceKeyValues, removeOutbound, removeOutboundForm, requestUsage } from
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import type { UsageObservation } from "../src/usage/observation.ts";
 import { STANDARD_MODE, parseServiceModeName } from "../src/usage/service-modes.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 /** Saves a price on an OpenAI connection, as the management API does. */
 const save = (pricing: Parameters<typeof ratesFromPricing>[0], type = "openai") => ratesFromPricing(pricing, type);
@@ -443,7 +442,7 @@ describe("through the proxy", () => {
     await seedAccount();
     const id = crypto.randomUUID().replaceAll("-", "");
     const slug = `openai-${id.slice(0, 6)}`;
-    const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], "sk-test-provider-key-5678");
+    const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], "sk-test-provider-key-5678");
     const now = Date.now();
     await env.DB.prepare(
       `INSERT INTO provider_connection

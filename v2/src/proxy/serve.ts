@@ -73,7 +73,7 @@ import { attemptCostUsd, attemptUsage, requestedServiceMode, responseReader, ser
 import { removeOutbound, requestFacts, requestFormFields } from "./request-fields.ts";
 import { observeBody } from "./observe.ts";
 import { jobSigningReady, jobSigningUnavailable, routeDigest, signJobId } from "../jobs/job-id.ts";
-import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRedirect, providerRequestId, withGatewayLinks } from "../jobs/jobs.ts";
+import { gatewayLinks, jobEstimate, jobLocation, jobRedirectTargets, providerRedirect, providerRequestId, withGatewayLinks, withJobKeyCopies } from "../jobs/jobs.ts";
 
 /** How long a provider may take to send its response headers (v1's default), unless the operation declares its own. */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
@@ -436,8 +436,9 @@ export async function proxyHandler(c: ProxyContext): Promise<Response> {
       if (operation.lifecycle === "job" && !jobSigningReady(c.env.JWT_SECRET)) throw jobSigningUnavailable();
 
       // The credentials are checked before admission: a request that cannot be sent must not spend anything.
-      // They stay sealed: the vault opens them when it sends the call (plan step 8i).
-      const credentials = sealedCredentials(connection);
+      // They stay sealed: the vault opens them when it sends the call (plan step 8i), with the
+      // credential this request brought for an account with split keys on (step 8j).
+      const credentials = sealedCredentials(connection, identity.keyShare);
 
       // Admission comes last, once the request is known to be one that can be
       // served: the app's own limits, then the plan allowance.
@@ -533,7 +534,7 @@ async function servePassthrough(
   if (applied.body.kind === "set") sent = { bytes: applied.body.bytes, contentType: "application/json" };
   const facts = requestFacts(operation, { body: {}, query: url.searchParams }, bill.price?.price ?? null, caller.facts);
   // The credentials are checked before admission: a request that cannot be sent must not spend anything.
-  const credentials = sealedCredentials(connection);
+  const credentials = sealedCredentials(connection, caller.identity.keyShare);
   await timedAdmission(timingsOf(c.req.raw), () =>
     admitRequest({
       env: c.env,
@@ -1476,7 +1477,14 @@ async function answerJobSubmit(
     route: await routeDigest(connection),
   });
   const entry = jobEstimate(attempt, operation, { status: "ok", httpStatus: upstream.status, latencyMs, signedId: jobId, now });
-  c.executionCtx.waitUntil(recordLedgerEntry(c.env, entry));
+  // For an account with split keys on, the check row also gets copies of the key for the sweep (plan step 8j).
+  c.executionCtx.waitUntil(
+    prepared
+      .credentials()
+      .then((credentials) => withJobKeyCopies(c.env, entry, credentials, now))
+      .catch(() => entry)
+      .then((kept) => recordLedgerEntry(c.env, kept)),
+  );
   const links = gatewayLinks(new URL(c.req.url).origin, attempt.appId, jobId);
   const headers = clientResponseHeaders(upstream.headers, keyHeader);
   // The provider's own `Location` (fal can send one with a 202) never reaches the app: when it

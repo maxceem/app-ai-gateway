@@ -7,12 +7,15 @@
  * - `fetch`: one call to a provider, with the sealed credentials in the
  *   `x-agw-vault` header (`./call.js`);
  * - `holds`: which texts echo a call's credentials, for stored conversations;
- * - `seal`: a new credential, sealed as soon as it arrives;
+ * - `seal`: a new credential, sealed as soon as it arrives (to the account's
+ *   root as well, for an account with split keys on);
+ * - `storeCopy`: copies of a call's credentials for work with no app request
+ *   (split keys, plan step 8j);
  * - `reseal`: a credential sealed again for a new address, without leaving;
  * - `status`: whether its settings let it seal and open, for the health check.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { callFromRequest, holds } from "./call.js";
+import { callFromRequest, holds, storeCopy } from "./call.js";
 import { reseal, seal, vaultStatus } from "./seal.js";
 
 /** @extends {WorkerEntrypoint<import("./seal.js").VaultEnv>} */
@@ -29,9 +32,18 @@ export default class Vault extends WorkerEntrypoint {
    * @param {string} kind
    * @param {string[]} identity
    * @param {string} plaintext
+   * @param {string} [rootPublicKey] the account's, when split keys are on
    */
-  seal(kind, identity, plaintext) {
-    return seal(this.env, kind, identity, plaintext);
+  seal(kind, identity, plaintext, rootPublicKey) {
+    return seal(this.env, kind, identity, plaintext, rootPublicKey);
+  }
+
+  /**
+   * @param {unknown} credentials
+   * @param {number} expiresAt
+   */
+  storeCopy(credentials, expiresAt) {
+    return storeCopy(this.env, credentials, expiresAt);
   }
 
   /**

@@ -17,6 +17,7 @@ import { clearAllCaches } from "../src/core/ttl-cache.ts";
 import { resetStallHold } from "../src/core/stale-read.ts";
 import { writeToLedger, type LedgerEntry } from "../src/ledger/write.ts";
 import { encodeCbor } from "./app-attest-fixtures.ts";
+import { addKeySlot, enableSplitKeys, hasSplitKeys, splitKeysOn } from "./split-keys.ts";
 
 export const ACCOUNT_ID = "acc_test";
 export const TEAM_ID = "AAAAAAAAAA";
@@ -37,6 +38,8 @@ export async function seedAccount(): Promise<void> {
       "INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Test', 'usr_test', ?, ?)",
     ).bind(ACCOUNT_ID, new Date(now).toISOString(), new Date(now).toISOString()),
   ]);
+  // The split-key run: the test account has split keys on (`./split-keys.ts`).
+  if (splitKeysOn) await enableSplitKeys(ACCOUNT_ID);
   seeded = true;
 }
 
@@ -74,6 +77,9 @@ export async function seedAppKey(appId: string, status: "active" | "revoked" = "
   )
     .bind(id, appId, await hashApiKey(key), key.slice(0, 12), status, Date.now())
     .run();
+  // With split keys on, the key has a keyslot, as the browser will make one (phase 2).
+  const owner = await env.DB.prepare("SELECT account_id FROM app WHERE id = ?").bind(appId).first<{ account_id: string }>();
+  if (owner !== null && hasSplitKeys(owner.account_id)) await addKeySlot(owner.account_id, id, key);
   return { id, key };
 }
 

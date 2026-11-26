@@ -17,9 +17,8 @@ import { requestBody } from "../src/proxy/serve.ts";
 import { usageFromMeasures, usageMeasures } from "../src/usage/measures.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-5678";
@@ -28,7 +27,7 @@ async function setup(type: string, routing: Record<string, unknown>): Promise<{ 
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

@@ -12,6 +12,7 @@
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
+import type { VaultRequestCredential } from "./key-share.ts";
 import type { SecretIdentity, SecretKind } from "./secrets.ts";
 
 /** The request header sealed credentials travel in, as the vault reads it (`v2/vault/src/call.js`). */
@@ -21,24 +22,46 @@ export const VAULT_ERROR_HEADER = "x-agw-vault-error";
 /** The caller's deadline over the binding, in epoch ms, as the vault reads it (`v2/vault/src/call.js`). */
 export const VAULT_DEADLINE_HEADER = "x-agw-vault-deadline";
 
-/** A provider key, sealed, with the header and format it is sent in. */
+/**
+ * A provider key, sealed, with the header and format it is sent in. A copy
+ * stored for work with no app request has one more id: when it stops opening
+ * (`storedProviderKey`, plan step 8j).
+ */
 export interface SealedProviderKey {
   readonly blob: string;
-  readonly identity: SecretIdentity<"providerKey">;
+  readonly identity: SecretIdentity<"providerKey"> | SecretIdentity<"storedProviderKey">;
   readonly header: string;
   readonly format: string;
 }
 
-/** A Cloudflare AI Gateway token, sealed. */
+/** A Cloudflare AI Gateway token, sealed; or a stored copy of one, as above. */
 export interface SealedCloudflareToken {
   readonly blob: string;
-  readonly identity: SecretIdentity<"cloudflareGatewayToken">;
+  readonly identity: SecretIdentity<"cloudflareGatewayToken"> | SecretIdentity<"storedCloudflareToken">;
 }
 
-/** What one call carries, sealed. */
+/**
+ * What one call carries, sealed. `credential` is the app's own, for an
+ * account with split keys on (`./key-share.ts`): without it such an
+ * account's keys do not open.
+ */
 export interface SealedCallCredentials {
   readonly providerKey?: SealedProviderKey;
   readonly cloudflareToken?: SealedCloudflareToken;
+  readonly credential?: VaultRequestCredential;
+}
+
+/** A connection's credentials to copy, with the app's credential that opens them (`storeCopy`). */
+export interface CopyRequest {
+  readonly providerKey?: { readonly blob: string; readonly identity: SecretIdentity<"providerKey"> };
+  readonly cloudflareToken?: { readonly blob: string; readonly identity: SecretIdentity<"cloudflareGatewayToken"> };
+  readonly credential: VaultRequestCredential;
+}
+
+/** Copies of a call's credentials for work with no app request, sealed with the KEK alone until they expire. */
+export interface StoredCopies {
+  readonly providerKey?: { readonly blob: string; readonly identity: SecretIdentity<"storedProviderKey"> };
+  readonly cloudflareToken?: { readonly blob: string; readonly identity: SecretIdentity<"storedCloudflareToken"> };
 }
 
 export interface VaultCall {
@@ -58,8 +81,18 @@ export interface VaultCall {
   readonly credentials: SealedCallCredentials;
 }
 
+/** The kinds the gateway asks the vault to seal: a new provider key or Cloudflare token. */
+export type SealableKind = Extract<SecretKind, "providerKey" | "cloudflareGatewayToken">;
+
 export interface VaultClient {
-  seal<K extends SecretKind>(kind: K, identity: SecretIdentity<K>, plaintext: string): Promise<string>;
+  /** With `rootPublicKey` (an account with split keys on), sealed to the account's root too. */
+  seal<K extends SealableKind>(kind: K, identity: SecretIdentity<K>, plaintext: string, rootPublicKey?: string): Promise<string>;
+  /**
+   * Copies of a call's credentials, opened with the app's credential and
+   * sealed with the KEK alone until `expiresAt` (at most 3 hours ahead), for
+   * work with no app request (plan step 8j).
+   */
+  storeCopy(credentials: CopyRequest, expiresAt: number): Promise<StoredCopies>;
   reseal<K extends SecretKind>(kind: K, from: SecretIdentity<K>, to: SecretIdentity<K>, blob: string): Promise<string>;
   /** The provider's answer. Throws a 502 `provider_unavailable` when the vault itself refuses. */
   call(input: VaultCall): Promise<Response>;
@@ -72,7 +105,8 @@ export interface VaultClient {
 /** The vault Worker's entrypoint as the binding exposes it. */
 interface VaultBinding {
   fetch(request: Request): Promise<Response>;
-  seal(kind: string, identity: string[], plaintext: string): Promise<string>;
+  seal(kind: string, identity: string[], plaintext: string, rootPublicKey?: string): Promise<string>;
+  storeCopy(credentials: CopyRequest, expiresAt: number): Promise<StoredCopies>;
   reseal(kind: string, from: string[], to: string[], blob: string): Promise<string>;
   holds(credentials: SealedCallCredentials, texts: string[]): Promise<boolean[]>;
   status(): Promise<"ok" | "misconfigured">;
@@ -102,7 +136,9 @@ export function vaultAnswer(response: Response): Response {
 function bindingClient(binding: VaultBinding): VaultClient {
   return {
     // Awaited inside, so callers get a plain promise rather than the binding's own thenable.
-    seal: async (kind, identity, plaintext) => await binding.seal(kind, [...identity], plaintext),
+    seal: async (kind, identity, plaintext, rootPublicKey) =>
+      rootPublicKey === undefined ? await binding.seal(kind, [...identity], plaintext) : await binding.seal(kind, [...identity], plaintext, rootPublicKey),
+    storeCopy: async (credentials, expiresAt) => await binding.storeCopy(credentials, expiresAt),
     reseal: async (kind, from, to, blob) => await binding.reseal(kind, [...from], [...to], blob),
     holds: async (credentials, texts) => await binding.holds(credentials, [...texts]),
     status: async () => await binding.status(),

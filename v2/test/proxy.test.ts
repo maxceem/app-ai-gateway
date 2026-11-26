@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest, splitKeysOn } from "./split-keys.ts";
 import {
   ACCOUNT_ID,
   attestAuthentication,
@@ -20,7 +20,6 @@ import {
   ledger,
   withLedgerDb,
 } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-provider-key-1234";
@@ -38,7 +37,7 @@ async function seedConnection(
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = options.slug ?? `openai-${id.slice(0, 6)}`;
   const baseUrl = options.baseUrl ?? null;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? "", "", ""], options.secret ?? SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "openai", baseUrl ?? "", "", ""], options.secret ?? SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -474,7 +473,8 @@ describe("review fixes", () => {
     expect(row?.last_used_at).toEqual(expect.any(Number));
   });
 
-  it("records a replayed App Attest proof as a rejection event (S7)", async () => {
+  // A gateway token brings no share until split keys phase 3.
+  it.skipIf(splitKeysOn)("records a replayed App Attest proof as a rejection event (S7)", async () => {
     const { slug } = await seedConnection();
     const appId = await seedRoutedApp(attestAuthentication(), { providers: { [slug]: { operations: ["openai.chat"] } } });
     const install = await registerTestInstall(appId);

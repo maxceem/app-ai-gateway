@@ -255,12 +255,44 @@ export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<v
   }
 }
 
+/**
+ * The detail field a job's check row keeps its key copies in, for an account
+ * with split keys on (`../jobs/jobs.ts`, plan step 8j). A copy is a key the
+ * KEK alone opens: it never goes to the logs, and goes with the check.
+ */
+export const KEY_COPIES_FIELD = "keyCopies";
+
+/** What stands in for key copies taken off a row: its check then ends, the estimate kept (`../jobs/jobs.ts`). */
+export const KEY_COPIES_REMOVED = "removed";
+
+/**
+ * An open-work row without its key copies, everything else kept. The one
+ * place that knows what a copy is, for every row that leaves the ledger
+ * object: one that is logged, and one the failed-write store keeps
+ * (`../do/ChargeStore.ts`), so a copy never outlives the ledger's own clean-up.
+ */
+export function withoutKeyCopies(row: OpenWorkRow): OpenWorkRow {
+  const copies = row.detail?.[KEY_COPIES_FIELD];
+  if (copies === undefined || copies === null || typeof copies !== "object") return row;
+  return { ...row, detail: { ...row.detail, [KEY_COPIES_FIELD]: KEY_COPIES_REMOVED } };
+}
+
+/** An entry without its key copies (`withoutKeyCopies`). */
+export function entryWithoutKeyCopies(entry: LedgerEntry): LedgerEntry {
+  return entry.openWork.some((row) => withoutKeyCopies(row) !== row) ? { ...entry, openWork: entry.openWork.map(withoutKeyCopies) } : entry;
+}
+
+/** An open-work row as it may be logged: everything needed to write it by hand, never its key copies. */
+export function openWorkForLog(row: OpenWorkRow): Record<string, unknown> {
+  return withoutKeyCopies(row) as unknown as Record<string, unknown>;
+}
+
 /** The last resort: the whole charge in the logs, so it can be written by hand. Never a secret. */
 export function logLostEntry(entry: LedgerEntry, error: unknown): void {
   log("error", "usage_record_failed", {
     app: entry.charge.appId,
     charge: entry.charge as unknown as Record<string, unknown>,
-    openWork: entry.openWork as unknown as Record<string, unknown>[],
+    openWork: entry.openWork.map(openWorkForLog),
     error: errorFacts(error),
   });
 }

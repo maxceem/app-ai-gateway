@@ -16,6 +16,7 @@
  * envelope (`./kms.js`), with the same context as additional data.
  */
 import { ENVELOPE_PREFIX, KmsError, createKmsClient, secureKmsUrl } from "./kms.js";
+import { SPLIT_PREFIX, isSplit, sealSecretToRoot } from "./split.js";
 
 /** @typedef {{ readonly [name: string]: unknown }} VaultEnv */
 
@@ -34,10 +35,19 @@ export const VAULT_SERVICE = "app-ai-gateway";
  *   saved ("" for a built-in type, whose headers `./hosts.js` lists).
  * - `cloudflareGatewayToken`: the account, the connection, and the Cloudflare
  *   account and gateway the token may go to.
+ * - `keySlot` (split keys, plan step 8j): an account's root key for one
+ *   credential, bound to the account, the credential and its kind.
+ * - `storedProviderKey` and `storedCloudflareToken` (split keys): a copy the
+ *   vault makes for work that runs with no app request (the sweep's job
+ *   checks), bound to everything the original is, plus when it stops
+ *   opening, in epoch ms.
  */
 export const CONTEXT_NAMES = /** @type {const} */ ({
   providerKey: ["accountId", "connectionId", "providerType", "baseUrl", "keyHeader", "keyFormat"],
   cloudflareGatewayToken: ["accountId", "connectionId", "gatewayAccountId", "gatewayId"],
+  keySlot: ["accountId", "credentialId", "credentialKind"],
+  storedProviderKey: ["accountId", "connectionId", "providerType", "baseUrl", "keyHeader", "keyFormat", "expiresAt"],
+  storedCloudflareToken: ["accountId", "connectionId", "gatewayAccountId", "gatewayId", "expiresAt"],
 });
 
 /** @typedef {keyof typeof CONTEXT_NAMES} SecretKind */
@@ -71,8 +81,8 @@ export class VaultBlobError extends Error {
  * @returns {Record<string, string>}
  */
 export function secretContext(kind, identity) {
-  if (kind !== "providerKey" && kind !== "cloudflareGatewayToken") throw new VaultBlobError("unknown credential kind");
-  const names = CONTEXT_NAMES[kind];
+  if (!Object.hasOwn(CONTEXT_NAMES, kind)) throw new VaultBlobError("unknown credential kind");
+  const names = CONTEXT_NAMES[/** @type {SecretKind} */ (kind)];
   if (!Array.isArray(identity) || identity.length !== names.length || !identity.every((id) => typeof id === "string")) {
     throw new VaultBlobError("identity does not match its kind");
   }
@@ -122,8 +132,8 @@ function toBase64Url(bytes) {
   return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
 }
 
-/** @param {Record<string, string>} context */
-function additionalData(context) {
+/** The context as bytes, for AES-GCM and HPKE additional data. @param {Record<string, string>} context */
+export function additionalData(context) {
   const entries = Object.entries(context).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return new TextEncoder().encode(JSON.stringify(Object.fromEntries(entries)));
 }
@@ -230,16 +240,13 @@ export function vaultStatus(env) {
 }
 
 /**
- * Seals `plaintext` to `identity`.
+ * The KEK layer: `plaintext` sealed under `context`.
  * @param {VaultEnv} env
- * @param {string} kind
- * @param {unknown} identity
+ * @param {Record<string, string>} context
  * @param {string} plaintext
  * @returns {Promise<string>}
  */
-export async function seal(env, kind, identity, plaintext) {
-  if (typeof plaintext !== "string" || plaintext === "") throw new VaultBlobError("nothing to seal");
-  const context = secretContext(kind, identity);
+async function sealKek(env, context, plaintext) {
   if (vaultMode(env) === "kms") return kms(env).encryptSecret(plaintext, context);
   const { materials, current } = keks(env);
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
@@ -251,7 +258,46 @@ export async function seal(env, kind, identity, plaintext) {
 }
 
 /**
- * Opens a blob sealed to `identity`. Never logged, never returned to a caller.
+ * Seals `plaintext` to `identity`, for any kind. Only this Worker calls it
+ * for a keyslot or a stored copy; the gateway's entrypoint is {@link seal}.
+ * @param {VaultEnv} env
+ * @param {string} kind
+ * @param {unknown} identity
+ * @param {string} plaintext
+ * @returns {Promise<string>}
+ */
+export async function sealAs(env, kind, identity, plaintext) {
+  if (typeof plaintext !== "string" || plaintext === "") throw new VaultBlobError("nothing to seal");
+  return sealKek(env, secretContext(kind, identity), plaintext);
+}
+
+/**
+ * Seals a new provider key or Cloudflare token to `identity`, as soon as it
+ * arrives. With `rootPublicKey` (an account with split keys on, plan step
+ * 8j) it is sealed to the account's root first, so only a request that
+ * brings a credential can open it again; the KEK layer stays outside.
+ * @param {VaultEnv} env
+ * @param {string} kind
+ * @param {unknown} identity
+ * @param {string} plaintext
+ * @param {unknown} [rootPublicKey] base64url, or undefined for a key the KEK alone opens
+ * @returns {Promise<string>}
+ */
+export async function seal(env, kind, identity, plaintext, rootPublicKey) {
+  if (kind !== "providerKey" && kind !== "cloudflareGatewayToken") throw new VaultBlobError("only a provider key or a Cloudflare token is sealed here");
+  if (typeof plaintext !== "string" || plaintext === "") throw new VaultBlobError("nothing to seal");
+  // A key that looks like a split-key value would be read as one when opened.
+  if (plaintext.startsWith(SPLIT_PREFIX)) throw new VaultBlobError("not a credential");
+  const context = secretContext(kind, identity);
+  if (rootPublicKey === undefined || rootPublicKey === null) return sealKek(env, context, plaintext);
+  if (typeof rootPublicKey !== "string") throw new VaultBlobError("invalid root public key");
+  return sealKek(env, context, await sealSecretToRoot(rootPublicKey, additionalData(context), plaintext));
+}
+
+/**
+ * Opens the KEK layer of a blob sealed to `identity`. Never logged, never
+ * returned to a caller. For a split-key account what comes out is still
+ * sealed to its root (`./keys.js` opens the rest).
  * @param {VaultEnv} env
  * @param {string} kind
  * @param {unknown} identity
@@ -311,5 +357,9 @@ export async function reseal(env, kind, from, to, blob) {
   const target = secretContext(kind, to);
   const same = ["accountId", "connectionId", "providerType", "keyHeader", "keyFormat"].every((name) => source[name] === target[name]);
   if (!same || target.baseUrl !== "") throw new VaultBlobError("a key can only be sealed again for its provider's own address");
-  return seal(env, kind, to, await open(env, kind, from, blob));
+  const opened = await open(env, kind, from, blob);
+  // A split-key value is bound to its address inside the root's seal too, and the
+  // root is not here: moving it needs the key again (plan step 8j).
+  if (isSplit(opened)) throw new VaultBlobError("a split-key value needs the key again to move");
+  return sealKek(env, target, opened);
 }

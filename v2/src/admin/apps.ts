@@ -932,6 +932,8 @@ export async function deleteApp(c: AdminContext): Promise<Response> {
        SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
        ON CONFLICT (id) DO NOTHING`,
     ).bind(appId, Date.now(), actor.accountId),
+    // Split keys (plan step 8j): the keys' keyslots go with them.
+    c.env.DB.prepare("DELETE FROM key_slot WHERE credential_kind = 'api_key' AND credential_id IN (SELECT id FROM app_key WHERE app_id = ?)").bind(appId),
     c.env.DB.prepare("DELETE FROM app_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_attest_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_auth_challenge WHERE app_id = ?").bind(appId),
@@ -993,7 +995,13 @@ export async function revokeAppKey(c: AdminContext): Promise<Response> {
   const appId = c.req.param("app")!;
   const keyId = c.req.param("key")!;
   requireApiKeyApp(await appRow(c.env.DB, actor.accountId, appId));
-  await c.env.DB.prepare("UPDATE app_key SET status = 'revoked' WHERE id = ? AND app_id = ?").bind(keyId, appId).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE app_key SET status = 'revoked' WHERE id = ? AND app_id = ?").bind(keyId, appId),
+    // Split keys (plan step 8j): a revoked key's keyslot goes with it.
+    c.env.DB.prepare(
+      "DELETE FROM key_slot WHERE credential_kind = 'api_key' AND credential_id = ? AND account_id = ? AND EXISTS (SELECT 1 FROM app_key WHERE id = ? AND app_id = ?)",
+    ).bind(keyId, actor.accountId, keyId, appId),
+  ]);
   const row = await c.env.DB.prepare(
     "SELECT id, name, key_prefix, status, created_at, last_used_at FROM app_key WHERE id = ? AND app_id = ?",
   )

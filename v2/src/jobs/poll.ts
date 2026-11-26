@@ -112,7 +112,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
         const timings = timingsOf(c.req.raw);
         if (timings !== undefined) prepareDone(timings);
         const providerStart = Date.now();
-        const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query);
+        const { response, keyHeader, url } = await fetchJob(c.env, context, which, claims, caller.identity.userId, undefined, query, { share: caller.identity.keyShare });
         providerAnswered(c.req.raw, Date.now() - providerStart);
         const headers = clientResponseHeaders(response.headers, keyHeader);
         jobLocation(headers, response.headers, url, jobRedirectTargets(context, claims), links);
@@ -153,7 +153,7 @@ export function jobPollHandler(which: "status" | "result" | "cancel") {
           // Too large to rewrite, so never passed on with the provider's links in it.
           // Asked once more without the optional query fields (fal's `logs`).
           void read.stream.cancel().catch(() => undefined);
-          const again = await fetchJob(c.env, context, "status", claims, caller.identity.userId);
+          const again = await fetchJob(c.env, context, "status", claims, caller.identity.userId, undefined, "", { share: caller.identity.keyShare });
           answer = again.response;
           answerHeaders = clientResponseHeaders(answer.headers, again.keyHeader);
           jobLocation(answerHeaders, answer.headers, again.url, jobRedirectTargets(context, claims), links);

@@ -2,9 +2,29 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-worker
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({
-  plugins: [
-    cloudflareTest(async () => {
+/**
+ * The files that send provider keys over requests an app key authenticates,
+ * run a second time with the test account's split keys on (plan step 8j,
+ * `test/split-keys.ts`). A request with a gateway token brings no share
+ * until phase 3, so those tests skip themselves in this run.
+ */
+const SPLIT_KEY_FILES = [
+  "test/proxy.test.ts",
+  "test/passthrough.test.ts",
+  "test/presets.test.ts",
+  "test/jobs.test.ts",
+  "test/conversations.test.ts",
+  "test/custom-providers.test.ts",
+  "test/deepgram-fal.test.ts",
+  "test/elevenlabs.test.ts",
+  "test/media.test.ts",
+  "test/providers.test.ts",
+  "test/pricing-units.test.ts",
+];
+
+/** The Workers test pool, with the test account's split keys on or off. */
+const workers = (splitKeys: boolean) =>
+  cloudflareTest(async () => {
       const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
       return {
         wrangler: { configPath: "./wrangler.jsonc" },
@@ -68,14 +88,18 @@ export default defineConfig({
             // The console and the OAuth issuer (`https://console.gateway.test/v2`).
             CONSOLE_ORIGIN: "https://console.gateway.test",
             TEST_MIGRATIONS: migrations,
+            ...(splitKeys ? { TEST_SPLIT_KEYS: "1" } : {}),
           },
         },
       };
-    }),
-  ],
+    });
+
+export default defineConfig({
   test: {
-    setupFiles: ["./test/apply-migrations.ts"],
-    include: ["test/**/*.test.ts"],
+    projects: [
+      { plugins: [workers(false)], test: { name: "v2", setupFiles: ["./test/apply-migrations.ts"], include: ["test/**/*.test.ts"] } },
+      { plugins: [workers(true)], test: { name: "v2-split-keys", setupFiles: ["./test/apply-migrations.ts"], include: SPLIT_KEY_FILES } },
+    ],
     // Every run goes to the test ledger when one is set up (scripts/test-ledger/).
     reporters: ["default", ["../scripts/test-ledger/reporter.mjs", { suite: "v2" }]],
   },
