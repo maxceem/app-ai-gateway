@@ -4,7 +4,7 @@
  * the mark of the provider key that came in, and the mark of a client
  * credential that reached the provider.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import mock, { clientCredentialHeaders, clientCredentialPlaces, jwksFromPath, keyMarks } from "../smoke/mock/index.ts";
 import { assertHolds, keyMark, readJson } from "../smoke/support.ts";
 
@@ -129,6 +129,32 @@ describe("the smoke mock", () => {
     expect(flex.prompt_tokens_details?.cached_tokens).toBeGreaterThan(0);
     expect(flex.prompt_tokens_details!.cached_tokens).toBeLessThan(flex.prompt_tokens);
     expect((await usage()).prompt_tokens_details).toBeUndefined();
+  });
+});
+
+describe("the smoke mock's slow stream", () => {
+  it("logs that the stream was cut off, with its tag and the chunks sent, when the reader hangs up", async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const response = await mock.fetch(
+        new Request("https://mock.test/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer sk-mock-smoke-key", "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o-mini", stream: true, mock_slow_stream: true, mock_tag: "abort-1", messages: [] }),
+        }),
+      );
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('"content":"."');
+      await reader.cancel();
+      const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as { event: string; tag: string; chunks: number });
+      expect(lines.find((line) => line.event === "mock_stream_cancelled")).toMatchObject({ tag: "abort-1" });
+      expect(lines.some((line) => line.event === "mock_stream_finished")).toBe(false);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

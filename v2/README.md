@@ -102,7 +102,8 @@ Inside `v2/`:
 
 - `JWT_SECRET` signs gateway tokens: at least 32 bytes.
 - `SECRET_VAULT_LOCAL_KEK_V1` seals provider keys in `local` vault mode: 32 bytes, base64. Back it up:
-  without it, stored provider keys cannot be opened.
+  without it, stored provider keys cannot be opened. It is the vault Worker's secret
+  (`vault/.dev.vars.example`), never the gateway Worker's.
 - `BETTER_AUTH_SECRET` signs console sessions and seals OAuth codes: at least 32 bytes. Every
   deployment needs it: without it, the whole management API answers 503, management keys included.
   Changing it signs everyone out.
@@ -197,6 +198,19 @@ name, database id, domains and placement go in a gitignored
 applied with `wrangler d1 migrations apply DB --remote -c wrangler.<profile>.jsonc`
 before the Worker is deployed. Build the console (`pnpm run v2:console:build`) before every
 deploy: the Worker uploads `console/dist/` as its static files.
+
+The vault Worker (`vault/`) is deployed first, then the gateway Worker, whose `VAULT` binding
+names it.
+
+- Its own profile is a gitignored `vault/wrangler.<profile>.jsonc`, a copy of
+  `vault/wrangler.jsonc` with the deployment's Worker name. It is uploaded as it is, with no
+  build. The gateway's profile names that Worker in its `VAULT` service binding.
+- Its secrets go only to it: `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc`.
+  The gateway Worker holds no `SECRET_VAULT_*` setting.
+- In `kms` mode, the vault profile's `vars` hold only `SECRET_VAULT_MODE: "kms"`. Leave out
+  `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`: a vault in `kms` mode with any `SECRET_VAULT_LOCAL_*`
+  setting reports `vault: "misconfigured"` in health. Its secrets are `SECRET_VAULT_KMS_URL` and
+  `SECRET_VAULT_KMS_TOKEN`.
 
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,

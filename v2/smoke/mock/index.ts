@@ -48,6 +48,12 @@
  * - `service_tier`: exactly `flex` sets `x-mock-service-tier: flex`, so a check
  *   sees the mode arrived, and Chat Completions then reports half the prompt
  *   as cached tokens. Nothing else from it is echoed.
+ * - `mock_slow_stream: true` (a Chat Completions stream): one chunk every
+ *   250 ms for 30 s. The mock logs `mock_stream_cancelled` with the chunks
+ *   sent if the gateway closes the connection first, and
+ *   `mock_stream_finished` otherwise, with `mock_tag` (letters, digits and
+ *   `-`, at most 64), so a check reading the mock's logs sees whether a
+ *   client's hang-up reached the provider.
  * - `mock_output_bytes`: make the answer's payload this many bytes (at most
  *   32 MB): the image's base64, the Responses output text (in a stream, on
  *   its closing event) or the transcript, before the usage, so a check can
@@ -145,7 +151,35 @@ type Answer = (input: { body: Record<string, unknown>; bytes: number; model: str
 
 const SSE = { "content-type": "text/event-stream" };
 
+const SLOW_CHUNKS = 120;
+const SLOW_CHUNK_MS = 250;
+
+/** A Chat Completions stream that takes 30 s, and logs whether it was cut off (`mock_slow_stream`). */
+function slowStream(body: Record<string, unknown>, model: string): Response {
+  const tag = typeof body.mock_tag === "string" && /^[A-Za-z0-9-]{1,64}$/u.test(body.mock_tag) ? body.mock_tag : "untagged";
+  const encoder = new TextEncoder();
+  let sent = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (sent > 0) await new Promise((resolve) => setTimeout(resolve, SLOW_CHUNK_MS));
+      if (sent === SLOW_CHUNKS) {
+        controller.enqueue(encoder.encode(events([{ id: "chatcmpl-mock", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }], true)));
+        console.log(JSON.stringify({ event: "mock_stream_finished", tag, chunks: sent }));
+        controller.close();
+        return;
+      }
+      sent += 1;
+      controller.enqueue(encoder.encode(events([{ id: "chatcmpl-mock", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { content: "." } }] }])));
+    },
+    cancel() {
+      console.log(JSON.stringify({ event: "mock_stream_cancelled", tag, chunks: sent }));
+    },
+  });
+  return new Response(stream, { headers: SSE });
+}
+
 const chat: Answer = ({ body, bytes, model, stream }) => {
+  if (stream && body.mock_slow_stream === true) return slowStream(body, model);
   const prompt = promptTokens(bytes);
   // A flex request reports half its prompt as cached, as OpenAI does inside
   // `prompt_tokens`, so a check can see cached usage priced and recorded.
