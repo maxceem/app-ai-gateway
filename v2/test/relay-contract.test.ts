@@ -16,7 +16,8 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { issueTicket, type TicketRequest } from "../src/relay/tickets.ts";
 import { parseTicket } from "../relay/src/ticket.js";
-import { ACCOUNT_ID, ledger } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, ledger, seedAccount } from "./helpers.ts";
+import { checkpointForRelay } from "../src/relay/checkpoint.ts";
 import { sealForTest, testShare } from "./split-keys.ts";
 
 interface Contract {
@@ -60,6 +61,25 @@ async function ticket(): Promise<{ text: string; sid: string; start: number }> {
 const session = (sid: string) => ledger().prepare("SELECT state, final_slice, end_reason FROM session WHERE id = ?").bind(sid).first();
 
 describe("relay contract versions", () => {
+  // First in this file, so no other session's minutes count toward the plan's.
+  it("stops at the plan's live-session minutes from the hosted billing answer: the checkpoint that reaches them answers allowance_used_up (D17)", async () => {
+    await seedAccount();
+    clearCaches();
+    const plan = { planKey: "p", planName: "P", isDefault: true, limits: { maxSessionMinutesPerMonth: 1 } };
+    const hosted = { ...env, BILLING: { getTenantAccess: async () => ({ plan, subscription: null }) } } as unknown as Env;
+    const t = await ticket();
+    const slice = (seq: number, sessionMs: number, from: number) => ({ seq, measures: {}, sessionMs, gapMs: 0, gaps: 0, from, to: from + sessionMs });
+    const input = (s: ReturnType<typeof slice>) => ({ slice: s, connected: true, accounting: false, relayVersion: 2 });
+    expect(await checkpointForRelay(hosted, t.text, input(slice(1, 40_000, t.start)))).toMatchObject({ decision: "continue", written: true });
+    expect(await checkpointForRelay(hosted, t.text, input(slice(2, 20_000, t.start + 40_000)))).toEqual({
+      version: 2,
+      decision: "stop",
+      reasons: ["allowance_used_up"],
+      written: true,
+    });
+    clearCaches();
+  });
+
   it("answers a version 1 relay: open, then close with no slices", async () => {
     const t = await ticket();
     const opened = await contract.open(t.text);

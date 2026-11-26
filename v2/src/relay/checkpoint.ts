@@ -34,7 +34,7 @@ import type { AppRecord } from "../core/types.ts";
 import { loadApp } from "../apps/app-records.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import type { Measured, PriceSource } from "../ledger/labels.ts";
-import { checkpointStanding, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
+import { checkpointStanding, sessionRates, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
 import { utcDay, type ChargeRow } from "../ledger/write.ts";
 import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
@@ -197,7 +197,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     errorCode: null,
     costNano: price.costNano,
     // A gap means some usage may be missing: never `complete` (plan 4.2).
-    measured: slice.gapMs > 0 ? "partial" : price.measured,
+    measured: slice.gapMs > 0 || slice.gaps > 0 ? "partial" : price.measured,
     priceSource: price.priceSource,
     priceIsEstimate: price.estimated,
     inputTokens: tokens.input_tokens,
@@ -285,18 +285,24 @@ export async function checkpointForRelay(
 
   // The reads before the ledger, together: each has its own short deadline, and none can fail the checkpoint.
   const facts = { app: ticket.app, session: ticket.sid };
-  const [standing, budgets, planMinutes] = await Promise.all([
+  const ledger = ledgerDb(env, ticket.account, { deadlineMs: CHECKPOINT_LEDGER_DEADLINE_MS });
+  const [standing, budgets, planMinutes, fixedRates] = await Promise.all([
     // Its own 1 s deadline inside; null when D1 can't answer, and both checks are skipped.
     checkpointStanding(env.DB, session),
     bounded(async () => checkpointBudgets(await loadApp(env, ticket.app), ticket), [], "checkpoint_budgets_unchecked", facts, waitUntil),
     bounded(() => checkpointPlanMinutes(env, ticket, now, waitUntil), null, "checkpoint_allowance_unchecked", facts, waitUntil),
+    // The rates the session started with (plan 4.2): a rate change mid-session never reprices it.
+    bounded(() => sessionRates(ledger, ticket.sid), undefined, "checkpoint_rates_unread", facts, waitUntil),
   ]);
+  // Not fixed yet (the first checkpoint): today's rates, fixed on the session in the same write.
   // Without the connection's own rates (D1 didn't answer), our list price still prices the slice.
-  const slice = input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(ticket, input.slice.measures, standing?.ratesJson ?? null), now);
+  const rates = fixedRates !== undefined ? fixedRates : (standing?.ratesJson ?? null);
+  const fixRates = fixedRates === undefined && standing !== null ? (standing.ratesJson ?? null) : undefined;
+  const slice = input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(ticket, input.slice.measures, rates), now);
 
   let answer;
   try {
-    answer = await writeCheckpoint(ledgerDb(env, ticket.account, { deadlineMs: CHECKPOINT_LEDGER_DEADLINE_MS }), env.DB, {
+    answer = await writeCheckpoint(ledger, env.DB, {
       session,
       slice,
       budgets,
@@ -305,6 +311,7 @@ export async function checkpointForRelay(
       providerCallId: input.providerCallId ?? null,
       standing,
       gaps: input.slice?.gaps ?? 0,
+      ...(fixRates === undefined ? {} : { fixRates }),
     });
   } catch (error) {
     // The ledger can't be reached: the session continues, and the relay sends the slice again.

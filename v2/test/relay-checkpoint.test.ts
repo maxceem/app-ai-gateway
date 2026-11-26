@@ -18,7 +18,7 @@ import type { SessionCheckpointAnswer, UserSessionAdmission } from "../src/do/En
 import type { SlotClaim } from "../src/do/session-slots.ts";
 import type { AppRecord } from "../src/core/types.ts";
 import { parseTicket, deadlineOf, type Ticket } from "../relay/src/ticket.js";
-import { ACCOUNT_ID, ledger, seedApp, withLedgerDb } from "./helpers.ts";
+import { ACCOUNT_ID, ledger, seedAccount, seedApp, withLedgerDb } from "./helpers.ts";
 import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
 
 const MINUTE = 60_000;
@@ -98,6 +98,29 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     const answers = await Promise.all([checkpointForRelay(env, text, live(one)), checkpointForRelay(env, text, live(one))]);
     expect(answers.map((a) => a.decision)).toEqual(["continue", "continue"]);
     expect(await charges(ticket.sid)).toHaveLength(1);
+  });
+
+  it("prices every slice at the rates the session started with: a rate change mid-session reprices nothing (Sol round 1)", async () => {
+    await seedAccount();
+    const connectionId = `conn_${crypto.randomUUID().replaceAll("-", "")}`;
+    const rates = (input: number) => JSON.stringify({ "house-realtime": { input, output: input } });
+    await env.DB.prepare(
+      "INSERT INTO provider_connection (id, account_id, type, slug, name, status, rates_json, created_by, created_at, updated_at) VALUES (?, ?, 'openai', ?, 'T', 'active', ?, 't', ?, ?)",
+    )
+      .bind(connectionId, ACCOUNT_ID, connectionId.slice(0, 40), rates(1_000_000_000), Date.now(), Date.now())
+      .run();
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    // The first checkpoint fixes the rates: $1 per million tokens.
+    await checkpointForRelay(env, text, live(null));
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind(rates(5_000_000_000), connectionId).run();
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000, price_source: "customer_rate" }]);
+  });
+
+  it("never books a slice with a gap as complete, even one with no gap time (Sol round 1)", async () => {
+    const { text, ticket } = await ticketFor();
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 5 }, { gaps: 1, gapMs: 0 })));
+    expect(await charges(ticket.sid)).toMatchObject([{ measured: "partial" }]);
   });
 
   it("books tokens of a model with no price yet as unresolved, never as free, and queues them for pricing (AGENTS.md)", async () => {

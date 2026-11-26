@@ -24,8 +24,8 @@ export const JOURNAL_VERSION = 1;
 export const JOURNAL_KEY = "journal";
 /** How many recent event ids are kept to skip a repeat. A provider repeats an event soon, if at all. */
 export const SEEN_IDS = 64;
-/** The journal's hard size, in characters of JSON. Past it, usage is counted as a gap. */
-export const JOURNAL_MAX_CHARS = 16 * 1024;
+/** The journal's hard size, in bytes of JSON. An event that would pass it is not counted: the slice gets an "unknown cost" gap instead. */
+export const JOURNAL_MAX_BYTES = 16 * 1024;
 /**
  * Whether the journal's per-event write lets frames go out before the write
  * is confirmed (Cloudflare's `allowUnconfirmed`; plan 5.2 rule 3). T12's
@@ -52,12 +52,14 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   savedAt: number,
  *   lastCheckpointAt: number,
  *   connected: boolean,
+ *   droppedFrom?: number,
  * }} Journal
  * `from` starts the open usage's connection time. `baselines` is a running
  * total's last figure. `unsent` are frozen slices not yet confirmed, in order.
  * `savedAt` is the last time the journal was written: after a crash, the time
  * since is a gap. `connected` is the sticky proof that the session is real
- * (crash table row 20).
+ * (crash table row 20). `droppedFrom` is when the open usage first lost an
+ * event to the hard size: the time from it to the slice's end is a gap.
  *
  * @typedef {{ id: string, measures: Record<string, number> }} UsageEvent
  * One usage event, as an adapter read it (`./adapters.js`).
@@ -81,35 +83,49 @@ export function readJournal(value) {
   return journal.v === JOURNAL_VERSION ? journal : null;
 }
 
+/** The journal's size in bytes of JSON, as it is stored. @param {Journal} journal */
+function sizeOf(journal) {
+  return new TextEncoder().encode(JSON.stringify(journal)).length;
+}
+
 /**
- * Adds one usage event. Returns whether the journal changed: a repeated id,
- * or an event past the hard size (counted as a gap instead), changes the
- * measures not at all.
+ * Adds one usage event. Returns whether the journal changed. A repeated id
+ * changes nothing.
  * - `per_turn`: each event is one turn's usage, added as it is.
  * - `running_total`: each event is the total so far; only the difference
  *   from the last total is added.
+ *
+ * An event that would take the journal past its hard size is not counted,
+ * and the ids already seen are kept, so a repeat is still skipped. The open
+ * usage gets an "unknown cost" gap from that moment to its slice's end, so
+ * the slice is never booked as complete.
  * @param {Journal} journal
  * @param {UsageEvent} event
  * @param {"per_turn" | "running_total"} shape
+ * @param {number} now
  * @returns {boolean}
  */
-export function addUsage(journal, event, shape) {
+export function addUsage(journal, event, shape, now) {
   if (journal.seen.includes(event.id)) return false;
-  journal.seen.push(event.id);
-  if (journal.seen.length > SEEN_IDS) journal.seen.splice(0, journal.seen.length - SEEN_IDS);
+  const seen = [...journal.seen, event.id].slice(-SEEN_IDS);
+  const measures = { ...journal.measures };
+  const baselines = { ...journal.baselines };
   for (const [name, value] of Object.entries(event.measures)) {
     let add = value;
     if (shape === "running_total") {
-      add = Math.max(0, value - (journal.baselines[name] ?? 0));
-      journal.baselines[name] = Math.max(value, journal.baselines[name] ?? 0);
+      add = Math.max(0, value - (baselines[name] ?? 0));
+      baselines[name] = Math.max(value, baselines[name] ?? 0);
     }
-    if (add > 0) journal.measures[name] = (journal.measures[name] ?? 0) + add;
+    if (add > 0) measures[name] = (measures[name] ?? 0) + add;
   }
-  if (JSON.stringify(journal).length > JOURNAL_MAX_CHARS) {
-    // Never reached with the fixed measures and the bounded id list; kept as the plan's hard limit.
-    journal.seen = journal.seen.slice(-1);
-    journal.gaps += 1;
+  if (sizeOf({ ...journal, seen, measures, baselines }) > JOURNAL_MAX_BYTES) {
+    if (journal.droppedFrom !== undefined) return false;
+    journal.droppedFrom = now;
+    return true;
   }
+  journal.seen = seen;
+  journal.measures = measures;
+  journal.baselines = baselines;
   return true;
 }
 
@@ -133,6 +149,11 @@ export function freeze(journal, at, options = {}) {
     gapMs += at - connectedUntil;
     gaps += 1;
   }
+  if (journal.droppedFrom !== undefined) {
+    // Usage was dropped at the hard size: unknown from then on, and never less than 1 ms.
+    gapMs += Math.max(1, at - journal.droppedFrom);
+    gaps += 1;
+  }
   const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0;
   if (empty) return null;
   /** @type {Slice} */
@@ -143,6 +164,7 @@ export function freeze(journal, at, options = {}) {
   journal.measures = {};
   journal.gapMs = 0;
   journal.gaps = 0;
+  delete journal.droppedFrom;
   return slice;
 }
 

@@ -795,6 +795,95 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
     expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { seq: 1, measures: { input_tokens: 10, output_tokens: 20 }, gaps: 1 } });
   });
 
+  it("a late live reply never writes over the ended journal: the final slice stays queued for delivery (Sol round 1)", async () => {
+    let release: (reply: Reply) => void = () => undefined;
+    const s = setup({
+      checkpoint: (seen) => {
+        // The live reply for slice 1 is held; the final delivery confirms 1 and fails to write 2.
+        if (!seen.accounting) return new Promise<Reply>((resolve) => (release = resolve));
+        return Promise.resolve({ decision: "continue", reasons: [], written: seen.slice?.seq === 1 });
+      },
+    });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    await core.recordUsage(usage("e1"), "per_turn");
+    s.tick(60_000);
+    const live = core.checkpoint();
+    await until(() => s.calls.checkpoints.length === 1);
+    await core.recordUsage(usage("e2", 5, 5), "per_turn");
+    s.tick(10_000);
+    await core.end("client_closed");
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 2 }]);
+    // Now the live reply comes, late.
+    release({ decision: "continue", reasons: [], written: true });
+    await live;
+    expect((s.store.data.get("journal") as { unsent: { seq: number }[] }).unsent.map((slice) => slice.seq)).toEqual([2]);
+    // The next retry delivers slice 2.
+    s.tick(CLOSE_RETRY_EVERY_MS);
+    await core.alarm();
+    expect(s.calls.checkpoints.filter((seen) => seen.accounting).map((seen) => seen.slice?.seq)).toEqual([1, 2, 2]);
+  });
+
+  it("acts on an explicit stop even when the journal's write then fails, keeping the unconfirmed slice for the final delivery (Sol round 1)", async () => {
+    const s = setup({
+      checkpoint: async (seen) =>
+        seen.accounting ? { decision: "continue", reasons: [], written: true } : { decision: "stop", reasons: ["key_removed"], written: false },
+    });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    await core.recordUsage(usage("e1"), "per_turn");
+    // The journal's own write fails once the checkpoint is out.
+    const putJournal = s.store.putJournal.bind(s.store);
+    s.store.putJournal = (journal: unknown) => (s.calls.checkpoints.length > 0 ? Promise.reject(new Error("storage failed")) : putJournal(journal));
+    s.tick(60_000);
+    await core.checkpoint();
+    expect(s.store.data.get("state")).toBe("ended");
+    expect(s.calls.close).toEqual([{ endReason: "key_removed", finalSlice: 1 }]);
+    expect(s.calls.checkpoints.map((seen) => [seen.slice?.seq, seen.accounting])).toEqual([
+      [1, false],
+      [1, true],
+    ]);
+  });
+
+  it("an instance that wakes 6 minutes past a 30-minute deadline bills nothing past the cap, and keeps the crash gap (Sol round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    s.tick(30_000);
+    await core.recordUsage(usage("e1"), "per_turn");
+    // The instance dies; a new one wakes 6 minutes after the deadline.
+    const deadline = s.ticket.start + s.ticket.cap;
+    s.tick(deadline + 6 * 60_000 - s.now());
+    await s.instance().alarm();
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 1 }]);
+    const final = s.calls.checkpoints.at(-1)?.slice as unknown as { to: number; sessionMs: number; gapMs: number; gaps: number };
+    expect(final).toMatchObject({ seq: 1, to: deadline, sessionMs: 30_000, gapMs: deadline - (s.ticket.start + 30_000), gaps: 1 });
+    // Within the main Worker's limit: never more than the cap.
+    expect(final.sessionMs + final.gapMs).toBeLessThanOrEqual(s.ticket.cap);
+  });
+
+  it("arms cleanup when a retry delivers the last slice after close already went through (Sol round 1)", async () => {
+    let accountingUp = false;
+    const s = setup({
+      checkpoint: async (seen) =>
+        seen.accounting && !accountingUp ? Promise.reject(new Error("down")) : { decision: "continue", reasons: [], written: !seen.accounting || accountingUp },
+    });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    await core.recordUsage(usage("e1"), "per_turn");
+    s.tick(60_000);
+    await core.end("client_closed");
+    expect(s.store.data.get("closed")).toBe(true);
+    // Past the ticket's expiry, a retry (its alarm a little late) delivers the slice.
+    accountingUp = true;
+    s.tick(CLOSE_RETRY_EVERY_MS + 5_000);
+    await core.alarm();
+    expect((s.store.data.get("journal") as { unsent: unknown[] }).unsent).toEqual([]);
+    expect(s.store.alarm).toBe(s.now());
+    await core.alarm();
+    expect(s.store.data.size).toBe(0);
+  });
+
   it("gives up on slices it can't deliver after a while, and logs them at error (row 25)", async () => {
     const s = setup({ checkpoint: async (seen) => (seen.accounting ? Promise.reject(new Error("down")) : { decision: "continue", reasons: [], written: false }) });
     const core = s.instance();

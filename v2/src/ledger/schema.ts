@@ -288,4 +288,8 @@ END`,
   ],
   // Version 2 (step 8f, Sol round 6): the next work still being tried, without reading given-up rows.
   ["CREATE INDEX `open_work_due_pending` ON `open_work` (`due_at`) WHERE gave_up_at IS NULL"],
+  // Version 3 (step 9a part 2, Sol round 1): a live session's rates, fixed at its first
+  // checkpoint, so a rate change mid-session never reprices it. NULL: not fixed yet; '': our
+  // list price; else the connection's own `rates_json` as it was then.
+  ["ALTER TABLE `session` ADD COLUMN `rates_json` text"],
 ];

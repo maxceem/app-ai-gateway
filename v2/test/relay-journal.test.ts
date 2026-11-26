@@ -4,31 +4,31 @@
  * `relay-start.test.ts`.
  */
 import { describe, expect, it } from "vitest";
-import { addUsage, confirm, finalSliceOf, freeze, JOURNAL_VERSION, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
+import { addUsage, confirm, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
 import { adapterFor } from "../relay/src/adapters.js";
 
 describe("journal", () => {
   it("adds per-turn usage, and skips an event it already counted", () => {
     const journal = newJournal(0);
-    expect(addUsage(journal, { id: "e1", measures: { input_tokens: 10, output_tokens: 2 } }, "per_turn")).toBe(true);
-    expect(addUsage(journal, { id: "e1", measures: { input_tokens: 10, output_tokens: 2 } }, "per_turn")).toBe(false);
-    addUsage(journal, { id: "e2", measures: { input_tokens: 5 } }, "per_turn");
+    expect(addUsage(journal, { id: "e1", measures: { input_tokens: 10, output_tokens: 2 } }, "per_turn", 0)).toBe(true);
+    expect(addUsage(journal, { id: "e1", measures: { input_tokens: 10, output_tokens: 2 } }, "per_turn", 0)).toBe(false);
+    addUsage(journal, { id: "e2", measures: { input_tokens: 5 } }, "per_turn", 0);
     expect(journal.measures).toEqual({ input_tokens: 15, output_tokens: 2 });
   });
 
   it("adds only the growth of a running total, across slices, and never subtracts", () => {
     const journal = newJournal(0);
-    addUsage(journal, { id: "t1", measures: { input_tokens: 100 } }, "running_total");
-    addUsage(journal, { id: "t2", measures: { input_tokens: 150 } }, "running_total");
+    addUsage(journal, { id: "t1", measures: { input_tokens: 100 } }, "running_total", 0);
+    addUsage(journal, { id: "t2", measures: { input_tokens: 150 } }, "running_total", 0);
     expect(freeze(journal, 1_000)?.measures).toEqual({ input_tokens: 150 });
-    addUsage(journal, { id: "t3", measures: { input_tokens: 120 } }, "running_total");
-    addUsage(journal, { id: "t4", measures: { input_tokens: 200 } }, "running_total");
+    addUsage(journal, { id: "t3", measures: { input_tokens: 120 } }, "running_total", 0);
+    addUsage(journal, { id: "t4", measures: { input_tokens: 200 } }, "running_total", 0);
     expect(freeze(journal, 2_000)?.measures).toEqual({ input_tokens: 50 });
   });
 
   it("keeps a bounded list of seen ids", () => {
     const journal = newJournal(0);
-    for (let i = 0; i < SEEN_IDS + 10; i++) addUsage(journal, { id: `e${i}`, measures: { output_tokens: 1 } }, "per_turn");
+    for (let i = 0; i < SEEN_IDS + 10; i++) addUsage(journal, { id: `e${i}`, measures: { output_tokens: 1 } }, "per_turn", 0);
     expect(journal.seen).toHaveLength(SEEN_IDS);
     expect(journal.measures).toEqual({ output_tokens: SEEN_IDS + 10 });
   });
@@ -38,7 +38,7 @@ describe("journal", () => {
     expect(freeze(journal, 1_000)).toBeNull();
     const one = freeze(journal, 61_000);
     expect(one).toEqual({ seq: 1, measures: {}, sessionMs: 60_000, gapMs: 0, gaps: 0, from: 1_000, to: 61_000 });
-    addUsage(journal, { id: "e1", measures: { input_tokens: 3 } }, "per_turn");
+    addUsage(journal, { id: "e1", measures: { input_tokens: 3 } }, "per_turn", 0);
     expect(freeze(journal, 61_000)).toMatchObject({ seq: 2, sessionMs: 0, measures: { input_tokens: 3 } });
     expect(journal.unsent.map((s) => s.seq)).toEqual([1, 2]);
     confirm(journal, 1);
@@ -52,6 +52,22 @@ describe("journal", () => {
     expect(freeze(journal, 90_000, { gapFrom: 30_000 })).toMatchObject({ sessionMs: 30_000, gapMs: 60_000, gaps: 1 });
     // A crash before the open usage started: all of it is a gap.
     expect(freeze(journal, 120_000, { gapFrom: 10_000 })).toMatchObject({ sessionMs: 0, gapMs: 30_000, gaps: 1 });
+  });
+
+  it("at its hard size, drops an event uncounted, still skips repeats, and marks the slice with an unknown-cost gap (Sol round 1)", () => {
+    const journal = newJournal(0);
+    // 128-character ids that grow six times when escaped in JSON: about 21 fit in 16 KB.
+    const id = (i: number) => String(i).padStart(3, "0") + "\u0001".repeat(125);
+    for (let i = 0; i < 40; i += 1) addUsage(journal, { id: id(i), measures: { input_tokens: 1 } }, "per_turn", 1_000 + i);
+    const counted = journal.measures.input_tokens ?? 0;
+    expect(counted).toBeGreaterThan(0);
+    expect(counted).toBeLessThan(40);
+    expect(new TextEncoder().encode(JSON.stringify(journal)).length).toBeLessThanOrEqual(JOURNAL_MAX_BYTES);
+    // A repeat of an event already counted is still skipped.
+    expect(addUsage(journal, { id: id(0), measures: { input_tokens: 1 } }, "per_turn", 2_000)).toBe(false);
+    expect(journal.measures.input_tokens).toBe(counted);
+    // The slice says some usage is unknown, with a real duration: from the first drop to its end.
+    expect(freeze(journal, 5_000)).toMatchObject({ gaps: 1, gapMs: 5_000 - (1_000 + counted) });
   });
 
   it("reads only a journal in a format it knows", () => {

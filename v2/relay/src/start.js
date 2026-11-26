@@ -432,7 +432,10 @@ export class SessionCore {
     }
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const journal = readJournal(stored.get(JOURNAL_KEY));
-    if (journal !== null) freeze(journal, at, details.gap === true ? { gapFrom: journal.savedAt } : {});
+    // Never past the deadline: an instance that wakes late bills nothing after the cap.
+    const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
+    const sliceEnd = deadline === undefined ? at : Math.min(at, deadline);
+    if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */
     const entries = { state: "ended", end: { reason, at, finalSlice: finalSliceOf(journal) } };
@@ -462,8 +465,9 @@ export class SessionCore {
   async recordUsage(event, shape) {
     if (this.call === null || this.ending !== null) return;
     const journal = await this.loadJournal();
-    if (journal === null || !addUsage(journal, event, shape)) return;
-    journal.savedAt = this.now();
+    const now = this.now();
+    if (journal === null || !addUsage(journal, event, shape, now)) return;
+    journal.savedAt = now;
     try {
       await this.store.putJournal(journal);
     } catch {
@@ -526,6 +530,8 @@ export class SessionCore {
     if (!journal.connected && this.proof()) journal.connected = true;
     let slice = journal.unsent[0] ?? null;
     if (slice === null) {
+      // The end owns the journal once it starts: nothing here writes over it.
+      if (this.ending !== null || this.journal !== journal) return;
       slice = freeze(journal, now);
       // The slice's boundary is stored before it is sent: usage after it goes to the next one (row 16).
       if (slice !== null) {
@@ -540,12 +546,22 @@ export class SessionCore {
       providerCallId: typeof stored.get("callId") === "string" ? /** @type {string} */ (stored.get("callId")) : null,
       relayVersion: RELAY_CONTRACT_VERSION,
     });
-    journal.lastCheckpointAt = now;
-    if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
-    if (this.ending === null) await this.store.putJournal(journal);
+    // An explicit stop comes first, whatever was written: the end stores the final journal, with
+    // this slice still in it when it is unconfirmed, for the final delivery (row 16).
     if (reply !== null && reply.decision === "stop") {
       const reason = stopReason(reply.reasons);
       await this.end(reason, reply.reasons[0] === "ended" ? { log: "relay_session_ended_by_ledger" } : {});
+      return;
+    }
+    // A reply that comes after the end began is not written: the end's journal is newer (Sol round 1).
+    if (this.ending !== null || this.journal !== journal) return;
+    journal.lastCheckpointAt = now;
+    if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
+    try {
+      await this.store.putJournal(journal);
+    } catch {
+      // The slice stays unconfirmed in memory and is sent again; a restart sends it from storage.
+      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
     }
   }
 
@@ -587,7 +603,12 @@ export class SessionCore {
         });
         if (reply === null || !reply.written) break;
         confirm(journal, slice.seq);
-        await this.store.putJournal(journal);
+        try {
+          await this.store.putJournal(journal);
+        } catch {
+          // Booked all the same: a later try sends it again, and the main Worker books it once.
+          this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionIdOf(stored) });
+        }
       }
       this.journal = journal;
     }
@@ -611,7 +632,12 @@ export class SessionCore {
     const stored = await this.store.get(KEYS);
     const ticket = stored.get("ticket");
     const end = /** @type {{ reason: string, at: number, finalSlice: number } | undefined} */ (stored.get("end"));
-    if (typeof ticket !== "string" || end === undefined || stored.get("closed") === true) return true;
+    if (typeof ticket !== "string" || end === undefined) return true;
+    if (stored.get("closed") === true) {
+      // A retry delivered the last slice after `close` was already sent: clean up once the ticket expires.
+      if (!slicesLeft) await this.store.put({}, this.cleanupAt(ticket));
+      return true;
+    }
     try {
       await this.main.close(ticket, {
         finalSlice: end.finalSlice,
@@ -652,14 +678,17 @@ export class SessionCore {
     }
     if (state === "active") {
       const deadline = settings?.deadline ?? now;
-      if (now >= deadline) return this.end("time_cap");
+      // A relayed session whose instance is gone lost its provider socket too: the time since the
+      // journal's last write is a gap even at the cap (rows 13 and 14).
+      const lost = this.call === null && settings?.mode !== "observed";
+      if (now >= deadline) return this.end("time_cap", lost ? { log: "relay_provider_lost", gap: true } : {});
       // The next tick is armed before anything that can fail (crash table row 29): a tick that
       // throws still leaves the session its next one.
       await this.store.put({}, Math.min(deadline, now + TICK_MS));
       // A relayed session lost its provider socket with its instance: it ends, and the time since
       // its journal's last write is a gap (rows 13 and 14, relayed). An observed session reattaches
       // instead (part 3): until then it waits for its deadline.
-      if (this.call === null && settings?.mode !== "observed") return this.end("error", { log: "relay_provider_lost", gap: true });
+      if (lost) return this.end("error", { log: "relay_provider_lost", gap: true });
       // The live session's own checks: a silent client, a client too far behind.
       const reason = this.liveness(now);
       if (reason !== null) return this.end(reason);

@@ -217,6 +217,12 @@ export async function writeCheckpoint(
     readonly standing?: CheckpointStanding | null;
     /** How many crash gaps this slice carries: added to the session's count when the slice is really written. */
     readonly gaps?: number;
+    /**
+     * The rates this checkpoint priced with, fixed on the session when none
+     * are yet (its first checkpoint): null is our list price. Undefined fixes
+     * nothing.
+     */
+    readonly fixRates?: string | null;
   },
 ): Promise<CheckpointAnswer> {
   const { session, slice, now } = input;
@@ -228,6 +234,11 @@ export async function writeCheckpoint(
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
   ];
+  if (input.fixRates !== undefined) {
+    statements.push(
+      db.prepare("UPDATE session SET rates_json = ? WHERE id = ? AND rates_json IS NULL").bind(input.fixRates ?? "", session.id),
+    );
+  }
   if ((input.providerCallId ?? null) !== null) {
     statements.push(
       db
@@ -352,6 +363,17 @@ export const CHECKPOINT_SETTINGS_DEADLINE_MS = 1_000;
  * connection gone or disabled. Null when D1 cannot answer in time: both are
  * skipped.
  */
+/**
+ * A session's rates, fixed at its first checkpoint: undefined when they are
+ * not fixed yet (or there is no row), null for our list price, else the
+ * connection's own rates as they were then.
+ */
+export async function sessionRates(db: D1Database, sessionId: string): Promise<string | null | undefined> {
+  const row = await db.prepare("SELECT rates_json FROM session WHERE id = ?").bind(sessionId).first<{ rates_json: string | null }>();
+  if (row === null || row.rates_json === null) return undefined;
+  return row.rates_json === "" ? null : row.rates_json;
+}
+
 export async function checkpointStanding(settings: D1Database, session: SessionRow): Promise<CheckpointStanding | null> {
   const reads: D1PreparedStatement[] = [];
   if (session.endUserId !== null) {
