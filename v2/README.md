@@ -219,7 +219,8 @@ names it.
       (gitignored, readable only by you). Upload with
       `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc --dir vault/kms-<profile>`.
     - If the local key was uploaded by mistake, delete each `SECRET_VAULT_LOCAL_KEK_*` secret
-      from the vault Worker with `wrangler secret delete`.
+      from the vault Worker:
+      `pnpm exec wrangler secret delete <secret-name> -c vault/wrangler.<profile>.jsonc`.
 
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,
