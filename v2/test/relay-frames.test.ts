@@ -12,6 +12,7 @@ import {
   SLOW_CLIENT_MS,
   START_QUEUE_BYTES,
   START_QUEUE_FRAMES,
+  providerFrame,
   StartQueue,
 } from "../relay/src/frames.js";
 
@@ -171,11 +172,16 @@ describe("the start queue", () => {
     expect(byCount.overflowed).toBe(true);
     expect(byCount.drain()).toEqual([]);
 
+    // Text is charged two bytes per character, what it takes in memory (Sol, #260 round 2).
     const bySize = new StartQueue();
     const chunk = "x".repeat(256 * 1024);
     let pushed = 0;
     while (bySize.push(chunk)) pushed += 1;
-    expect(pushed).toBe(Math.floor(START_QUEUE_BYTES / chunk.length));
+    expect(pushed).toBe(Math.floor(START_QUEUE_BYTES / (chunk.length * 2)));
+    const binary = new StartQueue();
+    let binaryPushed = 0;
+    while (binary.push(new ArrayBuffer(256 * 1024))) binaryPushed += 1;
+    expect(binaryPushed).toBe(Math.floor(START_QUEUE_BYTES / (256 * 1024)));
     expect(bySize.overflowed).toBe(true);
     expect(bySize.bytes).toBe(0);
     // Nothing more is held once it overflowed.
@@ -187,5 +193,24 @@ describe("the start queue", () => {
     ordered.push("third");
     expect(ordered.drain().map((data) => (typeof data === "string" ? data : data.byteLength))).toEqual(["first", 2, "third"]);
     expect(ordered.drain()).toEqual([]);
+  });
+});
+
+describe("provider frames during the start (Sol, #260 round 2)", () => {
+  it("are held until the session started, overflow without closing anything, then go through forward", () => {
+    const forwarded: (string | ArrayBuffer)[] = [];
+    const closes: string[] = [];
+    const call = { forward: null as ((data: string | ArrayBuffer) => void) | null, pending: new StartQueue(), close: (code: number, reason: string) => closes.push(`${code} ${reason}`) };
+    for (let frame = 0; frame < START_QUEUE_FRAMES + 50; frame += 1) providerFrame(call, `f${frame}`);
+    // Overflowed: everything held is dropped, nothing is closed here, and the owning start ends the session.
+    expect(call.pending.overflowed).toBe(true);
+    expect(closes).toEqual([]);
+    expect(call.pending.drain()).toEqual([]);
+    const fresh = { forward: null as ((data: string | ArrayBuffer) => void) | null, pending: new StartQueue() };
+    providerFrame(fresh, "early");
+    fresh.forward = (data) => forwarded.push(data);
+    providerFrame(fresh, "late");
+    expect(fresh.pending.drain()).toEqual(["early"]);
+    expect(forwarded).toEqual(["late"]);
   });
 });

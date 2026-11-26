@@ -6,7 +6,8 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { HEALTH_PATH, SESSION_PATH } from "../relay/src/constants.js";
-import relay from "../relay/src/index.js";
+import relay, { Session } from "../relay/src/index.js";
+import { StartQueue } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { TEST_TICKET_PUBLIC_KEY } from "./relay-keys.ts";
@@ -106,5 +107,34 @@ describe("the relay's entry", () => {
     const unset = sessions();
     expect((await relay.fetch(connect((await signed()).ticket), relayEnv(unset.namespace, null))).status).toBe(503);
     expect(unset.used).toEqual([]);
+  });
+});
+
+describe("the session object's start (Sol, #260 round 2)", () => {
+  it("a provider queue that overflowed during the start ends the session with 4000 start_queue_full: the owning start's close", async () => {
+    const pending = new StartQueue();
+    while (pending.push("x".repeat(64 * 1024)));
+    const ended: string[] = [];
+    const sent: unknown[] = [];
+    const closes: string[] = [];
+    // The session object without its constructor: a stand-in core, as the start leaves it.
+    const session = Object.create(Session.prototype) as Session;
+    session.live = null;
+    (session as unknown as { core: unknown }).core = {
+      start: async () => ({ ok: true, reconnectSecret: "secret", deadline: Date.now() + 60_000, call: { callId: null, forward: null, pending, send: (data: unknown) => sent.push(data), close: () => closes.push("provider") } }),
+      end: async (reason: string) => void ended.push(reason),
+      clientGone: async () => undefined,
+      startedBy: () => true,
+    };
+    const client = {
+      addEventListener: () => undefined,
+      send: (data: unknown) => sent.push(data),
+      close: (code: number, reason: string) => closes.push(`${code} ${reason}`),
+    } as unknown as WebSocket;
+    await session.begin(client, "ticket", { sid: "ses_flood" } as never, true);
+    expect(closes).toEqual(["4000 start_queue_full"]);
+    expect(ended).toEqual(["error"]);
+    // Nothing announced, nothing forwarded.
+    expect(sent).toEqual([]);
   });
 });

@@ -17,7 +17,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
-import { RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
+import { providerFrame, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -135,11 +135,10 @@ export class Session extends DurableObject {
           };
           // Frames that come before the session started (OpenAI sends `session.created` at
           // once) wait, in order, and go to the client once it is started. Too many, or too
-          // large, and the provider is hung up: the start then ends the session.
-          socket.addEventListener("message", (event) => {
-            if (call.forward !== null) call.forward(event.data);
-            else if (!call.pending.push(event.data)) call.close?.(1011, "start_queue_full");
-          });
+          // large, and the queue drops them all and holds nothing more: the owning start then
+          // ends the session with `4000 start_queue_full` (`begin`). Nothing is closed here, so
+          // no close event can end the session with another reason first.
+          socket.addEventListener("message", (event) => providerFrame(call, event.data));
           // The provider hung up first: the session ends, and the client is told. A close the
           // relay caused itself, after letting go of this call, is ignored (`providerGone`).
           socket.addEventListener("close", () => void this.core.providerGone(call));

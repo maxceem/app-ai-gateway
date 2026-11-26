@@ -63,10 +63,14 @@ export class StartQueue {
     this.overflowed = false;
   }
 
-  /** @param {string | ArrayBuffer} data */
+  /**
+   * A text frame is charged two bytes per character, what it takes in memory
+   * (UTF-16), so the byte cap holds for text too.
+   * @param {string | ArrayBuffer} data
+   */
   push(data) {
     if (this.overflowed) return false;
-    const size = frameSize(data);
+    const size = typeof data === "string" ? data.length * 2 : data.byteLength;
     if (this.frames.length >= START_QUEUE_FRAMES || this.bytes + size > START_QUEUE_BYTES) {
       this.overflowed = true;
       this.frames = [];
@@ -224,4 +228,18 @@ export class SessionFrames {
     if (quietClient && (this.relayMessages || quietProvider)) return "heartbeat_timeout";
     return this.slow(now);
   }
+}
+
+/**
+ * A provider frame: forwarded once the session started, held before that.
+ * Never closes anything: on overflow the queue drops what it held and holds
+ * nothing more, and the owning start ends the session with
+ * `4000 start_queue_full` (`./index.js`, `begin`). A close here could end the
+ * session first, with another reason (Sol, #260 round 2).
+ * @param {{ forward: ((data: string | ArrayBuffer) => void) | null, pending: StartQueue }} call
+ * @param {string | ArrayBuffer} data
+ */
+export function providerFrame(call, data) {
+  if (call.forward !== null) call.forward(data);
+  else call.pending.push(data);
 }
