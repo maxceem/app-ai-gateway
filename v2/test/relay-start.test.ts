@@ -231,8 +231,10 @@ describe("a session's start", () => {
 
   it("row 12: the provider refuses: close with error, and the client may ask for a new session", async () => {
     const s = setup({ connect: () => Promise.reject(new ProviderRefused(503)) });
-    expect(await s.instance().start(s.text, s.ticket)).toEqual({ ok: false, code: "provider_unavailable" });
+    expect(await s.instance().start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "provider_unavailable" });
     expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 0 }]);
+    // The session's end didn't close the client with a bare "error": the caller tells it, with this code (Fable N1).
+    expect(s.ended.client).toEqual([]);
   });
 
   it("row 13, relayed: a restart after active lost the provider socket: the session ends with error at the first wakeup, well before the deadline (Sol round 1)", async () => {
@@ -345,7 +347,7 @@ describe("a session's end", () => {
 });
 
 describe("a client that hangs up during the start (Sol round 2)", () => {
-  it("while the vault answers: the provider is never dialed, and the session ends through the usual end path", async () => {
+  it("while the vault answers: no open and no provider call, and nothing is stored, so there is nothing to end (Sol round 2; Fable N3)", async () => {
     let release: (value: unknown) => void = () => undefined;
     const s = setup({ vault: () => new Promise((resolve) => (release = resolve)) });
     const core = s.instance();
@@ -355,11 +357,8 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await core.clientGone(client);
     release({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" });
     expect(await started).toEqual({ ok: false, code: "client_closed" });
-    expect(s.calls.connect).toBe(0);
-    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
-    // The ended marker stays until the ticket expires.
-    expect(s.store.data.get("state")).toBe("ended");
-    expect(s.store.alarm).toBe(s.ticket.exp);
+    expect(s.calls).toMatchObject({ open: 0, connect: 0, close: [] });
+    expect(s.store.data.size).toBe(0);
   });
 
   it("during the provider handshake: the provider is hung up, and the session ends", async () => {

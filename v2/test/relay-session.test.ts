@@ -10,15 +10,17 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SESSION_PATH } from "../relay/src/constants.js";
 import { issueTicket } from "../src/relay/tickets.ts";
-import { sealForTest } from "./split-keys.ts";
+import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
 import { ACCOUNT_ID } from "./helpers.ts";
 
 const relay = () => (env as unknown as { RELAY_TEST: Fetcher }).RELAY_TEST;
+const provider = () => (env as unknown as { PROVIDER_STUB: Fetcher }).PROVIDER_STUB;
 
-describe("the relay's session object (Fable F3)", () => {
+describe(`the relay's session object (Fable F3; split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("starts a session for a valid ticket and sends the client its reconnect secret", async () => {
     const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, "conn_session", "openai", "", "", ""];
     const blob = await sealForTest("providerKey", identity, "sk-session-object");
+    const share = await testShare(ACCOUNT_ID);
     const { ticket } = await issueTicket(env, {
       accountId: ACCOUNT_ID,
       appId: "app_session",
@@ -35,7 +37,7 @@ describe("the relay's session object (Fable F3)", () => {
       sessionTotal: false,
       url: "https://api.openai.com/v1/realtime",
       capMs: 60_000,
-      credentials: { providerKey: { blob, identity }, cloudflareToken: null },
+      credentials: { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) },
       keyPlacement: { header: "authorization", format: "Bearer {key}" },
     });
     const response = await relay().fetch(`https://relay.test${SESSION_PATH}`, { headers: { upgrade: "websocket", authorization: `Bearer ${ticket}` } });
@@ -49,6 +51,8 @@ describe("the relay's session object (Fable F3)", () => {
     const message = JSON.parse(await first) as { type: string; reconnect_secret: string };
     expect(message.type).toBe("agw.session.started");
     expect(message.reconnect_secret).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    // The provider got the key, in its own header, from the vault's seal (Fable round 2).
+    expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
     socket.close(1000, "done");
   });
 });

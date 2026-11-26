@@ -135,6 +135,16 @@ export class SessionCore {
       if (this.owner === client) this.owner = null;
       return /** @type {{ ok: false, code: string }} */ ({ ok: false, code });
     };
+    /**
+     * Ends the session from the start's own failure: the client is told by the
+     * caller, with the start's code, not by `end` with a bare reason.
+     * @param {string} reason
+     * @param {{ log?: string, status?: number }} details
+     */
+    const endStart = (reason, details) => {
+      if (this.owner === client) this.owner = null;
+      return this.end(reason, details);
+    };
     try {
       const stored = await this.store.get(KEYS);
       const state = stored.get("state");
@@ -144,7 +154,7 @@ export class SessionCore {
       // unless "connecting" was recorded: then the outcome is unknown, and it never connects again (rows 10, 11).
       const resumed = state === "starting";
       if (resumed && stored.get("connecting") === true) {
-        await this.end("error", { log: "relay_start_outcome_unknown" });
+        await endStart("error", { log: "relay_start_outcome_unknown" });
         return fail("session_ended");
       }
       if (this.now() >= ticket.exp) return fail("ticket_expired");
@@ -158,6 +168,9 @@ export class SessionCore {
         this.log({ level: "warn", message: "relay_vault_refused", session: ticket.sid, code: codeOf(error) });
         return fail("credential_unavailable");
       }
+
+      // The client left while the vault answered: no `open`, so no open-then-close round trip.
+      if (this.owner !== client) return fail("client_closed");
 
       /** @type {Settings} */
       let settings;
@@ -185,24 +198,26 @@ export class SessionCore {
         this.call = await this.provider.connect(key);
       } catch (error) {
         if (error instanceof ProviderRefused) {
-          await this.end("error", { log: "relay_provider_refused", status: error.status });
+          await endStart("error", { log: "relay_provider_refused", status: error.status });
         } else {
           // Sent, and no answer came back: never retried (4.3 step 4; row 10).
-          await this.end("error", { log: "relay_start_outcome_unknown" });
+          await endStart("error", { log: "relay_start_outcome_unknown" });
         }
         return fail("provider_unavailable");
       }
       const call = this.call;
-      // A slow handshake: the alarm may have ended the session, the client may have gone, or
-      // the time run out. Then the provider's side is hung up, and an ended session stays ended.
-      if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       const reconnectSecret = newSecret();
+      const reconnect = await hashOf(reconnectSecret);
       const deadline = deadlineOf(ticket);
       const interval = settings.checkpointIntervalMs > 0 ? settings.checkpointIntervalMs : Infinity;
+      // A slow handshake: the alarm may have ended the session, the client may have gone, or
+      // the time run out. Then the provider's side is hung up, and an ended session stays ended.
+      // Nothing waits between this check and the `active` write.
+      if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       // The first wakeup comes one checkpoint interval in, not at the deadline: a restarted
       // object that lost its provider socket then ends soon (row 13). The fixed tick per
       // session comes with frame forwarding (step 9a part 1, fourth review).
-      await this.store.put({ state: "active", callId: call.callId, reconnect: await hashOf(reconnectSecret) }, Math.min(deadline, this.now() + interval));
+      await this.store.put({ state: "active", callId: call.callId, reconnect }, Math.min(deadline, this.now() + interval));
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       return { ok: true, reconnectSecret, call, deadline };
@@ -250,6 +265,8 @@ export class SessionCore {
       await this.end("client_closed");
       return "client_closed";
     }
+    // The start's own failure: the caller tells the client, with this code.
+    this.owner = null;
     await this.end("error", { log: "relay_start_too_late" });
     return this.now() >= ticket.exp ? "ticket_expired" : "session_ended";
   }

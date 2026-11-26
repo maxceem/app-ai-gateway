@@ -21,6 +21,7 @@ const SPLIT_KEY_FILES = [
   "test/providers.test.ts",
   "test/pricing-units.test.ts",
   "test/relay-tickets.test.ts",
+  "test/relay-session.test.ts",
 ];
 
 /**
@@ -110,9 +111,13 @@ const workers = (splitKeys: boolean) =>
               // Every provider connect the test relay makes: a WebSocket that stays open.
               name: "app-ai-gateway-v2-provider-stub",
               modules: true,
+              // It keeps the key header of the last connect, which the test reads back at /last-key-header.
               script: [
+                "let lastKeyHeader = null;",
                 "export default {",
-                "  fetch() {",
+                "  fetch(request) {",
+                "    if (new URL(request.url).pathname === \"/last-key-header\") return Response.json({ authorization: lastKeyHeader });",
+                "    lastKeyHeader = request.headers.get(\"authorization\");",
                 "    const [client, server] = Object.values(new WebSocketPair());",
                 "    server.accept();",
                 "    return new Response(null, { status: 101, webSocket: client });",
@@ -140,6 +145,7 @@ const workers = (splitKeys: boolean) =>
             VAULT_KMS: "app-ai-gateway-v2-vault-kms",
             VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
             RELAY_TEST: "app-ai-gateway-v2-relay-test",
+            PROVIDER_STUB: "app-ai-gateway-v2-provider-stub",
           },
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
