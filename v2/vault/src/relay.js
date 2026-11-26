@@ -23,7 +23,7 @@ import { verifyTicket } from "./ticket.js";
 /**
  * What the relay gets: the key, where it goes, and the one address it may be
  * sent to. `cloudflareToken` is set for a connection through Cloudflare AI Gateway.
- * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string, sealUntil: number }} SessionKey
+ * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string }} SessionKey
  */
 
 /** A refusal the relay can act on: a code, never a secret. */
@@ -76,7 +76,7 @@ export async function sessionKey(env, ticketText, options = {}) {
   const memo = {};
   try {
     /** @type {SessionKey} */
-    const answer = { target, sealUntil: Number(key?.identity[6] ?? token?.identity[4]) };
+    const answer = { target };
     if (key !== undefined) {
       const value = await keyForRequest(env, "storedProviderKey", key.identity, key.blob, { credential: null, memo });
       answer.key = { value, header: key.header ?? "", format: key.format ?? "" };

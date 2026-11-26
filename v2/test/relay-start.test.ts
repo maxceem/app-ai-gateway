@@ -24,14 +24,20 @@ class MemoryStore {
   readonly data = new Map<string, unknown>();
   alarm: number | null = null;
   freezeWhen: ((entries: Record<string, unknown>) => boolean) | null = null;
+  /** Runs before a write is applied: a test's way to land an event during that write. */
+  beforePut: ((entries: Record<string, unknown>) => void) | null = null;
+  /** Throws on the chosen read: a test's way to make storage fail. */
+  failGet: ((keys: string[]) => boolean) | null = null;
   /** Whether a write froze: the instance that made it never goes on. */
   frozen = false;
 
   async get(keys: string[]): Promise<Map<string, unknown>> {
+    if (this.failGet?.(keys)) throw new Error("storage failed");
     return new Map(keys.filter((key) => this.data.has(key)).map((key) => [key, structuredClone(this.data.get(key))]));
   }
 
   put(entries: Record<string, unknown>, alarmAt: number | null): Promise<void> {
+    this.beforePut?.(entries);
     if (this.freezeWhen?.(entries)) {
       this.frozen = true;
       return never();
@@ -83,8 +89,6 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
   /** What each side was told when the session ended: the client's reason, the provider's close. */
   const ended = { client: [] as string[], provider: [] as [number, string][] };
   const parts = () => ({
-    onEnd: (reason: string) => ended.client.push(reason),
-    name: "ses_1",
     store,
     now: () => now,
     log: (event: Record<string, unknown>) => logs.push(event),
@@ -118,6 +122,8 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     calls,
     logs,
     ended,
+    /** A client connection: what it is told when the session ends is recorded. */
+    client: () => ({ close: (_code: number, reason: string) => ended.client.push(reason) }),
     text,
     ticket,
     /** A new instance over the same storage: a fresh object, or the restarted one. */
@@ -183,12 +189,6 @@ describe("a session's start", () => {
     expect(await first).toMatchObject({ ok: true });
     expect(s.calls.connect).toBe(1);
     expect(await core.start(s.text, s.ticket)).toEqual({ ok: false, code: "session_active" });
-  });
-
-  it("refuses a ticket for another session object", async () => {
-    const s = setup();
-    const other = ticketFor(s.now(), { sid: "ses_other" });
-    expect(await s.instance().start(other.text, other.ticket)).toEqual({ ok: false, code: "ticket_refused" });
   });
 
   it("row 9: a restart after open: a retry goes on with one provider connect; with no retry, the alarm closes at the ticket's expiry", async () => {
@@ -280,7 +280,7 @@ describe("a session's start", () => {
   it("ends at its deadline with time_cap, and both peers are told: the provider's side hung up, the client's closed with the reason (Sol round 1)", async () => {
     const s = setup();
     const core = s.instance();
-    await core.start(s.text, s.ticket);
+    await core.start(s.text, s.ticket, s.client());
     // The first wakeup finds the provider still there and waits for the deadline.
     s.tick(s.store.alarm! - s.now());
     await core.alarm();
@@ -294,7 +294,7 @@ describe("a session's start", () => {
   it("when the provider hangs up first, the client's socket is closed too, with the reason (Sol round 1)", async () => {
     const s = setup();
     const core = s.instance();
-    await core.start(s.text, s.ticket);
+    await core.start(s.text, s.ticket, s.client());
     await core.end("provider_closed");
     expect(s.ended.client).toEqual(["provider_closed"]);
     expect(s.calls.close).toEqual([{ endReason: "provider_closed", finalSlice: 0 }]);
@@ -349,7 +349,7 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     let release: (value: unknown) => void = () => undefined;
     const s = setup({ vault: () => new Promise((resolve) => (release = resolve)) });
     const core = s.instance();
-    const client = {};
+    const client = s.client();
     const started = core.start(s.text, s.ticket, client);
     await until(() => s.calls.vault === 1);
     await core.clientGone(client);
@@ -366,7 +366,7 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     let release: (value: { callId: string | null }) => void = () => undefined;
     const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
     const core = s.instance();
-    const client = {};
+    const client = s.client();
     const started = core.start(s.text, s.ticket, client);
     await until(() => s.calls.connect === 1);
     await core.clientGone(client);
@@ -380,9 +380,9 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
   it("a second connection turned away does nothing to the running session when it closes (Sol round 3)", async () => {
     const s = setup();
     const core = s.instance();
-    const first = {};
+    const first = s.client();
     expect(await core.start(s.text, s.ticket, first)).toMatchObject({ ok: true });
-    const second = {};
+    const second = s.client();
     expect(await core.start(s.text, s.ticket, second)).toEqual({ ok: false, code: "session_active" });
     await core.clientGone(second);
     expect(s.store.data.get("state")).toBe("active");
@@ -392,5 +392,28 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await core.clientGone(first);
     expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
     expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+  });
+
+  it("a hang-up that lands during the active write is caught by the check after it: the session ends (Fable F1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    const client = s.client();
+    s.store.beforePut = (entries) => {
+      if (entries.state === "active") void core.clientGone(client);
+    };
+    expect(await core.start(s.text, s.ticket, client)).toEqual({ ok: false, code: "client_closed" });
+    await until(() => s.calls.close.length === 1);
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    expect(s.store.data.get("state")).toBe("ended");
+  });
+
+  it("a storage failure after the provider connected never leaves its call behind (Fable F2)", async () => {
+    const s = setup();
+    let reads = 0;
+    s.store.failGet = (keys) => keys.length === 1 && keys[0] === "state" && (reads += 1) === 2;
+    await expect(s.instance().start(s.text, s.ticket, s.client())).rejects.toThrow("storage failed");
+    expect(s.calls.connect).toBe(1);
+    expect(s.ended.provider).toEqual([[1011, "relay error"]]);
   });
 });

@@ -133,7 +133,6 @@ describe(`session tickets (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     }) as typeof fetch;
     const data = new Map<string, unknown>();
     const core = new SessionCore({
-      name: issued.sessionId,
       log: () => undefined,
       store: {
         get: async (keys) => new Map(keys.filter((key) => data.has(key)).map((key) => [key, data.get(key)])),

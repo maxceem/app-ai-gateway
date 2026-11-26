@@ -69,7 +69,8 @@ export default {
 /**
  * One session: its start, its end, and its alarm. The client's WebSocket is
  * answered at once; the start runs after, and its result goes to the client
- * as a message (the reconnect secret) or a close with a code.
+ * as a message (the reconnect secret) or a close with a code. The session's
+ * core (`./start.js`) owns the client's socket and closes it when it ends.
  * @extends {DurableObject<RelayEnv>}
  */
 export class Session extends DurableObject {
@@ -79,11 +80,8 @@ export class Session extends DurableObject {
    */
   constructor(ctx, env) {
     super(ctx, env);
-    /** @type {WebSocket | null} The client's socket, while a session runs in this instance. */
-    this.clientSocket = null;
     const storage = ctx.storage;
     this.core = new SessionCore({
-      name: ctx.id.name ?? "",
       store: {
         get: (keys) => storage.get(keys),
         put: async (entries, alarmAt) => {
@@ -105,12 +103,6 @@ export class Session extends DurableObject {
           return { callId, close: (code, reason) => socket.close(code, reason) };
         },
       },
-      // The session ended (deadline, error, the provider's close): the client's socket closes too, with the reason.
-      onEnd: (reason) => {
-        const client = this.clientSocket;
-        this.clientSocket = null;
-        client?.close(1000, reason);
-      },
     });
   }
 
@@ -122,8 +114,6 @@ export class Session extends DurableObject {
     const ticketText = ticketOf(request);
     const parsed = ticketText === null ? null : parseTicket(ticketText);
     if (ticketText === null || parsed === null) return refusal(401, "ticket_refused");
-    // A second connection while a start is in flight gets an error and never reaches the provider (row 8).
-    if (this.core.starting) return refusal(409, "start_in_flight");
     const [client, server] = Object.values(new WebSocketPair());
     if (!client || !server) throw new Error("no WebSocket pair");
     server.accept();
@@ -132,31 +122,44 @@ export class Session extends DurableObject {
   }
 
   /**
+   * A second connection while a start is in flight is refused by the core
+   * (`start_in_flight`, row 8), and its close changes nothing.
    * @param {WebSocket} client
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
    */
   async begin(client, ticketText, ticket) {
-    // Listened to before the start, so a client that hangs up during it stops it: no paid
-    // provider session is left running with nobody on the other end.
-    let gone = false;
-    // Only this socket's own start, or the session it started, is affected: a socket turned away changes nothing.
-    client.addEventListener("close", () => {
-      gone = true;
-      if (this.clientSocket === client) this.clientSocket = null;
-      void this.core.clientGone(client);
-    });
-    const result = await this.core.start(ticketText, ticket, client);
-    if (!result.ok) {
-      if (!gone) client.close(4000, result.code);
+    // Listened to before the start: a client that hangs up during it stops it.
+    client.addEventListener("close", () => void this.core.clientGone(client));
+    /** @type {Awaited<ReturnType<SessionCore["start"]>>} */
+    let result;
+    try {
+      result = await this.core.start(ticketText, ticket, client);
+    } catch {
+      // The core has hung up any provider call; the client is told, and the session ends if it got that far.
+      console.log(JSON.stringify({ level: "error", message: "relay_start_failed", session: ticket.sid }));
+      closeQuietly(client, 1011, "internal_error");
+      await this.core.end("error").catch(() => undefined);
       return;
     }
-    this.clientSocket = client;
+    if (!result.ok) {
+      closeQuietly(client, 4000, result.code);
+      return;
+    }
     client.send(JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
   }
 
   /** @override */
   async alarm() {
     await this.core.alarm();
+  }
+}
+
+/** Closes a socket that may be closed already. @param {WebSocket} socket @param {number} code @param {string} reason */
+function closeQuietly(socket, code, reason) {
+  try {
+    socket.close(code, reason);
+  } catch {
+    // Already closed: nothing to do.
   }
 }

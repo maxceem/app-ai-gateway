@@ -89,9 +89,58 @@ const workers = (splitKeys: boolean) =>
                 return Response.json({ plaintextKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", wrappedKey: "fixed", kekVersion: 1 });
               },
             },
+            {
+              // The relay Worker as it is uploaded, with its real session object (\`test/relay-session.test.ts\`):
+              // the vault's RelayKeys for keys, a stand-in for the gateway's RelayContract, and a provider
+              // stand-in that answers every connect with a WebSocket.
+              name: "app-ai-gateway-v2-relay-test",
+              modules: true,
+              modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+              scriptPath: path.join(import.meta.dirname, "relay/src/index.js"),
+              compatibilityDate: "2026-07-24",
+              durableObjects: { SESSION: "Session" },
+              bindings: { RELAY_TICKET_PUBLIC_KEY: "UT0iL-macVGQntunvBGGJabK-ieqY-6yQtsovFkmEGU" },
+              serviceBindings: {
+                MAIN: { name: "app-ai-gateway-v2-relay-main-stub", entrypoint: "RelayContract" },
+                VAULT: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
+              },
+              outboundService: "app-ai-gateway-v2-provider-stub",
+            },
+            {
+              // Every provider connect the test relay makes: a WebSocket that stays open.
+              name: "app-ai-gateway-v2-provider-stub",
+              modules: true,
+              script: [
+                "export default {",
+                "  fetch() {",
+                "    const [client, server] = Object.values(new WebSocketPair());",
+                "    server.accept();",
+                "    return new Response(null, { status: 101, webSocket: client });",
+                "  },",
+                "};",
+              ].join("\n"),
+              compatibilityDate: "2026-07-24",
+            },
+            {
+              name: "app-ai-gateway-v2-relay-main-stub",
+              modules: true,
+              script: [
+                'import { WorkerEntrypoint } from "cloudflare:workers";',
+                "export class RelayContract extends WorkerEntrypoint {",
+                "  async open() { return { version: 1, deadline: Date.now() + 60000, mode: \"relayed\", operation: \"openai.realtime\", checkpointIntervalMs: 60000 }; }",
+                "  async close() { return { version: 1 }; }",
+                "}",
+                "export default { fetch() { return new Response(null, { status: 404 }); } };",
+              ].join("\n"),
+              compatibilityDate: "2026-07-24",
+            },
           ],
           // The vault's relay-only entrypoint, so its tests go through the binding the relay uses (step 9a).
-          serviceBindings: { VAULT_KMS: "app-ai-gateway-v2-vault-kms", VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" } },
+          serviceBindings: {
+            VAULT_KMS: "app-ai-gateway-v2-vault-kms",
+            VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
+            RELAY_TEST: "app-ai-gateway-v2-relay-test",
+          },
           // The optional conversation bucket (step 7), so conversation storage can be tested.
           r2Buckets: ["CONVERSATIONS"],
           bindings: {
