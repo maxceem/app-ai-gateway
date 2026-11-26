@@ -134,6 +134,23 @@ describe("AppDetailPage", () => {
     expect(limits.per_app.requests.per_minute).toBe(600);
   });
 
+  it("keeps the app's session caps when another limit is saved (Gemini Neon 9a3 round 1)", async () => {
+    const config = testApp().config;
+    const withCaps = testApp({
+      config: { ...config, limits: { ...config.limits, per_app: { ...config.limits.per_app, sessions: { conversational: 4, streaming: 20 } } } },
+    });
+    const fetchMock = stub({ [`GET ${APP_URL}`]: { body: { app: withCaps } }, [`PUT ${APP_URL}`]: { body: { app: withCaps } } });
+    renderTab("limits");
+
+    await userEvent.type((await screen.findAllByLabelText(/requests per minute/i))[1]!, "600");
+    await userEvent.click(screen.getByRole("button", { name: /save limits/i }));
+
+    await waitFor(() => expect(putBody(fetchMock)).toBeTruthy());
+    const { limits } = putBody(fetchMock).config;
+    expect(limits.per_app.requests.per_minute).toBe(600);
+    expect(limits.per_app.sessions).toEqual({ conversational: 4, streaming: 20 });
+  });
+
   it("explains a save refused because the app changed meanwhile", async () => {
     stub({ [`PUT ${APP_URL}`]: { status: 409, body: { error: { code: "app_revision_conflict", message: "stale" } } } });
     const error = vi.spyOn(toast, "error");
