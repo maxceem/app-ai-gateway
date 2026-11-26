@@ -1,23 +1,21 @@
 /**
- * A live session's price, fixed when it opens (plan 4.2): the resolved price
- * (its rates in nano-dollars, and whether they are the connection's own or
- * ours) is saved on the session's ledger row at `open`, and every slice is
- * priced with it. A connection edit or a new price list mid-session never
- * reprices the session.
+ * A live session's price (plan 4.2): the resolved price, its rates in
+ * nano-dollars and whether they are the connection's own or ours. The first
+ * checkpoint saves it on the session's ledger row, in the same transaction as
+ * its slice, and every later slice is booked only at that price
+ * (`../ledger/sessions.ts`, `writeCheckpoint`). A connection edit or a new
+ * price list mid-session never reprices the session.
+ *
+ * The first checkpoint goes out right after the session is `active`, so a
+ * price change in the few seconds between `open` and it applies to that
+ * session. That is accepted: saving at `open` cost more than it saved.
  *
  * Saved as JSON in the session row's `rates_json`, or '' when the model had
  * no price then: its slices are booked `unresolved` and priced later by the
- * sweep, never as free. NULL means nothing is saved yet: the first checkpoint
- * saves today's price instead (`./checkpoint.ts`).
+ * sweep, never as free.
  */
-import { boundedJob } from "../core/background.ts";
-import { ledgerDb } from "../ledger/database.ts";
-import { saveSessionPrice } from "../ledger/sessions.ts";
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
 import type { Ticket } from "./tickets.ts";
-
-/** How long `open` waits to save the price: past it, the session starts and its first checkpoint saves it. */
-const SAVE_DEADLINE_MS = 1_000;
 
 /** Today's price for the session's model on its connection, or null when it has none (or the rates can't be read). */
 export function resolveSessionPrice(ticket: Ticket, ratesJson: string | null): ResolvedPrice | null {
@@ -35,31 +33,30 @@ export function encodeSessionPrice(price: ResolvedPrice | null): string {
   return price === null ? "" : JSON.stringify(price);
 }
 
-/** The saved form, read back. Throws when it is not one. */
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A set of rates: each a whole, non-negative number of nano-dollars. */
+const isRateSet = (value: unknown): boolean =>
+  isObject(value) && Object.values(value).every((rate) => typeof rate === "number" && Number.isSafeInteger(rate) && rate >= 0);
+
+/** Rates by price key value: key, then value, then a rate set. */
+const isKeyedRates = (value: unknown): boolean => isObject(value) && Object.values(value).every((byValue) => isObject(byValue) && Object.values(byValue).every(isRateSet));
+
+/** The saved form, read back. Throws when it is not one, so the caller falls back to today's price. */
 export function decodeSessionPrice(text: string): ResolvedPrice | null {
   if (text === "") return null;
-  const parsed = JSON.parse(text) as Partial<ResolvedPrice>;
-  if (typeof parsed !== "object" || parsed === null || typeof parsed.price?.rates !== "object" || (parsed.source !== "customer_rate" && parsed.source !== "list_rate")) {
-    throw new Error("not a saved session price");
-  }
-  return parsed as ResolvedPrice;
-}
-
-/**
- * `open`: saves the session's price on its ledger row, unless one is saved
- * already (a repeated `open` changes nothing). Never fails `open`: past the
- * deadline or on a failure it logs a warning, and the first checkpoint saves
- * the price instead.
- */
-export async function savePriceAtOpen(env: Env, ticket: Ticket): Promise<void> {
-  const work = (async () => {
-    const ratesJson =
-      ticket.connection === null
-        ? null
-        : ((await env.DB.prepare("SELECT rates_json FROM provider_connection WHERE id = ?").bind(ticket.connection).first<{ rates_json: string | null }>())
-            ?.rates_json ?? null);
-    const price = encodeSessionPrice(resolveSessionPrice(ticket, ratesJson));
-    await saveSessionPrice(ledgerDb(env, ticket.account, { deadlineMs: SAVE_DEADLINE_MS }), ticket.sid, price);
-  })();
-  await boundedJob(work, "saving the session's price", "relay_price_unsaved", { app: ticket.app, session: ticket.sid }, SAVE_DEADLINE_MS);
+  const parsed: unknown = JSON.parse(text);
+  const price = isObject(parsed) ? parsed.price : undefined;
+  const valid =
+    isObject(parsed) &&
+    (parsed.source === "customer_rate" || parsed.source === "list_rate") &&
+    isObject(price) &&
+    isRateSet(price.rates) &&
+    (price.keyed === undefined || isKeyedRates(price.keyed)) &&
+    (price.keyedAdditions === undefined || isKeyedRates(price.keyedAdditions)) &&
+    (price.longContextThreshold === undefined || (typeof price.longContextThreshold === "number" && price.longContextThreshold >= 0)) &&
+    (price.modes === undefined || (isObject(price.modes) && Object.values(price.modes).every(isObject))) &&
+    isObject(price.raw);
+  if (!valid) throw new Error("not a saved session price");
+  return parsed as unknown as ResolvedPrice;
 }

@@ -34,7 +34,7 @@ import type { AppRecord } from "../core/types.ts";
 import { loadApp } from "../apps/app-records.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import type { Measured, PriceSource } from "../ledger/labels.ts";
-import { checkpointStanding, savedSessionPrice, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
+import { checkpointStanding, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
 import { utcDay, type ChargeRow } from "../ledger/write.ts";
 import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
@@ -285,47 +285,49 @@ export async function checkpointForRelay(
 
   // The reads before the ledger, together: each has its own short deadline, and none can fail the checkpoint.
   const facts = { app: ticket.app, session: ticket.sid };
-  const ledger = ledgerDb(env, ticket.account, { deadlineMs: CHECKPOINT_LEDGER_DEADLINE_MS });
-  const [standing, budgets, planMinutes, saved] = await Promise.all([
+  const [standing, budgets, planMinutes] = await Promise.all([
     // Its own 1 s deadline inside; null when D1 can't answer, and both checks are skipped.
     checkpointStanding(env.DB, session),
     bounded(async () => checkpointBudgets(await loadApp(env, ticket.app), ticket), [], "checkpoint_budgets_unchecked", facts, waitUntil),
     bounded(() => checkpointPlanMinutes(env, ticket, now, waitUntil), null, "checkpoint_allowance_unchecked", facts, waitUntil),
-    // The price saved when the session opened (plan 4.2): a rate change mid-session never reprices it.
-    bounded(() => savedSessionPrice(ledger, ticket.sid), undefined, "checkpoint_price_unread", facts, waitUntil),
   ]);
-  // Today's price, when none is saved (`open` didn't manage to) or it can't be read: saved now
-  // if none is yet. Without the connection's own rates (D1 didn't answer), our list price.
-  let price: ResolvedPrice | null = null;
-  let fixPrice: string | undefined;
-  let fromSaved = false;
-  if (saved !== undefined) {
-    try {
-      price = decodeSessionPrice(saved);
-      fromSaved = true;
-    } catch (error) {
-      log("warn", "checkpoint_price_unreadable", { ...facts, error: errorFacts(error) });
-    }
-  }
-  if (!fromSaved) {
-    price = resolveSessionPrice(ticket, standing?.ratesJson ?? null);
-    if (saved === undefined && standing !== null) fixPrice = encodeSessionPrice(price);
-  }
-  const slice = input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(input.slice.measures, price), now);
 
-  let answer;
-  try {
-    answer = await writeCheckpoint(ledger, env.DB, {
+  // The slice is priced at today's price, and the ledger books it only at the session's saved
+  // price (plan 4.2; `./session-price.ts`). The first checkpoint saves today's, unless it was
+  // priced without the connection's own rates (D1 didn't answer). When the saved one differs,
+  // the slice is priced again with it and sent once more, within the same deadline.
+  const started = Date.now();
+  const today = resolveSessionPrice(ticket, standing?.ratesJson ?? null);
+  const book = (priceText: string, price: ResolvedPrice | null, deadlineMs: number) =>
+    writeCheckpoint(ledgerDb(env, ticket.account, { deadlineMs }), env.DB, {
       session,
-      slice,
+      slice: input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(input.slice.measures, price), now),
       budgets,
       planMinutes,
       now,
       providerCallId: input.providerCallId ?? null,
       standing,
       gaps: input.slice?.gaps ?? 0,
-      ...(fixPrice === undefined ? {} : { fixPrice }),
+      price: priceText,
+      savePrice: standing !== null,
     });
+
+  let answer;
+  try {
+    answer = await book(encodeSessionPrice(today), today, CHECKPOINT_LEDGER_DEADLINE_MS);
+    if (answer.priceChanged !== undefined) {
+      // A saved price this code can't read or use: today's, with a warning, booked under the saved one.
+      let price = today;
+      try {
+        const saved = decodeSessionPrice(answer.priceChanged);
+        if (input.slice !== null) priceSlice(input.slice.measures, saved);
+        price = saved;
+      } catch (error) {
+        log("warn", "checkpoint_price_unreadable", { ...facts, error: errorFacts(error) });
+      }
+      const left = CHECKPOINT_LEDGER_DEADLINE_MS - (Date.now() - started);
+      if (left > 0) answer = await book(answer.priceChanged, price, left);
+    }
   } catch (error) {
     // The ledger can't be reached: the session continues, and the relay sends the slice again.
     log("warn", "checkpoint_unchecked", { app: ticket.app, session: ticket.sid, error: errorFacts(error) });
