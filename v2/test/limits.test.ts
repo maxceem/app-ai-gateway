@@ -231,6 +231,20 @@ describe("admission order and timeout rules", () => {
     expect(uncheckedReasons()).toEqual(["deadline", "deadline"]);
   });
 
+  it("serves a request when a limiter throws at once, before any answer exists, and logs it (Fable 9a3 round 2)", async () => {
+    const stubbed = {
+      ...env,
+      END_USER_LIMITER: limiter("user", [], allowed),
+      APP_LIMITER: {
+        getByName: () => {
+          throw new Error("limiter binding broken");
+        },
+      },
+    } as unknown as Env;
+    await expect(admitRequest(input({ env: stubbed }))).resolves.toBeUndefined();
+    expect(uncheckedReasons()).toEqual(["failed"]);
+  });
+
   it("serves a request when a limit check fails, and logs it", async () => {
     const stubbed = {
       ...env,

@@ -58,8 +58,8 @@ export function sessionLimiterName(appId: string, installId: string | null, endU
 /**
  * Admits one live session, or throws the refusal. Throws nothing when a
  * limiter cannot be reached. A refused start frees both of its slots by
- * session id, so a refused start never holds one, not even one a limiter
- * wrote after its answer came too late.
+ * session id, so it usually holds none. A slot a late limiter writes after
+ * that release has run stays until its ticket expires (T7).
  */
 export async function admitSession(input: SessionAdmissionInput): Promise<void> {
   const { env, app, identity, claim } = input;
@@ -67,7 +67,7 @@ export async function admitSession(input: SessionAdmissionInput): Promise<void> 
     await admitInOrder(input);
   } catch (error) {
     const owner = { appId: app.id, installId: identity.installId, endUserId: identity.userId };
-    input.waitUntil(releaseSessionLeases(env, owner, claim.sessionId));
+    input.waitUntil(releaseSessionLeases(env, owner, claim.sessionId, input.waitUntil));
     throw error;
   }
 }

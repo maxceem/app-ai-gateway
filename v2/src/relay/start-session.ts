@@ -165,7 +165,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         );
       } catch (error) {
         // The start goes no further: its slots are freed at once, not at the ticket's expiry.
-        waitUntil(releaseSessionLeases(c.env, { appId: app.id, installId: identity.installId, endUserId: identity.userId }, sessionId));
+        waitUntil(releaseSessionLeases(c.env, { appId: app.id, installId: identity.installId, endUserId: identity.userId }, sessionId, waitUntil));
         throw error;
       }
       // The session's row, after the reply (4.3 step 1): a failed write is
