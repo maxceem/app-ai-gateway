@@ -17,7 +17,7 @@ import { DurableObject } from "cloudflare:workers";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
-import { LEDGER_D1_DEADLINE_MS, logLostEntry, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, logLostEntry, openWorkForLog, writeOpenWork, writeToLedger, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 
 /**
  * How many entries one store holds before the oldest go to the logs. One
@@ -209,7 +209,7 @@ export class ChargeStore extends DurableObject<Env> {
   }
 
   private dropWork(id: string, row: string): void {
-    log("error", "open_work_unrecorded", { work: id, row: JSON.parse(row) as Record<string, unknown> });
+    log("error", "open_work_unrecorded", { work: id, row: openWorkForLog(JSON.parse(row) as OpenWorkRow) });
     this.ctx.storage.sql.exec("DELETE FROM pending_work WHERE id = ?", id);
   }
 

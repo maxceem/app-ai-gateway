@@ -22,6 +22,7 @@ import { log } from "../core/log.ts";
 import { priceUnresolvedCharge } from "./corrections.ts";
 import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
+import { KEY_COPIES_FIELD } from "./write.ts";
 import { checkJob } from "../jobs/jobs.ts";
 
 
@@ -160,6 +161,27 @@ function paceOf(item: OpenWorkItem): { readonly maxTries: number; readonly delay
   };
 }
 
+/**
+ * A row's detail with its key copies (split keys, plan step 8j) replaced by
+ * "removed", as SQL. A check ends with its copies gone, whatever the outcome:
+ * a check that ends is deleted with them, and one that gives up keeps only
+ * this. A row with no copies is left as it is.
+ */
+const WITHOUT_KEY_COPIES = `CASE WHEN json_type(detail_json, '$.${KEY_COPIES_FIELD}') = 'object' THEN json_set(detail_json, '$.${KEY_COPIES_FIELD}', 'removed') ELSE detail_json END`;
+
+/** Removes every key copy past its expiry (the last id of its identity). The check that had it then ends, its estimate kept. */
+export async function removeExpiredKeyCopies(ledger: D1Database, now: number): Promise<void> {
+  await ledger
+    .prepare(
+      `UPDATE open_work SET detail_json = ${WITHOUT_KEY_COPIES}
+       WHERE json_type(detail_json, '$.${KEY_COPIES_FIELD}') = 'object'
+         AND CAST(COALESCE(json_extract(detail_json, '$.${KEY_COPIES_FIELD}.providerKey.identity[6]'),
+                           json_extract(detail_json, '$.${KEY_COPIES_FIELD}.cloudflareToken.identity[4]'), 0) AS INTEGER) <= ?`,
+    )
+    .bind(now)
+    .run();
+}
+
 const TIMED_OUT = Symbol("timed out");
 
 /**
@@ -184,6 +206,13 @@ export async function runSweep(
   const handlers = options.handlers ?? OPEN_WORK_HANDLERS;
   const itemLimit = options.itemTimeLimitMs ?? SWEEP_ITEM_TIME_LIMIT_MS;
   const runLimit = options.runTimeLimitMs ?? SWEEP_RUN_TIME_LIMIT_MS;
+  // Key copies past their expiry go first, wherever they are: one written late
+  // (a failed write replayed days on) never waits for its check (plan step 8j).
+  try {
+    await removeExpiredKeyCopies(ledger, now);
+  } catch (error) {
+    log("warn", "key_copies_not_removed", { error: errorFacts(error) });
+  }
   const rows = await ledger.prepare(
     "SELECT * FROM open_work WHERE gave_up_at IS NULL AND due_at <= ? ORDER BY due_at, id LIMIT ?",
   )
@@ -231,8 +260,11 @@ export async function runSweep(
         await ledger.prepare("DELETE FROM open_work WHERE id = ?").bind(item.id).run();
         done += 1;
       } else {
+        // A check that gives up keeps its row for the console, but not its key copies.
         const update = lastTry
-          ? ledger.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ? WHERE id = ?").bind(result.reason, now, item.id)
+          ? ledger
+              .prepare(`UPDATE open_work SET tries = tries + 1, last_error = ?, gave_up_at = ?, detail_json = ${WITHOUT_KEY_COPIES} WHERE id = ?`)
+              .bind(result.reason, now, item.id)
           : ledger.prepare("UPDATE open_work SET tries = tries + 1, last_error = ?, due_at = ? WHERE id = ?").bind(
               result.reason,
               now + pace.delay(item.tries + 1),

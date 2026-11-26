@@ -11,7 +11,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import worker from "../src/index.ts";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
 import { KeyShare } from "../src/vault/key-share.ts";
-import { runSweep } from "../src/ledger/sweep.ts";
+import { OPEN_WORK_HANDLERS, runSweep } from "../src/ledger/sweep.ts";
 import { AEAD, decap, deriveKeyPair, encap, keySchedule, openBase, sealBase } from "../vault/src/hpke.js";
 import { MAX_STORED_COPY_MS, storeCopy } from "../vault/src/call.js";
 import { forgetOpenedKeys, keyForRequest } from "../vault/src/keys.js";
@@ -444,5 +444,53 @@ describe("requests for an account with split keys on", () => {
     expect(await ledger().prepare("SELECT id FROM open_work WHERE id = ?").bind(row!.id).first()).toBeNull();
     const { results: kinds } = await ledger().prepare("SELECT kind FROM charge WHERE app_id = ?").bind(appId).all<{ kind: string }>();
     expect(kinds.map((one) => one.kind)).toEqual(["estimate"]);
+  });
+});
+
+describe("key copies go with their check (Sol round 1)", () => {
+  const COPY = { providerKey: { blob: "local1.1.x.y", identity: [ACCOUNT_ID, "conn", "fal", "", "", ""] } };
+
+  async function row(id: string, keyCopies: unknown, dueAt: number): Promise<void> {
+    await ledger()
+      .prepare(
+        `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
+         VALUES (?, 'job_check', ?, 'app_copies', 'job', ?, NULL, ?, ?, 0, 0)`,
+      )
+      .bind(id, ACCOUNT_ID, id, JSON.stringify({ jobId: `signed_${id}`, maxTries: 1, keyCopies }), dueAt)
+      .run();
+  }
+
+  async function detail(id: string): Promise<Record<string, unknown> | null> {
+    const found = await ledger().prepare("SELECT detail_json FROM open_work WHERE id = ?").bind(id).first<{ detail_json: string }>();
+    return found === null ? null : (JSON.parse(found.detail_json) as Record<string, unknown>);
+  }
+
+  beforeAll(() => seedAccount());
+
+  it("removes a check's copies when it gives up, keeping the rest for the console", async () => {
+    const id = `job:give_up_${crypto.randomUUID().slice(0, 6)}`;
+    const until = String(Date.now() + 60 * 60_000);
+    await row(id, { providerKey: { ...COPY.providerKey, identity: [...COPY.providerKey.identity, until] } }, 0);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const handlers = { ...OPEN_WORK_HANDLERS, job_check: async () => ({ done: false as const, reason: "not done" }) };
+    await runSweep(env, ledger(), { now: Date.now(), handlers });
+    const gaveUp = await ledger().prepare("SELECT gave_up_at FROM open_work WHERE id = ?").bind(id).first<{ gave_up_at: number | null }>();
+    expect(gaveUp?.gave_up_at).not.toBeNull();
+    expect(await detail(id)).toEqual({ jobId: `signed_${id}`, maxTries: 1, keyCopies: "removed" });
+    vi.restoreAllMocks();
+  });
+
+  it("removes copies past their expiry on every sweep, even on a row not yet due, and leaves the rest", async () => {
+    const expired = `job:expired_${crypto.randomUUID().slice(0, 6)}`;
+    const current = `job:current_${crypto.randomUUID().slice(0, 6)}`;
+    const now = Date.now();
+    const later = now + 60 * 60_000;
+    await row(expired, { providerKey: { ...COPY.providerKey, identity: [...COPY.providerKey.identity, String(now - 1)] } }, later);
+    await row(current, { providerKey: { ...COPY.providerKey, identity: [...COPY.providerKey.identity, String(later)] } }, later);
+    await runSweep(env, ledger(), { now });
+    expect((await detail(expired))?.keyCopies).toBe("removed");
+    expect((await detail(expired))?.jobId).toBe(`signed_${expired}`);
+    expect((await detail(current))?.keyCopies).toMatchObject({ providerKey: { blob: COPY.providerKey.blob } });
   });
 });

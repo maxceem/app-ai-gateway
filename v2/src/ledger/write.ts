@@ -255,12 +255,30 @@ export async function recordLedgerEntry(env: Env, entry: LedgerEntry): Promise<v
   }
 }
 
+/**
+ * The detail field a job's check row keeps its key copies in, for an account
+ * with split keys on (`../jobs/jobs.ts`, plan step 8j). A copy is a key the
+ * KEK alone opens: it never goes to the logs, and goes with the check.
+ */
+export const KEY_COPIES_FIELD = "keyCopies";
+
+/**
+ * An open-work row as it may be logged: everything needed to write it by
+ * hand, without its key copies. The one place every log of open work goes
+ * through.
+ */
+export function openWorkForLog(row: OpenWorkRow): Record<string, unknown> {
+  if (row.detail === null || !(KEY_COPIES_FIELD in row.detail)) return row as unknown as Record<string, unknown>;
+  const { [KEY_COPIES_FIELD]: _copies, ...detail } = row.detail;
+  return { ...row, detail };
+}
+
 /** The last resort: the whole charge in the logs, so it can be written by hand. Never a secret. */
 export function logLostEntry(entry: LedgerEntry, error: unknown): void {
   log("error", "usage_record_failed", {
     app: entry.charge.appId,
     charge: entry.charge as unknown as Record<string, unknown>,
-    openWork: entry.openWork as unknown as Record<string, unknown>[],
+    openWork: entry.openWork.map(openWorkForLog),
     error: errorFacts(error),
   });
 }

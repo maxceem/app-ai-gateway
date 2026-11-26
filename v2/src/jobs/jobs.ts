@@ -34,7 +34,7 @@ import { bookingTooLate } from "../ledger/late-booking.ts";
 import { jobEstimateCharge, jobSettled, settleJobFrom, type FinalFigure } from "../ledger/corrections.ts";
 import type { ChargeStatus } from "../ledger/labels.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
-import { utcDay, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
+import { KEY_COPIES_FIELD, utcDay, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../ledger/write.ts";
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
@@ -179,15 +179,19 @@ export async function withJobKeyCopies(env: Env, entry: LedgerEntry, credentials
     log("warn", "job_key_copy_failed", { app: check.appId, job: check.ownerId, error: errorFacts(error) });
     copies = "missing";
   }
-  const withCopies: OpenWorkRow = { ...check, detail: { ...check.detail, keyCopies: copies } };
+  const withCopies: OpenWorkRow = { ...check, detail: { ...check.detail, [KEY_COPIES_FIELD]: copies } };
   return { ...entry, openWork: entry.openWork.map((work) => (work === check ? withCopies : work)) };
 }
 
-/** A check row's key copies: the copies, "missing" when they could not be made, or null for an account with split keys off. */
+/**
+ * A check row's key copies: the copies; "missing" when they could not be made
+ * or were removed (`removed`, past their expiry, `../ledger/sweep.ts`); or
+ * null for an account with split keys off.
+ */
 function keyCopiesOf(detail: Record<string, unknown>): StoredCopies | "missing" | null {
-  const value = detail.keyCopies;
+  const value = detail[KEY_COPIES_FIELD];
   if (value === undefined || value === null) return null;
-  if (value === "missing" || typeof value !== "object") return "missing";
+  if (typeof value !== "object") return "missing";
   return value as StoredCopies;
 }
 

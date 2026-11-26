@@ -3,12 +3,12 @@
  * (plan section 4.2).
  */
 import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_PENDING, retryStored } from "../src/do/ChargeStore.ts";
 import { CHARGE_STORE_DEADLINE_MS } from "../src/ledger/charge-store.ts";
 import { ledgerDb } from "../src/ledger/database.ts";
-import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, type ChargeRow, type LedgerEntry } from "../src/ledger/write.ts";
+import { LEDGER_D1_DEADLINE_MS, recordLedgerEntry, type ChargeRow, type LedgerEntry, type OpenWorkRow } from "../src/ledger/write.ts";
 import { nano, type NanoDollars } from "../src/money.ts";
 import { ledger, withLedgerDb, writeAtTheirTime } from "./helpers.ts";
 
@@ -263,5 +263,69 @@ describe("the failed-write store", () => {
 
   it("has a size limit", () => {
     expect(MAX_PENDING).toBeGreaterThan(0);
+  });
+});
+
+describe("key copies never reach the logs (split keys, plan step 8j, Sol round 1)", () => {
+  const COPY = "local1.1.COPYIVCOPYIV.COPYCIPHERTEXTNEVERLOGGED";
+
+  /** An entry whose job check carries a key copy, as a split-key fal job's does. */
+  function withCopy(appId: string): { entry: LedgerEntry; work: OpenWorkRow } {
+    const one = entry({}, appId);
+    const work: OpenWorkRow = {
+      id: `job:${one.charge.ownerId}`,
+      kind: "job_check",
+      accountId: one.charge.accountId,
+      appId,
+      ownerType: "job",
+      ownerId: one.charge.ownerId,
+      chargeId: one.charge.id,
+      detail: { jobId: "job_signed_id", maxTries: 60, keyCopies: { providerKey: { blob: COPY, identity: ["a", "c", "fal", "", "", "", "1"] } } },
+      dueAt: AT,
+      createdAt: AT,
+    };
+    return { entry: { ...one, openWork: [work] }, work };
+  }
+
+  function errorLines(spy: { mock: { calls: unknown[][] } }, message: string): string[] {
+    return spy.mock.calls.map(([line]) => String(line)).filter((line) => line.includes(`"message":"${message}"`));
+  }
+
+  it("logs a lost entry without its key copies, keeping what writing it by hand needs", async () => {
+    const { entry: one } = withCopy("app_copy_lost");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const down = () => Promise.reject(new Error("down"));
+    await recordLedgerEntry(
+      { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ query: down }) }, CHARGE_STORE: { getByName: () => ({ keep: down }) } } as unknown as Env,
+      one,
+    );
+    const [line] = errorLines(errors, "usage_record_failed");
+    expect(line).toBeDefined();
+    expect(line).not.toContain(COPY);
+    expect(line).toContain("job_signed_id");
+    expect(line).toContain(one.charge.id);
+  });
+
+  it("logs what the failed-write store drops without its key copies", async () => {
+    const appId = `app_copy_drop_${crypto.randomUUID().slice(0, 6)}`;
+    const { entry: one, work } = withCopy(appId);
+    const store = env.CHARGE_STORE.getByName(appId);
+    await store.keep([one]);
+    await store.keepWork([{ ...work, id: `${work.id}:alone` }]);
+    // Past the store's retention, so its next alarm drops both, logging each.
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec("UPDATE pending SET stored_at = 0");
+      state.storage.sql.exec("UPDATE pending_work SET stored_at = 0");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await runDurableObjectAlarm(store);
+    const lines = [...errorLines(errors, "usage_record_failed"), ...errorLines(errors, "open_work_unrecorded")];
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line).not.toContain(COPY);
+      expect(line).toContain("job_signed_id");
+    }
   });
 });
