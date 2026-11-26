@@ -122,17 +122,23 @@ export async function verifyAppAttestation(input: {
     return fail();
   }
   const root = input.root ?? appleAppAttestRootCertificate();
-  if (
-    !certificateIsCurrent(credential) ||
-    !certificateIsCurrent(intermediate) ||
-    // checkIssued compares names only; a certificate the root issued for an
-    // end entity must not stand in as the intermediate.
-    !intermediate.ca ||
-    !credential.checkIssued(intermediate) ||
-    !credential.verify(intermediate.publicKey) ||
-    !intermediate.checkIssued(root) ||
-    !intermediate.verify(root.publicKey)
-  ) fail();
+  let chained = false;
+  try {
+    chained =
+      certificateIsCurrent(credential) &&
+      certificateIsCurrent(intermediate) &&
+      // checkIssued compares names only; a certificate the root issued for an
+      // end entity must not stand in as the intermediate.
+      intermediate.ca &&
+      credential.checkIssued(intermediate) &&
+      credential.verify(intermediate.publicKey) &&
+      intermediate.checkIssued(root) &&
+      intermediate.verify(root.publicKey);
+  } catch {
+    // A certificate whose public key does not parse throws here; refuse it
+    // like any other broken chain, not as a gateway error.
+  }
+  if (!chained) fail();
 
   const challengeHash = await sha256(decodeBase64(input.challenge, "challenge"));
   const nonce = await sha256(Buffer.concat([proof.authData, challengeHash]));

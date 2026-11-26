@@ -129,6 +129,21 @@ function verify(made: Attestation, overrides: { challenge?: string; keyId?: stri
 
 const refused = { status: 403, code: "attest_failed" };
 
+/**
+ * The certificate with one bit flipped in its public key, so it still parses
+ * but reading its key throws (the iPhone check's broken intermediate, T33).
+ */
+function withBrokenKey(der: Buffer): Buffer {
+  const spki = new X509Certificate(der).publicKey.export({ type: "spki", format: "der" });
+  const at = der.indexOf(spki);
+  if (at < 0) throw new Error("public key not found in the certificate");
+  const broken = Buffer.from(der);
+  broken[at + spki.length - 1]! ^= 0x01;
+  const certificate = new X509Certificate(broken);
+  expect(() => certificate.publicKey).toThrow();
+  return broken;
+}
+
 describe("an App Attest attestation", () => {
   let valid: Attestation;
 
@@ -211,6 +226,14 @@ describe("an App Attest attestation", () => {
     await expect(verify(await attestation({ intermediateExpired: true }))).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ leafNotYetValid: true }))).rejects.toMatchObject(refused);
     await expect(verify(await attestation({ intermediateNotYetValid: true }))).rejects.toMatchObject(refused);
+  });
+
+  it("refuses an intermediate whose public key does not parse, as 403 and not a gateway error", async () => {
+    await expect(verify(await attestation({
+      shape: ({ authData, leaf, intermediate }) => ({
+        fmt: "apple-appattest", attStmt: { x5c: [leaf, withBrokenKey(intermediate)], receipt: Buffer.from("r") }, authData,
+      }),
+    }))).rejects.toMatchObject(refused);
   });
 
   it("refuses an end-entity certificate from the root standing in as the intermediate", async () => {

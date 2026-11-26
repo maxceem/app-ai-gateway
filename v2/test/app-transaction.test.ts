@@ -60,6 +60,21 @@ async function sign(chainOf: Chain, payload: Record<string, unknown>, header: Re
     .sign(chainOf.leafKey);
 }
 
+/**
+ * The certificate with one bit flipped in its public key, so it still parses
+ * but reading its key throws (the iPhone check's broken intermediate, T33).
+ */
+function withBrokenKey(der: Buffer): Buffer {
+  const spki = new X509Certificate(der).publicKey.export({ type: "spki", format: "der" });
+  const at = der.indexOf(spki);
+  if (at < 0) throw new Error("public key not found in the certificate");
+  const broken = Buffer.from(der);
+  broken[at + spki.length - 1]! ^= 0x01;
+  const certificate = new X509Certificate(broken);
+  expect(() => certificate.publicKey).toThrow();
+  return broken;
+}
+
 const BUNDLE = "com.example.app";
 
 function transaction(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -114,6 +129,13 @@ describe("an App Store transaction", () => {
     // Without the injected root, Apple's own is the only one trusted.
     await expect(verifyAppTransaction({ jws: await sign(valid, transaction()), appId: "app-1", bundleId: BUNDLE }))
       .resolves.toEqual({ account: null, rejection: "chain" });
+  });
+
+  it("names nobody, without throwing, when the intermediate's public key does not parse", async () => {
+    const [leaf, intermediate, root] = valid.x5c as [string, string, string];
+    const broken = withBrokenKey(Buffer.from(intermediate, "base64")).toString("base64");
+    const chainOf = { ...valid, x5c: [leaf, broken, root] };
+    await expect(verify(await sign(chainOf, transaction()))).resolves.toEqual({ account: null, rejection: "chain" });
   });
 
   it("requires Apple's marker on the leaf and on the intermediate", async () => {
