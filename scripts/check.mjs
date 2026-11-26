@@ -1,6 +1,6 @@
 import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
-import { runStep, shuttingDown, silenceLimitMs } from "./check-step.mjs";
+import { runStep, silenceLimitMs } from "./check-step.mjs";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -100,9 +100,8 @@ let failed = false;
 await Promise.all(
   Array.from({ length: slots }, async () => {
     // Stop taking work once something has failed: the run already has to be
-    // fixed and repeated, so later steps would only add noise and delay. The
-    // same once this process is told to stop.
-    while (queue.length > 0 && !failed && !shuttingDown()) {
+    // fixed and repeated, so later steps would only add noise and delay.
+    while (queue.length > 0 && !failed) {
       const result = await run(queue.shift());
       results.push(result);
       if (!result.ok) failed = true;
@@ -122,9 +121,6 @@ if (failures.length > 0) {
     `\n${tier} failed in ${total}s: ${failures.map((f) => f.name).join(", ")}` +
       (skipped > 0 ? ` (${skipped} step${skipped === 1 ? "" : "s"} not run)` : ""),
   );
-  // Not `process.exit`: a step stopped for silence may still have its SIGKILL
-  // timer pending, and exiting now would cancel it and leave a process running.
-  process.exitCode = 1;
-} else {
-  console.log(`\n${tier} passed in ${total}s`);
+  process.exit(1);
 }
+console.log(`\n${tier} passed in ${total}s`);

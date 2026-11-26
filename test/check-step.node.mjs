@@ -13,8 +13,7 @@ const FIXTURE_LIFE_MS = 60_000;
 const TEST_TIMEOUT_MS = 25_000;
 // Long enough for a fixture to start and print on a loaded machine.
 const SILENCE_MS = 3_000;
-const GRACE_MS = 2_000;
-// Slack on top of the silence limit and the grace period.
+// Slack on top of the silence limit, for the kill and the output to close.
 const MARGIN_MS = 2_000;
 
 /** `work`, or a failure once `ms` have passed. */
@@ -82,8 +81,8 @@ for (const wrapperExits of [false, true]) {
   // Without the watchdog the step never ends, so the timeout fails the test.
   test(`a step that ${what} is stopped with its whole group, and fails`, { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
     const result = await within(
-      SILENCE_MS + GRACE_MS + MARGIN_MS,
-      runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS, graceMs: GRACE_MS }),
+      SILENCE_MS + MARGIN_MS,
+      runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS }),
       "stopping the step",
     );
     assert.equal(result.ok, false, "a step stopped by the watchdog never passes, even when it exited 0");
@@ -95,36 +94,6 @@ for (const wrapperExits of [false, true]) {
     assert.equal(await stops(child), true, "the child that held the output pipe was stopped too");
   });
 }
-
-// A child that ignores SIGTERM and prints when it gets one, as a busy test
-// runner might. Its output must not start the watchdog again, and it still
-// ends: SIGKILL follows once the grace period is over.
-const STUBBORN = `
-const { spawn } = require("node:child_process");
-const child = \`console.log("child-pid:" + process.pid); process.on("SIGTERM", () => console.log("child got SIGTERM, staying")); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});\`;
-spawn(process.execPath, ["-e", child], { stdio: "inherit" });
-console.log("stdout | test/hangs.test.ts > waits forever");
-setInterval(() => undefined, 1000);
-setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});
-`;
-
-test("a child that ignores SIGTERM and prints on it gets one timeout and is then killed", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
-  // The grace period is longer than the silence limit, so a watchdog started
-  // again by the child's answer would fire a second time before SIGKILL.
-  const graceMs = SILENCE_MS + 1_500;
-  // Only SIGKILL can end this step in time: the child ignores SIGTERM.
-  const result = await within(
-    SILENCE_MS + graceMs + MARGIN_MS,
-    runStep("fake:stubborn", process.execPath, ["-e", STUBBORN], { silenceMs: SILENCE_MS, graceMs }),
-    "killing the step",
-  );
-  assert.equal(result.ok, false);
-  assert.match(result.output, /child got SIGTERM, staying/);
-  assert.equal(result.output.match(/hit its silence timeout/g)?.length, 1, "the watchdog fired exactly once");
-  const child = Number(result.output.match(/child-pid:(\d+)/)?.[1]);
-  assert.ok(child > 0, "the child printed its pid");
-  assert.equal(await stops(child), true, "SIGKILL ended the child that ignored SIGTERM");
-});
 
 test("Ctrl-C sends SIGKILL to a watched step's group, so even a process that ignores SIGTERM goes, and exits 130", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "check-step-"));
