@@ -785,7 +785,7 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
     await core.start(s.text, s.ticket, s.client());
     await core.recordUsage(usage("kept"), "per_turn");
     // The next usage event's write never lands: the instance dies with it.
-    s.store.freezeWhen = (entries) => JSON.stringify(entries).includes("lost");
+    s.store.freezeWhen = (entries) => JSON.stringify(entries).includes('"input_tokens":510');
     void core.recordUsage(usage("lost", 500, 500), "per_turn");
     await until(() => s.store.frozen);
     s.store.freezeWhen = null;
@@ -860,6 +860,23 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
     expect(final).toMatchObject({ seq: 1, to: deadline, sessionMs: 30_000, gapMs: deadline - (s.ticket.start + 30_000), gaps: 1 });
     // Within the main Worker's limit: never more than the cap.
     expect(final.sessionMs + final.gapMs).toBeLessThanOrEqual(s.ticket.cap);
+  });
+
+  it("never books a live slice past the deadline: an alarm that starts just before it and crosses it while storage writes (Sol round 2)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    await core.recordUsage(usage("e1"), "per_turn");
+    const deadline = s.ticket.start + s.ticket.cap;
+    s.tick(deadline - 1 - s.now());
+    // The tick's own write takes 5 s: the checkpoint after it runs past the deadline.
+    s.store.beforePut = () => {
+      s.store.beforePut = null;
+      s.tick(5_000);
+    };
+    await core.alarm();
+    const live = s.calls.checkpoints.find((seen) => !seen.accounting && seen.slice !== null)?.slice as unknown as { to: number; sessionMs: number };
+    expect(live).toMatchObject({ to: deadline, sessionMs: deadline - s.ticket.start });
   });
 
   it("arms cleanup when a retry delivers the last slice after close already went through (Sol round 1)", async () => {

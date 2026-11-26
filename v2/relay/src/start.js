@@ -519,7 +519,7 @@ export class SessionCore {
 
   async checkpointOnce() {
     if (this.ending !== null) return;
-    const stored = await this.store.get(["state", "ticket", "callId"]);
+    const stored = await this.store.get(["state", "ticket", "callId", "settings"]);
     const ticket = stored.get("ticket");
     // No checkpoint before `active`, and none from a session that has ended (crash table, "Checkpoints").
     if (stored.get("state") !== "active" || typeof ticket !== "string") return;
@@ -532,7 +532,9 @@ export class SessionCore {
     if (slice === null) {
       // The end owns the journal once it starts: nothing here writes over it.
       if (this.ending !== null || this.journal !== journal) return;
-      slice = freeze(journal, now);
+      // Never past the deadline: a checkpoint that crosses it while waiting bills nothing after the cap.
+      const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
+      slice = freeze(journal, deadline === undefined ? now : Math.min(now, deadline));
       // The slice's boundary is stored before it is sent: usage after it goes to the next one (row 16).
       if (slice !== null) {
         journal.savedAt = now;

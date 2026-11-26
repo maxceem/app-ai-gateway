@@ -34,15 +34,16 @@ import type { AppRecord } from "../core/types.ts";
 import { loadApp } from "../apps/app-records.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import type { Measured, PriceSource } from "../ledger/labels.ts";
-import { checkpointStanding, sessionRates, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
+import { checkpointStanding, savedSessionPrice, writeCheckpoint, type CheckpointBudget, type CheckpointPlanMinutes, type StopReason } from "../ledger/sessions.ts";
 import { utcDay, type ChargeRow } from "../ledger/write.ts";
 import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
-import { billingForCharge, priceSources } from "../pricing/billability.ts";
+import type { ResolvedPrice } from "../pricing/billability.ts";
 import { priceInServedMode } from "../pricing/tokens.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { CONTRACT_VERSION, ContractRefusal, checkedTicket } from "./contract.ts";
 import { sessionRowOf, SEAL_GRACE_MS, type Ticket } from "./tickets.ts";
+import { decodeSessionPrice, encodeSessionPrice, resolveSessionPrice } from "./session-price.ts";
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
@@ -134,17 +135,16 @@ interface SlicePrice {
 }
 
 /**
- * Prices a slice's tokens with the connection's own rate, else ours. A slice
+ * Prices a slice's tokens with the session's price (`./session-price.ts`):
+ * the connection's own rate, else ours, as they were when it opened. A slice
  * with no tokens (connection time only) costs nothing: there is no usage to
- * price. Tokens with no price yet are booked `unresolved`, priced later by the
+ * price. Tokens with no price are booked `unresolved`, priced later by the
  * sweep, never billed as free (AGENTS.md).
  */
-export function priceSlice(ticket: Ticket, measures: Readonly<Record<string, number>>, ratesJson: string | null): SlicePrice {
+export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null): SlicePrice {
   const hasTokens = SLICE_MEASURES.some((name) => (measures[name] ?? 0) > 0);
   if (!hasTokens) return { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   const unresolved: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
-  if (ticket.model === null) return unresolved;
-  const resolved = billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model);
   if (resolved === null) return unresolved;
   const priced = priceInServedMode(resolved.price, {
     inputTokens: measures.input_tokens ?? 0,
@@ -286,19 +286,32 @@ export async function checkpointForRelay(
   // The reads before the ledger, together: each has its own short deadline, and none can fail the checkpoint.
   const facts = { app: ticket.app, session: ticket.sid };
   const ledger = ledgerDb(env, ticket.account, { deadlineMs: CHECKPOINT_LEDGER_DEADLINE_MS });
-  const [standing, budgets, planMinutes, fixedRates] = await Promise.all([
+  const [standing, budgets, planMinutes, saved] = await Promise.all([
     // Its own 1 s deadline inside; null when D1 can't answer, and both checks are skipped.
     checkpointStanding(env.DB, session),
     bounded(async () => checkpointBudgets(await loadApp(env, ticket.app), ticket), [], "checkpoint_budgets_unchecked", facts, waitUntil),
     bounded(() => checkpointPlanMinutes(env, ticket, now, waitUntil), null, "checkpoint_allowance_unchecked", facts, waitUntil),
-    // The rates the session started with (plan 4.2): a rate change mid-session never reprices it.
-    bounded(() => sessionRates(ledger, ticket.sid), undefined, "checkpoint_rates_unread", facts, waitUntil),
+    // The price saved when the session opened (plan 4.2): a rate change mid-session never reprices it.
+    bounded(() => savedSessionPrice(ledger, ticket.sid), undefined, "checkpoint_price_unread", facts, waitUntil),
   ]);
-  // Not fixed yet (the first checkpoint): today's rates, fixed on the session in the same write.
-  // Without the connection's own rates (D1 didn't answer), our list price still prices the slice.
-  const rates = fixedRates !== undefined ? fixedRates : (standing?.ratesJson ?? null);
-  const fixRates = fixedRates === undefined && standing !== null ? (standing.ratesJson ?? null) : undefined;
-  const slice = input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(ticket, input.slice.measures, rates), now);
+  // Today's price, when none is saved (`open` didn't manage to) or it can't be read: saved now
+  // if none is yet. Without the connection's own rates (D1 didn't answer), our list price.
+  let price: ResolvedPrice | null = null;
+  let fixPrice: string | undefined;
+  let fromSaved = false;
+  if (saved !== undefined) {
+    try {
+      price = decodeSessionPrice(saved);
+      fromSaved = true;
+    } catch (error) {
+      log("warn", "checkpoint_price_unreadable", { ...facts, error: errorFacts(error) });
+    }
+  }
+  if (!fromSaved) {
+    price = resolveSessionPrice(ticket, standing?.ratesJson ?? null);
+    if (saved === undefined && standing !== null) fixPrice = encodeSessionPrice(price);
+  }
+  const slice = input.slice === null ? null : sliceCharge(ticket, input.slice, priceSlice(input.slice.measures, price), now);
 
   let answer;
   try {
@@ -311,7 +324,7 @@ export async function checkpointForRelay(
       providerCallId: input.providerCallId ?? null,
       standing,
       gaps: input.slice?.gaps ?? 0,
-      ...(fixRates === undefined ? {} : { fixRates }),
+      ...(fixPrice === undefined ? {} : { fixPrice }),
     });
   } catch (error) {
     // The ledger can't be reached: the session continues, and the relay sends the slice again.

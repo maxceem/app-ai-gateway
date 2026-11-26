@@ -4,7 +4,7 @@
  * `relay-start.test.ts`.
  */
 import { describe, expect, it } from "vitest";
-import { addUsage, confirm, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
+import { addUsage, confirm, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
 import { adapterFor } from "../relay/src/adapters.js";
 
 describe("journal", () => {
@@ -54,20 +54,38 @@ describe("journal", () => {
     expect(freeze(journal, 120_000, { gapFrom: 10_000 })).toMatchObject({ sessionMs: 0, gapMs: 30_000, gaps: 1 });
   });
 
-  it("at its hard size, drops an event uncounted, still skips repeats, and marks the slice with an unknown-cost gap (Sol round 1)", () => {
+  it("counts every event of a long session with long escaped ids: ids are kept as fixed-size digests (Sol round 2)", () => {
     const journal = newJournal(0);
-    // 128-character ids that grow six times when escaped in JSON: about 21 fit in 16 KB.
-    const id = (i: number) => String(i).padStart(3, "0") + "\u0001".repeat(125);
-    for (let i = 0; i < 40; i += 1) addUsage(journal, { id: id(i), measures: { input_tokens: 1 } }, "per_turn", 1_000 + i);
-    const counted = journal.measures.input_tokens ?? 0;
-    expect(counted).toBeGreaterThan(0);
-    expect(counted).toBeLessThan(40);
-    expect(new TextEncoder().encode(JSON.stringify(journal)).length).toBeLessThanOrEqual(JOURNAL_MAX_BYTES);
-    // A repeat of an event already counted is still skipped.
-    expect(addUsage(journal, { id: id(0), measures: { input_tokens: 1 } }, "per_turn", 2_000)).toBe(false);
-    expect(journal.measures.input_tokens).toBe(counted);
-    // The slice says some usage is unknown, with a real duration: from the first drop to its end.
-    expect(freeze(journal, 5_000)).toMatchObject({ gaps: 1, gapMs: 5_000 - (1_000 + counted) });
+    // 128-character ids that grow six times when escaped in JSON.
+    const id = (i: number) => String(i).padStart(5, "0") + "\u0001".repeat(123);
+    let at = 0;
+    for (let i = 0; i < 2_000; i += 1) {
+      expect(addUsage(journal, { id: id(i), measures: { input_tokens: 1 } }, "per_turn", i)).toBe(true);
+      // A slice every 100 events, confirmed at once.
+      if (i % 100 === 99) {
+        at = i + 1;
+        const slice = freeze(journal, at);
+        expect(slice).toMatchObject({ measures: { input_tokens: 100 }, gaps: 0, gapMs: 0 });
+        confirm(journal, slice!.seq);
+      }
+    }
+    expect(journal.seen).toHaveLength(SEEN_IDS);
+    expect(journal.seen.every((digest) => /^[0-9a-f]{14}$/.test(digest))).toBe(true);
+    expect(journal.seen.at(-1)).toBe(digestOf(id(1_999)));
+    expect(new TextEncoder().encode(JSON.stringify(journal)).length).toBeLessThan(JOURNAL_MAX_BYTES / 8);
+    // A recent repeat is still skipped.
+    expect(addUsage(journal, { id: id(1_999), measures: { input_tokens: 1 } }, "per_turn", at)).toBe(false);
+  });
+
+  it("merges a dropped-usage gap and a crash gap, so time they share counts once (Sol round 2)", () => {
+    const journal = newJournal(0);
+    addUsage(journal, { id: "e1", measures: { input_tokens: 1 } }, "per_turn", 10_000);
+    // Usage was dropped at the hard size from 20 s; the instance then crashed after its write at 30 s.
+    journal.droppedFrom = 20_000;
+    const slice = freeze(journal, 90_000, { gapFrom: 30_000 });
+    // One gap from 20 s to 90 s, not 70 s + 60 s; never longer than the slice.
+    expect(slice).toMatchObject({ sessionMs: 30_000, gapMs: 70_000, gaps: 2, from: 0, to: 90_000 });
+    expect(slice!.gapMs).toBeLessThanOrEqual(slice!.to - slice!.from);
   });
 
   it("reads only a journal in a format it knows", () => {

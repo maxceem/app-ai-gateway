@@ -16,7 +16,8 @@
  *
  * `open` activates the session's leases in the limiters, and `close` frees
  * them (`../limits/session-admission.ts`). Neither ever fails because a
- * limiter cannot be reached (crash table row 7).
+ * limiter cannot be reached (crash table row 7). `open` also saves the
+ * session's price (`./session-price.ts`), and never fails because it can't.
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -27,6 +28,7 @@ import { closeSession } from "../ledger/sessions.ts";
 import { sessionRowOf, verifyTicket, type Ticket } from "./tickets.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
+import { savePriceAtOpen } from "./session-price.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
 
 /**
@@ -109,7 +111,8 @@ export async function openForRelay(
   const payload = await checkedTicket(env, ticket);
   if (now >= payload.exp) throw new ContractRefusal("ticket_expired");
   const lease = leaseOf(payload);
-  await activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil);
+  // The session's price is fixed now (plan 4.2), alongside the leases; neither ever fails `open`.
+  await Promise.all([activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil), savePriceAtOpen(env, payload)]);
   return {
     version: CONTRACT_VERSION,
     sessionId: payload.sid,

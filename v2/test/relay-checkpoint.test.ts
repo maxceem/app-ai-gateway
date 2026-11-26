@@ -8,11 +8,11 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkpointBudgets, checkpointForRelay, priceSlice, type SliceInput } from "../src/relay/checkpoint.ts";
-import { ContractRefusal } from "../src/relay/contract.ts";
-import { issueTicket, type TicketRequest } from "../src/relay/tickets.ts";
-import { closeSession } from "../src/ledger/sessions.ts";
+import { ContractRefusal, openForRelay } from "../src/relay/contract.ts";
+import { issueTicket, sessionRowOf, type TicketRequest } from "../src/relay/tickets.ts";
+import { closeSession, openSession } from "../src/ledger/sessions.ts";
 import { userLimiterName } from "../src/limits/admission.ts";
-import { listPrice } from "../src/pricing/prices.ts";
+import { listPrice, PRICE_LIST } from "../src/pricing/prices.ts";
 import { priceTokens } from "../src/pricing/tokens.ts";
 import type { SessionCheckpointAnswer, UserSessionAdmission } from "../src/do/EndUserLimiter.ts";
 import type { SlotClaim } from "../src/do/session-slots.ts";
@@ -100,7 +100,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(await charges(ticket.sid)).toHaveLength(1);
   });
 
-  it("prices every slice at the rates the session started with: a rate change mid-session reprices nothing (Sol round 1)", async () => {
+  it("prices every slice at the price saved when the session opened: a connection edit between open and the first checkpoint changes nothing (Sol round 2)", async () => {
     await seedAccount();
     const connectionId = `conn_${crypto.randomUUID().replaceAll("-", "")}`;
     const rates = (input: number) => JSON.stringify({ "house-realtime": { input, output: input } });
@@ -110,11 +110,45 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
       .bind(connectionId, ACCOUNT_ID, connectionId.slice(0, 40), rates(1_000_000_000), Date.now(), Date.now())
       .run();
     const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
-    // The first checkpoint fixes the rates: $1 per million tokens.
-    await checkpointForRelay(env, text, live(null));
+    // The session endpoint wrote the row; `open` saves the price: $1 per million tokens.
+    await openSession(ledger(), sessionRowOf(ticket), Date.now());
+    await openForRelay(env, text);
     await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind(rates(5_000_000_000), connectionId).run();
+    await checkpointForRelay(env, text, live(null));
     await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
     expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000, price_source: "customer_rate" }]);
+  });
+
+  it("prices every slice at the price saved when the session opened: a new price list mid-session changes nothing (Sol round 2)", async () => {
+    const { text, ticket } = await ticketFor();
+    await openSession(ledger(), sessionRowOf(ticket), Date.now());
+    await openForRelay(env, text);
+    const usage = { input_tokens: 1_000, output_tokens: 200 };
+    const before = listPrice("openai", "gpt-4o-mini")!;
+    const expected = priceTokens(before, { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
+    // A new release ships a price list where the model costs five times as much.
+    const models = PRICE_LIST.get("openai") as unknown as Map<string, unknown>;
+    const fivefold = Object.fromEntries(Object.entries(before.rates).map(([name, rate]) => [name, (rate as number) * 5]));
+    models.set("gpt-4o-mini", { ...before, rates: fivefold } as never);
+    try {
+      expect(listPrice("openai", "gpt-4o-mini")).not.toEqual(before);
+      await checkpointForRelay(env, text, live(slice(ticket, 1, usage)));
+    } finally {
+      models.set("gpt-4o-mini", before);
+    }
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: expected, price_source: "list_rate" }]);
+  });
+
+  it("prices at today's price, with a warning, when the saved price can't be read (Sol round 2)", async () => {
+    const { text, ticket } = await ticketFor();
+    await openSession(ledger(), sessionRowOf(ticket), Date.now());
+    await ledger().prepare("UPDATE session SET rates_json = '{not json' WHERE id = ?").bind(ticket.sid).run();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000, output_tokens: 200 })));
+    const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: expected, price_source: "list_rate" }]);
+    expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_price_unreadable");
   });
 
   it("never books a slice with a gap as complete, even one with no gap time (Sol round 1)", async () => {
@@ -129,7 +163,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: null, price_source: "unresolved" }]);
     expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toEqual({ kind: "unresolved" });
     // Connection time alone costs nothing: there is no usage to price.
-    expect(priceSlice(ticket, {}, null)).toMatchObject({ costNano: 0, priceSource: "list_rate" });
+    expect(priceSlice({}, null)).toMatchObject({ costNano: 0, priceSource: "list_rate" });
   });
 
   it("writes the session row on an empty checkpoint, with the provider's call id, and marks a gap's slice partial (rows 13, 14)", async () => {
