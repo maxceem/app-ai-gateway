@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { lastTestFile, runStep, silenceLimitMs } from "../scripts/check-step.mjs";
 
@@ -24,6 +28,9 @@ console.log("stdout | test/hangs.test.ts > waits forever");
 ${wrapperExits ? "process.exit(0);" : `setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`}
 `;
 
+// The watchdog needs process groups, so it is off on Windows.
+const noGroups = process.platform === "win32";
+
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -36,7 +43,7 @@ const alive = (pid) => {
 for (const wrapperExits of [false, true]) {
   const what = wrapperExits ? "exits at once and leaves its child hanging" : "prints once and then hangs";
   // Without the watchdog the step never ends, so the timeout fails the test.
-  test(`a step that ${what} is stopped with its whole group, and fails`, { timeout: TEST_TIMEOUT_MS }, async () => {
+  test(`a step that ${what} is stopped with its whole group, and fails`, { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
     const result = await runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS });
     assert.equal(result.ok, false, "a step stopped by the watchdog never passes, even when it exited 0");
     assert.match(result.output, /fake:test hit its silence timeout: it printed nothing for 0\.05 minutes, so it was stopped/);
@@ -47,6 +54,56 @@ for (const wrapperExits of [false, true]) {
     assert.equal(alive(child), false, "the child that held the output pipe was stopped too");
   });
 }
+
+// A child that ignores SIGTERM and prints when it gets one, as a busy test
+// runner might. Its output must not start the watchdog again, and it still
+// ends: SIGKILL follows once the grace period is over.
+const STUBBORN = `
+const { spawn } = require("node:child_process");
+const child = \`console.log("child-pid:" + process.pid); process.on("SIGTERM", () => console.log("child got SIGTERM, staying")); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});\`;
+spawn(process.execPath, ["-e", child], { stdio: "inherit" });
+console.log("stdout | test/hangs.test.ts > waits forever");
+setInterval(() => undefined, 1000);
+setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});
+`;
+
+test("a child that ignores SIGTERM and prints on it gets one timeout and is then killed", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
+  // The grace period is longer than the silence limit, so a watchdog started
+  // again by the child's answer would fire a second time before SIGKILL.
+  const result = await runStep("fake:stubborn", process.execPath, ["-e", STUBBORN], { silenceMs: SILENCE_MS, graceMs: SILENCE_MS + 1_500 });
+  assert.equal(result.ok, false);
+  assert.match(result.output, /child got SIGTERM, staying/);
+  assert.equal(result.output.match(/hit its silence timeout/g)?.length, 1, "the watchdog fired exactly once");
+  const child = Number(result.output.match(/child-pid:(\d+)/)?.[1]);
+  assert.ok(child > 0, "the child printed its pid");
+  assert.equal(alive(child), false, "SIGKILL ended the child that ignored SIGTERM");
+});
+
+test("Ctrl-C stops a watched step's group, even a process that ignores SIGTERM, and then exits 130", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "check-step-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pidFile = path.join(dir, "pid");
+  const fixture = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on("SIGTERM", () => undefined); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`;
+  const runner = `
+import { runStep } from ${JSON.stringify(new URL("../scripts/check-step.mjs", import.meta.url).href)};
+await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixture)}], { silenceMs: 60_000, graceMs: 1_000 });
+`;
+  const parent = spawn(process.execPath, ["--input-type=module", "-e", runner], { stdio: "ignore" });
+  const exited = new Promise((resolve) => parent.on("exit", (code, signal) => resolve(code ?? signal)));
+  let child = 0;
+  for (let waited = 0; !child && waited < 10_000; waited += 50) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      child = Number(readFileSync(pidFile, "utf8"));
+    } catch {
+      // Not started yet.
+    }
+  }
+  assert.ok(child > 0, "the watched step started");
+  parent.kill("SIGINT");
+  assert.equal(await exited, 130);
+  assert.equal(alive(child), false, "the process that ignored SIGTERM was killed before the runner exited");
+});
 
 test("a step that keeps printing is never stopped, however long it runs in all", { timeout: TEST_TIMEOUT_MS }, async () => {
   const slow = `let n = 0; const t = setInterval(() => { console.log("tick " + n); if (++n === 12) clearInterval(t); }, 300);`;

@@ -19,7 +19,7 @@ export const SILENCE_ENV = "CHECK_SILENCE_MINUTES";
 const DEFAULT_SILENCE_MINUTES = 5;
 // The longest delay a Node timer accepts. A longer one fires after 1 ms.
 const MAX_TIMER_MS = 2 ** 31 - 1;
-// How long a stopped step gets to end on its own before it is killed.
+// How long a stopped group gets to end after SIGTERM before it gets SIGKILL.
 const KILL_GRACE_MS = 5_000;
 
 /** How long a watched step may print nothing, in milliseconds, or `0` for no limit. */
@@ -47,22 +47,24 @@ export function lastTestFile(output) {
  *
  * With `silenceMs` above 0, the step runs in its own process group, and the
  * whole group is stopped once it prints nothing for that long. That needs
- * process groups, so on Windows no step is watched.
+ * process groups, so on Windows no step is watched. `graceMs` is how long the
+ * group gets after SIGTERM before SIGKILL; tests shorten it.
  */
-export function runStep(name, command, args, { cwd, silenceMs = 0 } = {}) {
+export function runStep(name, command, args, { cwd, silenceMs = 0, graceMs = KILL_GRACE_MS } = {}) {
   const watched = silenceMs > 0 && process.platform !== "win32";
   return new Promise((resolve) => {
     const started = Date.now();
     // `detached` makes the child the leader of a new process group, so the
     // group holds everything it starts, even what outlives it.
     const child = spawn(command, args, { cwd, detached: watched });
-    if (watched) stopWithParent(child.pid);
+    const group = watched ? trackGroup(child.pid, graceMs) : null;
 
     let output = "";
     let timedOut = false;
     let watchdog = null;
-    let killer = null;
     const stopSilent = () => {
+      // Fires once: output that comes after SIGTERM must not start it again.
+      watchdog = null;
       timedOut = true;
       const minutes = Math.round((silenceMs / 60_000) * 100) / 100;
       const file = lastTestFile(output);
@@ -73,9 +75,7 @@ export function runStep(name, command, args, { cwd, silenceMs = 0 } = {}) {
         ` (${SILENCE_ENV} changes the limit.)`;
       console.error(`STOP ${message}`);
       output += `\n${message}\n`;
-      signalGroup(child.pid, "SIGTERM");
-      // Kept referenced: a frozen process may ignore SIGTERM.
-      killer = setTimeout(() => signalGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
+      group.stop();
     };
     if (watched) watchdog = setTimeout(stopSilent, silenceMs);
     const keep = (chunk) => {
@@ -87,19 +87,78 @@ export function runStep(name, command, args, { cwd, silenceMs = 0 } = {}) {
     child.stderr.on("data", keep);
     child.on("error", (error) => {
       clearTimeout(watchdog);
+      group?.closed();
       resolve({ name, ok: false, output: String(error), seconds: 0 });
     });
     child.on("close", (code) => {
       clearTimeout(watchdog);
-      if (watched) groups.delete(child.pid);
-      // Nothing left in the group: no need to kill it later.
-      if (killer && !groupExists(child.pid)) clearTimeout(killer);
+      group?.closed();
       const seconds = Math.round((Date.now() - started) / 1000);
       const ok = code === 0 && !timedOut;
       console.log(`${ok ? "PASS" : "FAIL"} ${name} (${seconds}s)`);
       resolve({ name, ok, output, seconds });
     });
   });
+}
+
+// Every watched group that may still have members, by its id.
+const groups = new Map();
+
+/**
+ * Tracks a watched step's process group until it has no members left. Its
+ * `stop()` sends SIGTERM, then SIGKILL after the grace period, with a single
+ * timer however often it is called. That timer is kept referenced, so this
+ * process waits for it rather than leave a process running.
+ */
+function trackGroup(pid, graceMs) {
+  let killer = null;
+  const group = {
+    graceMs,
+    stop() {
+      if (killer) return;
+      signalGroup(pid, "SIGTERM");
+      killer = setTimeout(() => {
+        signalGroup(pid, "SIGKILL");
+        groups.delete(pid);
+      }, graceMs);
+    },
+    // The wrapper's output closed. The group may still have members.
+    closed() {
+      if (groupExists(pid)) return;
+      groups.delete(pid);
+      clearTimeout(killer);
+    },
+  };
+  groups.set(pid, group);
+  stopGroupsOnExit();
+  return group;
+}
+
+// A watched step is in its own process group, so Ctrl-C in the terminal no
+// longer reaches it. When this process is told to stop, it stops every
+// watched group the same way the watchdog does, then exits with the signal's
+// usual code. It sends SIGTERM rather than the signal it got, because a step
+// started from a background shell ignores SIGINT.
+let stopsOnExit = false;
+
+function stopGroupsOnExit() {
+  if (stopsOnExit) return;
+  stopsOnExit = true;
+  let stopping = false;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => {
+      if (stopping) return; // A second Ctrl-C does not cut the clean-up short.
+      stopping = true;
+      for (const group of groups.values()) group.stop();
+      // Exits once every group is gone, which each group's SIGKILL ensures.
+      const exitWhenGone = () => {
+        for (const group of [...groups.values()]) group.closed();
+        if (groups.size === 0) process.exit(128 + constants.signals[signal]);
+        else setTimeout(exitWhenGone, 100);
+      };
+      exitWhenGone();
+    });
+  }
 }
 
 function signalGroup(pid, signal) {
@@ -116,25 +175,5 @@ function groupExists(pid) {
     return true;
   } catch {
     return false;
-  }
-}
-
-// A watched step is in its own process group, so Ctrl-C in the terminal no
-// longer reaches it. When this process is told to stop, it stops every
-// watched group that is still running, then exits. It sends SIGTERM rather
-// than the signal it got, because a step started from a background shell
-// ignores SIGINT.
-const groups = new Set();
-let passingStops = false;
-
-function stopWithParent(pid) {
-  groups.add(pid);
-  if (passingStops) return;
-  passingStops = true;
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.once(signal, () => {
-      for (const group of groups) signalGroup(group, "SIGTERM");
-      process.exit(128 + constants.signals[signal]);
-    });
   }
 }

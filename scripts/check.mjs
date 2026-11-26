@@ -121,6 +121,9 @@ if (failures.length > 0) {
     `\n${tier} failed in ${total}s: ${failures.map((f) => f.name).join(", ")}` +
       (skipped > 0 ? ` (${skipped} step${skipped === 1 ? "" : "s"} not run)` : ""),
   );
-  process.exit(1);
+  // Not `process.exit`: a step stopped for silence may still have its SIGKILL
+  // timer pending, and exiting now would cancel it and leave a process running.
+  process.exitCode = 1;
+} else {
+  console.log(`\n${tier} passed in ${total}s`);
 }
-console.log(`\n${tier} passed in ${total}s`);
