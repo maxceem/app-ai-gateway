@@ -176,3 +176,29 @@ describe("the smoke checks' config comparison", () => {
     await expect(readJson(new Response("not json sk-live-0123456789abcdef", { status: 502 }))).rejects.not.toThrow(/sk-live/);
   });
 });
+
+describe("the mock's live session stand-in (step 9a, frame forwarding and T12)", () => {
+  it("answers a WebSocket upgrade, sends session.created at once, echoes frames, and sends one large frame with its type last", async () => {
+    const response = await mock.fetch(new Request("https://mock.test/v1/realtime?model=gpt-realtime", { headers: { upgrade: "websocket" } }));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const got: string[] = [];
+    let waiting: { count: number; resolve: () => void } | null = null;
+    // Waits on the messages themselves, not on a timer.
+    const arrived = (count: number) =>
+      got.length >= count ? Promise.resolve() : new Promise<void>((resolve) => (waiting = { count, resolve }));
+    socket.addEventListener("message", (event) => {
+      got.push(String(event.data));
+      if (waiting !== null && got.length >= waiting.count) waiting.resolve();
+    });
+    socket.accept();
+    socket.send("hello");
+    socket.send(JSON.stringify({ type: "mock.big" }));
+    await arrived(3);
+    expect(JSON.parse(got[0]!)).toEqual({ type: "session.created" });
+    expect(got[1]).toBe("hello");
+    expect(got[2]!.length).toBeGreaterThan(512 * 1024);
+    expect(got[2]!.endsWith('"type":"audio"}')).toBe(true);
+    socket.close(1000, "done");
+  });
+});

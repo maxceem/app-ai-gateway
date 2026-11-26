@@ -298,13 +298,19 @@ export async function websocketHandshake(path: string, base: string, headers: Re
  * text or bytes. Anything else fails with fixed text: Node's own error can
  * quote the URL.
  */
-export async function exchangeFrames(path: string, base: string, frames: (string | Uint8Array)[], count: number): Promise<(string | Uint8Array)[]> {
+export async function exchangeFrames(
+  path: string,
+  base: string,
+  frames: (string | Uint8Array)[],
+  count: number,
+  headers: Record<string, string> = {},
+): Promise<(string | Uint8Array)[]> {
   let socket: WebSocket;
   try {
     const url = new URL(path, base);
     url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
     // Node's WebSocket takes headers in its options; the DOM type does not know them.
-    socket = new WebSocket(url, { headers: { "user-agent": USER_AGENT } } as unknown as string[]);
+    socket = new WebSocket(url, { headers: { "user-agent": USER_AGENT, ...headers } } as unknown as string[]);
   } catch {
     stop("a WebSocket could not be opened");
   }

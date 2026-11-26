@@ -14,14 +14,18 @@
  * 4. "connecting" is stored, then the provider is called, once: an unknown
  *    outcome is never retried, since a retry could start a second paid call;
  * 5. one write: `active`, the call id and the reconnect secret's hash, with
- *    the alarm at the deadline.
- * The first checkpoint comes with the journal (step 9a part 2).
+ *    the alarm at the first tick.
+ * Then the alarm ticks every `TICK_MS` until the session ends: the time cap,
+ * a lost provider socket, and the liveness checks the session object gives
+ * (`liveness`: the heartbeat and "client too slow", `./frames.js`). The
+ * checkpoint joins the tick with the journal (step 9a part 2).
  *
  * The end: one write stores `ended`, the reason and the final slice, then
  * `close` is sent; the alarm retries it. Storage is deleted once `close` is
  * confirmed (or given up on) and the ticket has expired; until then the
  * `ended` marker refuses the ticket again (row 28).
  */
+import { TICK_MS } from "./frames.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
@@ -50,6 +54,7 @@ export const CLOSE_RETRY_EVERY_MS = 30_000;
  * `connect` throws `ProviderRefused` for a known refusal; anything else is an unknown outcome.
  * @typedef {(event: Record<string, unknown>) => void} Logger
  * @typedef {{ close(code: number, reason: string): void }} Client the connection a session is started for
+ * @typedef {(now: number) => string | null} Liveness the live session's own checks on each tick: an end reason, or null
  */
 
 /** The provider said no, with an answer: nothing was started there (crash table row 12). */
@@ -90,7 +95,7 @@ function codeOf(error) {
 
 export class SessionCore {
   /**
-   * @param {{ store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger }} parts
+   * @param {{ store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger, liveness?: Liveness }} parts
    */
   constructor(parts) {
     this.store = parts.store;
@@ -99,6 +104,8 @@ export class SessionCore {
     this.provider = parts.provider;
     this.now = parts.now ?? (() => Date.now());
     this.log = parts.log ?? ((event) => console.log(JSON.stringify(event)));
+    /** @type {Liveness} */
+    this.liveness = parts.liveness ?? (() => null);
     /** A start is in flight in this instance: a second connection with the ticket gets an error (row 8). */
     this.starting = false;
     /**
@@ -220,15 +227,13 @@ export class SessionCore {
       const reconnectSecret = newSecret();
       const reconnect = await hashOf(reconnectSecret);
       const deadline = deadlineOf(ticket);
-      const interval = settings.checkpointIntervalMs > 0 ? settings.checkpointIntervalMs : Infinity;
       // A slow handshake: the alarm may have ended the session, the client may have gone, or
       // the time run out. Then the provider's side is hung up, and an ended session stays ended.
       // Nothing waits between this check and the `active` write.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
-      // The first wakeup comes one checkpoint interval in, not at the deadline: a restarted
-      // object that lost its provider socket then ends soon (row 13). The fixed tick per
-      // session comes with frame forwarding (step 9a part 1, fourth review).
-      await this.store.put({ state: "active", callId: call.callId, reconnect }, Math.min(deadline, this.now() + interval));
+      // The alarm's first tick: from then on it ticks every `TICK_MS` (plan section 5), so a
+      // restarted object that lost its provider socket ends soon (row 13).
+      await this.store.put({ state: "active", callId: call.callId, reconnect }, Math.min(deadline, this.now() + TICK_MS));
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       return { ok: true, reconnectSecret, call, deadline };
@@ -269,11 +274,12 @@ export class SessionCore {
     const call = this.call;
     this.call = null;
     call?.close?.(1000, "session ended");
-    // Ended meanwhile (the alarm, or the client's close): it stays ended.
+    // Ended meanwhile (the alarm, or the client's close): it stays ended, and the client is told why.
     const stored = await this.store.get(["state", "end"]);
     if (stored.get("state") !== "starting") {
       const reason = /** @type {{ reason?: string } | undefined} */ (stored.get("end"))?.reason;
-      return reason === "client_closed" ? "client_closed" : "session_ended";
+      if (reason === "client_closed") return "client_closed";
+      return this.now() >= ticket.exp ? "ticket_expired" : "session_ended";
     }
     if (this.owner !== client) {
       await this.end("client_closed");
@@ -349,9 +355,11 @@ export class SessionCore {
     const call = this.call;
     this.owner = null;
     this.call = null;
-    // Both sides are told, with the reason: the provider hung up, the client closed.
+    // Both sides are told, with the reason: the provider hung up, the client closed. A client
+    // whose start is still in flight is told by that start, with its code (`4000`), when it
+    // finds the session ended: never a bare `1000 "error"` from here.
     call?.close?.(1000, "session ended");
-    owner?.close(1000, reason);
+    if (!this.starting) owner?.close(1000, reason);
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
     const at = this.now();
@@ -414,11 +422,17 @@ export class SessionCore {
     if (state === "active") {
       const deadline = settings?.deadline ?? now;
       if (now >= deadline) return this.end("time_cap");
+      // The next tick is armed before anything that can fail (crash table row 30): a tick that
+      // throws still leaves the session its next one.
+      await this.store.put({}, Math.min(deadline, now + TICK_MS));
       // A relayed session lost its provider socket with its instance: it ends (row 13, relayed).
       // An observed session reattaches instead (part 3): until then it waits for its deadline.
       if (this.call === null && settings?.mode !== "observed") return this.end("error", { log: "relay_provider_lost" });
-      // Seam: the fixed tick per session comes with frame forwarding (fourth review).
-      return this.store.put({}, deadline);
+      // The live session's own checks: a silent client, a client too far behind.
+      const reason = this.liveness(now);
+      if (reason !== null) return this.end(reason);
+      // Seam: the checkpoint joins the tick with the journal (step 9a part 2).
+      return;
     }
     // Ended: retry `close` for a while, then give up and log; then clean up once the ticket has expired.
     const end = /** @type {{ at: number } | undefined} */ (stored.get("end"));

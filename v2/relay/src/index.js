@@ -12,11 +12,12 @@
  * (`./start.js`): the key from the vault's relay entrypoint, `open` on the
  * main Worker, then the provider.
  *
- * Forwarding frames comes next (step 9a part 1, fourth review), the journal and
- * checkpoints after it (part 2), and observed mode in part 3.
+ * The object then forwards frames both ways (`./frames.js`). The journal and
+ * checkpoints come in step 9a part 2, and observed mode in part 3.
  */
 import { DurableObject } from "cloudflare:workers";
 import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
+import { RELAY_MESSAGES_HEADER, SessionFrames, START_QUEUE_FRAMES } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -67,10 +68,34 @@ export default {
 };
 
 /**
- * One session: its start, its end, and its alarm. The client's WebSocket is
- * answered at once; the start runs after, and its result goes to the client
- * as a message (the reconnect secret) or a close with a code. The session's
- * core (`./start.js`) owns the client's socket and closes it when it ends.
+ * @typedef {import("./start.js").ProviderCall & {
+ *   send(data: string | ArrayBuffer): void,
+ *   forward: ((data: string | ArrayBuffer) => void) | null,
+ *   pending: (string | ArrayBuffer)[],
+ * }} RelayCall
+ * The provider's side of a relayed session. Its frames wait in `pending` until
+ * the session is started, then go through `forward`.
+ *
+ * @typedef {{
+ *   client: WebSocket,
+ *   owner: import("./start.js").Client,
+ *   frames: SessionFrames,
+ *   call: RelayCall | null,
+ *   deadline: number,
+ *   queue: (string | ArrayBuffer)[],
+ * }} Live
+ * One client's session in this instance. Client frames wait in `queue` while
+ * the session starts, then go to the provider in order.
+ */
+
+/**
+ * One session: its start, its frames, its end, and its alarm. The client's
+ * WebSocket is answered at once; the start runs after, and its result goes to
+ * the client as a message (the reconnect secret, only to a client that asked
+ * for the relay's messages) or a close with a code. Frames are forwarded both
+ * ways in the step they arrive in, with no storage write and no call to the
+ * main Worker (plan 5.2). The session's core (`./start.js`) owns the client's
+ * socket and closes it when it ends.
  * @extends {DurableObject<RelayEnv>}
  */
 export class Session extends DurableObject {
@@ -81,6 +106,8 @@ export class Session extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     const storage = ctx.storage;
+    /** @type {Live | null} The session this instance runs, once it started. A restart loses it. */
+    this.live = null;
     this.core = new SessionCore({
       store: {
         get: (keys) => storage.get(keys),
@@ -98,14 +125,29 @@ export class Session extends DurableObject {
       provider: {
         connect: async (key) => {
           const { callId, socket } = await connectProvider(key);
-          /** @type {import("./start.js").ProviderCall} */
-          const call = { callId, close: (code, reason) => socket.close(code, reason) };
+          /** @type {RelayCall} */
+          const call = {
+            callId,
+            close: (code, reason) => closeQuietly(socket, code, reason),
+            send: (data) => sendQuietly(socket, data),
+            forward: null,
+            pending: [],
+          };
+          // Frames that come before the session started (OpenAI sends `session.created` at
+          // once) wait, in order, and go to the client once it is started.
+          socket.addEventListener("message", (event) => {
+            if (call.forward !== null) call.forward(event.data);
+            else if (call.pending.length < START_QUEUE_FRAMES) call.pending.push(event.data);
+            else call.close?.(1011, "start_queue_full");
+          });
           // The provider hung up first: the session ends, and the client is told. A close the
           // relay caused itself, after letting go of this call, is ignored (`providerGone`).
           socket.addEventListener("close", () => void this.core.providerGone(call));
           return call;
         },
       },
+      // The tick's checks for the session this instance runs: none after a restart.
+      liveness: (now) => this.live?.frames.check(now) ?? null,
     });
   }
 
@@ -117,10 +159,11 @@ export class Session extends DurableObject {
     const ticketText = ticketOf(request);
     const parsed = ticketText === null ? null : parseTicket(ticketText);
     if (ticketText === null || parsed === null) return refusal(401, "ticket_refused");
+    const relayMessages = request.headers.get(RELAY_MESSAGES_HEADER) === "1";
     const [client, server] = Object.values(new WebSocketPair());
     if (!client || !server) throw new Error("no WebSocket pair");
     server.accept();
-    this.ctx.waitUntil(this.begin(server, ticketText, parsed.payload));
+    this.ctx.waitUntil(this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -130,32 +173,103 @@ export class Session extends DurableObject {
    * @param {WebSocket} client
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
+   * @param {boolean} relayMessages whether the client asked for the relay's own messages
    */
-  async begin(client, ticketText, ticket) {
-    // Listened to before the start: a client that hangs up during it stops it.
-    client.addEventListener("close", () => void this.core.clientGone(client));
+  async begin(client, ticketText, ticket, relayMessages) {
+    /** @type {import("./start.js").Client} What the core holds: closing it never throws. */
+    const owner = { close: (code, reason) => closeQuietly(client, code, reason) };
+    /** @type {Live} */
+    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: [] };
+    // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
+    client.addEventListener("close", () => void this.core.clientGone(owner));
+    client.addEventListener("message", (event) => this.fromClient(live, event.data));
     /** @type {Awaited<ReturnType<SessionCore["start"]>>} */
     let result;
     try {
-      result = await this.core.start(ticketText, ticket, client);
+      result = await this.core.start(ticketText, ticket, owner);
     } catch {
       // The core has hung up any provider call; the client is told, and the session ends if it got that far.
       console.log(JSON.stringify({ level: "error", message: "relay_start_failed", session: ticket.sid }));
       closeQuietly(client, 1011, "internal_error");
       // Only a start that owned the session may end it: a second connection's failure never does.
-      if (this.core.startedBy(client)) await this.core.end("error").catch(() => undefined);
+      if (this.core.startedBy(owner)) await this.core.end("error").catch(() => undefined);
       return;
     }
     if (!result.ok) {
       closeQuietly(client, 4000, result.code);
       return;
     }
-    client.send(JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
+    const call = /** @type {RelayCall} */ (result.call);
+    live.call = call;
+    live.deadline = result.deadline;
+    this.live = live;
+    if (relayMessages) sendQuietly(client, JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
+    // In order: what the provider sent during the start, then what the client did.
+    call.forward = (data) => this.toClient(live, data);
+    for (const data of call.pending.splice(0)) call.forward(data);
+    for (const data of live.queue.splice(0)) call.send(data);
+  }
+
+  /**
+   * A frame from the client: forwarded at once, or held while the session
+   * starts. The relay's own messages are answered here and never forwarded.
+   * @param {Live} live
+   * @param {string | ArrayBuffer} data
+   */
+  fromClient(live, data) {
+    const verdict = live.frames.fromClient(data);
+    if (verdict.kind === "forward") {
+      if (live.call === null) {
+        if (live.queue.length < START_QUEUE_FRAMES) live.queue.push(data);
+        else this.endFor(live, "error", 4000, "start_queue_full");
+        return;
+      }
+      if (Date.now() >= live.deadline) return void this.core.end("time_cap");
+      live.call.send(data);
+    } else if (verdict.kind === "answer") {
+      sendQuietly(live.client, verdict.message);
+    } else if (verdict.kind === "end") {
+      this.endFor(live, verdict.reason, verdict.closeCode, verdict.closeReason);
+    }
+  }
+
+  /**
+   * A frame from the provider: forwarded first, then counted (plan 5.2). The
+   * deadline is the copy in memory: no storage read on the audio path.
+   * @param {Live} live
+   * @param {string | ArrayBuffer} data
+   */
+  toClient(live, data) {
+    if (Date.now() >= live.deadline) return void this.core.end("time_cap");
+    sendQuietly(live.client, data);
+    live.frames.toClient(data);
+  }
+
+  /**
+   * Ends the session with a close code of its own for the client: the client
+   * is told first, then the core ends the session with the reason.
+   * @param {Live} live
+   * @param {string} reason
+   * @param {number} code
+   * @param {string} closeReason
+   */
+  endFor(live, reason, code, closeReason) {
+    closeQuietly(live.client, code, closeReason);
+    void this.core.end(reason);
   }
 
   /** @override */
   async alarm() {
     await this.core.alarm();
+  }
+}
+
+/** Sends to a socket that may be closed already. @param {WebSocket} socket @param {string | ArrayBuffer} data */
+function sendQuietly(socket, data) {
+  try {
+    socket.send(data);
+  } catch {
+    // Closed: the session's end is under way.
   }
 }
 
