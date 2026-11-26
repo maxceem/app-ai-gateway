@@ -39,7 +39,8 @@ const SPEC = QUEUE.job!;
 async function setup(rates: Record<string, unknown> | null = null, baseUrl: string | null = null) {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
-  const slug = `fal-${id.slice(0, 6)}`;
+  // The whole id: a short random part can repeat across this file's many connections.
+  const slug = `fal-${id}`;
   // The key is sealed to where it is sent: the base URL, or the provider's own hosts.
   const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
