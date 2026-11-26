@@ -20,7 +20,7 @@
  * Every smoke file is scanned, except those not converted to the helpers yet.
  */
 import { describe, expect, it } from "vitest";
-import { check, expectCode, fail, note, same } from "../smoke/support.ts";
+import { check, exchangeFrames, expectCode, fail, note, same } from "../smoke/support.ts";
 
 const sources = (import.meta as ImportMeta & {
   glob<T>(pattern: string, options: { query: string; import: string; eager: true }): Record<string, T>;
@@ -119,3 +119,10 @@ describe("smoke checks print nothing a deployment answered", () => {
     );
   });
 });
+
+describe("the smoke WebSocket helper", () => {
+  it("fails with fixed text for an address it can't use, never quoting it", async () => {
+    await expect(exchangeFrames("/v2/relay/echo", "not a url agw_app_secret", [], 1)).rejects.toThrow(/^a WebSocket could not be opened$/u);
+  });
+});
+

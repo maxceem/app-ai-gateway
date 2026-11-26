@@ -15,13 +15,19 @@
  */
 import { spawnSync } from "node:child_process";
 import { cp, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const REPO_DIR = dirname(V2_DIR);
 // A relative path starts at the folder it runs in (`v2/` through `pnpm run`), as in `deploy.ts`.
 const out = resolve(process.cwd(), process.argv[2] ?? join(V2_DIR, "dist", "prebuilt"));
+// The folder is deleted first, so it must be one of `v2/dist/`'s own, never the source.
+const DIST_DIR = join(V2_DIR, "dist");
+if (relative(DIST_DIR, out) === "" || relative(DIST_DIR, out).startsWith("..") || isAbsolute(relative(DIST_DIR, out))) {
+  console.error(`The output folder must be inside ${DIST_DIR}; nothing was built or deleted.`);
+  process.exit(2);
+}
 
 function run(command: string, args: string[], cwd: string): void {
   const result = spawnSync(command, args, { cwd, stdio: "inherit", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });

@@ -180,6 +180,11 @@ test("a deploy goes vault, migrations, gateway, relay, and gives the gateway the
   // A first install: the gateway learns the relay's address once the relay exists.
   assert.ok(!deploys[2]!.includes("--var"));
   assert.ok(deploys[4]!.includes("RELAY_URL:https://app-ai-gateway-v2-relay.team-1.workers.dev"));
+  // Every call is pinned to the config's top level: a CLOUDFLARE_ENV in a .env file is never used.
+  for (const call of fake.calls()) {
+    const at = call.indexOf("--env");
+    assert.ok(at !== -1 && call[at + 1] === "", call.join(" "));
+  }
 });
 
 test("a prebuilt deploy refuses vault or relay files that differ from git", (t) => {
@@ -283,4 +288,19 @@ test("a deploy fails when the relay's address can't be found", (t) => {
   const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_NO_RELAY_URL: "1" });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /relay's address was not found/u);
+});
+
+test("the three Workers need three different names", () => {
+  const { main, vault, relay } = tracked();
+  assert.match(deployProblems(main, vault, { ...relay, name: main.name }).join("\n"), /each have their own Worker name/u);
+  assert.match(deployProblems(main, { ...vault, name: relay.name }, relay).join("\n"), /each have their own Worker name/u);
+});
+
+test("the prebuilt build deletes and writes only inside v2/dist", () => {
+  for (const out of [".", "src", "..", "dist", "/tmp/elsewhere"]) {
+    const run = spawnSync(process.execPath, ["--experimental-strip-types", join(V2_DIR, "scripts", "build-prebuilt.ts"), out], { cwd: V2_DIR, encoding: "utf8" });
+    assert.equal(run.status, 2, out);
+    assert.match(run.stderr, /must be inside/u);
+  }
+  assert.ok(readdirSync(join(V2_DIR, "src")).length > 0);
 });

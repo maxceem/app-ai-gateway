@@ -108,11 +108,20 @@ const problems = deployProblems(configs.main, configs.vault, configs.relay);
 if (problems.length > 0) refuse(["Nothing was deployed:", ...problems.map((p) => `- ${p}`)].join("\n"));
 
 /**
+ * The config, pinned to its top level. Wrangler reads `CLOUDFLARE_ENV` from a
+ * `.env` file in each run, even when the shell has none, and would then act on
+ * that environment; `--env ""` makes it use the top-level config.
+ */
+function pinned(config: string): string[] {
+  return ["--config", config, "--env", ""];
+}
+
+/**
  * Runs Wrangler with `config`. `output: "show"` prints as it goes; "echo" also
  * returns what was printed; "quiet" returns standard output without printing.
  */
 function wrangler(args: string[], config: string, output: "show" | "echo" | "quiet" = "show"): string {
-  const result = spawnSync(wranglerBin!, [...args, "--config", config], {
+  const result = spawnSync(wranglerBin!, [...args, ...pinned(config)], {
     cwd: dirname(config),
     encoding: "utf8",
     stdio: output === "show" ? "inherit" : ["ignore", "pipe", "pipe"],
@@ -180,7 +189,7 @@ function deployConfigs(): typeof paths {
 
 /** A Worker's deployed secret names, or `undefined` when the Worker doesn't exist yet. Never values. */
 function deployedSecrets(config: string): string[] | undefined {
-  const result = spawnSync(wranglerBin!, ["secret", "list", "--format", "json", "--config", config], {
+  const result = spawnSync(wranglerBin!, ["secret", "list", "--format", "json", ...pinned(config)], {
     cwd: dirname(config),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

@@ -36,6 +36,8 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
   for (const [label, config] of [["gateway", main], ["vault", vault], ["relay", relay]] as const) {
     if (typeof config.name !== "string" || config.name === "") problems.push(`The ${label} config names no Worker.`);
   }
+  const names = [main.name, vault.name, relay.name].filter((name) => typeof name === "string" && name !== "");
+  if (new Set(names).size !== names.length) problems.push("The gateway, the vault and the relay must each have their own Worker name.");
   if (serviceFor(main, "VAULT") !== vault.name) {
     problems.push(`The gateway's VAULT binding must name the vault Worker (${String(vault.name)}).`);
   }
