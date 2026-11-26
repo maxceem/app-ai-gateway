@@ -9,6 +9,7 @@ node_modules/
 /docs/wrangler.*.jsonc
 /v2/wrangler.*.jsonc
 /v2/vault/wrangler.*.jsonc
+/v2/relay/wrangler.*.jsonc
 .env
 .env.*
 !.env.example
@@ -18,6 +19,7 @@ _archive/
 /dist/
 console/dist/
 /v2/console/dist/
+/v2/dist/
 docs/.next/
 docs/.source/
 docs/out/
