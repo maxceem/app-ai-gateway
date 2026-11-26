@@ -50,6 +50,7 @@ import { readCustomAuth } from "../providers/passthrough.ts";
 import { CUSTOM_PROVIDER_TYPE } from "../providers/custom.ts";
 import { cloudflareGatewayOrigin } from "../providers/destinations.ts";
 import { builtInProvider } from "../providers/index.ts";
+import { sealingRoot } from "../vault/split-keys.ts";
 import { vault } from "../vault/client.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
 import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
@@ -438,7 +439,7 @@ async function providerAddWrite(
   if (cloudflare !== null) checkCloudflareIds(cloudflare, null);
   // Sealed for where the key goes: the base URL, the Cloudflare gateway, or the provider's own host.
   const origin = keyOrigin({ type: review.type, baseUrl: review.baseUrl ?? null, cloudflareGateway: cloudflare });
-  const blob = secret === undefined ? null : await vault(env).seal("providerKey", keyIdentity(accountId, id, review.type, origin, null), secret);
+  const blob = secret === undefined ? null : await vault(env).seal("providerKey", keyIdentity(accountId, id, review.type, origin, null), secret, await sealingRoot(env, accountId));
   const cloudflareJson =
     cloudflare === null || cloudflareToken === undefined ? null : await storedCloudflare(env, accountId, id, { ...cloudflare, token: cloudflareToken });
   const cap = await planCap(env, env.DB, accountId, "provider");
@@ -513,7 +514,12 @@ async function providerKeyWrite(env: Env, accountId: string, review: RotateRevie
   }
   // Sealed for the origin the connection has now, which the revision check keeps unchanged.
   const origin = keyOrigin({ type: current.type, baseUrl: current.base_url, cloudflareGateway: readCloudflareGateway(current.cloudflare_gateway_json) });
-  const blob = await vault(env).seal("providerKey", keyIdentity(accountId, current.id, current.type, origin, readCustomAuth(current.passthrough_json)), secret);
+  const blob = await vault(env).seal(
+    "providerKey",
+    keyIdentity(accountId, current.id, current.type, origin, readCustomAuth(current.passthrough_json)),
+    secret,
+    await sealingRoot(env, accountId),
+  );
   const now = Date.now();
   const statement = database(env.DB)
     .update(providerConnection)

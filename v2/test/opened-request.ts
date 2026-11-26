@@ -9,7 +9,7 @@ import { GatewayError } from "../src/core/errors.ts";
 import { sealedCredentials, type ConnectionRecord } from "../src/providers/connections.ts";
 import type { ProviderDescription } from "../src/providers/operation.ts";
 import { sealedUpstreamRequest, type UpstreamRequestInput } from "../src/providers/route.ts";
-import { openSecret } from "../src/vault/secrets.ts";
+import { openSecret, type SecretIdentity } from "../src/vault/secrets.ts";
 
 export interface OpenedCredentials {
   readonly providerKey: string | null;
@@ -50,11 +50,11 @@ export async function connectionCredentials(vaultEnv: unknown, connection: Conne
   const sealed = sealedCredentials(connection);
   try {
     return {
-      providerKey: sealed.providerKey === null ? null : await openSecret(vaultEnv as Env, "providerKey", sealed.providerKey.identity, sealed.providerKey.blob),
+      providerKey: sealed.providerKey === null ? null : await openSecret(vaultEnv as Env, "providerKey", sealed.providerKey.identity as SecretIdentity<"providerKey">, sealed.providerKey.blob),
       cloudflareToken:
         sealed.cloudflareToken === null
           ? null
-          : await openSecret(vaultEnv as Env, "cloudflareGatewayToken", sealed.cloudflareToken.identity, sealed.cloudflareToken.blob),
+          : await openSecret(vaultEnv as Env, "cloudflareGatewayToken", sealed.cloudflareToken.identity as SecretIdentity<"cloudflareGatewayToken">, sealed.cloudflareToken.blob),
     };
   } catch {
     throw new GatewayError(502, "provider_unavailable", "The provider credential could not be opened");

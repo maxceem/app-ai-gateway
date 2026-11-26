@@ -15,6 +15,8 @@ import { database } from "../db/index.ts";
 import { providerConnection } from "../db/schema.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import type { SecretIdentity } from "../vault/secrets.ts";
+import type { KeyShare, VaultRequestCredential } from "../vault/key-share.ts";
+import type { StoredCopies } from "../vault/client.ts";
 import { builtInProvider } from "./index.ts";
 import type { PassthroughPath } from "./matcher.ts";
 import { CUSTOM_PROVIDER_TYPE, customDescription } from "./custom.ts";
@@ -227,11 +229,39 @@ export function cloudflareTokenIdentity(
  * open a key (plan step 8i). The vault opens them, under the same ids.
  */
 export interface SealedCredentials {
-  readonly providerKey: { readonly blob: string; readonly identity: SecretIdentity<"providerKey"> } | null;
-  readonly cloudflareToken: { readonly blob: string; readonly identity: SecretIdentity<"cloudflareGatewayToken"> } | null;
+  readonly providerKey: { readonly blob: string; readonly identity: SecretIdentity<"providerKey"> | SecretIdentity<"storedProviderKey"> } | null;
+  readonly cloudflareToken: {
+    readonly blob: string;
+    readonly identity: SecretIdentity<"cloudflareGatewayToken"> | SecretIdentity<"storedCloudflareToken">;
+  } | null;
+  /** The app's credential, for an account with split keys on (plan step 8j). */
+  readonly credential?: VaultRequestCredential;
 }
 
-export function sealedCredentials(connection: ConnectionRecord): SealedCredentials {
+/**
+ * A connection's credentials, still sealed, with the credential the request
+ * brought when it opens this account's keys (split keys, plan step 8j). A
+ * share from another account is never sent.
+ */
+export function sealedCredentials(connection: ConnectionRecord, share?: KeyShare | null): SealedCredentials {
+  const sealed = connectionCredentials(connection);
+  return share === undefined || share === null || share.accountId !== connection.accountId ? sealed : { ...sealed, credential: share.forVault() };
+}
+
+/**
+ * Copies stored for work with no app request (`storeCopy` in
+ * `src/vault/client.ts`) in place of the connection's own credentials, for the
+ * same connection. The address check stays the vault's: a copy is bound to the
+ * address it was made for.
+ */
+export function withStoredCopies(sealed: SealedCredentials, copies: StoredCopies): SealedCredentials {
+  return {
+    providerKey: sealed.providerKey === null ? null : (copies.providerKey ?? sealed.providerKey),
+    cloudflareToken: sealed.cloudflareToken === null ? null : (copies.cloudflareToken ?? sealed.cloudflareToken),
+  };
+}
+
+function connectionCredentials(connection: ConnectionRecord): SealedCredentials {
   const gateway = connection.cloudflareGateway;
   if (connection.baseUrl !== null && gateway !== null && connection.secretBlob !== null) {
     log("error", "provider_connection_unusable", {

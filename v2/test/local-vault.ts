@@ -7,7 +7,7 @@
  * The vault's settings are its own (`TEST_VAULT_ENV`), never the gateway's:
  * the gateway Worker holds no vault secret (plan step 8i), in the tests too.
  */
-import { callProvider, holds } from "../vault/src/call.js";
+import { callProvider, holds, storeCopy } from "../vault/src/call.js";
 import { reseal, seal, vaultStatus } from "../vault/src/seal.js";
 import { vaultAnswer, type VaultClient } from "../src/vault/client.ts";
 
@@ -21,7 +21,8 @@ export const TEST_VAULT_ENV: Readonly<Record<string, string>> = Object.freeze({
 export function localVault(_env: Env): VaultClient {
   const vaultEnv = TEST_VAULT_ENV as Record<string, unknown>;
   return {
-    seal: (kind, identity, plaintext) => seal(vaultEnv, kind, [...identity], plaintext),
+    seal: (kind, identity, plaintext, rootPublicKey) => seal(vaultEnv, kind, [...identity], plaintext, rootPublicKey),
+    storeCopy: (credentials, expiresAt) => storeCopy(vaultEnv, credentials, expiresAt) as never,
     reseal: (kind, from, to, blob) => reseal(vaultEnv, kind, [...from], [...to], blob),
     call: async (input) => vaultAnswer(await callProvider(vaultEnv, input)),
     holds: (credentials, texts) => holds(vaultEnv, credentials, [...texts]),

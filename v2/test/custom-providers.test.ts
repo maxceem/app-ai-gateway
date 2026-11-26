@@ -32,9 +32,8 @@ import { clientAuth, requestCredential } from "../src/client-auth/client-auth.ts
 import { openai } from "../src/providers/openai.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, ledger } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-custom-provider-key-9876";
@@ -727,7 +726,7 @@ async function setup(
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `custom-${id.slice(0, 6)}`;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "custom", baseUrl, auth.header, auth.format], SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "custom", baseUrl, auth.header, auth.format], SECRET);
   const rates = JSON.stringify(ratesJson);
   const now = Date.now();
   await env.DB.prepare(

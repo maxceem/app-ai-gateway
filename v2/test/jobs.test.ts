@@ -21,10 +21,10 @@ import { fal } from "../src/providers/fal.ts";
 import { rewrittenModel } from "../src/providers/operation.ts";
 import type { CallAttempt } from "../src/proxy/call-charge.ts";
 import { JOB_DISCONNECT_GRACE_MS } from "../src/proxy/serve.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest, testShare } from "./split-keys.ts";
 import { keyOrigin } from "../src/providers/connections.ts";
 import { ACCOUNT_ID, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, withLedgerDb, writeAtTheirTime, ledger } from "./helpers.ts";
-import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
+import { localVault } from "./local-vault.ts";
 import { setVaultForTests, VAULT_ERROR_HEADER, vaultAnswer, type VaultCall } from "../src/vault/client.ts";
 import { callProvider } from "../vault/src/call.js";
 import { KMS_TIMEOUT_MS } from "../vault/src/kms.js";
@@ -41,7 +41,7 @@ async function setup(rates: Record<string, unknown> | null = null, baseUrl: stri
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `fal-${id.slice(0, 6)}`;
   // The key is sealed to where it is sent: the base URL, or the provider's own hosts.
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "fal", keyOrigin({ type: "fal", baseUrl: baseUrl ?? null, cloudflareGateway: null }), "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -883,7 +883,7 @@ describe("a figure is its own row, written once and never changed (review fixes,
       const { appId, slug, key, connectionId } = await setup();
       falAnswers({});
       const jobId = String((await submit(appId, slug, key)).json!.request_id);
-      const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], "sk-another-account-key");
+      const blob = await sealForTest("providerKey", [ACCOUNT_ID, connectionId, "fal", "", "", ""], "sk-another-account-key");
       const update = env.DB.prepare(`UPDATE provider_connection SET ${change} WHERE slug = ?`);
       await (change.includes("?") ? update.bind(blob, slug) : update.bind(slug)).run();
       clearCaches();
@@ -1635,7 +1635,7 @@ describe("a final result's body after the sweep item's time, and the provider's 
     const context = (await jobContext(env, claims))!;
     fetchSpy.mockClear();
     const reason = new Error("the item's time is up");
-    await expect(fetchJob(env, context, "status", claims, null, AbortSignal.abort(reason))).rejects.toBe(reason);
+    await expect(fetchJob(env, context, "status", claims, null, AbortSignal.abort(reason), "", { share: await testShare(ACCOUNT_ID) })).rejects.toBe(reason);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -1688,7 +1688,7 @@ describe("a final result's body after the sweep item's time, and the provider's 
     });
     try {
       fetchSpy.mockClear();
-      await fetchJob(env, context, "status", claims, null);
+      await fetchJob(env, context, "status", claims, null, undefined, "", { share: await testShare(ACCOUNT_ID) });
     } finally {
       setVaultForTests(localVault);
     }
@@ -1839,7 +1839,8 @@ describe("Fable's review fixes", () => {
       stalled = init?.signal ?? null;
       return new Promise<Response>(() => undefined);
     });
-    void fetchJob(env, context, "result", claims, null).catch(() => undefined);
+    const share = await testShare(ACCOUNT_ID);
+    void fetchJob(env, context, "result", claims, null, undefined, "", { share }).catch(() => undefined);
     await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS + 1);
     expect(stalled!.aborted).toBe(true);
     // Headers in time, then a body slower than the limit: nothing aborts it.
@@ -1848,7 +1849,7 @@ describe("Fable's review fixes", () => {
       sent = init?.signal ?? null;
       return new Response(new ReadableStream<Uint8Array>(), { status: 200 });
     });
-    await fetchJob(env, context, "result", claims, null);
+    await fetchJob(env, context, "result", claims, null, undefined, "", { share });
     await vi.advanceTimersByTimeAsync(JOB_POLL_TIMEOUT_MS * 2);
     expect(sent!.aborted).toBe(false);
   });

@@ -15,11 +15,10 @@ import { QueryBudget } from "../src/core/query-budget.ts";
 import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
 import { planIncludes } from "../src/billing/access.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest, splitKeysOn } from "./split-keys.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
 import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -102,7 +101,7 @@ async function connection(type = "openai"): Promise<string> {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], "sk-test-provider-key-5678");
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, type, "", "", ""], "sk-test-provider-key-5678");
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -1123,7 +1122,8 @@ describe("conversation storage through the gateway", () => {
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
-  it("never stores the verified credential, whatever header carried it (Sol round 2)", async () => {
+  // A gateway token brings no share until split keys phase 3.
+  it.skipIf(splitKeysOn)("never stores the verified credential, whatever header carried it (Sol round 2)", async () => {
     const slug = await connection();
     // The issuer's token header is the end-user header name: a credential in a header the
     // gateway otherwise reads identity from, and never sends upstream.
@@ -1161,7 +1161,8 @@ describe("conversation storage through the gateway", () => {
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
-  it("never stores a second token in a configured token header named like an identity header (Astra round 2)", async () => {
+  // A gateway token brings no share until split keys phase 3.
+  it.skipIf(splitKeysOn)("never stores a second token in a configured token header named like an identity header (Astra round 2)", async () => {
     const slug = await connection();
     const { appId } = await appWith({
       authentication: {

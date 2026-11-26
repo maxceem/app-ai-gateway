@@ -92,6 +92,7 @@ import { readCustomAuth, readPassthrough, storedPassthrough } from "../providers
 import { TemplateError } from "../providers/path.ts";
 import { cloudflareIdProblem, normalizedBaseUrl } from "../providers/destinations.ts";
 import { sealedUpstreamRequest, type SealedUpstreamRequest } from "../providers/route.ts";
+import { keyNeededToMove, sealingRoot } from "../vault/split-keys.ts";
 import { vault } from "../vault/client.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
 import { checkConnectionChange, checkNewConnection, parseBody } from "./apps.ts";
@@ -646,7 +647,7 @@ export async function storedCloudflare(
   connectionId: string,
   setting: { readonly accountId: string; readonly gatewayId: string; readonly token: string },
 ): Promise<string> {
-  const blob = await vault(env).seal("cloudflareGatewayToken", cloudflareTokenIdentity(accountId, connectionId, setting), setting.token);
+  const blob = await vault(env).seal("cloudflareGatewayToken", cloudflareTokenIdentity(accountId, connectionId, setting), setting.token, await sealingRoot(env, accountId));
   return JSON.stringify({
     account_id: setting.accountId,
     gateway_id: setting.gatewayId,
@@ -856,7 +857,10 @@ export async function createProvider(c: AdminContext): Promise<Response> {
   if (body.secret === undefined && cloudflare === null) throw keyNeeded();
   const id = newConnectionId();
   const origin = keyOrigin({ type: body.type, baseUrl, cloudflareGateway: cloudflare });
-  const blob = body.secret === undefined ? null : await vault(c.env).seal("providerKey", keyIdentity(actor.accountId, id, body.type, origin, customSetting?.auth ?? null), body.secret);
+  const blob =
+    body.secret === undefined
+      ? null
+      : await vault(c.env).seal("providerKey", keyIdentity(actor.accountId, id, body.type, origin, customSetting?.auth ?? null), body.secret, await sealingRoot(c.env, actor.accountId));
   const cloudflareJson = cloudflare === null ? null : await storedCloudflare(c.env, actor.accountId, id, cloudflare);
   const servingJson = builtIn === null ? null : servingProvidersJson(builtIn, body.servingProviders);
   // A custom provider always stores its key header, so its paths are judged even when it lists none yet.
@@ -995,7 +999,7 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
     blob = null;
     hint = null;
   } else if (body.secret !== undefined) {
-    blob = await vault(c.env).seal("providerKey", identity(to, newAuth), body.secret);
+    blob = await vault(c.env).seal("providerKey", identity(to, newAuth), body.secret, await sealingRoot(c.env, actor.accountId));
     hint = secretHint(body.secret);
   } else if (keyAuthMoved && current.secret_blob !== null) {
     throw new GatewayError(400, "invalid_request", "secret: a new key header or format needs the key in the same request; a stored key is only ever sent the way it was saved");
@@ -1009,6 +1013,8 @@ export async function updateProvider(c: AdminContext): Promise<Response> {
     }
     // Back to the provider's own origin: the stored key is re-sealed for it.
     // The vault opens and seals it again itself: the key never comes back here (plan step 8i).
+    // With split keys on it cannot: the key is needed again (step 8j).
+    if ((await sealingRoot(c.env, actor.accountId)) !== undefined) throw keyNeededToMove();
     blob = await vault(c.env).reseal("providerKey", identity(from, storedAuth), identity(to, newAuth), current.secret_blob);
   }
   if (blob === null && cloudflare === null) throw keyNeeded();

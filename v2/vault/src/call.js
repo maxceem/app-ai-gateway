@@ -10,7 +10,8 @@
  * It never follows a redirect, never logs a key and never returns one.
  */
 import { CLOUDFLARE_SLUGS, KEY_HEADERS, PROVIDER_HOSTS } from "./hosts.js";
-import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
+import { keyForRequest, readRequestCredential } from "./keys.js";
+import { VaultBlobError, VaultConfigurationError, sealAs } from "./seal.js";
 
 /** @typedef {import("./seal.js").VaultEnv} VaultEnv */
 
@@ -18,15 +19,18 @@ import { VaultBlobError, VaultConfigurationError, open } from "./seal.js";
  * A provider key, sealed. For a built-in type, the header and format the
  * gateway names for the call (one of the type's own key headers); a custom
  * provider's key goes where it was sealed to go, and these are ignored.
+ * A copy stored for work with no app request has one more id, when it stops
+ * opening (`storedProviderKey`).
  * @typedef {{ readonly blob: string, readonly identity: readonly string[], readonly header?: string, readonly format?: string }} SealedKey
  */
 /**
- * A Cloudflare AI Gateway token, sealed.
+ * A Cloudflare AI Gateway token, sealed. A stored copy has one more id, as above.
  * @typedef {{ readonly blob: string, readonly identity: readonly string[] }} SealedToken
  */
 /**
- * What a call carries, sealed. At least one is set.
- * @typedef {{ readonly providerKey?: SealedKey, readonly cloudflareToken?: SealedToken }} SealedCredentials
+ * What a call carries, sealed. At least one of the two keys is set.
+ * `credential` is the app's own, for an account with split keys on.
+ * @typedef {{ readonly providerKey?: SealedKey, readonly cloudflareToken?: SealedToken, readonly credential?: import("./keys.js").RequestCredential }} SealedCredentials
  */
 /**
  * @typedef {{
@@ -58,37 +62,6 @@ const CLOUDFLARE_TOKEN_HEADER = "cf-aig-authorization";
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]{1,100}$/u;
 /** Headers the vault keeps for itself (`x-agw-vault`, `x-agw-vault-error`): never taken from a provider's answer. */
 const RESERVED_HEADER = /^x-agw-vault/iu;
-const SECRET_CACHE_TTL_MS = 10 * 60_000;
-const SECRET_CACHE_MAX = 10_000;
-
-/** @type {Map<string, { value: string, at: number }>} */
-const openedCache = new Map();
-
-/**
- * A credential, opened once and kept in this isolate for a while, by the blob
- * and the whole identity it opened under: a rotated key is never served from
- * the cache, and neither is one asked for under another address.
- * @param {VaultEnv} env
- * @param {"providerKey" | "cloudflareGatewayToken"} kind
- * @param {readonly string[]} identity
- * @param {string} blob
- * @param {AbortSignal} [signal] the caller's, passed on to cf-kms in kms mode
- * @param {number} [until] when to stop waiting on cf-kms, in epoch ms
- */
-async function opened(env, kind, identity, blob, signal, until) {
-  const key = [kind, ...identity, blob].join("\u0000");
-  const cached = openedCache.get(key);
-  if (cached !== undefined && Date.now() - cached.at < SECRET_CACHE_TTL_MS) return cached.value;
-  const value = await open(env, kind, identity, blob, signal, until);
-  openedCache.delete(key);
-  if (openedCache.size >= SECRET_CACHE_MAX) {
-    const oldest = openedCache.keys().next().value;
-    if (oldest !== undefined) openedCache.delete(oldest);
-  }
-  openedCache.set(key, { value, at: Date.now() });
-  return value;
-}
-
 /**
  * The address to send to, when `url` is under `base` and nothing in it can
  * reach another host or climb out of `base`'s path; else null. `url` must
@@ -205,24 +178,32 @@ export function allowedUrl(url, credentials) {
 
 /**
  * The sealed credentials a call carries, read from what the gateway sent, or null when they are not well formed.
+ * Without `placement` (a stored copy, which sends nothing), a provider key needs no header.
  * @param {unknown} value
+ * @param {{ placement?: boolean }} [options]
  * @returns {SealedCredentials | null}
  */
-export function readCredentials(value) {
+export function readCredentials(value, options = {}) {
   if (typeof value !== "object" || value === null) return null;
   const record = /** @type {Record<string, unknown>} */ (value);
-  /** @type {{ providerKey?: SealedKey, cloudflareToken?: SealedToken }} */
+  /** @type {{ providerKey?: SealedKey, cloudflareToken?: SealedToken, credential?: import("./keys.js").RequestCredential }} */
   const credentials = {};
-  /** @param {unknown} item @param {number} length */
+  /** @param {unknown} item @param {number} length A stored copy has one more id. */
   const identityOf = (item, length) =>
-    Array.isArray(item) && item.length === length && item.every((id) => typeof id === "string") ? /** @type {string[]} */ (item) : null;
+    Array.isArray(item) && (item.length === length || item.length === length + 1) && item.every((id) => typeof id === "string")
+      ? /** @type {string[]} */ (item)
+      : null;
   if (record.providerKey !== undefined) {
     const key = /** @type {Record<string, unknown>} */ (record.providerKey ?? {});
     const identity = identityOf(key.identity, 6);
     if (typeof key.blob !== "string" || identity === null) return null;
-    const placement = keyPlacement(identity, key.header, key.format);
-    if (placement === null) return null;
-    credentials.providerKey = { blob: key.blob, identity, ...placement };
+    if (options.placement === false) {
+      credentials.providerKey = { blob: key.blob, identity };
+    } else {
+      const placement = keyPlacement(identity, key.header, key.format);
+      if (placement === null) return null;
+      credentials.providerKey = { blob: key.blob, identity, ...placement };
+    }
   }
   if (record.cloudflareToken !== undefined) {
     const token = /** @type {Record<string, unknown>} */ (record.cloudflareToken ?? {});
@@ -231,7 +212,23 @@ export function readCredentials(value) {
     credentials.cloudflareToken = { blob: token.blob, identity };
   }
   if (credentials.providerKey === undefined && credentials.cloudflareToken === undefined) return null;
+  try {
+    const credential = readRequestCredential(record.credential);
+    if (credential !== null) credentials.credential = credential;
+  } catch {
+    return null;
+  }
   return credentials;
+}
+
+/** The kind a sealed provider key opens as: a stored copy has one more id. @param {SealedKey} key */
+function keyKind(key) {
+  return key.identity.length === 7 ? "storedProviderKey" : "providerKey";
+}
+
+/** The kind a sealed Cloudflare token opens as. @param {SealedToken} token */
+function tokenKind(token) {
+  return token.identity.length === 5 ? "storedCloudflareToken" : "cloudflareGatewayToken";
 }
 
 /**
@@ -261,18 +258,21 @@ export async function callProvider(env, call) {
   const until = call.deadline === undefined ? undefined : call.deadline - DEADLINE_MARGIN_MS;
   /** @type {string[]} */
   const keyHeaders = [];
+  /** @type {import("./keys.js").CallMemo} */
+  const memo = {};
+  const options = { credential: credentials.credential ?? null, memo, ...(call.signal ? { signal: call.signal } : {}), ...(until === undefined ? {} : { until }) };
   try {
     if (credentials.providerKey !== undefined) {
       // `readCredentials` has set the placement: the type's own key header, or the sealed one.
       const { blob, identity, header = "", format = "" } = credentials.providerKey;
-      const key = await opened(env, "providerKey", identity, blob, call.signal, until);
+      const key = await keyForRequest(env, keyKind(credentials.providerKey), identity, blob, options);
       // A callback, so a key with `$&` is sent as it is.
       headers.set(header, format.replace("{key}", () => key));
       keyHeaders.push(header.toLowerCase());
     }
     if (credentials.cloudflareToken !== undefined) {
       const { blob, identity } = credentials.cloudflareToken;
-      const token = await opened(env, "cloudflareGatewayToken", identity, blob, call.signal, until);
+      const token = await keyForRequest(env, tokenKind(credentials.cloudflareToken), identity, blob, options);
       headers.set(CLOUDFLARE_TOKEN_HEADER, `Bearer ${token}`);
       keyHeaders.push(CLOUDFLARE_TOKEN_HEADER);
     }
@@ -346,14 +346,59 @@ export async function holds(env, sealed, texts) {
   if (credentials === null || !Array.isArray(texts) || !texts.every((text) => typeof text === "string")) throw new VaultBlobError("bad request");
   /** @type {string[]} */
   const secrets = [];
+  const options = { credential: credentials.credential ?? null, memo: {} };
   if (credentials.providerKey !== undefined) {
     const { blob, identity } = credentials.providerKey;
-    secrets.push(await opened(env, "providerKey", identity, blob));
+    secrets.push(await keyForRequest(env, keyKind(credentials.providerKey), identity, blob, options));
   }
   if (credentials.cloudflareToken !== undefined) {
     const { blob, identity } = credentials.cloudflareToken;
-    secrets.push(await opened(env, "cloudflareGatewayToken", identity, blob));
+    secrets.push(await keyForRequest(env, tokenKind(credentials.cloudflareToken), identity, blob, options));
   }
   const long = secrets.filter((secret) => secret.length >= 8);
   return /** @type {string[]} */ (texts).map((text) => long.some((secret) => text.includes(secret)));
+}
+
+/** The longest a stored copy may be kept: fal's job checks need about 62 minutes, a session's lookups up to about 2 hours. */
+export const MAX_STORED_COPY_MS = 3 * 60 * 60_000;
+
+/**
+ * Copies of a call's credentials for work that runs later with no app
+ * request (plan step 8j, "Keys needed with no app request"): opened here with
+ * the app's credential, and sealed with the KEK alone, bound to the same ids
+ * and to `expiresAt`, after which they never open. The gateway stores them
+ * on the job's row and deletes them with it. A copy is never copied again.
+ * @param {VaultEnv} env
+ * @param {unknown} sealed
+ * @param {unknown} expiresAt epoch ms
+ * @returns {Promise<{ providerKey?: { blob: string, identity: string[] }, cloudflareToken?: { blob: string, identity: string[] } }>}
+ */
+export async function storeCopy(env, sealed, expiresAt) {
+  const credentials = readCredentials(sealed, { placement: false });
+  if (credentials === null) throw new VaultBlobError("bad request");
+  const now = Date.now();
+  if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + MAX_STORED_COPY_MS) {
+    throw new VaultBlobError("a stored copy's expiry must be within the next 3 hours");
+  }
+  const key = credentials.providerKey;
+  const token = credentials.cloudflareToken;
+  if ((key !== undefined && keyKind(key) !== "providerKey") || (token !== undefined && tokenKind(token) !== "cloudflareGatewayToken")) {
+    throw new VaultBlobError("a stored copy is never copied again");
+  }
+  const options = { credential: credentials.credential ?? null, memo: {} };
+  const until = String(expiresAt);
+  /** @type {{ providerKey?: { blob: string, identity: string[] }, cloudflareToken?: { blob: string, identity: string[] } }} */
+  const copies = {};
+  if (key !== undefined) {
+    const identity = [...key.identity, until];
+    copies.providerKey = { blob: await sealAs(env, "storedProviderKey", identity, await keyForRequest(env, "providerKey", key.identity, key.blob, options)), identity };
+  }
+  if (token !== undefined) {
+    const identity = [...token.identity, until];
+    copies.cloudflareToken = {
+      blob: await sealAs(env, "storedCloudflareToken", identity, await keyForRequest(env, "cloudflareGatewayToken", token.identity, token.blob, options)),
+      identity,
+    };
+  }
+  return copies;
 }

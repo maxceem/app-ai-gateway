@@ -205,6 +205,60 @@ export const appKey = sqliteTable(
   ],
 );
 
+export type SplitKeyMode = "off" | "migrating" | "on";
+
+/**
+ * An account's split-key root (plan step 8j): only its public key. The root
+ * key itself exists only inside keyslots. No row means split keys are off,
+ * as for every account until it turns them on.
+ */
+export const accountKeyRoot = sqliteTable(
+  "account_key_root",
+  {
+    accountId: text("account_id")
+      .primaryKey()
+      .references(() => mgmtOrganization.id),
+    /** X25519, base64url. New provider keys of the account are sealed to it. */
+    publicKey: text("public_key").notNull(),
+    mode: text("mode").$type<SplitKeyMode>().notNull(),
+    /** Progress of a move between modes, once that exists (phase 4). */
+    migration: text("migration_json", { mode: "json" }).$type<Record<string, unknown>>(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [check("account_key_root_mode", oneOf(table.mode, ["off", "migrating", "on"]))],
+);
+
+/** What holds a keyslot: an app key now; iOS shares and passkeys in later phases. */
+export type KeySlotCredentialKind = "api_key" | "ios_share" | "passkey";
+
+/**
+ * A keyslot: the account's root key sealed to one credential's public key,
+ * inside the KEK (plan step 8j). Only a request that brings that credential
+ * can open it.
+ */
+export const keySlot = sqliteTable(
+  "key_slot",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => mgmtOrganization.id),
+    credentialKind: text("credential_kind").$type<KeySlotCredentialKind>().notNull(),
+    /** The app key's id, for `api_key`. */
+    credentialId: text("credential_id").notNull(),
+    /** The credential's X25519 public key, base64url. */
+    publicKey: text("public_key").notNull(),
+    /** The root key, sealed to the public key and then with the KEK (vault kind `keySlot`). */
+    sealedRoot: text("sealed_root").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("key_slot_credential").on(table.credentialKind, table.credentialId),
+    index("key_slot_account").on(table.accountId),
+  ],
+);
+
 export type EndUserStatus = "active" | "blocked";
 
 /** An end user of an app, as the app's own sign-in names them. */

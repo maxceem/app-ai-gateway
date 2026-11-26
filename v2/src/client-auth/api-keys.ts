@@ -1,14 +1,17 @@
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNull, lt, or, type SQL } from "drizzle-orm";
 import { database, type Database } from "../db/index.ts";
-import { appKey } from "../db/schema.ts";
+import { appKey, keySlot } from "../db/schema.ts";
 import { GatewayError } from "../core/errors.ts";
 import { readOrKnown } from "../core/stale-read.ts";
 import { ttlCache } from "../core/ttl-cache.ts";
 import type { GatewayIdentity } from "../core/types.ts";
+import { KeyShare, type SealedKeySlot } from "../vault/key-share.ts";
 
 interface ApiKeyRecord {
   id: string;
   appId: string;
+  /** The key's keyslot, for an account with split keys on (plan step 8j); null otherwise. Read in the same query. */
+  slot: SealedKeySlot | null;
 }
 
 type ApiKeyCacheKey = `hash:${string}` | `id:${string}`;
@@ -104,20 +107,26 @@ export async function generateApiKey(): Promise<{
  * security lookups use the authoritative primary; the cache TTL is the only
  * intentional revocation window.
  */
-async function lookupApiKeyHash(db: Database, hash: string): Promise<ApiKeyRecord | null> {
-  const row = await db.query.appKey.findFirst({
-    columns: { id: true, appId: true },
-    where: and(eq(appKey.keyHash, hash), eq(appKey.status, "active")),
-  });
-  return row ? { id: row.id, appId: row.appId } : null;
+/** An active key, with its keyslot if it has one: one query, so split keys add no D1 round trip. */
+async function lookupActiveKey(db: Database, where: SQL): Promise<ApiKeyRecord | null> {
+  const [row] = await db
+    .select({ id: appKey.id, appId: appKey.appId, slotAccount: keySlot.accountId, slotBlob: keySlot.sealedRoot })
+    .from(appKey)
+    .leftJoin(keySlot, and(eq(keySlot.credentialKind, "api_key"), eq(keySlot.credentialId, appKey.id)))
+    .where(and(where, eq(appKey.status, "active")))
+    .limit(1);
+  if (row === undefined) return null;
+  const slot: SealedKeySlot | null =
+    row.slotAccount === null || row.slotBlob === null ? null : { blob: row.slotBlob, identity: [row.slotAccount, row.id, "api_key"] };
+  return { id: row.id, appId: row.appId, slot };
 }
 
-async function lookupApiKeyId(db: Database, id: string): Promise<ApiKeyRecord | null> {
-  const row = await db.query.appKey.findFirst({
-    columns: { id: true, appId: true },
-    where: and(eq(appKey.id, id), eq(appKey.status, "active")),
-  });
-  return row ? { id: row.id, appId: row.appId } : null;
+function lookupApiKeyHash(db: Database, hash: string): Promise<ApiKeyRecord | null> {
+  return lookupActiveKey(db, eq(appKey.keyHash, hash));
+}
+
+function lookupApiKeyId(db: Database, id: string): Promise<ApiKeyRecord | null> {
+  return lookupActiveKey(db, eq(appKey.id, id));
 }
 
 /**
@@ -203,6 +212,8 @@ export async function verifyApiKey(
     apiKeyId: value.id,
     installId: null,
     appleAccountId: null,
+    // The key itself opens its keyslot, so an account with split keys on can serve it (plan step 8j).
+    ...(value.slot === null ? {} : { keyShare: new KeyShare(credential, value.slot) }),
   };
 }
 

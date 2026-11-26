@@ -17,6 +17,7 @@
  * headers are chosen before this (`src/proxy/headers.ts`) and never carry any
  * of these: whatever this sets wins.
  */
+import type { VaultRequestCredential } from "../vault/key-share.ts";
 import { GatewayError } from "../core/errors.ts";
 import {
   upstreamOrigin,
@@ -178,11 +179,12 @@ export function sealedUpstreamRequest(
     hasProviderKey: credentials.providerKey !== null,
     hasCloudflareToken: credentials.cloudflareToken !== null,
   });
-  const sealed: { providerKey?: SealedProviderKey; cloudflareToken?: SealedCloudflareToken } = {};
+  const sealed: { providerKey?: SealedProviderKey; cloudflareToken?: SealedCloudflareToken; credential?: VaultRequestCredential } = {};
   if (target.keyAuth !== null && credentials.providerKey !== null) {
     sealed.providerKey = { ...credentials.providerKey, header: target.keyAuth.header, format: target.keyAuth.format };
   }
   if (target.cloudflare && credentials.cloudflareToken !== null) sealed.cloudflareToken = credentials.cloudflareToken;
+  if (credentials.credential !== undefined) sealed.credential = credentials.credential;
   return {
     url: target.url,
     headers: target.headers,

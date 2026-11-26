@@ -20,7 +20,7 @@ import type { Caller } from "../src/proxy/serve.ts";
 import type { SealedCredentials } from "../src/providers/connections.ts";
 import { providerTtfbTimeoutMs, sendAttempts, type ClientSide, type ProxyContext } from "../src/proxy/serve.ts";
 import { STANDARD_MODE } from "../src/usage/service-modes.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest, testShare } from "./split-keys.ts";
 import {
   ACCOUNT_ID,
   clearCaches,
@@ -31,7 +31,6 @@ import {
   seedManagementKey,
   ledger,
 } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -46,7 +45,7 @@ async function connection(type: string, status: "active" | "disabled" = "active"
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `${type}-${id.slice(0, 6)}`;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
@@ -121,8 +120,12 @@ const sealedBlobs = new Map<string, Promise<string>>();
 function sealedKey(seq: number, key: string): Promise<SealedCredentials> {
   const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, `conn_${seq}`, "openai", "", "", ""];
   const name = `${seq}\u0000${key}`;
-  if (!sealedBlobs.has(name)) sealedBlobs.set(name, sealSecret(TEST_VAULT_ENV, "providerKey", identity, key));
-  return sealedBlobs.get(name)!.then((blob) => ({ providerKey: { blob, identity }, cloudflareToken: null }));
+  if (!sealedBlobs.has(name)) sealedBlobs.set(name, sealForTest("providerKey", identity, key));
+  return sealedBlobs.get(name)!.then(async (blob) => {
+    // With split keys on, a call built by hand carries a credential, as a request's would.
+    const share = await testShare(ACCOUNT_ID);
+    return { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) };
+  });
 }
 
 /** An OpenAI chat attempt for the loop alone, with a key and a body that can be watched. */

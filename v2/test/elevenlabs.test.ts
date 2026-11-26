@@ -16,9 +16,8 @@ import { ProviderMatcher } from "../src/providers/matcher.ts";
 import { attemptCostUsd, headerNumber } from "../src/proxy/meter.ts";
 import { checkAppConfig } from "../src/admin/apps.ts";
 import { servedNow } from "../src/pricing/billability.ts";
-import { sealSecret } from "../src/vault/secrets.ts";
+import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, seedAccount, seedAppKey, seedRoutedApp, ledger } from "./helpers.ts";
-import { TEST_VAULT_ENV } from "./local-vault.ts";
 
 const ORIGIN = "https://gateway.test";
 const SECRET = "sk-test-elevenlabs-key-5678";
@@ -28,7 +27,7 @@ async function setup(routing: Record<string, unknown>, rates: Record<string, unk
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
   const slug = `elevenlabs-${id.slice(0, 6)}`;
-  const blob = await sealSecret(TEST_VAULT_ENV, "providerKey", [ACCOUNT_ID, id, "elevenlabs", "", "", ""], SECRET);
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "elevenlabs", "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection

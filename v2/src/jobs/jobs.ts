@@ -38,7 +38,7 @@ import { utcDay, writeOpenWork, type ChargeRow, type LedgerEntry, type OpenWorkR
 import { listedUnitRate } from "../pricing/billability.ts";
 import { scaledCount, UNIT_RATES } from "../pricing/units.ts";
 import { parseJson, readBounded } from "../core/bounded-body.ts";
-import { connectionDescription, loadConnection, readConnection, sealedCredentials, type ConnectionRecord } from "../providers/connections.ts";
+import { connectionDescription, loadConnection, readConnection, sealedCredentials, withStoredCopies, type ConnectionRecord, type SealedCredentials } from "../providers/connections.ts";
 import { UNITS, type JobRequest, type JobSpec, type OperationDescription, type ProviderDescription, type Unit } from "../providers/operation.ts";
 import { normalizePath } from "../providers/path.ts";
 import { BUILT_IN_PROVIDERS } from "../providers/index.ts";
@@ -46,7 +46,8 @@ import { sealedUpstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
 import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
-import { vault } from "../vault/client.ts";
+import { vault, type CopyRequest, type StoredCopies } from "../vault/client.ts";
+import type { KeyShare } from "../vault/key-share.ts";
 
 /** When the sweep first checks a job. fal keeps results for an hour, large ones for 6 minutes (T15). */
 export const JOB_FIRST_CHECK_MS = 2 * 60 * 1000;
@@ -135,6 +136,59 @@ export function jobEstimate(
     });
   }
   return { charge, openWork };
+}
+
+/**
+ * How long a job's key copy opens: the sweep's whole schedule for a job
+ * (first check, then a check a minute) and a few minutes over (plan step 8j:
+ * about 62 minutes for fal).
+ */
+export const JOB_KEY_COPY_MS = JOB_FIRST_CHECK_MS + JOB_MAX_CHECKS * JOB_CHECK_EVERY_MS + 5 * 60_000;
+/** How long making the copy may take: it runs after the answer is sent, and never fails the job. */
+export const JOB_KEY_COPY_DEADLINE_MS = 5_000;
+
+/**
+ * For an account with split keys on, the sweep cannot open the job's key
+ * later: no app request brings a credential then. So when the job is
+ * submitted, the vault makes copies of its connection's credentials, sealed
+ * with the KEK alone until `JOB_KEY_COPY_MS` from now, and they go on the
+ * job's check row, which is deleted when the job is settled (plan step 8j,
+ * "Keys needed with no app request"). If the copy cannot be made, the row
+ * says so: the sweep then ends the check and the estimate stays. Nothing
+ * changes for an account with split keys off.
+ */
+export async function withJobKeyCopies(env: Env, entry: LedgerEntry, credentials: SealedCredentials, now: number): Promise<LedgerEntry> {
+  const credential = credentials.credential;
+  const check = entry.openWork.find((work) => work.kind === "job_check");
+  if (credential === undefined || check === undefined) return entry;
+  let copies: StoredCopies | "missing";
+  try {
+    copies = await withDeadline(
+      vault(env).storeCopy(
+        {
+          ...(credentials.providerKey === null ? {} : { providerKey: credentials.providerKey as CopyRequest["providerKey"] & object }),
+          ...(credentials.cloudflareToken === null ? {} : { cloudflareToken: credentials.cloudflareToken as CopyRequest["cloudflareToken"] & object }),
+          credential,
+        },
+        now + JOB_KEY_COPY_MS,
+      ),
+      JOB_KEY_COPY_DEADLINE_MS,
+      "copying the job's key",
+    );
+  } catch (error) {
+    log("warn", "job_key_copy_failed", { app: check.appId, job: check.ownerId, error: errorFacts(error) });
+    copies = "missing";
+  }
+  const withCopies: OpenWorkRow = { ...check, detail: { ...check.detail, keyCopies: copies } };
+  return { ...entry, openWork: entry.openWork.map((work) => (work === check ? withCopies : work)) };
+}
+
+/** A check row's key copies: the copies, "missing" when they could not be made, or null for an account with split keys off. */
+function keyCopiesOf(detail: Record<string, unknown>): StoredCopies | "missing" | null {
+  const value = detail.keyCopies;
+  if (value === undefined || value === null) return null;
+  if (value === "missing" || typeof value !== "object") return "missing";
+  return value as StoredCopies;
 }
 
 /**
@@ -318,6 +372,17 @@ export async function jobContext(env: Env, claims: JobClaims, options: { readonl
 }
 
 /**
+ * What opens a job's key: for a client poll, the credential the poll brought
+ * (`share`); for the sweep, which has no app request, the copies made when
+ * the job was submitted (`copies`), for an account with split keys on (plan
+ * step 8j). Neither, for an account with split keys off.
+ */
+export interface JobKeys {
+  readonly share?: KeyShare | null | undefined;
+  readonly copies?: StoredCopies | null | undefined;
+}
+
+/**
  * A follow-up request to the provider, with the connection's key, never
  * following a redirect. The vault adds the key and sends it (plan step 8i):
  * this Worker never opens it. `userId` is the polling caller's own end user,
@@ -331,6 +396,7 @@ export async function fetchJob(
   userId: string | null,
   signal?: AbortSignal,
   query = "",
+  keys: JobKeys = {},
 ): Promise<{ readonly response: Response; readonly keyHeader: string; readonly url: string }> {
   const request = jobRequestFor(context.spec, which);
   // Once the sweep's time for the item is up, no more provider calls start.
@@ -339,7 +405,10 @@ export async function fetchJob(
     hostKey: request.host ?? "main",
     path: jobRequestPath(request, claims),
     query,
-    credentials: sealedCredentials(context.connection),
+    credentials:
+      keys.copies === undefined || keys.copies === null
+        ? sealedCredentials(context.connection, keys.share)
+        : withStoredCopies(sealedCredentials(context.connection), keys.copies),
     client: new Headers(),
     appId: claims.appId,
     userId,
@@ -889,7 +958,14 @@ export const checkJob: OpenWorkHandler = async (env, item, { ledger, now, signal
     return { done: true };
   }
   if (context.connection.status === "disabled") return retry("the job's connection is disabled");
-  const status = await fetchJob(env, context, "status", claims, null, signal);
+  // Split keys: the copies made at submit open the key; without them the job cannot be checked.
+  const copies = keyCopiesOf(detail);
+  if (copies === "missing") {
+    log("warn", "job_check_key_unavailable", { app: claims.appId, job: claims.job, providerSlug: claims.slug });
+    return { done: true };
+  }
+  const keys = copies === null ? {} : { copies };
+  const status = await fetchJob(env, context, "status", claims, null, signal, "", keys);
   // A status that redirects to this job's own result means the job is done; any
   // other redirect is refused (logged), and the job is checked again later.
   let moved: JobEndpoint | null;
@@ -907,7 +983,7 @@ export const checkJob: OpenWorkHandler = async (env, item, { ledger, now, signal
     const statusBody = statusRead.kind === "parsed" ? statusRead.value : null;
     if (!status.response.ok || !jobDone(context.spec, statusBody)) return retry(`job not done (${status.response.status})`);
   }
-  const result = await fetchJob(env, context, "result", claims, null, signal);
+  const result = await fetchJob(env, context, "result", claims, null, signal, "", keys);
   const headerFacts = readResultFacts(context.spec, result.response, null);
   if (headerFacts === null) {
     void result.response.body?.cancel().catch(() => undefined);

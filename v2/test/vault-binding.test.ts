@@ -8,7 +8,9 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayError } from "../src/core/errors.ts";
 import { setVaultForTests, vault, vaultAnswer, type VaultClient } from "../src/vault/client.ts";
-import { localVault } from "./local-vault.ts";
+import { localVault, TEST_VAULT_ENV } from "./local-vault.ts";
+import { additionalData, sealAs, secretContext } from "../vault/src/seal.js";
+import { credentialPublicKey, newRoot, sealRootToCredential } from "../vault/src/split.js";
 
 const KEY = "sk-test-binding-key-9876";
 const BASE = "https://llm.example.com/proxy/";
@@ -32,6 +34,35 @@ describe.each([
 ])("the vault %s", (_name, client) => {
   it("reports its own settings as ok", async () => {
     expect(await client().status()).toBe("ok");
+  });
+
+  it("with split keys, seals to the root, sends only with the app's credential, and copies for later work (plan step 8j)", async () => {
+    const vaultClient = client();
+    const root = await newRoot();
+    const secret = "agw_binding_app_key";
+    const slotIdentity = ["acct_bind", "key_bind", "api_key"];
+    const inner = await sealRootToCredential(root.privateKey, await credentialPublicKey(secret), additionalData(secretContext("keySlot", slotIdentity)));
+    const slot = await sealAs(TEST_VAULT_ENV, "keySlot", slotIdentity, inner);
+    const blob = await vaultClient.seal("providerKey", IDENTITY, KEY, root.publicKey);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) =>
+      Response.json({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers)) }),
+    );
+    const send = (credential?: { secret: string; slot: string; slotIdentity: string[] }, key = { blob, identity: IDENTITY as readonly string[] }) =>
+      vaultClient.call({
+        url: `${BASE}v1/chat/completions`,
+        method: "POST",
+        headers: new Headers({ "content-type": "application/json" }),
+        body: "{}",
+        credentials: { providerKey: { ...key, header: "authorization", format: "Bearer {key}" } as never, ...(credential === undefined ? {} : { credential }) },
+      });
+    await expect(send()).rejects.toBeInstanceOf(GatewayError);
+    const credential = { secret, slot, slotIdentity };
+    const seen = (await (await send(credential)).json()) as { headers: Record<string, string> };
+    expect(seen.headers.authorization).toBe(`Bearer ${KEY}`);
+    // A copy for work with no app request opens with no credential, at the same address only.
+    const copies = await vaultClient.storeCopy({ providerKey: { blob, identity: IDENTITY }, credential }, Date.now() + 60_000);
+    const copied = (await (await send(undefined, copies.providerKey!)).json()) as { headers: Record<string, string> };
+    expect(copied.headers.authorization).toBe(`Bearer ${KEY}`);
   });
 
   it("seals, sends with the key, and passes the answer back without the key header", async () => {
