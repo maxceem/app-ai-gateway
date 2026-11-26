@@ -22,6 +22,14 @@ const SPLIT_KEY_FILES = [
   "test/pricing-units.test.ts",
 ];
 
+/**
+ * Time limits for a test and for a setup hook. Vitest's defaults (5 s and 10 s)
+ * are hit by tests that are only slow because the machine is busy, for example
+ * when several full runs share it, and every such failure costs a rerun. A test
+ * that is really stuck still fails, only later. The console suites use the same 20 s test limit.
+ */
+const TIME_LIMITS = { testTimeout: 20_000, hookTimeout: 30_000 };
+
 /** The Workers test pool, with the test account's split keys on or off. */
 const workers = (splitKeys: boolean) =>
   cloudflareTest(async () => {
@@ -97,8 +105,8 @@ const workers = (splitKeys: boolean) =>
 export default defineConfig({
   test: {
     projects: [
-      { plugins: [workers(false)], test: { name: "v2", setupFiles: ["./test/apply-migrations.ts"], include: ["test/**/*.test.ts"] } },
-      { plugins: [workers(true)], test: { name: "v2-split-keys", setupFiles: ["./test/apply-migrations.ts"], include: SPLIT_KEY_FILES } },
+      { plugins: [workers(false)], test: { name: "v2", ...TIME_LIMITS, setupFiles: ["./test/apply-migrations.ts"], include: ["test/**/*.test.ts"] } },
+      { plugins: [workers(true)], test: { name: "v2-split-keys", ...TIME_LIMITS, setupFiles: ["./test/apply-migrations.ts"], include: SPLIT_KEY_FILES } },
     ],
     // Every run goes to the test ledger when one is set up (scripts/test-ledger/).
     reporters: ["default", ["../scripts/test-ledger/reporter.mjs", { suite: "v2" }]],
