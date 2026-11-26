@@ -88,16 +88,16 @@ export function prebuiltProblems(configs: Record<string, WorkerConfig>): string[
   return problems;
 }
 
-/**
- * Secrets already deployed on the wrong Worker, by name: a vault setting on the
- * gateway or the relay, or a local setting on a vault in kms mode. Each comes
- * with the command that deletes it. Nothing is deleted here.
- */
 /** One shell word: single quotes, with any single quote inside closed and escaped. */
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/**
+ * Secrets already deployed on the wrong Worker, by name: a vault setting on the
+ * gateway or the relay, or a local setting on a vault in kms mode. Each comes
+ * with the command that deletes it. Nothing is deleted here.
+ */
 export function deployedSecretProblems(
   names: { main?: string[]; vault?: string[]; relay?: string[] },
   configPaths: { main: string; vault: string; relay: string },
