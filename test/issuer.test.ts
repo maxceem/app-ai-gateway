@@ -265,7 +265,7 @@ describe("issuer JWT verification", () => {
     });
     // Answered by the deadline rather than by never returning at all.
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_000);
-  }, 15_000);
+  });
 
   it("rejects HS256 even when the JWKS contains a matching oct key", async () => {
     const secret = new TextEncoder().encode("attacker-controlled-symmetric-secret");

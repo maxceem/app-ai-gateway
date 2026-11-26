@@ -89,7 +89,7 @@ describe("the gateway's deadline, through the real binding to a kms vault", () =
     expect(submitted.status).toBe(502);
     expect(JSON.parse(submitted.text)).toMatchObject({ error: { code: "provider_unavailable" } });
     expect(await charges(appId)).toEqual([]);
-  }, 15_000);
+  });
 
   it("keeps a held 503 and writes no timeout charge when a fallback's key never opens before the deadline", async () => {
     const primary = await connection("openai", (id) => openable([ACCOUNT_ID, id, "openai", "", "", ""]));
@@ -109,5 +109,5 @@ describe("the gateway's deadline, through the real binding to a kms vault", () =
     expect(served.status).toBe(503);
     expect(JSON.parse(served.text)).toEqual({ error: { code: "busy" } });
     expect((await charges(appId)).map((row) => [row.seq, row.http_status, row.status])).toEqual([[1, 503, "provider_error"]]);
-  }, 15_000);
+  });
 });

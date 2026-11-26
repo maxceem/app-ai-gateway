@@ -644,7 +644,7 @@ describe("CLI account lifecycle", () => {
         "SELECT COUNT(*) AS n FROM mgmt_organization",
       ).first("n"),
     ).toBe(1);
-  }, 15_000);
+  });
   it("refuses a claim from a human who already belongs to another account", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
