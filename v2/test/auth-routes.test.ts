@@ -268,10 +268,8 @@ describe("POST /v2/apps/{app}/auth/failure", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/register", () => {
-  // The first registration in this file: it pays for the Worker's first load of App Attest's certificate code,
-  // which can take seconds on a loaded machine. That cold load is part of what it covers, so it keeps it, with a
-  // fair limit.
-  it("refuses a forged attestation, spends the challenge, and records the refusal", { timeout: 30_000 }, async () => {
+  // The first registration in this file, so it also covers the Worker's first load of the App Attest code.
+  it("refuses a forged attestation, spends the challenge, and records the refusal", async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);
     const body = { key_id: "a2V5", attestation: "bm90LWFuLWF0dGVzdGF0aW9u", challenge };

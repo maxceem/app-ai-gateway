@@ -344,6 +344,12 @@ beforeAll(async () => {
   // Through the Worker, as a test would: the bundle, and whatever the sign-in
   // library loads on its first request.
   await request(runtime(), "/.well-known/oauth-authorization-server");
+  // The same for the MCP app and its SDK, which load on the first MCP call
+  // that gets past the bearer gate: two to four seconds on a busy run. The
+  // rows this makes are gone before the first test (`beforeEach`).
+  const testEnv = runtime();
+  const { tokens } = await connected(testEnv);
+  await callTool(testEnv, tokens.access_token, "get_account");
 }, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 describe("OAuth discovery", () => {
