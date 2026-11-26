@@ -12,22 +12,21 @@
  *   deployed vault opens.
  */
 import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { secretVault } from "../../src/vault/index.ts";
 import { SecretVaultBlobError, VAULT_SERVICE, type SecretVaultContext } from "../../src/vault/types.ts";
 import { seal, vaultStatus } from "../../vault/src/seal.js";
 import { SecretDoesNotOpen, type Resealer, type V1Sealed } from "./settings.ts";
 
-/** A vault configuration file: `NAME=value` lines, `#` comments, values optionally quoted. Only `SECRET_VAULT_*` names are kept. */
+/**
+ * A vault configuration file, read as dotenv, the way the secrets upload
+ * reads `.dev.vars` (`node:util`'s `parseEnv`): comments after a value,
+ * quotes and `export` are understood. Only `SECRET_VAULT_*` names are kept.
+ */
 export function readVaultFile(path: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const raw of readFileSync(path, "utf8").split("\n")) {
-    const line = raw.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    const match = /^(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/u.exec(line);
-    if (match === null) throw new Error(`${path}: a line is not NAME=value`);
-    const [, name, value] = match as unknown as [string, string, string];
-    if (!name.startsWith("SECRET_VAULT_")) continue;
-    env[name] = /^(["']).*\1$/u.test(value) ? value.slice(1, -1) : value;
+  for (const [name, value] of Object.entries(parseEnv(readFileSync(path, "utf8")))) {
+    if (name.startsWith("SECRET_VAULT_") && value !== undefined) env[name] = value;
   }
   return env;
 }
