@@ -4,7 +4,7 @@
  * checkpoint sends today's price with its slice. Inside the ledger object, in
  * one transaction, the first checkpoint saves it on the session's row, and
  * every slice is priced with the saved one (`../ledger/sessions.ts`,
- * `writeCheckpoint`). A connection edit or a new price list mid-session never
+ * `writeCheckpointIn`). A connection edit or a new price list mid-session never
  * reprices the session.
  *
  * The first checkpoint goes out right after the session is `active`, so a

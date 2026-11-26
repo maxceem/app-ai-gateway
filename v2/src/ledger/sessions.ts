@@ -242,7 +242,8 @@ export type LedgerCheckpointWrite = Omit<CheckpointWrite, "slice" | "standing"> 
  *
  * A live session's checkpoint runs inside the ledger object instead
  * (`writeCheckpointIn`), which prices its slice there. This one, over D1's
- * shape, takes a slice already priced.
+ * shape, takes a slice already priced. Only tests call it: they check the
+ * ledger's own rules through the same statements (`checkpointStatements`).
  */
 export async function writeCheckpoint(db: D1Database, settings: D1Database, input: CheckpointWrite): Promise<CheckpointAnswer> {
   const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, input.session);
