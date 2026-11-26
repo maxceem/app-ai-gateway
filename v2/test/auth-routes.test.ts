@@ -350,15 +350,15 @@ describe("POST /v2/apps/{app}/auth/token with App Attest", () => {
     expect(JSON.stringify(claims)).not.toContain(sent.split(".")[1]);
   });
 
-  it("ignores an empty or malformed share when split keys are off, and refuses it with 401 when they are on (Sol round 1)", async () => {
+  it("ignores an empty, malformed or non-string share when split keys are off, and refuses it with 401 when they are on (Sol rounds 1 and 2)", async () => {
     const appId = await seedApp(attestAuthentication());
     const install = await registerTestInstall(appId);
     let counter = 0;
-    for (const sent of ["", "x".repeat(5_000)]) {
+    for (const sent of ["", "x".repeat(5_000), null, 42, { share: "x" }]) {
       counter += 1;
       const body = await exchangeBody(install, await challengeFor(appId), counter);
       const response = await post(`/v2/apps/${appId}/auth/token`, { ...body, key_share: sent });
-      expect(response.status, `${sent.length} characters`).toBe(splitKeysOn ? 401 : 200);
+      expect(response.status, JSON.stringify(sent).slice(0, 20)).toBe(splitKeysOn ? 401 : 200);
       if (splitKeysOn) expect(await response.json()).toMatchObject({ error: { code: "auth_required" } });
     }
   });

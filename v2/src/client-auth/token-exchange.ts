@@ -328,11 +328,13 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
     // the account's keys only with the app's share, so a missing or wrong one
     // is refused here, before any call. With them off the field is ignored.
     let shareId: string | null = null;
+    let keyShare: string | undefined;
     if (key.splitKeyMode === "on" && accountId !== null) {
-      if (body.key_share === undefined || body.key_share === "") {
+      if (typeof body.key_share !== "string" || body.key_share === "") {
         throw new GatewayError(401, "auth_required", "This app needs its key share: split keys are on for its account");
       }
-      shareId = await checkShare(env, appId, accountId, body.key_share);
+      keyShare = body.key_share;
+      shareId = await checkShare(env, appId, accountId, keyShare);
     }
     const now = Date.now();
     waitUntil(
@@ -360,7 +362,7 @@ const APP_ATTEST: ExchangeHandler<"app_attest"> = {
       authMethod: "attest",
       installId: body.key_id,
       appleAccountId,
-      ...(shareId === null || body.key_share === undefined ? {} : { keyShare: body.key_share }),
+      ...(shareId === null || keyShare === undefined ? {} : { keyShare }),
     });
   },
 };
