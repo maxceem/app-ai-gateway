@@ -657,6 +657,8 @@ export default mock;
 function realtimeSession(): Response {
   const [client, server] = Object.values(new WebSocketPair());
   if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  // Binary frames as bytes, so an echo sends back what came.
+  server.binaryType = "arraybuffer";
   server.accept();
   server.send(JSON.stringify({ type: "session.created" }));
   const audio = "A".repeat(3_200);

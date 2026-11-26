@@ -10,7 +10,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SESSION_PATH } from "../relay/src/constants.js";
-import { RELAY_MESSAGES_HEADER } from "../relay/src/frames.js";
+import { MAX_CLIENT_FRAME, RELAY_MESSAGES_HEADER } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
 import { ACCOUNT_ID } from "./helpers.ts";
@@ -105,5 +105,38 @@ describe(`the relay's session object (Fable F3; split keys ${splitKeysOn ? "on" 
     const [, , , forwarded] = await session.received(4);
     expect(JSON.parse(forwarded!)).toEqual({ type: "agw.heartbeat" });
     session.socket.close(1000, "done");
+  });
+
+  it("forwards binary frames as bytes both ways, and refuses a binary frame over the limit (Sol, #260 round 1)", async () => {
+    const response = await relay().fetch(`https://relay.test${SESSION_PATH}`, {
+      headers: { upgrade: "websocket", authorization: `Bearer ${await ticketFor("conn_session_binary")}`, [RELAY_MESSAGES_HEADER]: "1" },
+    });
+    const socket = response.webSocket!;
+    socket.binaryType = "arraybuffer";
+    const got: (string | ArrayBuffer)[] = [];
+    let closed = "";
+    let notify: () => void = () => undefined;
+    socket.addEventListener("message", (event) => {
+      got.push(event.data as string | ArrayBuffer);
+      notify();
+    });
+    socket.addEventListener("close", (event) => {
+      closed = `${event.code} ${event.reason}`;
+      notify();
+    });
+    const until = (done: () => boolean) =>
+      done() ? Promise.resolve() : new Promise<void>((resolve) => (notify = () => done() && resolve()));
+    socket.accept();
+    // Started, then the provider's first event.
+    await until(() => got.length >= 2);
+    socket.send(new Uint8Array([1, 2, 3, 250]));
+    await until(() => got.length >= 3);
+    const echoed = got[2];
+    expect(echoed).toBeInstanceOf(ArrayBuffer);
+    expect([...new Uint8Array(echoed as ArrayBuffer)]).toEqual([1, 2, 3, 250]);
+    // A binary frame over the limit is counted by its bytes and ends the session.
+    socket.send(new Uint8Array(MAX_CLIENT_FRAME + 1));
+    await until(() => closed !== "");
+    expect(closed).toBe("1009 frame_too_large");
   });
 });

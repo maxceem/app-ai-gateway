@@ -45,6 +45,8 @@ export async function connectProvider(key, send = fetch, timeout = wait) {
     await response.body?.cancel();
     throw new ProviderRefused(response.status);
   }
+  // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
+  socket.binaryType = "arraybuffer";
   socket.accept();
   return { callId: null, socket };
 }

@@ -10,6 +10,9 @@ import {
   MAX_CLIENT_FRAMES_PER_SECOND,
   SessionFrames,
   SLOW_CLIENT_MS,
+  START_QUEUE_BYTES,
+  START_QUEUE_FRAMES,
+  StartQueue,
 } from "../relay/src/frames.js";
 
 function frames(options: { relayMessages?: boolean; clientHook?: (data: string | ArrayBuffer) => string | null } = {}) {
@@ -135,5 +138,54 @@ describe("the heartbeat", () => {
     const f = frames({ relayMessages: true });
     for (let second = 0; second < 95; second += 1) oneSecondOfAudio(f);
     expect(f.state.check(f.now())).toBe("heartbeat_timeout");
+  });
+});
+
+describe("reports and the start (Sol, #260 round 1)", () => {
+  it("ignores a report higher than what was sent, or not a whole number: it can't switch the check off", () => {
+    for (const bad of [Number.MAX_SAFE_INTEGER, 1e30, 1.5, -1]) {
+      const f = frames();
+      oneSecondOfAudio(f);
+      f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: bad }));
+      for (let second = 0; second < 12; second += 1) oneSecondOfAudio(f);
+      expect(f.state.check(f.now()), String(bad)).toBe("client_too_slow");
+    }
+  });
+
+  it("catches our SDK stalling before its first report: it is tracked from the first provider frame", () => {
+    const f = frames({ relayMessages: true });
+    let verdict: ReturnType<SessionFrames["fromClient"]> = { kind: "forward" };
+    for (let second = 0; second < 12 && verdict.kind !== "end"; second += 1) {
+      oneSecondOfAudio(f);
+      verdict = f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: 0 }));
+    }
+    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow", closeCode: 4000, closeReason: "client_too_slow" });
+  });
+});
+
+describe("the start queue", () => {
+  it("holds frames in order, and overflows on too many or too many bytes, dropping what it held", () => {
+    const byCount = new StartQueue();
+    for (let frame = 0; frame < START_QUEUE_FRAMES; frame += 1) expect(byCount.push("a")).toBe(true);
+    expect(byCount.push("a")).toBe(false);
+    expect(byCount.overflowed).toBe(true);
+    expect(byCount.drain()).toEqual([]);
+
+    const bySize = new StartQueue();
+    const chunk = "x".repeat(256 * 1024);
+    let pushed = 0;
+    while (bySize.push(chunk)) pushed += 1;
+    expect(pushed).toBe(Math.floor(START_QUEUE_BYTES / chunk.length));
+    expect(bySize.overflowed).toBe(true);
+    expect(bySize.bytes).toBe(0);
+    // Nothing more is held once it overflowed.
+    expect(bySize.push("a")).toBe(false);
+
+    const ordered = new StartQueue();
+    ordered.push("first");
+    ordered.push(new ArrayBuffer(2));
+    ordered.push("third");
+    expect(ordered.drain().map((data) => (typeof data === "string" ? data : data.byteLength))).toEqual(["first", 2, "third"]);
+    expect(ordered.drain()).toEqual([]);
   });
 });

@@ -121,6 +121,7 @@ const workers = (splitKeys: boolean) =>
                 "    if (new URL(request.url).pathname === \"/last-key-header\") return Response.json({ authorization: lastKeyHeader });",
                 "    lastKeyHeader = request.headers.get(\"authorization\");",
                 "    const [client, server] = Object.values(new WebSocketPair());",
+                "    server.binaryType = \"arraybuffer\";",
                 "    server.accept();",
                 // Like a provider: an event at once, then each frame echoed back (frame forwarding's test).
                 "    server.send(JSON.stringify({ type: \"session.created\" }));",

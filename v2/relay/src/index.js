@@ -17,7 +17,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
-import { RELAY_MESSAGES_HEADER, SessionFrames, START_QUEUE_FRAMES } from "./frames.js";
+import { RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -71,7 +71,7 @@ export default {
  * @typedef {import("./start.js").ProviderCall & {
  *   send(data: string | ArrayBuffer): void,
  *   forward: ((data: string | ArrayBuffer) => void) | null,
- *   pending: (string | ArrayBuffer)[],
+ *   pending: StartQueue,
  * }} RelayCall
  * The provider's side of a relayed session. Its frames wait in `pending` until
  * the session is started, then go through `forward`.
@@ -82,7 +82,7 @@ export default {
  *   frames: SessionFrames,
  *   call: RelayCall | null,
  *   deadline: number,
- *   queue: (string | ArrayBuffer)[],
+ *   queue: StartQueue,
  * }} Live
  * One client's session in this instance. Client frames wait in `queue` while
  * the session starts, then go to the provider in order.
@@ -131,14 +131,14 @@ export class Session extends DurableObject {
             close: (code, reason) => closeQuietly(socket, code, reason),
             send: (data) => sendQuietly(socket, data),
             forward: null,
-            pending: [],
+            pending: new StartQueue(),
           };
           // Frames that come before the session started (OpenAI sends `session.created` at
-          // once) wait, in order, and go to the client once it is started.
+          // once) wait, in order, and go to the client once it is started. Too many, or too
+          // large, and the provider is hung up: the start then ends the session.
           socket.addEventListener("message", (event) => {
             if (call.forward !== null) call.forward(event.data);
-            else if (call.pending.length < START_QUEUE_FRAMES) call.pending.push(event.data);
-            else call.close?.(1011, "start_queue_full");
+            else if (!call.pending.push(event.data)) call.close?.(1011, "start_queue_full");
           });
           // The provider hung up first: the session ends, and the client is told. A close the
           // relay caused itself, after letting go of this call, is ignored (`providerGone`).
@@ -162,6 +162,8 @@ export class Session extends DurableObject {
     const relayMessages = request.headers.get(RELAY_MESSAGES_HEADER) === "1";
     const [client, server] = Object.values(new WebSocketPair());
     if (!client || !server) throw new Error("no WebSocket pair");
+    // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
+    server.binaryType = "arraybuffer";
     server.accept();
     this.ctx.waitUntil(this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
@@ -179,7 +181,7 @@ export class Session extends DurableObject {
     /** @type {import("./start.js").Client} What the core holds: closing it never throws. */
     const owner = { close: (code, reason) => closeQuietly(client, code, reason) };
     /** @type {Live} */
-    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: [] };
+    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue() };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     client.addEventListener("close", () => void this.core.clientGone(owner));
     client.addEventListener("message", (event) => this.fromClient(live, event.data));
@@ -203,11 +205,16 @@ export class Session extends DurableObject {
     live.call = call;
     live.deadline = result.deadline;
     this.live = live;
+    // Either side sent too much during the start: the session ends, and what was held is dropped.
+    if (call.pending.overflowed || live.queue.overflowed) return this.endFor(live, "error", 4000, "start_queue_full");
+    // The deadline may have passed while the start finished: nothing is announced or forwarded then.
+    if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     if (relayMessages) sendQuietly(client, JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
-    // In order: what the provider sent during the start, then what the client did.
+    // In order: what the provider sent during the start, then what the client did. The client's
+    // go through the same guarded send as its live frames.
     call.forward = (data) => this.toClient(live, data);
-    for (const data of call.pending.splice(0)) call.forward(data);
-    for (const data of live.queue.splice(0)) call.send(data);
+    for (const data of call.pending.drain()) call.forward(data);
+    for (const data of live.queue.drain()) this.toProvider(live, data);
   }
 
   /**
@@ -220,17 +227,26 @@ export class Session extends DurableObject {
     const verdict = live.frames.fromClient(data);
     if (verdict.kind === "forward") {
       if (live.call === null) {
-        if (live.queue.length < START_QUEUE_FRAMES) live.queue.push(data);
-        else this.endFor(live, "error", 4000, "start_queue_full");
+        if (!live.queue.push(data)) this.endFor(live, "error", 4000, "start_queue_full");
         return;
       }
-      if (Date.now() >= live.deadline) return void this.core.end("time_cap");
-      live.call.send(data);
+      this.toProvider(live, data);
     } else if (verdict.kind === "answer") {
       sendQuietly(live.client, verdict.message);
     } else if (verdict.kind === "end") {
       this.endFor(live, verdict.reason, verdict.closeCode, verdict.closeReason);
     }
+  }
+
+  /**
+   * A client frame to the provider, past the deadline check: live frames and
+   * the ones held during the start go through here alike.
+   * @param {Live} live
+   * @param {string | ArrayBuffer} data
+   */
+  toProvider(live, data) {
+    if (Date.now() >= live.deadline) return void this.core.end("time_cap");
+    live.call?.send(data);
   }
 
   /**

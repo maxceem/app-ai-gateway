@@ -98,7 +98,7 @@ function setup(
   /** A test's way to run something when the provider's socket closes, as the session object's listener does. */
   const hooks: { onProviderClose?: (call: unknown) => void } = {};
   /** What each side was told when the session ended: the client's reason, the provider's close. */
-  const ended = { client: [] as string[], provider: [] as [number, string][] };
+  const ended = { client: [] as string[], provider: [] as [number, string][], clientCodes: [] as number[] };
   const parts = () => ({
     store,
     now: () => now,
@@ -144,7 +144,12 @@ function setup(
     ended,
     hooks,
     /** A client connection: what it is told when the session ends is recorded. */
-    client: () => ({ close: (_code: number, reason: string) => ended.client.push(reason) }),
+    client: () => ({
+      close: (code: number, reason: string) => {
+        ended.client.push(reason);
+        ended.clientCodes.push(code);
+      },
+    }),
     text,
     ticket,
     /** A new instance over the same storage: a fresh object, or the restarted one. */
@@ -314,7 +319,7 @@ describe("a session's start", () => {
     }
     expect(s.now()).toBe(deadline);
     expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
-    expect(s.ended).toEqual({ client: ["time_cap"], provider: [[1000, "session ended"]] });
+    expect(s.ended).toEqual({ client: ["time_cap"], provider: [[1000, "session ended"]], clientCodes: [1000] });
   });
 
   it("when the provider hangs up first, the client's socket is closed too, with the reason (Sol round 1)", async () => {
@@ -562,6 +567,8 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
       await core.alarm();
       expect(s.calls.close).toEqual([{ endReason: reason, finalSlice: 0 }]);
       expect(s.ended.client).toEqual([reason]);
+      // The same code as the report path's (`frames.js`): 4000 with the reason (Sol, #260 round 1).
+      expect(s.ended.clientCodes).toEqual([4000]);
       expect(s.ended.provider).toEqual([[1000, "session ended"]]);
     }
   });
@@ -578,6 +585,21 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     expect(s.ended.client).toEqual([]);
     release({ callId: null });
     expect(await started).toEqual({ ok: false, code: "ticket_expired" });
+    expect(s.ended.client).toEqual([]);
+  });
+
+  it("an activation whose write is held past the deadline ends the session with time_cap, not a running session (Sol, #260 round 1)", async () => {
+    const s = setup();
+    const deadline = s.ticket.start + s.ticket.cap;
+    // The `active` write takes so long that the deadline passes during it.
+    s.store.beforePut = (entries) => {
+      if (entries.state === "active") s.tick(deadline - s.now());
+    };
+    const result = await s.instance().start(s.text, s.ticket, s.client());
+    expect(result).toEqual({ ok: false, code: "session_ended" });
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    // The start tells the client, with its code: nothing closed it from the end.
     expect(s.ended.client).toEqual([]);
   });
 });

@@ -36,10 +36,55 @@ export const MAX_CLIENT_FRAME = 256 * 1024;
 export const MAX_CLIENT_FRAMES_PER_SECOND = 200;
 /** Frames held while the session starts, on each side, before the session gives up on them. */
 export const START_QUEUE_FRAMES = 512;
+/**
+ * Bytes held while the session starts, on each side. A start takes about a
+ * second, which is about 64 KB of audio; 4 MB is far more than any real start
+ * needs, and small next to the 128 MB an isolate has, which several session
+ * objects may share.
+ */
+export const START_QUEUE_BYTES = 4 * 1024 * 1024;
 
 /** A frame's size, as both sides count it: a text frame's length in characters, a binary frame's bytes. @param {string | ArrayBuffer} data */
 export function frameSize(data) {
   return typeof data === "string" ? data.length : data.byteLength;
+}
+
+/**
+ * Frames held, in order, while a session starts: bounded by count and by
+ * size, so a client or provider that sends a lot during the start can't fill
+ * the isolate's memory. `push` answers false once either bound is passed, and
+ * the queue then holds nothing more.
+ */
+export class StartQueue {
+  constructor() {
+    /** @type {(string | ArrayBuffer)[]} */
+    this.frames = [];
+    this.bytes = 0;
+    this.overflowed = false;
+  }
+
+  /** @param {string | ArrayBuffer} data */
+  push(data) {
+    if (this.overflowed) return false;
+    const size = frameSize(data);
+    if (this.frames.length >= START_QUEUE_FRAMES || this.bytes + size > START_QUEUE_BYTES) {
+      this.overflowed = true;
+      this.frames = [];
+      this.bytes = 0;
+      return false;
+    }
+    this.frames.push(data);
+    this.bytes += size;
+    return true;
+  }
+
+  /** Hands over what was held, in order, and empties the queue. */
+  drain() {
+    const frames = this.frames;
+    this.frames = [];
+    this.bytes = 0;
+    return frames;
+  }
 }
 
 /**
@@ -69,10 +114,15 @@ export class SessionFrames {
     /** The frame rate window: when it started, and how many frames came in it. */
     this.windowStart = now;
     this.windowFrames = 0;
-    /** Characters and bytes sent to the client so far. */
+    /** Characters and bytes of provider frames sent to the client so far. The relay's own messages don't count. */
     this.sent = 0;
-    /** What the client last reported it got, or null before its first report. */
-    this.reported = /** @type {number | null} */ (null);
+    /**
+     * What the client last reported it got. A client that asked for the
+     * relay's messages (ours) is tracked from the first provider frame, as if
+     * it had reported 0, so one that stalls before its first report is still
+     * caught. Null for a client that sends no reports.
+     */
+    this.reported = /** @type {number | null} */ (options.relayMessages ? 0 : null);
     /**
      * Points along what was sent, about one a second: [total sent, when]. The
      * oldest point the client has not reported yet tells how far behind it is.
@@ -118,7 +168,9 @@ export class SessionFrames {
     }
     const fields = /** @type {{ type?: unknown, bytes?: unknown }} */ (message);
     if (fields.type === "agw.heartbeat") return { kind: "answer", message: JSON.stringify({ type: "agw.heartbeat" }) };
-    if (fields.type === "agw.received" && typeof fields.bytes === "number" && Number.isFinite(fields.bytes) && fields.bytes >= 0) {
+    // A report counts only as a whole number no larger than what was sent: a wrong or
+    // too-high one is ignored, so it can't switch the check off.
+    if (fields.type === "agw.received" && typeof fields.bytes === "number" && Number.isSafeInteger(fields.bytes) && fields.bytes >= 0 && fields.bytes <= this.sent) {
       this.received(fields.bytes);
       const slow = this.slow(this.now());
       if (slow !== null) return { kind: "end", reason: slow, closeCode: 4000, closeReason: slow };

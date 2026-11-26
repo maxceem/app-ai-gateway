@@ -34,6 +34,14 @@ export const CLOSE_RETRY_MS = 30 * 60_000;
 export const CLOSE_RETRY_EVERY_MS = 30_000;
 
 /**
+ * The close code a client gets for an end the relay decided about the client
+ * itself: the same code whichever path found it (a tick, or a report). Other
+ * ends close with 1000 and the reason.
+ * @type {Record<string, number>}
+ */
+const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
+
+/**
  * @typedef {{
  *   get(keys: string[]): Promise<Map<string, unknown>>,
  *   put(entries: Record<string, unknown>, alarmAt: number | null): Promise<void>,
@@ -236,6 +244,11 @@ export class SessionCore {
       await this.store.put({ state: "active", callId: call.callId, reconnect }, Math.min(deadline, this.now() + TICK_MS));
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
+      // A write held past the deadline: the session's time is over before it began.
+      if (this.now() >= deadline) {
+        await endStart("time_cap", {});
+        return fail("session_ended");
+      }
       return { ok: true, reconnectSecret, call, deadline };
     } catch (error) {
       // Anything unexpected (a storage failure, say) never leaves this start's provider call
@@ -359,7 +372,7 @@ export class SessionCore {
     // whose start is still in flight is told by that start, with its code (`4000`), when it
     // finds the session ended: never a bare `1000 "error"` from here.
     call?.close?.(1000, "session ended");
-    if (!this.starting) owner?.close(1000, reason);
+    if (!this.starting) owner?.close(CLIENT_END_CODES[reason] ?? 1000, reason);
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
     const at = this.now();
