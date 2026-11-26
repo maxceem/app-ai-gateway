@@ -68,3 +68,25 @@ export async function billingQuotaFor(
   if (planSchedule.anchorAt > now) throw invalidSchedule("future billing anchor");
   return { kind: "metered", access, limit, period: planPeriod(planSchedule, now) };
 }
+
+/** The plan's live-session minutes and the period they are counted over. */
+export type SessionQuota = { kind: "unmetered" } | { kind: "metered"; limitMs: number; period: PlanPeriod };
+
+/**
+ * The plan's live-session minutes (`maxSessionMinutesPerMonth`) over the same
+ * period as its requests. Throws `GatewayError` when billing data cannot be
+ * turned into a period; a session's start then goes on unchecked.
+ */
+export async function sessionQuotaFor(
+  access: GatewayBillingAccess,
+  env: Env,
+  accountId: string,
+  now: number = Date.now(),
+): Promise<SessionQuota> {
+  if (access.state !== "billed" || access.plan === null) return { kind: "unmetered" };
+  const minutes = billingPlanLimits(access).maxSessionMinutesPerMonth;
+  if (minutes === undefined) return { kind: "unmetered" };
+  const planSchedule = schedule(access, await accountCreatedAt(env, accountId));
+  if (planSchedule.anchorAt > now) throw invalidSchedule("future billing anchor");
+  return { kind: "metered", limitMs: minutes * 60_000, period: planPeriod(planSchedule, now) };
+}

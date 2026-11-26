@@ -16,6 +16,7 @@ import { closeForRelay, openForRelay } from "../src/relay/contract.ts";
 import { loadRequestApp } from "../src/apps/app-records.ts";
 import { admitSession } from "../src/limits/session-admission.ts";
 import { refusal } from "../src/proxy/serve.ts";
+import { parseAppConfig } from "../src/admin/apps.ts";
 import { parseTicket } from "../relay/src/ticket.js";
 import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, ledger, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -86,9 +87,18 @@ describe("the end user's session slots", () => {
     const later = T0 + MINUTE + 1;
     for (const id of ["ses_n1", "ses_n2", "ses_n3"]) expect(await limiter.admitSession(userAsk(claim(id, later), later))).toMatchObject({ admitted: true });
     expect(await limiter.admitSession(userAsk(claim("ses_n4", later), later))).toMatchObject({ admitted: false, reason: "starting_bound" });
-    // Past its deadline the activated lease goes too.
-    const pastDeadline = T0 + 30 * MINUTE + 1;
-    expect(await limiter.admitSession(userAsk(claim("ses_n5", pastDeadline), pastDeadline))).toMatchObject({ admitted: true });
+  });
+
+  it("frees an activated lease at its deadline and not before, with no close (T9; Sol 9a3 round 1)", async () => {
+    // An app cap of one: the only seat is the activated lease's, so each answer is about it alone.
+    const limiter = appLimiter(freshName());
+    const lease = claim("ses_lease", T0);
+    expect(await limiter.admitSession({ ...lease, now: T0, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: true });
+    await limiter.activateSession(lease, T0 + 1_000);
+    const justBefore = lease.deadline - 1;
+    expect(await limiter.admitSession({ ...claim("ses_before", justBefore), now: justBefore, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: false, reason: "session_limit" });
+    const atDeadline = lease.deadline;
+    expect(await limiter.admitSession({ ...claim("ses_at", atDeadline), now: atDeadline, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: true });
   });
 
   it("answers continue for an unknown or reserved slot, and changes nothing (row 20, rule 2)", async () => {
@@ -370,6 +380,74 @@ describe("starting a session", () => {
     const { appId, slug, key } = await setup();
     const response = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-7", env);
     expect(response.status).toBe(503);
+  });
+});
+
+describe("Sol 9a3 round 1", () => {
+  async function lastRejection(appId: string) {
+    return ledger().prepare("SELECT reason, model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at DESC").bind(appId).first<{ reason: string; model: string | null }>();
+  }
+
+  it("records a model the gateway doesn't know as unrecognized, never its text, whether the list or the cap refused it", async () => {
+    const listed = await setup();
+    await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, ?, json(?)) WHERE id = ?")
+      .bind(`$.routing.providers.${listed.slug}.models`, JSON.stringify(["gpt-realtime-mini"]), listed.appId)
+      .run();
+    clearCaches();
+    expect((await start(listed.appId, listed.slug, listed.key, { path: "v1/realtime", model: "not-a-model sk-oops" })).status).toBe(403);
+    expect(await lastRejection(listed.appId)).toMatchObject({ reason: "model_not_allowed", model: "unrecognized" });
+    const capped = await setup({ per_app: { sessions: { conversational: 1 } } });
+    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "first" }, "user-1")).status).toBe(201);
+    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "second sk-oops" }, "user-2")).status).toBe(429);
+    expect(await lastRejection(capped.appId)).toMatchObject({ reason: "blocked_session_limit", model: "unrecognized" });
+  });
+
+  /** Minutes that answer only after the start's 2 s deadline has passed. */
+  function lateMinutes(): Promise<number> {
+    return new Promise((resolve) => setTimeout(() => resolve(10 * MINUTE), 2_500)); // real-timer: must come after the endpoint's own 2 s deadline, which runs on the real clock
+  }
+
+  function hosted(minutes: number | undefined, usedMs: number | null | "slow"): Env {
+    const plan = { planKey: "p", planName: "P", isDefault: true, limits: minutes === undefined ? {} : { maxSessionMinutesPerMonth: minutes } };
+    return {
+      ...RELAY_ENV,
+      BILLING: { getTenantAccess: async () => ({ plan, subscription: null }) },
+      ACCOUNT_LIMITER: {
+        getByName: () => ({
+          sessionMs: () => (usedMs === "slow" ? lateMinutes() : Promise.resolve(usedMs)),
+        }),
+      },
+    } as unknown as Env;
+  }
+
+  it("refuses a session once the plan's live-session minutes are known to be used up, and frees the slots it took (D17, T12)", async () => {
+    const { appId, slug, key } = await setup({ per_app: { sessions: { conversational: 1 } } });
+    const refused = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-1", hosted(1, 60_000));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ error: { code: "billing_request_quota_exceeded", data: { limit: 1, used: 1 } } });
+    expect(await lastRejection(appId)).toMatchObject({ reason: "blocked_billing" });
+    // The app's only seat was freed: a session with minutes left starts.
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-1", hosted(1, 59_000))).status).toBe(201);
+  });
+
+  it("starts the session when the plan or its minutes can't be read in time, and when the plan sets no minutes", async () => {
+    const { appId, slug, key } = await setup();
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-1", hosted(1, null))).status).toBe(201);
+    // Each plan read fresh: the billing answer is cached per account.
+    clearCaches();
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-2", hosted(undefined, 10 * MINUTE))).status).toBe(201);
+    clearCaches();
+    // Minutes that never answer: the shared 2 s deadline lets the session start.
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" }, "user-3", hosted(1, "slow"))).status).toBe(201);
+  });
+
+  it("saves no session cap equal to its default, and no sessions block when nothing is left", () => {
+    const base = { authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }, routing: { providers: {} } };
+    const defaults = parseAppConfig({ ...base, limits: { per_app: { sessions: { conversational: 10, streaming: 50 } } } });
+    expect(defaults.limits.per_app.sessions).toBeUndefined();
+    expect(JSON.stringify(defaults)).not.toContain("sessions");
+    const one = parseAppConfig({ ...base, limits: { per_app: { sessions: { conversational: 4, streaming: 50 } } } });
+    expect(one.limits.per_app.sessions).toEqual({ conversational: 4 });
   });
 });
 

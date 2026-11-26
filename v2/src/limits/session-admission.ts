@@ -1,9 +1,11 @@
 /**
  * Admission for a live session (plan D15 and section 6;
  * `v2-prep/admission-and-settlement.md`): the end user's limiter, then the
- * app's, each checking its budget and taking a slot in one call. Opening a
- * session uses no request and no plan allowance (D8): a session counts its
- * minutes at its checkpoints.
+ * app's, each checking its budget and taking a slot in one call, then, hosted
+ * only, the plan's live-session minutes (D17, admission T12). Opening a
+ * session uses no request (D8): a session counts its minutes at its
+ * checkpoints, so the start only reads what the period used, and refuses only
+ * when that is known to be used up.
  *
  * As for every request, both checks share one `LIMITS_DEADLINE_MS` deadline,
  * and a limiter that does not answer in time is skipped: the session starts
@@ -16,6 +18,9 @@
  * session id and never failing the call when a limiter cannot be reached.
  */
 import { appSessionCap } from "../contracts/app-config.ts";
+import { admitAppTraffic, APP_TRAFFIC_BILLING_DEADLINE_MS, getAppTrafficBillingAccess } from "../billing/access.ts";
+import { billingBinding } from "../billing/contract.ts";
+import { sessionQuotaFor } from "../billing/quota.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -40,6 +45,7 @@ export interface SessionAdmissionInput {
   readonly refuse: RefusalMarker;
   /** For tests. */
   readonly limitsDeadlineMs?: number;
+  readonly billingDeadlineMs?: number;
 }
 
 /** What admission took: the slots to free if the start goes no further. */
@@ -136,6 +142,7 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
     remaining(),
     input.waitUntil,
   );
+  let appSeat = false;
   if ("value" in answer) {
     const verdict = answer.value;
     if (!verdict.admitted) {
@@ -152,10 +159,87 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
       throw budgetRefusal("app", refuse);
     }
     if (verdict.budget === "unread") log("warn", "app_budget_unchecked", { app: app.id, scope: "app" });
-    return { userLimiter, appSeat: true };
+    appSeat = true;
+  } else {
+    unchecked(app.id, "app", answer);
   }
-  unchecked(app.id, "app", answer);
-  return { userLimiter, appSeat: false };
+  const admission = { userLimiter, appSeat };
+
+  // 3. The plan's live-session minutes, hosted only, always last.
+  try {
+    await checkSessionMinutes(input, remaining, now);
+  } catch (error) {
+    // A refused start never holds a slot.
+    input.waitUntil(releaseAdmission(env, app.id, claim.sessionId, admission));
+    throw error;
+  }
+  return admission;
+}
+
+/**
+ * Refuses when the plan's live-session minutes are known to be used up this
+ * period, as the proxy refuses a used-up request allowance. Anything it cannot
+ * read in time lets the session start, logged (AGENTS.md "Serving requests").
+ * It reads billing (`billing_*`) only, never the app's own limits.
+ */
+async function checkSessionMinutes(input: SessionAdmissionInput, remaining: () => number, now: number): Promise<void> {
+  const { env, app, refuse } = input;
+  if (billingBinding(env) === null) return;
+  const skip = (reason: string, error?: unknown) =>
+    log("warn", "session_allowance_unchecked", { account: app.accountId, reason, ...(error === undefined ? {} : { error: errorFacts(error) }) });
+  const accessAnswer = await within(
+    getAppTrafficBillingAccess(env, app.accountId, input.waitUntil, input.billingDeadlineMs ?? APP_TRAFFIC_BILLING_DEADLINE_MS),
+    remaining(),
+    input.waitUntil,
+  );
+  if (!("value" in accessAnswer)) return skip(accessAnswer.missed, accessAnswer.error);
+  const access = accessAnswer.value;
+  // The last known plan, served while billing cannot answer, is never grounds to refuse.
+  if (access.state === "billed" && access.stale === true) return skip("billing_stale");
+  // No plan resolving at all is 402, as for a request.
+  admitAppTraffic(access, app.accountId);
+  const quotaAnswer = await within(sessionQuotaFor(access, env, app.accountId, now), remaining(), input.waitUntil);
+  if (!("value" in quotaAnswer)) return skip(quotaAnswer.missed === "deadline" ? "deadline" : "plan_unreadable", quotaAnswer.error);
+  const quota = quotaAnswer.value;
+  if (quota.kind === "unmetered") return;
+  const { period } = quota;
+  const usedAnswer = await within(
+    rpc<number | null>(
+      env.ACCOUNT_LIMITER.getByName(app.accountId).sessionMs({
+        accountId: app.accountId,
+        fromDay: period.periodStart.slice(0, 10),
+        toDay: period.periodEnd.slice(0, 10),
+        now,
+      }),
+    ),
+    remaining(),
+    input.waitUntil,
+  );
+  if (!("value" in usedAnswer)) return skip(usedAnswer.missed, usedAnswer.error);
+  const used = usedAnswer.value;
+  if (used === null) return skip("minutes_unread");
+  if (used < quota.limitMs) return;
+  const retryAfter = Math.max(1, Math.ceil((Date.parse(period.resetAt) - now) / 1000));
+  throw refuse(
+    new GatewayError(
+      429,
+      "billing_request_quota_exceeded",
+      `The plan's monthly live-session minutes are used up until ${period.resetAt}`,
+      { "Retry-After": String(retryAfter) },
+      {
+        data: {
+          limit: Math.floor(quota.limitMs / 60_000),
+          used: Math.floor(used / 60_000),
+          periodId: period.periodId,
+          periodStart: period.periodStart,
+          periodEnd: period.periodEnd,
+          resetAt: period.resetAt,
+        },
+      },
+    ),
+    "blocked_billing",
+    "account",
+  );
 }
 
 function userRefusal(reason: "budget" | "streaming_limit" | "starting_bound", scope: string, refuse: RefusalMarker): GatewayError {

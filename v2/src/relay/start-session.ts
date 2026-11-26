@@ -20,7 +20,7 @@ import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { openSession } from "../ledger/sessions.ts";
 import { admitSession, releaseAdmission } from "../limits/session-admission.ts";
-import { listOf } from "../pricing/billability.ts";
+import { knownModel, listOf, priceSources } from "../pricing/billability.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
@@ -107,6 +107,8 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       const requested = location.in === "fixed" ? location.model : request.data.model;
       if (requested === undefined) throw new GatewayError(400, "invalid_request", `${operation.name} needs a model`);
       caller.facts.model = requested;
+      // A refusal records the model only when the gateway knows it, as for a call.
+      caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested);
       // The app's model list judges the model, as for a call; a rewrite is
       // never applied to a session (plan D13). Its price is checked where a
       // session is metered, at its checkpoints (step 9a part 2): no session
