@@ -444,12 +444,6 @@ importers:
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0
-      asn1js:
-        specifier: ^3.0.7
-        version: 3.0.10
-      cbor-x:
-        specifier: ^1.6.0
-        version: 1.6.4
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20261103.1)(kysely@0.28.17)
@@ -459,9 +453,6 @@ importers:
       jose:
         specifier: ^6.0.0
         version: 6.2.4
-      pkijs:
-        specifier: ^3.3.3
-        version: 3.4.0
       zod:
         specifier: ^4.0.0
         version: 4.6.7

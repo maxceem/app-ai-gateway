@@ -8,6 +8,7 @@ import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
 import { drainExpiredChallenges, EXPIRED_CHALLENGES_SQL, recordAuthEvent, settleExpiredChallenges } from "../src/client-auth/auth-events.ts";
 import { PROOF_HEADER } from "../src/client-auth/request-proof.ts";
+import { MAX_ASSERTION_LENGTH, MAX_ATTESTATION_LENGTH } from "../src/contracts/auth.ts";
 import {
   ACCOUNT_ID,
   attestAuthentication,
@@ -265,9 +266,9 @@ describe("POST /v2/apps/{app}/auth/failure", () => {
 });
 
 describe("POST /v2/apps/{app}/auth/register", () => {
-  // The first registration in this file: it pays for the Worker's first load of App Attest's certificate code
-  // (pkijs, asn1js, cbor-x), about a second alone and several on a loaded machine. That cold load is part of what
-  // it covers, so it keeps it, with a fair limit.
+  // The first registration in this file: it pays for the Worker's first load of App Attest's certificate code,
+  // which can take seconds on a loaded machine. That cold load is part of what it covers, so it keeps it, with a
+  // fair limit.
   it("refuses a forged attestation, spends the challenge, and records the refusal", { timeout: 30_000 }, async () => {
     const appId = await seedApp(attestAuthentication());
     const challenge = await challengeFor(appId);
@@ -294,6 +295,26 @@ describe("POST /v2/apps/{app}/auth/register", () => {
     });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+  });
+});
+
+describe("App Attest proof sizes", () => {
+  it("refuses an attestation or an assertion far larger than a real one, before reading it", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const attestation = await post(`/v2/apps/${appId}/auth/register`, {
+      key_id: "a2V5",
+      attestation: "A".repeat(MAX_ATTESTATION_LENGTH + 1),
+      challenge: await challengeFor(appId),
+    });
+    expect(attestation.status).toBe(400);
+    expect(await attestation.json()).toMatchObject({ error: { code: "invalid_request" } });
+    const assertion = await post(`/v2/apps/${appId}/auth/token`, {
+      key_id: "a2V5",
+      assertion: "A".repeat(MAX_ASSERTION_LENGTH + 1),
+      challenge: await challengeFor(appId),
+    });
+    expect(assertion.status).toBe(400);
+    expect(await assertion.json()).toMatchObject({ error: { code: "invalid_request" } });
   });
 });
 

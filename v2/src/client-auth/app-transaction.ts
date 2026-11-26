@@ -17,16 +17,15 @@
  * a client that sent nothing at all is counted the same way.
  *
  * Imported dynamically by the token exchange, like `./app-attest`, so the
- * certificate libraries stay off every other path.
+ * certificate code stays off every other path.
  */
 
 import { Buffer } from "node:buffer";
 import { X509Certificate } from "node:crypto";
-import * as asn1js from "asn1js";
 import { compactVerify, decodeProtectedHeader } from "jose";
-import { Certificate } from "pkijs";
 import { MAX_APP_TRANSACTION_LENGTH } from "../contracts/auth.ts";
 import { sha256 } from "./app-assertion.ts";
+import { certificateFields } from "./der.ts";
 
 /** Apple Root CA - G3, which the App Store signs every StoreKit JWS under. */
 const APPLE_ROOT_CA_G3_PEM = `-----BEGIN CERTIFICATE-----
@@ -87,9 +86,11 @@ export type AppTransactionResult =
   | { account: null; rejection: AppTransactionRejection };
 
 function hasExtension(certificate: X509Certificate, oid: string): boolean {
-  const parsed = asn1js.fromBER(Uint8Array.from(certificate.raw).buffer);
-  if (parsed.offset === -1) return false;
-  return new Certificate({ schema: parsed.result }).extensions?.some((item) => item.extnID === oid) ?? false;
+  try {
+    return certificateFields(certificate.raw).extensions.has(oid);
+  } catch {
+    return false;
+  }
 }
 
 function validAt(certificate: X509Certificate, at: number): boolean {

@@ -211,7 +211,8 @@
           },
           "attestation": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 65536
           },
           "challenge": {
             "type": "string",
@@ -338,7 +339,8 @@
           },
           "assertion": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 8192
           },
           "challenge": {
             "type": "string",

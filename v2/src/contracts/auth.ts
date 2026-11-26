@@ -9,6 +9,21 @@ import { APP_ATTEST_VERIFY_ON, BUDGET_SCOPES } from "./app-config.ts";
 /** The longest App Store AppTransaction JWS the token exchange reads. */
 export const MAX_APP_TRANSACTION_LENGTH = 16_384;
 
+/**
+ * The longest App Attest attestation (base64) the gateway reads. A real one,
+ * with its receipt, is about 6 to 8 KB (Apple's published sample is 7.9 KB),
+ * but its size is Apple's to grow, so the cap leaves plenty of room. The CBOR
+ * reader's entry cap is what bounds the memory it can use.
+ */
+export const MAX_ATTESTATION_LENGTH = 65_536;
+
+/**
+ * The longest App Attest assertion (base64 or base64url) the gateway reads, in
+ * a body or an `X-AppAttest-Proof` header. A real one is a few hundred bytes;
+ * this is far above that and well below a header's limit.
+ */
+export const MAX_ASSERTION_LENGTH = 8_192;
+
 const AppAttestKeyIdSchema = z.string().min(1).max(200);
 const ChallengeSchema = z.string().min(1).max(200);
 
@@ -21,7 +36,7 @@ export const AppAttestRegisterRequestSchema = z
   .object({
     issuer_token: z.string().min(1).optional(),
     key_id: AppAttestKeyIdSchema,
-    attestation: z.string().min(1),
+    attestation: z.string().min(1).max(MAX_ATTESTATION_LENGTH),
     challenge: ChallengeSchema,
   })
   .meta({ id: "AppAttestRegisterRequest" });
@@ -30,7 +45,7 @@ export const AppAttestTokenRequestSchema = z
   .object({
     issuer_token: z.string().min(1).optional(),
     key_id: AppAttestKeyIdSchema,
-    assertion: z.string().min(1),
+    assertion: z.string().min(1).max(MAX_ASSERTION_LENGTH),
     challenge: ChallengeSchema,
     app_transaction: z.string().min(1).max(MAX_APP_TRANSACTION_LENGTH).optional().meta({
       description:
