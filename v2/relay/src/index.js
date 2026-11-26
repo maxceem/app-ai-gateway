@@ -98,9 +98,12 @@ export class Session extends DurableObject {
       provider: {
         connect: async (key) => {
           const { callId, socket } = await connectProvider(key);
-          // The provider hung up first: the session ends, and the client is told.
-          socket.addEventListener("close", () => void this.core.end("provider_closed"));
-          return { callId, close: (code, reason) => socket.close(code, reason) };
+          /** @type {import("./start.js").ProviderCall} */
+          const call = { callId, close: (code, reason) => socket.close(code, reason) };
+          // The provider hung up first: the session ends, and the client is told. A close the
+          // relay caused itself, after letting go of this call, is ignored (`providerGone`).
+          socket.addEventListener("close", () => void this.core.providerGone(call));
+          return call;
         },
       },
     });
@@ -139,7 +142,8 @@ export class Session extends DurableObject {
       // The core has hung up any provider call; the client is told, and the session ends if it got that far.
       console.log(JSON.stringify({ level: "error", message: "relay_start_failed", session: ticket.sid }));
       closeQuietly(client, 1011, "internal_error");
-      await this.core.end("error").catch(() => undefined);
+      // Only a start that owned the session may end it: a second connection's failure never does.
+      if (this.core.startedBy(client)) await this.core.end("error").catch(() => undefined);
       return;
     }
     if (!result.ok) {

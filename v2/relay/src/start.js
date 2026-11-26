@@ -111,6 +111,10 @@ export class SessionCore {
     this.call = null;
     /** For the logs. */
     this.sessionId = "";
+    /** @type {Promise<void> | null} The end in flight: a second caller waits for it, so one reason is stored and one `close` sent. */
+    this.ending = null;
+    /** @type {Client | undefined | null} The client whose start ran last past the running-session check. */
+    this.lastStarter = null;
   }
 
   /**
@@ -125,11 +129,16 @@ export class SessionCore {
    */
   async start(ticketText, ticket, client) {
     if (this.starting) return { ok: false, code: "start_in_flight" };
+    // A session already running in this instance is refused at once, before any wait: nothing a
+    // second connection's start does (a storage error, say) can then touch the running one.
+    if (this.call !== null || (this.owner !== null && this.owner !== undefined && this.owner !== client)) return { ok: false, code: "session_active" };
     // Set before the first wait, so a second connection that arrives meanwhile is refused.
     this.starting = true;
-    // A session already owned (a second connection while it runs) keeps its owner.
-    if (this.owner === null || this.owner === undefined) this.owner = client;
+    this.owner = client;
+    this.lastStarter = client;
     this.sessionId = ticket.sid;
+    /** @type {ProviderCall | null} The call this start made, the only one its failure may hang up. */
+    let ownCall = null;
     /** @param {string} code */
     const fail = (code) => {
       if (this.owner === client) this.owner = null;
@@ -195,7 +204,8 @@ export class SessionCore {
       await this.store.put({ connecting: true }, null);
       try {
         // Kept at once, so whatever happens next can hang it up.
-        this.call = await this.provider.connect(key);
+        ownCall = await this.provider.connect(key);
+        this.call = ownCall;
       } catch (error) {
         if (error instanceof ProviderRefused) {
           await endStart("error", { log: "relay_provider_refused", status: error.status });
@@ -222,10 +232,13 @@ export class SessionCore {
       if (this.owner !== client) return fail("client_closed");
       return { ok: true, reconnectSecret, call, deadline };
     } catch (error) {
-      // Anything unexpected (a storage failure, say) never leaves a provider call behind.
-      const call = this.call;
-      this.call = null;
-      call?.close?.(1011, "relay error");
+      // Anything unexpected (a storage failure, say) never leaves this start's provider call
+      // behind. Only what this start made is touched: never another client's call or owner.
+      if (ownCall !== null && this.call === ownCall) {
+        this.call = null;
+        ownCall.close?.(1011, "relay error");
+      }
+      if (this.owner === client) this.owner = null;
       throw error;
     } finally {
       this.starting = false;
@@ -285,13 +298,46 @@ export class SessionCore {
   }
 
   /**
+   * The provider's side of `call` closed. Only the current call counts: a close
+   * the relay caused itself, after letting go of the call, changes nothing.
+   * @param {ProviderCall} call
+   */
+  async providerGone(call) {
+    if (call !== this.call) return;
+    await this.end("provider_closed");
+  }
+
+  /** Whether `client` ran the last start that got past the running-session check: its failure may end the session. @param {Client} client */
+  startedBy(client) {
+    return this.lastStarter === client;
+  }
+
+  /**
    * Ends the session: closes both sides with the reason, stores the end in one
    * write, then sends `close` once. The alarm retries `close` until it is
-   * confirmed, then cleans up.
+   * confirmed, then cleans up. One end at a time: a caller that comes while one
+   * is in flight waits for it.
    * @param {string} reason
    * @param {{ finalSlice?: number, log?: string, status?: number }} [details]
    */
-  async end(reason, details = {}) {
+  end(reason, details = {}) {
+    if (this.ending !== null) return this.ending;
+    // Started a step later, so `ending` is set before anything inside the end runs: a close
+    // event that the end itself causes (the provider's socket) already finds it in flight.
+    const ending = Promise.resolve().then(() => this.endOnce(reason, details));
+    this.ending = ending;
+    // A failed end (its write failed) can run again.
+    ending.catch(() => {
+      if (this.ending === ending) this.ending = null;
+    });
+    return ending;
+  }
+
+  /**
+   * @param {string} reason
+   * @param {{ finalSlice?: number, log?: string, status?: number }} details
+   */
+  async endOnce(reason, details) {
     const owner = this.owner;
     const call = this.call;
     this.owner = null;

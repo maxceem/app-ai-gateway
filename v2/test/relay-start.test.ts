@@ -86,6 +86,8 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
   const store = new MemoryStore();
   const calls = { vault: 0, open: 0, connect: 0, close: [] as { endReason: string; finalSlice: number }[] };
   const logs: Record<string, unknown>[] = [];
+  /** A test's way to run something when the provider's socket closes, as the session object's listener does. */
+  const hooks: { onProviderClose?: (call: unknown) => void } = {};
   /** What each side was told when the session ended: the client's reason, the provider's close. */
   const ended = { client: [] as string[], provider: [] as [number, string][] };
   const parts = () => ({
@@ -111,8 +113,16 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     provider: {
       connect: async () => {
         calls.connect += 1;
-        const call = await (options.connect?.() ?? Promise.resolve({ callId: null }));
-        return { ...call, close: (code: number, reason: string) => ended.provider.push([code, reason]) };
+        const answer = await (options.connect?.() ?? Promise.resolve({ callId: null }));
+        const call = {
+          ...answer,
+          close: (code: number, reason: string) => {
+            ended.provider.push([code, reason]);
+            // The provider's socket closes, and its close event reaches the session at once.
+            hooks.onProviderClose?.(call);
+          },
+        };
+        return call;
       },
     },
   });
@@ -122,6 +132,7 @@ function setup(options: { vault?: () => Promise<unknown>; open?: () => Promise<u
     calls,
     logs,
     ended,
+    hooks,
     /** A client connection: what it is told when the session ends is recorded. */
     client: () => ({ close: (_code: number, reason: string) => ended.client.push(reason) }),
     text,
@@ -414,5 +425,55 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await expect(s.instance().start(s.text, s.ticket, s.client())).rejects.toThrow("storage failed");
     expect(s.calls.connect).toBe(1);
     expect(s.ended.provider).toEqual([[1011, "relay error"]]);
+  });
+
+  it("a second connection whose start meets a storage error never touches the running session (Gemini Neon 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    const first = s.client();
+    expect(await core.start(s.text, s.ticket, first)).toMatchObject({ ok: true });
+    s.store.failGet = () => true;
+    const second = s.client();
+    expect(await core.start(s.text, s.ticket, second)).toEqual({ ok: false, code: "session_active" });
+    expect(core.startedBy(second)).toBe(false);
+    s.store.failGet = null;
+    expect(s.store.data.get("state")).toBe("active");
+    expect(s.ended.provider).toEqual([]);
+    expect(core.call).not.toBeNull();
+  });
+
+  it("an end that hangs up the provider, whose close fires during it, stores one reason and sends one close (Gemini Neon 2)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    // As if the session object's listener sent the provider's close straight to `end`.
+    s.hooks.onProviderClose = () => void core.end("provider_closed");
+    await core.end("time_cap");
+    await until(() => s.calls.close.length >= 1);
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+    expect(s.store.data.get("end")).toMatchObject({ reason: "time_cap" });
+  });
+
+  it("a handshake that finishes past expiry, with the provider's close firing during stop: the client gets ticket_expired, and one close says error (Gemini Neon 2)", async () => {
+    let release: (value: { callId: string | null }) => void = () => undefined;
+    const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    s.hooks.onProviderClose = (call) => void core.providerGone(call as never);
+    const started = core.start(s.text, s.ticket, s.client());
+    await until(() => s.calls.connect === 1);
+    s.tick(60_000);
+    release({ callId: null });
+    expect(await started).toEqual({ ok: false, code: "ticket_expired" });
+    expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 0 }]);
+    expect(s.ended.client).toEqual([]);
+  });
+
+  it("the provider's close for a call the session no longer holds changes nothing (Gemini Neon 2)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    await core.providerGone({ callId: null });
+    expect(s.store.data.get("state")).toBe("active");
+    expect(s.calls.close).toEqual([]);
   });
 });
