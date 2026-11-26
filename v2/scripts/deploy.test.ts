@@ -262,7 +262,7 @@ test("a deploy stops, deleting nothing, when a vault secret is already on the wr
     FAKE_SECRETS: JSON.stringify({ gateway: ["JWT_SECRET", "SECRET_VAULT_LOCAL_KEK_V1"], vault: ["SECRET_VAULT_LOCAL_KEK_V1"] }),
   });
   assert.equal(run.status, 2);
-  assert.match(run.stderr, /The gateway holds the secret SECRET_VAULT_LOCAL_KEK_V1\. Delete it with: pnpm exec wrangler secret delete SECRET_VAULT_LOCAL_KEK_V1/u);
+  assert.match(run.stderr, /The gateway holds the secret SECRET_VAULT_LOCAL_KEK_V1\. Delete it with: pnpm exec wrangler secret delete SECRET_VAULT_LOCAL_KEK_V1 --config \S+ --env ""/u);
   assert.doesNotMatch(run.stderr, /JWT_SECRET/u);
   // Only secret names were listed: nothing deployed, nothing deleted.
   assert.ok(fake.calls().every((call) => call[0] === "secret" && call[1] === "list"));

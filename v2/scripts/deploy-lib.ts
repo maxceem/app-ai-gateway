@@ -101,7 +101,7 @@ export function deployedSecretProblems(
   const problems: string[] = [];
   const wrong = (label: string, list: string[] | undefined, path: string, test: (name: string) => boolean) => {
     for (const name of (list ?? []).filter(test)) {
-      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${path}`);
+      problems.push(`The ${label} holds the secret ${name}. Delete it with: pnpm exec wrangler secret delete ${name} --config ${path} --env ""`);
     }
   };
   wrong("gateway", names.main, configPaths.main, (name) => name.startsWith("SECRET_VAULT_"));

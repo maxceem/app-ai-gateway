@@ -39,7 +39,7 @@ try {
   await rm(out, { recursive: true, force: true });
   run("pnpm", ["--filter", "@app-ai-gateway/console-v2", "build"], REPO_DIR);
   // No profile: the bundle depends only on the tracked file.
-  run("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", join(out, "worker"), "--config", join(V2_DIR, "wrangler.jsonc")], V2_DIR);
+  run("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", join(out, "worker"), "--config", join(V2_DIR, "wrangler.jsonc"), "--env", ""], V2_DIR);
   // Neither is deployed: the map is not uploaded and the README is Wrangler's note.
   await rm(join(out, "worker", "index.js.map"), { force: true });
   await rm(join(out, "worker", "README.md"), { force: true });
