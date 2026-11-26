@@ -14,19 +14,19 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
-import { connectionCredentials } from "../test/opened-request.ts";
+import { readCloudflareGateway, sealedCredentials, type ConnectionRecord } from "../src/providers/connections.ts";
+import { open } from "../vault/src/seal.js";
 import { secretVault } from "../src/vault/index.ts";
 import { VAULT_SERVICE } from "../src/vault/types.ts";
 import { checkAgainstV2, insertStatements, readFirst, reportMarkdown } from "./migrate/output.ts";
 import { budgetNano, migrateSettings, SecretDoesNotOpen, TABLE_ORDER, v1TimeMs, type MigrationResult, type Row, type V2Rows } from "./migrate/settings.ts";
 import { loadV1Export, openV1Export, readV1Settings, REQUIRED_TABLES, StatementSplitter } from "./migrate/v1-rows.ts";
-import { vaultResealer } from "./migrate/vault.ts";
+import { readVaultFile, vaultResealer } from "./migrate/vault.ts";
 
 const V2_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const V1_MIGRATIONS = join(V2_DIR, "..", "migrations");
@@ -249,8 +249,11 @@ const said = (subject: string, pattern: RegExp, kind?: string) => {
   return found;
 };
 const config = (id: string) => JSON.parse(row("app", id)!.config_json as string);
-/** A moved connection's credentials, opened the way the Worker opens them for a live request (Sol 1). */
-const credentials = (id: string) => {
+/**
+ * A moved connection's credentials, opened by the vault Worker's own module
+ * for the identity the gateway sends it on a live request (Sol 1, 8i).
+ */
+const credentials = async (id: string) => {
   const moved = row("provider_connection", id)!;
   const record = {
     id: moved.id,
@@ -261,7 +264,11 @@ const credentials = (id: string) => {
     secretBlob: moved.secret_blob,
     cloudflareGateway: readCloudflareGateway(moved.cloudflare_gateway_json),
   } as unknown as ConnectionRecord;
-  return connectionCredentials(V2_VAULT, record);
+  const sealed = sealedCredentials(record);
+  return {
+    providerKey: sealed.providerKey === null ? null : await open(V2_VAULT, "providerKey", sealed.providerKey.identity, sealed.providerKey.blob),
+    cloudflareToken: sealed.cloudflareToken === null ? null : await open(V2_VAULT, "cloudflareGatewayToken", sealed.cloudflareToken.identity, sealed.cloudflareToken.blob),
+  };
 };
 
 // ---------------------------------------------------------------- accounts and people
@@ -848,4 +855,15 @@ test("the all-mode summary names only the routes left after a padded rewrite dro
   const summary = said("app all-u21", /v1 let it reach every connection of its account\. v2 names each one: it now allows (.+), each/u, "changed");
   assert.match(summary.what, /it now allows no connection,/u);
   assert.deepEqual(config("all-u21").routing.providers, {});
+});
+
+test("a vault file is read as dotenv, as the secrets upload reads it: a comment after a value is not part of it (Sol 1, 8i part 3)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-vault-file-"));
+  try {
+    const path = join(dir, "v2-vault.env");
+    writeFileSync(path, ['SECRET_VAULT_MODE=local # v2 vault mode', 'export SECRET_VAULT_LOCAL_KEK_V1="abc=" # quoted', "OTHER=kept-out", "# SECRET_VAULT_LOCAL_KEK_V2=commented"].join("\n"));
+    assert.deepEqual(readVaultFile(path), { SECRET_VAULT_MODE: "local", SECRET_VAULT_LOCAL_KEK_V1: "abc=" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

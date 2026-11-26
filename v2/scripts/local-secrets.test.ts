@@ -237,3 +237,21 @@ test("an old combined .dev.vars uploaded to the vault sends only the vault's set
     assert.ok(!run.output.includes("jwt-value") && !run.output.includes("auth-value") && !run.output.includes("kek-value"), "a value was printed");
   });
 });
+
+test("a kms vault's own folder (--dir) holding only the two kms secrets uploads just those, never the local key the setup made (README, Sol 1, 8i part 3)", () => {
+  withFolder((dir) => {
+    writeFileSync(join(dir, "pnpm"), `#!/bin/sh\ncat > "${join(dir, "stdin")}"\n`);
+    chmodSync(join(dir, "pnpm"), 0o755);
+    const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}`, INIT_CWD: dir, CLOUDFLARE_ENV: "" };
+    // The setup has made a local key in vault/.dev.vars, which a kms vault must not get.
+    assert.equal(script("setup-local-secrets.ts", ["--dir", dir]).code, 0);
+    mkdirSync(join(dir, "kms-vault"));
+    writeFileSync(join(dir, "kms-vault", ".dev.vars"), "SECRET_VAULT_KMS_URL=https://kms.example.test\nSECRET_VAULT_KMS_TOKEN=kms-value-0123456789\n");
+    const vaultConfig = join(dir, "wrangler.vault.jsonc");
+    writeFileSync(vaultConfig, JSON.stringify({ name: "vault", main: join(V2_DIR, "vault", "src", "index.js"), compatibility_date: "2026-01-01", vars: { SECRET_VAULT_MODE: "kms" } }));
+    const run = script("upload-local-secrets.ts", ["-c", vaultConfig, "--dir", "kms-vault"], env);
+    assert.equal(run.code, 0, run.output);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin"), "utf8")), { SECRET_VAULT_KMS_URL: "https://kms.example.test", SECRET_VAULT_KMS_TOKEN: "kms-value-0123456789" });
+    assert.ok(!run.output.includes("kms-value"), "a value was printed");
+  });
+});

@@ -13,6 +13,24 @@ import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
 import { allowLedgerWork, ledger, pauseLedgerWork } from "./helpers.ts";
 
+/**
+ * Puts the clock at noon UTC tomorrow: after the nightly hour, so the nightly
+ * maintenance is due whatever time the test runs (it failed between midnight
+ * and 04:00 UTC), and still ahead of the real clock, so an alarm set for "now"
+ * never fires on its own: only `runDurableObjectAlarm` runs it. Only `Date`
+ * is faked; timers stay real.
+ */
+function afterNightlyHour(): number {
+  const noon = new Date();
+  noon.setUTCDate(noon.getUTCDate() + 1);
+  noon.setUTCHours(12, 0, 0, 0);
+  vi.useFakeTimers({ toFake: ["Date"], now: noon });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  return noon.getTime();
+}
+
 describe("the ledger object", () => {
   it("runs the rollup trigger inside the object's SQLite, once per charge", async () => {
     const db = ledger("acc_trigger");
@@ -106,45 +124,49 @@ describe("the ledger object", () => {
 
   it("keeps its nightly alarm for an account whose only rows are given-up work, so retention still deletes them", async () => {
     allowLedgerWork();
+    const now = afterNightlyHour();
     const stub = ledgerObject(env, "acc_given_up");
     await ledger("acc_given_up")
       .prepare(
         "INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, due_at, tries, gave_up_at, created_at) VALUES ('w', 'unresolved', 'acc_given_up', 'a', 'call', 'o', 1, 20, 1, 1)",
       )
       .run();
-    // The write set the alarm for the nightly run, due at once on a new object, which deletes
-    // work given up more than 90 days ago. It may already be running on its own.
-    await runDurableObjectAlarm(stub);
-    await vi.waitFor(async () => expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0));
+    // The write set the alarm for the nightly run, due now on a new object. The clock is ahead of
+    // the real one, so it waits for this test to run it: the run deletes work given up more than 90 days ago.
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(now);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await ledger("acc_given_up").prepare("SELECT COUNT(*) AS n FROM open_work").first("n")).toBe(0);
     expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
   });
 
   it("runs its clean-up even when it cannot write, and still sets its next alarm (step 8f)", async () => {
     allowLedgerWork();
+    const now = afterNightlyHour();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const stub = ledgerObject(env, "acc_full");
-    await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
-    const old = Date.now() - 200 * 86_400_000;
-    await ledger("acc_full")
-      .prepare(
+    const old = now - 200 * 86_400_000;
+    // Seeded straight into the object's storage, which sets no alarm, then, as on a full ledger:
+    // deletes work, inserts and updates fail. So the night's mark cannot be written.
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.deleteAlarm();
+      state.storage.sql.exec(
         "INSERT INTO app_auth_event (id, app_id, account_id, event, outcome, created_at) VALUES ('old', 'a', 'acc_full', 'challenge', 'abandoned', ?), ('new', 'a', 'acc_full', 'challenge', 'abandoned', ?)",
-      )
-      .bind(old, Date.now())
-      .run();
-    // As on a full ledger: deletes work, inserts and updates fail.
-    await runInDurableObject(stub, (_instance, state) => {
+        old,
+        now,
+      );
       const exec = state.storage.sql.exec.bind(state.storage.sql);
       vi.spyOn(state.storage.sql, "exec").mockImplementation(((query: string, ...bindings: unknown[]) => {
         if (/^\s*(INSERT|UPDATE)/iu.test(query)) throw new Error("database or disk is full: SQLITE_FULL");
         return exec(query, ...bindings);
       }) as typeof state.storage.sql.exec);
+      await state.storage.setAlarm(now + 600_000);
     });
-    await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now()));
-    await runDurableObjectAlarm(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     vi.restoreAllMocks();
     expect(await ledger("acc_full").prepare("SELECT id FROM app_auth_event").all().then((r) => r.results)).toEqual([{ id: "new" }]);
-    // The night was not marked, so the next run is set: it tries again.
-    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).not.toBeNull();
+    // The night was not marked, so a retry is set: the nightly run is due again, after the
+    // alarm's one-minute floor (not the 10 minutes the test's own alarm was set for).
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(now + 60_000);
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
   });
 

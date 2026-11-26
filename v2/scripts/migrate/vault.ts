@@ -2,27 +2,31 @@
  * Moves sealed secrets from v1's vault to v2's, in memory only.
  *
  * Each side is a vault configuration, read from a file in the format of
- * `.dev.vars`: `SECRET_VAULT_MODE` and that mode's settings. v1's local vault
- * and its contexts are the same as v2's, apart from the names of the ids a
- * context binds, so v2's vault code opens v1's blobs under v1's contexts.
+ * `.dev.vars`: `SECRET_VAULT_MODE` and that mode's settings.
+ *
+ * - v1's blobs are opened with the gateway's own vault code
+ *   (`src/vault/index.ts`), under v1's contexts: v1 names the ids a context
+ *   binds differently, and the vault Worker opens only v2's.
+ * - v2's blobs are sealed by the vault Worker's own module
+ *   (`vault/src/seal.js`), so what the script writes is exactly what the
+ *   deployed vault opens.
  */
 import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { secretVault } from "../../src/vault/index.ts";
-import { secretContext } from "../../src/vault/secrets.ts";
 import { SecretVaultBlobError, VAULT_SERVICE, type SecretVaultContext } from "../../src/vault/types.ts";
+import { seal, vaultStatus } from "../../vault/src/seal.js";
 import { SecretDoesNotOpen, type Resealer, type V1Sealed } from "./settings.ts";
 
-/** A vault configuration file: `NAME=value` lines, `#` comments, values optionally quoted. Only `SECRET_VAULT_*` names are kept. */
+/**
+ * A vault configuration file, read as dotenv, the way the secrets upload
+ * reads `.dev.vars` (`node:util`'s `parseEnv`): comments after a value,
+ * quotes and `export` are understood. Only `SECRET_VAULT_*` names are kept.
+ */
 export function readVaultFile(path: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const raw of readFileSync(path, "utf8").split("\n")) {
-    const line = raw.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    const match = /^(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/u.exec(line);
-    if (match === null) throw new Error(`${path}: a line is not NAME=value`);
-    const [, name, value] = match as unknown as [string, string, string];
-    if (!name.startsWith("SECRET_VAULT_")) continue;
-    env[name] = /^(["']).*\1$/u.test(value) ? value.slice(1, -1) : value;
+  for (const [name, value] of Object.entries(parseEnv(readFileSync(path, "utf8")))) {
+    if (name.startsWith("SECRET_VAULT_") && value !== undefined) env[name] = value;
   }
   return env;
 }
@@ -47,7 +51,8 @@ function v1Context(sealed: V1Sealed): SecretVaultContext {
  */
 export function vaultResealer(v1Env: Record<string, string>, v2Env: Record<string, string>): Resealer {
   const v1 = secretVault(v1Env);
-  const v2 = secretVault(v2Env);
+  // The vault Worker's check, so v2's file is refused here as the deployed vault would refuse it.
+  if (vaultStatus(v2Env) !== "ok") throw new Error("v2's vault settings are incomplete or disagree: SECRET_VAULT_MODE and only that mode's settings");
   return async (blob, from, to) => {
     let secret: string;
     try {
@@ -58,9 +63,7 @@ export function vaultResealer(v1Env: Record<string, string>, v2Env: Record<strin
       throw new Error(`v1's vault could not open a secret: ${(error as Error).message}`, { cause: error });
     }
     try {
-      return await (to.kind === "providerKey"
-        ? v2.encryptSecret(secret, secretContext("providerKey", [...to.identity]))
-        : v2.encryptSecret(secret, secretContext("cloudflareGatewayToken", [...to.identity])));
+      return await seal(v2Env, to.kind, [...to.identity], secret);
     } catch (error) {
       throw new Error(`v2's vault could not seal a secret: ${(error as Error).message}`, { cause: error });
     }

@@ -102,7 +102,8 @@ Inside `v2/`:
 
 - `JWT_SECRET` signs gateway tokens: at least 32 bytes.
 - `SECRET_VAULT_LOCAL_KEK_V1` seals provider keys in `local` vault mode: 32 bytes, base64. Back it up:
-  without it, stored provider keys cannot be opened.
+  without it, stored provider keys cannot be opened. It is the vault Worker's secret
+  (`vault/.dev.vars.example`), never the gateway Worker's.
 - `BETTER_AUTH_SECRET` signs console sessions and seals OAuth codes: at least 32 bytes. Every
   deployment needs it: without it, the whole management API answers 503, management keys included.
   Changing it signs everyone out.
@@ -197,6 +198,29 @@ name, database id, domains and placement go in a gitignored
 applied with `wrangler d1 migrations apply DB --remote -c wrangler.<profile>.jsonc`
 before the Worker is deployed. Build the console (`pnpm run v2:console:build`) before every
 deploy: the Worker uploads `console/dist/` as its static files.
+
+The vault Worker (`vault/`) is deployed first, then the gateway Worker, whose `VAULT` binding
+names it.
+
+- Its own profile is a gitignored `vault/wrangler.<profile>.jsonc`, a copy of
+  `vault/wrangler.jsonc` with the deployment's Worker name. It is uploaded as it is, with no
+  build. The gateway's profile names that Worker in its `VAULT` service binding.
+- Its secrets go only to it. The gateway Worker holds no `SECRET_VAULT_*` setting. Run the one
+  upload that matches the vault's mode:
+  - **`local` mode:** `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc`. It reads
+    `vault/.dev.vars`, where `secrets:setup-local` puts the local key.
+  - **`kms` mode:** don't run the `local` upload; it would put the local key on the vault. The
+    vault must hold no `SECRET_VAULT_LOCAL_*` setting, or health reports
+    `vault: "misconfigured"`:
+    - its profile's `vars` hold only `SECRET_VAULT_MODE: "kms"`, without
+      `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`;
+    - its secrets are `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, in a `.dev.vars` of a
+      folder of its own that holds only those two, for example `vault/kms-<profile>/.dev.vars`
+      (gitignored, readable only by you). Upload with
+      `pnpm run secrets:upload -- -c vault/wrangler.<profile>.jsonc --dir vault/kms-<profile>`.
+    - If the local key was uploaded by mistake, delete each `SECRET_VAULT_LOCAL_KEK_*` secret
+      from the vault Worker:
+      `pnpm exec wrangler secret delete <secret-name> -c vault/wrangler.<profile>.jsonc`.
 
 One exception: migration `0005_cf_auth_1_0.sql` drops `mgmt_organization.expires_at`, which
 Workers built before it still read on every management-key request. Deploy the new Worker first,
