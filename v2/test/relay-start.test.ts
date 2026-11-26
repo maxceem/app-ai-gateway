@@ -1087,3 +1087,75 @@ describe("a session's close (step 9a part 3)", () => {
     expect(await s.instance().start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
   });
 });
+
+describe("reconnecting to the same session (step 9a part 3)", () => {
+  it("our SDK's link drops: the session goes on without a client, and only the reconnect secret takes it back", async () => {
+    const s = setup();
+    const core = s.instance();
+    const first = s.client();
+    const started = (await core.start(s.text, s.ticket, first)) as { reconnectSecret: string };
+    // Only the session's own client can leave it waiting.
+    expect(core.detach(s.client())).toBe(false);
+    expect(core.detach(first)).toBe(true);
+    expect(core.owner).toBeNull();
+    for (const wrong of ["", "x".repeat(43), 42, undefined, "y".repeat(500)]) expect(await core.mayReattach(wrong)).toBe(false);
+    expect(await core.mayReattach(started.reconnectSecret)).toBe(true);
+    const second = s.client();
+    expect(core.reattach(second)).toBe(true);
+    expect(core.owner).toBe(second);
+    // Nothing ended on the way: same session, same provider call.
+    expect(s.calls.close).toEqual([]);
+    expect(s.ended.provider).toEqual([]);
+  });
+
+  it("a detached session that nobody takes back is ended by the heartbeat, and the provider is hung up", async () => {
+    const s = setup({ liveness: () => "heartbeat_timeout" });
+    const core = s.instance();
+    const client = s.client();
+    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
+    core.detach(client);
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.close).toEqual([{ endReason: "heartbeat_timeout", finalSlice: 1 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    // No client to tell, and nothing to take back.
+    expect(s.ended.client).toEqual([]);
+    expect(await core.mayReattach(reconnectSecret)).toBe(false);
+    expect(core.reattach(s.client())).toBe(false);
+  });
+
+  it("a reconnect racing the heartbeat's end loses, even while the end waits for an answer: the client is never handed an ending session", async () => {
+    const waits: (() => void)[] = [];
+    const s = setup({ turnOpen: () => true, wait: () => new Promise<void>((resolve) => waits.push(resolve)) });
+    const core = s.instance();
+    const client = s.client();
+    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
+    core.detach(client);
+    const check = core.mayReattach(reconnectSecret);
+    // The tick's end lands while the secret is hashed, and waits for the answer in progress.
+    const ending = core.end("heartbeat_timeout");
+    await check;
+    expect(core.reattach(s.client())).toBe(false);
+    expect(await core.mayReattach(reconnectSecret)).toBe(false);
+    waits.splice(0).forEach((resolve) => resolve());
+    await ending;
+    expect(s.calls.close.map((close) => close.endReason)).toEqual(["heartbeat_timeout"]);
+    expect(s.ended.client).toEqual([]);
+  });
+
+  it("refuses the secret once the session's time is over, even before the tick ends it", async () => {
+    const s = setup();
+    const core = s.instance();
+    const client = s.client();
+    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
+    core.detach(client);
+    s.tick(30 * 60_000);
+    expect(await core.mayReattach(reconnectSecret)).toBe(false);
+  });
+
+  it("a restarted instance holds no provider side, so it takes nobody back: a reconnect there is a new session", async () => {
+    const s = setup();
+    const { reconnectSecret } = (await s.instance().start(s.text, s.ticket, s.client())) as { reconnectSecret: string };
+    expect(await s.instance().mayReattach(reconnectSecret)).toBe(false);
+  });
+});

@@ -15,10 +15,13 @@ SDK sees only the provider's frames.
 ## Messages
 
 - From the relay: `{"type":"agw.session.started","reconnect_secret":…,"deadline":…}`
-  once the session started, before any provider frame; and
-  `{"type":"agw.heartbeat"}` in answer to the client's heartbeat.
+  once the session started, before any provider frame;
+  `{"type":"agw.session.resumed","deadline":…}` when the client came back to
+  the same session (see "Reconnecting"); and `{"type":"agw.heartbeat"}` in
+  answer to the client's heartbeat.
 - From the client: `{"type":"agw.heartbeat"}` after 30 s without other frames,
-  and `{"type":"agw.received","bytes":N}` reports. Each starts exactly with
+  `{"type":"agw.received","bytes":N}` reports, and
+  `{"type":"agw.reconnect","secret":…}` as the first message when it comes back. Each starts exactly with
   `{"type":"agw.`, with no space and `type` as the first key. The relay drops
   every text frame that starts this way, even an unknown type, and forwards
   anything else to the provider, so a relay message written another way reaches
@@ -57,6 +60,8 @@ SDK sees only the provider's frames.
 - `1000 replaced`: a newer session of the same user took this one's place (a
   takeover, or the oldest session past the user's limit). A normal close, so
   an official SDK does not reconnect on its own; the newer session goes on.
+- `1000 reconnected`: the same client came back on a new link with the
+  reconnect secret, and this older link was let go. The session goes on there.
 - `1011 internal_error`: the relay failed.
 - `4000` with a start's code (for example `ticket_expired`, `start_queue_full`):
   the session never started.
@@ -88,6 +93,53 @@ There are two kinds, kept apart (plan 5.1):
   An app that names nothing gets the same at the user's limit: the oldest
   session is replaced. This is what works today.
 - **The same session again**, with the reconnect secret from
-  `agw.session.started`, while the relay still holds the provider's side. This
-  comes in a later step. Until then, a client that loses its link starts a new
-  session.
+  `agw.session.started`, while the relay still holds the provider's side. See
+  below.
+
+### Coming back to the same session
+
+When the client's link drops, the session goes on without it, and the
+provider's side stays open:
+
+- **What counts as a drop:** any close but a normal one. A close with `1000` or
+  `1001` ends the session, as before. So does any close from a client that did
+  not ask for the relay's messages: an official SDK starts a new session.
+- **While the link is down:** the provider's frames are held for the client, in
+  order, up to 512 frames or 4 MB (text counts 2 bytes per character). More
+  than that, and the session ends with `client_closed`. A protocol whose rule
+  is to end at once (ElevenLabs agents, later) ends the session at the drop.
+- **How long:** the heartbeat still runs. If no client comes back within 90 s
+  of the last frame the client sent, the session ends on the relay's next
+  30 s tick (`heartbeat_timeout`), so the gap can last 90 to 120 s. The session's
+  deadline does not move.
+
+To come back, the client opens the session's WebSocket again, with the same
+ticket and `x-agw-relay-messages: 1`. The ticket may have expired by then: it
+only finds the session. Its first message must be, within 10 s:
+
+```json
+{"type":"agw.reconnect","secret":"<reconnect_secret>"}
+```
+
+The secret goes only in this message, never in a URL or a header. The relay
+checks it against the hash it stored. Then:
+
+- **It matches:** the relay sends
+  `{"type":"agw.session.resumed","deadline":…}`, then the held frames, then
+  everything that follows. Frames the client sent right after the secret go to
+  the provider, in order. The session is the same one: same journal, same
+  slices, same deadline.
+- **The old link still looks open** (a phone that moved from Wi-Fi to mobile
+  data): the new one takes over anyway, and the old one is closed with
+  `1000 reconnected`. The same happens if two clients come back: the later one
+  wins.
+- **Received-byte reports start again from zero** on the new link: count only
+  what came after `agw.session.resumed`, held frames included.
+- **Anything else** (a wrong secret, another first message, nothing within
+  10 s) gets `4000 session_active`, the refusal any second connection gets.
+  The session runs on, and the right secret can still come.
+- **The session can't be taken back** (it ended, its time is over, or the
+  relay restarted and lost the provider's side): the client gets `4000` with
+  `session_ended`, `session_active` or `ticket_expired`. With the right secret
+  sent, any of these means: don't try again, ask the gateway for a new session
+  and name the old one in `takes_over`.

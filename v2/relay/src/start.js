@@ -214,6 +214,51 @@ export class SessionCore {
     this.turnWaiter = null;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
+    /**
+     * The reconnect secret's hash, kept by `start`: a client that lost its link proves it is the
+     * same one with the secret (plan 5.1). Only while this instance holds the provider's side: a
+     * restart loses both, and then a reconnect is a new session.
+     * @type {string | null}
+     */
+    this.reconnectHash = null;
+  }
+
+  /**
+   * The session's client lost its link, and may come back with its reconnect
+   * secret: the session goes on without one (plan 5.2, "Heartbeats and
+   * reconnects"). The heartbeat still ends it if nothing comes back within
+   * 90 s. Only the session's owner can detach.
+   * @param {Client} client
+   */
+  detach(client) {
+    if (client !== this.owner || this.call === null || this.ending !== null) return false;
+    this.owner = null;
+    return true;
+  }
+
+  /**
+   * Whether `secret` is this session's reconnect secret, and the session can
+   * take a client back: this instance still holds the provider's side, it is
+   * not ending, and its time is not over.
+   * @param {unknown} secret
+   */
+  async mayReattach(secret) {
+    if (typeof secret !== "string" || secret === "" || secret.length > 128) return false;
+    if (this.reconnectHash === null || this.call === null || this.ending !== null || this.now() >= this.deadline) return false;
+    return (await hashOf(secret)) === this.reconnectHash;
+  }
+
+  /**
+   * A client came back with the reconnect secret: it owns the session now,
+   * whether the old one is detached or still seen as open (a phone that moved
+   * from Wi-Fi to mobile data). The caller checked `mayReattach`; an end that
+   * began while the secret was hashed wins here.
+   * @param {Client} client
+   */
+  reattach(client) {
+    if (this.call === null || this.ending !== null) return false;
+    this.owner = client;
+    return true;
   }
 
   /** The provider finished an answer: a closing wait for it ends now. */
@@ -357,6 +402,7 @@ export class SessionCore {
       const journal = newJournal(this.now());
       await this.store.put({ state: "active", callId: call.callId, reconnect, [JOURNAL_KEY]: journal }, Math.min(deadline, this.now() + TICK_MS));
       this.journal = journal;
+      this.reconnectHash = reconnect;
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       // A write held past the deadline: the session's time is over before it began.
@@ -496,6 +542,7 @@ export class SessionCore {
     const cut = this.call !== null && this.turnOpen();
     const call = this.call;
     this.call = null;
+    this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
     // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
     const endedAt = this.now();

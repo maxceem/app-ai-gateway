@@ -113,7 +113,7 @@ const workers = (splitKeys: boolean) =>
               name: "app-ai-gateway-v2-provider-stub",
               modules: true,
               // It keeps the key header of the last connect, which the test reads back at /last-key-header,
-              // sends one event at once and echoes every frame.
+              // sends one event at once and echoes every frame (one marked "later:" after a while).
               script: [
                 "let lastKeyHeader = null;",
                 "export default {",
@@ -124,8 +124,13 @@ const workers = (splitKeys: boolean) =>
                 "    server.binaryType = \"arraybuffer\";",
                 "    server.accept();",
                 // Like a provider: an event at once, then each frame echoed back (frame forwarding's test).
+                // A frame that starts with "later:" is echoed after 300 ms: a provider frame that lands
+                // while the client's link is down (the reconnect tests).
                 "    server.send(JSON.stringify({ type: \"session.created\" }));",
-                "    server.addEventListener(\"message\", (event) => server.send(event.data));",
+                "    server.addEventListener(\"message\", (event) => {",
+                "      if (typeof event.data === \"string\" && event.data.startsWith(\"later:\")) setTimeout(() => server.send(event.data), 300);",
+                "      else server.send(event.data);",
+                "    });",
                 "    return new Response(null, { status: 101, webSocket: client });",
                 "  },",
                 "};",

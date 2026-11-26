@@ -144,6 +144,11 @@ export class SessionFrames {
      * @type {[number, number][]}
      */
     this.marks = [];
+    /**
+     * The client's link is down and it may come back (`./index.js`, a reconnect to the same
+     * session): only the heartbeat counts then. Nothing is being sent to it, so "too slow" can't be judged.
+     */
+    this.detached = false;
   }
 
   /**
@@ -238,7 +243,7 @@ export class SessionFrames {
     const quietClient = now - this.lastClientAt >= HEARTBEAT_TIMEOUT_MS;
     const quietProvider = now - this.lastProviderAt >= HEARTBEAT_TIMEOUT_MS;
     if (quietClient && (this.relayMessages || quietProvider)) return "heartbeat_timeout";
-    return this.slow(now);
+    return this.detached ? null : this.slow(now);
   }
 }
 

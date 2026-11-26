@@ -52,6 +52,8 @@ async function open(ticket: string, headers: Record<string, string>) {
   const messages: string[] = [];
   let waiting: { count: number; resolve: () => void } | null = null;
   let closed = "";
+  /** The close code and reason the client got, once it is closed. */
+  const closing = new Promise<string>((resolve) => socket.addEventListener("close", (event) => resolve(`${event.code} ${event.reason}`)));
   socket.addEventListener("message", (event) => {
     messages.push(String(event.data));
     if (waiting !== null && messages.length >= waiting.count) waiting.resolve();
@@ -70,8 +72,12 @@ async function open(ticket: string, headers: Record<string, string>) {
           if (got.length < count) throw new Error(`closed ${closed} after ${JSON.stringify(got)}`);
           return got;
         });
-  return { socket, messages, received };
+  return { socket, messages, received, closing };
 }
+
+/** Lets the relay see a client's close, and the provider stub's delayed echo land, in the real runtime: nothing outside shows either. */
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)); // real-timer: another Worker's close and timer, not observable here
+const reconnectWith = (secret: string) => JSON.stringify({ type: "agw.reconnect", secret });
 
 describe(`the relay's session object (Fable F3; split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("starts a session for a valid ticket, sends our SDK its reconnect secret, and forwards frames both ways", async () => {
@@ -145,5 +151,80 @@ describe(`the relay's session object (Fable F3; split keys ${splitKeysOn ? "on" 
     socket.send(new Uint8Array(MAX_CLIENT_FRAME + 1));
     await until(() => closed !== "");
     expect(closed).toBe("1009 frame_too_large");
+  });
+});
+
+describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
+  const relayMessages = { [RELAY_MESSAGES_HEADER]: "1" };
+
+  it("comes back after its link drops: it gets the provider's frames from the gap first, then the session goes on", async () => {
+    const ticket = await ticketFor("conn_reconnect");
+    const first = await open(ticket, relayMessages);
+    const [startedText] = await first.received(2);
+    const started = JSON.parse(startedText!) as { reconnect_secret: string; deadline: number };
+    // The provider answers this one after 300 ms: while no client is attached.
+    first.socket.send("later:gap");
+    first.socket.close(4001, "link lost");
+    await pause(600);
+    const second = await open(ticket, relayMessages);
+    second.socket.send(reconnectWith(started.reconnect_secret));
+    // Sent at once, while the secret is checked: it goes on in order.
+    second.socket.send("after");
+    const got = await second.received(3);
+    // Same session, same deadline.
+    expect(JSON.parse(got[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline });
+    expect(got.slice(1)).toEqual(["later:gap", "after"]);
+    // The relay's own messages work on the new link.
+    second.socket.send(JSON.stringify({ type: "agw.heartbeat" }));
+    expect(JSON.parse((await second.received(4))[3]!)).toEqual({ type: "agw.heartbeat" });
+    second.socket.close(1000, "done");
+  });
+
+  it("a wrong secret gets the refusal any second connection gets, and the session waits on for the right one", async () => {
+    const ticket = await ticketFor("conn_reconnect_wrong");
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
+    first.socket.close(4001, "link lost");
+    await pause(100);
+    for (const wrong of [reconnectWith("not-the-secret"), "hello", JSON.stringify({ type: "agw.heartbeat" })]) {
+      const intruder = await open(ticket, relayMessages);
+      intruder.socket.send(wrong);
+      expect(await intruder.closing).toBe("4000 session_active");
+    }
+    const back = await open(ticket, relayMessages);
+    back.socket.send(reconnectWith(started.reconnect_secret));
+    expect(JSON.parse((await back.received(1))[0]!)).toMatchObject({ type: "agw.session.resumed" });
+    back.socket.close(1000, "done");
+  });
+
+  it("two clients coming back with the secret: the later one takes the session, the earlier one is let go", async () => {
+    const ticket = await ticketFor("conn_reconnect_twice");
+    // The first link still looks open: a phone that moved from Wi-Fi to mobile data.
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
+    const second = await open(ticket, relayMessages);
+    second.socket.send(reconnectWith(started.reconnect_secret));
+    await second.received(1);
+    expect(await first.closing).toBe("1000 reconnected");
+    const third = await open(ticket, relayMessages);
+    third.socket.send(reconnectWith(started.reconnect_secret));
+    await third.received(1);
+    expect(await second.closing).toBe("1000 reconnected");
+    // Only the session's client gets its frames.
+    third.socket.send("only-third");
+    expect((await third.received(2))[1]).toBe("only-third");
+    expect(second.messages).toHaveLength(1);
+    third.socket.close(1000, "done");
+  });
+
+  it("a normal close ends the session: coming back with the secret then finds it ended", async () => {
+    const ticket = await ticketFor("conn_reconnect_closed");
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
+    first.socket.close(1000, "done");
+    await pause(200);
+    const late = await open(ticket, relayMessages);
+    late.socket.send(reconnectWith(started.reconnect_secret));
+    expect(await late.closing).toBe("4000 session_ended");
   });
 });

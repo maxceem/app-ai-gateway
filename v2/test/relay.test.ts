@@ -160,3 +160,60 @@ describe("the session object's start (Sol, #260 round 2)", () => {
     expect(ended).toEqual(["client_too_slow"]);
   });
 });
+
+describe("our SDK's link dropping (step 9a part 3)", () => {
+  /** The session object without its constructor, its core a stand-in that records what it was told. */
+  function dropped(options: { relayMessages: boolean; detached: "hold" | "end"; code: number }) {
+    const told: string[] = [];
+    const owner = { close: () => undefined };
+    const session = Object.create(Session.prototype) as Session;
+    const core = {
+      detach: (client: unknown) => (told.push("detach"), client === owner),
+      clientGone: async () => void told.push("clientGone"),
+    };
+    (session as unknown as { core: unknown }).core = core;
+    const live = {
+      client: {} as WebSocket,
+      owner,
+      frames: { detached: false },
+      relayMessages: options.relayMessages,
+      adapter: { detached: options.detached },
+    } as never as { client: WebSocket | null; frames: { detached: boolean } };
+    session.live = live as never;
+    session.clientClosed(live as never, owner, options.code);
+    return { told, live };
+  }
+
+  it("leaves the session running for our SDK to come back, when its link drops and the adapter holds frames", () => {
+    const { told, live } = dropped({ relayMessages: true, detached: "hold", code: 1006 });
+    expect(told).toEqual(["detach"]);
+    expect(live.client).toBeNull();
+    expect(live.frames.detached).toBe(true);
+  });
+
+  it("ends it on a normal close, for an official SDK, and for a protocol whose rule is to end", () => {
+    for (const options of [
+      { relayMessages: true, detached: "hold" as const, code: 1000 },
+      { relayMessages: true, detached: "hold" as const, code: 1001 },
+      { relayMessages: false, detached: "hold" as const, code: 1006 },
+      { relayMessages: true, detached: "end" as const, code: 1006 },
+    ]) {
+      const { told, live } = dropped(options);
+      expect(told, JSON.stringify(options)).toEqual(["clientGone"]);
+      expect(live.client).not.toBeNull();
+    }
+  });
+
+  it("holds the provider's frames while no client is attached, and ends the session when they don't fit", () => {
+    const ended: string[] = [];
+    const session = Object.create(Session.prototype) as Session;
+    (session as unknown as { core: unknown }).core = { ending: null, end: async (reason: string) => void ended.push(reason), recordUsage: async () => undefined, turnDone: () => undefined };
+    const live = { client: null, deadline: Infinity, held: new StartQueue(), adapter: { read: () => null, turn: () => null } } as never as { held: StartQueue };
+    session.toClient(live as never, "first");
+    expect(live.held.frames).toEqual(["first"]);
+    expect(ended).toEqual([]);
+    while (live.held.push("x".repeat(64 * 1024)));
+    session.toClient(live as never, "one too many");
+    expect(ended).toEqual(["client_closed"]);
+  });
+});
