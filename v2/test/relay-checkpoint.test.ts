@@ -254,6 +254,36 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     });
   });
 
+  it("the sweep books nothing when a checkpoint saves the session's price while it reads the current rate; the next sweep uses the saved price (Sol round 6)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // Slice 1 is unresolved, and nothing is saved.
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
+    await setRates(1_000_000_000);
+    // The sweep reads no saved price; while it fetches today's rate (B), a checkpoint saves A.
+    const settings = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => {
+            await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 })));
+            return { rates_json: JSON.stringify({ "house-realtime": { input: 4_000_000_000, output: 4_000_000_000 } }) };
+          },
+        }),
+        sql,
+      }),
+    } as unknown as D1Database;
+    expect(await priceUnresolvedCharge(ledger(), settings, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toEqual({ status: "price_changed" });
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE corrects_charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toEqual({ n: 0 });
+    // The next sweep prices slice 1 at A, though the connection is at B now.
+    await setRates(4_000_000_000);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 1_000_000 },
+    });
+  });
+
   it("books every slice at the price the first checkpoint saved: a new price list mid-session changes nothing (Sol rounds 2 to 4)", async () => {
     const { text, ticket } = await ticketFor();
     await checkpointForRelay(env, text, live(null));

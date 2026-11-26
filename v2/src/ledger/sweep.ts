@@ -108,6 +108,8 @@ export const OPEN_WORK_HANDLERS: Record<OpenWorkKind, OpenWorkHandler> = {
         return retry("charge not in the ledger yet");
       case "no_price":
         return retry("no price yet");
+      case "price_changed":
+        return retry("the session saved its price meanwhile");
     }
   },
   async stale_session(_env, item, { ledger, now, lastTry }) {
