@@ -14,7 +14,7 @@ import { openSession, settleSession, STALE_SESSION_GRACE_MS } from "../src/ledge
 import { MAX_STORED_COPY_MS } from "../vault/src/call.js";
 import { sessionKey } from "../vault/src/relay.js";
 import { connectProvider } from "../relay/src/provider.js";
-import { SessionCore } from "../relay/src/start.js";
+import { ProviderRefused, SessionCore } from "../relay/src/start.js";
 import { base64url, parseTicket } from "../relay/src/ticket.js";
 import { TEST_VAULT_ENV } from "./local-vault.ts";
 import { TEST_TICKET_PUBLIC_KEY } from "./relay-keys.ts";
@@ -163,6 +163,35 @@ describe(`session tickets (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     // A seal of one account in a ticket for another.
     await expect(sessionKey(VAULT_ENV, await signTicket(env, { ...payload, account: "acct_other" }))).rejects.toThrow("bad_seal");
   });
+});
+
+describe("the provider connection's time limit (T12, first run)", () => {
+  const key = { key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://provider.test/v1/realtime" };
+
+  it("covers only the handshake: once connected, the limit passing never aborts the open session", async () => {
+    let signal: AbortSignal | undefined;
+    const send = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      const [client] = Object.values(new WebSocketPair());
+      return new Response(null, { status: 101, webSocket: client });
+    }) as typeof fetch;
+    let elapse: () => void = () => undefined;
+    await connectProvider(key, send, () => new Promise<void>((resolve) => (elapse = resolve)));
+    // The limit's time passes after the handshake: the session's signal stays as it was.
+    elapse();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it("aborts a handshake that is still waiting when the limit passes: an unknown outcome, not a refusal", async () => {
+    const send = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))))) as typeof fetch;
+    const error = await connectProvider(key, send, () => Promise.resolve()).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ProviderRefused);
+    // The limit given here, not a fixed 15 s signal: the test's own short limit ends it.
+  }, 2_000);
 });
 
 describe("open and close (the relay's contract)", () => {
