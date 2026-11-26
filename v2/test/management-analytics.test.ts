@@ -12,8 +12,6 @@ import { knownClient, recordManagementCall, userAgentOf, versionOf, type Managem
 import worker from "../src/index.ts";
 import { LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedHuman, seedManagementKey } from "./helpers.ts";
 
-beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
-
 const API = "https://gateway.test";
 const CONSOLE = "https://console.gateway.test";
 
@@ -105,6 +103,18 @@ function toolCall(name: string, args: Record<string, unknown>, headers: Record<s
     }),
   };
 }
+
+beforeAll(async () => {
+  await loadManagement();
+  // The MCP SDK and the tool table load on the first MCP call that gets past the bearer gate: about a second
+  // alone, several on a loaded machine. Loaded here, as `mcp.test.ts` does, so the first MCP test does not pay it.
+  // The first call is checked too, so the path that loads the SDK is still covered.
+  const { points, send } = recording();
+  const owner = await account();
+  const response = await send("/v2/mcp", toolCall("list_apps", {}, key(owner.key)));
+  expect(response.status).toBe(200);
+  expect(points).toEqual([expect.objectContaining({ account: owner.accountId, channel: "mcp", tool: "list_apps", outcome: "ok", status: 200 })]);
+}, LOAD_MANAGEMENT_TIMEOUT_MS);
 
 describe("management analytics", () => {
   it("records a management API call by its operation, channel and account", async () => {
