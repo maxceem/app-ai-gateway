@@ -128,7 +128,8 @@ export class SessionCore {
    * @returns {Promise<{ ok: true, reconnectSecret: string, call: ProviderCall, deadline: number } | { ok: false, code: string }>}
    */
   async start(ticketText, ticket, client) {
-    if (this.starting) return { ok: false, code: "start_in_flight" };
+    // Also while an end is in flight: a start never runs into the middle of one.
+    if (this.starting || this.ending !== null) return { ok: false, code: "start_in_flight" };
     // A session already running in this instance is refused at once, before any wait: nothing a
     // second connection's start does (a storage error, say) can then touch the running one.
     if (this.call !== null || (this.owner !== null && this.owner !== undefined && this.owner !== client)) return { ok: false, code: "session_active" };
@@ -324,12 +325,18 @@ export class SessionCore {
     if (this.ending !== null) return this.ending;
     // Started a step later, so `ending` is set before anything inside the end runs: a close
     // event that the end itself causes (the provider's socket) already finds it in flight.
-    const ending = Promise.resolve().then(() => this.endOnce(reason, details));
-    this.ending = ending;
-    // A failed end (its write failed) can run again.
-    ending.catch(() => {
-      if (this.ending === ending) this.ending = null;
+    // Cleared when it settles, whether it ended a session or found nothing to end: a stale end
+    // must never swallow a later session's ends. A real end leaves `ended` stored, which stops
+    // a repeat on its own; a failed one (its write failed) can run again.
+    /** @type {Promise<void>} */
+    const ending = Promise.resolve().then(async () => {
+      try {
+        await this.endOnce(reason, details);
+      } finally {
+        if (this.ending === ending) this.ending = null;
+      }
     });
+    this.ending = ending;
     return ending;
   }
 

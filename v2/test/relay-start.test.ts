@@ -476,4 +476,45 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     expect(s.store.data.get("state")).toBe("active");
     expect(s.calls.close).toEqual([]);
   });
+
+  it("an end that found nothing to end never swallows a later session's ends: a retry on the same instance still ends (Gemini Neon round 2)", async () => {
+    const s = setup();
+    const core = s.instance();
+    // A first start fails on a storage error before anything is stored, and the session object then calls end("error").
+    s.store.failGet = () => true;
+    await expect(core.start(s.text, s.ticket, s.client())).rejects.toThrow("storage failed");
+    s.store.failGet = null;
+    await core.end("error");
+    expect(s.store.data.size).toBe(0);
+    // The client retries with the same ticket on the same instance.
+    const client = s.client();
+    expect(await core.start(s.text, s.ticket, client)).toMatchObject({ ok: true });
+    await core.clientGone(client);
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
+    expect(s.store.data.get("state")).toBe("ended");
+
+    // And the deadline alarm ends a retried session too.
+    const t = setup();
+    const again = t.instance();
+    t.store.failGet = () => true;
+    await expect(again.start(t.text, t.ticket, t.client())).rejects.toThrow("storage failed");
+    t.store.failGet = null;
+    await again.end("error");
+    expect(await again.start(t.text, t.ticket, t.client())).toMatchObject({ ok: true });
+    t.tick(t.ticket.cap);
+    await again.alarm();
+    expect(t.calls.close).toEqual([{ endReason: "time_cap", finalSlice: 0 }]);
+  });
+
+  it("a start that comes while an end is in flight is refused (Gemini Neon round 2)", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const s = setup({ close: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    await until(() => s.calls.close.length === 1);
+    release({ version: 1 });
+    await ending;
+  });
 });
