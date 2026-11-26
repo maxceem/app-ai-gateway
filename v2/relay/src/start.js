@@ -109,6 +109,10 @@ export class SessionCore {
     this.connected = false;
     /** The client hung up while the start was in flight: the start stops at its next check. */
     this.cancelled = false;
+    /** @type {unknown} The client whose start is running: only its hang-up cancels it. */
+    this.startingClient = undefined;
+    /** @type {unknown} The session's own client, once started: only its hang-up ends the session. */
+    this.client = undefined;
   }
 
   /**
@@ -117,13 +121,15 @@ export class SessionCore {
    * reconnect secret, or a code the client gets.
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
+   * @param {unknown} [client] the connection this start is for, as `clientGone` names it
    * @returns {Promise<{ ok: true, reconnectSecret: string, call: ProviderCall, deadline: number } | { ok: false, code: string }>}
    */
-  async start(ticketText, ticket) {
+  async start(ticketText, ticket, client) {
     if (this.starting) return { ok: false, code: "start_in_flight" };
     // Set before the first wait, so a second connection that arrives meanwhile is refused.
     this.starting = true;
     this.cancelled = false;
+    this.startingClient = client;
     try {
       if (ticket.sid !== this.name) return { ok: false, code: "ticket_refused" };
       const stored = await this.store.get(KEYS);
@@ -214,22 +220,27 @@ export class SessionCore {
       // object that lost its provider socket then ends soon (row 13). The fixed tick per
       // session comes with frame forwarding (step 9a part 1, fourth review).
       await this.store.put({ state: "active", callId: call.callId, reconnect: await hashOf(reconnectSecret) }, Math.min(deadline, this.now() + interval));
+      this.client = client;
       return { ok: true, reconnectSecret, call, deadline };
     } finally {
       this.starting = false;
+      this.startingClient = undefined;
     }
   }
 
   /**
-   * The client hung up. During a start, the start stops at its next check
-   * (before dialing, or right after the handshake); otherwise the session ends.
+   * A client connection closed. Only the session's own client counts: the one
+   * whose start is running stops that start at its next check (before dialing,
+   * or right after the handshake), and the started one ends the session. A
+   * connection that was turned away changes nothing.
+   * @param {unknown} client
    */
-  async clientGone() {
-    if (this.starting) {
+  async clientGone(client) {
+    if (this.starting && client === this.startingClient) {
       this.cancelled = true;
       return;
     }
-    await this.end("client_closed");
+    if (client !== undefined && client === this.client) await this.end("client_closed");
   }
 
   /**
@@ -246,6 +257,7 @@ export class SessionCore {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.name, ...(details.status === undefined ? {} : { status: details.status }) });
     }
     this.connected = false;
+    this.client = undefined;
     await this.store.put({ state: "ended", end: { reason, at, finalSlice: details.finalSlice ?? 0 } }, at + CLOSE_RETRY_EVERY_MS);
     // Both sides are closed, with the reason: the provider's hung up, the client told why.
     const call = this.call;

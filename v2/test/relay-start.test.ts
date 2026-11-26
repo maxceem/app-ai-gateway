@@ -349,9 +349,10 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     let release: (value: unknown) => void = () => undefined;
     const s = setup({ vault: () => new Promise((resolve) => (release = resolve)) });
     const core = s.instance();
-    const started = core.start(s.text, s.ticket);
+    const client = {};
+    const started = core.start(s.text, s.ticket, client);
     await until(() => s.calls.vault === 1);
-    await core.clientGone();
+    await core.clientGone(client);
     release({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" });
     expect(await started).toEqual({ ok: false, code: "client_closed" });
     expect(s.calls.connect).toBe(0);
@@ -365,13 +366,31 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     let release: (value: { callId: string | null }) => void = () => undefined;
     const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
     const core = s.instance();
-    const started = core.start(s.text, s.ticket);
+    const client = {};
+    const started = core.start(s.text, s.ticket, client);
     await until(() => s.calls.connect === 1);
-    await core.clientGone();
+    await core.clientGone(client);
     release({ callId: null });
     expect(await started).toEqual({ ok: false, code: "client_closed" });
     expect(s.ended.provider).toEqual([[1000, "session ended"]]);
     expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
     expect(s.store.data.get("state")).toBe("ended");
+  });
+
+  it("a second connection turned away does nothing to the running session when it closes (Sol round 3)", async () => {
+    const s = setup();
+    const core = s.instance();
+    const first = {};
+    expect(await core.start(s.text, s.ticket, first)).toMatchObject({ ok: true });
+    const second = {};
+    expect(await core.start(s.text, s.ticket, second)).toEqual({ ok: false, code: "session_active" });
+    await core.clientGone(second);
+    expect(s.store.data.get("state")).toBe("active");
+    expect(s.ended.provider).toEqual([]);
+    expect(s.calls.close).toEqual([]);
+    // The session's own client still ends it.
+    await core.clientGone(first);
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
   });
 });

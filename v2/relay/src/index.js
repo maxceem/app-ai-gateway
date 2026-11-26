@@ -140,12 +140,13 @@ export class Session extends DurableObject {
     // Listened to before the start, so a client that hangs up during it stops it: no paid
     // provider session is left running with nobody on the other end.
     let gone = false;
+    // Only this socket's own start, or the session it started, is affected: a socket turned away changes nothing.
     client.addEventListener("close", () => {
       gone = true;
       if (this.clientSocket === client) this.clientSocket = null;
-      void this.core.clientGone();
+      void this.core.clientGone(client);
     });
-    const result = await this.core.start(ticketText, ticket);
+    const result = await this.core.start(ticketText, ticket, client);
     if (!result.ok) {
       if (!gone) client.close(4000, result.code);
       return;
