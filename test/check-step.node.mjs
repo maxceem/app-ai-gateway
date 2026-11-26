@@ -6,13 +6,25 @@ import path from "node:path";
 import { test } from "node:test";
 import { lastTestFile, runStep, silenceLimitMs } from "../scripts/check-step.mjs";
 
-// Every fixture process exits on its own after this long, so none outlives the
-// test even when the watchdog fails to stop it. It is longer than any limit
-// below, and shorter than each test's own timeout.
-const FIXTURE_LIFE_MS = 15_000;
+// Every fixture process exits on its own after this long, so none is left
+// running for long even when the watchdog fails to stop it. It is far longer
+// than any test may take, so a fixture's own exit never makes a test pass.
+const FIXTURE_LIFE_MS = 60_000;
 const TEST_TIMEOUT_MS = 25_000;
 // Long enough for a fixture to start and print on a loaded machine.
 const SILENCE_MS = 3_000;
+const GRACE_MS = 2_000;
+// Slack on top of the silence limit and the grace period.
+const MARGIN_MS = 2_000;
+
+/** `work`, or a failure once `ms` have passed. */
+const within = (ms, work, what) => {
+  let timer;
+  const late = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+};
 
 // A child that hangs while holding the output pipe it inherited, as the
 // Workers runtime does under the test pool. It prints its own pid first.
@@ -69,7 +81,11 @@ for (const wrapperExits of [false, true]) {
   const what = wrapperExits ? "exits at once and leaves its child hanging" : "prints once and then hangs";
   // Without the watchdog the step never ends, so the timeout fails the test.
   test(`a step that ${what} is stopped with its whole group, and fails`, { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
-    const result = await runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS });
+    const result = await within(
+      SILENCE_MS + GRACE_MS + MARGIN_MS,
+      runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS, graceMs: GRACE_MS }),
+      "stopping the step",
+    );
     assert.equal(result.ok, false, "a step stopped by the watchdog never passes, even when it exited 0");
     assert.match(result.output, /fake:test hit its silence timeout: it printed nothing for 0\.05 minutes, so it was stopped/);
     assert.match(result.output, /most likely means the run froze, not that a test failed/);
@@ -95,7 +111,13 @@ setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});
 test("a child that ignores SIGTERM and prints on it gets one timeout and is then killed", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async () => {
   // The grace period is longer than the silence limit, so a watchdog started
   // again by the child's answer would fire a second time before SIGKILL.
-  const result = await runStep("fake:stubborn", process.execPath, ["-e", STUBBORN], { silenceMs: SILENCE_MS, graceMs: SILENCE_MS + 1_500 });
+  const graceMs = SILENCE_MS + 1_500;
+  // Only SIGKILL can end this step in time: the child ignores SIGTERM.
+  const result = await within(
+    SILENCE_MS + graceMs + MARGIN_MS,
+    runStep("fake:stubborn", process.execPath, ["-e", STUBBORN], { silenceMs: SILENCE_MS, graceMs }),
+    "killing the step",
+  );
   assert.equal(result.ok, false);
   assert.match(result.output, /child got SIGTERM, staying/);
   assert.equal(result.output.match(/hit its silence timeout/g)?.length, 1, "the watchdog fired exactly once");
@@ -127,7 +149,7 @@ await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixt
   }
   assert.ok(child > 0, "the watched step started");
   parent.kill("SIGINT");
-  assert.equal(await exited, 130);
+  assert.equal(await within(MARGIN_MS, exited, "exiting on Ctrl-C"), 130);
   assert.equal(await stops(child), true, "the process that ignored SIGTERM got SIGKILL");
 });
 
