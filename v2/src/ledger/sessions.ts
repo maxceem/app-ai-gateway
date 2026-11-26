@@ -179,8 +179,8 @@ export type CheckpointAnswer =
 
 /**
  * A slice priced inside the transaction: its charge id, and its charge row
- * at the session's saved price (`../relay/session-price.ts`; null when none
- * is saved).
+ * at the session's price (`../relay/session-price.ts`): the one saved, or
+ * today's, which the same transaction saves. Null when there is neither.
  */
 export interface SliceAtSavedPrice {
   readonly id: string;
@@ -195,10 +195,10 @@ export interface CheckpointStanding {
   readonly ratesJson?: string | null;
 }
 
-/** What one checkpoint writes (`writeCheckpoint`, `writeCheckpointIn`). */
+/** What one checkpoint writes (`writeCheckpoint`). */
 export interface CheckpointWrite {
   readonly session: SessionRow;
-  readonly slice: ChargeRow | SliceAtSavedPrice | null;
+  readonly slice: ChargeRow | null;
   readonly budgets: readonly CheckpointBudget[];
   readonly planMinutes: CheckpointPlanMinutes | null;
   readonly now: number;
@@ -215,6 +215,12 @@ export interface CheckpointWrite {
    */
   readonly price?: string;
 }
+
+/** What one checkpoint writes inside the ledger object (`writeCheckpointIn`): its slice priced there. */
+export type LedgerCheckpointWrite = Omit<CheckpointWrite, "slice" | "standing"> & {
+  readonly slice: SliceAtSavedPrice | null;
+  readonly standing: CheckpointStanding | null;
+};
 
 /**
  * Writes one checkpoint slice and answers continue or stop (S14).
@@ -234,27 +240,18 @@ export interface CheckpointWrite {
  * only those two checks are skipped: the slice is still written, and the
  * ledger's own stop decisions still apply.
  *
- * A slice given as `SliceAtSavedPrice` is priced with the session's saved
- * price. Inside the ledger object, `writeCheckpointIn` does that in one
- * synchronous transaction; this one, over D1's shape, reads the price in a
- * batch of its own first.
+ * A live session's checkpoint runs inside the ledger object instead
+ * (`writeCheckpointIn`), which prices its slice there. This one, over D1's
+ * shape, takes a slice already priced.
  */
 export async function writeCheckpoint(db: D1Database, settings: D1Database, input: CheckpointWrite): Promise<CheckpointAnswer> {
   const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, input.session);
-  let slice: ChargeRow | null = null;
-  let duplicate = false;
   try {
-    if (input.slice !== null && "priceAt" in input.slice) {
-      const read = await db.batch(priceReads(db, input.session.id, input.slice.id));
-      ({ slice, duplicate } = sliceToBook(input, read[0]?.results[0] as Row, read[1]?.results[0] as Row));
-    } else {
-      slice = input.slice;
-    }
-    const plan = checkpointStatements(db, input, slice, duplicate);
+    const plan = checkpointStatements(db, input, input.slice, false);
     const results = await db.batch(plan.statements);
-    return checkpointAnswer(input, slice, results.map((result) => result.results[0] as Row), plan.stateAt, standing);
+    return checkpointAnswer(input, input.slice, results.map((result) => result.results[0] as Row), plan.stateAt, standing);
   } catch (error) {
-    return failedCheckpoint(input, slice, standing, error);
+    return failedCheckpoint(input, input.slice, standing, error);
   }
 }
 
@@ -265,25 +262,20 @@ export async function writeCheckpoint(db: D1Database, settings: D1Database, inpu
  * not at all. It throws when a statement fails: the caller answers with
  * `failedCheckpoint`.
  */
-export function writeCheckpointIn(
-  exec: (statements: readonly LedgerStatement[]) => LedgerResult[],
-  input: CheckpointWrite & { readonly standing: CheckpointStanding | null },
-): CheckpointAnswer {
+export function writeCheckpointIn(exec: (statements: readonly LedgerStatement[]) => LedgerResult[], input: LedgerCheckpointWrite): CheckpointAnswer {
   const run = (statements: readonly D1PreparedStatement[]) => exec(statements.map(sentOf)).map(firstRowOf);
   let slice: ChargeRow | null = null;
   let duplicate = false;
-  if (input.slice !== null && "priceAt" in input.slice) {
+  if (input.slice !== null) {
     const [saved, booked] = run(priceReads(BUILDER, input.session.id, input.slice.id));
-    ({ slice, duplicate } = sliceToBook(input, saved, booked));
-  } else {
-    slice = input.slice;
+    ({ slice, duplicate } = sliceToBook(input.slice, input.price, saved, booked));
   }
   const plan = checkpointStatements(BUILDER, input, slice, duplicate);
   return checkpointAnswer(input, slice, run(plan.statements), plan.stateAt, input.standing);
 }
 
 /** A checkpoint whose transaction failed: nothing written, and the stops settings already know (crash table row 16). */
-export function failedCheckpoint(input: CheckpointWrite, slice: ChargeRow | null, standing: CheckpointStanding | null, error: unknown): CheckpointAnswer {
+export function failedCheckpoint(input: Pick<CheckpointWrite, "session">, slice: ChargeRow | null, standing: CheckpointStanding | null, error: unknown): CheckpointAnswer {
   const { session } = input;
   log("warn", "checkpoint_unchecked", { app: session.appId, session: session.id, slice: slice?.id ?? null, error: errorFacts(error) });
   const known = knownStops(standing);
@@ -311,14 +303,13 @@ function priceReads(db: D1Database, sessionId: string, sliceId: string): D1Prepa
  * nothing (S1, S14). With no price saved yet, it is priced at today's, which
  * the same transaction saves.
  */
-function sliceToBook(input: CheckpointWrite, saved: Row, booked: Row): { slice: ChargeRow | null; duplicate: boolean } {
+function sliceToBook(make: SliceAtSavedPrice, today: string | undefined, saved: Row, booked: Row): { slice: ChargeRow | null; duplicate: boolean } {
   if (booked?.booked === 1) return { slice: null, duplicate: true };
-  const make = input.slice as SliceAtSavedPrice;
-  return { slice: make.priceAt(typeof saved?.rates_json === "string" ? saved.rates_json : (input.price ?? null)), duplicate: false };
+  return { slice: make.priceAt(typeof saved?.rates_json === "string" ? saved.rates_json : (today ?? null)), duplicate: false };
 }
 
-/** The stops settings already know. */
-function knownStops(standing: CheckpointStanding | null): StopReason[] {
+/** The stops settings already know: kept even when the ledger can't be written (crash table row 16). */
+export function knownStops(standing: CheckpointStanding | null): StopReason[] {
   const known: StopReason[] = [];
   if (standing?.userBlocked === true) known.push("user_blocked");
   if (standing?.keyRemoved === true) known.push("key_removed");
@@ -331,7 +322,7 @@ function knownStops(standing: CheckpointStanding | null): StopReason[] {
  */
 function checkpointStatements(
   db: D1Database,
-  input: CheckpointWrite,
+  input: Omit<CheckpointWrite, "slice">,
   slice: ChargeRow | null,
   duplicate: boolean,
 ): { statements: D1PreparedStatement[]; stateAt: number } {
@@ -425,7 +416,7 @@ function checkpointStatements(
 }
 
 /** The answer, from each statement's first row. */
-function checkpointAnswer(input: CheckpointWrite, slice: ChargeRow | null, rows: Row[], stateAt: number, standing: CheckpointStanding | null): CheckpointAnswer {
+function checkpointAnswer(input: Omit<CheckpointWrite, "slice">, slice: ChargeRow | null, rows: Row[], stateAt: number, standing: CheckpointStanding | null): CheckpointAnswer {
   const { now } = input;
   let index = stateAt + 1;
   const reasons: StopReason[] = [];

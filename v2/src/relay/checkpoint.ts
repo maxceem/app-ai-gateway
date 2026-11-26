@@ -7,7 +7,7 @@
  *   connection time and any crash gap. This sends them to the account's
  *   ledger object with today's price (`./session-price.ts`). There, in one
  *   transaction, the session's saved price prices them, as a live call is
- *   priced, and the slice is booked (`bookCheckpoint`, `writeCheckpoint`). A
+ *   priced, and the slice is booked (`AccountLedger.checkpoint`). A
  *   slice whose model has no price yet is booked `unresolved`, and the sweep
  *   prices it later.
  * - The slice's id comes from the ticket's session id and the slice number,
@@ -38,12 +38,12 @@ import { ledgerObject } from "../ledger/database.ts";
 import type { Measured, PriceSource } from "../ledger/labels.ts";
 import {
   checkpointStanding,
-  writeCheckpoint,
+  knownStops,
   type CheckpointAnswer,
   type CheckpointBudget,
   type CheckpointPlanMinutes,
   type CheckpointStanding,
-  type CheckpointWrite,
+  type LedgerCheckpointWrite,
   type SliceAtSavedPrice,
   type StopReason,
 } from "../ledger/sessions.ts";
@@ -178,8 +178,9 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
 
 /** The slice's charge row. Its id and usage date come from the ticket and the slice number, never from the relay alone. */
 export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
-  // Dated inside the session's own time: never before its start, never after its deadline.
-  const usedAt = Math.min(Math.max(slice.to, ticket.start), deadlineOf(ticket));
+  // Dated by its start (D18), inside the session's own time: never before its start, never after
+  // its deadline. A slice that crosses midnight counts on the day, and in the period, it began.
+  const usedAt = Math.min(Math.max(slice.from, ticket.start), deadlineOf(ticket));
   // The token columns: zero filled, so the sweep can price an `unresolved` slice from its measures.
   const tokens = {
     input_tokens: slice.measures.input_tokens ?? 0,
@@ -292,58 +293,40 @@ export interface LedgerCheckpointInput {
   readonly standing: CheckpointStanding | null;
 }
 
-/** Prices tokens with a price, or null when that price can't be used at all. */
-function tryPrice(measures: Readonly<Record<string, number>>, price: string): SlicePrice | null {
-  try {
-    return priceSlice(measures, decodeSessionPrice(price));
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The slice at the session's saved price, priced inside the ledger
- * transaction (plan 4.2). Never billed as free:
- * - nothing saved (today's price couldn't be read on any checkpoint yet):
- *   `unresolved`, and the sweep prices it;
- * - a saved price that can't be read or used: today's, with a warning;
- * - a saved price that can't price these tokens (a cost too large to store)
- *   while today's can: today's, with a warning. A saved "no price" stays
- *   `unresolved`.
+ * transaction (plan 4.2). Its tokens are never billed as free: with no price
+ * saved, or one that can't be read or can't price them (a cost too large to
+ * store), the slice is booked `unresolved`, with a warning, and the sweep
+ * prices it. A saved "no price" ('') is `unresolved` too, without a warning.
  */
-function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, today: string | null, now: number): SliceAtSavedPrice {
+function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): SliceAtSavedPrice {
   const facts = { app: ticket.app, session: ticket.sid };
   const unpriced = priceSlice(slice.measures, null);
-  const todays = () => (today === null ? null : tryPrice(slice.measures, today));
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
     priceAt: (saved) => {
-      let price: SlicePrice | null = null;
+      let price = unpriced;
       if (saved === null) {
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
-      } else {
-        price = tryPrice(slice.measures, saved);
-        if (price === null) {
-          log("warn", "checkpoint_price_unreadable", facts);
-          price = todays();
-        } else if (price.priceSource === "unresolved" && saved !== "") {
-          const fallback = todays();
-          if (fallback !== null && fallback.priceSource !== "unresolved") {
-            log("warn", "checkpoint_saved_price_unusable", facts);
-            price = fallback;
-          }
+      } else if (saved !== "") {
+        try {
+          price = priceSlice(slice.measures, decodeSessionPrice(saved));
+        } catch {
+          price = unpriced;
         }
+        if (price.priceSource === "unresolved") log("warn", "checkpoint_saved_price_unusable", facts);
       }
-      return sliceCharge(ticket, slice, price ?? unpriced, now);
+      return sliceCharge(ticket, slice, price, now);
     },
   };
 }
 
 /** What the ledger object writes for one checkpoint (`AccountLedger.checkpoint`, `writeCheckpointIn`). */
-export function checkpointWrite(input: LedgerCheckpointInput): CheckpointWrite & { readonly standing: CheckpointStanding | null } {
+export function checkpointWrite(input: LedgerCheckpointInput): LedgerCheckpointWrite {
   return {
     session: sessionRowOf(input.ticket),
-    slice: input.slice === null ? null : sliceAtSavedPrice(input.ticket, input.slice, input.today, input.now),
+    slice: input.slice === null ? null : sliceAtSavedPrice(input.ticket, input.slice, input.now),
     budgets: input.budgets,
     planMinutes: input.planMinutes,
     now: input.now,
@@ -352,11 +335,6 @@ export function checkpointWrite(input: LedgerCheckpointInput): CheckpointWrite &
     gaps: input.slice?.gaps ?? 0,
     ...(input.today === null ? {} : { price: input.today }),
   };
-}
-
-/** One checkpoint over a ledger with D1's shape: tests' stand-ins for the ledger object. */
-export async function bookCheckpoint(db: D1Database, settings: D1Database, input: LedgerCheckpointInput): Promise<CheckpointAnswer> {
-  return await writeCheckpoint(db, settings, checkpointWrite(input));
 }
 
 /** The order a stop's reasons are told in: the first is the end reason the relay records. */
@@ -406,9 +384,7 @@ export async function checkpointForRelay(
   } catch (error) {
     // The ledger can't be reached: the session continues, and the relay sends the slice again.
     log("warn", "checkpoint_unchecked", { app: ticket.app, session: ticket.sid, error: errorFacts(error) });
-    const known: StopReason[] = [];
-    if (standing?.userBlocked === true) known.push("user_blocked");
-    if (standing?.keyRemoved === true) known.push("key_removed");
+    const known = knownStops(standing);
     answer = known.length > 0 ? { decision: "stop" as const, reasons: known, written: false } : { decision: "continue" as const, written: false };
   }
 

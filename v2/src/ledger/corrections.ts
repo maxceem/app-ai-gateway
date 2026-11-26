@@ -214,8 +214,7 @@ async function writeCorrection(
       },
     ),
   ];
-  // Guarded by the session's price, the work stays unless the correction was written just above.
-  if (doneWork !== null) statements.push(db.prepare(`DELETE FROM open_work WHERE id = ?${sessionPrice === null ? "" : " AND changes() > 0"}`).bind(doneWork));
+  if (doneWork !== null) statements.push(db.prepare("DELETE FROM open_work WHERE id = ?").bind(doneWork));
   // A settled job needs no more work: its check and every figure saved for it go, once the correction exists.
   if (doneJob !== null) statements.push(db.prepare("DELETE FROM open_work WHERE owner_type = 'job' AND owner_id = ?").bind(doneJob));
   const [inserted] = await db.batch(statements);

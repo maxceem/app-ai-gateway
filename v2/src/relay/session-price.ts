@@ -39,30 +39,14 @@ export function encodeSessionPrice(price: ResolvedPrice | null): string {
   return price === null ? "" : JSON.stringify(price);
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** A set of rates: each a whole, non-negative number of nano-dollars. */
-const isRateSet = (value: unknown): boolean =>
-  isObject(value) && Object.values(value).every((rate) => typeof rate === "number" && Number.isSafeInteger(rate) && rate >= 0);
-
-/** Rates by price key value: key, then value, then a rate set. */
-const isKeyedRates = (value: unknown): boolean => isObject(value) && Object.values(value).every((byValue) => isObject(byValue) && Object.values(byValue).every(isRateSet));
-
-/** The saved form, read back. Throws when it is not one, so the caller falls back to today's price. */
+/**
+ * The saved form, read back. Throws when it is not one. The ledger books a
+ * slice whose saved price can't be read, or can't price it, as `unresolved`,
+ * so the sweep prices it: a light check is enough here.
+ */
 export function decodeSessionPrice(text: string): ResolvedPrice | null {
   if (text === "") return null;
-  const parsed: unknown = JSON.parse(text);
-  const price = isObject(parsed) ? parsed.price : undefined;
-  const valid =
-    isObject(parsed) &&
-    (parsed.source === "customer_rate" || parsed.source === "list_rate") &&
-    isObject(price) &&
-    isRateSet(price.rates) &&
-    (price.keyed === undefined || isKeyedRates(price.keyed)) &&
-    (price.keyedAdditions === undefined || isKeyedRates(price.keyedAdditions)) &&
-    (price.longContextThreshold === undefined || (typeof price.longContextThreshold === "number" && price.longContextThreshold >= 0)) &&
-    (price.modes === undefined || (isObject(price.modes) && Object.values(price.modes).every(isObject))) &&
-    isObject(price.raw);
-  if (!valid) throw new Error("not a saved session price");
-  return parsed as unknown as ResolvedPrice;
+  const parsed = JSON.parse(text) as Partial<ResolvedPrice> | null;
+  if (parsed?.source !== "customer_rate" && parsed?.source !== "list_rate") throw new Error("not a saved session price");
+  return parsed as ResolvedPrice;
 }

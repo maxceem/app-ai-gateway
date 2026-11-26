@@ -7,12 +7,13 @@
  */
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkpointBudgets, checkpointForRelay, priceSlice, type SliceInput } from "../src/relay/checkpoint.ts";
+import { checkpointBudgets, checkpointForRelay, priceSlice, sliceCharge, type SliceInput } from "../src/relay/checkpoint.ts";
 import { decodeSessionPrice, encodeSessionPrice } from "../src/relay/session-price.ts";
 import { ContractRefusal, openForRelay } from "../src/relay/contract.ts";
 import { issueTicket, sessionRowOf, type TicketRequest } from "../src/relay/tickets.ts";
 import { closeSession, openSession } from "../src/ledger/sessions.ts";
 import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
+import { runSweep } from "../src/ledger/sweep.ts";
 import { userLimiterName } from "../src/limits/admission.ts";
 import { listPrice, PRICE_LIST } from "../src/pricing/prices.ts";
 import { priceTokens } from "../src/pricing/tokens.ts";
@@ -20,7 +21,7 @@ import type { SessionCheckpointAnswer, UserSessionAdmission } from "../src/do/En
 import type { SlotClaim } from "../src/do/session-slots.ts";
 import type { AppRecord } from "../src/core/types.ts";
 import { parseTicket, deadlineOf, type Ticket } from "../relay/src/ticket.js";
-import { ACCOUNT_ID, ledger, seedAccount, seedApp, withLedgerDb } from "./helpers.ts";
+import { ACCOUNT_ID, ledger, seedAccount, seedApp } from "./helpers.ts";
 import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
 
 const MINUTE = 60_000;
@@ -152,22 +153,21 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
     await checkpointForRelay(env, text, live(null));
     await closeSession(ledger(), { session: sessionRowOf(ticket), finalSlice: 1, endReason: "time_cap", endedAt: Date.now(), now: Date.now() });
-    // A new price is proposed, and the session has ended: the live checkpoint is booked at A and stops.
-    // Any second call to the ledger fails, as a retry past its deadline would.
+    // A new price is proposed, and the session has ended: the live checkpoint is booked at A and
+    // stops, in one call to the ledger object.
     await setRates(5_000_000_000);
-    let calls = 0;
-    const failing = { prepare: (sql: string) => ledger().prepare(sql), batch: () => Promise.reject(new Error("ledger down")) } as unknown as D1Database;
-    const once = withLedgerDb(env, (real) => (calls++ === 0 ? real : failing));
-    expect(await checkpointForRelay(once, text, live(slice(ticket, 1, { input_tokens: 1_000 })))).toEqual({
+    const calls = vi.spyOn(env.ACCOUNT_LEDGER, "get");
+    expect(await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })))).toEqual({
       version: 2,
       decision: "stop",
       reasons: ["ended"],
       written: true,
     });
+    expect(calls).toHaveBeenCalledTimes(1);
     expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 1_000_000 }]);
   });
 
-  it("uses today's price, with a warning, when the saved price can't price the slice (a cost too large to store) (Sol round 4)", async () => {
+  it("books unresolved, with a warning, when the saved price can't price the slice (a cost too large to store) (Fable round 1)", async () => {
     const { text, ticket } = await ticketFor();
     await openSession(ledger(), sessionRowOf(ticket), Date.now());
     const huge = { source: "list_rate", price: { ...listPrice("openai", "gpt-4o-mini")!, rates: { input: 9_000_000_000_000_000, output: 9_000_000_000_000_000 } } };
@@ -175,8 +175,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000_000_000 })));
-    const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1_000_000_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 })!.cost;
-    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: expected, price_source: "list_rate" }]);
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: null, price_source: "unresolved" }]);
     expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_saved_price_unusable");
   });
 
@@ -284,6 +283,60 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     });
   });
 
+  it("in a full sweep, keeps the queued work after price_changed, and removes it once the retry prices the slice (Fable round 1)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
+    await setRates(1_000_000_000);
+    const work = () => ledger().prepare("SELECT id FROM open_work WHERE id = ?").bind(`unresolved:${ticket.sid}:slice:1`).first();
+    expect(await work()).not.toBeNull();
+    // While the sweep reads this connection's rate (B), a checkpoint saves A.
+    let fired = false;
+    const racy = {
+      ...env,
+      DB: {
+        prepare: (sql: string) => {
+          const real = env.DB.prepare(sql);
+          if (!sql.includes("FROM provider_connection")) return real;
+          return {
+            bind: (...params: unknown[]) => {
+              const bound = real.bind(...params);
+              if (params[0] !== connectionId || fired) return bound;
+              return {
+                first: async () => {
+                  fired = true;
+                  await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 })));
+                  return { rates_json: JSON.stringify({ "house-realtime": { input: 4_000_000_000, output: 4_000_000_000 } }) };
+                },
+              };
+            },
+          };
+        },
+        batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+      },
+    } as unknown as Env;
+    const later = Date.now() + 60 * 60_000;
+    await runSweep(racy, ledger(), { now: later });
+    expect(fired).toBe(true);
+    expect(await work()).not.toBeNull();
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE corrects_charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toEqual({ n: 0 });
+    // The retry, a day on, prices slice 1 at A and removes the work.
+    await runSweep(env, ledger(), { now: later + 86_400_000 });
+    expect(await work()).toBeNull();
+    expect(await ledger().prepare("SELECT cost_nano FROM charge WHERE corrects_charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toEqual({ cost_nano: 1_000_000 });
+  });
+
+  it("dates a slice by its start: one that crosses midnight UTC counts on the day, and in the plan period, it began (D18, Fable round 1)", async () => {
+    const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+    const { ticket } = await ticketFor();
+    // A session that started 30 s before midnight: its first minute crosses it.
+    const started = { ...ticket, start: midnight - 30_000 };
+    const charge = sliceCharge(started, slice(started, 1, { input_tokens: 10 }), priceSlice({ input_tokens: 10 }, null), Date.now());
+    expect(charge.usageDay).toBe(new Date(midnight - 30_000).toISOString().slice(0, 10));
+  });
+
   it("books every slice at the price the first checkpoint saved: a new price list mid-session changes nothing (Sol rounds 2 to 4)", async () => {
     const { text, ticket } = await ticketFor();
     await checkpointForRelay(env, text, live(null));
@@ -314,28 +367,24 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     ["isn't JSON", "{not json"],
     ["has rates: null", JSON.stringify({ source: "list_rate", price: { rates: null, raw: {} } })],
   ] as const) {
-    it(`prices at today's price, with a warning, when the saved price ${what} (Sol rounds 2 and 3)`, async () => {
+    it(`books unresolved, with a warning, when the saved price ${what}: the sweep prices it (Fable round 1)`, async () => {
       const { text, ticket } = await ticketFor();
       await openSession(ledger(), sessionRowOf(ticket), Date.now());
       await ledger().prepare("UPDATE session SET rates_json = ? WHERE id = ?").bind(saved, ticket.sid).run();
       const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       vi.spyOn(console, "log").mockImplementation(() => undefined);
       expect(await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000, output_tokens: 200 })))).toMatchObject({ written: true });
-      const expected = priceTokens(listPrice("openai", "gpt-4o-mini")!, { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 200 })!.cost;
-      expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: expected, price_source: "list_rate" }]);
-      expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_price_unreadable");
+      expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: null, price_source: "unresolved" }]);
+      expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_saved_price_unusable");
+      expect(await ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toEqual({ kind: "unresolved" });
     });
   }
 
-  it("reads back only a whole saved price: every rate a whole, non-negative number of nano-dollars (Sol round 3)", () => {
+  it("reads back a saved price: JSON with a known source, or '' for no price", () => {
     const good = encodeSessionPrice({ source: "list_rate", price: listPrice("openai", "gpt-4o-mini")! });
     expect(decodeSessionPrice(good)?.source).toBe("list_rate");
     expect(decodeSessionPrice("")).toBeNull();
-    for (const rates of [null, [], { input: -1 }, { input: 1.5 }, { input: "1" }]) {
-      expect(() => decodeSessionPrice(JSON.stringify({ source: "list_rate", price: { rates, raw: {} } }))).toThrow();
-    }
-    expect(() => decodeSessionPrice(JSON.stringify({ source: "free", price: { rates: {}, raw: {} } }))).toThrow();
-    expect(() => decodeSessionPrice(JSON.stringify({ source: "list_rate", price: { rates: {}, keyed: { size: { big: { per_image: null } } }, raw: {} } }))).toThrow();
+    for (const bad of ["{not json", "null", "7", JSON.stringify({ source: "free", price: { rates: {} } })]) expect(() => decodeSessionPrice(bad)).toThrow();
   });
 
   it("never books a slice with a gap as complete, even one with no gap time (Sol round 1)", async () => {
@@ -448,7 +497,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
 
   it("answers continue, not written, when the ledger can't be reached, so the relay sends the slice again (row 16)", async () => {
     const { text, ticket } = await ticketFor();
-    const down = withLedgerDb(env, (real) => ({ prepare: (sql: string) => real.prepare(sql), batch: () => Promise.reject(new Error("ledger down")) }) as unknown as D1Database);
+    const down = { ...env, ACCOUNT_LEDGER: { idFromName: (name: string) => name, get: () => ({ checkpoint: () => Promise.reject(new Error("ledger down")) }) } } as unknown as Env;
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     expect(await checkpointForRelay(down, text, live(slice(ticket, 1)))).toEqual({ version: 2, decision: "continue", reasons: [], written: false });
     expect(await charges(ticket.sid)).toEqual([]);
