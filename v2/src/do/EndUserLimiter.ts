@@ -15,7 +15,7 @@
  */
 import type { SpendKey } from "../limits/spend.ts";
 import { RequestLimitObject } from "./request-limits.ts";
-import { activateSlot, heldSlots, pruneSlots, releaseSlot, reserveSlot, slotRow, type SlotClaim, type SlotRow } from "./session-slots.ts";
+import { heldSlots, pruneSlots, reserveSlot, slotRow, type SlotClaim, type SlotRow } from "./session-slots.ts";
 
 /** Open conversational sessions per end user; a new one replaces the oldest (D15). */
 export const USER_CONVERSATIONAL_LIMIT = 2;
@@ -107,18 +107,6 @@ export class EndUserLimiter extends RequestLimitObject {
     }
     reserveSlot(sql, input, takesOver);
     return { admitted: true, takesOver, budget };
-  }
-
-  /** `open` succeeded: the session's slot is `active` (T4). Safe to repeat. */
-  activateSession(claim: SlotClaim, now: number): void {
-    const sql = this.ctx.storage.sql;
-    pruneSlots(sql, Number.isFinite(now) ? now : Date.now());
-    activateSlot(sql, claim);
-  }
-
-  /** The session closed, or its start was refused further on: its slot is freed (T8). Safe to repeat. */
-  releaseSession(sessionId: string): void {
-    releaseSlot(this.ctx.storage.sql, sessionId);
   }
 
   /**

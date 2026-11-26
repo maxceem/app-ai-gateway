@@ -14,7 +14,7 @@ import type { AppSessionAdmission } from "../src/do/AppLimiter.ts";
 import type { SlotClaim } from "../src/do/session-slots.ts";
 import { closeForRelay, openForRelay } from "../src/relay/contract.ts";
 import { loadRequestApp } from "../src/apps/app-records.ts";
-import { admitSession } from "../src/limits/session-admission.ts";
+import { admitSession, releaseSessionLeases } from "../src/limits/session-admission.ts";
 import { refusal } from "../src/proxy/serve.ts";
 import { parseAppConfig } from "../src/admin/apps.ts";
 import { parseTicket } from "../relay/src/ticket.js";
@@ -365,8 +365,7 @@ describe("starting a session", () => {
     const now = Date.now();
     const kept: Promise<unknown>[] = [];
     // A deadline already spent: both limiters are called, and their answers are lost.
-    const admission = await admitSession({ env, app, identity, claim: claim("ses_lost", now), takesOver: null, waitUntil: (p) => kept.push(p), refuse: refusal, limitsDeadlineMs: 0 });
-    expect(admission).toEqual({ userLimiter: null, appSeat: false });
+    await expect(admitSession({ env, app, identity, claim: claim("ses_lost", now), takesOver: null, waitUntil: (p) => kept.push(p), refuse: refusal, limitsDeadlineMs: 0 })).resolves.toBeUndefined();
     await Promise.all(kept);
     // The reservation was written: it counts toward the bound until the ticket expires.
     const limiter = userLimiter(`${appId}:user:user-lost`);
@@ -374,6 +373,25 @@ describe("starting a session", () => {
     expect(await limiter.admitSession(userAsk(claim("ses_over", now), now))).toMatchObject({ admitted: false, reason: "starting_bound" });
     const afterExpiry = now + MINUTE + 1;
     expect(await limiter.admitSession(userAsk(claim("ses_after", afterExpiry), afterExpiry))).toMatchObject({ admitted: true });
+  });
+
+  it("a start that goes no further frees, by session id, the slots both limiters wrote after their answers came too late (Fable 9a3 round 1)", async () => {
+    const { appId } = await setup({ per_app: { sessions: { conversational: 1 } } });
+    const app = await loadRequestApp({ env, req: { raw: new Request(ORIGIN) } }, appId);
+    const identity = { appId, userId: "user-late", credentialType: "api_key", authMethod: "api_key", installId: null, appleAccountId: null } as const;
+    const now = Date.now();
+    const kept: Promise<unknown>[] = [];
+    // A deadline already spent: both limiters write their slot, and both answers are lost.
+    await admitSession({ env, app, identity, claim: claim("ses_late", now), takesOver: null, waitUntil: (p) => kept.push(p), refuse: refusal, limitsDeadlineMs: 0 });
+    await Promise.all(kept);
+    expect(await appLimiter(appId).admitSession({ ...claim("ses_probe", now), now, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: false });
+    // What the endpoint does when the ticket can't be made: free both by session id,
+    // with no record of which limiter answered.
+    await releaseSessionLeases(env, { appId, installId: null, endUserId: "user-late" }, "ses_late");
+    expect(await appLimiter(appId).admitSession({ ...claim("ses_probe2", now), now, budgetNano: null, spend: null, cap: 1 })).toMatchObject({ admitted: true });
+    for (let i = 0; i < USER_STARTING_BOUND; i += 1) {
+      expect(await userLimiter(`${appId}:user:user-late`).admitSession(userAsk(claim(`ses_after${i}`, now), now))).toMatchObject({ admitted: true });
+    }
   });
 
   it("says live sessions are not set up when the deployment has no relay address", async () => {

@@ -13,7 +13,7 @@
  * read, and are never read by, the plan allowance (`billing_*`).
  */
 import { DurableObject } from "cloudflare:workers";
-import { createSlotTable } from "./session-slots.ts";
+import { activateSlot, createSlotTable, pruneSlots, releaseSlot, type SlotClaim } from "./session-slots.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
@@ -117,6 +117,18 @@ export class RequestLimitObject extends DurableObject<Env> {
     const total = await this.budgetTotal(spend, now);
     if (total === null) return "unread";
     return total >= budgetNano ? "spent" : "checked";
+  }
+
+  /** `open` succeeded: the session's slot is `active` (T4). Safe to repeat. Both limiters keep slots. */
+  activateSession(claim: SlotClaim, now: number): void {
+    const sql = this.ctx.storage.sql;
+    pruneSlots(sql, Number.isFinite(now) ? now : Date.now());
+    activateSlot(sql, claim);
+  }
+
+  /** The session closed, or its start was refused: its slot is freed (T8). Safe to repeat. */
+  releaseSession(sessionId: string): void {
+    releaseSlot(this.ctx.storage.sql, sessionId);
   }
 
   /** Requests counted today, for `/me`. */

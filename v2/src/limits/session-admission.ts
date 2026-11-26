@@ -29,7 +29,7 @@ import type { AppSessionAdmission } from "../do/AppLimiter.ts";
 import type { SessionCheckpointAnswer, SessionCheckpointInput, UserSessionAdmission } from "../do/EndUserLimiter.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
 import { installLimiterName } from "../client-auth/replay.ts";
-import { endUserCaller, LIMITS_DEADLINE_MS, userLimiterName, type RefusalMarker } from "./admission.ts";
+import { endUserCaller, LIMITS_DEADLINE_MS, rpc, userLimiterName, within, type RefusalMarker, type Timed } from "./admission.ts";
 
 /** How long `open` and `close` wait for a limiter before going on without it. */
 export const LEASE_DEADLINE_MS = 1_000;
@@ -48,52 +48,6 @@ export interface SessionAdmissionInput {
   readonly billingDeadlineMs?: number;
 }
 
-/** What admission took: the slots to free if the start goes no further. */
-export interface SessionAdmission {
-  /** The end user's limiter that holds a slot, or null when none was taken there. */
-  readonly userLimiter: string | null;
-  /** Whether the app's limiter holds a seat. */
-  readonly appSeat: boolean;
-}
-
-/** An RPC call's result, typed as the object method returns it. */
-function rpc<T>(call: unknown): Promise<T> {
-  return Promise.resolve(call) as Promise<T>;
-}
-
-/**
- * A limiter call made inside a promise: one that throws at once, from
- * `getByName()` or the call itself, becomes a failed answer, which the
- * caller treats like any other (logged, and the session goes on).
- */
-function limiterCall<T>(make: () => unknown): Promise<T> {
-  return Promise.resolve().then(make) as Promise<T>;
-}
-
-/** `promise`'s answer, or null when it fails or is later than `ms`. A late call keeps running in the background. */
-async function within<T>(promise: Promise<T>, ms: number, waitUntil: (p: Promise<unknown>) => void): Promise<{ value: T } | { missed: "deadline" | "failed"; error?: unknown }> {
-  if (ms <= 0) {
-    waitUntil(promise.catch(() => undefined));
-    return { missed: "deadline" };
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">((resolve) => {
-    timer = setTimeout(() => resolve("late"), ms);
-  });
-  try {
-    const answer = await Promise.race([promise.then((value) => ({ value })), late]);
-    if (answer === "late") {
-      waitUntil(promise.catch(() => undefined));
-      return { missed: "deadline" };
-    }
-    return answer;
-  } catch (error) {
-    return { missed: "failed", error };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** The end user's limiter a session's slot lives in, by the ticket's names: per install on an App Attest app, else per user. */
 export function sessionLimiterName(appId: string, installId: string | null, endUserId: string | null): string | null {
   if (installId !== null) return installLimiterName(appId, installId);
@@ -101,19 +55,34 @@ export function sessionLimiterName(appId: string, installId: string | null, endU
   return null;
 }
 
-/** Admits one live session, or throws the refusal. Throws nothing when a limiter cannot be reached. */
-export async function admitSession(input: SessionAdmissionInput): Promise<SessionAdmission> {
+/**
+ * Admits one live session, or throws the refusal. Throws nothing when a
+ * limiter cannot be reached. A refused start frees both of its slots by
+ * session id, so a refused start never holds one, not even one a limiter
+ * wrote after its answer came too late.
+ */
+export async function admitSession(input: SessionAdmissionInput): Promise<void> {
+  const { env, app, identity, claim } = input;
+  try {
+    await admitInOrder(input);
+  } catch (error) {
+    const owner = { appId: app.id, installId: identity.installId, endUserId: identity.userId };
+    input.waitUntil(releaseSessionLeases(env, owner, claim.sessionId));
+    throw error;
+  }
+}
+
+async function admitInOrder(input: SessionAdmissionInput): Promise<void> {
   const { env, app, identity, claim, refuse } = input;
   const now = Date.now();
   const deadlineAt = now + (input.limitsDeadlineMs ?? LIMITS_DEADLINE_MS);
   const remaining = () => deadlineAt - Date.now();
   const caller = endUserCaller(app, identity);
-  let userLimiter: string | null = null;
 
   // 1. The end user: the user's budget, a streaming slot, the bound of 4 (T3, T14).
   if (caller !== null) {
     const answer = await within(
-      limiterCall<UserSessionAdmission>(() =>
+      rpc<UserSessionAdmission>(() =>
         env.END_USER_LIMITER.getByName(caller.name).admitSession({
           ...claim,
           now,
@@ -125,21 +94,16 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
       remaining(),
       input.waitUntil,
     );
-    if ("value" in answer) {
-      const verdict = answer.value;
-      if (!verdict.admitted) throw userRefusal(verdict.reason, caller.spend.scope, refuse);
-      userLimiter = caller.name;
-      if (verdict.budget === "unread") log("warn", "app_budget_unchecked", { app: app.id, scope: caller.spend.scope });
-    } else {
-      unchecked(app.id, caller.scope, answer);
-    }
+    if (answer.kind !== "answer") unchecked("session_limits_unchecked", { app: app.id, scope: caller.scope }, answer);
+    else if (!answer.value.admitted) throw userRefusal(answer.value.reason, caller.spend.scope, refuse);
+    else if (answer.value.budget === "unread") log("warn", "app_budget_unchecked", { app: app.id, scope: caller.spend.scope });
   }
 
   // 2. The app: its budget and its cap for this kind of session (T3). At a
   // full app the customer is told in the console (a rejection event), and it
   // is logged.
   const answer = await within(
-    limiterCall<AppSessionAdmission>(() =>
+    rpc<AppSessionAdmission>(() =>
       env.APP_LIMITER.getByName(app.id).admitSession({
         ...claim,
         now,
@@ -151,38 +115,22 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
     remaining(),
     input.waitUntil,
   );
-  let appSeat = false;
-  if ("value" in answer) {
-    const verdict = answer.value;
-    if (!verdict.admitted) {
-      // The user's slot is freed at once, so a refused start never holds one.
-      if (userLimiter !== null) input.waitUntil(releaseUserSlot(env, userLimiter, claim.sessionId));
-      if (verdict.reason === "session_limit") {
-        log("warn", "app_session_limit_reached", { app: app.id, kind: claim.kind, cap: verdict.cap ?? null });
-        throw refuse(
-          new GatewayError(429, "session_limit", `The app has the most ${claim.kind} sessions it allows open at once`, { "Retry-After": "30" }, { data: { scope: "app", kind: claim.kind } }),
-          "blocked_session_limit",
-          "app",
-        );
-      }
-      throw budgetRefusal("app", refuse);
-    }
-    if (verdict.budget === "unread") log("warn", "app_budget_unchecked", { app: app.id, scope: "app" });
-    appSeat = true;
-  } else {
-    unchecked(app.id, "app", answer);
+  if (answer.kind !== "answer") {
+    unchecked("session_limits_unchecked", { app: app.id, scope: "app" }, answer);
+  } else if (!answer.value.admitted) {
+    if (answer.value.reason !== "session_limit") throw budgetRefusal("app", refuse);
+    log("warn", "app_session_limit_reached", { app: app.id, kind: claim.kind, cap: answer.value.cap ?? null });
+    throw refuse(
+      new GatewayError(429, "session_limit", `The app has the most ${claim.kind} sessions it allows open at once`, { "Retry-After": "30" }, { data: { scope: "app", kind: claim.kind } }),
+      "blocked_session_limit",
+      "app",
+    );
+  } else if (answer.value.budget === "unread") {
+    log("warn", "app_budget_unchecked", { app: app.id, scope: "app" });
   }
-  const admission = { userLimiter, appSeat };
 
   // 3. The plan's live-session minutes, hosted only, always last.
-  try {
-    await checkSessionMinutes(input, remaining, now);
-  } catch (error) {
-    // A refused start never holds a slot.
-    input.waitUntil(releaseAdmission(env, app.id, claim.sessionId, admission));
-    throw error;
-  }
-  return admission;
+  await checkSessionMinutes(input, remaining, now);
 }
 
 /**
@@ -194,26 +142,25 @@ export async function admitSession(input: SessionAdmissionInput): Promise<Sessio
 async function checkSessionMinutes(input: SessionAdmissionInput, remaining: () => number, now: number): Promise<void> {
   const { env, app, refuse } = input;
   if (billingBinding(env) === null) return;
-  const skip = (reason: string, error?: unknown) =>
-    log("warn", "session_allowance_unchecked", { account: app.accountId, reason, ...(error === undefined ? {} : { error: errorFacts(error) }) });
+  const skip = (reason: string) => log("warn", "session_allowance_unchecked", { account: app.accountId, reason });
   const accessAnswer = await within(
     getAppTrafficBillingAccess(env, app.accountId, input.waitUntil, input.billingDeadlineMs ?? APP_TRAFFIC_BILLING_DEADLINE_MS),
     remaining(),
     input.waitUntil,
   );
-  if (!("value" in accessAnswer)) return skip(accessAnswer.missed, accessAnswer.error);
+  if (accessAnswer.kind !== "answer") return unchecked("session_allowance_unchecked", { account: app.accountId }, accessAnswer);
   const access = accessAnswer.value;
   // The last known plan, served while billing cannot answer, is never grounds to refuse.
   if (access.state === "billed" && access.stale === true) return skip("billing_stale");
   // No plan resolving at all is 402, as for a request.
   admitAppTraffic(access, app.accountId);
   const quotaAnswer = await within(sessionQuotaFor(access, env, app.accountId, now), remaining(), input.waitUntil);
-  if (!("value" in quotaAnswer)) return skip(quotaAnswer.missed === "deadline" ? "deadline" : "plan_unreadable", quotaAnswer.error);
+  if (quotaAnswer.kind !== "answer") return unchecked("session_allowance_unchecked", { account: app.accountId }, quotaAnswer);
   const quota = quotaAnswer.value;
   if (quota.kind === "unmetered") return;
   const { period } = quota;
   const usedAnswer = await within(
-    limiterCall<number | null>(() =>
+    rpc<number | null>(() =>
       env.ACCOUNT_LIMITER.getByName(app.accountId).sessionMs({
         accountId: app.accountId,
         fromDay: period.periodStart.slice(0, 10),
@@ -224,7 +171,7 @@ async function checkSessionMinutes(input: SessionAdmissionInput, remaining: () =
     remaining(),
     input.waitUntil,
   );
-  if (!("value" in usedAnswer)) return skip(usedAnswer.missed, usedAnswer.error);
+  if (usedAnswer.kind !== "answer") return unchecked("session_allowance_unchecked", { account: app.accountId }, usedAnswer);
   const used = usedAnswer.value;
   if (used === null) return skip("minutes_unread");
   if (used < quota.limitMs) return;
@@ -275,37 +222,13 @@ function budgetRefusal(scope: string, refuse: RefusalMarker): GatewayError {
   );
 }
 
-function unchecked(appId: string, scope: string, answer: { missed: "deadline" | "failed"; error?: unknown }): void {
-  log("warn", "session_limits_unchecked", {
-    app: appId,
-    scope,
-    reason: answer.missed,
-    ...(answer.missed === "failed" ? { error: errorFacts(answer.error) } : {}),
+/** Logs a limiter that did not answer: the session went on without it. */
+function unchecked(message: string, fields: Record<string, unknown>, answer: Timed<unknown>): void {
+  log("warn", message, {
+    ...fields,
+    reason: answer.kind === "late" ? "deadline" : "failed",
+    ...(answer.kind === "failed" ? { error: errorFacts(answer.error) } : {}),
   });
-}
-
-async function releaseUserSlot(env: Env, limiter: string, sessionId: string): Promise<void> {
-  try {
-    await rpc<void>(env.END_USER_LIMITER.getByName(limiter).releaseSession(sessionId));
-  } catch (error) {
-    log("warn", "session_lease_release_failed", { scope: "user", error: errorFacts(error) });
-  }
-}
-
-/** Frees what admission took, when the start goes no further (the ticket could not be made). */
-export function releaseAdmission(env: Env, appId: string, sessionId: string, admission: SessionAdmission): Promise<unknown> {
-  return Promise.all([
-    admission.userLimiter === null ? null : releaseUserSlot(env, admission.userLimiter, sessionId),
-    admission.appSeat ? releaseAppSeat(env, appId, sessionId) : null,
-  ]);
-}
-
-async function releaseAppSeat(env: Env, appId: string, sessionId: string): Promise<void> {
-  try {
-    await rpc<void>(env.APP_LIMITER.getByName(appId).releaseSession(sessionId));
-  } catch (error) {
-    log("warn", "session_lease_release_failed", { scope: "app", error: errorFacts(error) });
-  }
 }
 
 /** Where a session's leases live, from its ticket. */
@@ -315,36 +238,43 @@ export interface LeaseOwner {
   readonly endUserId: string | null;
 }
 
+/** Calls each limiter that holds the session's leases, the user's then the app's, and logs one that does not answer. Never fails. */
+async function onLeases(owner: LeaseOwner, keep: (p: Promise<unknown>) => void, user: (limiter: string) => unknown, app: () => unknown): Promise<void> {
+  const limiter = sessionLimiterName(owner.appId, owner.installId, owner.endUserId);
+  const calls: Array<[string, () => unknown]> = [["app", app]];
+  if (limiter !== null) calls.unshift(["user", () => user(limiter)]);
+  await Promise.all(
+    calls.map(async ([scope, make]) => {
+      const answer = await within(rpc<unknown>(make), LEASE_DEADLINE_MS, keep);
+      if (answer.kind !== "answer") unchecked("session_lease_unchanged", { app: owner.appId, scope }, answer);
+    }),
+  );
+}
+
+/** A promise kept by nobody: for a caller with no `waitUntil`. */
+const dropped = (promise: Promise<unknown>) => void promise;
+
 /**
  * `open` succeeded: both leases become `active` (T4). Never fails: a limiter
  * that cannot be reached is logged and skipped (crash table row 7).
  */
-export async function activateSessionLeases(env: Env, owner: LeaseOwner, claim: SlotClaim, now: number, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
-  const keep = waitUntil ?? ((promise: Promise<unknown>) => void promise);
-  const limiter = sessionLimiterName(owner.appId, owner.installId, owner.endUserId);
-  const calls: Array<Promise<void>> = [
-    leaseCall("app", owner.appId, () => rpc<void>(env.APP_LIMITER.getByName(owner.appId).activateSession(claim, now)), keep),
-  ];
-  if (limiter !== null) calls.unshift(leaseCall("user", owner.appId, () => rpc<void>(env.END_USER_LIMITER.getByName(limiter).activateSession(claim, now)), keep));
-  await Promise.all(calls);
+export function activateSessionLeases(env: Env, owner: LeaseOwner, claim: SlotClaim, now: number, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
+  return onLeases(
+    owner,
+    waitUntil ?? dropped,
+    (limiter) => env.END_USER_LIMITER.getByName(limiter).activateSession(claim, now),
+    () => env.APP_LIMITER.getByName(owner.appId).activateSession(claim, now),
+  );
 }
 
-/** `close`: both leases are freed (T8). Never fails. */
-export async function releaseSessionLeases(env: Env, owner: LeaseOwner, sessionId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
-  const keep = waitUntil ?? ((promise: Promise<unknown>) => void promise);
-  const limiter = sessionLimiterName(owner.appId, owner.installId, owner.endUserId);
-  const calls: Array<Promise<void>> = [
-    leaseCall("app", owner.appId, () => rpc<void>(env.APP_LIMITER.getByName(owner.appId).releaseSession(sessionId)), keep),
-  ];
-  if (limiter !== null) calls.unshift(leaseCall("user", owner.appId, () => rpc<void>(env.END_USER_LIMITER.getByName(limiter).releaseSession(sessionId)), keep));
-  await Promise.all(calls);
-}
-
-async function leaseCall(scope: "user" | "app", appId: string, call: () => Promise<void>, keep: (p: Promise<unknown>) => void): Promise<void> {
-  const answer = await within(Promise.resolve().then(call), LEASE_DEADLINE_MS, keep);
-  if (!("value" in answer)) {
-    log("warn", "session_lease_unchanged", { app: appId, scope, reason: answer.missed, ...(answer.missed === "failed" ? { error: errorFacts(answer.error) } : {}) });
-  }
+/** `close`, or a refused start: both leases are freed (T8). Safe to repeat. Never fails. */
+export function releaseSessionLeases(env: Env, owner: LeaseOwner, sessionId: string, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
+  return onLeases(
+    owner,
+    waitUntil ?? dropped,
+    (limiter) => env.END_USER_LIMITER.getByName(limiter).releaseSession(sessionId),
+    () => env.APP_LIMITER.getByName(owner.appId).releaseSession(sessionId),
+  );
 }
 
 /**
@@ -356,9 +286,9 @@ async function leaseCall(scope: "user" | "app", appId: string, call: () => Promi
 export async function replacementAtCheckpoint(env: Env, owner: LeaseOwner, input: SessionCheckpointInput, waitUntil: (p: Promise<unknown>) => void): Promise<"continue" | "replaced"> {
   const limiter = sessionLimiterName(owner.appId, owner.installId, owner.endUserId);
   if (limiter === null) return "continue";
-  const answer = await within(limiterCall<SessionCheckpointAnswer>(() => env.END_USER_LIMITER.getByName(limiter).sessionCheckpoint(input)), LEASE_DEADLINE_MS, waitUntil);
-  if (!("value" in answer)) {
-    log("warn", "session_replacement_unchecked", { app: owner.appId, reason: answer.missed, ...(answer.missed === "failed" ? { error: errorFacts(answer.error) } : {}) });
+  const answer = await within(rpc<SessionCheckpointAnswer>(() => env.END_USER_LIMITER.getByName(limiter).sessionCheckpoint(input)), LEASE_DEADLINE_MS, waitUntil);
+  if (answer.kind !== "answer") {
+    unchecked("session_replacement_unchecked", { app: owner.appId }, answer);
     return "continue";
   }
   if (answer.value.replaced.length > 0) log("info", "session_replaced", { app: owner.appId, count: answer.value.replaced.length });

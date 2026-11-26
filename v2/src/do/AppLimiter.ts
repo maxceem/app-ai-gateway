@@ -8,7 +8,7 @@
  */
 import type { SpendKey } from "../limits/spend.ts";
 import { RequestLimitObject } from "./request-limits.ts";
-import { activateSlot, heldSlots, pruneSlots, releaseSlot, reserveSlot, type SlotClaim } from "./session-slots.ts";
+import { heldSlots, pruneSlots, reserveSlot, type SlotClaim } from "./session-slots.ts";
 
 /** What the session request asks of the app's limiter. */
 export interface AppSessionRequest extends SlotClaim {
@@ -36,17 +36,5 @@ export class AppLimiter extends RequestLimitObject {
     if (heldSlots(sql, input.kind) >= input.cap) return { admitted: false, reason: "session_limit", cap: input.cap };
     reserveSlot(sql, input);
     return { admitted: true, budget };
-  }
-
-  /** `open` succeeded: the session's seat is `active` (T4). Safe to repeat. */
-  activateSession(claim: SlotClaim, now: number): void {
-    const sql = this.ctx.storage.sql;
-    pruneSlots(sql, Number.isFinite(now) ? now : Date.now());
-    activateSlot(sql, claim);
-  }
-
-  /** The session closed, or its start was refused further on: its seat is freed (T8). Safe to repeat. */
-  releaseSession(sessionId: string): void {
-    releaseSlot(this.ctx.storage.sql, sessionId);
   }
 }

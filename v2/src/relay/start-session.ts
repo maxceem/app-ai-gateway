@@ -19,7 +19,7 @@ import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { openSession } from "../ledger/sessions.ts";
-import { admitSession, releaseAdmission } from "../limits/session-admission.ts";
+import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
 import { knownModel, listOf, priceSources } from "../pricing/billability.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
@@ -135,7 +135,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         deadline: now + SESSION_CAP_MS,
       };
       const waitUntil = (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise);
-      const admission = await admitSession({ env: c.env, app, identity, claim, takesOver: request.data.takes_over ?? null, waitUntil, refuse: refusal });
+      await admitSession({ env: c.env, app, identity, claim, takesOver: request.data.takes_over ?? null, waitUntil, refuse: refusal });
 
       let issued;
       try {
@@ -165,7 +165,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         );
       } catch (error) {
         // The start goes no further: its slots are freed at once, not at the ticket's expiry.
-        waitUntil(releaseAdmission(c.env, app.id, sessionId, admission));
+        waitUntil(releaseSessionLeases(c.env, { appId: app.id, installId: identity.installId, endUserId: identity.userId }, sessionId));
         throw error;
       }
       // The session's row, after the reply (4.3 step 1): a failed write is
