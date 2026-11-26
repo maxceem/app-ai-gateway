@@ -6,11 +6,17 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { CloseInput } from "./contract.ts";
+import type { CheckpointInput } from "./checkpoint.ts";
 
 export class RelayContract extends WorkerEntrypoint<Env> {
   async open(ticket: string) {
     const { openForRelay } = await import("./contract.ts");
     return await openForRelay(this.env, ticket, Date.now(), (promise) => this.ctx.waitUntil(promise));
+  }
+
+  async checkpoint(ticket: string, input: CheckpointInput) {
+    const { checkpointForRelay } = await import("./checkpoint.ts");
+    return await checkpointForRelay(this.env, ticket, input, Date.now(), (promise) => this.ctx.waitUntil(promise));
   }
 
   async close(ticket: string, input: CloseInput) {

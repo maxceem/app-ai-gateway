@@ -86,6 +86,34 @@ test("a started session forwards frames both ways, and our SDK gets the relay's 
   same(texts[2], frame, "the frame the provider echoed");
 });
 
+test("a session's usage is booked once as a slice when it ends, even when the provider repeats an event (step 9a part 2)", { skip, timeout: 90_000 }, async () => {
+  const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
+  await expectResponse(response, 201, "starting a session to count its usage");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the session's id");
+  // The mock answers one usage event, sent twice: the relay counts it once.
+  const turn = JSON.stringify({ type: "mock.turn", event_id: "smoke-turn-1", usage: { input_tokens: 120, output_tokens: 30 }, repeat: 2 });
+  const got = await exchangeFrames("/v2/relay/session", relay, [turn], 3, { authorization: `Bearer ${String(body?.ticket)}` });
+  same(got.filter((item) => typeof item === "string" && item.startsWith('{"type":"mock.usage"')).length, 2, "the usage events the client got");
+  // The client closed: the relay books the final slice, then closes the session.
+  type Charge = { kind: string; input_tokens: number | null; output_tokens: number | null; cost_nano: number | null; price_source: string };
+  let charges: Charge[] = [];
+  for (let tries = 0; tries < 30; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${created.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the session's charges");
+    charges = (listed.body?.charges ?? []) as Charge[];
+    if (charges.some((charge) => (charge.input_tokens ?? 0) > 0)) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  check(charges.length > 0 && charges.every((charge) => charge.kind === "slice"), "the session's usage was not booked as slices");
+  same(charges.reduce((sum, charge) => sum + (charge.input_tokens ?? 0), 0), 120, "the session's input tokens");
+  same(charges.reduce((sum, charge) => sum + (charge.output_tokens ?? 0), 0), 30, "the session's output tokens");
+  // Tokens are never booked as free: priced, or left for the pricing sweep.
+  for (const charge of charges.filter((c) => (c.input_tokens ?? 0) > 0)) {
+    check(charge.cost_nano === null ? charge.price_source === "unresolved" : charge.cost_nano > 0, "a slice with tokens was booked as free");
+  }
+});
+
 test("a session the app doesn't allow, or a path that isn't a live session, is refused", { skip }, async () => {
   const notSession = await startSession({ path: "v1/chat/completions", model: "gpt-4o-mini" });
   same(notSession.status, 403, "a path that isn't a live session");

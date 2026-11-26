@@ -7,8 +7,11 @@
  *   it writes the slice charge, then reads the totals the stop decision needs, so a big
  *   turn counts at once. A repeated checkpoint id skips the insert but still
  *   reads the totals and answers, so a lost "stop" is not turned into
- *   "continue" by the retry (S14). If the batch fails, the session continues:
- *   the relay keeps the slice in its journal and sends it again (S15).
+ *   "continue" by the retry (S14). If the transaction fails, the session
+ *   continues unless a stop is already known from settings (a blocked user, a
+ *   removed key): the relay keeps the slice in its journal and sends it again
+ *   (S15). "Replaced" is not the ledger's: the end user's limiter decides it
+ *   (crash table row 20).
  * - The settlement barrier (S6–S8): the relay sends slices in order, one
  *   unconfirmed at a time, so the final slice being written proves every
  *   earlier one is. A session settles only once its final slice (from
@@ -17,7 +20,7 @@
  *   slice missing. A slice that arrives after settlement costs $0 when a
  *   session-level dollar total already covers it, and its own cost otherwise.
  * - A session-level total subtracts every slice recorded, worked out and
- *   written in one D1 batch (S9), and is dated on the day the session ended
+ *   written in one transaction in the account's ledger object (S9), and is dated on the day the session ended
  *   (S12).
  */
 import { withDeadline } from "../core/background.ts";
@@ -163,17 +166,31 @@ export interface CheckpointPlanMinutes {
 
 export type StopReason = "replaced" | "ended" | "budget_stop" | "allowance_used_up" | "user_blocked" | "key_removed";
 
+/**
+ * A checkpoint's two results, apart: whether its slice is written, and the
+ * stop decision (plan 4.2, "one rule for the result"). An explicit stop ends
+ * the session even when the write failed; with no stop, a failed write means
+ * the session continues and the relay sends the slice again.
+ */
 export type CheckpointAnswer =
-  | { readonly decision: "continue"; readonly written: true }
-  | { readonly decision: "stop"; readonly reasons: readonly StopReason[]; readonly written: true }
-  /** The batch failed: the session continues, and the relay sends the slice again. */
-  | { readonly decision: "continue"; readonly written: false };
+  | { readonly decision: "continue"; readonly written: boolean }
+  | { readonly decision: "stop"; readonly reasons: readonly StopReason[]; readonly written: boolean };
+
+/** The checkpoint's two checks on settings, read before the ledger transaction: null when they could not be read. */
+export interface CheckpointStanding {
+  readonly userBlocked: boolean;
+  readonly keyRemoved: boolean;
+  /** The connection's own rates, read with its status, for pricing the slice. */
+  readonly ratesJson?: string | null;
+}
 
 /**
  * Writes one checkpoint slice and answers continue or stop (S14).
  *
  * `slice` is a charge of kind `slice` owned by the session, its `seq` the
- * slice number and `sessionMs` its connection time. `budgets` and
+ * slice number and `sessionMs` its connection time. It is null for an empty
+ * checkpoint: the session row is still written and moved to `active`, and the
+ * stop checks still run (crash table, "Checkpoints"). `budgets` and
  * `planMinutes` come from the app's limits and the account's plan, resolved by
  * the caller; the totals they are compared with are read in the same batch,
  * after the slice is written. The plan's request allowance is not here: it
@@ -190,10 +207,16 @@ export async function writeCheckpoint(
   settings: D1Database,
   input: {
     readonly session: SessionRow;
-    readonly slice: ChargeRow;
+    readonly slice: ChargeRow | null;
     readonly budgets: readonly CheckpointBudget[];
     readonly planMinutes: CheckpointPlanMinutes | null;
     readonly now: number;
+    /** The provider's id for the call, recorded on the session the first time (crash table row 13). */
+    readonly providerCallId?: string | null;
+    /** The settings checks, when the caller read them already; else they are read here. */
+    readonly standing?: CheckpointStanding | null;
+    /** How many crash gaps this slice carries: added to the session's count when the slice is really written. */
+    readonly gaps?: number;
   },
 ): Promise<CheckpointAnswer> {
   const { session, slice, now } = input;
@@ -204,20 +227,37 @@ export async function writeCheckpoint(
     db
       .prepare("UPDATE session SET state = 'active', updated_at = ? WHERE id = ? AND state = 'starting'")
       .bind(now, session.id),
+  ];
+  if ((input.providerCallId ?? null) !== null) {
+    statements.push(
+      db
+        .prepare("UPDATE session SET provider_call_id = ?, updated_at = ? WHERE id = ? AND provider_call_id IS NULL")
+        .bind(input.providerCallId, now, session.id),
+    );
+  }
+  if (slice !== null) {
     // A slice after settlement is $0 when a session-level dollar total covers it (S8).
     // Written only under a session row. The slice's own day is judged by the insert
     // (`./late-booking.ts`), which logs a refusal: a slice inside the window cannot
     // have been deleted by retention, so its id still guards against a repeat.
-    insertChargeWithCostStatement(
-      db,
-      slice,
-      now,
-      "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
-      [session.id, slice.costNano],
-      { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
-    ),
-  ];
-  if (slice.priceSource === "unresolved") {
+    statements.push(
+      insertChargeWithCostStatement(
+        db,
+        slice,
+        now,
+        "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
+        [session.id, slice.costNano],
+        { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
+      ),
+    );
+    // Its crash gaps count on the session once, only when the insert just above really wrote it.
+    if ((input.gaps ?? 0) > 0) {
+      statements.push(
+        db.prepare("UPDATE session SET gaps = gaps + ?, updated_at = ? WHERE id = ? AND changes() > 0").bind(input.gaps, now, session.id),
+      );
+    }
+  }
+  if (slice !== null && slice.priceSource === "unresolved") {
     // An unpriced slice is queued for pricing in the same batch (S17), only
     // when the insert just above really wrote it: `changes()` is 0 for a
     // repeated checkpoint.
@@ -241,7 +281,7 @@ export async function writeCheckpoint(
     );
   }
   const stateAt = statements.length;
-  statements.push(db.prepare("SELECT state, replaced_by FROM session WHERE id = ?").bind(session.id));
+  statements.push(db.prepare("SELECT state FROM session WHERE id = ?").bind(session.id));
   for (const budget of input.budgets) {
     statements.push(
       db
@@ -259,14 +299,18 @@ export async function writeCheckpoint(
         .bind(session.accountId, input.planMinutes.fromDay, input.planMinutes.toDay),
     );
   }
-  const standing = await settingsStanding(settings, session);
+  const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, session);
+  // The stops settings already know: kept even when the transaction fails (crash table row 16).
+  const known: StopReason[] = [];
+  if (standing?.userBlocked === true) known.push("user_blocked");
+  if (standing?.keyRemoved === true) known.push("key_removed");
 
   let results: D1Result[];
   try {
     results = await db.batch(statements);
   } catch (error) {
-    log("warn", "checkpoint_unchecked", { app: session.appId, session: session.id, slice: slice.id, error: errorFacts(error) });
-    return { decision: "continue", written: false };
+    log("warn", "checkpoint_unchecked", { app: session.appId, session: session.id, slice: slice?.id ?? null, error: errorFacts(error) });
+    return known.length > 0 ? { decision: "stop", reasons: known, written: false } : { decision: "continue", written: false };
   }
 
   const first = (index: number) => results[index]?.results[0] as Record<string, unknown> | undefined;
@@ -278,11 +322,10 @@ export async function writeCheckpoint(
     // ledger (`./late-booking.ts`), long over. Nothing was booked; the relay is
     // told to stop, so it does not send the slice again. A slice dated too late
     // was logged by its insert already.
-    if (!bookingTooLate(slice.usageDay, now)) logTooLate(slice);
+    if (slice !== null && !bookingTooLate(slice.usageDay, now)) logTooLate(slice);
     return { decision: "stop", reasons: ["ended"], written: true };
   }
-  if (state?.replaced_by !== null && state?.replaced_by !== undefined) reasons.push("replaced");
-  else if (state?.state === "ended") reasons.push("ended");
+  if (state?.state === "ended") reasons.push("ended");
   for (const budget of input.budgets) {
     const spent = Number(first(index)?.spent ?? 0);
     index += 1;
@@ -293,8 +336,7 @@ export async function writeCheckpoint(
     index += 1;
     if (ms >= input.planMinutes.limitMs) reasons.push("allowance_used_up");
   }
-  if (standing?.userBlocked === true) reasons.push("user_blocked");
-  if (standing?.keyRemoved === true) reasons.push("key_removed");
+  reasons.push(...known);
   return reasons.length === 0 ? { decision: "continue", written: true } : { decision: "stop", reasons, written: true };
 }
 
@@ -310,18 +352,15 @@ export const CHECKPOINT_SETTINGS_DEADLINE_MS = 1_000;
  * connection gone or disabled. Null when D1 cannot answer in time: both are
  * skipped.
  */
-async function settingsStanding(
-  settings: D1Database,
-  session: SessionRow,
-): Promise<{ readonly userBlocked: boolean; readonly keyRemoved: boolean } | null> {
+export async function checkpointStanding(settings: D1Database, session: SessionRow): Promise<CheckpointStanding | null> {
   const reads: D1PreparedStatement[] = [];
   if (session.endUserId !== null) {
     reads.push(settings.prepare("SELECT status FROM app_end_user WHERE app_id = ? AND id = ?").bind(session.appId, session.endUserId));
   }
   if (session.providerConnectionId !== null) {
-    reads.push(settings.prepare("SELECT status FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
+    reads.push(settings.prepare("SELECT status, rates_json FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
   }
-  if (reads.length === 0) return { userBlocked: false, keyRemoved: false };
+  if (reads.length === 0) return { userBlocked: false, keyRemoved: false, ratesJson: null };
   let results: D1Result[];
   try {
     results = await withDeadline(settings.batch(reads), CHECKPOINT_SETTINGS_DEADLINE_MS, "reading the checkpoint's settings");
@@ -332,15 +371,17 @@ async function settingsStanding(
   let index = 0;
   let userBlocked = false;
   let keyRemoved = false;
+  let ratesJson: string | null = null;
   if (session.endUserId !== null) {
     userBlocked = (results[index]?.results[0] as { status?: unknown } | undefined)?.status === "blocked";
     index += 1;
   }
   if (session.providerConnectionId !== null) {
-    const status = (results[index]?.results[0] as { status?: unknown } | undefined)?.status;
-    keyRemoved = status === undefined || status === "disabled";
+    const row = results[index]?.results[0] as { status?: unknown; rates_json?: unknown } | undefined;
+    keyRemoved = row?.status === undefined || row.status === "disabled";
+    ratesJson = typeof row?.rates_json === "string" ? row.rates_json : null;
   }
-  return { userBlocked, keyRemoved };
+  return { userBlocked, keyRemoved, ratesJson };
 }
 
 /**

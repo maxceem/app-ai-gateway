@@ -16,17 +16,41 @@
  * 5. one write: `active`, the call id and the reconnect secret's hash, with
  *    the alarm at the first tick.
  * Then the alarm ticks every `TICK_MS` until the session ends: the time cap,
- * a lost provider socket, and the liveness checks the session object gives
- * (`liveness`: the heartbeat and "client too slow", `./frames.js`). The
- * checkpoint joins the tick with the journal (step 9a part 2).
+ * a lost provider socket, the liveness checks the session object gives
+ * (`liveness`: the heartbeat and "client too slow", `./frames.js`), and the
+ * checkpoint when it is due.
  *
- * The end: one write stores `ended`, the reason and the final slice, then
- * `close` is sent; the alarm retries it. Storage is deleted once `close` is
- * confirmed (or given up on) and the ticket has expired; until then the
- * `ended` marker refuses the ticket again (row 28).
+ * Usage goes to the journal (`./journal.js`) as it arrives, after its frame
+ * was forwarded. A checkpoint freezes it into a slice, stores the slice, then
+ * sends it; the slice stays until the main Worker says it is written
+ * (crash table rows 14–18). Only one is unconfirmed at a time.
+ *
+ * The end: one write stores `ended`, the reason, the final slice and the
+ * journal with the rest of the usage frozen; then the unsent slices are
+ * delivered, as accounting only, and `close` is sent. The alarm retries both.
+ * Storage is deleted once both are done (or given up on, with the slices
+ * logged) and the ticket has expired; until then the `ended` marker refuses
+ * the ticket again (rows 25–28).
  */
 import { TICK_MS } from "./frames.js";
+import { confirm, finalSliceOf, freeze, JOURNAL_KEY, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
+
+/** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
+export const RELAY_CONTRACT_VERSION = 2;
+/** How long a checkpoint may take: past it, the session goes on and the slice is sent again (plan 5.1). */
+export const CHECKPOINT_TIMEOUT_MS = 5_000;
+
+/**
+ * The end reason a checkpoint's stop gives: its first reason. The ledger's
+ * "ended" (it closed the session itself, say after a lost `close`) is not an
+ * end reason of its own: the session ends with `error`, logged.
+ * @param {readonly string[]} reasons
+ */
+function stopReason(reasons) {
+  const first = reasons[0] ?? "error";
+  return first === "ended" ? "error" : first;
+}
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
@@ -45,16 +69,27 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  * @typedef {{
  *   get(keys: string[]): Promise<Map<string, unknown>>,
  *   put(entries: Record<string, unknown>, alarmAt: number | null): Promise<void>,
+ *   putJournal(journal: import("./journal.js").Journal): Promise<void>,
  *   deleteAll(): Promise<void>,
  * }} Store
  * `put` writes the entries and sets the alarm in one write (crash table, "Alarm rule"); null keeps it.
+ * `putJournal` is the journal's one small write per usage event (plan 5.2 rule 3).
  *
  * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string }} SessionKey
  * @typedef {{ sessionKey(ticket: string, options: { restart: boolean }): Promise<SessionKey> }} VaultPort
- * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number }} Settings
+ * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string }} Settings
+ * @typedef {{ decision: "continue" | "stop", reasons: string[], written: boolean }} CheckpointReply
+ * @typedef {{
+ *   slice: import("./journal.js").Slice | null,
+ *   connected: boolean,
+ *   accounting: boolean,
+ *   providerCallId: string | null,
+ *   relayVersion: number,
+ * }} CheckpointCall
  * @typedef {{
  *   open(ticket: string): Promise<Settings>,
- *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null }): Promise<unknown>,
+ *   checkpoint(ticket: string, input: CheckpointCall): Promise<CheckpointReply>,
+ *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null, relayVersion: number }): Promise<unknown>,
  * }} MainPort
  * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
  * `close` hangs up the provider's side of a relayed session.
@@ -75,7 +110,7 @@ export class ProviderRefused extends Error {
   }
 }
 
-const KEYS = ["state", "ticket", "settings", "connecting", "callId", "end", "closed"];
+const KEYS = ["state", "ticket", "settings", "connecting", "callId", "end", "closed", JOURNAL_KEY];
 
 /** @param {string} secret */
 async function hashOf(secret) {
@@ -103,7 +138,11 @@ function codeOf(error) {
 
 export class SessionCore {
   /**
-   * @param {{ store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger, liveness?: Liveness }} parts
+   * @param {{
+   *   store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger,
+   *   liveness?: Liveness, proof?: () => boolean, checkpointTimeoutMs?: number,
+   * }} parts
+   * `proof`: whether a client message came since the start (crash table row 20), for a live checkpoint.
    */
   constructor(parts) {
     this.store = parts.store;
@@ -130,6 +169,13 @@ export class SessionCore {
     this.ending = null;
     /** @type {Client | undefined | null} The client whose start ran last past the running-session check. */
     this.lastStarter = null;
+    /** @type {() => boolean} */
+    this.proof = parts.proof ?? (() => false);
+    this.checkpointTimeoutMs = parts.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS;
+    /** @type {import("./journal.js").Journal | null} The journal in memory, loaded from storage after a restart. */
+    this.journal = null;
+    /** @type {Promise<unknown> | null} A checkpoint in flight: one at a time. */
+    this.checkpointing = null;
   }
 
   /**
@@ -140,7 +186,7 @@ export class SessionCore {
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
    * @param {Client} [client]
-   * @returns {Promise<{ ok: true, reconnectSecret: string, call: ProviderCall, deadline: number } | { ok: false, code: string }>}
+   * @returns {Promise<{ ok: true, reconnectSecret: string, call: ProviderCall, deadline: number, adapter: string | undefined } | { ok: false, code: string }>}
    */
   async start(ticketText, ticket, client) {
     // Also while an end is in flight: a start never runs into the middle of one.
@@ -241,7 +287,10 @@ export class SessionCore {
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       // The alarm's first tick: from then on it ticks every `TICK_MS` (plan section 5), so a
       // restarted object that lost its provider socket ends soon (row 13).
-      await this.store.put({ state: "active", callId: call.callId, reconnect }, Math.min(deadline, this.now() + TICK_MS));
+      // The journal starts here: the session's connection time counts from now.
+      const journal = newJournal(this.now());
+      await this.store.put({ state: "active", callId: call.callId, reconnect, [JOURNAL_KEY]: journal }, Math.min(deadline, this.now() + TICK_MS));
+      this.journal = journal;
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       // A write held past the deadline: the session's time is over before it began.
@@ -249,7 +298,7 @@ export class SessionCore {
         await endStart("time_cap", {});
         return fail("session_ended");
       }
-      return { ok: true, reconnectSecret, call, deadline };
+      return { ok: true, reconnectSecret, call, deadline, adapter: settings.adapter };
     } catch (error) {
       // Anything unexpected (a storage failure, say) never leaves this start's provider call
       // behind. Only what this start made is touched: never another client's call or owner.
@@ -333,12 +382,12 @@ export class SessionCore {
   }
 
   /**
-   * Ends the session: closes both sides with the reason, stores the end in one
-   * write, then sends `close` once. The alarm retries `close` until it is
-   * confirmed, then cleans up. One end at a time: a caller that comes while one
-   * is in flight waits for it.
+   * Ends the session: closes both sides with the reason, stores the end and
+   * the final slice in one write, then delivers the unsent slices and sends
+   * `close`. The alarm retries both until they are done, then cleans up. One
+   * end at a time: a caller that comes while one is in flight waits for it.
    * @param {string} reason
-   * @param {{ finalSlice?: number, log?: string, status?: number }} [details]
+   * @param {{ log?: string, status?: number, gap?: boolean }} [details]
    */
   end(reason, details = {}) {
     if (this.ending !== null) return this.ending;
@@ -361,7 +410,9 @@ export class SessionCore {
 
   /**
    * @param {string} reason
-   * @param {{ finalSlice?: number, log?: string, status?: number }} details
+   * @param {{ log?: string, status?: number, gap?: boolean }} details
+   * `gap`: the instance that ran the session is gone, so the time since the journal's last
+   * write is an "unknown cost" gap, not connection time (crash table row 14).
    */
   async endOnce(reason, details) {
     const owner = this.owner;
@@ -379,8 +430,169 @@ export class SessionCore {
     if (details.log !== undefined) {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
-    await this.store.put({ state: "ended", end: { reason, at, finalSlice: details.finalSlice ?? 0 } }, at + CLOSE_RETRY_EVERY_MS);
-    await this.sendClose();
+    // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
+    const journal = readJournal(stored.get(JOURNAL_KEY));
+    if (journal !== null) freeze(journal, at, details.gap === true ? { gapFrom: journal.savedAt } : {});
+    this.journal = journal;
+    /** @type {Record<string, unknown>} */
+    const entries = { state: "ended", end: { reason, at, finalSlice: finalSliceOf(journal) } };
+    if (journal !== null) entries[JOURNAL_KEY] = journal;
+    await this.store.put(entries, at + CLOSE_RETRY_EVERY_MS);
+    await this.flushEnded();
+  }
+
+  /**
+   * The journal, from memory or, after a restart, from storage. Null when the
+   * session has none (it never became active, or its storage was cleaned up).
+   * @returns {Promise<import("./journal.js").Journal | null>}
+   */
+  async loadJournal() {
+    if (this.journal === null) this.journal = readJournal((await this.store.get([JOURNAL_KEY])).get(JOURNAL_KEY));
+    return this.journal;
+  }
+
+  /**
+   * One usage event, after its frame was forwarded: added to the journal in
+   * one small write (plan 5.2 rule 3). A repeated event changes nothing. A
+   * write that fails is logged: the event may be lost, and the gap rules cover
+   * a restart.
+   * @param {import("./journal.js").UsageEvent} event
+   * @param {"per_turn" | "running_total"} shape
+   */
+  async recordUsage(event, shape) {
+    if (this.call === null || this.ending !== null) return;
+    const journal = await this.loadJournal();
+    if (journal === null || !addUsage(journal, event, shape)) return;
+    journal.savedAt = this.now();
+    try {
+      await this.store.putJournal(journal);
+    } catch {
+      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
+    }
+  }
+
+  /**
+   * Sends one checkpoint, with its timeout: a late or failed answer is null,
+   * and the session goes on (plan 5.1).
+   * @param {string} ticket
+   * @param {CheckpointCall} input
+   * @returns {Promise<CheckpointReply | null>}
+   */
+  async sendCheckpoint(ticket, input) {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), this.checkpointTimeoutMs);
+    });
+    try {
+      const reply = await Promise.race([this.main.checkpoint(ticket, input), late]);
+      if (reply === null) this.log({ level: "warn", message: "relay_checkpoint_late", session: this.sessionId });
+      return /** @type {CheckpointReply | null} */ (reply);
+    } catch (error) {
+      this.log({ level: "warn", message: "relay_checkpoint_failed", session: this.sessionId, code: codeOf(error) });
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * A live checkpoint (crash table rows 16–20). It sends the unconfirmed slice
+   * again if there is one; else it freezes the open usage into the next slice
+   * and stores it before sending, or sends an empty checkpoint when there is
+   * nothing. It books, and answers continue or stop. An explicit stop ends the
+   * session even when the slice was not written; the slice then goes in the
+   * final delivery. Forwarding never waits for it.
+   */
+  checkpoint() {
+    if (this.checkpointing !== null) return this.checkpointing;
+    const running = this.checkpointOnce().finally(() => {
+      if (this.checkpointing === running) this.checkpointing = null;
+    });
+    this.checkpointing = running;
+    return running;
+  }
+
+  async checkpointOnce() {
+    if (this.ending !== null) return;
+    const stored = await this.store.get(["state", "ticket", "callId"]);
+    const ticket = stored.get("ticket");
+    // No checkpoint before `active`, and none from a session that has ended (crash table, "Checkpoints").
+    if (stored.get("state") !== "active" || typeof ticket !== "string") return;
+    const journal = await this.loadJournal();
+    if (journal === null) return;
+    const now = this.now();
+    // The proof is sticky: once a client message came, every later checkpoint carries it (row 20).
+    if (!journal.connected && this.proof()) journal.connected = true;
+    let slice = journal.unsent[0] ?? null;
+    if (slice === null) {
+      slice = freeze(journal, now);
+      // The slice's boundary is stored before it is sent: usage after it goes to the next one (row 16).
+      if (slice !== null) {
+        journal.savedAt = now;
+        await this.store.putJournal(journal);
+      }
+    }
+    const reply = await this.sendCheckpoint(ticket, {
+      slice,
+      connected: journal.connected,
+      accounting: false,
+      providerCallId: typeof stored.get("callId") === "string" ? /** @type {string} */ (stored.get("callId")) : null,
+      relayVersion: RELAY_CONTRACT_VERSION,
+    });
+    journal.lastCheckpointAt = now;
+    if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
+    if (this.ending === null) await this.store.putJournal(journal);
+    if (reply !== null && reply.decision === "stop") {
+      const reason = stopReason(reply.reasons);
+      await this.end(reason, reply.reasons[0] === "ended" ? { log: "relay_session_ended_by_ledger" } : {});
+    }
+  }
+
+  /**
+   * Whether a live checkpoint is due on this tick: a slice waits to be sent
+   * again, or the interval has passed since the last one.
+   * @param {number} now
+   */
+  async checkpointDue(now) {
+    const journal = await this.loadJournal();
+    if (journal === null) return false;
+    const stored = await this.store.get(["settings"]);
+    const interval = /** @type {Settings | undefined} */ (stored.get("settings"))?.checkpointIntervalMs ?? 60_000;
+    return journal.unsent.length > 0 || now - journal.lastCheckpointAt >= interval;
+  }
+
+  /**
+   * After the end: delivers the unsent slices in order, as accounting only
+   * (they ask no limiter, and "ended" is no news), then sends `close`. A slice
+   * that is not written stops the delivery until the next try; `close` is sent
+   * either way, and the settlement barrier waits for the final slice (S6).
+   * Returns whether both are done.
+   * @returns {Promise<boolean>}
+   */
+  async flushEnded() {
+    const stored = await this.store.get(KEYS);
+    const ticket = stored.get("ticket");
+    if (typeof ticket !== "string") return true;
+    const journal = readJournal(stored.get(JOURNAL_KEY));
+    if (journal !== null) {
+      while (journal.unsent.length > 0) {
+        const slice = /** @type {import("./journal.js").Slice} */ (journal.unsent[0]);
+        const reply = await this.sendCheckpoint(ticket, {
+          slice,
+          connected: journal.connected,
+          accounting: true,
+          providerCallId: typeof stored.get("callId") === "string" ? /** @type {string} */ (stored.get("callId")) : null,
+          relayVersion: RELAY_CONTRACT_VERSION,
+        });
+        if (reply === null || !reply.written) break;
+        confirm(journal, slice.seq);
+        await this.store.putJournal(journal);
+      }
+      this.journal = journal;
+    }
+    const closed = await this.sendClose(journal !== null && journal.unsent.length > 0);
+    return closed && (journal === null || journal.unsent.length === 0);
   }
 
   /** The session id, for a log line. @param {Map<string, unknown>} stored */
@@ -389,8 +601,13 @@ export class SessionCore {
     return (typeof ticket === "string" ? parseTicket(ticket)?.payload.sid : undefined) ?? this.sessionId;
   }
 
-  /** Sends `close`; on success, the next alarm cleans up. @returns {Promise<boolean>} */
-  async sendClose() {
+  /**
+   * Sends `close`; on success, the next alarm cleans up, unless slices still
+   * wait to be delivered (`slicesLeft`): the alarm then keeps retrying them.
+   * @param {boolean} [slicesLeft]
+   * @returns {Promise<boolean>}
+   */
+  async sendClose(slicesLeft = false) {
     const stored = await this.store.get(KEYS);
     const ticket = stored.get("ticket");
     const end = /** @type {{ reason: string, at: number, finalSlice: number } | undefined} */ (stored.get("end"));
@@ -401,12 +618,13 @@ export class SessionCore {
         endReason: end.reason,
         endedAt: end.at,
         providerCallId: typeof stored.get("callId") === "string" ? /** @type {string} */ (stored.get("callId")) : null,
+        relayVersion: RELAY_CONTRACT_VERSION,
       });
     } catch (error) {
       this.log({ level: "warn", message: "relay_close_failed", session: this.sessionIdOf(stored), code: codeOf(error) });
       return false;
     }
-    await this.store.put({ closed: true }, this.cleanupAt(ticket));
+    await this.store.put({ closed: true }, slicesLeft ? null : this.cleanupAt(ticket));
     return true;
   }
 
@@ -438,22 +656,35 @@ export class SessionCore {
       // The next tick is armed before anything that can fail (crash table row 29): a tick that
       // throws still leaves the session its next one.
       await this.store.put({}, Math.min(deadline, now + TICK_MS));
-      // A relayed session lost its provider socket with its instance: it ends (row 13, relayed).
-      // An observed session reattaches instead (part 3): until then it waits for its deadline.
-      if (this.call === null && settings?.mode !== "observed") return this.end("error", { log: "relay_provider_lost" });
+      // A relayed session lost its provider socket with its instance: it ends, and the time since
+      // its journal's last write is a gap (rows 13 and 14, relayed). An observed session reattaches
+      // instead (part 3): until then it waits for its deadline.
+      if (this.call === null && settings?.mode !== "observed") return this.end("error", { log: "relay_provider_lost", gap: true });
       // The live session's own checks: a silent client, a client too far behind.
       const reason = this.liveness(now);
       if (reason !== null) return this.end(reason);
-      // Seam: the checkpoint joins the tick with the journal (step 9a part 2).
+      if (await this.checkpointDue(now)) await this.checkpoint();
       return;
     }
-    // Ended: retry `close` for a while, then give up and log; then clean up once the ticket has expired.
+    // Ended: deliver the slices and `close` for a while; then give up, with the slices logged; then
+    // clean up once the ticket has expired.
     const end = /** @type {{ at: number } | undefined} */ (stored.get("end"));
-    if (stored.get("closed") !== true) {
-      if (await this.sendClose()) return;
+    const journal = readJournal(stored.get(JOURNAL_KEY));
+    if (stored.get("closed") !== true || (journal !== null && journal.unsent.length > 0)) {
+      if (await this.flushEnded()) return;
       if (now - (end?.at ?? now) < CLOSE_RETRY_MS) return this.store.put({}, now + CLOSE_RETRY_EVERY_MS);
-      this.log({ level: "error", message: "relay_close_given_up", session: this.sessionIdOf(stored) });
-      await this.store.put({ closed: true }, this.cleanupAt(ticketText));
+      // Given up: the slices are logged at `error`, the one miscount the plan accepts (4.2; row 25).
+      const left = this.journal?.unsent ?? journal?.unsent ?? [];
+      this.log({
+        level: "error",
+        message: "relay_close_given_up",
+        session: this.sessionIdOf(stored),
+        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs })),
+      });
+      /** @type {Record<string, unknown>} */
+      const entries = { closed: true };
+      if (journal !== null) entries[JOURNAL_KEY] = { ...journal, unsent: [] };
+      await this.store.put(entries, this.cleanupAt(ticketText));
       return;
     }
     if (now >= ticketExpiry(ticketText)) return this.store.deleteAll();

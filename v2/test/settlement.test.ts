@@ -142,6 +142,11 @@ async function sessionState(id: string) {
   return ledger().prepare("SELECT state, final_slice, settlement, session_total_nano, end_reason FROM session WHERE id = ?").bind(id).first();
 }
 
+/** How many charges a session owns. */
+function sliceCount(sessionId: string) {
+  return ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ?").bind(sessionId).first("n");
+}
+
 function quiet(): void {
   vi.spyOn(console, "log").mockImplementation(() => undefined);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -346,7 +351,7 @@ describe("checkpoints", () => {
     expect(warned.filter((line) => line.includes('"message":"ledger_booking_too_late"'))).toHaveLength(1);
   });
 
-  it("answers stop when the plan minutes, the user, the key or a newer session say so", async () => {
+  it("answers stop when the plan minutes, the user or the key say so, and keeps a known stop when the write fails (crash table row 16)", async () => {
     await seedAccount();
     const appId = await seedApp({ type: "api_key", end_user: { source: "header", header: "x-end-user-id" } });
     const connectionId = unique("conn");
@@ -359,8 +364,38 @@ describe("checkpoints", () => {
     const session = sessionRow({ appId, endUserId: "u1", providerConnectionId: connectionId });
     const answer = await checkpoint(session, 1, 100, { planMinutes: { fromDay: "2026-11-01", toDay: "2026-12-01", limitMs: 60_000 } });
     expect(answer).toEqual({ decision: "stop", reasons: ["allowance_used_up", "user_blocked", "key_removed"], written: true });
+    // A newer session is not the ledger's to decide: the end user's limiter does (row 20), so `replaced_by` stops nothing here.
     await ledger().prepare("UPDATE session SET replaced_by = 'newer' WHERE id = ?").bind(session.id).run();
-    expect(await checkpoint(session, 2, 100)).toMatchObject({ decision: "stop", reasons: expect.arrayContaining(["replaced"]) });
+    const after = await checkpoint(session, 2, 100);
+    expect(after.decision === "stop" ? after.reasons : []).not.toContain("replaced");
+    // The ledger can't be reached: the slice isn't written, and the stops settings already know still end the session.
+    const failing = { prepare: (sql: string) => ledger().prepare(sql), batch: async () => Promise.reject(new Error("ledger down")) } as unknown as D1Database;
+    quiet();
+    expect(await writeCheckpoint(failing, env.DB, { session, slice: slice(session, 3, 100), budgets: [], planMinutes: null, now: T0 + 180_000 })).toEqual({
+      decision: "stop",
+      reasons: ["user_blocked", "key_removed"],
+      written: false,
+    });
+  });
+
+  it("writes the session row on an empty checkpoint, with the provider's call id, and moves it to active (crash table, \"Checkpoints\")", async () => {
+    const session = sessionRow({ expectsSessionTotal: false });
+    expect(await writeCheckpoint(ledger(), env.DB, { session, slice: null, budgets: [], planMinutes: null, now: T0, providerCallId: "call_1" })).toEqual({
+      decision: "continue",
+      written: true,
+    });
+    const row = await ledger().prepare("SELECT state, provider_call_id, gaps FROM session WHERE id = ?").bind(session.id).first();
+    expect(row).toEqual({ state: "active", provider_call_id: "call_1", gaps: 0 });
+    expect(await sliceCount(session.id)).toBe(0);
+  });
+
+  it("counts a slice's crash gaps on the session once, however often the slice is sent (rows 14 and 16)", async () => {
+    const session = sessionRow({ expectsSessionTotal: false });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await writeCheckpoint(ledger(), env.DB, { session, slice: slice(session, 1, 100, { measured: "partial" }), budgets: [], planMinutes: null, now: T0, gaps: 1 });
+    }
+    expect(await ledger().prepare("SELECT gaps FROM session WHERE id = ?").bind(session.id).first()).toEqual({ gaps: 1 });
+    expect(await sliceCount(session.id)).toBe(1);
   });
 
   it("skips only the two settings checks when D1 does not answer in time, and still writes the slice (step 8f)", async () => {

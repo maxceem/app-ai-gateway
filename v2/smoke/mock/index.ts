@@ -653,6 +653,13 @@ export default mock;
  *   rate: 20 frames a second of about 3.2 KB each, like 24 kHz PCM16 in base64;
  * - `{"type":"mock.big"}` sends one large frame with `type` at its end, the
  *   shape of an ElevenLabs audio event (plan, T12).
+ *
+ * And two give the relay's `mock` adapter usage to count (step 9a part 2):
+ * - `{"type":"mock.turn","event_id":…,"usage":{…},"repeat":N}` answers one
+ *   usage event, `{"type":"mock.usage","event_id":…,"usage":{…}}`, sent N
+ *   times (default once) the way a provider may repeat an event;
+ * - `mock.stream` with `"usageEvery":K` also sends a usage event of 100 input
+ *   and 20 output tokens after every K-th frame, to load the journal.
  */
 function realtimeSession(): Response {
   const [client, server] = Object.values(new WebSocketPair());
@@ -665,11 +672,16 @@ function realtimeSession(): Response {
   server.addEventListener("message", (event) => {
     const data = event.data;
     if (typeof data === "string" && data.startsWith('{"type":"mock.')) {
-      const message = JSON.parse(data) as { type: string; seconds?: number };
-      if (message.type === "mock.big") {
+      const message = JSON.parse(data) as { type: string; seconds?: number; usageEvery?: number; event_id?: unknown; usage?: unknown; repeat?: number };
+      if (message.type === "mock.turn") {
+        const usage = JSON.stringify({ type: "mock.usage", event_id: message.event_id, usage: message.usage });
+        for (let i = 0; i < Math.max(1, Math.min(5, message.repeat ?? 1)); i += 1) server.send(usage);
+      } else if (message.type === "mock.big") {
         server.send(`{"audio_base_64":"${"B".repeat(512 * 1024)}","isFinal":false,"type":"audio"}`);
       } else if (message.type === "mock.stream") {
         const frames = Math.max(0, Math.min(20 * 600, Math.round((message.seconds ?? 1) * 20)));
+        const usageEvery = Math.max(0, Math.round(message.usageEvery ?? 0));
+        const stream = crypto.randomUUID().slice(0, 8);
         let sent = 0;
         const timer = setInterval(() => {
           try {
@@ -679,6 +691,9 @@ function realtimeSession(): Response {
             return;
           }
           sent += 1;
+          if (usageEvery > 0 && sent % usageEvery === 0) {
+            server.send(JSON.stringify({ type: "mock.usage", event_id: `${stream}-${sent}`, usage: { input_tokens: 100, output_tokens: 20 } }));
+          }
           if (sent >= frames) {
             clearInterval(timer);
             server.send(JSON.stringify({ type: "mock.stream.done", frames: sent }));

@@ -12,11 +12,15 @@
  * (`./start.js`): the key from the vault's relay entrypoint, `open` on the
  * main Worker, then the provider.
  *
- * The object then forwards frames both ways (`./frames.js`). The journal and
- * checkpoints come in step 9a part 2, and observed mode in part 3.
+ * The object then forwards frames both ways (`./frames.js`). The session's
+ * adapter (`./adapters.js`) reads usage from the provider's frames after they
+ * are forwarded, into the journal; the alarm sends checkpoints. Observed mode
+ * comes in part 3.
  */
 import { DurableObject } from "cloudflare:workers";
+import { adapterFor } from "./adapters.js";
 import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
+import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
 import { providerFrame, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
@@ -83,6 +87,7 @@ export default {
  *   call: RelayCall | null,
  *   deadline: number,
  *   queue: StartQueue,
+ *   adapter: import("./adapters.js").Adapter,
  * }} Live
  * One client's session in this instance. Client frames wait in `queue` while
  * the session starts, then go to the provider in order.
@@ -117,6 +122,8 @@ export class Session extends DurableObject {
           if (alarmAt !== null) writes.push(storage.setAlarm(alarmAt));
           await Promise.all(writes);
         },
+        // The one small write per usage event (plan 5.2 rule 3).
+        putJournal: (journal) => storage.put(JOURNAL_KEY, journal, { allowUnconfirmed: JOURNAL_ALLOW_UNCONFIRMED }),
         // With this compatibility date, deleteAll() removes the alarm too.
         deleteAll: () => storage.deleteAll(),
       },
@@ -147,6 +154,7 @@ export class Session extends DurableObject {
       },
       // The tick's checks for the session this instance runs: none after a restart.
       liveness: (now) => this.live?.frames.check(now) ?? null,
+      proof: () => this.live?.frames.clientSpoke ?? false,
     });
   }
 
@@ -180,7 +188,7 @@ export class Session extends DurableObject {
     /** @type {import("./start.js").Client} What the core holds: closing it never throws. */
     const owner = { close: (code, reason) => closeQuietly(client, code, reason) };
     /** @type {Live} */
-    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue() };
+    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue(), adapter: adapterFor(undefined) };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     client.addEventListener("close", () => void this.core.clientGone(owner));
     client.addEventListener("message", (event) => this.fromClient(live, event.data));
@@ -203,6 +211,7 @@ export class Session extends DurableObject {
     const call = /** @type {RelayCall} */ (result.call);
     live.call = call;
     live.deadline = result.deadline;
+    live.adapter = adapterFor(result.adapter);
     this.live = live;
     // Either side sent too much during the start: the session ends, and what was held is dropped.
     if (call.pending.overflowed || live.queue.overflowed) return this.endFor(live, "error", 4000, "start_queue_full");
@@ -212,6 +221,8 @@ export class Session extends DurableObject {
     call.forward = (data) => this.toClient(live, data);
     for (const data of call.pending.drain()) call.forward(data);
     for (const data of live.queue.drain()) this.toProvider(live, data);
+    // The first checkpoint at once, empty if there is no usage yet: it writes the session row (call order step 9).
+    void this.core.checkpoint().catch(() => undefined);
   }
 
   /**
@@ -258,6 +269,9 @@ export class Session extends DurableObject {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     sendQuietly(live.client, data);
     live.frames.toClient(data);
+    // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
+    const event = live.adapter.read(data);
+    if (event !== null) void this.core.recordUsage(event, live.adapter.shape).catch(() => undefined);
   }
 
   /**
