@@ -36,6 +36,15 @@ describe.each([
     expect(await client().status()).toBe("ok");
   });
 
+  it("says only whether an app's share is the one its keyslot was made for (split keys, phase 3)", async () => {
+    const share = "shr_abcdefghij0123456789.the-share-secret-0123456789abcdef";
+    const publicKey = await credentialPublicKey(share);
+    expect(await client().credentialMatches(share, publicKey)).toBe(true);
+    expect(await client().credentialMatches(`${share}x`, publicKey)).toBe(false);
+    expect(await client().credentialMatches(share, "not-a-key")).toBe(false);
+    expect(await client().credentialMatches("", publicKey)).toBe(false);
+  });
+
   it("with split keys, seals to the root, sends only with the app's credential, and copies for later work (plan step 8j)", async () => {
     const vaultClient = client();
     const root = await newRoot();

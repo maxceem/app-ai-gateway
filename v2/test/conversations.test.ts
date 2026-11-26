@@ -15,10 +15,9 @@ import { QueryBudget } from "../src/core/query-budget.ts";
 import { appFolderName, appPrefix } from "../src/conversations/storage.ts";
 import type { ConversationLog } from "../src/do/ConversationLog.ts";
 import { planIncludes } from "../src/billing/access.ts";
-import { sealForTest, splitKeysOn } from "./split-keys.ts";
+import { sealForTest } from "./split-keys.ts";
 import { storedPassthrough } from "../src/providers/passthrough.ts";
-import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
-import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey } from "./helpers.ts";
+import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, tokenForAppKey } from "./helpers.ts";
 
 beforeAll(loadManagement, LOAD_MANAGEMENT_TIMEOUT_MS);
 
@@ -1122,8 +1121,7 @@ describe("conversation storage through the gateway", () => {
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
-  // A gateway token brings no share until split keys phase 3.
-  it.skipIf(splitKeysOn)("never stores the verified credential, whatever header carried it (Sol round 2)", async () => {
+  it("never stores the verified credential, whatever header carried it (Sol round 2)", async () => {
     const slug = await connection();
     // The issuer's token header is the end-user header name: a credential in a header the
     // gateway otherwise reads identity from, and never sends upstream.
@@ -1147,7 +1145,7 @@ describe("conversation storage through the gateway", () => {
       conversations: { store: true },
     });
     const appKey = await seedAppKey(appId);
-    const { token } = await issueGatewayToken(env.JWT_SECRET, { appId, userId: "person-1", authMethod: "api_key", apiKeyId: appKey.id });
+    const token = await tokenForAppKey(appId, "person-1", appKey);
     providerAnswers();
     const { response } = await call(`/v2/apps/${appId}/proxy/${slug}/v1/responses`, {
       method: "POST",
@@ -1161,8 +1159,7 @@ describe("conversation storage through the gateway", () => {
     expect(record!.request).toMatchObject({ kind: "json", value: { omitted: "credential" } });
   });
 
-  // A gateway token brings no share until split keys phase 3.
-  it.skipIf(splitKeysOn)("never stores a second token in a configured token header named like an identity header (Astra round 2)", async () => {
+  it("never stores a second token in a configured token header named like an identity header (Astra round 2)", async () => {
     const slug = await connection();
     const { appId } = await appWith({
       authentication: {
@@ -1184,7 +1181,7 @@ describe("conversation storage through the gateway", () => {
       conversations: { store: true },
     });
     const appKey = await seedAppKey(appId);
-    const { token } = await issueGatewayToken(env.JWT_SECRET, { appId, userId: "person-1", authMethod: "api_key", apiKeyId: appKey.id });
+    const token = await tokenForAppKey(appId, "person-1", appKey);
     const other = "second-token-value-0042-abcdef";
     providerAnswers();
     // Authorization carries the verified token; the configured token header carries another one.

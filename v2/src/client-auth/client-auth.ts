@@ -10,7 +10,9 @@
  */
 import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys.ts";
 import { GatewayError } from "../core/errors.ts";
-import { verifyGatewayToken } from "./gateway-token.ts";
+import { verifyGatewayTokenAndShare } from "./gateway-token.ts";
+import { lookupActiveShareById, shareId } from "./key-shares.ts";
+import { KeyShare } from "../vault/key-share.ts";
 import { PROOF_HEADER, verifyRequestProof } from "./request-proof.ts";
 import { GATEWAY_IDENTITY_HEADERS } from "../contracts/app-config.ts";
 import type {
@@ -121,7 +123,7 @@ function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication 
     identityHeaders: [PROOF_HEADER],
     verifier(env, appId, _headers, credential) {
       return async () => {
-        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId);
+        const { identity, share } = await verifyGatewayTokenAndShare(credential.token, env.JWT_SECRET, appId);
         // A token minted by the other exchange is refused, so changing an
         // app's sign-in type takes effect at once.
         if (identity.authMethod !== authMethod) {
@@ -133,8 +135,18 @@ function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication 
           if (!apiKey || apiKey.appId !== appId) {
             throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
           }
+          // Split keys (plan step 8j): the key sealed into the token opens its keyslot.
+          return share === null || apiKey.slot === null ? identity : { ...identity, keyShare: new KeyShare(share, apiKey.slot) };
         }
-        return identity;
+        if (share === null) return identity;
+        // An install's iOS share, sealed into its token at the exchange: it
+        // stops working, as an app key does, once it is revoked.
+        const id = shareId(share);
+        const record = id === null ? null : await lookupActiveShareById(env, id);
+        if (record === null || record.appId !== appId) {
+          throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
+        }
+        return { ...identity, keyShare: new KeyShare(share, record.slot) };
       };
     },
   };

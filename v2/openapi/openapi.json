@@ -352,6 +352,12 @@
             "minLength": 1,
             "maxLength": 16384,
             "description": "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify names no account, and the install is counted on its own."
+          },
+          "key_share": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "description": "The app's key share, for an account with split keys on: it lets the gateway open your provider keys for this install's requests. Required when split keys are on, and a wrong one is refused with 401 before any call. Ignored when split keys are off."
           }
         },
         "required": [

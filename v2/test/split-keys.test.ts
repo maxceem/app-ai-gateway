@@ -1,6 +1,7 @@
 /**
- * Split keys, phase 1 (plan step 8j): the crypto core in the vault, its
- * storage, and the request path for an app key. The other files that touch
+ * Split keys (plan step 8j): phase 1, the crypto core in the vault, its
+ * storage and the request path for an app key; and phase 3, the app's share
+ * at `/auth/token`, sealed into its token. The other files that touch
  * provider keys run again with split keys on (`vitest.config.ts`); this one
  * checks what only split keys do.
  */
@@ -10,6 +11,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
 import { hashApiKey } from "../src/client-auth/api-keys.ts";
+import { issueGatewayToken } from "../src/client-auth/gateway-token.ts";
 import { KeyShare } from "../src/vault/key-share.ts";
 import { OPEN_WORK_HANDLERS, runSweep } from "../src/ledger/sweep.ts";
 import { AEAD, decap, deriveKeyPair, encap, keySchedule, openBase, sealBase } from "../vault/src/hpke.js";
@@ -17,9 +19,10 @@ import { MAX_STORED_COPY_MS, storeCopy } from "../vault/src/call.js";
 import { forgetOpenedKeys, keyForRequest } from "../vault/src/keys.js";
 import { additionalData, open, reseal, seal, sealAs, secretContext } from "../vault/src/seal.js";
 import { SPLIT_PREFIX, credentialPublicKey, isSplit, newRoot, openRootWithCredential, sealRootToCredential } from "../vault/src/split.js";
-import { ACCOUNT_ID, attestAuthentication, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, ledger, loadManagement, registerTestInstall, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, tokenForInstall } from "./helpers.ts";
+import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
+import { ACCOUNT_ID, attestAuthentication, clearCaches, LOAD_MANAGEMENT_TIMEOUT_MS, ledger, loadManagement, registerTestInstall, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp, testAssertion, type TestInstall } from "./helpers.ts";
 import { TEST_VAULT_ENV } from "./local-vault.ts";
-import { enableSplitKeys, hasSplitKeys, sealForTest } from "./split-keys.ts";
+import { addIosShare, enableSplitKeys, hasSplitKeys, sealForTest } from "./split-keys.ts";
 
 const hex = (value: string) => Uint8Array.from(Buffer.from(value, "hex"));
 const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
@@ -332,13 +335,106 @@ describe("requests for an account with split keys on", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("sends nothing for a gateway token until tokens carry a share (phase 3)", async () => {
-    const { slug } = await seedSplitConnection();
-    const appId = await seedRoutedApp(attestAuthentication({ verify_on: "token_exchange" }), { providers: { [slug]: { operations: ["openai.chat"] } } });
-    const install = await registerTestInstall(appId);
-    const response = await call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chat(`Bearer ${await tokenForInstall(install)}`, { "x-app-version": "1.0" }));
-    expect(response.status).toBe(502);
-    expect(fetchSpy).not.toHaveBeenCalled();
+  describe("the app's share at /auth/token (phase 3)", () => {
+    async function attestApp() {
+      const { slug } = await seedSplitConnection();
+      const appId = await seedRoutedApp(attestAuthentication({ verify_on: "token_exchange" }), { providers: { [slug]: { operations: ["openai.chat"] } } });
+      return { slug, appId, install: await registerTestInstall(appId) };
+    }
+
+    /** One exchange, as the install sends it, with this share (or none). */
+    async function exchange(install: TestInstall, keyShare: string | undefined): Promise<Response> {
+      const challengeResponse = await call(`/v2/apps/${install.appId}/auth/challenge`, { method: "POST" });
+      const { challenge } = (await challengeResponse.json()) as { challenge: string };
+      install.counter += 1;
+      const assertion = await testAssertion({
+        privateKey: install.privateKey,
+        counter: install.counter,
+        clientDataHash: await sha256(assertionClientData(install.appId, challenge, install.keyId)),
+      });
+      return call(`/v2/apps/${install.appId}/auth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key_id: install.keyId, challenge, assertion: assertion.toString("base64"), ...(keyShare === undefined ? {} : { key_share: keyShare }) }),
+      });
+    }
+
+    const tokenOf = async (response: Response) => ((await response.json()) as { access_token: string }).access_token;
+    const ask = (appId: string, slug: string, token: string) =>
+      call(`/v2/apps/${appId}/proxy/${slug}/v1/chat/completions`, chat(`Bearer ${token}`, { "x-app-version": "1.0" }));
+    const answered = () =>
+      fetchSpy.mockImplementation(async () => Response.json({ id: "chatcmpl-1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+
+    it("seals an install's share into its token, and the token's requests open the account's keys", async () => {
+      const { slug, appId, install } = await attestApp();
+      const { id, share } = await addIosShare(ACCOUNT_ID, appId);
+      const exchanged = await exchange(install, share);
+      expect(exchanged.status).toBe(200);
+      answered();
+      const response = await ask(appId, slug, await tokenOf(exchanged));
+      expect(response.status).toBe(200);
+      expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe(`Bearer ${SECRET}`);
+      // The share's last use is recorded for the console.
+      const row = await env.DB.prepare("SELECT last_used_at FROM app_key_share WHERE id = ?").bind(id).first<{ last_used_at: number | null }>();
+      expect(row?.last_used_at).toEqual(expect.any(Number));
+    });
+
+    it("refuses a missing, wrong, malformed or other app's share with 401 at the exchange, before any call", async () => {
+      const { appId, install } = await attestApp();
+      const { share } = await addIosShare(ACCOUNT_ID, appId);
+      const other = await attestApp();
+      const { share: othersShare } = await addIosShare(ACCOUNT_ID, other.appId);
+      const [id] = share.split(".");
+      for (const sent of [undefined, `${id}.${"x".repeat(43)}`, "not-a-share", othersShare]) {
+        const response = await exchange(install, sent);
+        expect(response.status, String(sent)).toBe(401);
+        expect(await response.json()).toMatchObject({ error: { code: "auth_required" } });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // The right one still works.
+      expect((await exchange(install, share)).status).toBe(200);
+    });
+
+    it("sends nothing for a token with no share, as one minted before phase 3", async () => {
+      const { slug, appId, install } = await attestApp();
+      const { token } = await issueGatewayToken(env.JWT_SECRET, { appId, userId: install.userId, authMethod: "attest", installId: install.keyId });
+      const response = await ask(appId, slug, token);
+      expect(response.status).toBe(502);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses a revoked share at the exchange at once; its tokens stop once the short cache runs out", async () => {
+      const { slug, appId, install } = await attestApp();
+      const { id, share } = await addIosShare(ACCOUNT_ID, appId);
+      const token = await tokenOf(await exchange(install, share));
+      answered();
+      expect((await ask(appId, slug, token)).status).toBe(200);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE app_key_share SET status = 'revoked' WHERE id = ?").bind(id),
+        env.DB.prepare("DELETE FROM key_slot WHERE credential_kind = 'ios_share' AND credential_id = ?").bind(id),
+      ]);
+      expect((await exchange(install, share)).status).toBe(401);
+      // Not instantly for a token already issued: until its isolate's cache entry runs out.
+      expect((await ask(appId, slug, token)).status).toBe(200);
+      clearCaches();
+      forgetOpenedKeys();
+      const refused = await ask(appId, slug, token);
+      expect(refused.status).toBe(401);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("deletes an app's shares and their keyslots with the app", async () => {
+      const management = await seedManagementKey();
+      const { appId } = await attestApp();
+      const { id } = await addIosShare(ACCOUNT_ID, appId);
+      expect((await admin(management, "DELETE", `/v2/admin/apps/${appId}?confirm=${appId}`)).status).toBe(200);
+      const left = await env.DB.prepare(
+        "SELECT (SELECT COUNT(*) FROM app_key_share WHERE id = ?1) + (SELECT COUNT(*) FROM key_slot WHERE credential_id = ?1) AS n",
+      )
+        .bind(id)
+        .first<{ n: number }>();
+      expect(left?.n).toBe(0);
+    });
   });
 
   it("seals a key saved through the API to the account's root", async () => {

@@ -41,6 +41,9 @@ export const AppAttestRegisterRequestSchema = z
   })
   .meta({ id: "AppAttestRegisterRequest" });
 
+/** The longest key share (split keys, plan step 8j) a token request accepts. */
+export const MAX_KEY_SHARE_LENGTH = 160;
+
 export const AppAttestTokenRequestSchema = z
   .object({
     issuer_token: z.string().min(1).optional(),
@@ -50,6 +53,10 @@ export const AppAttestTokenRequestSchema = z
     app_transaction: z.string().min(1).max(MAX_APP_TRANSACTION_LENGTH).optional().meta({
       description:
         "The App Store's signed AppTransaction (its JWS), which names the Apple Account the install belongs to. When present, the assertion signs client data that also carries app_transaction: the unpadded base64url SHA-256 of this string. One that does not verify names no account, and the install is counted on its own.",
+    }),
+    key_share: z.string().min(1).max(MAX_KEY_SHARE_LENGTH).optional().meta({
+      description:
+        "The app's key share, for an account with split keys on: it lets the gateway open your provider keys for this install's requests. Required when split keys are on, and a wrong one is refused with 401 before any call. Ignored when split keys are off.",
     }),
   })
   .meta({ id: "AppAttestTokenRequest" });

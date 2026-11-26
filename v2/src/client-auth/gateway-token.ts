@@ -58,13 +58,95 @@ function key(secret: string): Promise<CryptoKey> {
   return imported;
 }
 
+/** The HKDF label of the key a token's share is sealed under (plan step 8j). */
+const SHARE_INFO = "agw-key-share";
+const SHARE_IV_BYTES = 12;
+
+/**
+ * AES-GCM keys for sealing shares into tokens, by `JWT_SECRET`: derived once
+ * each, as the HMAC keys above are imported once.
+ */
+const shareKeyCache = ttlCache<string, Promise<CryptoKey>>({
+  name: "jwt-share-key",
+  ttlMs: Number.POSITIVE_INFINITY,
+  maxEntries: MAX_KEY_CACHE_ENTRIES,
+});
+
+function shareKey(secret: string): Promise<CryptoKey> {
+  const cached = shareKeyCache.get(secret);
+  if (cached) return cached;
+  const derived: Promise<CryptoKey> = (async () => {
+    const base = await crypto.subtle.importKey("raw", encoder.encode(secret), "HKDF", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: encoder.encode(SHARE_INFO) },
+      base,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+  })().catch((error: unknown) => {
+    if (shareKeyCache.get(secret) === derived) shareKeyCache.delete(secret);
+    throw error;
+  });
+  shareKeyCache.set(secret, derived);
+  return derived;
+}
+
+/** What a sealed share is bound to: the one token it was sealed into. */
+function shareBinding(jti: string, appId: string, userId: string): Uint8Array<ArrayBuffer> {
+  return encoder.encode(JSON.stringify([SHARE_INFO, jti, appId, userId]));
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+function fromBase64Url(text: string): Uint8Array<ArrayBuffer> {
+  if (!/^[A-Za-z0-9_-]+$/u.test(text)) throw new Error("not base64url");
+  const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+/**
+ * The app's credential, sealed into its token: AES-GCM under a key derived
+ * from `JWT_SECRET`, bound to the token's `jti`, `app` and `sub`. A token can
+ * be read by whoever holds it, so the credential is never a plain claim.
+ */
+async function sealShare(secret: string, share: string, binding: Uint8Array<ArrayBuffer>): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(SHARE_IV_BYTES));
+  const sealed = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: binding }, await shareKey(secret), encoder.encode(share)),
+  );
+  const out = new Uint8Array(iv.length + sealed.length);
+  out.set(iv);
+  out.set(sealed, iv.length);
+  return toBase64Url(out);
+}
+
+async function openShare(secret: string, claim: string, binding: Uint8Array<ArrayBuffer>): Promise<string> {
+  const bytes = fromBase64Url(claim);
+  if (bytes.length <= SHARE_IV_BYTES + 16) throw new Error("sealed share too short");
+  const opened = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: bytes.subarray(0, SHARE_IV_BYTES), additionalData: binding },
+    await shareKey(secret),
+    bytes.subarray(SHARE_IV_BYTES),
+  );
+  return new TextDecoder("utf-8", { fatal: true }).decode(opened);
+}
+
 /**
  * What a gateway token says: one user of one application, and how they proved
  * it — the API key it was minted from, or the App Attest key of the install
  * it was minted for.
+ *
+ * `keyShare`, for an account with split keys on (plan step 8j), is the app's
+ * credential that opens its keyslot: the app key itself, or the iOS share
+ * the install sent. It is sealed into the token, never written in it plainly.
  */
 export type GatewayTokenClaims =
-  | { appId: string; userId: string; authMethod: "api_key"; apiKeyId?: string }
+  | { appId: string; userId: string; authMethod: "api_key"; apiKeyId?: string; keyShare?: string }
   | {
     appId: string;
     userId: string;
@@ -72,6 +154,7 @@ export type GatewayTokenClaims =
     installId: string;
     /** The Apple Account the exchange's App Store transaction named; absent or null where it named none. */
     appleAccountId?: string | null;
+    keyShare?: string;
   };
 
 /** A gateway token for one user of one application. */
@@ -81,6 +164,9 @@ export async function issueGatewayToken(
 ): Promise<{ token: string; expiresIn: number }> {
   const expiresIn = GATEWAY_TOKEN_TTL_SECONDS;
   const now = Math.floor(Date.now() / 1000);
+  const jti = crypto.randomUUID();
+  const keyShare =
+    claims.keyShare === undefined ? undefined : await sealShare(secret, claims.keyShare, shareBinding(jti, claims.appId, claims.userId));
   const token = await new SignJWT({
     app: claims.appId,
     auth_method: claims.authMethod,
@@ -95,29 +181,44 @@ export async function issueGatewayToken(
     ...(claims.authMethod === "attest" && typeof claims.appleAccountId === "string"
       ? { apple_account: claims.appleAccountId }
       : {}),
+    ...(keyShare === undefined ? {} : { key_share: keyShare }),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(claims.userId)
     .setIssuedAt(now)
     .setExpirationTime(now + expiresIn)
-    .setJti(crypto.randomUUID())
+    .setJti(jti)
     .sign(await key(secret));
   return { token, expiresIn };
 }
 
 /**
- * A gateway token's identity, or `401 auth_required`.
- *
- * An attest token must name its install, in either `verify_on` mode: the
- * install is what its limits, budget and usage are counted by, and a token
- * without one (as the gateway minted them before installs existed) is refused
- * like any other malformed token. An API-key token names none.
+ * A gateway token's identity, or `401 auth_required`. See
+ * {@link verifyGatewayTokenAndShare}, which also opens the app's credential
+ * a token for a split-key account carries.
  */
 export async function verifyGatewayToken(
   token: string,
   secret: string,
   expectedAppId: string,
 ): Promise<GatewayIdentity> {
+  return (await verifyGatewayTokenAndShare(token, secret, expectedAppId)).identity;
+}
+
+/**
+ * A gateway token's identity, and the app's credential sealed into it (null
+ * when it carries none), or `401 auth_required`.
+ *
+ * An attest token must name its install, in either `verify_on` mode: the
+ * install is what its limits, budget and usage are counted by, and a token
+ * without one (as the gateway minted them before installs existed) is refused
+ * like any other malformed token. An API-key token names none.
+ */
+export async function verifyGatewayTokenAndShare(
+  token: string,
+  secret: string,
+  expectedAppId: string,
+): Promise<{ identity: GatewayIdentity; share: string | null }> {
   try {
     const { payload, protectedHeader } = await jwtVerify(token, await key(secret), {
       algorithms: ["HS256"],
@@ -141,7 +242,8 @@ export async function verifyGatewayToken(
       (payload.apple_account !== undefined &&
         (payload.auth_method !== "attest" ||
           typeof payload.apple_account !== "string" ||
-          payload.apple_account.length === 0))
+          payload.apple_account.length === 0)) ||
+      (payload.key_share !== undefined && typeof payload.key_share !== "string")
     ) {
       throw new Error("Required gateway token claims are missing");
     }
@@ -151,7 +253,7 @@ export async function verifyGatewayToken(
       credentialType: "gateway_token" as const,
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
-    return payload.auth_method === "attest"
+    const identity: GatewayIdentity = payload.auth_method === "attest"
       ? {
         ...fields,
         authMethod: "attest",
@@ -159,6 +261,11 @@ export async function verifyGatewayToken(
         appleAccountId: typeof payload.apple_account === "string" ? payload.apple_account : null,
       }
       : { ...fields, authMethod: "api_key", installId: null, appleAccountId: null };
+    const share =
+      typeof payload.key_share === "string"
+        ? await openShare(secret, payload.key_share, shareBinding(payload.jti, expectedAppId, payload.sub))
+        : null;
+    return { identity, share };
   } catch {
     throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
   }

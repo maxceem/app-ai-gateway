@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import worker from "../src/index.ts";
-import { sealForTest, splitKeysOn } from "./split-keys.ts";
+import { sealForTest } from "./split-keys.ts";
 import {
   ACCOUNT_ID,
   attestAuthentication,
@@ -473,8 +473,7 @@ describe("review fixes", () => {
     expect(row?.last_used_at).toEqual(expect.any(Number));
   });
 
-  // A gateway token brings no share until split keys phase 3.
-  it.skipIf(splitKeysOn)("records a replayed App Attest proof as a rejection event (S7)", async () => {
+  it("records a replayed App Attest proof as a rejection event (S7)", async () => {
     const { slug } = await seedConnection();
     const appId = await seedRoutedApp(attestAuthentication(), { providers: { [slug]: { operations: ["openai.chat"] } } });
     const install = await registerTestInstall(appId);

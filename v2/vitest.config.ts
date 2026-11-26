@@ -3,12 +3,12 @@ import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 /**
- * The files that send provider keys over requests an app key authenticates,
- * run a second time with the test account's split keys on (plan step 8j,
- * `test/split-keys.ts`). A request with a gateway token brings no share
- * until phase 3, so those tests skip themselves in this run.
+ * The files that send provider keys, or exchange the tokens that carry the
+ * app's credential, run a second time with the test account's split keys on
+ * (plan step 8j, `test/split-keys.ts`).
  */
 const SPLIT_KEY_FILES = [
+  "test/auth-routes.test.ts",
   "test/proxy.test.ts",
   "test/passthrough.test.ts",
   "test/presets.test.ts",

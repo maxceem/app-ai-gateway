@@ -9,6 +9,7 @@
  */
 import { callProvider, holds, storeCopy } from "../vault/src/call.js";
 import { reseal, seal, vaultStatus } from "../vault/src/seal.js";
+import { credentialMatches } from "../vault/src/split.js";
 import { vaultAnswer, type VaultClient } from "../src/vault/client.ts";
 
 /** The test vault's settings: local mode, a test-only key of 32 zero bytes, as `vitest.config.ts` gives the vault Worker. */
@@ -26,6 +27,7 @@ export function localVault(_env: Env): VaultClient {
     reseal: (kind, from, to, blob) => reseal(vaultEnv, kind, [...from], [...to], blob),
     call: async (input) => vaultAnswer(await callProvider(vaultEnv, input)),
     holds: (credentials, texts) => holds(vaultEnv, credentials, [...texts]),
+    credentialMatches: (secret, publicKey) => credentialMatches(secret, publicKey),
     status: () => Promise.resolve(vaultStatus(vaultEnv)),
   };
 }

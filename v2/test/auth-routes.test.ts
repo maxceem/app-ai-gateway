@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { LEDGER_CALL_DEADLINE_MS } from "../src/ledger/database.ts";
 import { BACKGROUND_JOB_DEADLINE_MS, boundedJob } from "../src/core/background.ts";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import worker from "../src/index.ts";
 import { assertionClientData, sha256 } from "../src/client-auth/app-assertion.ts";
@@ -22,6 +22,7 @@ import {
   tokenForInstall,
   type TestInstall,
 } from "./helpers.ts";
+import { shareForApp, splitKeysOn } from "./split-keys.ts";
 
 const ORIGIN = "https://gateway.test";
 
@@ -45,14 +46,15 @@ async function challengeFor(appId: string): Promise<string> {
   return ((await response.json()) as { challenge: string }).challenge;
 }
 
-/** The token exchange body a device sends for an install. */
+/** The token exchange body a device sends for an install: with the app's iOS share in the split-key run. */
 async function exchangeBody(install: TestInstall, challenge: string, counter: number): Promise<Record<string, unknown>> {
   const assertion = await testAssertion({
     privateKey: install.privateKey,
     counter,
     clientDataHash: await sha256(assertionClientData(install.appId, challenge, install.keyId)),
   });
-  return { key_id: install.keyId, challenge, assertion: assertion.toString("base64") };
+  const share = await shareForApp(install.appId);
+  return { key_id: install.keyId, challenge, assertion: assertion.toString("base64"), ...(share === null ? {} : { key_share: share }) };
 }
 
 beforeEach(() => clearCaches());
@@ -333,6 +335,21 @@ describe("POST /v2/apps/{app}/auth/token with App Attest", () => {
     });
   });
 
+  it("seals the app's share into the token when split keys are on, and ignores one when they are off (split keys)", async () => {
+    const appId = await seedApp(attestAuthentication());
+    const install = await registerTestInstall(appId);
+    // In the off run the field holds a share-shaped value that opens nothing: it is ignored.
+    const body = await exchangeBody(install, await challengeFor(appId), 1);
+    const sent = (body.key_share as string | undefined) ?? `shr_${"a".repeat(20)}.${"b".repeat(43)}`;
+    const response = await post(`/v2/apps/${appId}/auth/token`, { ...body, key_share: sent });
+    expect(response.status).toBe(200);
+    const { access_token: token } = (await response.json()) as { access_token: string };
+    const claims = decodeJwt(token);
+    expect(claims.key_share !== undefined).toBe(splitKeysOn);
+    // Sealed, never plain: neither the share nor its secret can be read from the token.
+    expect(JSON.stringify(claims)).not.toContain(sent.split(".")[1]);
+  });
+
   it("refuses a replayed counter, a used challenge, and an assertion for another key", async () => {
     const appId = await seedApp(attestAuthentication());
     const install = await registerTestInstall(appId);
@@ -408,6 +425,9 @@ describe("POST /v2/apps/{app}/auth/token with an app key and an issuer", () => {
     expect(response.status).toBe(200);
     const { access_token: token, verify_on } = (await response.json()) as { access_token: string; verify_on?: string };
     expect(verify_on).toBeUndefined();
+    // Split keys: the key, which opens its keyslot, is sealed into the token, never written in it.
+    expect(decodeJwt(token).key_share !== undefined).toBe(splitKeysOn);
+    expect(JSON.stringify(decodeJwt(token))).not.toContain(key.key);
     const me = await call(`/v2/apps/${appId}/me`, { headers: { authorization: `Bearer ${token}` } });
     expect(await me.json()).toEqual({ user_id: "person-1", install_id: null, limits: {
         requests_today: null,

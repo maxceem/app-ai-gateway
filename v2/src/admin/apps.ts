@@ -932,9 +932,11 @@ export async function deleteApp(c: AdminContext): Promise<Response> {
        SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM app WHERE id = ?1 AND account_id = ?3)
        ON CONFLICT (id) DO NOTHING`,
     ).bind(appId, Date.now(), actor.accountId),
-    // Split keys (plan step 8j): the keys' keyslots go with them.
+    // Split keys (plan step 8j): the keys' and iOS shares' keyslots go with them.
     c.env.DB.prepare("DELETE FROM key_slot WHERE credential_kind = 'api_key' AND credential_id IN (SELECT id FROM app_key WHERE app_id = ?)").bind(appId),
+    c.env.DB.prepare("DELETE FROM key_slot WHERE credential_kind = 'ios_share' AND credential_id IN (SELECT id FROM app_key_share WHERE app_id = ?)").bind(appId),
     c.env.DB.prepare("DELETE FROM app_key WHERE app_id = ?").bind(appId),
+    c.env.DB.prepare("DELETE FROM app_key_share WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_attest_key WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_auth_challenge WHERE app_id = ?").bind(appId),
     c.env.DB.prepare("DELETE FROM app_end_user WHERE app_id = ?").bind(appId),
