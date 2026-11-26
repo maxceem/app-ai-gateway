@@ -19,8 +19,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { readCloudflareGateway, type ConnectionRecord } from "../src/providers/connections.ts";
-import { connectionCredentials } from "../test/opened-request.ts";
+import { readCloudflareGateway, sealedCredentials, type ConnectionRecord } from "../src/providers/connections.ts";
+import { open } from "../vault/src/seal.js";
 import { secretVault } from "../src/vault/index.ts";
 import { VAULT_SERVICE } from "../src/vault/types.ts";
 import { checkAgainstV2, insertStatements, readFirst, reportMarkdown } from "./migrate/output.ts";
@@ -249,8 +249,11 @@ const said = (subject: string, pattern: RegExp, kind?: string) => {
   return found;
 };
 const config = (id: string) => JSON.parse(row("app", id)!.config_json as string);
-/** A moved connection's credentials, opened the way the Worker opens them for a live request (Sol 1). */
-const credentials = (id: string) => {
+/**
+ * A moved connection's credentials, opened by the vault Worker's own module
+ * for the identity the gateway sends it on a live request (Sol 1, 8i).
+ */
+const credentials = async (id: string) => {
   const moved = row("provider_connection", id)!;
   const record = {
     id: moved.id,
@@ -261,7 +264,11 @@ const credentials = (id: string) => {
     secretBlob: moved.secret_blob,
     cloudflareGateway: readCloudflareGateway(moved.cloudflare_gateway_json),
   } as unknown as ConnectionRecord;
-  return connectionCredentials(V2_VAULT, record);
+  const sealed = sealedCredentials(record);
+  return {
+    providerKey: sealed.providerKey === null ? null : await open(V2_VAULT, "providerKey", sealed.providerKey.identity, sealed.providerKey.blob),
+    cloudflareToken: sealed.cloudflareToken === null ? null : await open(V2_VAULT, "cloudflareGatewayToken", sealed.cloudflareToken.identity, sealed.cloudflareToken.blob),
+  };
 };
 
 // ---------------------------------------------------------------- accounts and people
