@@ -343,3 +343,35 @@ describe("a session's end", () => {
     expect(s.store.alarm).toBeNull();
   });
 });
+
+describe("a client that hangs up during the start (Sol round 2)", () => {
+  it("while the vault answers: the provider is never dialed, and the session ends through the usual end path", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const s = setup({ vault: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    const started = core.start(s.text, s.ticket);
+    await until(() => s.calls.vault === 1);
+    await core.clientGone();
+    release({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" });
+    expect(await started).toEqual({ ok: false, code: "client_closed" });
+    expect(s.calls.connect).toBe(0);
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
+    // The ended marker stays until the ticket expires.
+    expect(s.store.data.get("state")).toBe("ended");
+    expect(s.store.alarm).toBe(s.ticket.exp);
+  });
+
+  it("during the provider handshake: the provider is hung up, and the session ends", async () => {
+    let release: (value: { callId: string | null }) => void = () => undefined;
+    const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    const started = core.start(s.text, s.ticket);
+    await until(() => s.calls.connect === 1);
+    await core.clientGone();
+    release({ callId: null });
+    expect(await started).toEqual({ ok: false, code: "client_closed" });
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 0 }]);
+    expect(s.store.data.get("state")).toBe("ended");
+  });
+});

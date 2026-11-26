@@ -107,6 +107,8 @@ export class SessionCore {
     this.starting = false;
     /** The provider connection is live in this instance's memory. A restart loses it. */
     this.connected = false;
+    /** The client hung up while the start was in flight: the start stops at its next check. */
+    this.cancelled = false;
   }
 
   /**
@@ -121,6 +123,7 @@ export class SessionCore {
     if (this.starting) return { ok: false, code: "start_in_flight" };
     // Set before the first wait, so a second connection that arrives meanwhile is refused.
     this.starting = true;
+    this.cancelled = false;
     try {
       if (ticket.sid !== this.name) return { ok: false, code: "ticket_refused" };
       const stored = await this.store.get(KEYS);
@@ -164,6 +167,11 @@ export class SessionCore {
         await this.store.put({ state: "starting", ticket: ticketText, settings }, ticket.exp);
       }
 
+      // The client hung up while the vault or `open` answered: no provider call is made.
+      if (this.cancelled) {
+        await this.end("client_closed");
+        return { ok: false, code: "client_closed" };
+      }
       // Checked again right before dialing: the waits above may have taken the ticket or the session past its time.
       const deadline = deadlineOf(ticket);
       if (this.now() >= ticket.exp || this.now() >= deadline) {
@@ -187,6 +195,12 @@ export class SessionCore {
       // A slow handshake: the alarm may have ended the session meanwhile, or its time run out.
       // Then the provider's side is hung up, and an ended session is never brought back.
       const current = await this.store.get(["state"]);
+      // The client hung up during the handshake: the provider's side is hung up, and the session ends.
+      if (this.cancelled && current.get("state") === "starting") {
+        this.call = call;
+        await this.end("client_closed");
+        return { ok: false, code: "client_closed" };
+      }
       if (current.get("state") !== "starting" || this.now() >= deadline) {
         call.close?.(1000, "session ended");
         if (current.get("state") === "starting") await this.end("error", { log: "relay_start_too_late" });
@@ -204,6 +218,18 @@ export class SessionCore {
     } finally {
       this.starting = false;
     }
+  }
+
+  /**
+   * The client hung up. During a start, the start stops at its next check
+   * (before dialing, or right after the handshake); otherwise the session ends.
+   */
+  async clientGone() {
+    if (this.starting) {
+      this.cancelled = true;
+      return;
+    }
+    await this.end("client_closed");
   }
 
   /**

@@ -137,18 +137,21 @@ export class Session extends DurableObject {
    * @param {import("./ticket.js").Ticket} ticket
    */
   async begin(client, ticketText, ticket) {
+    // Listened to before the start, so a client that hangs up during it stops it: no paid
+    // provider session is left running with nobody on the other end.
+    let gone = false;
+    client.addEventListener("close", () => {
+      gone = true;
+      if (this.clientSocket === client) this.clientSocket = null;
+      void this.core.clientGone();
+    });
     const result = await this.core.start(ticketText, ticket);
     if (!result.ok) {
-      client.close(4000, result.code);
+      if (!gone) client.close(4000, result.code);
       return;
     }
     this.clientSocket = client;
     client.send(JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
-    // The client hung up: the provider's side is hung up too (in `end`).
-    client.addEventListener("close", () => {
-      if (this.clientSocket === client) this.clientSocket = null;
-      void this.core.end("client_closed");
-    });
   }
 
   /** @override */
