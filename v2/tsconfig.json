@@ -17,5 +17,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["src/**/*.ts", "vault/src/**/*.js", "test/**/*.ts", "scripts/**/*.ts", "smoke/**/*.ts", "vitest.config.ts", "drizzle.config.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "vault/src/**/*.js", "relay/src/**/*.js", "test/**/*.ts", "scripts/**/*.ts", "smoke/**/*.ts", "vitest.config.ts", "drizzle.config.ts", "worker-configuration.d.ts"]
 }

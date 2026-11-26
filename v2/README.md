@@ -49,7 +49,7 @@ Run from the repository root:
 - `pnpm run v2:check`: types, generated Worker types and the generated OpenAPI document.
 - `pnpm run v2:test`: the tests.
 - `pnpm run v2:console:check`, `pnpm run v2:console:test`: the console's types and tests.
-- `pnpm run v2:console:build`: build the console. Every deploy needs it first.
+- `pnpm run v2:console:build`: build the console. The deploy (see "Deploying") builds it itself.
 
 Inside `v2/`:
 
@@ -62,6 +62,8 @@ Inside `v2/`:
   checks need `V2_CONSOLE_URL` alone. The Cloudflare AI Gateway check also needs
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
   The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
+  The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway, and
+  `V2_RELAY_ECHO=1` for a relay with its echo on; without it they check the echo is refused.
   Every request the checks send names itself with the `user-agent` `agw-smoke/<version>`
   (`smoke/user-agent.ts`, which `pnpm run smoke` loads first).
 - `node --experimental-strip-types --import ./smoke/user-agent.ts --test smoke/email.smoke.ts`: the email check, run on its own. It
@@ -192,15 +194,66 @@ a warning. On the Workers Paid plan, two optional Worker variables clear it fast
 
 ## Deploying
 
-`wrangler.jsonc` holds what every deployment shares. A deployment's own Worker
-name, database id, domains and placement go in a gitignored
-`wrangler.<profile>.jsonc` next to it, used with `wrangler -c`. Migrations are
-applied with `wrangler d1 migrations apply DB --remote -c wrangler.<profile>.jsonc`
-before the Worker is deployed. Build the console (`pnpm run v2:console:build`) before every
-deploy: the Worker uploads `console/dist/` as its static files.
+v2 is three Workers, each with its own `wrangler.jsonc`:
 
-The vault Worker (`vault/`) is deployed first, then the gateway Worker, whose `VAULT` binding
-names it.
+- the gateway (this folder);
+- the vault (`vault/`), the only Worker that opens provider keys outside a live session;
+- the relay (`relay/`), for live sessions. For now its session object only echoes frames, and
+  only where the relay's profile sets `RELAY_ECHO` to `"1"`, which only a test deployment does.
+
+Each `wrangler.jsonc` holds what every deployment shares. A deployment's own Worker names,
+database id, domains and placement go in a gitignored `wrangler.<profile>.jsonc` next to each,
+a full copy of that Worker's `wrangler.jsonc`. The gateway's profile names the vault in its
+`VAULT` binding, and the relay's profile names the gateway in its `MAIN` binding.
+
+Deploy all three with one command:
+
+```sh
+pnpm --filter @app-ai-gateway/gateway-v2 run deploy -- --profile <name>
+```
+
+It deploys in the order the bindings need:
+
+1. the vault;
+2. the D1 migrations, then the gateway, after building the console;
+3. the relay.
+
+It also gives the gateway `RELAY_URL`, the address apps reach the relay at. That is the
+gateway config's own `RELAY_URL` if set, else the relay's custom domain, else its workers.dev
+address. On a first install the gateway is deployed a second time, once the relay's address is
+known. The address the gateway has now is read before anything is deployed; if it can't be read
+for a gateway that exists, nothing is deployed.
+
+Before deploying anything, it refuses configs that don't fit together:
+
+- a binding that names the wrong Worker;
+- a relay without `code_update_strategy` `{ "mode": "deferred", "max_delay": 2400 }`;
+- a vault in `kms` mode with a local setting;
+- a vault setting on the gateway or the relay;
+- a vault or a relay without `no_bundle`;
+- two Workers with the same name;
+- a relay with no custom domain and no workers.dev address, unless the gateway config sets
+  `RELAY_URL`.
+
+Every Wrangler call it makes passes `--env ""`, so a `CLOUDFLARE_ENV` in the shell or a `.env`
+file never picks another environment: the profiles are files, not Wrangler environments.
+
+Without that relay setting, a deploy cuts open sessions after 300 s. With it, open sessions keep
+the old code for up to 40 minutes. So deploy the relay only with this command, never from the
+dashboard or with `wrangler deploy` alone. Deploy the gateway with this command too: a plain
+`wrangler deploy` drops its `RELAY_URL`.
+
+`--dry-run` checks the configs and runs `wrangler deploy --dry-run` for each Worker, and changes
+nothing. The release's deploy uses `--prebuilt <dir>`, with the gateway bundle and console that
+`build:prebuilt` made in a job without deploy secrets, and refuses a config with a build command
+or `base_dir`. The vault and the relay have no build: they are uploaded straight from the
+checkout, which in the release's deploy job is the tag, so they match it by construction. A
+relative path is from the folder the command runs in, which is `v2/` through `pnpm run`.
+
+Secrets are not part of the deploy; `secrets:upload` puts them on each Worker. The relay holds
+none yet.
+
+The vault:
 
 - Its own profile is a gitignored `vault/wrangler.<profile>.jsonc`, a copy of
   `vault/wrangler.jsonc` with the deployment's Worker name. It is uploaded as it is, with no

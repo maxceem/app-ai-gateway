@@ -1,0 +1,32 @@
+// The relay Worker (plan step 9): live sessions. Plain JavaScript modules,
+// uploaded as they are, with no build and no npm packages. For now its session
+// object only echoes frames; tickets, `open` and forwarding come next (9a).
+// A deployment's own name goes in a gitignored `wrangler.<profile>.jsonc` next
+// to this file, never here.
+//
+// Deploy it only with the v2 deploy script (`scripts/deploy.ts`): it always
+// sends `code_update_strategy`, and refuses a config without it. Without that
+// setting a deploy cuts open sessions after 300 s (plan section 5.1).
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway-v2-relay",
+  "main": "src/index.js",
+  // Keep this the same as the gateway's `wrangler.jsonc`.
+  "compatibility_date": "2026-07-24",
+  "no_bundle": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js"] }],
+  // Installs without a custom domain reach the relay at its workers.dev URL,
+  // which the deploy script gives the gateway as `RELAY_URL`.
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "enabled": true, "head_sampling_rate": 1 } },
+  // The gateway Worker. The relay calls it; the gateway never calls the relay,
+  // so the gateway is deployed first.
+  "services": [{ "binding": "MAIN", "service": "app-ai-gateway-v2" }],
+  "durable_objects": {
+    "bindings": [{ "name": "SESSION", "class_name": "Session" }],
+    // Open sessions keep the old code for up to 40 minutes after a deploy.
+    "code_update_strategy": { "mode": "deferred", "max_delay": 2400 }
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Session"] }]
+}
