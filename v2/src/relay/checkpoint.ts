@@ -43,6 +43,7 @@ import {
   type CheckpointBudget,
   type CheckpointPlanMinutes,
   type CheckpointStanding,
+  type CheckpointWrite,
   type SliceAtSavedPrice,
   type StopReason,
 } from "../ledger/sessions.ts";
@@ -338,9 +339,9 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, today: string | nu
   };
 }
 
-/** Inside the account's ledger object: books one checkpoint (`AccountLedger.checkpoint`). */
-export async function bookCheckpoint(db: D1Database, settings: D1Database, input: LedgerCheckpointInput): Promise<CheckpointAnswer> {
-  return await writeCheckpoint(db, settings, {
+/** What the ledger object writes for one checkpoint (`AccountLedger.checkpoint`, `writeCheckpointIn`). */
+export function checkpointWrite(input: LedgerCheckpointInput): CheckpointWrite & { readonly standing: CheckpointStanding | null } {
+  return {
     session: sessionRowOf(input.ticket),
     slice: input.slice === null ? null : sliceAtSavedPrice(input.ticket, input.slice, input.today, input.now),
     budgets: input.budgets,
@@ -350,7 +351,12 @@ export async function bookCheckpoint(db: D1Database, settings: D1Database, input
     standing: input.standing,
     gaps: input.slice?.gaps ?? 0,
     ...(input.today === null ? {} : { price: input.today }),
-  });
+  };
+}
+
+/** One checkpoint over a ledger with D1's shape: tests' stand-ins for the ledger object. */
+export async function bookCheckpoint(db: D1Database, settings: D1Database, input: LedgerCheckpointInput): Promise<CheckpointAnswer> {
+  return await writeCheckpoint(db, settings, checkpointWrite(input));
 }
 
 /** The order a stop's reasons are told in: the first is the end reason the relay records. */

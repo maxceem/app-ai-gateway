@@ -104,19 +104,30 @@ export class AccountLedger extends DurableObject<Env> {
   }
 
   /**
-   * Books one live-session checkpoint (`../relay/checkpoint.ts`): the
-   * session's saved price is read, the slice priced with it and booked, with
-   * no other request in between. Its code loads on first use.
+   * Books one live-session checkpoint (`../relay/checkpoint.ts`) in one
+   * synchronous transaction: the session's saved price is read, the slice
+   * priced with it and booked, the price saved on the first one, and the
+   * stops checked. If anything fails, nothing is written. Its code loads on
+   * first use.
    */
   async checkpoint(input: import("../relay/checkpoint.ts").LedgerCheckpointInput): Promise<import("../ledger/sessions.ts").CheckpointAnswer> {
-    const { bookCheckpoint } = await import("../relay/checkpoint.ts");
+    const [{ checkpointWrite }, { failedCheckpoint, writeCheckpointIn }] = await Promise.all([import("../relay/checkpoint.ts"), import("../ledger/sessions.ts")]);
+    const write = checkpointWrite(input);
+    const storage = this.ctx.storage;
     let wrote = false;
-    const db = shapedLikeD1(async (statements, transaction) => {
-      const results = runLedgerStatements(this.ctx.storage, statements, transaction);
-      if (results.some((result) => result.changes > 0)) wrote = true;
-      return results;
-    });
-    const answer = await bookCheckpoint(db, this.env.DB, input);
+    let answer;
+    try {
+      answer = storage.transactionSync(() =>
+        writeCheckpointIn((statements) => {
+          const results = runLedgerStatements(storage, statements, false);
+          if (results.some((result) => result.changes > 0)) wrote = true;
+          return results;
+        }, write),
+      );
+    } catch (error) {
+      wrote = false;
+      answer = failedCheckpoint(write, null, write.standing, error);
+    }
     if (wrote) {
       try {
         await this.planWork();

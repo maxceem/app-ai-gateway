@@ -12,6 +12,7 @@ import { decodeSessionPrice, encodeSessionPrice } from "../src/relay/session-pri
 import { ContractRefusal, openForRelay } from "../src/relay/contract.ts";
 import { issueTicket, sessionRowOf, type TicketRequest } from "../src/relay/tickets.ts";
 import { closeSession, openSession } from "../src/ledger/sessions.ts";
+import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
 import { userLimiterName } from "../src/limits/admission.ts";
 import { listPrice, PRICE_LIST } from "../src/pricing/prices.ts";
 import { priceTokens } from "../src/pricing/tokens.ts";
@@ -194,6 +195,63 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 }, { from: ticket.start + 60_000, to: ticket.start + 120_000 })));
     expect(await savedPrice(ticket.sid)).toContain('"source":"customer_rate"');
     expect(await charges(ticket.sid)).toMatchObject([{ price_source: "unresolved" }, { cost_nano: 1_000_000, price_source: "customer_rate" }]);
+  });
+
+  it("a retry of a booked slice saves no price: only a new slice does (Sol round 5)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // Slice 1 is booked unresolved; its reply is lost.
+    const one = slice(ticket, 1, { input_tokens: 1_000 });
+    await checkpointForRelay(env, text, live(one));
+    // The rates recover to A, and slice 1 is sent again: acknowledged, and nothing is saved.
+    await setRates(1_000_000_000);
+    expect(await checkpointForRelay(env, text, live(one))).toMatchObject({ written: true });
+    expect(await savedPrice(ticket.sid)).toBeNull();
+    // The rates change to B; slice 2 saves B and is booked at it.
+    await setRates(3_000_000_000);
+    await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 })));
+    expect(await charges(ticket.sid)).toMatchObject([{ price_source: "unresolved" }, { cost_nano: 3_000_000, price_source: "customer_rate" }]);
+  });
+
+  it("a booking that fails saves no price: the retry's price is the one saved (Sol round 5)", async () => {
+    const { connectionId, setRates } = await houseConnection(1_000_000_000);
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const one = slice(ticket, 1, { input_tokens: 1_000 });
+    // The charge insert fails inside the ledger object's transaction.
+    await ledger()
+      .prepare(`CREATE TRIGGER fail_slice BEFORE INSERT ON charge WHEN NEW.id = '${ticket.sid}:slice:1' BEGIN SELECT RAISE(ABORT, 'forced'); END`)
+      .run();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await checkpointForRelay(env, text, live(one))).toMatchObject({ decision: "continue", written: false });
+    } finally {
+      await ledger().prepare("DROP TRIGGER fail_slice").run();
+    }
+    expect(await savedPrice(ticket.sid)).toBeNull();
+    // The rates change; the retry saves its own price and is booked at it.
+    await setRates(2_000_000_000);
+    expect(await checkpointForRelay(env, text, live(one))).toMatchObject({ written: true });
+    expect(await savedPrice(ticket.sid)).toContain("2000000000");
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 2_000_000 }]);
+  });
+
+  it("the sweep prices an unresolved slice at the session's saved price, not the current rate (Sol round 5)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // Slice 1 is unresolved; slice 2 saves A.
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 })));
+    await setRates(1_000_000_000);
+    await checkpointForRelay(env, text, live(slice(ticket, 2, { input_tokens: 1_000 })));
+    // The connection changes to B; the sweep prices slice 1 at A.
+    await setRates(4_000_000_000);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 1_000_000, priceSource: "customer_rate" },
+    });
   });
 
   it("books every slice at the price the first checkpoint saved: a new price list mid-session changes nothing (Sol rounds 2 to 4)", async () => {

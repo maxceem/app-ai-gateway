@@ -116,6 +116,16 @@ export function shapedLikeD1(run: LedgerRunner): D1Database {
   return database as unknown as D1Database;
 }
 
+/** A prepared statement as the ledger object takes it. Only for statements this module's databases prepared. */
+export function sentOf(statement: D1PreparedStatement): LedgerStatement {
+  return (statement as unknown as Statement).sent();
+}
+
+/** A result's first row as an object, as D1 answers it, or undefined when it has none. */
+export function firstRowOf(result: LedgerResult): Record<string, unknown> | undefined {
+  return rowsOf(result)[0];
+}
+
 /** Rows as objects, as D1 answers them: of two columns with one name, the last wins. */
 function rowsOf(result: LedgerResult): Record<string, unknown>[] {
   return result.values.map((values) => Object.fromEntries(result.columns.map((column, index) => [column, values[index]])));
