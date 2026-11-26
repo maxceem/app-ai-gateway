@@ -4,7 +4,7 @@
  * failure cases every lifecycle gets.
  */
 import { env } from "cloudflare:workers";
-import { createExecutionContext, runDurableObjectAlarm, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi, type MockInstance } from "vitest";
 import { timeOrderedId } from "../src/core/ids.ts";
 import worker from "../src/index.ts";
@@ -1313,6 +1313,11 @@ describe("per-output counts, stalled writes, read errors, submit deadlines, the 
   it("keeps at most MAX_PENDING entries and rows in all, across both of the store's tables", async () => {
     const { appId } = await setup();
     const store = env.CHARGE_STORE.getByName(appId);
+    // The store sets an alarm to retry what it keeps. Left in place, it fires
+    // during a later test and drains these rows in the background. If that
+    // test fakes setTimeout, the alarm's timer fires from the test's own
+    // Durable Object, the runtime refuses that, and the whole run can freeze.
+    onTestFinished(() => runInDurableObject(store, (_instance, state) => state.storage.deleteAlarm()));
     await store.keep([estimateEntry(appId, `job_${crypto.randomUUID()}`)]);
     const ref: JobRef = { job: `job_${crypto.randomUUID()}`, accountId: ACCOUNT_ID, appId };
     const rows = Array.from({ length: MAX_PENDING }, (_, units) => figureWork(ref, { status: 200, units, outputs: null }, 3_000));

@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
+import { runStep, silenceLimitMs } from "./check-step.mjs";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -38,6 +38,7 @@ const steps = [
   { name: "test:price-update", tier: "test" },
   { name: "test:indexnow", tier: "test" },
   { name: "test:test-ledger", tier: "test" },
+  { name: "test:check-script", tier: "test" },
   { name: "smoke:check", tier: "check" },
   { name: "smoke:test", tier: "test" },
   { name: "v2:check", tier: "check" },
@@ -64,26 +65,21 @@ const selected = steps
 const pnpm = process.env.npm_execpath ?? "pnpm";
 const runsUnderNode = pnpm.endsWith(".cjs") || pnpm.endsWith(".js") || pnpm.endsWith(".mjs");
 
-function run(name) {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    const args = ["run", name];
-    const child = runsUnderNode
-      ? spawn(process.execPath, [pnpm, ...args], { cwd: projectRoot })
-      : spawn(pnpm, args, { cwd: projectRoot });
+// A step that prints nothing for this long is frozen and gets stopped
+// (`scripts/check-step.mjs`).
+let silenceMs;
+try {
+  silenceMs = silenceLimitMs();
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
 
-    // Buffered, not streamed: parallel steps would otherwise interleave their
-    // output line by line and make a failure impossible to read.
-    let output = "";
-    child.stdout.on("data", (chunk) => (output += chunk));
-    child.stderr.on("data", (chunk) => (output += chunk));
-    child.on("error", (error) => resolve({ name, ok: false, output: String(error), seconds: 0 }));
-    child.on("close", (code) => {
-      const seconds = Math.round((Date.now() - started) / 1000);
-      console.log(`${code === 0 ? "PASS" : "FAIL"} ${name} (${seconds}s)`);
-      resolve({ name, ok: code === 0, output, seconds });
-    });
-  });
+function run(name) {
+  const args = ["run", name];
+  return runsUnderNode
+    ? runStep(name, process.execPath, [pnpm, ...args], { cwd: projectRoot, silenceMs })
+    : runStep(name, pnpm, args, { cwd: projectRoot, silenceMs });
 }
 
 // A pool rather than fixed lanes: the steps differ in cost by more than an
