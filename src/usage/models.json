@@ -1,5 +1,35 @@
 {
   "openai": {
+    "gpt-6.1-sol-healthcare": {
+      "kind": "text",
+      "input": 2.0,
+      "cached_input": 0.1,
+      "output": 10.0,
+      "long_input": 4.0,
+      "long_cached_input": 0.2,
+      "long_output": 15.0,
+      "long_context_threshold": 272000,
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 }
+      },
+      "release_date": "2026-11-26"
+    },
+    "gpt-6-astra-healthcare": {
+      "kind": "text",
+      "input": 10.0,
+      "cached_input": 1.0,
+      "output": 50.0,
+      "long_input": 20.0,
+      "long_cached_input": 2.0,
+      "long_output": 75.0,
+      "long_context_threshold": 272000,
+      "author": "OpenAI",
+      "modes": {
+        "fast": { "factor": 2.0 }
+      },
+      "release_date": "2026-11-26"
+    },
     "gpt-6.2-astra-law": {
       "kind": "text",
       "input": 8.0,
@@ -2191,9 +2221,9 @@
     },
     "Qwen/Qwen4-Max": {
       "kind": "text",
-      "input": 1.425,
-      "cached_input": 0.07125,
-      "output": 4.275,
+      "input": 1.5,
+      "cached_input": 0.075,
+      "output": 4.5,
       "author": "Alibaba",
       "release_date": "2026-11-19"
     },
@@ -2333,7 +2363,7 @@
       "output": 4.05,
       "author": "Thinking Machines",
       "release_date": "2026-07-15",
-      "retirement_date": "2026-11-06"
+      "retirement_date": "2026-12-09"
     },
     "Qwen/Qwen3.8-Flash": {
       "kind": "text",
@@ -2434,14 +2464,16 @@
       "modes": {
         "us": { "factor": 1.25 }
       },
-      "release_date": "2026-08-13"
+      "release_date": "2026-08-13",
+      "retirement_date": "2026-12-09"
     },
     "openai/gpt-oss-120b": {
       "kind": "text",
       "input": 0.15,
       "output": 0.6,
       "author": "OpenAI",
-      "release_date": "2025-08-05"
+      "release_date": "2025-08-05",
+      "retirement_date": "2026-12-09"
     },
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
       "kind": "text",
