@@ -13,6 +13,20 @@ import { ledgerLocationHint, ledgerObject } from "../src/ledger/database.ts";
 import { LEDGER_SCHEMA } from "../src/ledger/schema.ts";
 import { allowLedgerWork, ledger, pauseLedgerWork } from "./helpers.ts";
 
+/**
+ * Puts the clock at noon UTC today, after the nightly hour, so the nightly
+ * maintenance is due whatever time the test runs (it failed between midnight
+ * and 04:00 UTC). Only `Date` is faked; timers stay real.
+ */
+function afterNightlyHour(): void {
+  const noon = new Date();
+  noon.setUTCHours(12, 0, 0, 0);
+  vi.useFakeTimers({ toFake: ["Date"], now: noon });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
 describe("the ledger object", () => {
   it("runs the rollup trigger inside the object's SQLite, once per charge", async () => {
     const db = ledger("acc_trigger");
@@ -106,6 +120,7 @@ describe("the ledger object", () => {
 
   it("keeps its nightly alarm for an account whose only rows are given-up work, so retention still deletes them", async () => {
     allowLedgerWork();
+    afterNightlyHour();
     const stub = ledgerObject(env, "acc_given_up");
     await ledger("acc_given_up")
       .prepare(
@@ -121,6 +136,7 @@ describe("the ledger object", () => {
 
   it("runs its clean-up even when it cannot write, and still sets its next alarm (step 8f)", async () => {
     allowLedgerWork();
+    afterNightlyHour();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const stub = ledgerObject(env, "acc_full");
     await runInDurableObject(stub, (_instance, state) => state.storage.deleteAlarm());
