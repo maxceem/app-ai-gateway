@@ -120,12 +120,15 @@ describe("the session object's start (Sol, #260 round 2)", () => {
     // The session object without its constructor: a stand-in core, as the start leaves it.
     const session = Object.create(Session.prototype) as Session;
     session.live = null;
-    (session as unknown as { core: unknown }).core = {
-      start: async () => ({ ok: true, reconnectSecret: "secret", deadline: Date.now() + 60_000, call: { callId: null, forward: null, pending, send: (data: unknown) => sent.push(data), close: () => closes.push("provider") } }),
+    const core: Record<string, unknown> = {
+      owner: null,
+      // As the real core: a started session belongs to the client that started it.
+      start: async (_ticket: string, _payload: unknown, client: unknown) => ((core.owner = client), { ok: true, reconnectSecret: "secret", deadline: Date.now() + 60_000, call: { callId: null, forward: null, pending, send: (data: unknown) => sent.push(data), close: () => closes.push("provider") } }),
       end: async (reason: string) => void ended.push(reason),
       clientGone: async () => undefined,
       startedBy: () => true,
     };
+    (session as unknown as { core: unknown }).core = core;
     const client = {
       addEventListener: () => undefined,
       send: (data: unknown) => sent.push(data),
@@ -136,5 +139,24 @@ describe("the session object's start (Sol, #260 round 2)", () => {
     expect(ended).toEqual(["error"]);
     // Nothing announced, nothing forwarded.
     expect(sent).toEqual([]);
+  });
+
+  it("a client too slow is ended through the core, which sets its close code; a turned-away connection never ends the session (Fable, #260 round 1)", () => {
+    const ended: string[] = [];
+    const closes: string[] = [];
+    const owner = { close: () => undefined };
+    const session = Object.create(Session.prototype) as Session;
+    (session as unknown as { core: unknown }).core = { owner, end: async (reason: string) => void ended.push(reason) };
+    const client = { close: (code: number, reason: string) => closes.push(`${code} ${reason}`), send: () => undefined } as unknown as WebSocket;
+    const live = (verdict: unknown, liveOwner: unknown) =>
+      ({ client, owner: liveOwner, frames: { fromClient: () => verdict }, call: null, deadline: Infinity, queue: new StartQueue() }) as never;
+    // The session's own client falls behind: the core ends it, and closes the client with its code.
+    session.fromClient(live({ kind: "end", reason: "client_too_slow" }, owner), "report");
+    expect(ended).toEqual(["client_too_slow"]);
+    expect(closes).toEqual([]);
+    // A connection that was turned away sends a frame too large: it is closed, the session runs on.
+    session.fromClient(live({ kind: "end", reason: "error", closeCode: 1009, closeReason: "frame_too_large" }, { close: () => undefined }), "big");
+    expect(closes).toEqual(["1009 frame_too_large"]);
+    expect(ended).toEqual(["client_too_slow"]);
   });
 });

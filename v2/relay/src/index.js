@@ -206,8 +206,6 @@ export class Session extends DurableObject {
     this.live = live;
     // Either side sent too much during the start: the session ends, and what was held is dropped.
     if (call.pending.overflowed || live.queue.overflowed) return this.endFor(live, "error", 4000, "start_queue_full");
-    // The deadline may have passed while the start finished: nothing is announced or forwarded then.
-    if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     if (relayMessages) sendQuietly(client, JSON.stringify({ type: "agw.session.started", reconnect_secret: result.reconnectSecret, deadline: result.deadline }));
     // In order: what the provider sent during the start, then what the client did. The client's
     // go through the same guarded send as its live frames.
@@ -233,7 +231,9 @@ export class Session extends DurableObject {
     } else if (verdict.kind === "answer") {
       sendQuietly(live.client, verdict.message);
     } else if (verdict.kind === "end") {
-      this.endFor(live, verdict.reason, verdict.closeCode, verdict.closeReason);
+      if (verdict.closeCode !== undefined) this.endFor(live, verdict.reason, verdict.closeCode, verdict.closeReason ?? verdict.reason);
+      // No code of its own (a client too slow): the session's end closes the client, with the code its reason has.
+      else if (this.core.owner === live.owner) void this.core.end(verdict.reason);
     }
   }
 
@@ -270,7 +270,8 @@ export class Session extends DurableObject {
    */
   endFor(live, reason, code, closeReason) {
     closeQuietly(live.client, code, closeReason);
-    void this.core.end(reason);
+    // Only the session's own connection may end it: a turned-away one changes nothing.
+    if (this.core.owner === live.owner) void this.core.end(reason);
   }
 
   /** @override */

@@ -435,7 +435,7 @@ export class SessionCore {
     if (state === "active") {
       const deadline = settings?.deadline ?? now;
       if (now >= deadline) return this.end("time_cap");
-      // The next tick is armed before anything that can fail (crash table row 30): a tick that
+      // The next tick is armed before anything that can fail (crash table row 29): a tick that
       // throws still leaves the session its next one.
       await this.store.put({}, Math.min(deadline, now + TICK_MS));
       // A relayed session lost its provider socket with its instance: it ends (row 13, relayed).

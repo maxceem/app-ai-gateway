@@ -32,8 +32,15 @@ export const HEARTBEAT_TIMEOUT_MS = 90_000;
 export const SLOW_CLIENT_MS = 10_000;
 /** The largest client frame forwarded (plan 5.2: a maximum frame size from the client). */
 export const MAX_CLIENT_FRAME = 256 * 1024;
-/** The most client frames in one second (plan 5.2: a maximum message rate, generous). */
-export const MAX_CLIENT_FRAMES_PER_SECOND = 200;
+/**
+ * The most client frames in one rate window (plan 5.2: a maximum message rate,
+ * generous). Counted over 10 s, not 1 s: a phone that sends 50 frames a second
+ * and catches up after a few seconds' stall delivers 200 and more in one
+ * second, and must not be ended for it. A flood still is.
+ */
+export const MAX_CLIENT_FRAMES_PER_WINDOW = 2_000;
+/** The rate window. */
+export const RATE_WINDOW_MS = 10_000;
 /** Frames held while the session starts, on each side, before the session gives up on them. */
 export const START_QUEUE_FRAMES = 512;
 /**
@@ -44,7 +51,12 @@ export const START_QUEUE_FRAMES = 512;
  */
 export const START_QUEUE_BYTES = 4 * 1024 * 1024;
 
-/** A frame's size, as both sides count it: a text frame's length in characters, a binary frame's bytes. @param {string | ArrayBuffer} data */
+/**
+ * A frame's size, as both sides count it: a text frame's length in UTF-16 code
+ * units (what JavaScript's `length` gives), a binary frame's bytes. Our SDK
+ * counts the same way in its received-byte reports (`../PROTOCOL.md`).
+ * @param {string | ArrayBuffer} data
+ */
 export function frameSize(data) {
   return typeof data === "string" ? data.length : data.byteLength;
 }
@@ -100,7 +112,9 @@ export class StartQueue {
  * @typedef {{ kind: "forward" }
  *   | { kind: "answer", message: string }
  *   | { kind: "drop" }
- *   | { kind: "end", reason: string, closeCode: number, closeReason: string }} ClientVerdict
+ *   | { kind: "end", reason: string, closeCode?: number, closeReason?: string }} ClientVerdict
+ * An end with a close code closes the client with it first. One without (a client
+ * too slow) is closed by the session's end, with the code the core gives its reason.
  */
 
 export class SessionFrames {
@@ -121,15 +135,10 @@ export class SessionFrames {
     /** Characters and bytes of provider frames sent to the client so far. The relay's own messages don't count. */
     this.sent = 0;
     /**
-     * What the client last reported it got. A client that asked for the
-     * relay's messages (ours) is tracked from the first provider frame, as if
-     * it had reported 0, so one that stalls before its first report is still
-     * caught. Null for a client that sends no reports.
-     */
-    this.reported = /** @type {number | null} */ (options.relayMessages ? 0 : null);
-    /**
      * Points along what was sent, about one a second: [total sent, when]. The
      * oldest point the client has not reported yet tells how far behind it is.
+     * Kept only for a client that sends reports (ours), from the first provider
+     * frame on, so one that stalls before its first report is still caught.
      * @type {[number, number][]}
      */
     this.marks = [];
@@ -144,12 +153,12 @@ export class SessionFrames {
   fromClient(data) {
     const now = this.now();
     this.lastClientAt = now;
-    if (now - this.windowStart >= 1_000) {
+    if (now - this.windowStart >= RATE_WINDOW_MS) {
       this.windowStart = now;
       this.windowFrames = 0;
     }
     this.windowFrames += 1;
-    if (this.windowFrames > MAX_CLIENT_FRAMES_PER_SECOND) return { kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" };
+    if (this.windowFrames > MAX_CLIENT_FRAMES_PER_WINDOW) return { kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" };
     if (frameSize(data) > MAX_CLIENT_FRAME) return { kind: "end", reason: "error", closeCode: 1009, closeReason: "frame_too_large" };
     if (this.relayMessages && typeof data === "string" && data.startsWith(RELAY_MESSAGE_PREFIX)) return this.relayMessage(data);
     const refused = this.clientHook(data);
@@ -177,15 +186,14 @@ export class SessionFrames {
     if (fields.type === "agw.received" && typeof fields.bytes === "number" && Number.isSafeInteger(fields.bytes) && fields.bytes >= 0 && fields.bytes <= this.sent) {
       this.received(fields.bytes);
       const slow = this.slow(this.now());
-      if (slow !== null) return { kind: "end", reason: slow, closeCode: 4000, closeReason: slow };
+      if (slow !== null) return { kind: "end", reason: slow };
     }
     return { kind: "drop" };
   }
 
-  /** The client's report of what it got so far. Never goes back. @param {number} bytes */
+  /** The client's report of what it got so far: the marks it has passed go. @param {number} bytes */
   received(bytes) {
-    this.reported = Math.max(this.reported ?? 0, bytes);
-    while (this.marks.length > 0 && /** @type {[number, number]} */ (this.marks[0])[0] <= this.reported) this.marks.shift();
+    while (this.marks.length > 0 && /** @type {[number, number]} */ (this.marks[0])[0] <= bytes) this.marks.shift();
   }
 
   /**
@@ -197,6 +205,7 @@ export class SessionFrames {
     const now = this.now();
     this.lastProviderAt = now;
     this.sent += frameSize(data);
+    if (!this.relayMessages) return;
     const last = this.marks.at(-1);
     if (last === undefined || now - last[1] >= 1_000) this.marks.push([this.sent, now]);
     else last[0] = this.sent;
@@ -209,7 +218,7 @@ export class SessionFrames {
    * @returns {"client_too_slow" | null}
    */
   slow(now) {
-    if (this.reported === null) return null;
+    if (!this.relayMessages) return null;
     const oldest = this.marks[0];
     return oldest !== undefined && now - oldest[1] > SLOW_CLIENT_MS ? "client_too_slow" : null;
   }

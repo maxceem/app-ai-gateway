@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   HEARTBEAT_TIMEOUT_MS,
   MAX_CLIENT_FRAME,
-  MAX_CLIENT_FRAMES_PER_SECOND,
+  MAX_CLIENT_FRAMES_PER_WINDOW,
+  RATE_WINDOW_MS,
   SessionFrames,
   SLOW_CLIENT_MS,
   START_QUEUE_BYTES,
@@ -31,20 +32,32 @@ function oneSecondOfAudio(f: ReturnType<typeof frames>) {
 }
 
 describe("a client's frames", () => {
-  it("are forwarded, and a frame too large or too many in a second end the session", () => {
+  it("are forwarded, and a frame too large ends the session", () => {
     const f = frames();
     expect(f.state.fromClient("hello")).toEqual({ kind: "forward" });
     expect(f.state.fromClient(new ArrayBuffer(16))).toEqual({ kind: "forward" });
     expect(f.state.fromClient("x".repeat(MAX_CLIENT_FRAME + 1))).toEqual({ kind: "end", reason: "error", closeCode: 1009, closeReason: "frame_too_large" });
+  });
 
-    const g = frames();
-    for (let frame = 0; frame < MAX_CLIENT_FRAMES_PER_SECOND; frame += 1) expect(g.state.fromClient("a").kind).toBe("forward");
-    expect(g.state.fromClient("a")).toEqual({ kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" });
-    // A new second starts a new count.
-    const h = frames();
-    for (let frame = 0; frame < MAX_CLIENT_FRAMES_PER_SECOND; frame += 1) h.state.fromClient("a");
-    h.tick(1_000);
-    expect(h.state.fromClient("a").kind).toBe("forward");
+  it("a phone catching up after a stall passes, and a sustained flood is stopped (Fable, #260 round 1)", () => {
+    // 50 frames a second, a 4 s stall, then 250 frames in one second as it catches up.
+    const phone = frames();
+    for (let second = 0; second < 5; second += 1) {
+      for (let frame = 0; frame < 50; frame += 1) expect(phone.state.fromClient("a").kind).toBe("forward");
+      phone.tick(1_000);
+    }
+    phone.tick(4_000);
+    for (let frame = 0; frame < 250; frame += 1) expect(phone.state.fromClient("a").kind).toBe("forward");
+    // A flood: far over the window's count.
+    const flood = frames();
+    let verdict: ReturnType<SessionFrames["fromClient"]> = { kind: "forward" };
+    for (let frame = 0; frame <= MAX_CLIENT_FRAMES_PER_WINDOW && verdict.kind === "forward"; frame += 1) verdict = flood.state.fromClient("a");
+    expect(verdict).toEqual({ kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" });
+    // A new window starts a new count.
+    const later = frames();
+    for (let frame = 0; frame < MAX_CLIENT_FRAMES_PER_WINDOW; frame += 1) later.state.fromClient("a");
+    later.tick(RATE_WINDOW_MS);
+    expect(later.state.fromClient("a").kind).toBe("forward");
   });
 
   it("go through the adapter's hook: a refusal ends the session with its code", () => {
@@ -82,7 +95,7 @@ describe("a client that falls behind", () => {
       seconds += 1;
       verdict = f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: stuckAt }));
     }
-    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow", closeCode: 4000, closeReason: "client_too_slow" });
+    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow" });
     // Ended about 10 s in, not at once and not much later.
     expect(seconds).toBeGreaterThanOrEqual(SLOW_CLIENT_MS / 1_000);
     expect(seconds).toBeLessThanOrEqual(SLOW_CLIENT_MS / 1_000 + 2);
@@ -160,7 +173,7 @@ describe("reports and the start (Sol, #260 round 1)", () => {
       oneSecondOfAudio(f);
       verdict = f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: 0 }));
     }
-    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow", closeCode: 4000, closeReason: "client_too_slow" });
+    expect(verdict).toEqual({ kind: "end", reason: "client_too_slow" });
   });
 });
 

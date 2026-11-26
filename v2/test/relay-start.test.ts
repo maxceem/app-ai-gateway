@@ -536,7 +536,7 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await ending;
   });
 
-  it("the alarm ticks every TICK_MS while the session runs, arming the next tick before its checks (crash table row 30)", async () => {
+  it("the alarm ticks every TICK_MS while the session runs, arming the next tick before its checks (crash table row 29)", async () => {
     let failing = true;
     const s = setup({
       liveness: () => {
@@ -567,7 +567,7 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
       await core.alarm();
       expect(s.calls.close).toEqual([{ endReason: reason, finalSlice: 0 }]);
       expect(s.ended.client).toEqual([reason]);
-      // The same code as the report path's (`frames.js`): 4000 with the reason (Sol, #260 round 1).
+      // One place sets the code, for the tick and the report path alike: 4000 with the reason (Sol and Fable, #260).
       expect(s.ended.clientCodes).toEqual([4000]);
       expect(s.ended.provider).toEqual([[1000, "session ended"]]);
     }
