@@ -420,6 +420,82 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(await ledger().prepare("SELECT id FROM open_work WHERE charge_id = ?").bind(`${ticket.sid}:slice:1`).first()).toBeNull();
   });
 
+  /** Rates for the house model, saved form: nano-dollars, per minute of connection or per token. */
+  const perMinute = (nanoPerMinute: number) => JSON.stringify({ "house-realtime": { per_minute: nanoPerMinute } });
+  const booked = (id: string) =>
+    ledger().prepare("SELECT cost_nano, price_source, measured, measures_json FROM charge WHERE id = ?").bind(id).first<{ cost_nano: number | null; price_source: string; measured: string; measures_json: string }>();
+  const queued = (id: string) => ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(id).first();
+
+  it("bills connection time at a price's time rate, through the checkpoint: the wall clock meter (step 9a part 3)", async () => {
+    // $0.0043 a minute, as a provider billed by connection time states it: one minute is 4,300,000 nano-dollars.
+    const { connectionId } = await houseConnection(perMinute(4_300_000));
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    await checkpointForRelay(env, text, live(slice(ticket, 1)));
+    await checkpointForRelay(env, text, live(slice(ticket, 2, {}, { sessionMs: 90_000 })));
+    // A gap in a slice billed by time keeps the price of the time it knows, marked partial, never $0.
+    await checkpointForRelay(env, text, live(slice(ticket, 3, {}, { sessionMs: 30_000, gapMs: 30_000, gaps: 1 })));
+    expect(await charges(ticket.sid)).toMatchObject([
+      { cost_nano: 4_300_000, price_source: "customer_rate", measured: "complete", session_ms: MINUTE },
+      { cost_nano: 6_450_000, measured: "complete" },
+      { cost_nano: 2_150_000, measured: "partial" },
+    ]);
+    // The billed time is kept as the slice's usage.
+    expect(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: MINUTE });
+  });
+
+  it("never books connection time as $0 when the price can't be read: unresolved and queued, and the sweep prices the seconds (Sol round 1)", async () => {
+    // Today's rates can't be read (as when the settings read times out): no price is saved.
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1)));
+    const id = `${ticket.sid}:slice:1`;
+    expect(await booked(id)).toMatchObject({ cost_nano: null, price_source: "unresolved" });
+    expect(await queued(id)).toEqual({ kind: "unresolved" });
+    expect(warned.mock.calls.map((call) => String(call[0])).join()).toContain("checkpoint_price_unsaved");
+    // The rates come back, billed by time: the sweep prices the minute.
+    await setRates(perMinute(4_300_000));
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 4_300_000, priceSource: "customer_rate", unit: "session_seconds" },
+    });
+  });
+
+  it("the sweep keeps a cut-off slice's correction partial (Sol round 2)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // An answer cut off at the end: its known tokens, and a gap with no gap time.
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000 }, { gaps: 1 })));
+    await setRates(1_000_000_000);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 1_000_000, measured: "partial" },
+    });
+  });
+
+  it("the sweep books connection time at $0 when the price turns out to bill tokens only, but a slice with a gap stays an unknown cost (Sol round 1)", async () => {
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await checkpointForRelay(env, text, live(slice(ticket, 1)));
+    await checkpointForRelay(env, text, live(slice(ticket, 2, {}, { sessionMs: 30_000, gapMs: 30_000, gaps: 1 })));
+    // Time with no price is queued, even with a gap; a gap with no known time is not.
+    await checkpointForRelay(env, text, live(slice(ticket, 3, {}, { sessionMs: 0, gapMs: 60_000, gaps: 1 })));
+    expect(await queued(`${ticket.sid}:slice:2`)).toEqual({ kind: "unresolved" });
+    expect(await queued(`${ticket.sid}:slice:3`)).toBeNull();
+    await setRates(1_000_000_000);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 0 },
+    });
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${ticket.sid}:slice:2`, now: Date.now() })).toEqual({ status: "already" });
+    expect(await booked(`${ticket.sid}:slice:2`)).toMatchObject({ cost_nano: null, price_source: "unresolved", measured: "partial" });
+  });
+
   it("books a clean slice with no tokens and no gap at $0, complete (Gemini Neon round 1)", async () => {
     const { text, ticket } = await ticketFor();
     await checkpointForRelay(env, text, live(slice(ticket, 1)));

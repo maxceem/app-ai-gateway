@@ -107,6 +107,8 @@ function setup(
     checkpoint?: (input: CheckpointSeen) => Promise<Reply>;
     proof?: () => boolean;
     checkpointTimeoutMs?: number;
+    turnOpen?: () => boolean;
+    wait?: (ms: number) => Promise<void>;
   } = {},
 ) {
   let now = 1_000_000;
@@ -123,6 +125,8 @@ function setup(
     ...(options.liveness === undefined ? {} : { liveness: options.liveness }),
     ...(options.proof === undefined ? {} : { proof: options.proof }),
     ...(options.checkpointTimeoutMs === undefined ? {} : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+    ...(options.turnOpen === undefined ? {} : { turnOpen: options.turnOpen }),
+    ...(options.wait === undefined ? {} : { wait: options.wait }),
     log: (event: Record<string, unknown>) => logs.push(event),
     vault: {
       sessionKey: async () => {
@@ -738,6 +742,8 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
       await core.start(s.text, s.ticket, s.client());
       await core.checkpoint();
       expect(s.calls.close).toEqual([{ endReason, finalSlice: 0 }]);
+      // A normal close with the reason: an official SDK does not reconnect on its own (`PROTOCOL.md`).
+      expect([s.ended.clientCodes, s.ended.client]).toEqual([[1000], [endReason]]);
     }
   });
 
@@ -917,5 +923,167 @@ describe("checkpoints and the journal (step 9a part 2)", () => {
     s.tick(60_000);
     await core.alarm();
     expect(s.store.data.size).toBe(0);
+  });
+});
+
+describe("a session's close (step 9a part 3)", () => {
+  const usage = (id: string, input = 10, output = 20) => ({ id, measures: { input_tokens: input, output_tokens: output } });
+
+  /** A timer the test fires itself: no real wait. It records how long each wait asked for. */
+  function heldWait() {
+    const pending: (() => void)[] = [];
+    const asked: number[] = [];
+    return {
+      asked,
+      wait: (ms: number) => {
+        asked.push(ms);
+        return new Promise<void>((resolve) => pending.push(resolve));
+      },
+      fire: () => pending.splice(0).forEach((resolve) => resolve()),
+    };
+  }
+
+  const finalSliceOf = (s: ReturnType<typeof setup>) => s.calls.checkpoints.find((seen) => seen.accounting)?.slice;
+
+  it("waits up to 10 s for the provider's answer in progress, counts its usage, then hangs up: the client is told at once (plan 5.1)", async () => {
+    let answering = true;
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => answering, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    expect(timer.asked).toEqual([10_000]);
+    // The client is told at once; the provider's side stays up for the answer.
+    expect(s.ended.client).toEqual(["client_closed"]);
+    expect(s.ended.provider).toEqual([]);
+    // The last answer's usage arrives during the wait and still counts.
+    await core.recordUsage(usage("last", 30, 40), "per_turn");
+    answering = false;
+    core.turnDone();
+    await ending;
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    // The answer finished: nothing is missing.
+    expect(finalSliceOf(s)).toMatchObject({ measures: { input_tokens: 30, output_tokens: 40 }, gaps: 0 });
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
+  });
+
+  it("hangs up when the answer doesn't finish within the wait: the final slice keeps its known usage and is marked partial, and later usage is not counted", async () => {
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => true, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    await core.recordUsage(usage("known", 5, 6), "per_turn");
+    timer.fire();
+    await ending;
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    await core.recordUsage(usage("too-late"), "per_turn");
+    // A gap makes the booked slice `partial` (`sliceCharge`); its known tokens are still priced.
+    expect(finalSliceOf(s)).toMatchObject({ measures: { input_tokens: 5, output_tokens: 6 }, gaps: 1 });
+    expect(s.logs).toContainEqual(expect.objectContaining({ level: "warn", message: "relay_answer_cut" }));
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
+  });
+
+  it("never waits past the deadline, and doesn't wait at the time cap: the paid connection never outlives the cap", async () => {
+    const near = heldWait();
+    const s = setup({ turnOpen: () => true, wait: near.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    // 3 s before the deadline: the wait asks for those 3 s, not 10.
+    s.tick(30 * 60_000 - 3_000);
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    expect(near.asked).toEqual([3_000]);
+    near.fire();
+    await ending;
+
+    const atCap = heldWait();
+    const c = setup({ turnOpen: () => true, wait: atCap.wait });
+    const capped = c.instance();
+    await capped.start(c.text, c.ticket, c.client());
+    c.tick(60_000);
+    await capped.end("time_cap");
+    expect(atCap.asked).toEqual([]);
+    expect(c.ended.provider).toEqual([[1000, "session ended"]]);
+    // The answer was cut off at the cap: its usage is missing.
+    expect(finalSliceOf(c)).toMatchObject({ sessionMs: 60_000, gaps: 1 });
+  });
+
+  it("stops waiting the moment the provider hangs up, and the session's time ends there", async () => {
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => true, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    s.tick(5_000);
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    s.tick(2_000);
+    // Time passes after the hang-up, before the end writes: it is not the session's time.
+    s.hooks.onProviderClose = () => s.tick(4_000);
+    void core.providerGone(core.call as never);
+    await ending;
+    expect(core.turnWaiter).toBeNull();
+    expect(finalSliceOf(s)).toMatchObject({ sessionMs: 7_000, gaps: 1 });
+    expect(s.calls.close).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
+  });
+
+  it("ends the session's time when the provider connection ends, not after the end's storage reads, for every end (Sol rounds 2 and 3)", async () => {
+    const ends: [string, (core: SessionCore) => Promise<void>][] = [
+      ["provider_closed", (core) => core.providerGone(core.call as never)],
+      ["client_closed", (core) => core.end("client_closed")],
+      ["budget_stop", (core) => core.end("budget_stop")],
+      ["time_cap", (core) => core.end("time_cap")],
+    ];
+    for (const [reason, endIt] of ends) {
+      const s = setup();
+      const core = s.instance();
+      await core.start(s.text, s.ticket, s.client());
+      s.tick(7_000);
+      // The end's first storage read takes 4 s.
+      const read = s.store.get.bind(s.store);
+      let slow = true;
+      s.store.get = async (keys: string[]) => {
+        if (slow) {
+          slow = false;
+          s.tick(4_000);
+        }
+        return read(keys);
+      };
+      await endIt(core);
+      expect(finalSliceOf(s), reason).toMatchObject({ sessionMs: 7_000 });
+      expect(s.store.data.get("end"), reason).toMatchObject({ reason, at: s.ticket.start + 7_000 });
+    }
+  });
+
+  it("doesn't wait when no answer is in progress, or when the provider hung up itself", async () => {
+    for (const [answering, reason, finalSlice] of [
+      [false, "client_closed", 0],
+      // An answer the provider cut by hanging up is missing usage: a slice with a gap.
+      [true, "provider_closed", 1],
+    ] as const) {
+      const timer = heldWait();
+      const s = setup({ turnOpen: () => answering, wait: timer.wait });
+      const core = s.instance();
+      await core.start(s.text, s.ticket, s.client());
+      await core.end(reason);
+      expect(timer.asked).toEqual([]);
+      expect(s.calls.close).toEqual([{ endReason: reason, finalSlice }]);
+    }
+  });
+
+  it("refuses a new start while it waits for the answer, and the ended session never reopens", async () => {
+    const timer = heldWait();
+    const s = setup({ turnOpen: () => true, wait: timer.wait });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    timer.fire();
+    await ending;
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
+    expect(await s.instance().start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
   });
 });

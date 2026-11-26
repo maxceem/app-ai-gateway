@@ -117,6 +117,18 @@ describe("adapters", () => {
   it("reads nothing for an adapter this relay does not know", () => {
     for (const name of ["openai_ws", undefined, "__proto__", "toString"]) {
       expect(adapterFor(name).read('{"type":"mock.usage","event_id":"e1","usage":{"input_tokens":7}}')).toBeNull();
+      // And never waits for an answer when the session closes.
+      expect(adapterFor(name).turn('{"type":"response.created"}')).toBeNull();
     }
+  });
+
+  it("tells when an answer opens and when it is done, from a cheap prefix check (step 9a part 3)", () => {
+    const mock = adapterFor("mock");
+    expect(mock.turn('{"type":"response.created","response":{}}')).toBe("open");
+    expect(mock.turn('{"type":"response.done","response":{}}')).toBe("done");
+    expect(mock.turn('{"type":"response.output_audio.delta","delta":"AAAA"}')).toBeNull();
+    // Only a frame that starts with the type is looked at, as for usage.
+    expect(mock.turn('{"response":{},"type":"response.done"}')).toBeNull();
+    expect(mock.turn(new ArrayBuffer(8))).toBeNull();
   });
 });

@@ -88,9 +88,11 @@ export default {
  *   deadline: number,
  *   queue: StartQueue,
  *   adapter: import("./adapters.js").Adapter,
+ *   turnOpen: boolean,
  * }} Live
  * One client's session in this instance. Client frames wait in `queue` while
- * the session starts, then go to the provider in order.
+ * the session starts, then go to the provider in order. `turnOpen`: the
+ * provider is in the middle of an answer (the adapter's `turn`).
  */
 
 /**
@@ -155,6 +157,7 @@ export class Session extends DurableObject {
       // The tick's checks for the session this instance runs: none after a restart.
       liveness: (now) => this.live?.frames.check(now) ?? null,
       proof: () => this.live?.frames.clientSpoke ?? false,
+      turnOpen: () => this.live?.turnOpen ?? false,
     });
   }
 
@@ -188,7 +191,7 @@ export class Session extends DurableObject {
     /** @type {import("./start.js").Client} What the core holds: closing it never throws. */
     const owner = { close: (code, reason) => closeQuietly(client, code, reason) };
     /** @type {Live} */
-    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue(), adapter: adapterFor(undefined) };
+    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue(), adapter: adapterFor(undefined), turnOpen: false };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     client.addEventListener("close", () => void this.core.clientGone(owner));
     client.addEventListener("message", (event) => this.fromClient(live, event.data));
@@ -256,6 +259,8 @@ export class Session extends DurableObject {
    */
   toProvider(live, data) {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
+    // The session is closing: nothing new goes to the provider while its last answer finishes.
+    if (this.core.ending !== null) return;
     live.call?.send(data);
   }
 
@@ -266,12 +271,23 @@ export class Session extends DurableObject {
    * @param {string | ArrayBuffer} data
    */
   toClient(live, data) {
-    if (Date.now() >= live.deadline) return void this.core.end("time_cap");
-    sendQuietly(live.client, data);
-    live.frames.toClient(data);
+    // Past the deadline, or closing: the client gets nothing more, but the frame is still read,
+    // so the last answer's usage counts while the end waits for it (plan 5.1).
+    const late = Date.now() >= live.deadline;
+    if (!late && this.core.ending === null) {
+      sendQuietly(live.client, data);
+      live.frames.toClient(data);
+    }
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const event = live.adapter.read(data);
     if (event !== null) void this.core.recordUsage(event, live.adapter.shape).catch(() => undefined);
+    const turn = live.adapter.turn(data);
+    if (turn === "open") live.turnOpen = true;
+    else if (turn === "done") {
+      live.turnOpen = false;
+      this.core.turnDone();
+    }
+    if (late) void this.core.end("time_cap");
   }
 
   /**

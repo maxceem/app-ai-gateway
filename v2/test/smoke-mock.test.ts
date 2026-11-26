@@ -201,4 +201,31 @@ describe("the mock's live session stand-in (step 9a, frame forwarding and T12)",
     expect(got[2]!.endsWith('"type":"audio"}')).toBe(true);
     socket.close(1000, "done");
   });
+
+  it("answers mock.answer like an OpenAI answer: response.created, audio, the usage event, then response.done (step 9a part 3)", async () => {
+    const response = await mock.fetch(new Request("https://mock.test/v1/realtime?model=gpt-realtime", { headers: { upgrade: "websocket" } }));
+    const socket = response.webSocket!;
+    const got: string[] = [];
+    let waiting: { count: number; resolve: () => void } | null = null;
+    const arrived = (count: number) =>
+      got.length >= count ? Promise.resolve() : new Promise<void>((resolve) => (waiting = { count, resolve }));
+    socket.addEventListener("message", (event) => {
+      got.push(String(event.data));
+      if (waiting !== null && got.length >= waiting.count) waiting.resolve();
+    });
+    socket.accept();
+    socket.send(JSON.stringify({ type: "mock.answer", event_id: "a1", usage: { input_tokens: 5, output_tokens: 9 }, seconds: 0.1 }));
+    // session.created, response.created, two audio frames, the usage event, response.done.
+    await arrived(6);
+    expect(got.map((frame) => (JSON.parse(frame) as { type: string }).type)).toEqual([
+      "session.created",
+      "response.created",
+      "response.output_audio.delta",
+      "response.output_audio.delta",
+      "mock.usage",
+      "response.done",
+    ]);
+    expect(JSON.parse(got[4]!)).toEqual({ type: "mock.usage", event_id: "a1", usage: { input_tokens: 5, output_tokens: 9 } });
+    socket.close(1000, "done");
+  });
 });

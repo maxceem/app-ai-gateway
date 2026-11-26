@@ -25,7 +25,7 @@
  */
 import { rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
-import { decodeSessionPrice } from "../relay/session-price.ts";
+import { decodeSessionPrice, sliceUsage } from "../relay/session-price.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
@@ -88,7 +88,7 @@ export function correctionOf(
     /** The unit the correction's cost is in, where the price bills another than the charge recorded. */
     readonly unit?: string;
     /** How complete the measure the correction billed is: a pricing correction's comes from its pricing result. */
-    readonly measured?: "complete" | "estimated";
+    readonly measured?: "complete" | "estimated" | "partial";
   },
 ): ChargeRow {
   return {
@@ -354,10 +354,11 @@ export async function priceUnresolvedCharge(
   // modalities and variants, in the service mode that served it.
   const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
   if (stored === null) return { status: "no_price" };
-  const { usage } = stored;
+  /** The usage `price` bills: a session's slice bills its connection time only at a time rate. */
+  const usageAt = (price: ResolvedPrice) => (original.ownerType === "session" ? sliceUsage(stored.usage, price.price) : stored.usage);
   const priceWith = (price: ResolvedPrice) => {
     try {
-      return priceInServedMode(price.price, usage, stored.mode, stored.doubt);
+      return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt);
     } catch {
       return null;
     }
@@ -375,9 +376,14 @@ export async function priceUnresolvedCharge(
             .first<{ rates_json: string | null }>();
     resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
     if (resolved === null) return { status: "no_price" };
-    priced = priceInServedMode(resolved.price, usage, stored.mode, stored.doubt);
+    priced = priceInServedMode(resolved.price, usageAt(resolved), stored.mode, stored.doubt);
   }
   if (priced === null || resolved === null) return { status: "no_price" };
+  // A slice with a gap whose price bills neither its tokens nor its time: its cost stays unknown,
+  // never $0 (plan 4.2). Nothing more to price.
+  const toBill = usageAt(resolved);
+  const empty = toBill.units === undefined && toBill.inputTokens + toBill.cachedInputTokens + toBill.cacheWriteTokens + toBill.outputTokens === 0;
+  if (original.ownerType === "session" && empty && original.measured === "partial") return { status: "already" };
   // The unit and count the price billed, from the pricing result itself.
   const billed = { unit: priced.unit, units: priced.units };
   const correction = correctionOf(original, {
@@ -392,7 +398,8 @@ export async function priceUnresolvedCharge(
     unit: billed.unit,
     now: input.now,
     estimate: priced.estimated,
-    measured: priced.measured,
+    // A slice with usage missing (a gap, a cut-off answer) stays `partial` in its correction too.
+    measured: original.measured === "partial" ? "partial" : priced.measured,
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.

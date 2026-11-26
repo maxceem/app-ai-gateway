@@ -17,7 +17,14 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
 
 /**
  * @typedef {import("./journal.js").UsageEvent} UsageEvent
- * @typedef {{ shape: "per_turn" | "running_total", read(data: string | ArrayBuffer): UsageEvent | null }} Adapter
+ * @typedef {{
+ *   shape: "per_turn" | "running_total",
+ *   read(data: string | ArrayBuffer): UsageEvent | null,
+ *   turn(data: string | ArrayBuffer): "open" | "done" | null,
+ * }} Adapter
+ * `turn` tells when the provider starts an answer and when it is done (OpenAI's
+ * `response.created` and `response.done`), so a closing session can wait for
+ * the last answer's usage (plan 5.1: up to 10 s). A cheap prefix check, like `read`.
  */
 
 /**
@@ -43,13 +50,22 @@ function usageEvent(parsed) {
 
 /**
  * A text frame starting with `prefix`, parsed: anything else is not looked at.
+ * An answer opens on a frame starting with `opens` and is done on one starting
+ * with `closes`.
  * @param {string} prefix
  * @param {"per_turn" | "running_total"} shape
+ * @param {{ opens: string, closes: string }} turns
  * @returns {Adapter}
  */
-function jsonAdapter(prefix, shape) {
+function jsonAdapter(prefix, shape, turns) {
   return {
     shape,
+    turn(data) {
+      if (typeof data !== "string") return null;
+      if (data.startsWith(turns.opens)) return "open";
+      if (data.startsWith(turns.closes)) return "done";
+      return null;
+    },
     read(data) {
       if (typeof data !== "string" || !data.startsWith(prefix)) return null;
       try {
@@ -61,16 +77,23 @@ function jsonAdapter(prefix, shape) {
   };
 }
 
+/** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
+const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
+
 /** @type {Record<string, Adapter>} */
 const ADAPTERS = {
   // The smoke mock's per-turn usage: `{"type":"mock.usage","event_id":…,"usage":{…}}`.
-  mock: jsonAdapter('{"type":"mock.usage"', "per_turn"),
+  mock: jsonAdapter('{"type":"mock.usage"', "per_turn", MOCK_TURNS),
   // A running total, as xAI reports (9b), for the journal's tests: `{"type":"mock.total",…}`.
-  mock_total: jsonAdapter('{"type":"mock.total"', "running_total"),
+  mock_total: jsonAdapter('{"type":"mock.total"', "running_total", MOCK_TURNS),
 };
 
-/** An adapter that reads nothing: the session is metered by connection time only. @type {Adapter} */
-const NONE = { shape: "per_turn", read: () => null };
+/**
+ * An adapter that reads nothing: the session is metered by connection time
+ * only (the wall clock meter), and never waits for an answer when it closes.
+ * @type {Adapter}
+ */
+const NONE = { shape: "per_turn", read: () => null, turn: () => null };
 
 /** The adapter `open` named, or one that reads nothing. @param {string | undefined} name */
 export function adapterFor(name) {

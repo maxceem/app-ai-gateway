@@ -25,12 +25,33 @@
  * sends it; the slice stays until the main Worker says it is written
  * (crash table rows 14–18). Only one is unconfirmed at a time.
  *
- * The end: one write stores `ended`, the reason, the final slice and the
+ * The end: the client is told at once. If the provider is in the middle of an
+ * answer, the relay waits for it to finish, up to `CLOSE_DRAIN_MS` and never
+ * past the deadline, so the last answer's usage is counted (plan 5.1); nothing
+ * more goes to the client or the provider meanwhile. There is no wait at the
+ * time cap or when the provider hung up. An answer still open after the wait
+ * was cut off: the final slice is booked `partial`. Then the provider is hung
+ * up, and one write stores `ended`, the reason, the final slice and the
  * journal with the rest of the usage frozen; then the unsent slices are
- * delivered, as accounting only, and `close` is sent. The alarm retries both.
- * Storage is deleted once both are done (or given up on, with the slices
- * logged) and the ticket has expired; until then the `ended` marker refuses
- * the ticket again (rows 25–28).
+ * delivered, as accounting only, and `close` is sent. The alarm retries both. Storage is deleted once both are
+ * done (or given up on, with the slices logged) and the ticket has expired;
+ * until then the `ended` marker refuses the ticket again (rows 25–28).
+ *
+ * The session's states (plan 4.3), the only ones there are. The object keeps
+ * its state in its own storage:
+ *
+ * | State      | Entered when                              | Leaves for | Never      |
+ * | ---------- | ----------------------------------------- | ---------- | ---------- |
+ * | (none)     | nothing stored yet                        | `starting` |            |
+ * | `starting` | `open` succeeded (start step 3)           | `active`, `ended` |     |
+ * | `active`   | the provider's side is up (start step 5)  | `ended`    | `starting` |
+ * | `ended`    | any end: a stop, the cap, a hang-up, …   | (cleanup)  | any other  |
+ *
+ * Only `active` sends checkpoints, and only `active` forwards frames. An ended
+ * session never reopens: its ticket is refused until it expires, then its
+ * storage is deleted. Takeover: a checkpoint's `replaced` stop ends the old
+ * session like any other stop; the client gets `1000 replaced`, a normal
+ * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
 import { confirm, finalSliceOf, freeze, JOURNAL_KEY, newJournal, readJournal, addUsage } from "./journal.js";
@@ -51,6 +72,9 @@ function stopReason(reasons) {
   const first = reasons[0] ?? "error";
   return first === "ended" ? "error" : first;
 }
+
+/** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
+export const CLOSE_DRAIN_MS = 10_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
@@ -141,8 +165,11 @@ export class SessionCore {
    * @param {{
    *   store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger,
    *   liveness?: Liveness, proof?: () => boolean, checkpointTimeoutMs?: number,
+   *   turnOpen?: () => boolean, wait?: (ms: number) => Promise<void>,
    * }} parts
    * `proof`: whether a client message came since the start (crash table row 20), for a live checkpoint.
+   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`).
+   * `wait`: a timer, for the closing wait; tests give their own.
    */
   constructor(parts) {
     this.store = parts.store;
@@ -176,6 +203,42 @@ export class SessionCore {
     this.journal = null;
     /** @type {Promise<unknown> | null} A checkpoint in flight: one at a time. */
     this.checkpointing = null;
+    /** @type {() => boolean} */
+    this.turnOpen = parts.turnOpen ?? (() => false);
+    /** @type {(ms: number) => Promise<void>} */
+    this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    /**
+     * @type {(() => void) | null} Ends the closing wait when the answer is done. Set only
+     * during the wait: the end is waiting for the provider's answer, and usage still counts.
+     */
+    this.turnWaiter = null;
+    /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
+    this.deadline = Infinity;
+  }
+
+  /** The provider finished an answer: a closing wait for it ends now. */
+  turnDone() {
+    this.turnWaiter?.();
+  }
+
+  /**
+   * Waits for the provider's answer in progress to finish, so its usage is
+   * counted before the provider is hung up: up to `CLOSE_DRAIN_MS`, and never
+   * past the session's deadline, so the paid connection never outlives its
+   * cap. It ends early when the answer is done or the provider hangs up.
+   */
+  async drainTurn() {
+    if (!this.turnOpen()) return;
+    const limit = Math.min(CLOSE_DRAIN_MS, this.deadline - this.now());
+    if (limit <= 0) return;
+    try {
+      await new Promise((resolve) => {
+        this.turnWaiter = () => resolve(undefined);
+        void this.wait(limit).then(() => resolve(undefined));
+      });
+    } finally {
+      this.turnWaiter = null;
+    }
   }
 
   /**
@@ -264,6 +327,10 @@ export class SessionCore {
       // The waits above may have taken the ticket past its time, or the client may have gone.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       await this.store.put({ connecting: true }, null);
+      // Known before the provider is called, so an end that comes in the window below still
+      // caps its closing wait by the deadline.
+      const deadline = deadlineOf(ticket);
+      this.deadline = deadline;
       try {
         // Kept at once, so whatever happens next can hang it up.
         ownCall = await this.provider.connect(key);
@@ -280,7 +347,6 @@ export class SessionCore {
       const call = this.call;
       const reconnectSecret = newSecret();
       const reconnect = await hashOf(reconnectSecret);
-      const deadline = deadlineOf(ticket);
       // A slow handshake: the alarm may have ended the session, the client may have gone, or
       // the time run out. Then the provider's side is hung up, and an ended session stays ended.
       // Nothing waits between this check and the `active` write.
@@ -373,6 +439,8 @@ export class SessionCore {
    */
   async providerGone(call) {
     if (call !== this.call) return;
+    // A closing wait ends now too.
+    this.turnWaiter?.();
     await this.end("provider_closed");
   }
 
@@ -416,17 +484,24 @@ export class SessionCore {
    */
   async endOnce(reason, details) {
     const owner = this.owner;
-    const call = this.call;
     this.owner = null;
-    this.call = null;
-    // Both sides are told, with the reason: the provider hung up, the client closed. A client
-    // whose start is still in flight is told by that start, with its code (`4000`), when it
-    // finds the session ended: never a bare `1000 "error"` from here.
-    call?.close?.(1000, "session ended");
+    // The client is told at once, with the reason. A client whose start is still in flight is
+    // told by that start, with its code (`4000`), when it finds the session ended: never a bare
+    // `1000 "error"` from here.
     if (!this.starting) owner?.close(CLIENT_END_CODES[reason] ?? 1000, reason);
+    // An answer in progress is let finish, so its usage counts (plan 5.1). Not when the provider
+    // hung up itself, not at the time cap, and not for a start that never got its call.
+    if (this.call !== null && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
+    // An answer still open now was cut off: its usage is missing.
+    const cut = this.call !== null && this.turnOpen();
+    const call = this.call;
+    this.call = null;
+    // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
+    // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
+    const endedAt = this.now();
+    call?.close?.(1000, "session ended");
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
-    const at = this.now();
     if (details.log !== undefined) {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
@@ -434,13 +509,19 @@ export class SessionCore {
     const journal = readJournal(stored.get(JOURNAL_KEY));
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
-    const sliceEnd = deadline === undefined ? at : Math.min(at, deadline);
+    const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
+    if (journal !== null && cut) {
+      // The cut answer's usage is unknown: the final slice is booked with a gap, so it is
+      // `partial`, keeping the cost that is known (plan 4.2).
+      journal.droppedFrom ??= sliceEnd;
+      this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
+    }
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */
-    const entries = { state: "ended", end: { reason, at, finalSlice: finalSliceOf(journal) } };
+    const entries = { state: "ended", end: { reason, at: endedAt, finalSlice: finalSliceOf(journal) } };
     if (journal !== null) entries[JOURNAL_KEY] = journal;
-    await this.store.put(entries, at + CLOSE_RETRY_EVERY_MS);
+    await this.store.put(entries, this.now() + CLOSE_RETRY_EVERY_MS);
     await this.flushEnded();
   }
 
@@ -463,7 +544,8 @@ export class SessionCore {
    * @param {"per_turn" | "running_total"} shape
    */
   async recordUsage(event, shape) {
-    if (this.call === null || this.ending !== null) return;
+    // During the closing wait, the last answer's usage still counts.
+    if (this.call === null || (this.ending !== null && this.turnWaiter === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null || !addUsage(journal, event, shape, now)) return;

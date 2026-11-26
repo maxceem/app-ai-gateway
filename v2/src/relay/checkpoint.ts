@@ -55,7 +55,7 @@ import { priceInServedMode } from "../pricing/tokens.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { CONTRACT_VERSION, ContractRefusal, checkedTicket } from "./contract.ts";
 import { sessionRowOf, SEAL_GRACE_MS, type Ticket } from "./tickets.ts";
-import { decodeSessionPrice, todaySessionPrice } from "./session-price.ts";
+import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-price.ts";
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
@@ -147,23 +147,34 @@ interface SlicePrice {
 }
 
 /**
- * Prices a slice's tokens with the session's price (`./session-price.ts`):
- * the connection's own rate, else ours, as they were when it opened. A slice
- * with no tokens (connection time only) costs nothing: there is no usage to
- * price. Tokens with no price are booked `unresolved`, priced later by the
- * sweep, never billed as free (AGENTS.md).
+ * Prices a slice with the session's price (`./session-price.ts`): the
+ * connection's own rate, else ours, as they were when it opened. Tokens are
+ * priced by their rates. A price with a time rate (the wall clock meter: a
+ * provider billed per minute of connection) also bills the slice's connection
+ * time, `sessionMs`, as session seconds (`sliceUsage`). A slice with neither
+ * (connection time on a model billed by tokens) costs nothing: there is no
+ * usage to price. With no price, tokens and connection time are booked
+ * `unresolved`, priced later by the sweep, never billed as free (AGENTS.md):
+ * the model may bill time.
  */
-export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null): SlicePrice {
+export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null, sessionMs = 0): SlicePrice {
   const hasTokens = SLICE_MEASURES.some((name) => (measures[name] ?? 0) > 0);
-  if (!hasTokens) return { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
+  const free: SlicePrice = { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   const unresolved: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
-  if (resolved === null) return unresolved;
-  const priced = priceInServedMode(resolved.price, {
-    inputTokens: measures.input_tokens ?? 0,
-    cachedInputTokens: measures.cached_input_tokens ?? 0,
-    cacheWriteTokens: measures.cache_write_tokens ?? 0,
-    outputTokens: measures.output_tokens ?? 0,
-  });
+  if (resolved === null) return hasTokens || sessionMs > 0 ? unresolved : free;
+  const usage = sliceUsage(
+    {
+      inputTokens: measures.input_tokens ?? 0,
+      cachedInputTokens: measures.cached_input_tokens ?? 0,
+      cacheWriteTokens: measures.cache_write_tokens ?? 0,
+      outputTokens: measures.output_tokens ?? 0,
+      // Session seconds are stored at the milli scale: a millisecond count is the unit count.
+      ...(sessionMs > 0 ? { units: { session_seconds: sessionMs } } : {}),
+    },
+    resolved.price,
+  );
+  if (!hasTokens && usage.units === undefined) return free;
+  const priced = priceInServedMode(resolved.price, usage);
   if (priced === null) return unresolved;
   return {
     costNano: priced.cost,
@@ -184,7 +195,11 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
  */
 export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
   const gap = slice.gapMs > 0 || slice.gaps > 0;
-  if (gap && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
+  // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
+  // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
+  const billableMs = slice.sessionMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? slice.sessionMs : 0;
+  // A slice billed by time keeps the price of the time it knows, marked `partial` below.
+  if (gap && price.unit !== "session_seconds" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
     price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
   }
   // Dated by its start (D18), inside the session's own time: never before its start, never after
@@ -228,7 +243,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     outputTokens: tokens.output_tokens,
     unit: price.unit,
     units: price.units,
-    measures: { ...tokens, ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}) },
+    measures: { ...tokens, ...(billableMs > 0 ? { units_session_seconds: billableMs } : {}), ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}) },
     rates: price.rates,
     sessionMs: slice.sessionMs,
     correctionKind: null,
@@ -311,7 +326,7 @@ export interface LedgerCheckpointInput {
  */
 function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): SliceAtSavedPrice {
   const facts = { app: ticket.app, session: ticket.sid };
-  const unpriced = priceSlice(slice.measures, null);
+  const unpriced = priceSlice(slice.measures, null, slice.sessionMs);
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
     priceAt: (saved) => {
@@ -320,7 +335,7 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
       } else if (saved !== "") {
         try {
-          price = priceSlice(slice.measures, decodeSessionPrice(saved));
+          price = priceSlice(slice.measures, decodeSessionPrice(saved), slice.sessionMs);
         } catch {
           price = unpriced;
         }

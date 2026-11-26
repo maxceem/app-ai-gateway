@@ -660,6 +660,11 @@ export default mock;
  *   times (default once) the way a provider may repeat an event;
  * - `mock.stream` with `"usageEvery":K` also sends a usage event of 100 input
  *   and 20 output tokens after every K-th frame, to load the journal.
+ *
+ * And one answer shaped like OpenAI's, for the relay's closing wait (step 9a
+ * part 3): `{"type":"mock.answer","event_id":…,"usage":{…},"seconds":N}`
+ * sends `response.created`, audio for N seconds, then the usage event and
+ * `response.done`.
  */
 function realtimeSession(): Response {
   const [client, server] = Object.values(new WebSocketPair());
@@ -673,7 +678,26 @@ function realtimeSession(): Response {
     const data = event.data;
     if (typeof data === "string" && data.startsWith('{"type":"mock.')) {
       const message = JSON.parse(data) as { type: string; seconds?: number; usageEvery?: number; event_id?: unknown; usage?: unknown; repeat?: number };
-      if (message.type === "mock.turn") {
+      if (message.type === "mock.answer") {
+        const frames = Math.max(1, Math.min(20 * 60, Math.round((message.seconds ?? 1) * 20)));
+        server.send(JSON.stringify({ type: "response.created" }));
+        let sent = 0;
+        const timer = setInterval(() => {
+          try {
+            if (sent < frames) {
+              server.send(JSON.stringify({ type: "response.output_audio.delta", n: sent, delta: audio }));
+              sent += 1;
+              return;
+            }
+            clearInterval(timer);
+            server.send(JSON.stringify({ type: "mock.usage", event_id: message.event_id, usage: message.usage }));
+            server.send(JSON.stringify({ type: "response.done" }));
+          } catch {
+            clearInterval(timer);
+          }
+        }, 50);
+        server.addEventListener("close", () => clearInterval(timer));
+      } else if (message.type === "mock.turn") {
         const usage = JSON.stringify({ type: "mock.usage", event_id: message.event_id, usage: message.usage });
         for (let i = 0; i < Math.max(1, Math.min(5, message.repeat ?? 1)); i += 1) server.send(usage);
       } else if (message.type === "mock.big") {
