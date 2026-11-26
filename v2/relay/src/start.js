@@ -327,6 +327,10 @@ export class SessionCore {
       // The waits above may have taken the ticket past its time, or the client may have gone.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       await this.store.put({ connecting: true }, null);
+      // Known before the provider is called, so an end that comes in the window below still
+      // caps its closing wait by the deadline.
+      const deadline = deadlineOf(ticket);
+      this.deadline = deadline;
       try {
         // Kept at once, so whatever happens next can hang it up.
         ownCall = await this.provider.connect(key);
@@ -343,8 +347,6 @@ export class SessionCore {
       const call = this.call;
       const reconnectSecret = newSecret();
       const reconnect = await hashOf(reconnectSecret);
-      const deadline = deadlineOf(ticket);
-      this.deadline = deadline;
       // A slow handshake: the alarm may have ended the session, the client may have gone, or
       // the time run out. Then the provider's side is hung up, and an ended session stays ended.
       // Nothing waits between this check and the `active` write.
