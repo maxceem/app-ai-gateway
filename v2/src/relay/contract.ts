@@ -14,8 +14,9 @@
  *   safe to repeat: the first close wins. It checks only the signature: a
  *   session closes long after its start ticket expired.
  *
- * Taking and freeing the session's lease in the limiters comes with the
- * leases (step 9a part 1, third review).
+ * `open` activates the session's leases in the limiters, and `close` frees
+ * them (`../limits/session-admission.ts`). Neither ever fails because a
+ * limiter cannot be reached (crash table row 7).
  */
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
@@ -25,6 +26,8 @@ import { ledgerDb } from "../ledger/database.ts";
 import { closeSession } from "../ledger/sessions.ts";
 import { sessionRowOf, verifyTicket, type Ticket } from "./tickets.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
+import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
+import type { SlotClaim } from "../do/session-slots.ts";
 
 /** The contract's version: the relay and the main Worker each say which they speak. */
 export const CONTRACT_VERSION = 1;
@@ -69,10 +72,25 @@ async function checkedTicket(env: Env, ticket: unknown): Promise<Ticket> {
   return payload;
 }
 
-/** `open`: the settings for a session that may start. */
-export async function openForRelay(env: Env, ticket: unknown, now: number = Date.now()): Promise<OpenSettings> {
+/** Where a session's leases live, and the slot they hold, from its ticket. */
+function leaseOf(ticket: Ticket): { owner: LeaseOwner; claim: SlotClaim } {
+  return {
+    owner: { appId: ticket.app, installId: ticket.install, endUserId: ticket.endUser },
+    claim: { sessionId: ticket.sid, kind: ticket.slot, ticketStart: ticket.start, expiresAt: ticket.exp, deadline: deadlineOf(ticket) },
+  };
+}
+
+/** `open`: the settings for a session that may start. Its leases become `active` (T4). */
+export async function openForRelay(
+  env: Env,
+  ticket: unknown,
+  now: number = Date.now(),
+  waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<OpenSettings> {
   const payload = await checkedTicket(env, ticket);
   if (now >= payload.exp) throw new ContractRefusal("ticket_expired");
+  const lease = leaseOf(payload);
+  await activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil);
   return {
     version: CONTRACT_VERSION,
     sessionId: payload.sid,
@@ -93,8 +111,14 @@ export interface CloseInput {
   readonly providerCallId?: string | null;
 }
 
-/** `close`: records the session's end. Safe to repeat. */
-export async function closeForRelay(env: Env, ticket: unknown, input: CloseInput, now: number = Date.now()): Promise<{ readonly version: number }> {
+/** `close`: records the session's end, and frees its leases (T8). Safe to repeat. */
+export async function closeForRelay(
+  env: Env,
+  ticket: unknown,
+  input: CloseInput,
+  now: number = Date.now(),
+  waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<{ readonly version: number }> {
   const payload = await checkedTicket(env, ticket);
   if (
     !Number.isSafeInteger(input.finalSlice) ||
@@ -119,5 +143,7 @@ export async function closeForRelay(env: Env, ticket: unknown, input: CloseInput
     log("warn", "relay_close_failed", { app: payload.app, session: payload.sid, error: errorFacts(error) });
     throw new ContractRefusal("unavailable");
   }
+  // After the ledger: a close the relay retries frees the leases again, which changes nothing.
+  await releaseSessionLeases(env, leaseOf(payload).owner, payload.sid, waitUntil);
   return { version: CONTRACT_VERSION };
 }

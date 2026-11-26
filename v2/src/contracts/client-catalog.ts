@@ -48,6 +48,47 @@ const JOB_ERRORS = {
   503: "The gateway could not finish the check in time. Retry shortly.",
 } as const;
 
+/** What an app sends to start a live session (plan section 4.3, step 1). */
+export const StartSessionRequestSchema = z
+  .object({
+    path: z
+      .string()
+      .min(1)
+      .max(512)
+      .meta({ description: "The provider's own live-session path, as the app would call it, such as `v1/realtime`." }),
+    model: z.string().min(1).max(256).optional().meta({ description: "The model the session runs. Required where the provider names it on the connection, as OpenAI does." }),
+    takes_over: z
+      .string()
+      .max(64)
+      .optional()
+      .meta({
+        description:
+          "The session this one replaces, such as one whose network dropped. It counts only when it is this user's own open conversational session; otherwise the request is an ordinary new session.",
+      }),
+  })
+  .strict()
+  .meta({ id: "StartSessionRequest" });
+
+export const StartSessionResponseSchema = z
+  .object({
+    session_id: z.string(),
+    ticket: z.string().meta({ description: "Single use. Send it to the relay in the Authorization header as `Bearer <ticket>`, never in a URL." }),
+    relay_url: z.string().meta({ description: "Where to open the session's WebSocket." }),
+    expires_at: z.string().meta({ description: "When the ticket stops starting a session. An ISO 8601 time." }),
+    ends_at: z.string().meta({ description: "When the session ends at the latest: the ticket's start plus the session's time cap. An ISO 8601 time." }),
+  })
+  .meta({ id: "StartSessionResponse" });
+
+const SESSION_ERRORS = {
+  400: "The request is invalid, or names no model where the provider needs one.",
+  401: "A valid app key or gateway token is required, or the request must carry X-AppAttest-Proof.",
+  403: "The App Attest proof was rejected or replayed, the user is blocked, the app is disabled, or the app does not allow this live session or model.",
+  404: "The app does not exist.",
+  429: "The user or the app has the most live sessions it allows (`session_limit`), or a spending budget is used up. Carries Retry-After.",
+  502: "The provider connection is missing or turned off, or its credential cannot be used.",
+  503: "Live sessions are not set up on this deployment, or the gateway could not finish the check in time. Retry shortly.",
+} as const;
+
 export const CLIENT_CATALOG = {
   getHealth: {
     method: "GET",
@@ -131,6 +172,22 @@ export const CLIENT_CATALOG = {
       404: "The app does not exist, or identifies no end users.",
       503: "The gateway could not finish the check in time. Retry shortly.",
     },
+  },
+
+  startSession: {
+    method: "POST",
+    path: "/v2/apps/{app}/sessions/{provider}",
+    params: { ...APP_PARAM, provider: { description: "The provider connection's slug, as in the app's routing." } },
+    tags: ["Live sessions"],
+    summary: "Start a live session",
+    description:
+      "Checks the caller, the app's settings and limits, takes the session's slot, and answers a single-use ticket and the relay's address. The app then opens the session's WebSocket at the relay with the ticket. Starting a session uses no request and no plan allowance; its minutes count while it runs.",
+    security: "gateway",
+    request: StartSessionRequestSchema,
+    response: StartSessionResponseSchema,
+    status: 201,
+    responseDescription: "The session's ticket and the relay's address.",
+    errors: SESSION_ERRORS,
   },
 
   getJobStatus: {

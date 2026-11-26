@@ -13,6 +13,7 @@
  * read, and are never read by, the plan allowance (`billing_*`).
  */
 import { DurableObject } from "cloudflare:workers";
+import { createSlotTable } from "./session-slots.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
@@ -66,6 +67,9 @@ export class RequestLimitObject extends DurableObject<Env> {
           day_count INTEGER NOT NULL
         );
       `);
+      // Live-session slots (`./session-slots.ts`): the user's in the end
+      // user's limiter, the app's seats in the app's.
+      createSlotTable(this.ctx.storage.sql);
     });
   }
 
@@ -102,6 +106,17 @@ export class RequestLimitObject extends DurableObject<Env> {
     }
     this.bumpWindows(windows.minuteKey, windows.minute + 1, windows.dayKey, windows.day + 1);
     return { allowed: true, budget };
+  }
+
+  /**
+   * The budget alone, counting nothing: a live session's start uses no
+   * request (D8), but a budget already spent still refuses it (section 6).
+   */
+  protected async budgetSpent(budgetNano: number | null, spend: SpendKey | null, now: number): Promise<"spent" | "checked" | "unread" | "none"> {
+    if (budgetNano === null || spend === null) return "none";
+    const total = await this.budgetTotal(spend, now);
+    if (total === null) return "unread";
+    return total >= budgetNano ? "spent" : "checked";
   }
 
   /** Requests counted today, for `/me`. */

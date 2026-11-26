@@ -38,6 +38,8 @@ export type ErrorCode =
   | "job_not_found"
   | "app_rate_limited"
   | "app_budget_exhausted"
+  // A live session over the user's or the app's session limit (D15).
+  | "session_limit"
   | "billing_request_quota_exceeded"
   | "billing_payment_required"
   | "billing_unavailable"

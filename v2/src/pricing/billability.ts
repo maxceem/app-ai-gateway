@@ -550,7 +550,7 @@ export function modelSet(models: readonly string[] | undefined): ReadonlySet<str
 }
 
 /** A route's model names, a set for membership; null when it has no list. */
-function listOf(route: RouteModels): ReadonlySet<string> | null {
+export function listOf(route: RouteModels): ReadonlySet<string> | null {
   return modelSet(route.models);
 }
 

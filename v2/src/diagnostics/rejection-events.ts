@@ -33,6 +33,7 @@ export const REJECTION_REASONS: ReadonlySet<string> = new Set([
   "blocked_user",
   "blocked_app_rate",
   "blocked_app_budget",
+  "blocked_session_limit",
   "blocked_billing",
   "blocked_replay",
   "payload_too_large",
