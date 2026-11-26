@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -31,13 +31,27 @@ ${wrapperExits ? "process.exit(0);" : `setInterval(() => undefined, 1000); setTi
 // The watchdog needs process groups, so it is off on Windows.
 const noGroups = process.platform === "win32";
 
-const alive = (pid) => {
+const running = (pid) => {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // A process that has ended still answers until its parent collects it. Once
+  // its own parent is gone, that parent is init, which may take a moment.
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false; // `ps` found no such process.
+  }
+};
+
+/** Whether `pid` stops running within two seconds. */
+const stops = async (pid) => {
+  for (let waited = 0; running(pid) && waited < 2_000; waited += 50) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return !running(pid);
 };
 
 for (const wrapperExits of [false, true]) {
@@ -51,7 +65,7 @@ for (const wrapperExits of [false, true]) {
     assert.match(result.output, /The last test file in its output was test\/hangs\.test\.ts\./);
     const child = Number(result.output.match(/child-pid:(\d+)/)?.[1]);
     assert.ok(child > 0, "the child printed its pid");
-    assert.equal(alive(child), false, "the child that held the output pipe was stopped too");
+    assert.equal(await stops(child), true, "the child that held the output pipe was stopped too");
   });
 }
 
@@ -76,7 +90,7 @@ test("a child that ignores SIGTERM and prints on it gets one timeout and is then
   assert.equal(result.output.match(/hit its silence timeout/g)?.length, 1, "the watchdog fired exactly once");
   const child = Number(result.output.match(/child-pid:(\d+)/)?.[1]);
   assert.ok(child > 0, "the child printed its pid");
-  assert.equal(alive(child), false, "SIGKILL ended the child that ignored SIGTERM");
+  assert.equal(await stops(child), true, "SIGKILL ended the child that ignored SIGTERM");
 });
 
 test("Ctrl-C stops a watched step's group, even a process that ignores SIGTERM, and then exits 130", { timeout: TEST_TIMEOUT_MS, skip: noGroups }, async (t) => {
@@ -102,7 +116,7 @@ await runStep("fake:interrupted", process.execPath, ["-e", ${JSON.stringify(fixt
   assert.ok(child > 0, "the watched step started");
   parent.kill("SIGINT");
   assert.equal(await exited, 130);
-  assert.equal(alive(child), false, "the process that ignored SIGTERM was killed before the runner exited");
+  assert.equal(await stops(child), true, "the process that ignored SIGTERM was killed before the runner exited");
 });
 
 test("a step that keeps printing is never stopped, however long it runs in all", { timeout: TEST_TIMEOUT_MS }, async () => {
