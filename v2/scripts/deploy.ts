@@ -47,6 +47,7 @@ import {
   latestVersionIds,
   prebuiltProblems,
   relayUrlFromConfig,
+  sourceProblems,
   relayUrlFromDeployOutput,
   type WorkerConfig,
 } from "./deploy-lib.ts";
@@ -96,7 +97,10 @@ function configPath(dir: string): string {
 
 const paths = { main: configPath(V2_DIR), vault: configPath(join(V2_DIR, "vault")), relay: configPath(join(V2_DIR, "relay")) };
 const configs = { main: readConfig(paths.main), vault: readConfig(paths.vault), relay: readConfig(paths.relay) };
-const problems = deployProblems(configs.main, configs.vault, configs.relay);
+const problems = [
+  ...deployProblems(configs.main, configs.vault, configs.relay),
+  ...sourceProblems(V2_DIR, { vault: { path: paths.vault, config: configs.vault }, relay: { path: paths.relay, config: configs.relay } }),
+];
 if (problems.length > 0) refuse(["Nothing was deployed:", ...problems.map((p) => `- ${p}`)].join("\n"));
 
 /**
@@ -178,16 +182,16 @@ function deployConfigs(): typeof paths {
  * failure to read it is thrown, so a deploy never drops the gateway's address.
  */
 function currentRelayUrl(mainConfig: string): string | undefined {
-  let list: string;
   try {
-    list = wrangler(["deployments", "list", "--json"], mainConfig, "quiet");
+    const id = latestVersionIds(wrangler(["deployments", "list", "--json"], mainConfig, "quiet"))[0];
+    return id === undefined ? undefined : deployedVar(wrangler(["versions", "view", id, "--json"], mainConfig, "quiet"), "RELAY_URL");
   } catch (error) {
     // Cloudflare's "this Worker does not exist" code: a first install.
     if (error instanceof WranglerError && /\[code: 10007\]/u.test(error.output)) return undefined;
-    throw new Error("Could not read the gateway's current RELAY_URL, so nothing was deployed; check Wrangler's sign-in and try again.");
+    // Wrangler's own words name the real cause (a sign-in, the network, a changed format).
+    if (error instanceof WranglerError) process.stderr.write(`${error.output.trim()}\n`);
+    throw new Error("Could not read the gateway's current relay address; nothing was deployed. Check Wrangler's sign-in and try again.");
   }
-  const id = latestVersionIds(list)[0];
-  return id === undefined ? undefined : deployedVar(wrangler(["versions", "view", id, "--json"], mainConfig, "quiet"), "RELAY_URL");
 }
 
 try {

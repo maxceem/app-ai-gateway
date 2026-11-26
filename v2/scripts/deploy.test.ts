@@ -15,6 +15,7 @@ import {
   deployProblems,
   latestVersionIds,
   RELAY_CODE_UPDATE,
+  sourceProblems,
   relayUrlFromConfig,
   relayUrlFromDeployOutput,
   type WorkerConfig,
@@ -111,6 +112,7 @@ if (args[0] === "deployments") {
 }
 if (args[0] === "versions" && args[1] === "view") {
   const gateway = process.env.FAKE_GATEWAY;
+  if (gateway === "view-fails") { console.error("Authentication error [code: 10000]"); process.exit(1); }
   const bindings = gateway === "secrets-only" ? [] : [{ name: "RELAY_URL", type: "plain_text", text: gateway }];
   process.stdout.write(JSON.stringify({ resources: { bindings } }));
   process.exit(0);
@@ -267,7 +269,9 @@ test("a gateway whose RELAY_URL can't be read stops the deploy before the vault 
   const fake = fakeWrangler(dir);
   const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "offline" });
   assert.equal(run.status, 1);
-  assert.match(run.stderr, /Could not read the gateway's current RELAY_URL, so nothing was deployed/u);
+  assert.match(run.stderr, /Could not read the gateway's current relay address; nothing was deployed/u);
+  // Wrangler's own words show the real cause.
+  assert.match(run.stderr, /fetch failed/u);
   assert.ok(fake.calls().every((call) => call[0] === "deployments"));
 });
 
@@ -287,5 +291,30 @@ test("an existing gateway keeps its RELAY_URL; one only secrets:upload made coun
   // Like a first install: deployed without the address, then again once the relay's is known.
   assert.equal(gatewayDeploys().length, 3);
   assert.ok(gatewayDeploys()[2]!.includes(`RELAY_URL:${relay}`));
+});
+
+test("a failed read of the gateway's current version also stops the deploy before the vault", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agw-v2-deploy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = fakeWrangler(dir);
+  const run = deploy(["--prebuilt", prebuiltDir(dir)], fake.bin, { FAKE_GATEWAY: "view-fails" });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Could not read the gateway's current relay address; nothing was deployed/u);
+  assert.match(run.stderr, /Authentication error/u);
+  assert.ok(fake.calls().every((call) => call[0] === "deployments" || call[0] === "versions"));
+});
+
+test("the vault and the relay must run this checkout's vault/src and relay/src", () => {
+  const { vault, relay } = tracked();
+  const workers = (vaultMain: unknown, relayMain: unknown, dir = V2_DIR) => ({
+    vault: { path: join(dir, "vault", "wrangler.test.jsonc"), config: { ...vault, main: vaultMain } },
+    relay: { path: join(dir, "relay", "wrangler.test.jsonc"), config: { ...relay, main: relayMain } },
+  });
+  assert.deepEqual(sourceProblems(V2_DIR, workers("src/index.js", "src/index.js")), []);
+  assert.match(sourceProblems(V2_DIR, workers("../relay/src/index.js", "src/index.js")).join("\n"), /vault config's main/u);
+  assert.match(sourceProblems(V2_DIR, workers("src/index.js", "/tmp/other/index.js")).join("\n"), /relay config's main/u);
+  // A config file somewhere else whose main still names this checkout's file passes; one beside a copy does not.
+  assert.deepEqual(sourceProblems(V2_DIR, { ...workers("src/index.js", "src/index.js"), vault: { path: "/elsewhere/wrangler.jsonc", config: { ...vault, main: join(V2_DIR, "vault", "src", "index.js") } } }), []);
+  assert.match(sourceProblems(V2_DIR, workers("src/index.js", "src/index.js", "/copy/v2")).join("\n"), /vault config's main/u);
 });
 

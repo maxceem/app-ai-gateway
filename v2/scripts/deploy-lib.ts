@@ -2,6 +2,8 @@
  * The pure parts of the v2 deploy (`deploy.ts`), kept apart so they can be
  * tested without Wrangler or an account.
  */
+import { dirname, join, resolve } from "node:path";
+
 /** The setting the relay must always be deployed with (plan section 5.1). */
 export const RELAY_CODE_UPDATE = { mode: "deferred", max_delay: 2400 } as const;
 
@@ -65,6 +67,23 @@ export function deployProblems(main: WorkerConfig, vault: WorkerConfig, relay: W
   for (const [label, config] of [["gateway", main], ["relay", relay]] as const) {
     const leaked = Object.keys(config.vars ?? {}).filter((name) => name.startsWith("SECRET_VAULT_"));
     if (leaked.length > 0) problems.push(`Only the vault holds the vault's settings; remove ${leaked.join(", ")} from the ${label} config.`);
+  }
+  return problems;
+}
+
+/**
+ * Why the vault or the relay would upload files other than this checkout's
+ * `vault/src/index.js` and `relay/src/index.js`: each config's `main`, read from
+ * where the config file is, must point there. So their upload is the checked-out
+ * source by construction, and `upload-local-secrets.ts` still recognises the vault.
+ */
+export function sourceProblems(v2Dir: string, workers: Record<"vault" | "relay", { path: string; config: WorkerConfig }>): string[] {
+  const problems: string[] = [];
+  for (const [label, { path, config }] of Object.entries(workers)) {
+    const expected = join(v2Dir, label, "src", "index.js");
+    if (typeof config.main !== "string" || resolve(dirname(path), config.main) !== expected) {
+      problems.push(`The ${label} config's main must be ${label}/src/index.js in this checkout.`);
+    }
   }
   return problems;
 }
