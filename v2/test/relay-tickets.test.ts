@@ -139,12 +139,14 @@ describe(`session tickets (split keys ${splitKeysOn ? "on" : "off"})`, () => {
         put: async (entries) => {
           for (const [key, value] of Object.entries(entries)) data.set(key, value);
         },
+        putJournal: async (journal) => void data.set("journal", journal),
         deleteAll: async () => data.clear(),
       },
       vault: { sessionKey: (ticket, options) => sessionKey(VAULT_ENV, ticket, options) },
       // `open` names another address than the seal's: the relay never uses it.
       main: {
         open: async (ticket) => ({ ...(await openForRelay(env, ticket)), url: "https://evil.example.com/v1/realtime", upstream: "https://evil.example.com/" }) as never,
+        checkpoint: async () => ({ decision: "continue", reasons: [], written: true }),
         close: async () => ({ version: 1 }),
       },
       provider: { connect: async (key) => ({ callId: (await connectProvider(key, send)).callId }) },

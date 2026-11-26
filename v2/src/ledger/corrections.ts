@@ -24,7 +24,8 @@
  *   stops once a final settlement exists; the settlement already includes it.
  */
 import { rate, nano, type NanoDollars } from "../money.ts";
-import { billingForCharge, priceSources } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
+import { decodeSessionPrice } from "../relay/session-price.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
@@ -183,6 +184,8 @@ async function writeCorrection(
   doneWork: string | null,
   unlessSettled = false,
   doneJob: string | null = null,
+  /** Only while the session's saved price is still this (`rates_json`, NULL included): the price the correction used. */
+  sessionPrice: { readonly sessionId: string; readonly ratesJson: string | null } | null = null,
 ): Promise<ChargeRow | null> {
   const correctedId = correction.correctsChargeId!;
   const statements = [
@@ -203,8 +206,11 @@ async function writeCorrection(
               ` AND NOT EXISTS (SELECT 1 FROM charge WHERE corrects_charge_id = ? AND correction_kind IN ('units', 'dollars'))
               AND NOT EXISTS (SELECT 1 FROM session WHERE ? = 'session' AND id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL)`
             : ""
-        }`,
-        params: unlessSettled ? [correctedId, correctedId, correction.ownerType, correction.ownerId] : [correctedId],
+        }${sessionPrice === null ? "" : " AND EXISTS (SELECT 1 FROM session WHERE id = ? AND rates_json IS ?)"}`,
+        params: [
+          ...(unlessSettled ? [correctedId, correctedId, correction.ownerType, correction.ownerId] : [correctedId]),
+          ...(sessionPrice === null ? [] : [sessionPrice.sessionId, sessionPrice.ratesJson]),
+        ],
       },
     ),
   ];
@@ -283,7 +289,9 @@ export type PricingResult =
   | { readonly status: "already" }
   | { readonly status: "charge_missing" }
   /** Still no price, ours or the customer's. Try again later. */
-  | { readonly status: "no_price" };
+  | { readonly status: "no_price" }
+  /** The session saved its price while this was priced: nothing booked. Try again, with it. */
+  | { readonly status: "price_changed" };
 
 /** A charge's token columns as a standard-mode usage, for a charge whose measures hold none. */
 function tokenColumns(charge: ChargeRow): ReturnType<typeof usageFromMeasures> {
@@ -322,30 +330,54 @@ export async function priceUnresolvedCharge(
     .bind(original.id)
     .first();
   if (settled !== null) return { status: "already" };
-  // So does a session settled with a provider total, for each of its slices.
+  // So does a session settled with a provider total, for each of its slices. A session's slice
+  // is priced at the price the session saved first (plan 4.2; `../relay/session-price.ts`).
+  let saved: ResolvedPrice | null = null;
+  /** The session's price as read here: the correction is booked only while it is unchanged. */
+  let sessionPrice: { readonly sessionId: string; readonly ratesJson: string | null } | null = null;
   if (original.ownerType === "session") {
     const session = await db
-      .prepare("SELECT 1 FROM session WHERE id = ? AND settlement = 'settled' AND session_total_nano IS NOT NULL")
+      .prepare("SELECT settlement, session_total_nano, rates_json FROM session WHERE id = ?")
       .bind(original.ownerId)
-      .first();
-    if (session !== null) return { status: "already" };
+      .first<{ settlement: string; session_total_nano: number | null; rates_json: string | null }>();
+    if (session !== null && session.settlement === "settled" && session.session_total_nano !== null) return { status: "already" };
+    if (session !== null) sessionPrice = { sessionId: original.ownerId, ratesJson: session.rates_json };
+    if (session !== null && session.rates_json !== null && session.rates_json !== "") {
+      try {
+        saved = decodeSessionPrice(session.rates_json);
+      } catch {
+        // Unreadable: the current rate prices it, as for a charge with no session.
+      }
+    }
   }
-  const connection =
-    original.providerConnectionId === null
-      ? null
-      : await settings
-          .prepare("SELECT rates_json FROM provider_connection WHERE id = ?")
-          .bind(original.providerConnectionId)
-          .first<{ rates_json: string | null }>();
-  const resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
-  if (resolved === null) return { status: "no_price" };
   // Priced exactly as the request would have been: the stored usage, with its
   // modalities and variants, in the service mode that served it.
   const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
   if (stored === null) return { status: "no_price" };
   const { usage } = stored;
-  const priced = priceInServedMode(resolved.price, usage, stored.mode, stored.doubt);
-  if (priced === null) return { status: "no_price" };
+  const priceWith = (price: ResolvedPrice) => {
+    try {
+      return priceInServedMode(price.price, usage, stored.mode, stored.doubt);
+    } catch {
+      return null;
+    }
+  };
+  let resolved = saved;
+  let priced = saved === null ? null : priceWith(saved);
+  if (priced === null) {
+    // No saved price, or one that can't price it: the current rate, the customer's then ours.
+    const connection =
+      original.providerConnectionId === null
+        ? null
+        : await settings
+            .prepare("SELECT rates_json FROM provider_connection WHERE id = ?")
+            .bind(original.providerConnectionId)
+            .first<{ rates_json: string | null }>();
+    resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
+    if (resolved === null) return { status: "no_price" };
+    priced = priceInServedMode(resolved.price, usage, stored.mode, stored.doubt);
+  }
+  if (priced === null || resolved === null) return { status: "no_price" };
   // The unit and count the price billed, from the pricing result itself.
   const billed = { unit: priced.unit, units: priced.units };
   const correction = correctionOf(original, {
@@ -364,6 +396,12 @@ export async function priceUnresolvedCharge(
   });
   // Never after a final settlement that already holds its cost: the charge's
   // own, its job's, or its session's provider total.
-  const written = await writeCorrection(db, correction, input.now, priced.cost, input.doneWork ?? null, true);
-  return written !== null ? { status: "priced", correction: written } : { status: "already" };
+  const written = await writeCorrection(db, correction, input.now, priced.cost, input.doneWork ?? null, true, null, sessionPrice);
+  if (written !== null) return { status: "priced", correction: written };
+  if (sessionPrice !== null) {
+    // A checkpoint saved the session's price while the current rate was read (Sol round 6).
+    const now = await db.prepare("SELECT rates_json FROM session WHERE id = ?").bind(sessionPrice.sessionId).first<{ rates_json: string | null }>();
+    if (now !== null && now.rates_json !== sessionPrice.ratesJson) return { status: "price_changed" };
+  }
+  return { status: "already" };
 }

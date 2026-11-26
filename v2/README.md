@@ -253,7 +253,8 @@ dashboard or with `wrangler deploy` alone. Deploy the gateway with this command 
 `wrangler deploy` drops its `RELAY_URL`.
 
 `--dry-run` checks the configs and runs `wrangler deploy --dry-run` for each Worker, and changes
-nothing. The release's deploy uses `--prebuilt <dir>`, with the gateway bundle and console that
+nothing. Run it with `--profile <name>`: every deployment needs its own ticket key, so the tracked
+`wrangler.jsonc` files alone don't pass. The release's deploy uses `--prebuilt <dir>`, with the gateway bundle and console that
 `build:prebuilt` made in a job without deploy secrets, and refuses a config with a build command
 or `base_dir`. The vault and the relay have no build: they are uploaded straight from the
 checkout, which in the release's deploy job is the tag, so they match it by construction. A

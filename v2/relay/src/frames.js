@@ -129,6 +129,8 @@ export class SessionFrames {
     const now = this.now();
     this.lastClientAt = now;
     this.lastProviderAt = now;
+    /** Whether any message came from the client since the start: the relayed proof that the session is real (crash table row 20). */
+    this.clientSpoke = false;
     /** The frame rate window: when it started, and how many frames came in it. */
     this.windowStart = now;
     this.windowFrames = 0;
@@ -153,6 +155,7 @@ export class SessionFrames {
   fromClient(data) {
     const now = this.now();
     this.lastClientAt = now;
+    this.clientSpoke = true;
     if (now - this.windowStart >= RATE_WINDOW_MS) {
       this.windowStart = now;
       this.windowFrames = 0;

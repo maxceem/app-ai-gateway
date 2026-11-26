@@ -1,8 +1,8 @@
 /**
  * The relay's calls into the main Worker (plan section 5.1): `open` and
- * `close` here; `checkpoint` comes with the journal (step 9a part 2). The
- * relay calls them over its service binding (`RelayContract` in
- * `./entrypoint.ts`); the main Worker never calls the relay.
+ * `close` here, `checkpoint` in `./checkpoint.ts`. The relay calls them over
+ * its service binding (`RelayContract` in `./entrypoint.ts`); the main Worker
+ * never calls the relay.
  *
  * Fields are only ever added, and each answer carries `CONTRACT_VERSION`.
  *
@@ -29,8 +29,13 @@ import { deadlineOf } from "../../relay/src/ticket.js";
 import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
 
-/** The contract's version: the relay and the main Worker each say which they speak. */
-export const CONTRACT_VERSION = 1;
+/**
+ * The contract's version: the relay and the main Worker each say which they
+ * speak. 1: `open` and `close`. 2: adds `checkpoint`, and the relay's
+ * `relayVersion` and `adapter` fields. A main Worker always answers every
+ * version still deployed (`test/relay-contract.test.ts`).
+ */
+export const CONTRACT_VERSION = 2;
 /** How often the relay sends a checkpoint (plan section 5.1). */
 export const CHECKPOINT_INTERVAL_MS = 60_000;
 /** How long `close`'s ledger write may take. */
@@ -46,6 +51,19 @@ export interface OpenSettings {
   readonly model: string | null;
   readonly deadline: number;
   readonly checkpointIntervalMs: number;
+  /**
+   * The relay's protocol adapter: how it reads usage from the provider's
+   * frames (plan 5.2). Version 2. Until the provider adapters land (9b–9e),
+   * every session uses `mock`, which reads the smoke mock's usage events and
+   * nothing else: a real provider's frames carry none of them, so its session
+   * is metered by connection time only.
+   */
+  readonly adapter: string;
+}
+
+/** The relay adapter for a session's operation (plan 5.2). Provider adapters come with 9b–9e. */
+export function adapterFor(_ticket: Ticket): string {
+  return "mock";
 }
 
 /** A refusal the relay can act on: its message is a code, never a value from the ticket. */
@@ -56,7 +74,8 @@ export class ContractRefusal extends Error {
   }
 }
 
-async function checkedTicket(env: Env, ticket: unknown): Promise<Ticket> {
+/** The ticket, its signature checked (never its expiry here). Refuses with a code. */
+export async function checkedTicket(env: Env, ticket: unknown): Promise<Ticket> {
   let payload: Ticket | null;
   try {
     payload = await verifyTicket(env, ticket);
@@ -100,6 +119,7 @@ export async function openForRelay(
     model: payload.model,
     deadline: deadlineOf(payload),
     checkpointIntervalMs: CHECKPOINT_INTERVAL_MS,
+    adapter: adapterFor(payload),
   };
 }
 
@@ -109,6 +129,8 @@ export interface CloseInput {
   readonly endReason: string;
   readonly endedAt: number;
   readonly providerCallId?: string | null;
+  /** The contract version the relay speaks (version 2 on). */
+  readonly relayVersion?: number;
 }
 
 /** `close`: records the session's end, and frees its leases (T8). Safe to repeat. */

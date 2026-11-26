@@ -103,6 +103,41 @@ export class AccountLedger extends DurableObject<Env> {
     return results;
   }
 
+  /**
+   * Books one live-session checkpoint (`../relay/checkpoint.ts`) in one
+   * synchronous transaction: the session's saved price is read, the slice
+   * priced with it and booked, the price saved on the first one, and the
+   * stops checked. If anything fails, nothing is written. Its code loads on
+   * first use.
+   */
+  async checkpoint(input: import("../relay/checkpoint.ts").LedgerCheckpointInput): Promise<import("../ledger/sessions.ts").CheckpointAnswer> {
+    const [{ checkpointWrite }, { failedCheckpoint, writeCheckpointIn }] = await Promise.all([import("../relay/checkpoint.ts"), import("../ledger/sessions.ts")]);
+    const write = checkpointWrite(input);
+    const storage = this.ctx.storage;
+    let wrote = false;
+    let answer;
+    try {
+      answer = storage.transactionSync(() =>
+        writeCheckpointIn((statements) => {
+          const results = runLedgerStatements(storage, statements, false);
+          if (results.some((result) => result.changes > 0)) wrote = true;
+          return results;
+        }, write),
+      );
+    } catch (error) {
+      wrote = false;
+      answer = failedCheckpoint(write, null, write.standing, error);
+    }
+    if (wrote) {
+      try {
+        await this.planWork();
+      } catch (error) {
+        log("warn", "ledger_alarm_unset", { error: errorFacts(error) });
+      }
+    }
+    return answer;
+  }
+
   /** The schema version this object is at. For tests and diagnostics. */
   async schemaVersion(): Promise<number> {
     return Number(readMeta(this.ctx.storage, "schema_version") ?? "0");
