@@ -1,28 +1,37 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { constants } from "node:os";
 
-// Runs one step of `scripts/check.mjs` and stops it if it freezes.
+// Runs one step of `scripts/check.mjs`, and stops a watched step that goes
+// silent for too long.
 //
-// A test run can freeze: it uses no CPU and never ends. The Workers test pool
-// does this when a message from inside the runtime to Vitest is lost, and
-// Vitest then waits for it forever. Without a limit, `verify` would wait too.
+// A Worker test run can freeze: it uses no CPU and never ends. The Workers
+// test pool does this when a message from inside the runtime to Vitest is
+// lost, and Vitest then waits for it forever. Without a limit, `verify` would
+// wait too. So a watched step that prints nothing for a while is stopped,
+// with every process it started, and fails with a message that says so.
 //
-// So a step that prints nothing for a while is treated as frozen. Its whole
-// process tree is stopped, and the step fails with a message that says so.
-// Every step prints well within the limit while it works: Vitest reports each
-// test file as it finishes, and the slowest file takes about a minute.
+// Only the Worker test steps are watched (see `check.mjs`). They print as each
+// test file finishes, and the slowest file takes about a minute. A type check
+// can be silent for its whole run, so it is not watched.
 
 /** Overrides the limit, in minutes. `0` turns the watchdog off. */
 export const SILENCE_ENV = "CHECK_SILENCE_MINUTES";
 const DEFAULT_SILENCE_MINUTES = 5;
+// The longest delay a Node timer accepts. A longer one fires after 1 ms.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+// How long a stopped step gets to end on its own before it is killed.
+const KILL_GRACE_MS = 5_000;
 
-/** How long a step may print nothing, in milliseconds, or `0` for no limit. */
+/** How long a watched step may print nothing, in milliseconds, or `0` for no limit. */
 export function silenceLimitMs(env = process.env) {
   const raw = env[SILENCE_ENV];
   const minutes = raw === undefined || raw.trim() === "" ? DEFAULT_SILENCE_MINUTES : Number(raw);
-  if (!Number.isFinite(minutes) || minutes < 0) {
-    throw new Error(`${SILENCE_ENV} must be a number of minutes, or 0 to turn the limit off (got "${raw}")`);
+  const ms = minutes * 60_000;
+  if (!Number.isFinite(minutes) || minutes < 0 || ms > MAX_TIMER_MS) {
+    const most = Math.floor(MAX_TIMER_MS / 60_000);
+    throw new Error(`${SILENCE_ENV} must be a number of minutes from 0 to ${most}, where 0 turns the limit off (got "${raw}")`);
   }
-  return minutes * 60_000;
+  return ms;
 }
 
 /** The last test file named in a step's output, such as `test/jobs.test.ts`. */
@@ -35,27 +44,40 @@ export function lastTestFile(output) {
  * Runs `command` and resolves with `{ name, ok, output, seconds }`. Output is
  * buffered, not streamed: parallel steps would otherwise interleave their
  * output line by line and make a failure impossible to read.
+ *
+ * With `silenceMs` above 0, the step runs in its own process group, and the
+ * whole group is stopped once it prints nothing for that long. That needs
+ * process groups, so on Windows no step is watched.
  */
-export function runStep(name, command, args, { cwd, silenceMs = silenceLimitMs() } = {}) {
+export function runStep(name, command, args, { cwd, silenceMs = 0 } = {}) {
+  const watched = silenceMs > 0 && process.platform !== "win32";
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(command, args, { cwd });
+    // `detached` makes the child the leader of a new process group, so the
+    // group holds everything it starts, even what outlives it.
+    const child = spawn(command, args, { cwd, detached: watched });
+    if (watched) stopWithParent(child.pid);
 
     let output = "";
+    let timedOut = false;
     let watchdog = null;
-    const stopFrozen = () => {
+    let killer = null;
+    const stopSilent = () => {
+      timedOut = true;
       const minutes = Math.round((silenceMs / 60_000) * 100) / 100;
       const file = lastTestFile(output);
       const message =
-        `${name} printed nothing for ${minutes} minute${minutes === 1 ? "" : "s"}, so it was stopped. ` +
-        `This is a frozen run, not a failing test.` +
+        `${name} hit its silence timeout: it printed nothing for ${minutes} minute${minutes === 1 ? "" : "s"}, so it was stopped. ` +
+        `This most likely means the run froze, not that a test failed.` +
         (file ? ` The last test file in its output was ${file}.` : "") +
-        ` (Set ${SILENCE_ENV} to change the limit.)`;
+        ` (${SILENCE_ENV} changes the limit.)`;
       console.error(`STOP ${message}`);
       output += `\n${message}\n`;
-      stopTree(child.pid);
+      signalGroup(child.pid, "SIGTERM");
+      // Kept referenced: a frozen process may ignore SIGTERM.
+      killer = setTimeout(() => signalGroup(child.pid, "SIGKILL"), KILL_GRACE_MS);
     };
-    if (silenceMs > 0) watchdog = setTimeout(stopFrozen, silenceMs);
+    if (watched) watchdog = setTimeout(stopSilent, silenceMs);
     const keep = (chunk) => {
       output += chunk;
       watchdog?.refresh();
@@ -69,56 +91,50 @@ export function runStep(name, command, args, { cwd, silenceMs = silenceLimitMs()
     });
     child.on("close", (code) => {
       clearTimeout(watchdog);
+      if (watched) groups.delete(child.pid);
+      // Nothing left in the group: no need to kill it later.
+      if (killer && !groupExists(child.pid)) clearTimeout(killer);
       const seconds = Math.round((Date.now() - started) / 1000);
-      console.log(`${code === 0 ? "PASS" : "FAIL"} ${name} (${seconds}s)`);
-      resolve({ name, ok: code === 0, output, seconds });
+      const ok = code === 0 && !timedOut;
+      console.log(`${ok ? "PASS" : "FAIL"} ${name} (${seconds}s)`);
+      resolve({ name, ok, output, seconds });
     });
   });
 }
 
-/**
- * Stops a process and everything it started. The test pools start the Workers
- * runtime as a grandchild, and stopping only the direct child would leave it
- * running and holding the output pipe open, so the step would never end.
- * Only this step's own processes are touched.
- */
-function stopTree(pid) {
-  const pids = [pid, ...descendants(pid)];
-  const signal = (name) => {
-    for (const one of pids) {
-      try {
-        process.kill(one, name);
-      } catch {
-        // Already gone.
-      }
-    }
-  };
-  signal("SIGTERM");
-  // A frozen process may ignore the polite request.
-  setTimeout(() => signal("SIGKILL"), 5_000).unref();
+function signalGroup(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // The group is already gone.
+  }
 }
 
-function descendants(pid) {
-  let table;
+function groupExists(pid) {
   try {
-    table = execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
+    process.kill(-pid, 0);
+    return true;
   } catch {
-    return []; // No `ps` here: only the direct child is stopped.
+    return false;
   }
-  const children = new Map();
-  for (const line of table.split("\n")) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
-    if (!child || !parent) continue;
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(child);
+}
+
+// A watched step is in its own process group, so Ctrl-C in the terminal no
+// longer reaches it. When this process is told to stop, it stops every
+// watched group that is still running, then exits. It sends SIGTERM rather
+// than the signal it got, because a step started from a background shell
+// ignores SIGINT.
+const groups = new Set();
+let passingStops = false;
+
+function stopWithParent(pid) {
+  groups.add(pid);
+  if (passingStops) return;
+  passingStops = true;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(signal, () => {
+      for (const group of groups) signalGroup(group, "SIGTERM");
+      process.exit(128 + constants.signals[signal]);
+    });
   }
-  const found = [];
-  const queue = [pid];
-  while (queue.length > 0) {
-    for (const child of children.get(queue.shift()) ?? []) {
-      found.push(child);
-      queue.push(child);
-    }
-  }
-  return found;
 }

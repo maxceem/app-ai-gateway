@@ -2,37 +2,68 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lastTestFile, runStep, silenceLimitMs } from "../scripts/check-step.mjs";
 
-// A fake step that prints once and then hangs. Like the Workers test pool, it
-// starts a grandchild that hangs too and keeps the output pipe open, so the
-// step ends only when the whole tree is stopped.
-const HANGS = `
+// Every fixture process exits on its own after this long, so none outlives the
+// test even when the watchdog fails to stop it. It is longer than any limit
+// below, and shorter than each test's own timeout.
+const FIXTURE_LIFE_MS = 15_000;
+const TEST_TIMEOUT_MS = 25_000;
+// Long enough for a fixture to start and print on a loaded machine.
+const SILENCE_MS = 3_000;
+
+// A child that hangs while holding the output pipe it inherited, as the
+// Workers runtime does under the test pool. It prints its own pid first.
+const GRANDCHILD = `console.log("child-pid:" + process.pid); setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`;
+
+// A fake step that starts that child, prints the test files it is on, and then
+// either hangs or exits at once, leaving its child behind.
+const step = ({ wrapperExits }) => `
 const { spawn } = require("node:child_process");
-spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "inherit" });
+spawn(process.execPath, ["-e", ${JSON.stringify(GRANDCHILD)}], { stdio: "inherit" });
 console.log(" ✓ test/first.test.ts (3 tests) 120ms");
 console.log("stdout | test/hangs.test.ts > waits forever");
-setInterval(() => undefined, 1000);
+${wrapperExits ? "process.exit(0);" : `setInterval(() => undefined, 1000); setTimeout(() => process.exit(0), ${FIXTURE_LIFE_MS});`}
 `;
 
-// Without the watchdog the step never ends, so this limit fails the test.
-test("a step that prints once and then hangs is stopped and fails, naming the last test file", { timeout: 20_000 }, async () => {
-  const result = await runStep("fake:test", process.execPath, ["-e", HANGS], { silenceMs: 500 });
-  assert.equal(result.ok, false);
-  assert.match(result.output, /fake:test printed nothing for 0\.01 minutes, so it was stopped/);
-  assert.match(result.output, /a frozen run, not a failing test/);
-  assert.match(result.output, /The last test file in its output was test\/hangs\.test\.ts\./);
-});
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
-test("a step that keeps printing is never stopped, however long it runs in all", { timeout: 20_000 }, async () => {
-  const slow = `let n = 0; const t = setInterval(() => { console.log("tick " + n); if (++n === 6) clearInterval(t); }, 150);`;
-  const result = await runStep("fake:slow", process.execPath, ["-e", slow], { silenceMs: 500 });
+for (const wrapperExits of [false, true]) {
+  const what = wrapperExits ? "exits at once and leaves its child hanging" : "prints once and then hangs";
+  // Without the watchdog the step never ends, so the timeout fails the test.
+  test(`a step that ${what} is stopped with its whole group, and fails`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    const result = await runStep("fake:test", process.execPath, ["-e", step({ wrapperExits })], { silenceMs: SILENCE_MS });
+    assert.equal(result.ok, false, "a step stopped by the watchdog never passes, even when it exited 0");
+    assert.match(result.output, /fake:test hit its silence timeout: it printed nothing for 0\.05 minutes, so it was stopped/);
+    assert.match(result.output, /most likely means the run froze, not that a test failed/);
+    assert.match(result.output, /The last test file in its output was test\/hangs\.test\.ts\./);
+    const child = Number(result.output.match(/child-pid:(\d+)/)?.[1]);
+    assert.ok(child > 0, "the child printed its pid");
+    assert.equal(alive(child), false, "the child that held the output pipe was stopped too");
+  });
+}
+
+test("a step that keeps printing is never stopped, however long it runs in all", { timeout: TEST_TIMEOUT_MS }, async () => {
+  const slow = `let n = 0; const t = setInterval(() => { console.log("tick " + n); if (++n === 12) clearInterval(t); }, 300);`;
+  const result = await runStep("fake:slow", process.execPath, ["-e", slow], { silenceMs: 2_000 });
   assert.equal(result.ok, true);
-  assert.doesNotMatch(result.output, /stopped/);
+  assert.doesNotMatch(result.output, /silence timeout/);
 });
 
-test("a step that fails on its own is reported as it is", async () => {
-  const result = await runStep("fake:fails", process.execPath, ["-e", "console.log('FAIL test/a.test.ts'); process.exit(1)"], { silenceMs: 500 });
+test("a step that fails on its own is reported as it is", { timeout: TEST_TIMEOUT_MS }, async () => {
+  const result = await runStep("fake:fails", process.execPath, ["-e", "console.log('FAIL test/a.test.ts'); process.exit(1)"], { silenceMs: SILENCE_MS });
   assert.equal(result.ok, false);
-  assert.doesNotMatch(result.output, /stopped/);
+  assert.doesNotMatch(result.output, /silence timeout/);
+});
+
+test("an unwatched step may stay silent", { timeout: TEST_TIMEOUT_MS }, async () => {
+  const result = await runStep("fake:quiet", process.execPath, ["-e", "setTimeout(() => undefined, 300)"]);
+  assert.equal(result.ok, true);
 });
 
 test("the limit is five minutes unless the environment changes it, and 0 turns it off", () => {
@@ -40,7 +71,11 @@ test("the limit is five minutes unless the environment changes it, and 0 turns i
   assert.equal(silenceLimitMs({ CHECK_SILENCE_MINUTES: "" }), 5 * 60_000);
   assert.equal(silenceLimitMs({ CHECK_SILENCE_MINUTES: "15" }), 15 * 60_000);
   assert.equal(silenceLimitMs({ CHECK_SILENCE_MINUTES: "0" }), 0);
+  assert.equal(silenceLimitMs({ CHECK_SILENCE_MINUTES: "35791" }), 35_791 * 60_000);
   assert.throws(() => silenceLimitMs({ CHECK_SILENCE_MINUTES: "five" }), /must be a number of minutes/);
+  assert.throws(() => silenceLimitMs({ CHECK_SILENCE_MINUTES: "-1" }), /must be a number of minutes/);
+  // Past Node's timer limit, which would otherwise fire after 1 ms.
+  assert.throws(() => silenceLimitMs({ CHECK_SILENCE_MINUTES: "40000" }), /from 0 to 35791/);
 });
 
 test("the last test file is found in Vitest's and node's output, or none", () => {

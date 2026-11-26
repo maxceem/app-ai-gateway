@@ -23,7 +23,7 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const steps = [
   { name: "cli:check", tier: "check" },
   { name: "cli:test", tier: "test" },
-  { name: "test:worker", tier: "test" },
+  { name: "test:worker", tier: "test", watch: true },
   { name: "console:test", tier: "test" },
   { name: "docs:typecheck", tier: "check" },
   { name: "typecheck:bindings", tier: "check" },
@@ -42,7 +42,7 @@ const steps = [
   { name: "smoke:check", tier: "check" },
   { name: "smoke:test", tier: "test" },
   { name: "v2:check", tier: "check" },
-  { name: "v2:test", tier: "test" },
+  { name: "v2:test", tier: "test", watch: true },
   { name: "v2:console:check", tier: "check" },
   { name: "v2:console:test", tier: "test" },
   { name: "v2:cli:check", tier: "check" },
@@ -65,8 +65,11 @@ const selected = steps
 const pnpm = process.env.npm_execpath ?? "pnpm";
 const runsUnderNode = pnpm.endsWith(".cjs") || pnpm.endsWith(".js") || pnpm.endsWith(".mjs");
 
-// A step that prints nothing for this long is frozen and gets stopped
-// (`scripts/check-step.mjs`).
+// A watched step that prints nothing for this long is stopped and fails
+// (`scripts/check-step.mjs`). Only the Worker test suites are watched: their
+// test pool can freeze, and they print as each test file finishes. Other steps,
+// such as a type check, may stay silent for their whole run.
+const watched = new Set(steps.filter((step) => step.watch).map((step) => step.name));
 let silenceMs;
 try {
   silenceMs = silenceLimitMs();
@@ -77,9 +80,8 @@ try {
 
 function run(name) {
   const args = ["run", name];
-  return runsUnderNode
-    ? runStep(name, process.execPath, [pnpm, ...args], { cwd: projectRoot, silenceMs })
-    : runStep(name, pnpm, args, { cwd: projectRoot, silenceMs });
+  const options = { cwd: projectRoot, silenceMs: watched.has(name) ? silenceMs : 0 };
+  return runsUnderNode ? runStep(name, process.execPath, [pnpm, ...args], options) : runStep(name, pnpm, args, options);
 }
 
 // A pool rather than fixed lanes: the steps differ in cost by more than an
