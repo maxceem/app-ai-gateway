@@ -150,8 +150,11 @@ own rates.
   A `session.update` that names another `model` is sent on with the session's
   model instead. Everything else you send goes to OpenAI as it is.
 - **Input transcription is billed apart**, at the transcription model's price:
-  the model OpenAI states in `session.created` or `session.updated`, and the
-  usage in each `conversation.item.input_audio_transcription.completed`.
+  the model OpenAI stated when it committed the audio
+  (`input_audio_buffer.committed`, after `session.created` or
+  `session.updated`), and the usage in each
+  `conversation.item.input_audio_transcription.completed`. A closing session
+  waits for transcriptions still to come, within its closing wait.
 - **An answer the session's own end cuts** (its time cap, a stop) reports no
   usage: its audio is billed from what was forwarded, 20 tokens a second,
   marked as an estimate. An answer you cancel reports its own usage.
