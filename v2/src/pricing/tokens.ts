@@ -382,9 +382,23 @@ function withAdditions<C extends Candidate>(price: ModelPrice, usage: UsageObser
 /** `priceUsage` before rounding. */
 function usageCandidate(price: ModelPrice, usage: UsageObservation): Candidate | null {
   const unit = priceUnitRate(price, usage);
-  if (unit !== undefined) return unit;
-  if (usage.noTokens === true) return null;
-  return tokenCandidate(price, usage);
+  if (unit !== undefined) return unit ?? onlyAdded(usage);
+  if (usage.noTokens === true) return onlyAdded(usage);
+  return tokenCandidate(price, usage) ?? onlyAdded(usage);
+}
+
+/**
+ * A usage that reports only what bills on top (xAI's text messages before its
+ * clock started): nothing for the main measure, so `withAdditions` prices
+ * those units alone, at their own rates. Null for any other usage.
+ */
+function onlyAdded(usage: UsageObservation): Candidate | null {
+  if (totalTokens(usage) > 0) return null;
+  const reported = Object.entries(usage.units ?? {}).filter(([, count]) => count !== undefined && count > 0) as [Unit, number][];
+  const additive = (unit: Unit) => UNIT_RATES.some((unitRate) => unitRate.additive === true && unitRate.units.includes(unit));
+  const first = reported[0];
+  if (first === undefined || !reported.every(([unit]) => additive(unit))) return null;
+  return { exact: { numerator: 0n, denominator: 1n }, rates: {}, longContext: false, unit: first[0], units: first[1], fromEstimate: false, rank: 0 };
 }
 
 /**

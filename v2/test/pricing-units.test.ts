@@ -103,8 +103,11 @@ describe("unit rates", () => {
     expect(priceUsage(voice, counted({ session_seconds: 90_000 }))?.cost).toBe(120_000_000);
     // A price without the text rate can't price a usage that has text messages: unpriced, not $0 for them.
     expect(priceUsage(priced({ per_minute: 80_000_000 }), counted({ session_seconds: 90_000, text_messages: 2 }))).toBeNull();
-    // Text messages alone are never the measure billed.
-    expect(priceUsage(voice, counted({ text_messages: 2 }))).toBeNull();
+    // Text messages alone, sent before the clock started, are billed at their own rate.
+    expect(priceUsage(voice, counted({ text_messages: 2 }))).toMatchObject({ cost: 8_000_000, unit: "text_messages", units: 2 });
+    expect(priceInServedMode(voice, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, units: { text_messages: 1 } })?.cost).toBe(4_000_000);
+    expect(priceUsage(priced({ per_minute: 80_000_000 }), counted({ text_messages: 2 }))).toBeNull();
+    expect(priceUsage(priced({ input: 1, output: 1 }), { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, units: { text_messages: 2 } })).toBeNull();
     // xAI's voice API: its clock and its text messages, in one way.
     const xaiVoice = defineOperation({
       name: "xai.realtime",

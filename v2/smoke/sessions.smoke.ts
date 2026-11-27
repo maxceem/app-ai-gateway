@@ -207,7 +207,8 @@ test("an xAI voice session is billed by its clock from the first audio, plus eac
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   check(charges.length > 0, "the xAI session's usage was not booked");
-  check(charges.every((charge) => charge.price_source === "list_rate" && charge.unit === "session_seconds"), "the xAI session was not billed by its clock at the list price");
+  // Each slice at the list price: by its time, or by its text messages alone when it has no time.
+  check(charges.every((charge) => charge.price_source === "list_rate" && (charge.unit === "session_seconds" || charge.unit === "text_messages")), "the xAI session was not billed by its clock and text messages at the list price");
   const cost = charges.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0);
   // One text message is $0.004 (4,000,000 nano-dollars); the time from the first audio adds to it.
   check(cost > 4_000_000, "the xAI session cost less than one text message and its time");

@@ -452,6 +452,9 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 1, { text_messages: 2 }, { sessionMs: 90_000 })));
     expect(await charges(listed.ticket.sid)).toMatchObject([{ cost_nano: 128_000_000, price_source: "list_rate", measured: "complete", session_ms: 90_000 }]);
     expect(JSON.parse((await booked(`${listed.ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: 90_000, units_text_messages: 2 });
+    // A text message before the clock started: a slice with no time, billed for the message alone.
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 2, { text_messages: 1 }, { sessionMs: 0 })));
+    expect((await charges(listed.ticket.sid))[1]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", session_ms: 0 });
     // Today's rates can't be read: unresolved, queued, and the sweep later prices both measures.
     const { connectionId, setRates } = await houseConnection("{not json");
     const unread = await ticketFor({ ...xai, connectionId });

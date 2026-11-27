@@ -267,8 +267,9 @@ export class Session extends DurableObject {
     const turn = adapter.turn(data);
     if (turn === "open") this.sideTurnOpen = true;
     else if (turn === "done") {
-      this.sideTurnOpen = false;
-      this.answerDone(recorded);
+      this.answerDone(recorded, () => {
+        this.sideTurnOpen = false;
+      });
     }
   }
 
@@ -505,14 +506,19 @@ export class Session extends DurableObject {
   }
 
   /**
-   * The provider finished an answer. When the same frame carried its usage (OpenAI's
-   * `response.done`), a closing session waits for that usage's write first, so the final slice
-   * has it (plan 5.1).
+   * The provider finished an answer: `settle` marks it so, then the closing wait is told. When
+   * the same frame carried its usage (OpenAI's `response.done`), both wait for that usage's
+   * write, so an end that starts meanwhile still waits for it, and the final slice has it (plan 5.1).
    * @param {Promise<void> | null} recorded
+   * @param {() => void} settle
    */
-  answerDone(recorded) {
-    if (recorded === null) this.core.turnDone();
-    else void recorded.then(() => this.core.turnDone());
+  answerDone(recorded, settle) {
+    const done = () => {
+      settle();
+      this.core.turnDone();
+    };
+    if (recorded === null) done();
+    else void recorded.then(done);
   }
 
   /**
@@ -540,8 +546,9 @@ export class Session extends DurableObject {
       // An answer is activity too: a provider that bills by its own clock has started it (xAI).
       if (this.core.idle) void this.core.activity().catch(() => undefined);
     } else if (turn === "done") {
-      live.turnOpen = false;
-      this.answerDone(recorded);
+      this.answerDone(recorded, () => {
+        live.turnOpen = false;
+      });
     }
     // Ended only after the frame was read, so its usage counts.
     if (overflowed) {

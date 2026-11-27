@@ -175,11 +175,15 @@ describe("the session object reading xAI's frames (step 9b)", () => {
         };
       });
     live.adapter = adapterFor("mock_done");
+    live.turnOpen = true;
     object.toClient(live as never, JSON.stringify({ type: "response.done", event_id: "e1", usage: { input_tokens: 10, output_tokens: 4 } }));
     await Promise.resolve();
     expect(told).toEqual([]);
+    // Still open until the write lands: an end that starts now waits for this answer.
+    expect(live.turnOpen).toBe(true);
     written();
     await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
     expect(told).toEqual(["usage written", "done"]);
+    expect(live.turnOpen).toBe(false);
   });
 });
