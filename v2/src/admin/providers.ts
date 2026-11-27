@@ -490,8 +490,9 @@ export function passthroughJson(
       if (!(error instanceof TemplateError)) throw error;
       throw new GatewayError(400, "invalid_request", `${where}.path: ${error.message}`);
     }
-    // Two listings that match the same requests are one, whatever their parts are called.
-    const shape = listingShape(bare.method, compiled.template);
+    // Two listings that match the same requests are one, whatever their parts are called. A WebSocket path
+    // and a plain GET at the same address are two: live sessions reach one, HTTP requests the other (Sol, #274 round 3).
+    const shape = `${listingShape(bare.method, compiled.template)}${bare.websocket === true ? "\u0000websocket" : ""}`;
     if (seen.has(shape)) throw new GatewayError(400, "invalid_request", `${where}: ${key} matches the same requests as another listed path`);
     seen.add(shape);
     if (callGap(resolvePassthrough(bare)) !== null) {

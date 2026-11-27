@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { parsePathLines, parsePricesText, pathLine, pricesText, ProvidersPage, testResultText } from "./providers";
+import { parsePathLines, parsePricesText, pathKey, pathLine, pathsToSave, pricesText, ProvidersPage, testResultText } from "./providers";
 import { renderAuthenticated, settled } from "@/test/render";
 import { chooseOption } from "@/test/select";
 import { cloudflareCapable, PROVIDER_TYPES } from "@/lib/providers";
@@ -757,6 +757,14 @@ describe("listed path lines", () => {
   ])("say what is wrong with %j", (text, custom, problem) => {
     const parsed = parsePathLines(text, custom);
     expect("problem" in parsed && parsed.problem).toContain(problem);
+  });
+
+  it("keep a plain GET's settings with it, not with a WebSocket path at the same address (Sol, #274 round 3)", () => {
+    const http = { method: "GET" as const, path: "v1/live" };
+    const live = { method: "GET" as const, path: "v1/live", websocket: true as const, per_minute: 0.06 };
+    expect(pathKey(http)).not.toBe(pathKey(live));
+    const setting = { in: "query" as const, name: "format", value: "json", label: "Format" };
+    expect(pathsToSave([http, live], { [pathKey(http)]: [setting] })).toEqual([{ ...http, set_fields: [{ in: "query", name: "format", value: "json" }] }, live]);
   });
 
   it("write a listed path back as the line it reads from", () => {

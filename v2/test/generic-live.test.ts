@@ -154,6 +154,30 @@ describe(`saving a WebSocket path (step 10b, split keys ${splitKeysOn ? "on" : "
     expect(JSON.stringify(body)).not.toContain(SECRET);
   });
 
+  it("saves a plain GET and a WebSocket path at the same address, each with its own settings, and still refuses a repeated plain one (Sol, #274 round 3)", async () => {
+    const key = await seedManagementKey();
+    const http = { method: "GET", path: "v1/live", set_fields: [{ in: "query", name: "format", value: "json" }] };
+    const live = { method: "GET", path: "v1/live", websocket: true, per_minute: 0.06 };
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/v2/admin/providers`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({ type: "custom", name: "Both", slug: `both-${crypto.randomUUID().slice(0, 6)}`, secret: SECRET, baseUrl: BASE, auth: AUTH, passthrough: [http, live] }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(201);
+    expect(((await response.json()) as { provider: { passthrough: unknown } }).provider.passthrough).toEqual([http, live]);
+    // An HTTP request reaches only the plain one, a live session only the WebSocket one.
+    const paths = readPassthrough(storedPassthrough([{ method: "GET", path: "v1/live" }, LIVE], AUTH));
+    expect(compiledPassthrough(paths).map((one) => one.listed.websocket)).toEqual([undefined]);
+    expect(compiledWebsocket(paths).map((one) => one.listed.websocket)).toEqual([true]);
+    expect(saved([{ method: "GET", path: "v1/live" }, { method: "GET", path: "v1/live" }])).toContain("matches the same requests as another listed path");
+  });
+
   it("reads a stored WebSocket path only with its price: one without was never saved, and would bill nothing", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect(readPassthrough(JSON.stringify({ paths: [{ method: "GET", path: "v1/live", websocket: true }] }))).toEqual([]);

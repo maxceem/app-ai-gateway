@@ -674,9 +674,11 @@ export { parsePathLines, pathLine };
 /**
  * The key a listed path's field settings are kept under while its line is
  * edited: the method and the path, with each named part's name left out, so
- * renaming `{file_id}` to `{id}` keeps the same settings.
+ * renaming `{file_id}` to `{id}` keeps the same settings, and whether it is a
+ * WebSocket path, so a plain GET at the same address keeps its own.
  */
-export const pathKey = (path: { method: string; path: string }) => `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}`;
+export const pathKey = (path: { method: string; path: string; websocket?: boolean }) =>
+  `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}${path.websocket === true ? " websocket" : ""}`;
 
 /** A field setting as a request sends it: without what an answer adds about it. */
 function settingOnly({ label: _label, reason: _reason, suggested_value: _suggested, ...setting }: FieldSetting): FieldSetting {
