@@ -106,10 +106,16 @@ describe("an xAI session's clock (step 9b)", () => {
     s.tick(10_000);
     await core.recordUsage({ id: "e2", measures: {}, clockSeconds: 16 }, "running_total");
     expect(s.logs.filter((event) => event.message === "relay_clock_mismatch")).toEqual([expect.objectContaining({ level: "warn", differenceMs: -10_700 })]);
+    // Logged once per session: a push-to-talk session drifts on every answer (Fable, #266 round 1).
+    s.tick(10_000);
+    await core.recordUsage({ id: "e3", measures: {}, clockSeconds: 16 }, "running_total");
+    expect(s.logs.filter((event) => event.message === "relay_clock_mismatch")).toHaveLength(1);
+    // A check with nothing to count writes nothing to the journal.
+    expect((s.store.data.get("journal") as { seen: string[] }).seen).toEqual([]);
     expect(10_700).toBeGreaterThan(CLOCK_CHECK_MS);
     s.tick(60_000);
     await core.alarm();
-    expect(s.slices()).toEqual([expect.objectContaining({ measures: {}, sessionMs: 86_700 })]);
+    expect(s.slices()).toEqual([expect.objectContaining({ measures: {}, sessionMs: 96_700 })]);
   });
 });
 

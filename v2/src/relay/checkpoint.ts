@@ -207,8 +207,8 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
   // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
   // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
   const billableMs = slice.sessionMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? slice.sessionMs : 0;
-  // A slice billed by time keeps the price of the time it knows, marked `partial` below.
-  if (gap && price.unit !== "session_seconds" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
+  // A slice billed by time, or by its text messages alone, keeps the price of what it knows, marked `partial` below.
+  if (gap && price.unit !== "session_seconds" && price.unit !== "text_messages" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
     price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
   }
   // Dated by its start (D18), inside the session's own time: never before its start, never after

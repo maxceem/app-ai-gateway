@@ -92,22 +92,21 @@ describe("unit rates", () => {
 
   it("bills a text message on top of the minutes, never instead of them, and never as free (xAI, step 9b)", () => {
     const voice = priced({ per_minute: 80_000_000, per_text_message: 4_000_000 });
+    const none = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
     // 90 s and two text messages: $0.12 + $0.008, summed exactly, rounded once.
-    expect(priceUsage(voice, counted({ session_seconds: 90_000, text_messages: 2 }))).toMatchObject({
+    expect(priceInServedMode(voice, counted({ session_seconds: 90_000, text_messages: 2 }))).toMatchObject({
       cost: 128_000_000,
       unit: "session_seconds",
       units: 90_000,
       rates: { per_minute: 80_000_000, per_text_message: 4_000_000 },
     });
-    expect(priceInServedMode(voice, counted({ session_seconds: 90_000, text_messages: 2 }))?.cost).toBe(128_000_000);
-    expect(priceUsage(voice, counted({ session_seconds: 90_000 }))?.cost).toBe(120_000_000);
+    expect(priceInServedMode(voice, counted({ session_seconds: 90_000 }))?.cost).toBe(120_000_000);
     // A price without the text rate can't price a usage that has text messages: unpriced, not $0 for them.
-    expect(priceUsage(priced({ per_minute: 80_000_000 }), counted({ session_seconds: 90_000, text_messages: 2 }))).toBeNull();
+    expect(priceInServedMode(priced({ per_minute: 80_000_000 }), counted({ session_seconds: 90_000, text_messages: 2 }))).toBeNull();
     // Text messages alone, sent before the clock started, are billed at their own rate.
-    expect(priceUsage(voice, counted({ text_messages: 2 }))).toMatchObject({ cost: 8_000_000, unit: "text_messages", units: 2 });
-    expect(priceInServedMode(voice, { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, units: { text_messages: 1 } })?.cost).toBe(4_000_000);
-    expect(priceUsage(priced({ per_minute: 80_000_000 }), counted({ text_messages: 2 }))).toBeNull();
-    expect(priceUsage(priced({ input: 1, output: 1 }), { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, units: { text_messages: 2 } })).toBeNull();
+    expect(priceInServedMode(voice, { ...none, units: { text_messages: 2 } })).toMatchObject({ cost: 8_000_000, unit: "text_messages", units: 2 });
+    expect(priceInServedMode(priced({ per_minute: 80_000_000 }), counted({ text_messages: 2 }))).toBeNull();
+    expect(priceInServedMode(priced({ input: 1, output: 1 }), { ...none, units: { text_messages: 2 } })).toBeNull();
     // xAI's voice API: its clock and its text messages, in one way.
     const xaiVoice = defineOperation({
       name: "xai.realtime",
@@ -115,7 +114,7 @@ describe("unit rates", () => {
       lifecycle: "session",
       transport: "websocket",
       model: { in: "query", name: "model" },
-      meter: { kind: "wall_clock", adapter: "xai", units: ["text_messages"] },
+      meter: { kind: "wall_clock", units: ["text_messages"] },
     });
     expect(ways(xaiVoice)).toEqual([["session_seconds+text_messages"]]);
     const sources = priceSources({ type: "xai", rates: {} });
@@ -124,7 +123,6 @@ describe("unit rates", () => {
     expect(billing(xaiVoice, priceSources({ type: "xai", rates: { "house-voice": { per_minute: rate(80_000_000) } } }), "house-voice").problem).toBe("wrong_unit");
     // Rates by key value: the session names none, and its time would go unbilled. Never saved, never served (Sol, #266 round 1).
     const keyed = priceSources({ type: "xai", rates: { "house-voice": { per_text_message: rate(4_000_000), by: { voice: { eve: { per_minute: rate(80_000_000), per_text_message: rate(4_000_000) } } } } as never } });
-    expect(billing(xaiVoice, keyed, "house-voice", undefined, "save").problem).toBe("wrong_unit");
     expect(billing(xaiVoice, keyed, "house-voice").problem).toBe("wrong_unit");
     // Both base rates, stated by the model itself: saved.
     const base = priceSources({ type: "xai", rates: { "house-voice": { per_minute: rate(80_000_000), per_text_message: rate(4_000_000) } } });

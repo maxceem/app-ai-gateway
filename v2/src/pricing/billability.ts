@@ -843,7 +843,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "session_rates"; readonly operation: string; readonly keyed: boolean; readonly measure?: string }
+  | { readonly kind: "session_rates"; readonly operation: string }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -868,11 +868,7 @@ export function savedPriceProblem(
     listed === null
       ? undefined
       : operations.find((operation) => operation.meter.kind === "wall_clock" && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
-  if (session !== undefined) {
-    const keyed = keyedClockSession(session, price);
-    const measure = keyed ? null : missingMeasure(session, price);
-    return { kind: "session_rates", operation: session.name, keyed, ...(measure !== null ? { measure } : {}) };
-  }
+  if (session !== undefined) return { kind: "session_rates", operation: session.name };
   try {
     effectivePrices(price);
   } catch (error) {

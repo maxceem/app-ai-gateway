@@ -455,6 +455,9 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     // A text message before the clock started: a slice with no time, billed for the message alone.
     await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 2, { text_messages: 1 }, { sessionMs: 0 })));
     expect((await charges(listed.ticket.sid))[1]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", session_ms: 0 });
+    // The same with a crash gap: the message keeps its price, marked partial, not left for the sweep (Fable, #266 round 1).
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 3, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
+    expect((await charges(listed.ticket.sid))[2]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", measured: "partial" });
     // Today's rates can't be read: unresolved, queued, and the sweep later prices both measures.
     const { connectionId, setRates } = await houseConnection("{not json");
     const unread = await ticketFor({ ...xai, connectionId });

@@ -241,6 +241,8 @@ export class SessionCore {
      * during the wait: the end is waiting for the provider's answer, and usage still counts.
      */
     this.turnWaiter = null;
+    /** Whether this instance already logged a drift of the provider's clock (`checkClock`): once is enough. */
+    this.clockWarned = false;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -900,6 +902,8 @@ export class SessionCore {
     const now = this.now();
     if (journal === null) return;
     if (event.clockSeconds !== undefined) this.checkClock(journal, event.clockSeconds, now);
+    // Nothing to count (xAI's `response.done` carries only its clock): no write.
+    if (Object.keys(event.measures).length === 0) return;
     if (!addUsage(journal, event, shape, now)) return;
     // An observed session is real once usage came on its side channel (crash table row 20). Sticky.
     if (this.mode === "observed") journal.connected = true;
@@ -943,7 +947,9 @@ export class SessionCore {
   /**
    * A provider's own total of its billed clock, against the relay's (xAI's
    * `billable_audio_seconds`): a check only, never billed. A difference past
-   * `CLOCK_CHECK_MS` is logged, so the monitor sees a meter that drifts.
+   * `CLOCK_CHECK_MS` is logged once per session, so the monitor sees a meter
+   * that drifts without a line for every answer (a push-to-talk session
+   * drifts on each one: xAI bills it only for its audio).
    * @param {import("./journal.js").Journal} journal
    * @param {number} seconds
    * @param {number} now
@@ -951,7 +957,9 @@ export class SessionCore {
   checkClock(journal, seconds, now) {
     if (journal.activeAt === undefined) return;
     const differenceMs = Math.round(seconds * 1000 - (now - journal.activeAt));
-    if (Math.abs(differenceMs) > CLOCK_CHECK_MS) this.log({ level: "warn", message: "relay_clock_mismatch", session: this.sessionId, differenceMs });
+    if (this.clockWarned || Math.abs(differenceMs) <= CLOCK_CHECK_MS) return;
+    this.clockWarned = true;
+    this.log({ level: "warn", message: "relay_clock_mismatch", session: this.sessionId, differenceMs });
   }
 
   /**

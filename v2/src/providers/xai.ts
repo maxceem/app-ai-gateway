@@ -48,7 +48,7 @@ export const xai = defineProvider({
         lifecycle: "session",
         transport: "websocket",
         model: { in: "query", name: "model" },
-        meter: { kind: "wall_clock", adapter: "xai", units: ["text_messages"] },
+        meter: { kind: "wall_clock", units: ["text_messages"] },
         session: { slot: "conversational", mode: "relayed" },
       }),
     ],

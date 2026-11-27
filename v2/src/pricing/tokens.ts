@@ -486,6 +486,8 @@ export function priceInServedMode(
   // What the usage bills on top of its main measure is added once, to the price chosen below.
   const finish = (candidate: ChargePricing): ChargePricing | null => {
     const added = isolated(() => withAdditions(price, usage, candidate), { candidate: "additions" });
+    // Nothing billed on top (every call but xAI's voice sessions): the price as it was, rounded once.
+    if (added === candidate) return candidate;
     return added === null ? null : withCost(added);
   };
   const chosen = preferred(priced);
