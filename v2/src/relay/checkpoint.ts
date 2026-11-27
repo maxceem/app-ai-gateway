@@ -61,7 +61,7 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { CONTRACT_VERSION, ContractRefusal, checkedTicket } from "./contract.ts";
 import { sessionRowOf, SEAL_GRACE_MS, type Ticket } from "./tickets.ts";
-import { decodeSessionPrice, sessionBillsTime, sliceUsage, todaySessionPrice } from "./session-price.ts";
+import { decodeSessionPrice, sessionBillsTime, sessionPricedAsEstimate, sliceUsage, todaySessionPrice } from "./session-price.ts";
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
@@ -414,7 +414,8 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     // A gap means some usage may be missing: never `complete` (plan 4.2).
     measured: gap ? "partial" : price.measured,
     priceSource: price.priceSource,
-    priceIsEstimate: price.estimated,
+    // A session billed at a base rate (ElevenLabs agents) is an estimate once priced, till its record settles it.
+    priceIsEstimate: price.estimated || (price.costNano !== null && sessionPricedAsEstimate(ticket.operation)),
     inputTokens: tokens.input_tokens,
     cachedInputTokens: tokens.cached_input_tokens,
     cacheWriteTokens: tokens.cache_write_tokens,

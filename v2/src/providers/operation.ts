@@ -550,6 +550,12 @@ export interface SessionSpec {
    */
   readonly signedUrl?: "elevenlabs";
   /**
+   * Its priced slices are estimates, whatever their price: it is a base rate the provider's own bill
+   * differs from (ElevenLabs agents: burst minutes, silences, the language model, 11a). The provider's
+   * record settles it (`lookup`), exactly (`sessionPricedAsEstimate` in `../relay/session-price.ts`).
+   */
+  readonly estimate?: true;
+  /**
    * The provider takes the session's options in its address's query (Deepgram's audio format, ElevenLabs'
    * output format): the app's query goes on, without credential fields, and with the session's model. A
    * session without it refuses a query, as one always did (Sol, #273 round 1).
@@ -600,6 +606,12 @@ export interface OperationDescription {
    * model is the same on every operation.
    */
   readonly priceList?: string;
+  /**
+   * The only model ids it serves: those that start with this, and have more after it (an ElevenLabs
+   * agent's, `agent_…`, 11a). Any other is a model of another kind for it, at save and admission alike
+   * (`resolveCall` in `../pricing/billability.ts`); another operation of the provider may still serve it.
+   */
+  readonly modelPrefix?: string;
   /**
    * The price list's kinds of model it serves, such as `speech`. A model the
    * list names with another kind (a transcription model beside it on the same

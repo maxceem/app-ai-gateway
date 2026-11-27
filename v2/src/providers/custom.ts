@@ -128,6 +128,8 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   priceKeys: "kept",
   // Its own section of our price list: only a session has one (Deepgram's stream), and sessions are refused.
   priceList: "refused",
+  // Only a session has one (ElevenLabs agents), and sessions are refused.
+  modelPrefix: "refused",
   modelKinds: "kept",
   // A custom path is the customer's own: it serves whatever model ids they send.
   modelIds: "replaced",

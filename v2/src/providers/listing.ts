@@ -18,8 +18,13 @@ export function listedAs(type: string, model: string): ListedModel {
   const provider = builtInProvider(type);
   // Something of the customer's own, all priced as one entry (an ElevenLabs agent's id, 11a).
   const byPrefix = provider?.listedByPrefix;
-  if (byPrefix !== undefined && model.length > byPrefix.prefix.length && model.startsWith(byPrefix.prefix)) return { type: byPrefix.type, model: byPrefix.model };
+  if (byPrefix !== undefined && hasPrefix(model, byPrefix.prefix)) return { type: byPrefix.type, model: byPrefix.model };
   return listedIn(provider?.modelNamespaces, type, model);
+}
+
+/** Whether a model id starts with `prefix` and has more after it: the one test of an id's prefix (`listedByPrefix`, `modelPrefix`). */
+export function hasPrefix(model: string, prefix: string): boolean {
+  return model.length > prefix.length && model.startsWith(prefix);
 }
 
 /** The same, with the namespaces given: an operation's own (`readingRules`), such as a custom provider's path on Vercel's host. */

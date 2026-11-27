@@ -35,6 +35,9 @@ describe("an agent's client frames: only the first message's greeting may be ove
     for (const frame of [{ type: "pong", event_id: 2 }, { type: "contextual_update", text: "Earlier: …" }, { type: "user_message", text: "Hi" }, { type: "conversation_initiation_client_data" }]) {
       expect(JSON.parse(agentLock(JSON.stringify(frame)) as string)).toEqual(frame);
     }
+    // Who started the call, and the agent's own placeholders, go too.
+    const named = { type: "conversation_initiation_client_data", dynamic_variables: { name: "Ann" }, user_id: "user-1", source_info: { source: "swift_sdk", version: "2.0.0" } };
+    expect(JSON.parse(agentLock(JSON.stringify(named)) as string)).toEqual(named);
     // A repeated key goes as ElevenLabs reads it: once, the last.
     expect(agentLock('{"type":"pong","event_id":1,"event_id":2}')).toBe('{"type":"pong","event_id":2}');
   });
@@ -48,6 +51,13 @@ describe("an agent's client frames: only the first message's greeting may be ove
     expect(agentLock(init({ agent: { first_message: 42 } }))).toEqual({ refused: "override_not_allowed" });
     expect(agentLock(init("all"))).toEqual({ refused: "override_not_allowed" });
     expect(agentLock(JSON.stringify({ type: "conversation_initiation_client_data", custom_llm_extra_body: { temperature: 2 } }))).toEqual({ refused: "override_not_allowed" });
+    // The overrides outside conversation_config_override, another branch, and any field not on the list (Sol, #275 round 1).
+    for (const field of [{ starting_workflow_node_id: "node_2" }, { procedure_ids: ["proc_1"] }, { start_procedure_ids: ["proc_1"] }, { branch_id: "agtbrch_2" }, { environment: "staging" }, { new_field: true }]) {
+      expect(agentLock(JSON.stringify({ type: "conversation_initiation_client_data", ...field })), JSON.stringify(field)).toEqual({ refused: "override_not_allowed" });
+    }
+    // Nor hidden in another message.
+    expect(agentLock(JSON.stringify({ type: "user_activity", starting_workflow_node_id: "node_2" }))).toEqual({ refused: "override_not_allowed" });
+    expect(agentLock(JSON.stringify({ type: "contextual_update", text: "x", procedure_ids: ["p"] }))).toEqual({ refused: "override_not_allowed" });
     // An escaped name is read as ElevenLabs reads it.
     expect(agentLock('{"type":"conversation_initiation_client_data","conversation_config_overrid\\u0065":{"conversation":{"max_duration_seconds":7200}}}')).toEqual({
       refused: "override_not_allowed",

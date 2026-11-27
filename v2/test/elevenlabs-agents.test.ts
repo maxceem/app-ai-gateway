@@ -22,7 +22,7 @@ import { adapterFor, closeForRelay, ContractRefusal, openForRelay } from "../src
 import { checkpointForRelay, priceSlice } from "../src/relay/checkpoint.ts";
 import { conversationFigure } from "../src/relay/elevenlabs-agent.ts";
 import { agentSetupProblem } from "../src/admin/agents.ts";
-import { billing, billingForCharge, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { billing, billingForCharge, priceSources, resolveCall, savedPriceProblem } from "../src/pricing/billability.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { lookupWorkId, PROVIDER_LOOKUP_WINDOW_MS } from "../src/ledger/sessions.ts";
@@ -68,7 +68,11 @@ function agentSettings(fields: { enableAuth?: boolean; durationOverride?: boolea
   };
 }
 
-/** A conversation record as `GET v1/convai/conversations/{id}` answers it (T16, call B), with fields changed. */
+/**
+ * A conversation record as `GET v1/convai/conversations/{id}` answers it: its `metadata.charging` in the
+ * shape ElevenLabs' reference documents (`ConversationChargingCommonModel`), with the values of a real
+ * record (T16, call B), and fields changed. `subagent_charge` is not in the reference, but real records have it.
+ */
 function record(fields: { status?: string; costFiat?: number | null; cost?: number | null; surcharge?: number | null; charging?: Record<string, unknown> } = {}) {
   return {
     agent_id: AGENT,
@@ -83,15 +87,20 @@ function record(fields: { status?: string; costFiat?: number | null; cost?: numb
         dev_discount: false,
         is_burst: false,
         tier: "starter",
-        llm_charge: 0,
+        llm_usage: { irreversible_generation: { model_usage: { "gpt-6-luna": { input: { tokens: 412, price: 4.1e-5 }, output_total: { tokens: 52, price: 2.1e-5 } } } } },
         llm_price: 6.185e-5,
+        llm_charge: 0,
         call_charge: 138,
         platform_charge: 138,
+        platform_usage: { category_usage: { voice: { credits: 138, price: 0.027580610511979707, quantity: 0.3448 } } },
         platform_price: 0.027580610511979707,
+        free_minutes_consumed: 0,
+        free_llm_dollars_consumed: 0,
+        tts_usage: { primary_tts_model: "eleven_flash_v2", total_audio_output_seconds: 9.1, total_characters: 131, per_voice_usage: [{ voice_id: "JBFqnCBsd6RMkjVDRZzb", audio_output_seconds: 9.1 }] },
+        asr_usage: { asr_model: "scribe_realtime", total_transcription_calls: 2, total_audio_input_seconds: 21 },
+        analysis: { total: { price: 0, charge: 0, runs: 0 }, last_run: { price: 0, charge: 0 } },
         subagent_charge: 0,
         voice_surcharge_charge: fields.surcharge === undefined ? null : fields.surcharge,
-        analysis: null,
-        user_memory: null,
         ...fields.charging,
       },
       voice_rewards: [],
@@ -275,6 +284,23 @@ describe(`checking an agent when an app lists it (step 11a, split keys ${splitKe
     expect(asking.map((one) => one.url)).toEqual(["https://api.elevenlabs.io/v1/convai/agents/agent_second"]);
   });
 
+  it("refuses to list a legacy id (no agent_ prefix) for agents even with a rate a minute, while one listed for text to speech keeps saving (Sol, #275 round 1)", async () => {
+    const { slug, id } = await seedConnection();
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ J3Pbu5gP6NNKBscdCdwB: { per_minute: 80_000_000 }, my_voice_model: { per_million_characters: 40_000_000_000 } }), id)
+      .run();
+    clearCaches();
+    const asked = elevenLabsApi();
+    const legacy = await admin("/v2/admin/apps", "POST", { name: "agents", config: appConfig(slug, ["J3Pbu5gP6NNKBscdCdwB"]) });
+    expect(legacy.status).toBe(400);
+    expect(legacy.body.error.code).toBe("pricing_not_configured");
+    // An app listing a model of its own for text to speech keeps saving with agents turned on beside it: the
+    // agent operation doesn't serve it, and it is never read as an agent.
+    const voice = await admin("/v2/admin/apps", "POST", { name: "voice", config: appConfig(slug, ["my_voice_model"], ["elevenlabs.tts", "elevenlabs.agent"]) });
+    expect(voice.status, JSON.stringify(voice.body)).toBe(201);
+    expect(asked).toEqual([]);
+  });
+
   it.runIf(splitKeysOn)("answers 503 when the connection's key opens only with an app's share, which a save doesn't have", async () => {
     const { slug } = await seedConnection();
     const asked = elevenLabsApi();
@@ -304,6 +330,19 @@ describe(`starting an agent call and its signed URL (step 11a, split keys ${spli
     // The agent in the body is the same agent.
     const named = await start(appId, slug, key, { path: "v1/convai/conversation", model: AGENT });
     expect(parseTicket(((await named.json()) as { ticket: string }).ticket)!.payload.url).toBe(`https://api.elevenlabs.io/v1/convai/conversation?agent_id=${AGENT}`);
+  });
+
+  it("serves only agent ids (agent_…): a legacy id is refused at admission even with a rate a minute of its own (Sol, #275 round 1)", async () => {
+    const legacy = await setup(["J3Pbu5gP6NNKBscdCdwB"]);
+    await env.DB.prepare("UPDATE provider_connection SET rates_json = ? WHERE id = ?").bind(JSON.stringify({ J3Pbu5gP6NNKBscdCdwB: { per_minute: 80_000_000 } }), legacy.connectionId).run();
+    clearCaches();
+    const asked = elevenLabsApi();
+    const refused = await start(legacy.appId, legacy.slug, legacy.key, { path: "v1/convai/conversation?agent_id=J3Pbu5gP6NNKBscdCdwB" });
+    expect(refused.status).toBe(400);
+    expect(asked).toEqual([]);
+    const own = priceSources({ type: "elevenlabs", rates: { J3Pbu5gP6NNKBscdCdwB: { per_minute: 80_000_000 } } });
+    expect(resolveCall({ models: ["J3Pbu5gP6NNKBscdCdwB"] }, undefined, own, agentOperation, "J3Pbu5gP6NNKBscdCdwB", undefined, { asIfServed: true })).toMatchObject({ kind: "refused", reason: "wrong_unit" });
+    expect(resolveCall({ models: [AGENT] }, undefined, own, agentOperation, AGENT, undefined, { asIfServed: true })).toMatchObject({ kind: "admitted" });
   });
 
   it("refuses an agent the app doesn't list, a voice model named as one, and a call naming none", async () => {
@@ -388,19 +427,27 @@ describe(`ElevenLabs' conversation lookup after an agent call (step 11a, split k
     expect(conversationFigure(record({ cost: 0, surcharge: 10 }))).toEqual({ kind: "doubtful" });
     expect(conversationFigure(record({ charging: { subagent_charge: 12 } }))).toEqual({ kind: "doubtful" });
     expect(conversationFigure(record({ charging: { memory_charge: 3 } }))).toEqual({ kind: "doubtful" });
+    // The post-call analysis's charge, which ElevenLabs reports apart: its part in cost_fiat is not confirmed (Sol, #275 round 1).
+    expect(conversationFigure(record({ charging: { analysis: { total: { price: 0.002, charge: 10, runs: 1 }, last_run: { price: 0.002, charge: 10 } } } }))).toEqual({ kind: "doubtful" });
+    expect(conversationFigure(record({ charging: { analysis: null } }))).toMatchObject({ kind: "final" });
     expect(conversationFigure(null)).toEqual({ kind: "pending" });
   });
 
   it("settles the call to ElevenLabs' own figure once it is done, minus the estimate booked (ok)", async () => {
     const { sessionId, endedAt } = await closedCall();
-    // The estimate: a minute at the base rate.
+    // The estimate: a minute at the base rate, marked so (Sol, #275 round 1).
     expect(await sessionCost(sessionId)).toBe(80_000_000);
+    const flags = async () =>
+      (await ledger().prepare("SELECT kind, price_is_estimate FROM charge WHERE owner_id = ? ORDER BY kind").bind(sessionId).all<{ kind: string; price_is_estimate: number }>()).results;
+    expect(await flags()).toEqual([{ kind: "slice", price_is_estimate: 1 }]);
     const asked = elevenLabsApi();
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 27_642_461 });
     expect(await sessionCost(sessionId)).toBe(27_642_461);
     expect(asked).toEqual([{ url: `https://api.elevenlabs.io/v1/convai/conversations/${CONVERSATION}`, key: SECRET }]);
     expect(await lookupRow(sessionId)).toBeNull();
+    // ElevenLabs' own figure is exact: its correction is no estimate.
+    expect(await flags()).toEqual([{ kind: "correction", price_is_estimate: 0 }, { kind: "slice", price_is_estimate: 1 }]);
   });
 
   it("tries a record that isn't done again, a minute later and then doubling (pending), and settles once it is", async () => {
@@ -429,8 +476,9 @@ describe(`ElevenLabs' conversation lookup after an agent call (step 11a, split k
     }
   });
 
-  it("keeps the estimate on a doubtful figure: $0 (a call that never started), a negative one, an unknown charge", async () => {
-    for (const body of [record({ costFiat: null, cost: null }), record({ costFiat: -0.01 }), record({ charging: { subagent_charge: 5 } })]) {
+  it("keeps the estimate on a doubtful figure: $0 (a call that never started), a negative one, an unknown charge, an analysis charge", async () => {
+    const analysed = record({ charging: { analysis: { total: { price: 0.002, charge: 10, runs: 1 }, last_run: { price: 0.002, charge: 10 } } } });
+    for (const body of [record({ costFiat: null, cost: null }), record({ costFiat: -0.01 }), record({ charging: { subagent_charge: 5 } }), analysed]) {
       const { sessionId, endedAt } = await closedCall();
       elevenLabsApi({ conversation: () => ({ status: 200, body }) });
       await runSweep(env, ledger(), { now: endedAt + 31_000 });

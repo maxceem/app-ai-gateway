@@ -34,7 +34,7 @@
  * file reads the price list or a connection's rates to decide this (a test
  * guards it).
  */
-import { listedAs, type ListedModel } from "../providers/listing.ts";
+import { hasPrefix, listedAs, type ListedModel } from "../providers/listing.ts";
 import { readingRules, rewrittenModel, type ApiStyle, type OperationDescription, type ProviderDescription } from "../providers/operation.ts";
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -475,6 +475,9 @@ export function resolveCall(
 ): CallResolution {
   if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
   if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
+  // An operation that serves only ids of one form (ElevenLabs agents, `agent_…`): any other is a model of
+  // another kind for it, whatever its price, so a legacy id never skips the agent's setup checks (Sol, #275).
+  if (operation.modelPrefix !== undefined && !hasPrefix(requested, operation.modelPrefix)) return { kind: "refused", reason: "wrong_unit", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
   if (pricedModelsPath(operation) && resolve(sources, model, operation) === null) return { kind: "refused", reason: "unpriced_path", model };
   const bill = billing(operation, sources, model);

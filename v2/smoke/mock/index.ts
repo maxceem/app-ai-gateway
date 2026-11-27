@@ -633,7 +633,7 @@ async function answer(request: Request): Promise<Response> {
     return Response.json({
       conversation_id: decodeURIComponent(conversation[1]!),
       status: "done",
-      metadata: { cost: 60, cost_fiat: 0.012, charging: { call_charge: 60, platform_charge: 60, llm_charge: 0, voice_surcharge_charge: null } },
+      metadata: { cost: 60, cost_fiat: 0.012, charging: { call_charge: 60, platform_charge: 60, llm_charge: 0, voice_surcharge_charge: null, analysis: { total: { price: 0, charge: 0, runs: 0 }, last_run: { price: 0, charge: 0 } } } },
     });
   }
   const record = /^\/v1\/projects\/mock-project\/requests\/([^/]+)$/u.exec(url.pathname);

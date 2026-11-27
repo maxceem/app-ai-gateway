@@ -64,7 +64,12 @@ export async function signedSessionUrl(env: Env, ticket: Ticket): Promise<string
   return signed;
 }
 
-/** The charge fields of a record whose part in its figure is known: the rest, set, mark it doubtful. */
+/**
+ * The charges known to be inside `cost_fiat` (T16: `cost` = `llm_charge` + `platform_charge`, and
+ * `call_charge` the same as `platform_charge`), and the voice surcharge, which is added. Any other charge
+ * that is not zero, a top-level `*_charge` or the post-call analysis's (`analysis.total`), makes the
+ * figure doubtful until its part in the bill is confirmed: the estimate stays (Sol, #275 round 1).
+ */
 const KNOWN_CHARGES = new Set(["call_charge", "platform_charge", "llm_charge", "voice_surcharge_charge"]);
 
 /** A number, when the value is a finite one. @param value */
@@ -75,7 +80,7 @@ const numberOf = (value: unknown): number | null => (typeof value === "number" &
  * or `failed`, with `cost_fiat` (null, a call that never started, is $0: judged by the caller) plus the
  * voice surcharge in dollars; `pending` while ElevenLabs is still on it (`initiated`, `in-progress`,
  * `processing`); `doubtful` when a charge can't be counted: a surcharge with no credit price to turn it
- * into dollars, or a charge field whose part in the figure is unknown.
+ * into dollars, or another charge that is not zero (`KNOWN_CHARGES`).
  */
 export function conversationFigure(record: unknown): { readonly kind: "final"; readonly usd: number } | { readonly kind: "pending" } | { readonly kind: "doubtful" } {
   const fields = typeof record === "object" && record !== null ? (record as { status?: unknown; metadata?: unknown }) : {};
@@ -86,6 +91,8 @@ export function conversationFigure(record: unknown): { readonly kind: "final"; r
   for (const [name, value] of Object.entries(charging)) {
     if (name.endsWith("_charge") && !KNOWN_CHARGES.has(name) && (numberOf(value) ?? 0) !== 0) return { kind: "doubtful" };
   }
+  const analysis = (charging.analysis as { total?: { charge?: unknown; price?: unknown } } | null | undefined)?.total;
+  if ((numberOf(analysis?.charge) ?? 0) !== 0 || (numberOf(analysis?.price) ?? 0) !== 0) return { kind: "doubtful" };
   const surcharge = numberOf(charging.voice_surcharge_charge) ?? 0;
   if (surcharge === 0) return { kind: "final", usd: fiat };
   const credits = numberOf(metadata.cost) ?? 0;

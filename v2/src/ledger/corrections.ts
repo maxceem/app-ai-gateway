@@ -25,7 +25,7 @@
  */
 import { rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
-import { decodeSessionPrice, sessionBillsTime, sliceUsage } from "../relay/session-price.ts";
+import { decodeSessionPrice, sessionBillsTime, sessionPricedAsEstimate, sliceUsage } from "../relay/session-price.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
@@ -403,7 +403,8 @@ export async function priceUnresolvedCharge(
     // Its cost lands in the rollup of the unit the price bills.
     unit: billed.unit,
     now: input.now,
-    estimate: priced.estimated,
+    // A session billed at a base rate (ElevenLabs agents) is an estimate, as its checkpoint books it.
+    estimate: priced.estimated || (original.ownerType === "session" && sessionPricedAsEstimate(original.operation)),
     // A slice with usage missing (a gap, a cut-off answer) stays `partial` in its correction too.
     measured: original.measured === "partial" ? "partial" : priced.measured,
   });

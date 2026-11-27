@@ -971,6 +971,21 @@ export function withoutCredentials(data) {
 const AGENT_AUDIO = '{"user_audio_chunk":"';
 
 /**
+ * The only fields the client's first message may carry (`conversation_initiation_client_data`, ElevenLabs'
+ * WebSocket reference): its `type`; the greeting override (`onlyFirstMessage`); `dynamic_variables`, which
+ * fill the placeholders the agent's owner wrote and have no override switch; and `user_id` and
+ * `source_info`, which only name who and what started the call (ElevenLabs' own SDKs send `source_info`).
+ * Everything else changes what the agent does or what it bills, and is refused: the overrides outside
+ * `conversation_config_override` (`starting_workflow_node_id`, `procedure_ids`, `start_procedure_ids`),
+ * `custom_llm_extra_body`, another `branch_id` or `environment` than the signed URL's, and any field
+ * ElevenLabs may add later (Sol, #275 round 1).
+ */
+const AGENT_START_FIELDS = new Set(["type", "conversation_config_override", "dynamic_variables", "user_id", "source_info"]);
+
+/** The first message's fields refused in any later frame too, so none hides in another message. */
+const AGENT_START_ONLY = ["conversation_config_override", "custom_llm_extra_body", "starting_workflow_node_id", "procedure_ids", "start_procedure_ids", "branch_id", "environment"];
+
+/**
  * Whether the client's overrides are only the one it may make (plan step 11): the agent's `first_message`,
  * so a reconnect, a new conversation, doesn't repeat the whole greeting (T17a). Nothing else: above all
  * not the duration (`conversation.max_duration_seconds`), the agent's own second cap behind ours.
@@ -987,11 +1002,12 @@ function onlyFirstMessage(override) {
 /**
  * An agent's client frame as it goes to ElevenLabs (plan 5.1: settings messages are always fully parsed).
  * - An audio chunk and nothing else goes as it is, never parsed: no quote in it but the last one.
- * - Any other frame is read whole, as ElevenLabs reads it. One with an override but the first message
- *   (`conversation_config_override`, `custom_llm_extra_body`), in the first message or any later one, is
- *   refused, and so is one that is not a JSON object, or binary: ElevenLabs' messages are JSON text, and
- *   either would go unread. The rest go written again as they were read, so a repeated key can't be read
- *   another way by ElevenLabs.
+ * - Any other frame is read whole, as ElevenLabs reads it. The first message may carry only
+ *   `AGENT_START_FIELDS`, and its override only the greeting. Any other frame may carry none of the first
+ *   message's fields but the greeting override (`AGENT_START_ONLY`). A frame that breaks either is refused,
+ *   and so is one that is not a JSON object, or binary: ElevenLabs' messages are JSON text, and either would
+ *   go unread. The rest go written again as they were read, so a repeated key can't be read another way by
+ *   ElevenLabs.
  * @param {string | ArrayBuffer} data
  * @returns {string | { refused: string }}
  */
@@ -1000,8 +1016,11 @@ export function agentLock(data) {
   if (data.startsWith(AGENT_AUDIO) && data.endsWith('"}') && data.indexOf('"', AGENT_AUDIO.length) === data.length - 2) return data;
   const frame = parsed(data);
   if (!isObject(frame)) return { refused: "invalid_frame" };
-  if (!onlyFirstMessage(frame.conversation_config_override)) return { refused: "override_not_allowed" };
-  if (frame.custom_llm_extra_body !== undefined && frame.custom_llm_extra_body !== null) return { refused: "override_not_allowed" };
+  const start = frame.type === "conversation_initiation_client_data";
+  const allowed = start
+    ? Object.keys(frame).every((name) => AGENT_START_FIELDS.has(name))
+    : AGENT_START_ONLY.every((name) => name === "conversation_config_override" || !Object.hasOwn(frame, name));
+  if (!allowed || !onlyFirstMessage(frame.conversation_config_override)) return { refused: "override_not_allowed" };
   return JSON.stringify(frame);
 }
 

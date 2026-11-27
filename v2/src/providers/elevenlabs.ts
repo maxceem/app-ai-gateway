@@ -21,6 +21,9 @@
  */
 import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry, type StoredAudio, type SuggestedField } from "./operation.ts";
 
+/** ElevenLabs' own form for an agent's id (its API reference: "Agent id (agent_…)"). */
+const AGENT_PREFIX = "agent_";
+
 /** ElevenLabs' default text-to-speech model, used when the request names none. */
 const DEFAULT_TTS_MODEL = "eleven_multilingual_v2";
 
@@ -76,7 +79,7 @@ export const elevenlabs = defineProvider({
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
   // Its agents (`agent_…`) are priced as one: the base rate a minute (11a).
-  listedByPrefix: { prefix: "agent_", type: "elevenlabs-agents", model: "agent" },
+  listedByPrefix: { prefix: AGENT_PREFIX, type: "elevenlabs-agents", model: "agent" },
   // Its US host and its data residency hosts.
   otherHosts: ["api.us.elevenlabs.io", "api.eu.residency.elevenlabs.io", "api.in.residency.elevenlabs.io", "api.sg.residency.elevenlabs.io"],
   auth: { header: "xi-api-key", format: "{key}" },
@@ -177,9 +180,12 @@ export const elevenlabs = defineProvider({
       transport: "websocket",
       model: { in: "query", name: "agent_id" },
       modelKinds: ["agent"],
+      // Only agents, in ElevenLabs' own form for their ids: never a legacy id, which no setup check would read.
+      modelPrefix: AGENT_PREFIX,
       meter: { kind: "wall_clock" },
       // Its query's other options (`branch_id`, `environment`) go on to the signed URL's request.
-      session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: "elevenlabs", queryOptions: true },
+      // Its clock is billed at the base rate, so every priced slice is an estimate until the record settles it.
+      session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: "elevenlabs", queryOptions: true, estimate: true },
     }),
     defineOperation({
       name: "elevenlabs.stt",

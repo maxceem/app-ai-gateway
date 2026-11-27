@@ -59,6 +59,11 @@ export function decodeSessionPrice(text: string): ResolvedPrice | null {
   return parsed as ResolvedPrice;
 }
 
+/** Whether a session's priced slices are estimates, whatever their price (`SessionSpec.estimate`: ElevenLabs agents). */
+export function sessionPricedAsEstimate(operation: string): boolean {
+  return declaredOperation(operation)?.session?.estimate === true;
+}
+
 /** The rates a price may bill connection time with (`../pricing/units.ts`): the wall clock meter. */
 const TIME_RATES = ["per_second", "per_minute", "per_hour"] as const;
 
