@@ -72,7 +72,8 @@ export async function signedSessionUrl(env: Env, ticket: Ticket): Promise<string
     log("warn", "elevenlabs_signed_url_unreadable", { app: ticket.app, session: ticket.sid, error: errorFacts(error) });
     throw new SignedUrlRefused(response.status);
   }
-  if (typeof signed !== "string" || signed.length > 4096 || !URL.canParse(signed)) throw new SignedUrlRefused(response.status);
+  // Where it may go is the relay's check, against the sealed address (`signedSession`).
+  if (typeof signed !== "string") throw new SignedUrlRefused(response.status);
   return signed;
 }
 

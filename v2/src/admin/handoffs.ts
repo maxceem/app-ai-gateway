@@ -54,6 +54,7 @@ import { sealingRoot } from "../vault/split-keys.ts";
 import { vault } from "../vault/client.ts";
 import { requireConsoleSession, requireManage, type AdminVariables } from "./actor.ts";
 import { appRow, checkAppConfig, checkConversations, checkNewConnection, freshAppId, parseAppConfig, parseBody, requireApiKeyApp } from "./apps.ts";
+import { checkAgents } from "./agents.ts";
 import { capCondition, planCap, planCeiling, type PlanCap } from "./plan-caps.ts";
 import {
   checkCloudflareIds,
@@ -681,6 +682,8 @@ export async function createReservedApp(c: AdminContext): Promise<Response> {
     await checkAppConfig(c.env.DB, actor.accountId, request.config);
     // As `createApp`: storage needs this deployment's bucket and a plan that includes it.
     await checkConversations(c.env, actor.accountId, payload.config, null);
+    // As `createApp`: every agent it lists is read from ElevenLabs (Fable, #275 round 1).
+    await checkAgents(c.env, actor.accountId, payload.config, null);
     // The first key is not counted against the key ceiling, as v1, except
     // when the plan allows no keys at all.
     if (apiKeyApp && (await planCeiling(c.env, actor.accountId, "appKey")) === 0) {

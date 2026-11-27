@@ -78,7 +78,9 @@ export type ErrorCode =
   | "sender_changed"
   // MCP tools and the CLI's tool catalog (v1's codes).
   | "tool_not_found"
-  | "tool_changed";
+  | "tool_changed"
+  // An ElevenLabs agent can't be read when an app lists it on an account with split keys on (11a).
+  | "split_keys_unsupported";
 
 export type GatewayErrorData = Record<string, string | number | boolean>;
 

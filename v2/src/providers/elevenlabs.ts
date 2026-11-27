@@ -185,7 +185,7 @@ export const elevenlabs = defineProvider({
       meter: { kind: "wall_clock" },
       // Of its query, only `branch_id` and `environment` go on to the signed URL's request.
       // Its clock is billed at the base rate, so every priced slice is an estimate until the record settles it.
-      session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: "elevenlabs", queryOptions: true, estimate: true, sendsUser: true },
+      session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: true, queryOptions: true, estimate: true, sendsUser: true },
     }),
     defineOperation({
       name: "elevenlabs.stt",

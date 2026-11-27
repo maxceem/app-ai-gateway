@@ -548,7 +548,7 @@ export interface SessionSpec {
    * The session connects through a single-use signed URL the gateway asks the provider for at `open`
    * (ElevenLabs agents, 11a, `../relay/elevenlabs-agent.ts`): the relay connects there, never with the key.
    */
-  readonly signedUrl?: "elevenlabs";
+  readonly signedUrl?: true;
   /**
    * Its priced slices are estimates, whatever their price: it is a base rate the provider's own bill
    * differs from (ElevenLabs agents: burst minutes, silences, the language model, 11a). The provider's

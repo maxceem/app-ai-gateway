@@ -11,7 +11,8 @@
  *   refuses the override in the client's first message.
  *
  * Saving is strict (`AGENTS.md`): an agent that fails is refused, and one whose settings can't be read is
- * a `503`, never a guess. Only what the save newly lists is read: an agent listed before was checked
+ * a `503`, never a guess. On an account with split keys on, no save can read them (the key needs an app's
+ * share): that is a `409 split_keys_unsupported`, since a retry never helps. Only what the save newly lists is read: an agent listed before was checked
  * when it was. A model not named as an agent (`agent_…`: a voice model, listed for another operation of
  * the route) is not one (`listedByPrefix` in `../providers/elevenlabs.ts`).
  */
@@ -32,6 +33,12 @@ const AGENT_READ_MS = 5_000;
 /** Whether a listed model is an agent: an id in ElevenLabs' own form for them, `agent_…`, priced as one. */
 export function isAgent(model: string): boolean {
   return listedAs("elevenlabs", model).type === "elevenlabs-agents";
+}
+
+/** Whether the account has split keys on, or is moving to them: its provider keys then need an app's share. */
+async function splitKeysOn(env: Env, accountId: string): Promise<boolean> {
+  const root = await env.DB.prepare("SELECT mode FROM account_key_root WHERE account_id = ?").bind(accountId).first<{ mode: string }>();
+  return root !== null && root.mode !== "off";
 }
 
 /** What an agent's settings say, as ElevenLabs answers them: null when both checks pass. */
@@ -57,8 +64,6 @@ export async function checkAgents(env: Env, accountId: string, config: AppConfig
     if (!route.operations.includes(AGENT_OPERATION)) continue;
     const before = current?.routing.providers[slug];
     if (route.models === undefined) {
-      // Unchanged, it was judged when it was saved.
-      if (before !== undefined && before.operations.includes(AGENT_OPERATION) && before.models === undefined) continue;
       throw new GatewayError(400, "invalid_request", `config.routing.providers.${slug}.models: list the agents ${AGENT_OPERATION} may start, by their ids`, undefined, {
         data: { slug },
       });
@@ -71,6 +76,18 @@ export async function checkAgents(env: Env, accountId: string, config: AppConfig
     // The app's own check has refused a missing connection, and one of another type has no agents.
     if (connection === null || description === null || connection.type !== "elevenlabs") continue;
     if (connection.status === "disabled") throw refused(slug, agents[0]!, "can't be checked: the provider connection is disabled");
+    // With split keys on, the connection's key opens only with an app's share, which a save never has: no
+    // retry helps until the console can unlock keys (split keys, phase 2). Said plainly, never a 503.
+    if (await splitKeysOn(env, accountId)) {
+      log("info", "agent_check_split_keys", { slug });
+      throw new GatewayError(
+        409,
+        "split_keys_unsupported",
+        `config.routing.providers.${slug}.models: ElevenLabs agents can't be checked on an account with split keys on yet, so they can't be listed until the console can unlock its keys`,
+        undefined,
+        { data: { slug, model: agents[0]! } },
+      );
+    }
     await Promise.all(
       agents.map(async (agent) => {
         let status: number;
@@ -104,7 +121,6 @@ export async function checkAgents(env: Env, accountId: string, config: AppConfig
         if (status === 404) throw refused(slug, agent, "is not an agent this ElevenLabs key can reach");
         if (status === 401 || status === 403) throw refused(slug, agent, "can't be checked: ElevenLabs refused the connection's key for reading agents");
         if (status !== 200) {
-          // With split keys on, the connection's key opens only with an app's share, which a save doesn't have.
           log("warn", "agent_check_unavailable", { slug, status });
           throw new GatewayError(503, "service_unavailable", `config.routing.providers.${slug}.models: ${agent}'s settings could not be read from ElevenLabs; try again`);
         }

@@ -317,12 +317,38 @@ describe(`checking an agent when an app lists it (step 11a, split keys ${splitKe
     expect(asked).toEqual([]);
   });
 
-  it.runIf(splitKeysOn)("answers 503 when the connection's key opens only with an app's share, which a save doesn't have", async () => {
+  it.runIf(splitKeysOn)("says plainly that agents can't be listed with split keys on, since no save can open the key and a retry never helps (Fable, #275 round 1)", async () => {
     const { slug } = await seedConnection();
     const asked = elevenLabsApi();
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
     const saved = await admin("/v2/admin/apps", "POST", { name: "agents", config: appConfig(slug, [AGENT]) });
-    expect(saved.status).toBe(503);
+    expect(saved.status).toBe(409);
+    expect(saved.body.error).toMatchObject({ code: "split_keys_unsupported", message: expect.stringContaining("split keys") });
     expect(asked).toEqual([]);
+    // Logged once, as information: nothing failed.
+    expect(lines.filter((line) => line.includes("agent_check_split_keys"))).toHaveLength(1);
+    expect(lines.some((line) => line.includes("agent_check_unavailable"))).toBe(false);
+    // An app that lists no agent saves as before.
+    expect((await admin("/v2/admin/apps", "POST", { name: "voice", config: appConfig(slug, ["eleven_flash_v2_5"], ["elevenlabs.tts"]) })).status).toBe(201);
+  });
+
+  it.runIf(!splitKeysOn)("checks agents when an app is made through a handoff (app.add) too: when it is reserved, and when it is made (Fable, #275 round 1)", async () => {
+    const { slug } = await seedConnection();
+    let agent: Answer = { status: 200, body: agentSettings({ enableAuth: false }) };
+    const asked = elevenLabsApi({ agent: () => agent });
+    const refused = await admin("/v2/admin/reserved/apps", "POST", { name: "handed", config: appConfig(slug, [AGENT]) });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.message).toContain("authentication off");
+    agent = { status: 200, body: agentSettings() };
+    const reserved = await admin("/v2/admin/reserved/apps", "POST", { name: "handed", config: appConfig(slug, [AGENT]) });
+    expect(reserved.status, JSON.stringify(reserved.body)).toBe(200);
+    // Set up badly in ElevenLabs since: the app is not made.
+    agent = { status: 200, body: agentSettings({ durationOverride: true }) };
+    const made = await admin("/v2/admin/reserved/apps", "POST", { name: "handed", config: appConfig(slug, [AGENT]), handle: reserved.body.handle });
+    expect(made.status).toBe(400);
+    expect(asked.every((one) => one.url === `https://api.elevenlabs.io/v1/convai/agents/${AGENT}`)).toBe(true);
+    expect(asked).toHaveLength(3);
   });
 });
 

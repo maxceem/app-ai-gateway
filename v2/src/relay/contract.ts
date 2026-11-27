@@ -150,7 +150,7 @@ export async function openForRelay(
   const payload = await checkedTicket(env, ticket);
   if (now >= payload.exp) throw new ContractRefusal("ticket_expired");
   // Asked for before the leases count the session as started: a refusal leaves them to expire with the ticket.
-  const signedUrl = declaredOperation(payload.operation)?.session?.signedUrl === undefined ? undefined : await signedUrlFor(env, payload);
+  const signedUrl = declaredOperation(payload.operation)?.session?.signedUrl === true ? await signedUrlFor(env, payload) : undefined;
   const lease = leaseOf(payload);
   await activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil);
   const backend = backendOf(payload);
