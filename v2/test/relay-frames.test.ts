@@ -31,6 +31,9 @@ function oneSecondOfAudio(f: ReturnType<typeof frames>) {
   }
 }
 
+/** Seconds of audio a little past the slow-client threshold. */
+const BEHIND_SECONDS = SLOW_CLIENT_MS / 1_000 + 2;
+
 describe("a client's frames", () => {
   it("are forwarded, and a frame too large ends the session", () => {
     const f = frames();
@@ -79,7 +82,7 @@ describe("a client's frames", () => {
 });
 
 describe("a client that falls behind", () => {
-  it("is ended with client_too_slow once it is about 10 s of audio behind, by its own reports", () => {
+  it("is ended with client_too_slow once it is about 30 s of audio behind, by its own reports", () => {
     const f = frames();
     // It reports keeping up for a while.
     for (let second = 0; second < 5; second += 1) {
@@ -96,7 +99,7 @@ describe("a client that falls behind", () => {
       verdict = f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: stuckAt }));
     }
     expect(verdict).toEqual({ kind: "end", reason: "client_too_slow" });
-    // Ended about 10 s in, not at once and not much later.
+    // Ended about 30 s in, not at once and not much later (9c, T37).
     expect(seconds).toBeGreaterThanOrEqual(SLOW_CLIENT_MS / 1_000);
     expect(seconds).toBeLessThanOrEqual(SLOW_CLIENT_MS / 1_000 + 2);
   });
@@ -105,7 +108,7 @@ describe("a client that falls behind", () => {
     const f = frames();
     oneSecondOfAudio(f);
     f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: f.state.sent }));
-    for (let second = 0; second < 12; second += 1) oneSecondOfAudio(f);
+    for (let second = 0; second < BEHIND_SECONDS; second += 1) oneSecondOfAudio(f);
     expect(f.state.check(f.now())).toBe("client_too_slow");
   });
 
@@ -158,7 +161,7 @@ describe("the heartbeat", () => {
     const f = frames();
     oneSecondOfAudio(f);
     f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: 0 }));
-    for (let second = 0; second < 12; second += 1) oneSecondOfAudio(f);
+    for (let second = 0; second < BEHIND_SECONDS; second += 1) oneSecondOfAudio(f);
     expect(f.state.check(f.now())).toBe("client_too_slow");
     f.state.detached = true;
     expect(f.state.check(f.now())).toBeNull();
@@ -173,7 +176,7 @@ describe("reports and the start (Sol, #260 round 1)", () => {
       const f = frames();
       oneSecondOfAudio(f);
       f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: bad }));
-      for (let second = 0; second < 12; second += 1) oneSecondOfAudio(f);
+      for (let second = 0; second < BEHIND_SECONDS; second += 1) oneSecondOfAudio(f);
       expect(f.state.check(f.now()), String(bad)).toBe("client_too_slow");
     }
   });
@@ -182,7 +185,7 @@ describe("reports and the start (Sol, #260 round 1)", () => {
     const f = frames({ relayMessages: true });
     // No report at all: the client only sends heartbeats, so the heartbeat rule stays quiet.
     let reason: string | null = null;
-    for (let second = 0; second < 15 && reason === null; second += 1) {
+    for (let second = 0; second < BEHIND_SECONDS + 3 && reason === null; second += 1) {
       oneSecondOfAudio(f);
       expect(f.state.fromClient(JSON.stringify({ type: "agw.heartbeat" })).kind).toBe("answer");
       reason = f.state.check(f.now());
@@ -199,12 +202,14 @@ describe("the start queue", () => {
     expect(byCount.overflowed).toBe(true);
     expect(byCount.drain()).toEqual([]);
 
-    // Text is charged two bytes per character, what it takes in memory (Sol, #260 round 2).
+    // Text is charged one byte per character: provider frames are ASCII (9c, T37).
     const bySize = new StartQueue();
-    const chunk = "x".repeat(256 * 1024);
+    const chunk = "x".repeat(68_000);
     let pushed = 0;
     while (bySize.push(chunk)) pushed += 1;
-    expect(pushed).toBe(Math.floor(START_QUEUE_BYTES / (chunk.length * 2)));
+    expect(pushed).toBe(Math.floor(START_QUEUE_BYTES / chunk.length));
+    // About two minutes of xAI audio, at 1.1 s per frame.
+    expect(pushed).toBeGreaterThanOrEqual(120);
     const binary = new StartQueue();
     let binaryPushed = 0;
     while (binary.push(new ArrayBuffer(256 * 1024))) binaryPushed += 1;

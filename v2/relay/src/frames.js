@@ -26,10 +26,12 @@ export const TICK_MS = 30_000;
 export const HEARTBEAT_TIMEOUT_MS = 90_000;
 /**
  * How far behind a client that sends received-byte reports may fall before the
- * session ends with "client too slow": about 10 s of audio (plan 5.2). Provisional:
- * 9c sets it on a phone.
+ * session ends with "client too slow" (plan 5.2). Set on a phone in 9c (T37):
+ * xAI sends a one-minute answer, 3–5 MB, within about 3 s. At 1 Mbit/s a phone
+ * receives about 3.75 MB in 30 s, so it keeps answers up to that size while
+ * still far ahead of playback; a client that stopped reading is still ended.
  */
-export const SLOW_CLIENT_MS = 10_000;
+export const SLOW_CLIENT_MS = 30_000;
 /** The largest client frame forwarded (plan 5.2: a maximum frame size from the client). */
 export const MAX_CLIENT_FRAME = 256 * 1024;
 /**
@@ -41,15 +43,19 @@ export const MAX_CLIENT_FRAME = 256 * 1024;
 export const MAX_CLIENT_FRAMES_PER_WINDOW = 2_000;
 /** The rate window. */
 export const RATE_WINDOW_MS = 10_000;
-/** Frames held while the session starts, on each side, before the session gives up on them. */
+/**
+ * Frames held while the session starts, on each side, and for a client that is
+ * away, before the session gives up on them.
+ */
 export const START_QUEUE_FRAMES = 512;
 /**
- * Bytes held while the session starts, on each side. A start takes about a
- * second, which is about 64 KB of audio; 4 MB is far more than any real start
- * needs, and small next to the 128 MB an isolate has, which several session
- * objects may share.
+ * Bytes held in the same places. Set on a phone in 9c (T37): one xAI audio frame
+ * is about 68,000 characters (1.1 s of audio), and an answer of 46–83 s arrives
+ * within about 3 s, often while the client is away. 8 MB holds about 120 such
+ * frames, about 2 minutes of audio, and stays small next to the 128 MB an
+ * isolate has, which several session objects may share.
  */
-export const START_QUEUE_BYTES = 4 * 1024 * 1024;
+export const START_QUEUE_BYTES = 8 * 1024 * 1024;
 
 /**
  * A frame's size, as both sides count it: a text frame's length in UTF-16 code
@@ -76,13 +82,17 @@ export class StartQueue {
   }
 
   /**
-   * A text frame is charged two bytes per character, what it takes in memory
-   * (UTF-16), so the byte cap holds for text too.
+   * A text frame is charged one byte per character: provider frames are JSON
+   * with base64 audio, which is ASCII, and the runtime keeps an ASCII string at
+   * one byte per character. Its length costs nothing to read. A frame with
+   * other characters takes up to twice that, bounded by the frame size and
+   * rate limits. The same count holds for the client's start queue, which the
+   * per-user session limit bounds.
    * @param {string | ArrayBuffer} data
    */
   push(data) {
     if (this.overflowed) return false;
-    const size = typeof data === "string" ? data.length * 2 : data.byteLength;
+    const size = frameSize(data);
     if (this.frames.length >= START_QUEUE_FRAMES || this.bytes + size > START_QUEUE_BYTES) {
       this.overflowed = true;
       this.frames = [];

@@ -504,6 +504,50 @@ public actor AppAIGatewayClient {
         try await built(url: currentUserURL(), method: "GET", body: nil, contentType: nil).request
     }
 
+    /// The gateway's route that starts a live session on one provider
+    /// connection: `POST /v2/apps/{app}/sessions/{provider}`.
+    private func sessionURL(provider: String) -> URL {
+        appURL("sessions/\(provider)")
+    }
+
+    /// Asks the gateway for a live session, such as a voice session, and
+    /// answers its ticket. Open it with ``LiveSession``.
+    ///
+    /// - `path` is the provider's own live-session path, as the app would
+    ///   call it, such as `v1/realtime`.
+    /// - `model` is the model the session runs, where the provider names it.
+    /// - `takesOver` names a session this one replaces, such as one whose
+    ///   network dropped and that can't be taken back.
+    ///
+    /// A refusal throws ``GatewayError``. It is built, signed and recovered
+    /// exactly as `withAuthorizedRequest` does for a call, and sent with
+    /// `send`.
+    public func startSession(
+        provider: String,
+        path: String,
+        model: String? = nil,
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        var fields: [String: String] = ["path": path]
+        if let model { fields["model"] = model }
+        if let takesOver { fields["takes_over"] = takesOver }
+        let body = try JSONEncoder().encode(fields)
+        let url = sessionURL(provider: provider)
+        let (data, response) = try await recovering(send: send) {
+            try await self.built(url: url, method: "POST", body: body, contentType: "application/json")
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayError(code: .unknown, message: "No HTTP answer", statusCode: 0)
+        }
+        if let refusal = GatewayError(response: http, body: data) { throw refusal }
+        do {
+            return try JSONDecoder().decode(LiveSessionTicket.self, from: data)
+        } catch {
+            throw GatewayError(code: .unknown, message: "The session answer could not be read", statusCode: http.statusCode)
+        }
+    }
+
     /// Builds a request to a provider through the gateway, hands it to `send`,
     /// and builds it again where the gateway itself refused it in a way a
     /// fresh token or a fresh proof can fix.

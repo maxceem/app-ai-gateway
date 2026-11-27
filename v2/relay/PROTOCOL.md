@@ -36,15 +36,16 @@ SDK sees only the provider's frames.
 - **When:** every few seconds while provider frames arrive, and again whenever
   they stop, so nothing received stays unreported for more than a few seconds.
   Otherwise a normal pause between turns leaves the unreported tail more than
-  10 s old, and the session ends as `client_too_slow`.
+  30 s old, and the session ends as `client_too_slow`.
 - **The value:** the total received since the session started: a whole number,
   never more than the relay sent. A report outside that is ignored.
-- **What the relay does with them:** a client that falls about 10 s behind what
+- **What the relay does with them:** a client that falls about 30 s behind what
   the relay sent is ended with close code `4000` and reason `client_too_slow`.
   Tracking starts with the first provider frame, so a client that never reports
   is caught too. The relay checks when a report arrives and on its 30 s tick, so
-  the end can come up to about 30 s after the 10 s mark. The number is
-  provisional: it is set on a phone (plan step 9c).
+  the end can come up to about 30 s after the 30 s mark. Set on a phone in step
+  9c: xAI sends a one-minute answer within a few seconds, so a phone on a slow
+  link can be well behind the relay and still ahead of playback.
 
 ## Other ends a client sees
 
@@ -125,7 +126,7 @@ provider's side stays open:
   `1001`, or with no code (`1005`), ends the session, as before. So does any close from a client that did
   not ask for the relay's messages: an official SDK starts a new session.
 - **While the link is down:** the provider's frames are held for the client, in
-  order, up to 512 frames or 4 MB (text counts 2 bytes per character). More
+  order, up to 512 frames or 8 MB (text counts 1 byte per character). More
   than that, and the session ends with `client_closed`. A protocol whose rule
   is to end at once (ElevenLabs agents, later) ends the session at the drop.
 - **How long:** the heartbeat still runs. If no client comes back within 90 s
