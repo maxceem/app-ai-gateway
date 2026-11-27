@@ -86,6 +86,8 @@ public actor LiveSession {
     /// link has taken the session over: the relay closes it then with
     /// `1000 reconnected`. A close from this side could end the session first.
     private var retiring: (any LiveSessionLink)?
+    /// The retiring link's generation: what it still delivers reaches the app.
+    private var retiringGeneration = 0
     /// Bumped for each new link: frames and closes from an older one are ignored.
     private var generation = 0
     /// Whether frames may go out: the session started or resumed on this link.
@@ -169,6 +171,7 @@ public actor LiveSession {
     public func reconnect() {
         guard !finished, ready, secret != nil else { return }
         retiring = link
+        retiringGeneration = generation
         dropped()
     }
 
@@ -222,7 +225,19 @@ public actor LiveSession {
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message, on current: Int) {
-        guard current == generation, !finished else { return }
+        guard !finished else { return }
+        // Until the new link takes over, the relay still sends the provider's
+        // frames to the old one, such as the end of an answer: the app gets
+        // them, but they don't count in the new link's reports.
+        if current != generation {
+            guard retiring != nil, current == retiringGeneration else { return }
+            switch message {
+            case .string(let text) where !text.hasPrefix(Self.relayPrefix): continuation.yield(.text(text))
+            case .data(let data): continuation.yield(.data(data))
+            default: break
+            }
+            return
+        }
         switch message {
         case .string(let text):
             if text.hasPrefix(Self.relayPrefix) {
@@ -345,6 +360,7 @@ public actor LiveSession {
         // The same handoff as reconnect(): the old link stays open until the
         // new one has taken the session over, so the relay never sees it end.
         retiring = link
+        retiringGeneration = generation
         dropped()
     }
 

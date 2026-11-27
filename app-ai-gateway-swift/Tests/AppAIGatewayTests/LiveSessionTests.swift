@@ -237,6 +237,32 @@ struct LiveSessionTests {
     }
 
     @Test
+    func whatTheOldLinkStillDeliversDuringAHandoffReachesTheAppButIsNotCountedOnTheNewOne() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(report: 0.02), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        await session.reconnect()
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        // The relay still sends to the old link until the new one takes over: the end of an answer.
+        links[0].deliver(#"{"type":"response.done"}"#)
+        #expect(await events.next() == .text(#"{"type":"response.done"}"#))
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        links[1].deliver("xy")
+        #expect(await events.next() == .text("xy"))
+        // The new link's report counts only what came on it.
+        #expect(await eventually { links[1].sent.contains(#"{"type":"agw.received","bytes":2}"#) })
+        // Once the new link took over, the old one is not this session's any more.
+        links[0].deliver("late")
+        links[1].deliver("now")
+        #expect(await events.next() == .text("now"))
+    }
+
+    @Test
     func framesGoOutInTheOrderTheAppSentThem() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
