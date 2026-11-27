@@ -109,44 +109,35 @@ const workers = (splitKeys: boolean) =>
               outboundService: "app-ai-gateway-v2-provider-stub",
             },
             {
-              // Every provider connect the test relay makes: a WebSocket that stays open.
+              // Every provider request the test relay makes (`test/provider-stub.js`): a relayed
+              // session's WebSocket, and an observed call, its side channel and its hang-up.
               name: "app-ai-gateway-v2-provider-stub",
               modules: true,
-              // It keeps the key header of the last connect, which the test reads back at /last-key-header,
-              // sends one event at once and echoes every frame (one marked "later:" after a while).
-              script: [
-                "let lastKeyHeader = null;",
-                "export default {",
-                "  fetch(request) {",
-                "    if (new URL(request.url).pathname === \"/last-key-header\") return Response.json({ authorization: lastKeyHeader });",
-                "    lastKeyHeader = request.headers.get(\"authorization\");",
-                "    const [client, server] = Object.values(new WebSocketPair());",
-                "    server.binaryType = \"arraybuffer\";",
-                "    server.accept();",
-                // Like a provider: an event at once, then each frame echoed back (frame forwarding's test).
-                // A frame that starts with "later:" is echoed after 300 ms: a provider frame that lands
-                // while the client's link is down (the reconnect tests).
-                "    server.send(JSON.stringify({ type: \"session.created\" }));",
-                "    server.addEventListener(\"message\", (event) => {",
-                "      if (typeof event.data === \"string\" && event.data.startsWith(\"later:\")) setTimeout(() => server.send(event.data), 300);",
-                "      else server.send(event.data);",
-                "    });",
-                "    return new Response(null, { status: 101, webSocket: client });",
-                "  },",
-                "};",
-              ].join("\n"),
+              modulesRoot: import.meta.dirname,
+              modulesRules: [{ type: "ESModule", include: ["**/*.js"] }],
+              scriptPath: path.join(import.meta.dirname, "test/provider-stub.js"),
               compatibilityDate: "2026-07-24",
             },
             {
               name: "app-ai-gateway-v2-relay-main-stub",
               modules: true,
+              // The ticket's own mode, and the `mock` adapter, as the gateway answers. It keeps what the
+              // relay sent, which a test reads back at /seen/<session id>.
               script: [
                 'import { WorkerEntrypoint } from "cloudflare:workers";',
+                "const seen = new Map();",
+                "const payloadOf = (ticket) => JSON.parse(atob(ticket.split(\".\")[0].replaceAll(\"-\", \"+\").replaceAll(\"_\", \"/\")));",
+                "const record = (ticket, kind, input) => {",
+                "  const sid = payloadOf(ticket).sid;",
+                "  if (!seen.has(sid)) seen.set(sid, { checkpoints: [], closes: [] });",
+                "  seen.get(sid)[kind].push(input);",
+                "};",
                 "export class RelayContract extends WorkerEntrypoint {",
-                "  async open() { return { version: 1, deadline: Date.now() + 60000, mode: \"relayed\", operation: \"openai.realtime\", checkpointIntervalMs: 60000 }; }",
-                "  async close() { return { version: 1 }; }",
+                "  async open(ticket) { const t = payloadOf(ticket); return { version: 2, deadline: t.start + t.cap, mode: t.mode, operation: t.operation, checkpointIntervalMs: 60000, adapter: \"mock\" }; }",
+                "  async checkpoint(ticket, input) { record(ticket, \"checkpoints\", input); return { decision: \"continue\", reasons: [], written: true }; }",
+                "  async close(ticket, input) { record(ticket, \"closes\", input); return { version: 2 }; }",
                 "}",
-                "export default { fetch() { return new Response(null, { status: 404 }); } };",
+                "export default { fetch(request) { const sid = new URL(request.url).pathname.split(\"/\").at(-1); return Response.json(seen.get(sid) ?? { checkpoints: [], closes: [] }); } };",
               ].join("\n"),
               compatibilityDate: "2026-07-24",
             },
@@ -156,6 +147,7 @@ const workers = (splitKeys: boolean) =>
             VAULT_KMS: "app-ai-gateway-v2-vault-kms",
             VAULT_RELAY: { name: "app-ai-gateway-v2-vault", entrypoint: "RelayKeys" },
             RELAY_TEST: "app-ai-gateway-v2-relay-test",
+            RELAY_MAIN_STUB: "app-ai-gateway-v2-relay-main-stub",
             PROVIDER_STUB: "app-ai-gateway-v2-provider-stub",
           },
           // The optional conversation bucket (step 7), so conversation storage can be tested.

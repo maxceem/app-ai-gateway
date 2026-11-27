@@ -100,10 +100,20 @@ describe("the relay's entry", () => {
     expect(used).toEqual([`idFromName:${sessionId}`, "get"]);
   });
 
-  it("refuses an observed session until observed mode is built (part 3), and a relay without its key", async () => {
+  it("takes each mode only its own way: an observed ticket over a WebSocket, a relayed one in a POST; and refuses with no key", async () => {
     const observed = sessions();
-    expect((await relay.fetch(connect((await signed("observed")).ticket), relayEnv(observed.namespace))).status).toBe(501);
+    const overSocket = await relay.fetch(connect((await signed("observed")).ticket), relayEnv(observed.namespace));
+    expect(overSocket.status).toBe(400);
+    expect(await overSocket.json()).toEqual({ error: { code: "offer_required" } });
+    const relayed = sessions();
+    const post = new Request(`https://relay.example${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${(await signed()).ticket}` }, body: "v=0" });
+    expect((await relay.fetch(post, relayEnv(relayed.namespace))).status).toBe(426);
     expect(observed.used).toEqual([]);
+    expect(relayed.used).toEqual([]);
+    // An observed ticket with its offer reaches the session object it names.
+    const offer = sessions();
+    const posted = await relay.fetch(new Request(`https://relay.example${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${(await signed("observed")).ticket}` }, body: "v=0" }), relayEnv(offer.namespace));
+    expect(await posted.text()).toBe("from the session");
     const unset = sessions();
     expect((await relay.fetch(connect((await signed()).ticket), relayEnv(unset.namespace, null))).status).toBe(503);
     expect(unset.used).toEqual([]);

@@ -60,6 +60,8 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   lastCheckpointAt: number,
  *   connected: boolean,
  *   droppedFrom?: number,
+ *   detachedFrom?: number,
+ *   detachedMs?: number,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -68,6 +70,10 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * since is a gap. `connected` is the sticky proof that the session is real
  * (crash table row 20). `droppedFrom` is when the open usage first lost an
  * event to the hard size: the time from it to the slice's end is a gap.
+ * `detachedFrom` and `detachedMs` are an observed session's time without its
+ * side channel (plan step 12: no plan minutes and no clock charges then): since
+ * when it is down now, and how long it was down earlier in the open usage. Both
+ * are optional, so a journal written before them reads the same.
  *
  * @typedef {{ id: string, measures: Record<string, number> }} UsageEvent
  * One usage event, as an adapter read it (`./adapters.js`).
@@ -158,11 +164,28 @@ export function addUsage(journal, event, shape, now) {
 }
 
 /**
+ * An observed session's side channel went down at `at` (`markAttached` ends it).
+ * A second call while it is down keeps the first time. @param {Journal} journal @param {number} at
+ */
+export function markDetached(journal, at) {
+  journal.detachedFrom ??= Math.max(journal.from, at);
+}
+
+/** The side channel is back at `at`: the time it was down is kept for the slice. @param {Journal} journal @param {number} at */
+export function markAttached(journal, at) {
+  if (journal.detachedFrom === undefined) return;
+  journal.detachedMs = (journal.detachedMs ?? 0) + Math.max(0, at - Math.max(journal.from, journal.detachedFrom));
+  delete journal.detachedFrom;
+}
+
+/**
  * Freezes the open usage into the next slice, ending at `at`, and returns
  * it; it is kept in `unsent` until confirmed. Null when there is nothing to
  * freeze: no usage, no connection time, no gap (an empty checkpoint).
  * - `gapFrom`: after a crash, the time from it to `at` is an "unknown cost"
  *   gap, not connection time (plan 5.2 rule 3).
+ * - An observed session's time without its side channel (`markDetached`) is a
+ *   gap too, and a side channel still down goes on into the next slice.
  *
  * Both kinds of gap, a crash's and usage dropped at the hard size, run to
  * `at`, so they are merged: time they share counts once, and the gap is never
@@ -174,14 +197,17 @@ export function addUsage(journal, event, shape, now) {
  */
 export function freeze(journal, at, options = {}) {
   const connectedUntil = options.gapFrom === undefined ? at : Math.min(at, Math.max(journal.from, options.gapFrom));
-  const sessionMs = Math.max(0, connectedUntil - journal.from);
+  const downNow = journal.detachedFrom === undefined ? 0 : Math.max(0, at - Math.max(journal.from, journal.detachedFrom));
+  const detachedMs = Math.min(Math.max(0, connectedUntil - journal.from), (journal.detachedMs ?? 0) + downNow);
+  const sessionMs = Math.max(0, connectedUntil - journal.from - detachedMs);
   /** Where each gap starts; each runs to `at`. */
   const starts = [];
   if (options.gapFrom !== undefined && at > connectedUntil) starts.push(connectedUntil);
   // Usage was dropped at the hard size: unknown from then on.
   if (journal.droppedFrom !== undefined) starts.push(Math.min(at, Math.max(journal.from, journal.droppedFrom)));
-  const gaps = starts.length;
-  const gapMs = gaps === 0 ? 0 : at - Math.min(...starts);
+  const gaps = starts.length + (detachedMs > 0 ? 1 : 0);
+  // Detached time may overlap a dropped-usage gap: the sum is capped at the slice's length.
+  const gapMs = Math.min(at - journal.from, (starts.length === 0 ? 0 : at - Math.min(...starts)) + detachedMs);
   const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0;
   if (empty) return null;
   /** @type {Slice} */
@@ -191,6 +217,8 @@ export function freeze(journal, at, options = {}) {
   journal.from = at;
   journal.measures = {};
   delete journal.droppedFrom;
+  delete journal.detachedMs;
+  if (journal.detachedFrom !== undefined) journal.detachedFrom = at;
   return slice;
 }
 

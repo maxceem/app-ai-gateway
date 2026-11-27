@@ -4,7 +4,7 @@
  * `relay-start.test.ts`.
  */
 import { describe, expect, it } from "vitest";
-import { addUsage, confirm, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
+import { addUsage, confirm, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, markAttached, markDetached, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
 import { adapterFor } from "../relay/src/adapters.js";
 
 describe("journal", () => {
@@ -45,6 +45,22 @@ describe("journal", () => {
     expect(journal.unsent.map((s) => s.seq)).toEqual([2]);
     expect(finalSliceOf(journal)).toBe(2);
     expect(finalSliceOf(null)).toBe(0);
+  });
+
+  it("counts an observed session's time without its side channel as a gap, and a side channel still down goes on into the next slice", () => {
+    const journal = newJournal(0);
+    markDetached(journal, 10_000);
+    // A second close while it is down keeps the first time.
+    markDetached(journal, 15_000);
+    markAttached(journal, 25_000);
+    markDetached(journal, 50_000);
+    expect(freeze(journal, 60_000)).toMatchObject({ sessionMs: 35_000, gapMs: 25_000, gaps: 1 });
+    // Still down: the next slice starts detached.
+    markAttached(journal, 70_000);
+    expect(freeze(journal, 120_000)).toMatchObject({ sessionMs: 50_000, gapMs: 10_000, gaps: 1 });
+    expect(freeze(journal, 180_000)).toMatchObject({ sessionMs: 60_000, gapMs: 0, gaps: 0 });
+    // A journal written before these fields reads the same.
+    expect(readJournal({ ...newJournal(0) })).not.toBeNull();
   });
 
   it("counts the time after a crash as a gap, not connection time", () => {
