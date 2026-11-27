@@ -247,7 +247,8 @@ describe(`starting a session on a WebSocket path (step 10b, split keys ${splitKe
     }
     expect(generic).not.toHaveProperty("lock");
     expect(generic).not.toHaveProperty("client");
-    expect(generic).not.toHaveProperty("clock");
+    // Its clock runs from the provider connection: no first-activity wait.
+    expect(generic.clock).toBe("connected");
   });
 
   it("is reached only by an app that allows passthrough, only at the listed path, and never by an HTTP request", async () => {
@@ -337,7 +338,7 @@ describe(`a WebSocket session's slices (step 10b, split keys ${splitKeysOn ? "on
 
 type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number; billedMs?: number };
 
-function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | null; accounting: boolean }) => unknown; afterConnectMs?: number } = {}) {
+function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | null; accounting: boolean }) => unknown; afterConnectMs?: number; adapter?: string } = {}) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(1_000_000);
   const startedAt = Date.now();
@@ -360,7 +361,7 @@ function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | n
     log: () => undefined,
     vault: { sessionKey: async () => ({ key: { value: SECRET, header: AUTH.header, format: AUTH.format }, target: "https://live.example.com/v1/live" }) as never },
     main: {
-      open: async () => ({ deadline: startedAt + (options.capMs ?? 30 * 60_000), mode: "relayed", operation: "websocket", model: "", checkpointIntervalMs: 60_000, version: 2, adapter: "generic" }) as never,
+      open: async () => ({ deadline: startedAt + (options.capMs ?? 30 * 60_000), mode: "relayed", operation: "websocket", model: "", checkpointIntervalMs: 60_000, version: 2, adapter: options.adapter ?? "generic" }) as never,
       checkpoint: async (_ticket: string, input: { slice: Slice | null; accounting: boolean }) => {
         checkpoints.push(structuredClone(input));
         return (options.checkpoint?.(input) ?? { decision: "continue", reasons: [], written: true }) as never;
@@ -419,6 +420,15 @@ describe("the relay's generic adapter: the clock, checkpoints, the cap, the end 
     s.tick(10_000);
     await session.end("client_closed");
     expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 13_000, gapMs: 0 })]);
+  });
+
+  it("leaves every other adapter's time as it was: Gemini Live's still counts from the end of the start (Sol, #274 round 2)", async () => {
+    const s = core({ afterConnectMs: 3_000, adapter: "gemini" });
+    const session = s.instance();
+    await session.start(s.text, s.ticket, s.client);
+    s.tick(10_000);
+    await session.end("client_closed");
+    expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 10_000, gapMs: 0 })]);
   });
 
   it("ends at the cap with time_cap, and bills nothing past it", async () => {
