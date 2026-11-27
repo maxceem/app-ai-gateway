@@ -30,8 +30,10 @@ covers a part that can fail on its own, without any change of yours:
   apps are still served, from records the gateway already knew or uncounted, so
   every other check stays green; this one reads the deployment's Worker logs
   for the lines that say so. It needs a read-only Cloudflare token and is
-  skipped without one. Unlike the others it is not a contract with clients:
-  it watches the deployment's health.
+  skipped without one. A failure that starts "the gateway fell back" names
+  the lines it found; a `LogsUnreadable` failure means Cloudflare's API could
+  not answer, so the monitor could not look. Unlike the others it is not a
+  contract with clients: it watches the deployment's health.
 
 **`deploy` — did this deploy break something?** Everything that only changes
 when the code does, run once after each deploy together with `monitor`:
