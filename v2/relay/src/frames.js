@@ -219,12 +219,15 @@ export class SessionFrames {
 
   /**
    * A frame from the provider, forwarded to the client. Only counted: the
-   * frame itself is passed on untouched (plan 5.2).
+   * frame itself is passed on untouched (plan 5.2). A `keepalive` frame (xAI's
+   * `ping`) is not the provider sending: a client that is gone is still ended
+   * by the 90 s rule.
    * @param {string | ArrayBuffer} data
+   * @param {boolean} [keepalive]
    */
-  toClient(data) {
+  toClient(data, keepalive = false) {
     const now = this.now();
-    this.lastProviderAt = now;
+    if (!keepalive) this.lastProviderAt = now;
     this.sent += frameSize(data);
     if (!this.relayMessages) return;
     const last = this.marks.at(-1);

@@ -62,6 +62,9 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   droppedFrom?: number,
  *   detachedFrom?: number,
  *   detachedMs?: number,
+ *   idle?: true,
+ *   idleMs?: number,
+ *   activeAt?: number,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -75,13 +78,57 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * when it is down now, and how long it was down earlier in the open usage. Both
  * are optional, so a journal written before them reads the same.
  *
- * @typedef {{ id: string, measures: Record<string, number> }} UsageEvent
- * One usage event, as an adapter read it (`./adapters.js`).
+ * `idle`, `idleMs` and `activeAt` are for a provider whose clock starts at the
+ * session's first activity (xAI, plan 5.2 rule 3): until then the session's
+ * time is free, neither connection time nor a gap. `idle` says the clock has
+ * not started; `idleMs` is the free time in the open usage before it did;
+ * `activeAt` is when it started, kept so a restart does not lose it. Optional
+ * too, for the same reason.
+ *
+ * @typedef {{ id: string, measures: Record<string, number>, clockSeconds?: number }} UsageEvent
+ * One usage event, as an adapter read it (`./adapters.js`). `clockSeconds` is a
+ * provider's own running total of its billed clock (xAI), a check only.
  */
 
-/** @param {number} now @returns {Journal} */
-export function newJournal(now) {
-  return { v: JOURNAL_VERSION, nextSeq: 1, from: now, measures: {}, seen: [], baselines: {}, unsent: [], savedAt: now, lastCheckpointAt: 0, connected: false };
+/**
+ * A new journal. `idle`: the provider's clock starts at the first activity
+ * (`markActive`), so the time until then is free.
+ * @param {number} now
+ * @param {{ idle?: boolean }} [options]
+ * @returns {Journal}
+ */
+export function newJournal(now, options = {}) {
+  /** @type {Journal} */
+  const journal = { v: JOURNAL_VERSION, nextSeq: 1, from: now, measures: {}, seen: [], baselines: {}, unsent: [], savedAt: now, lastCheckpointAt: 0, connected: false };
+  if (options.idle === true) journal.idle = true;
+  return journal;
+}
+
+/**
+ * The session's first activity, at `at`: the provider's clock starts, and the
+ * time before it stays free. Returns whether the journal changed: only the
+ * first call does.
+ * @param {Journal} journal
+ * @param {number} at
+ */
+export function markActive(journal, at) {
+  if (journal.idle !== true) return false;
+  const start = Math.max(journal.from, at);
+  journal.idleMs = start - journal.from;
+  journal.activeAt = start;
+  delete journal.idle;
+  return true;
+}
+
+/**
+ * Adds `count` to a measure the relay counts itself, with no provider event
+ * behind it (xAI's text messages, from the client's frames).
+ * @param {Journal} journal
+ * @param {string} name
+ * @param {number} count
+ */
+export function countMeasure(journal, name, count) {
+  journal.measures = { ...journal.measures, [name]: (journal.measures[name] ?? 0) + count };
 }
 
 /**
@@ -202,7 +249,10 @@ export function freeze(journal, at, options = {}) {
   const connectedUntil = options.gapFrom === undefined ? at : Math.min(at, Math.max(journal.from, options.gapFrom));
   const downNow = journal.detachedFrom === undefined ? 0 : Math.max(0, at - Math.max(journal.from, journal.detachedFrom));
   const detachedMs = Math.min(Math.max(0, connectedUntil - journal.from), (journal.detachedMs ?? 0) + downNow);
-  const sessionMs = Math.max(0, connectedUntil - journal.from - detachedMs);
+  // Before a clock that starts at the first activity has started, the time is free: no
+  // connection time, and no gap either.
+  const idleMs = journal.idle === true ? at - journal.from : Math.min(at - journal.from, journal.idleMs ?? 0);
+  const sessionMs = Math.max(0, connectedUntil - journal.from - detachedMs - idleMs);
   /** Where each gap starts; each runs to `at`. */
   const starts = [];
   if (options.gapFrom !== undefined && at > connectedUntil) starts.push(connectedUntil);
@@ -221,6 +271,7 @@ export function freeze(journal, at, options = {}) {
   journal.measures = {};
   delete journal.droppedFrom;
   delete journal.detachedMs;
+  delete journal.idleMs;
   if (journal.detachedFrom !== undefined) journal.detachedFrom = at;
   return slice;
 }

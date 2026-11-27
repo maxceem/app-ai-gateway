@@ -59,6 +59,8 @@ import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-pri
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
+/** The other counts a slice may carry, each a unit of its own: xAI's text messages, which the relay counts itself (9b). */
+export const SLICE_UNITS = ["text_messages"] as const;
 /** The largest count one measure of one slice may hold: far above any real minute of a session. */
 const MAX_MEASURE = 1_000_000_000;
 /** How long the reads before the ledger (settings, the app, the plan) may take together. */
@@ -121,7 +123,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     if (typeof raw.measures !== "object" || raw.measures === null || Array.isArray(raw.measures)) throw bad();
     const measures: Record<string, number> = {};
     for (const [name, value] of Object.entries(raw.measures)) {
-      if (!(SLICE_MEASURES as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
+      if (!([...SLICE_MEASURES, ...SLICE_UNITS] as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
     slice = { seq: raw.seq, measures, sessionMs: raw.sessionMs, gapMs: raw.gapMs, gaps: raw.gaps, from: raw.from, to: raw.to };
@@ -151,7 +153,8 @@ interface SlicePrice {
  * connection's own rate, else ours, as they were when it opened. Tokens are
  * priced by their rates. A price with a time rate (the wall clock meter: a
  * provider billed per minute of connection) also bills the slice's connection
- * time, `sessionMs`, as session seconds (`sliceUsage`). A slice with neither
+ * time, `sessionMs`, as session seconds (`sliceUsage`), and what it bills on
+ * top (`SLICE_UNITS`: xAI's text messages). A slice with neither
  * (connection time on a model billed by tokens) costs nothing: there is no
  * usage to price. With no price, tokens and connection time are booked
  * `unresolved`, priced later by the sweep, never billed as free (AGENTS.md):
@@ -159,9 +162,10 @@ interface SlicePrice {
  */
 export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null, sessionMs = 0): SlicePrice {
   const hasTokens = SLICE_MEASURES.some((name) => (measures[name] ?? 0) > 0);
+  const units = { ...(sessionMs > 0 ? { session_seconds: sessionMs } : {}), ...unitsOf(measures) };
   const free: SlicePrice = { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   const unresolved: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
-  if (resolved === null) return hasTokens || sessionMs > 0 ? unresolved : free;
+  if (resolved === null) return hasTokens || Object.keys(units).length > 0 ? unresolved : free;
   const usage = sliceUsage(
     {
       inputTokens: measures.input_tokens ?? 0,
@@ -169,7 +173,7 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
       cacheWriteTokens: measures.cache_write_tokens ?? 0,
       outputTokens: measures.output_tokens ?? 0,
       // Session seconds are stored at the milli scale: a millisecond count is the unit count.
-      ...(sessionMs > 0 ? { units: { session_seconds: sessionMs } } : {}),
+      ...(Object.keys(units).length > 0 ? { units } : {}),
     },
     resolved.price,
   );
@@ -185,6 +189,11 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
     unit: priced.unit,
     units: priced.units,
   };
+}
+
+/** A slice's counts in units of their own (`SLICE_UNITS`), as a usage's units: only those above zero. */
+function unitsOf(measures: Readonly<Record<string, number>>): Partial<Record<(typeof SLICE_UNITS)[number], number>> {
+  return Object.fromEntries(SLICE_UNITS.filter((unit) => (measures[unit] ?? 0) > 0).map((unit) => [unit, measures[unit] as number]));
 }
 
 /**
@@ -243,7 +252,13 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     outputTokens: tokens.output_tokens,
     unit: price.unit,
     units: price.units,
-    measures: { ...tokens, ...(billableMs > 0 ? { units_session_seconds: billableMs } : {}), ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}) },
+    measures: {
+      ...tokens,
+      ...(billableMs > 0 ? { units_session_seconds: billableMs } : {}),
+      // Kept whether priced or not, so the sweep prices an `unresolved` slice with them too.
+      ...Object.fromEntries(Object.entries(unitsOf(slice.measures)).map(([unit, count]) => [`units_${unit}`, count])),
+      ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}),
+    },
     rates: price.rates,
     sessionMs: slice.sessionMs,
     correctionKind: null,

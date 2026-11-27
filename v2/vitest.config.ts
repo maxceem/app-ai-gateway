@@ -121,7 +121,7 @@ const workers = (splitKeys: boolean) =>
             {
               name: "app-ai-gateway-v2-relay-main-stub",
               modules: true,
-              // The ticket's own mode, and the `mock` adapter, as the gateway answers. It keeps what the
+              // The ticket's own mode, and the adapter the gateway answers for it (xAI's, else `mock`). It keeps what the
               // relay sent, which a test reads back at /seen/<session id>.
               script: [
                 'import { WorkerEntrypoint } from "cloudflare:workers";',
@@ -133,7 +133,7 @@ const workers = (splitKeys: boolean) =>
                 "  seen.get(sid)[kind].push(input);",
                 "};",
                 "export class RelayContract extends WorkerEntrypoint {",
-                "  async open(ticket) { const t = payloadOf(ticket); return { version: 2, deadline: t.start + t.cap, mode: t.mode, operation: t.operation, checkpointIntervalMs: 60000, adapter: \"mock\" }; }",
+                "  async open(ticket) { const t = payloadOf(ticket); return { version: 2, deadline: t.start + t.cap, mode: t.mode, operation: t.operation, checkpointIntervalMs: 60000, adapter: t.operation === \"xai.realtime\" ? \"xai\" : \"mock\" }; }",
                 "  async checkpoint(ticket, input) { record(ticket, \"checkpoints\", input); return { decision: \"continue\", reasons: [], written: true }; }",
                 "  async close(ticket, input) { record(ticket, \"closes\", input); return { version: 2 }; }",
                 "}",

@@ -263,13 +263,12 @@ export class Session extends DurableObject {
    */
   sideFrame(call, adapter, data) {
     if (this.core.call !== call) return;
-    const event = adapter.read(data);
-    if (event !== null) void this.core.recordUsage(event, adapter.shape).catch(() => undefined);
+    const recorded = this.readUsage(adapter, data);
     const turn = adapter.turn(data);
     if (turn === "open") this.sideTurnOpen = true;
     else if (turn === "done") {
       this.sideTurnOpen = false;
-      this.core.turnDone();
+      this.answerDone(recorded);
     }
   }
 
@@ -487,6 +486,33 @@ export class Session extends DurableObject {
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
     live.call?.send(data);
+    // Read after it went out (plan 5.2): a provider that bills by its own clock starts it at the
+    // first activity, and bills each text message (xAI). Nothing else is read here.
+    const kind = live.adapter.client?.(data) ?? null;
+    if (kind === "activity" && this.core.idle) void this.core.activity().catch(() => undefined);
+    else if (kind === "text") void this.core.countText().catch(() => undefined);
+  }
+
+  /**
+   * A provider frame's usage, journaled in its own write (plan 5.2), or null when it has none.
+   * @param {import("./adapters.js").Adapter} adapter
+   * @param {string | ArrayBuffer} data
+   * @returns {Promise<void> | null}
+   */
+  readUsage(adapter, data) {
+    const event = adapter.read(data);
+    return event === null ? null : this.core.recordUsage(event, adapter.shape).catch(() => undefined);
+  }
+
+  /**
+   * The provider finished an answer. When the same frame carried its usage (OpenAI's
+   * `response.done`), a closing session waits for that usage's write first, so the final slice
+   * has it (plan 5.1).
+   * @param {Promise<void> | null} recorded
+   */
+  answerDone(recorded) {
+    if (recorded === null) this.core.turnDone();
+    else void recorded.then(() => this.core.turnDone());
   }
 
   /**
@@ -507,13 +533,15 @@ export class Session extends DurableObject {
       else overflowed = !live.held.push(data);
     }
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
-    const event = live.adapter.read(data);
-    if (event !== null) void this.core.recordUsage(event, live.adapter.shape).catch(() => undefined);
+    const recorded = this.readUsage(live.adapter, data);
     const turn = live.adapter.turn(data);
-    if (turn === "open") live.turnOpen = true;
-    else if (turn === "done") {
+    if (turn === "open") {
+      live.turnOpen = true;
+      // An answer is activity too: a provider that bills by its own clock has started it (xAI).
+      if (this.core.idle) void this.core.activity().catch(() => undefined);
+    } else if (turn === "done") {
       live.turnOpen = false;
-      this.core.turnDone();
+      this.answerDone(recorded);
     }
     // Ended only after the frame was read, so its usage counts.
     if (overflowed) {
@@ -540,7 +568,7 @@ export class Session extends DurableObject {
   deliver(live, data) {
     if (live.client === null) return;
     sendQuietly(live.client, data);
-    live.frames.toClient(data);
+    live.frames.toClient(data, live.adapter.keepalive?.(data) === true);
   }
 
   /**

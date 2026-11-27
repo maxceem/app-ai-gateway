@@ -90,6 +90,37 @@ describe("unit rates", () => {
     expect(ways(operation({ kind: "provider_event", adapter: "x" }, { lifecycle: "session", transport: "websocket" }))).toEqual([["tokens"], ["session_seconds"]]);
   });
 
+  it("bills a text message on top of the minutes, never instead of them, and never as free (xAI, step 9b)", () => {
+    const voice = priced({ per_minute: 80_000_000, per_text_message: 4_000_000 });
+    // 90 s and two text messages: $0.12 + $0.008, summed exactly, rounded once.
+    expect(priceUsage(voice, counted({ session_seconds: 90_000, text_messages: 2 }))).toMatchObject({
+      cost: 128_000_000,
+      unit: "session_seconds",
+      units: 90_000,
+      rates: { per_minute: 80_000_000, per_text_message: 4_000_000 },
+    });
+    expect(priceInServedMode(voice, counted({ session_seconds: 90_000, text_messages: 2 }))?.cost).toBe(128_000_000);
+    expect(priceUsage(voice, counted({ session_seconds: 90_000 }))?.cost).toBe(120_000_000);
+    // A price without the text rate can't price a usage that has text messages: unpriced, not $0 for them.
+    expect(priceUsage(priced({ per_minute: 80_000_000 }), counted({ session_seconds: 90_000, text_messages: 2 }))).toBeNull();
+    // Text messages alone are never the measure billed.
+    expect(priceUsage(voice, counted({ text_messages: 2 }))).toBeNull();
+    // xAI's voice API: its clock and its text messages, in one way.
+    const xaiVoice = defineOperation({
+      name: "xai.realtime",
+      match: { method: "GET", path: "v1/realtime" },
+      lifecycle: "session",
+      transport: "websocket",
+      model: { in: "query", name: "model" },
+      meter: { kind: "wall_clock", adapter: "xai", units: ["text_messages"] },
+    });
+    expect(ways(xaiVoice)).toEqual([["session_seconds+text_messages"]]);
+    const sources = priceSources({ type: "xai", rates: {} });
+    expect(billing(xaiVoice, sources, "grok-voice-3.0").problem).toBeNull();
+    // Saving a rate for the minutes alone would leave text messages unpriced: it can't bill this way.
+    expect(billing(xaiVoice, priceSources({ type: "xai", rates: { "house-voice": { per_minute: rate(80_000_000) } } }), "house-voice").problem).toBe("wrong_unit");
+  });
+
   it("lets an operation bill a model only in a unit it measures", () => {
     const sources = priceSources({ type: "openai", rates: { "tts-1": { per_million_characters: 15_000_000_000 } } });
     const speech = openai.operations.find((op) => op.name === "openai.speech")!;

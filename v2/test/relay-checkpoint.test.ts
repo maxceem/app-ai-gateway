@@ -443,6 +443,29 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: MINUTE });
   });
 
+  it("bills an xAI session's minutes and each text message on top, at our list price, and the sweep prices them the same way (step 9b)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const xai = { providerType: "xai", operation: "xai.realtime", model: "grok-voice-3.0", url: "https://api.x.ai/v1/realtime?model=grok-voice-3.0" };
+    const listed = await ticketFor(xai);
+    // 90 s at $0.08 a minute, and two text messages at $0.004 each: $0.12 + $0.008, exactly.
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 1, { text_messages: 2 }, { sessionMs: 90_000 })));
+    expect(await charges(listed.ticket.sid)).toMatchObject([{ cost_nano: 128_000_000, price_source: "list_rate", measured: "complete", session_ms: 90_000 }]);
+    expect(JSON.parse((await booked(`${listed.ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: 90_000, units_text_messages: 2 });
+    // Today's rates can't be read: unresolved, queued, and the sweep later prices both measures.
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const unread = await ticketFor({ ...xai, connectionId });
+    await checkpointForRelay(env, unread.text, live(slice(unread.ticket, 1, { text_messages: 1 }, { sessionMs: MINUTE })));
+    const id = `${unread.ticket.sid}:slice:1`;
+    expect(await booked(id)).toMatchObject({ cost_nano: null, price_source: "unresolved" });
+    expect(await queued(id)).toEqual({ kind: "unresolved" });
+    await setRates("{}");
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 84_000_000, priceSource: "list_rate", unit: "session_seconds" },
+    });
+  });
+
   it("never books connection time as $0 when the price can't be read: unresolved and queued, and the sweep prices the seconds (Sol round 1)", async () => {
     // Today's rates can't be read (as when the settings read times out): no price is saved.
     const { connectionId, setRates } = await houseConnection("{not json");

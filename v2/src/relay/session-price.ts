@@ -66,7 +66,7 @@ export function billsTime(price: ModelPrice): boolean {
  * A session slice's usage as `price` bills it. Its connection time
  * (`units.session_seconds`, at the milli scale: a millisecond count) is billed
  * only when the price has a time rate; otherwise it is dropped. Time alone
- * bills with no tokens. The checkpoint and the pricing sweep both price a
+ * bills with no tokens. Other units (xAI's text messages) are kept as they are. The checkpoint and the pricing sweep both price a
  * slice this way.
  */
 export function sliceUsage(usage: UsageObservation, price: ModelPrice): UsageObservation {
@@ -75,7 +75,7 @@ export function sliceUsage(usage: UsageObservation, price: ModelPrice): UsageObs
   const { units, noTokens: _noTokens, ...rest } = usage;
   if (seconds > 0 && billsTime(price)) {
     const tokens = rest.inputTokens + rest.cachedInputTokens + rest.cacheWriteTokens + rest.outputTokens > 0;
-    return { ...rest, units: { session_seconds: seconds }, ...(tokens ? {} : { noTokens: true as const }) };
+    return { ...rest, units: { ...units, session_seconds: seconds }, ...(tokens ? {} : { noTokens: true as const }) };
   }
   const { session_seconds: _seconds, ...others } = units ?? {};
   return Object.keys(others).length > 0 ? { ...rest, units: others } : rest;

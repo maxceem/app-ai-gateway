@@ -57,7 +57,8 @@
  * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
-import { confirm, finalSliceOf, freeze, JOURNAL_KEY, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
+import { adapterFor } from "./adapters.js";
+import { confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -91,6 +92,12 @@ export const VAULT_KEY_WAIT_MS = 5_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
+/**
+ * How far a provider's own running total of its billed clock (xAI's
+ * `billable_audio_seconds`) may differ from the relay's before it is logged.
+ * T20 measured it 0.5–1 s below over 30 minutes: it counts whole seconds.
+ */
+export const CLOCK_CHECK_MS = 5_000;
 /** How soon the alarm tries `close` again. */
 export const CLOSE_RETRY_EVERY_MS = 30_000;
 
@@ -480,7 +487,8 @@ export class SessionCore {
       // The alarm's first tick: from then on it ticks every `TICK_MS` (plan section 5), so a
       // restarted object that lost its provider socket ends soon (row 13).
       // The journal starts here: the session's connection time counts from now.
-      const journal = newJournal(this.now());
+      // A provider that bills from the first activity (xAI): the time until then is free.
+      const journal = newJournal(this.now(), { idle: adapterFor(settings.adapter).clock === "first_activity" });
       // An observed session has no side channel yet: until its first attach, no time is
       // connection time (`attachOnce`).
       if (observed) markDetached(journal, journal.from);
@@ -890,11 +898,60 @@ export class SessionCore {
     if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
-    if (journal === null || !addUsage(journal, event, shape, now)) return;
+    if (journal === null) return;
+    if (event.clockSeconds !== undefined) this.checkClock(journal, event.clockSeconds, now);
+    if (!addUsage(journal, event, shape, now)) return;
     // An observed session is real once usage came on its side channel (crash table row 20). Sticky.
     if (this.mode === "observed") journal.connected = true;
     journal.savedAt = now;
     await this.writeJournal(journal);
+  }
+
+  /** Whether the session's clock waits for its first activity (`activity`). No storage read: for the audio path. */
+  get idle() {
+    return this.journal?.idle === true;
+  }
+
+  /**
+   * The session's first activity, after its frame went to the provider: the
+   * provider's clock starts (xAI, plan 5.2 rule 3), and the time is stored in
+   * one small write, so a restart keeps it. Only the first call writes.
+   */
+  async activity() {
+    if (!this.idle || this.call === null || this.over || this.ending !== null) return;
+    const journal = await this.loadJournal();
+    const now = this.now();
+    if (journal === null || !markActive(journal, now)) return;
+    journal.savedAt = now;
+    await this.writeJournal(journal);
+  }
+
+  /**
+   * One text message from the client, after it went to the provider: counted
+   * as its own measure (xAI bills each one), in one small write.
+   */
+  async countText() {
+    if (this.call === null || this.over || this.ending !== null) return;
+    const journal = await this.loadJournal();
+    const now = this.now();
+    if (journal === null) return;
+    countMeasure(journal, "text_messages", 1);
+    journal.savedAt = now;
+    await this.writeJournal(journal);
+  }
+
+  /**
+   * A provider's own total of its billed clock, against the relay's (xAI's
+   * `billable_audio_seconds`): a check only, never billed. A difference past
+   * `CLOCK_CHECK_MS` is logged, so the monitor sees a meter that drifts.
+   * @param {import("./journal.js").Journal} journal
+   * @param {number} seconds
+   * @param {number} now
+   */
+  checkClock(journal, seconds, now) {
+    if (journal.activeAt === undefined) return;
+    const differenceMs = Math.round(seconds * 1000 - (now - journal.activeAt));
+    if (Math.abs(differenceMs) > CLOCK_CHECK_MS) this.log({ level: "warn", message: "relay_clock_mismatch", session: this.sessionId, differenceMs });
   }
 
   /**

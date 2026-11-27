@@ -4,9 +4,12 @@
  * Anthropic-compatible Messages API is not documented to report it, so it
  * bills on our price. Images and their edits report their cost as chat does;
  * embeddings answer in tokens, and transcription (`v1/stt`) with a duration.
+ * Its voice API (`v1/realtime`, a WebSocket) is a relayed session, billed by
+ * wall time from the first activity to the close, plus each text message (T5,
+ * T20; step 9b).
  */
 import { chat, completions, embeddings, images, messages, responses, transcription, withV1Paths } from "./llm.ts";
-import { defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
+import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
 
 export const xai = defineProvider({
   type: "xai",
@@ -39,6 +42,15 @@ export const xai = defineProvider({
       images("xai.images", "v1/images/generations", { providerCost: "xai", costOnly: true }),
       images("xai.images.edits", "v1/images/edits", { providerCost: "xai", costOnly: true, uploads: true }),
       embeddings("xai.embeddings", "v1/embeddings"),
+      defineOperation({
+        name: "xai.realtime",
+        match: { method: "GET", path: "v1/realtime" },
+        lifecycle: "session",
+        transport: "websocket",
+        model: { in: "query", name: "model" },
+        meter: { kind: "wall_clock", adapter: "xai", units: ["text_messages"] },
+        session: { slot: "conversational", mode: "relayed" },
+      }),
     ],
     { chat: { providerCost: "xai" }, responses: { providerCost: "xai" } },
   ),

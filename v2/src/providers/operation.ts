@@ -275,8 +275,13 @@ export type Meter =
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)
   /** One unit per request, at a flat price. */
   | { readonly kind: "request_count" }
-  /** Connection time, for a provider we do not know (the generic WebSocket adapter, D4). */
-  | { readonly kind: "wall_clock" }
+  /**
+   * Connection time: for a provider we do not know (the generic WebSocket
+   * adapter, D4), or one that bills by its own clock (xAI's voice API). The
+   * `adapter`, when named, tells the relay when that clock starts and what it
+   * bills on top (`relay/src/adapters.js`); `units` lists those extra measures.
+   */
+  | { readonly kind: "wall_clock"; readonly adapter?: string; readonly units?: readonly Unit[] }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
   | { readonly kind: "provider_event"; readonly adapter: string };
 

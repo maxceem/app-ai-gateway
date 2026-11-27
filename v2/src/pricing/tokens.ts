@@ -269,7 +269,8 @@ function atUnitRate(price: ModelPrice, unitRate: UnitRate, unit: Unit, count: nu
 function unitOptions(price: ModelPrice, usage: UsageObservation, units: (unit: Unit) => boolean, rank: MeasureRank): Candidate[] {
   const options: Candidate[] = [];
   for (const unitRate of UNIT_RATES) {
-    if (price.rates[unitRate.field] === undefined) continue;
+    // A rate billed on top is never the main measure (`withAdditions`).
+    if (unitRate.additive === true || price.rates[unitRate.field] === undefined) continue;
     for (const unit of unitRate.units) {
       if (!units(unit) || measureRank(usage, unit) !== rank) continue;
       const count = unitCount(usage, unit);
@@ -291,7 +292,7 @@ function unitOptions(price: ModelPrice, usage: UsageObservation, units: (unit: U
  * $0. A price that also bills tokens falls back to them.
  */
 function priceUnitRate(price: ModelPrice, usage: UsageObservation): Candidate | null | undefined {
-  if (!UNIT_RATES.some((unitRate) => price.rates[unitRate.field] !== undefined)) return undefined;
+  if (!UNIT_RATES.some((unitRate) => unitRate.additive !== true && price.rates[unitRate.field] !== undefined)) return undefined;
   const billsTokens = price.rates.input !== undefined && price.rates.output !== undefined && usage.noTokens !== true;
   const billed = preferred(unitOptions(price, usage, () => true, 0));
   if (billed !== null) return billed;
@@ -347,8 +348,35 @@ function dearestCharge(price: ModelPrice, usage: UsageObservation): Candidate | 
  * alone for a token-priced model, or tokens alone for a time-priced one.
  */
 export function priceUsage(price: ModelPrice, usage: UsageObservation): Pricing | null {
-  const candidate = usageCandidate(price, usage);
+  const candidate = withAdditions(price, usage, usageCandidate(price, usage));
   return candidate === null ? null : withCost(candidate);
+}
+
+/**
+ * A candidate with what the usage bills on top of its main measure (an
+ * `additive` unit rate, `./units.ts`: xAI's text messages beside its
+ * minutes), summed exactly before the one rounding. A usage that reports such
+ * a unit is priced only by a price that has its rate: null otherwise, never
+ * billed as free. Throws `MoneyError` when the sum cannot be stored.
+ */
+function withAdditions<C extends Candidate>(price: ModelPrice, usage: UsageObservation, candidate: C | null): C | null {
+  if (candidate === null) return null;
+  const parts: [field: string, count: number, rate: RateNanoPerMillion][] = [];
+  for (const unitRate of UNIT_RATES) {
+    if (unitRate.additive !== true) continue;
+    for (const unit of unitRate.units) {
+      const count = unitCount(usage, unit) ?? 0;
+      if (count === 0) continue;
+      const value = price.rates[unitRate.field];
+      if (value === undefined) return null;
+      parts.push([unitRate.field, count, value]);
+    }
+  }
+  if (parts.length === 0) return candidate;
+  const added = exactOfRates(parts);
+  const exact = { numerator: candidate.exact.numerator * added.denominator + added.numerator * candidate.exact.denominator, denominator: candidate.exact.denominator * added.denominator };
+  assertStorable(exact);
+  return { ...candidate, exact, rates: { ...candidate.rates, ...Object.fromEntries(parts.map(([field, , value]) => [field, value])) } };
 }
 
 /** `priceUsage` before rounding. */
@@ -441,16 +469,21 @@ export function priceInServedMode(
     if (one !== null) priced.push(one);
   }
   const standardPrice = keyed.fallback;
+  // What the usage bills on top of its main measure is added once, to the price chosen below.
+  const finish = (candidate: ChargePricing): ChargePricing | null => {
+    const added = isolated(() => withAdditions(price, usage, candidate), { candidate: "additions" });
+    return added === null ? null : withCost(added);
+  };
   const chosen = preferred(priced);
   if (chosen === null) {
     const standard = isolated(() => usageCandidate(standardPrice, usage), { candidate: "standard" });
     if (standard === null) return null;
     const standardMeasured: ChargePricing["measured"] = standard.fromEstimate ? "estimated" : "complete";
-    return withCost({ ...standard, estimated: true, measured: standardMeasured });
+    return finish(withCost({ ...standard, estimated: true, measured: standardMeasured }));
   }
   const estimated = chosen.estimated || doubt || keyed.estimated || usage.reportMissing === true;
   const measured: ChargePricing["measured"] = chosen.fromEstimate ? "estimated" : "complete";
-  if (!estimated) return withCost({ ...chosen, estimated: false, measured });
+  if (!estimated) return finish(withCost({ ...chosen, estimated: false, measured }));
   // The one floor, both parts applied: the dearer of (a) the model's own standard price on the unit the
   // estimate billed, so it never bills below the standard rate for its own unit, and (b) the dearest charge
   // the standard price can make for this usage, rank by rank (`dearestCharge`), so it never bills below base
@@ -467,7 +500,7 @@ export function priceInServedMode(
   }
   const billed = floor !== null && compareExact(floor.exact, chosen.exact) > 0 ? floor : chosen;
   // The label follows the measure actually billed: the floor may bill the request's estimate.
-  return withCost({ ...billed, estimated: true, measured: billed.fromEstimate ? "estimated" : measured });
+  return finish(withCost({ ...billed, estimated: true, measured: billed.fromEstimate ? "estimated" : measured }));
 }
 
 function priceIn(price: ModelPrice, usage: UsageObservation, mode: ServiceMode): (Candidate & { readonly estimated: boolean }) | null {

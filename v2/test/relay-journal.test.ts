@@ -4,8 +4,8 @@
  * `relay-start.test.ts`.
  */
 import { describe, expect, it } from "vitest";
-import { addUsage, confirm, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, markAttached, markDetached, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
-import { adapterFor } from "../relay/src/adapters.js";
+import { addUsage, confirm, countMeasure, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, markActive, markAttached, markDetached, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
+import { adapterFor, typeOf } from "../relay/src/adapters.js";
 
 describe("journal", () => {
   it("adds per-turn usage, and skips an event it already counted", () => {
@@ -111,6 +111,35 @@ describe("journal", () => {
     expect(slice!.gapMs).toBeLessThanOrEqual(slice!.to - slice!.from);
   });
 
+  it("keeps a clock that starts at the first activity: free before it, billed from it to the slice's end (xAI, step 9b)", () => {
+    const journal = newJournal(1_000, { idle: true });
+    // Nothing happened yet: no slice, no connection time, and no gap either.
+    expect(freeze(journal, 31_000)).toBeNull();
+    expect(journal.idle).toBe(true);
+    // The first activity, 40 s in: the free time stays in the same open usage.
+    expect(markActive(journal, 41_000)).toBe(true);
+    expect(markActive(journal, 45_000)).toBe(false);
+    expect(journal.activeAt).toBe(41_000);
+    expect(freeze(journal, 91_000)).toMatchObject({ seq: 1, sessionMs: 50_000, gapMs: 0, gaps: 0, from: 1_000, to: 91_000 });
+    // From then on, every slice is billed whole, to the close.
+    expect(freeze(journal, 101_000)).toMatchObject({ seq: 2, sessionMs: 10_000, gapMs: 0 });
+    // A crash keeps its gap rule: the time since the last write is unknown, not free.
+    expect(freeze(journal, 121_000, { gapFrom: 111_000 })).toMatchObject({ seq: 3, sessionMs: 10_000, gapMs: 10_000 });
+    // The clock's start is kept in storage, so a restart reads it back.
+    const idle = newJournal(0, { idle: true });
+    markActive(idle, 5_000);
+    expect(readJournal(structuredClone(idle))).toMatchObject({ idleMs: 5_000, activeAt: 5_000 });
+    expect(newJournal(0)).not.toHaveProperty("idle");
+  });
+
+  it("counts a measure the relay counts itself, and freezes it with the slice (xAI's text messages)", () => {
+    const journal = newJournal(0);
+    countMeasure(journal, "text_messages", 1);
+    countMeasure(journal, "text_messages", 1);
+    expect(freeze(journal, 1_000)?.measures).toEqual({ text_messages: 2 });
+    expect(journal.measures).toEqual({});
+  });
+
   it("reads only a journal in a format it knows", () => {
     const journal = newJournal(0);
     expect(readJournal(structuredClone(journal))).toEqual(journal);
@@ -153,5 +182,36 @@ describe("adapters", () => {
     // Only a frame that starts with the type is looked at, as for usage.
     expect(mock.turn('{"response":{},"type":"response.done"}')).toBeNull();
     expect(mock.turn(new ArrayBuffer(8))).toBeNull();
+  });
+
+  it("reads a frame's type from its start, or its end for a frame whose type comes after a long field", () => {
+    expect(typeOf('{"type":"ping","event_id":"e1"}')).toBe("ping");
+    expect(typeOf('{"event_id":"0d6c3a41-2c55-4a7c-9a3c-6a4b1c0f8f31", "type" : "response.done"}')).toBe("response.done");
+    expect(typeOf(`{"audio":"${"A".repeat(4_000)}","type":"input_audio_buffer.append"}`)).toBe("input_audio_buffer.append");
+    expect(typeOf(`{"audio":"${"A".repeat(4_000)}"}`)).toBeNull();
+    expect(typeOf("not json")).toBeNull();
+  });
+
+  it("xAI: its clock starts at the first audio or answer, each text message counts, ping is only a keepalive, and response.done's total is a check (T5, T20)", () => {
+    const xai = adapterFor("xai");
+    expect(xai).toMatchObject({ clock: "first_activity", detached: "hold" });
+    // The client's frames, read after they went to xAI.
+    expect(xai.client?.(JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }))).toBe("activity");
+    expect(xai.client?.(`{"audio":"${"A".repeat(4_000)}","type":"input_audio_buffer.append"}`)).toBe("activity");
+    expect(xai.client?.(new ArrayBuffer(960))).toBe("activity");
+    expect(xai.client?.(JSON.stringify({ type: "response.create" }))).toBe("activity");
+    const text = JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } });
+    expect(xai.client?.(text)).toBe("text");
+    expect(xai.client?.(JSON.stringify({ type: "session.update", session: { voice: "eve" } }))).toBeNull();
+    // xAI's frames: an answer opens and ends, and a ping says only "still here".
+    expect(xai.turn('{"type":"response.created","response":{"id":"r1"}}')).toBe("open");
+    expect(xai.turn('{"event_id":"e9","type":"response.done","response":{"id":"r1"}}')).toBe("done");
+    expect(xai.keepalive?.('{"type":"ping","event_id":"p1"}')).toBe(true);
+    expect(xai.keepalive?.('{"type":"response.output_audio.delta","delta":"AAAA"}')).toBe(false);
+    // `billable_audio_seconds` is read as a check, never as a measure that bills.
+    const done = JSON.stringify({ type: "response.done", event_id: "e9", response: { id: "r1", usage: { input_tokens: 0 } }, usage: { output_audio_seconds: 2.9, billable_audio_seconds: 16 } });
+    expect(xai.read(done)).toEqual({ id: "e9", measures: {}, clockSeconds: 16 });
+    expect(xai.read(JSON.stringify({ type: "response.done", event_id: "e8", usage: { output_audio_seconds: 0.4 } }))).toBeNull();
+    expect(xai.read('{"type":"ping"}')).toBeNull();
   });
 });
