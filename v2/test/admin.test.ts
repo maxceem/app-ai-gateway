@@ -255,6 +255,14 @@ describe("apps", () => {
     expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gemini-3.8-live": { input: 1, output: 10, audio_input: 4, audio_output: 15 } } })).toMatchObject({ status: 200 });
   });
 
+  it("still saves a per-image price for OpenAI's image model: only the sessions the relay prices check a custom price (Sol, #269 round 1)", async () => {
+    const key = await seedManagementKey();
+    const openai = await createProvider(key);
+    const imageSave = await request(key, "PUT", `/v2/admin/providers/${openai.body.provider.id as string}`, { revision: 1, pricing: { "gpt-image-1.5": { per_image: 0.04 } } });
+    expect(imageSave.body?.error?.message ?? "", "an OpenAI image model's own price").toBe("");
+    expect(imageSave.status).toBe(200);
+  });
+
   it("checks each model's unit against the enabled operations, with the provider-cost exception per operation", async () => {
     const key = await seedManagementKey();
     const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });

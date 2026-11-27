@@ -9,7 +9,8 @@ import { adapterFor, geminiMeasures, geminiMessage } from "../relay/src/adapters
 import { BYTES_PER_ESTIMATED_TOKEN, GeminiUpstream, GOAWAY_MARGIN_MS, OLD_CLOSE_WAIT_MS, RESUME_LIMIT_MS, RESUME_RETRY_MS } from "../relay/src/gemini.js";
 import { billingForCharge, priceSources } from "../src/pricing/billability.ts";
 import { priceSlice } from "../src/relay/checkpoint.ts";
-import { until } from "./relay-stand-ins.ts";
+import { SessionCore } from "../relay/src/start.js";
+import { MemoryStore, ticketFor, until } from "./relay-stand-ins.ts";
 
 /** A stand-in WebSocket: it keeps what was sent, and the test fires its frames and its close. */
 class FakeSocket {
@@ -57,7 +58,7 @@ const USAGE = {
 const chunk = () => ({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "A".repeat(19_200) } }], role: "model" } } });
 const chunkBytes = new TextEncoder().encode(JSON.stringify(chunk())).byteLength;
 
-function setup(model: string | null = "gemini-3.8-live") {
+function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
   let now = 1_000_000;
   const timers: { at: number; resolve: () => void }[] = [];
   const first = new FakeSocket();
@@ -67,6 +68,8 @@ function setup(model: string | null = "gemini-3.8-live") {
   const logs: Record<string, unknown>[] = [];
   let cuts = 0;
   let gone = 0;
+  let capped = 0;
+  const refused: string[] = [];
   const upstream = new GeminiUpstream({
     socket: first,
     open: async () => {
@@ -75,6 +78,7 @@ function setup(model: string | null = "gemini-3.8-live") {
       return socket;
     },
     model,
+    deadline,
     now: () => now,
     wait: (ms) => new Promise<void>((resolve) => timers.push({ at: now + ms, resolve })),
     events: {
@@ -82,6 +86,8 @@ function setup(model: string | null = "gemini-3.8-live") {
       usage: (event) => usage.push(event),
       cut: () => void (cuts += 1),
       gone: () => void (gone += 1),
+      capped: () => void (capped += 1),
+      refuse: (code) => void refused.push(code),
       log: (event) => logs.push(event),
     },
   });
@@ -100,7 +106,7 @@ function setup(model: string | null = "gemini-3.8-live") {
     first.emit({ setupComplete: {} });
     first.emit({ sessionResumptionUpdate: { newHandle: handle, resumable: true } });
   };
-  return { upstream, first, opened, toClient, usage, logs, advance, started, cuts: () => cuts, gone: () => gone };
+  return { upstream, first, opened, toClient, usage, logs, refused, advance, started, cuts: () => cuts, gone: () => gone, capped: () => capped };
 }
 
 describe("Gemini Live's adapter (step 9d)", () => {
@@ -144,6 +150,21 @@ describe("Gemini Live's upstream: the setup (step 9d)", () => {
     expect(s.first.sent).toHaveLength(1);
   });
 
+  it("reads the first message whole: a setup with leading spacing or other keys is still rewritten (the model lock)", () => {
+    const s = setup();
+    s.upstream.send(`${" ".repeat(64)}\n{"other": 1, "setup": {"model": "models/gemini-cheap", "sessionResumption": {"handle": "x"}}}`);
+    expect(s.first.messages()).toEqual([{ setup: { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: {} } }]);
+  });
+
+  it("ends the session when the first message is not a setup, and sends nothing upstream", () => {
+    const s = setup();
+    s.upstream.send(JSON.stringify({ clientContent: { turns: [] } }));
+    expect(s.refused).toEqual(["setup_required"]);
+    expect(s.first.sent).toHaveLength(0);
+    s.upstream.send("not json");
+    expect(s.refused).toEqual(["setup_required", "setup_required"]);
+  });
+
   it("keeps the app's own compression settings, and reads a setup sent as bytes", () => {
     const s = setup();
     const setupBytes = new TextEncoder().encode(JSON.stringify({ setup: { contextWindowCompression: { triggerTokens: 9000 } } })).buffer as ArrayBuffer;
@@ -163,7 +184,7 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
   it("after goAway at a quiet moment: closes the old connection first, resumes with the handle, and sends the waiting frames in order", async () => {
     const s = setup();
     s.started("h2");
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "before" } }));
+    s.upstream.send(JSON.stringify({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: "AAAA" } } }));
     s.first.emit({ goAway: { timeLeft: "50s" } });
     expect(s.first.closedWith?.code).toBe(1000);
     // Frames that come during the swap wait; the old connection got nothing more.
@@ -221,6 +242,16 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.cuts()).toBe(0);
   });
 
+  it("waits for the answer to a realtime text input too", () => {
+    const s = setup();
+    s.started();
+    s.upstream.send(JSON.stringify({ realtimeInput: { text: "hi" } }));
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    expect(s.first.closedWith).toBeNull();
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    expect(s.first.closedWith?.code).toBe(1000);
+  });
+
   it("waits for every answer asked for: a second turn sent before the first answer finished keeps the swap waiting", () => {
     const s = setup();
     s.started();
@@ -244,9 +275,61 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.first.closedWith).toBeNull();
     await s.advance(1);
     expect(s.first.closedWith?.code).toBe(1000);
-    const tokens = Math.ceil((2 * chunkBytes) / BYTES_PER_ESTIMATED_TOKEN);
-    expect(s.usage).toEqual([{ id: expect.any(String), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } }]);
     expect(s.cuts()).toBe(1);
+    // The estimate waits for the old connection's close: its real usage could still come.
+    expect(s.usage).toEqual([]);
+    s.first.fireClose(1000);
+    const tokens = Math.ceil((2 * chunkBytes) / BYTES_PER_ESTIMATED_TOKEN);
+    await until(() => s.usage.length === 1);
+    expect(s.usage).toEqual([{ id: expect.any(String), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } }]);
+  });
+
+  it("bills a cut answer's real usage instead of its estimate when the old connection reports it while it closes", async () => {
+    const s = setup();
+    s.started();
+    s.first.emit(chunk());
+    s.first.emit({ goAway: { timeLeft: "10s" } });
+    await s.advance(0);
+    expect(s.first.closedWith?.code).toBe(1000);
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    s.first.fireClose(1000);
+    await until(() => s.opened.length === 1);
+    expect(s.usage).toEqual([{ id: expect.any(String), measures: expect.objectContaining({ input_tokens: 638, output_tokens: 99 }) }]);
+    expect(s.usage[0]?.measures.estimated_tokens).toBeUndefined();
+  });
+
+  it("goes on past no deadline: a swap whose new connection is set up after the session's cap sends nothing, and ends it at its cap", async () => {
+    const s = setup("gemini-3.8-live", 1_000_000 + 5_000);
+    s.started();
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    s.upstream.send(JSON.stringify({ realtimeInput: { text: "late" } }));
+    s.first.fireClose(1000);
+    await until(() => s.opened.length === 1);
+    await s.advance(5_000);
+    (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
+    expect(s.capped()).toBe(1);
+    expect((s.opened[0] as FakeSocket).messages()).toHaveLength(1);
+    // A swap that starts past the cap opens nothing.
+    const t = setup("gemini-3.8-live", 1_000_000);
+    t.started();
+    t.first.fireClose(1011);
+    await t.advance(OLD_CLOSE_WAIT_MS);
+    expect(t.opened).toHaveLength(0);
+    expect(t.capped()).toBe(1);
+  });
+
+  it("counts speech and turns when a waiting frame is sent, not when it waits: speech in a swap never leaves it stuck", async () => {
+    const s = setup();
+    s.started();
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    s.upstream.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+    s.upstream.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    expect(s.upstream.speaking).toBe(false);
+    s.first.fireClose(1000);
+    await until(() => s.opened.length === 1);
+    (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
+    expect(s.upstream.speaking).toBe(false);
+    expect(s.upstream.awaiting).toBe(1);
   });
 
   it("tries a refused resume again every 250 ms, and goes on once one is set up", async () => {
@@ -353,3 +436,36 @@ describe("a Gemini Live slice's price (step 9d)", () => {
     expect(estimated).toMatchObject({ costNano: 10 * 12_000, estimated: true });
   });
 });
+
+describe("a Gemini Live session's own end (step 9d)", () => {
+  it("bills the answer the cap cuts from its estimate, before the final slice (Sol, #269 round 1)", async () => {
+    let now = 1_000_000;
+    const store = new MemoryStore();
+    const slices: { measures: Record<string, number>; gapMs: number }[] = [];
+    const estimate = { id: "cut", measures: { output_tokens: 7, output_split: 1, output_audio_tokens: 7, estimated_tokens: 7 } };
+    let asked = 0;
+    const core = new SessionCore({
+      store,
+      now: () => now,
+      log: () => undefined,
+      vault: { sessionKey: async () => ({ key: { value: "k", header: "x-goog-api-key", format: "{key}" }, target: "https://generativelanguage.googleapis.com/ws" }) as never },
+      main: {
+        open: async () => ({ deadline: now + 60_000, mode: "relayed", operation: "gemini.live.v1beta", checkpointIntervalMs: 60_000, version: 2, adapter: "gemini", model: "gemini-3.8-live" }) as never,
+        checkpoint: async (_ticket: string, input: { slice: { measures: Record<string, number>; gapMs: number } | null }) => {
+          if (input.slice !== null) slices.push(structuredClone(input.slice));
+          return { decision: "continue", reasons: [], written: true } as never;
+        },
+        close: async () => ({ version: 2 }),
+      },
+      provider: { connect: async () => ({ callId: null, close: () => undefined, estimate: () => (asked++ === 0 ? estimate : null) }) },
+      turnOpen: () => true,
+    });
+    const { text, ticket } = ticketFor(now, { providerType: "gemini", operation: "gemini.live.v1beta", model: "gemini-3.8-live", cap: 60_000 });
+    expect((await core.start(text, ticket, { close: () => undefined })).ok).toBe(true);
+    now += 60_000;
+    await core.alarm();
+    expect(asked).toBe(1);
+    expect(slices.at(-1)?.measures).toMatchObject({ output_tokens: 7, output_audio_tokens: 7, estimated_tokens: 7 });
+  });
+});
+

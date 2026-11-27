@@ -129,8 +129,10 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *   checkpoint(ticket: string, input: CheckpointCall): Promise<CheckpointReply>,
  *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null, relayVersion: number }): Promise<unknown>,
  * }} MainPort
- * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
+ * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
+ * `estimate`, for a provider whose cut answer never reports usage (Gemini Live): what the session's
+ * own end bills for the answer it cuts, asked once before the final slice.
  * @typedef {{
  *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
  *   createCall?(key: SessionKey, offer: string): Promise<{ callId: string, answer: string }>,
@@ -833,6 +835,8 @@ export class SessionCore {
     // channel dropped during the wait: the answer never finished where the relay could see it.
     const cut = hadCall && this.turnOpen();
     const call = this.call;
+    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini): estimated.
+    const estimate = call?.estimate?.() ?? null;
     this.call = null;
     this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
@@ -858,6 +862,7 @@ export class SessionCore {
       journal.droppedFrom ??= sliceEnd;
       this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
     }
+    if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */

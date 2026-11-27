@@ -52,13 +52,35 @@ function headOf(data, length) {
   return new TextDecoder().decode(new Uint8Array(data, 0, Math.min(length, data.byteLength)));
 }
 
-/** A client `setup` message: `{"setup": …}`, with any spacing. */
+/** A later client `setup` message: `{"setup": …}`. Gemini takes one per connection, so a later one is dropped. */
 const SETUP_START = /^\s*\{\s*"setup"\s*:/u;
-/** A client message that asks for an answer: a finished text turn, or a tool's result. */
+/** A client message that may ask for an answer: a text turn, or a tool's result. */
 const TURN_START = /^\s*\{\s*"(clientContent|toolResponse)"\s*:/u;
 const TURN_COMPLETE = /"turnComplete"\s*:\s*true/u;
+/** A realtime text input: Gemini answers it as it answers a turn. */
+const REALTIME_TEXT = /^\s*\{\s*"realtimeInput"\s*:\s*\{\s*"text"\s*:/u;
 /** The longest client frame read for a speech signal: `activityStart` and `activityEnd` frames are tiny. */
 const SIGNAL_MAX = 256;
+
+/**
+ * What a client frame says about the conversation, read cheaply: an answer is
+ * asked for (`"turn"`), the user starts or stops speaking, or nothing.
+ * @param {string | ArrayBuffer} data
+ * @returns {"turn" | "start" | "end" | null}
+ */
+function clientSignal(data) {
+  const head = headOf(data, 96);
+  if (TURN_START.test(head)) {
+    if (/"toolResponse"/u.test(head.slice(0, 32))) return "turn";
+    return TURN_COMPLETE.test(typeof data === "string" ? data : new TextDecoder().decode(new Uint8Array(data))) ? "turn" : null;
+  }
+  if (REALTIME_TEXT.test(head)) return "turn";
+  if (frameSize(data) > SIGNAL_MAX) return null;
+  const signal = headOf(data, SIGNAL_MAX);
+  if (signal.includes('"activityStart"')) return "start";
+  if (signal.includes('"activityEnd"')) return "end";
+  return null;
+}
 
 /** `"50s"` as milliseconds, or null. @param {unknown} value */
 function durationMs(value) {
@@ -79,11 +101,14 @@ function durationMs(value) {
  *   usage(event: import("./journal.js").UsageEvent): void,
  *   cut(): void,
  *   gone(): void,
+ *   capped(): void,
+ *   refuse(code: string): void,
  *   log(event: Record<string, unknown>): void,
  * }} Events
  * What the session object does with the upstream's news: a frame for the
  * client, a usage event (an estimate, or usage from a closing connection),
- * an answer cut, and the end of the provider's side.
+ * an answer cut, the end of the provider's side, the session's deadline
+ * reached during a swap, and a client whose first message was not a setup.
  */
 
 export class GeminiUpstream {
@@ -92,6 +117,7 @@ export class GeminiUpstream {
    *   socket: Socket,
    *   open: () => Promise<Socket>,
    *   model: string | null | undefined,
+   *   deadline?: number,
    *   events: Events,
    *   now?: () => number,
    *   wait?: (ms: number) => Promise<void>,
@@ -101,6 +127,8 @@ export class GeminiUpstream {
   constructor(parts) {
     this.open = parts.open;
     this.model = parts.model ?? null;
+    /** The session's deadline: no swap goes on past it. */
+    this.deadline = parts.deadline ?? Infinity;
     this.events = parts.events;
     this.now = parts.now ?? (() => Date.now());
     this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -129,6 +157,11 @@ export class GeminiUpstream {
     this.awaiting = 0;
     /** The user is speaking: a voice activity start with no end yet. */
     this.speaking = false;
+    /**
+     * @type {import("./journal.js").UsageEvent | null} A cut answer's estimate, held while its old
+     * connection closes: that connection may still report the answer's real usage, which wins.
+     */
+    this.heldEstimate = null;
     /** @type {number | null} After `goAway`: when the swap happens at the latest. */
     this.goAwayBy = null;
     /** The session let go of this upstream: nothing is resumed any more. */
@@ -144,48 +177,62 @@ export class GeminiUpstream {
   }
 
   /**
-   * A client frame, past the relay's own checks: the first `setup` is
-   * rewritten, a later one dropped; during a swap it waits.
+   * A client frame, past the relay's own checks. The first message must be a
+   * setup: it is rewritten, and anything else ends the session (the model
+   * lock). A later setup is dropped. During a swap a frame waits.
    * @param {string | ArrayBuffer} data
    */
   send(data) {
     if (this.closed) return;
-    let spoke = false;
-    const head = headOf(data, 32);
-    if (SETUP_START.test(head)) {
-      if (this.setup !== null) {
-        this.events.log({ level: "warn", message: "relay_gemini_setup_dropped" });
-        return;
-      }
-      const setup = this.ownSetup(data);
-      if (setup !== null) {
-        this.setup = setup;
-        data = JSON.stringify({ setup: { ...setup, sessionResumption: {} } });
-      }
-    } else if (TURN_START.test(head)) {
-      // An answer is on its way from here: no swap until it is done (a turn sent to a connection
-      // that is then closed would never be answered).
-      const text = typeof data === "string" ? data : new TextDecoder().decode(new Uint8Array(data));
-      if (head.includes("toolResponse") || TURN_COMPLETE.test(text)) this.awaiting += 1;
-    } else if (frameSize(data) <= SIGNAL_MAX) {
-      const signal = headOf(data, SIGNAL_MAX);
-      if (signal.includes('"activityStart"')) this.speaking = true;
-      else if (signal.includes('"activityEnd"')) spoke = true;
+    if (this.setup === null) return this.firstMessage(data);
+    if (SETUP_START.test(headOf(data, 32))) {
+      this.events.log({ level: "warn", message: "relay_gemini_setup_dropped" });
+      return;
     }
     if (this.waiting !== null) {
       if (!this.waiting.push(data)) this.fail("relay_gemini_swap_queue_full");
       return;
     }
+    this.deliver(data);
+  }
+
+  /**
+   * The client's first message, read whole: only a valid setup goes upstream,
+   * with the session's model.
+   * @param {string | ArrayBuffer} data
+   */
+  firstMessage(data) {
+    const setup = this.ownSetup(data);
+    if (setup === null) {
+      this.events.log({ level: "warn", message: "relay_gemini_setup_required" });
+      this.events.refuse("setup_required");
+      return;
+    }
+    this.setup = setup;
+    try {
+      this.socket?.send(JSON.stringify({ setup: { ...setup, sessionResumption: {} } }));
+    } catch {
+      // Closed: its close event decides what happens next.
+    }
+  }
+
+  /**
+   * A frame goes to the current connection, and what it says is counted then:
+   * the speech and the answers it asks for belong to the connection that got it.
+   * @param {string | ArrayBuffer} data
+   */
+  deliver(data) {
     try {
       this.socket?.send(data);
     } catch {
       // Closed: its close event decides what happens next.
     }
-    // The end of speech went to the connection that heard its start, and its answer comes there.
-    if (spoke) {
+    const signal = clientSignal(data);
+    if (signal === "start") this.speaking = true;
+    else if (signal === "end") {
       this.speaking = false;
       this.awaiting += 1;
-    }
+    } else if (signal === "turn") this.awaiting += 1;
   }
 
   /**
@@ -222,9 +269,13 @@ export class GeminiUpstream {
   fromUpstream(socket, data) {
     const message = geminiMessage(data);
     if (socket === this.retiring) {
-      // An old connection's last frames: its usage counts, nothing goes to the client.
+      // An old connection's last frames: its usage counts, and is the real figure for an answer the
+      // swap cut, so its estimate goes. Nothing goes to the client.
       const usage = message?.usageMetadata;
-      if (typeof usage === "object" && usage !== null) this.events.usage({ id: crypto.randomUUID(), measures: geminiMeasures(usage) });
+      if (typeof usage === "object" && usage !== null) {
+        this.heldEstimate = null;
+        this.events.usage({ id: crypto.randomUUID(), measures: geminiMeasures(usage) });
+      }
       return;
     }
     if (socket === this.next) {
@@ -337,14 +388,21 @@ export class GeminiUpstream {
     this.speaking = false;
     // Whatever was on its way went to the old connection: it will not come.
     this.awaiting = 0;
-    this.cutAnswer();
+    const cut = this.takeCut();
     this.events.log({ level: "info", message: "relay_gemini_swap", why });
     const old = closeOld ? this.socket : null;
     this.socket = null;
+    // A cut answer's estimate waits for the old connection's close: its real usage may still come.
+    if (cut !== null && old !== null) this.heldEstimate = cut;
+    else if (cut !== null) this.events.usage(cut);
     void this.wait(RESUME_LIMIT_MS).then(() => {
       if (this.swaps === swap && this.waiting !== null) this.fail("relay_gemini_resume_failed", why);
     });
     void this.retire(old).then(() => {
+      if (this.heldEstimate !== null && !this.closed) {
+        this.events.usage(this.heldEstimate);
+        this.heldEstimate = null;
+      }
       if (this.swaps === swap && this.waiting !== null) void this.resume(swap);
     });
   }
@@ -376,6 +434,7 @@ export class GeminiUpstream {
    * @param {number} swap
    */
   async resume(swap) {
+    if (this.now() >= this.deadline) return this.timeUp();
     if (this.now() >= this.swapBy) return this.fail("relay_gemini_resume_failed", "deadline");
     /** @type {Socket} */
     let socket;
@@ -400,40 +459,51 @@ export class GeminiUpstream {
     }
   }
 
-  /** The new connection is set up: the waiting frames go to it, in order. */
+  /** The new connection is set up: the waiting frames go to it, in order, unless the session's time is up. */
   swapped() {
     const socket = /** @type {Socket} */ (this.next);
+    if (this.now() >= this.deadline) return this.timeUp();
     const waiting = this.waiting?.drain() ?? [];
     this.next = null;
     this.waiting = null;
     this.socket = socket;
-    for (const data of waiting) {
-      try {
-        socket.send(data);
-      } catch {
-        break;
-      }
-    }
+    for (const data of waiting) this.deliver(data);
     this.events.log({ level: "info", message: "relay_gemini_resumed", held: waiting.length });
   }
 
+  /** The session's deadline came during a swap: nothing more goes upstream, and the session ends at its cap. */
+  timeUp() {
+    if (this.closed) return;
+    this.waiting = null;
+    this.events.capped();
+  }
+
   /**
-   * An answer cut by a swap or a close: its usage never comes (T19). Billed from
-   * the audio forwarded, marked an estimate, so it is never free.
+   * An answer cut by a swap or a close: its usage never comes (T19). Its estimate,
+   * from the audio forwarded, marked as one, so it is never free; the answer is over.
+   * @returns {import("./journal.js").UsageEvent | null}
    */
-  cutAnswer() {
-    if (!this.answering) return;
+  takeCut() {
+    if (!this.answering) return null;
     const tokens = Math.ceil(this.answerBytes / BYTES_PER_ESTIMATED_TOKEN);
     this.answering = false;
     this.answerBytes = 0;
     this.events.log({ level: "warn", message: "relay_gemini_answer_cut", estimatedTokens: tokens });
-    if (tokens > 0) {
-      this.events.usage({
-        id: crypto.randomUUID(),
-        measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens },
-      });
-    }
     this.events.cut();
+    if (tokens === 0) return null;
+    return { id: crypto.randomUUID(), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } };
+  }
+
+  /**
+   * What the session's own end bills for an answer this upstream cut or is cutting:
+   * an estimate held during a swap, or the answer still running. Asked once, before
+   * the final slice (the session core's `estimate` hook).
+   * @returns {import("./journal.js").UsageEvent | null}
+   */
+  estimate() {
+    const held = this.heldEstimate;
+    this.heldEstimate = null;
+    return held ?? this.takeCut();
   }
 
   /**
@@ -443,7 +513,8 @@ export class GeminiUpstream {
    */
   fail(message, why) {
     if (this.closed) return;
-    this.cutAnswer();
+    const cut = this.estimate();
+    if (cut !== null) this.events.usage(cut);
     this.events.log({ level: "warn", message, ...(why === undefined ? {} : { why }) });
     this.closed = true;
     this.waiting = null;

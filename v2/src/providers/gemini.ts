@@ -47,6 +47,8 @@ function live(version: "v1beta" | "v1alpha") {
     lifecycle: "session",
     transport: "websocket",
     model: { in: "body", field: "model" },
+    // Only the Live models: a generateContent model's price, an image model's say, is not judged here.
+    modelKinds: ["realtime"],
     meter: { kind: "provider_event", adapter: "gemini-live" },
     session: { slot: "conversational", mode: "relayed" },
   });

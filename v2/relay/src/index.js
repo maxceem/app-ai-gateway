@@ -246,6 +246,7 @@ export class Session extends DurableObject {
         upstream.close(code, reason);
       },
       send: (data) => upstream.send(data),
+      estimate: () => upstream.estimate(),
       forward: null,
       pending: new StartQueue(),
     };
@@ -253,6 +254,7 @@ export class Session extends DurableObject {
       socket,
       open: async () => (await connectProvider(key)).socket,
       model: settings.model,
+      deadline: settings.deadline,
       events: {
         frame: (data) => providerFrame(call, data),
         usage: (event) => void this.core.recordUsage(event, "per_turn").catch(() => undefined),
@@ -266,6 +268,14 @@ export class Session extends DurableObject {
           this.core.turnDone();
         },
         gone: () => void this.core.providerGone(call),
+        capped: () => {
+          if (this.core.call === call) void this.core.end("time_cap");
+        },
+        // The first message was not a setup: the session ends, as for any frame an adapter refuses.
+        refuse: (code) => {
+          const live = this.live;
+          if (live?.call === call) this.endFor(live, "error", 1008, code);
+        },
         log: (event) => console.log(JSON.stringify({ ...event, session: this.core.sessionId })),
       },
     });
