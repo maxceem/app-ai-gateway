@@ -111,12 +111,14 @@ export default {
  *   adapter: import("./adapters.js").Adapter,
  *   turnOpen: boolean,
  *   turns: number,
+ *   clientState: Record<string, unknown>,
  * }} Live
  * The session in this instance. Client frames wait in `queue` while the
  * session starts, then go to the provider in order. `client` is null while our
  * SDK's link is down; the provider's frames then wait in `held` for it to come
  * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`);
  * `turns` counts the answers opened, so a late "done" for an earlier one never closes a newer one.
+ * `clientState`: what the adapter remembers from the client's frames (ElevenLabs' dictionaries).
  */
 
 /**
@@ -157,7 +159,7 @@ export class Session extends DurableObject {
       main: env.MAIN,
       provider: {
         connect: async (key, settings) => {
-          const { callId, socket } = await connectProvider(key);
+          const { callId, socket } = await connectProvider(key, undefined, undefined, undefined, adapterFor(settings.adapter).callIdHeader);
           // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
           if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
           const meter = adapterFor(settings.adapter).perCall?.(settings.model ?? null, settings) ?? null;
@@ -393,6 +395,7 @@ export class Session extends DurableObject {
       adapter: adapterFor(undefined),
       turnOpen: false,
       turns: 0,
+      clientState: {},
     };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     this.listen(live, client, owner);
@@ -583,6 +586,12 @@ export class Session extends DurableObject {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
+    // The adapter's own lock (ElevenLabs': a client's credentials out, a binary frame dropped).
+    if (live.adapter.lock !== undefined) {
+      const kept = live.adapter.lock(data);
+      if (kept === null) return;
+      data = kept;
+    }
     // The model lock, for a provider whose client may name another model mid-session (OpenAI's `session.update`).
     const locked = live.call?.meter?.lock(data) ?? data;
     // A frame the lock refuses (GPT-Live's backend rules): the session ends, and the client is told why.
@@ -593,10 +602,12 @@ export class Session extends DurableObject {
     data = locked;
     live.call?.send(data);
     // Read after it went out (plan 5.2): a provider that bills by its own clock starts it at the
-    // first activity, and bills each text message (xAI). Nothing else is read here.
-    const kind = live.adapter.client?.(data) ?? null;
+    // first activity, and bills each text message (xAI); one that bills the client's text counts it
+    // (ElevenLabs). Nothing else is read here.
+    const kind = live.adapter.client?.(data, live.clientState) ?? null;
     if (kind === "activity" && this.core.idle) void this.core.activity().catch(() => undefined);
     else if (kind === "text") void this.core.countText().catch(() => undefined);
+    else if (typeof kind === "object" && kind !== null) void this.core.count(kind.counts).catch(() => undefined);
   }
 
   /**

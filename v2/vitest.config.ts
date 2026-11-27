@@ -23,6 +23,7 @@ const SPLIT_KEY_FILES = [
   "test/relay-tickets.test.ts",
   "test/relay-session.test.ts",
   "test/session-leases.test.ts",
+  "test/streaming-voice.test.ts",
 ];
 
 /**

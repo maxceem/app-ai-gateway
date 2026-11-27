@@ -18,10 +18,12 @@ import { errorFacts } from "../core/error-facts.ts";
 import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
-import { openSession } from "../ledger/sessions.ts";
+import { attachLookupKeyCopies, openSession, PROVIDER_LOOKUP_WINDOW_MS } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
 import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
+import { priceKeyValues, removeOutbound } from "../proxy/request-fields.ts";
+import { storeKeyCopies } from "../vault/key-copies.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
 import { callRefusal, matcherFor, refusal, serveCaller, type ProxyContext } from "../proxy/serve.ts";
@@ -49,6 +51,19 @@ export function relaySessionUrl(env: Env): string | null {
   url.search = "";
   url.hash = "";
   return url.toString();
+}
+
+/**
+ * A query field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`,
+ * `api_key`, `access_token`, `authorization`, `single_use_token`). Never sent: the session's key is the
+ * only credential.
+ */
+export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+
+/** A live-session path and its query, apart: the query, if any, without its `?`. */
+function splitQuery(path: string): [string, string | undefined] {
+  const at = path.indexOf("?");
+  return at === -1 ? [path, undefined] : [path.slice(0, at), path.slice(at + 1)];
 }
 
 export async function startSessionHandler(c: ProxyContext): Promise<Response> {
@@ -87,13 +102,18 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       const request = StartSessionRequestSchema.safeParse(parsed);
       if (!request.success) throw new GatewayError(400, "invalid_request", "The request must name a live-session path, and may name a model and a session to take over");
 
-      // The provider's own live-session path, as for any operation it declares.
-      const match = matcherFor(description).match("GET", request.data.path, { route: upstreamRoute(description, connection) });
+      // The provider's own live-session path, as for any operation it declares. Its query holds the
+      // session's options (Deepgram's audio format, ElevenLabs' output format), sent on as they are.
+      const [path = "", search] = splitQuery(request.data.path);
+      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection) });
       const operation = match.kind === "operation" ? match.operation : null;
       if (match.kind !== "operation" || operation === null || operation.lifecycle !== "session" || operation.session === undefined) {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       }
       caller.facts.operation = operation.name;
+      // Only a provider that takes the session's options in its query gets the app's; any other session
+      // refuses a query, as the path with it never matched before (Sol, #273 round 1).
+      if (search !== undefined && operation.session.queryOptions !== true) throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       if (!routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
@@ -104,7 +124,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(502, "provider_unavailable", "Live sessions cannot go through Cloudflare AI Gateway yet");
       }
       const location = operation.model;
-      const requested = location.in === "fixed" ? location.model : request.data.model;
+      // As for a call: the model the app names, in the body or, for a provider that takes it there, in the
+      // query (Deepgram's `model`, ElevenLabs' `model_id`), else the operation's default.
+      const options = new URLSearchParams(search ?? "");
+      const inQuery = location.in === "query" ? (options.get(location.name) ?? undefined) : undefined;
+      const requested = location.in === "fixed" ? location.model : (request.data.model ?? inQuery ?? ("default" in location ? location.default : undefined));
       if (requested === undefined) throw new GatewayError(400, "invalid_request", `${operation.name} needs a model`);
       caller.facts.model = requested;
       // A refusal records the model only when the gateway knows it, as for a call.
@@ -128,9 +152,18 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         log("error", "relay_url_missing", {});
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");
       }
-      const query = location.in === "query" ? `?${new URLSearchParams({ [location.name]: call.model }).toString()}` : "";
-      const url = upstreamUrl(connection, description, { hostKey: match.upstream.host, path: match.upstream.path.replace(/^\//u, ""), query });
+      // The app's options go on as it sent them, except the fields the operation removes (webhooks), any
+      // field named as a credential (`CREDENTIAL_FIELD`), and the model, which is always the session's own.
+      const sent = removeOutbound(operation, null, options).query ?? new URLSearchParams(options);
+      for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
+      if (location.in === "query") sent.set(location.name, call.model);
+      const queryText = sent.toString();
+      const url = upstreamUrl(connection, description, { hostKey: match.upstream.host, path: match.upstream.path.replace(/^\//u, ""), query: queryText === "" ? "" : `?${queryText}` });
       const credentials = sealedCredentials(connection, identity.keyShare);
+      // The values the session's price depends on, read from its options once: its slices are priced with them.
+      const priceKeys = priceKeyValues(operation, { body: {}, query: options });
+      // A provider whose own dollar figure settles the session after it ends (Deepgram's request record).
+      const lookup = operation.session.lookup;
 
       const now = Date.now();
       const sessionId = newSessionId();
@@ -161,12 +194,13 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             model: call.model,
             mode: operation.session.mode,
             slot: operation.session.slot,
-            sessionTotal: false,
+            sessionTotal: lookup !== undefined,
             url,
             capMs: SESSION_CAP_MS,
             credentials,
             keyPlacement: { header: description.auth.header, format: description.auth.format },
             ...(backend === undefined ? {} : { backend }),
+            ...(priceKeys === undefined ? {} : { priceKeys }),
           },
           now,
           sessionId,
@@ -177,12 +211,28 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw error;
       }
       // The session's row, after the reply (4.3 step 1): a failed write is
-      // made by the first checkpoint or by `close` (crash table row 3).
-      waitUntil(
-        openSession(ledgerDb(c.env, app.accountId), issued.session, now).catch((error: unknown) =>
-          log("warn", "session_row_unwritten", { app: app.id, error: errorFacts(error) }),
-        ),
+      // made by the first checkpoint or by `close` (crash table row 3). With
+      // a lookup after the end, the key's copies for it are put on its row
+      // once made, whichever write made the row.
+      const ledger = ledgerDb(c.env, app.accountId);
+      const opened = openSession(ledger, issued.session, now).catch((error: unknown) =>
+        log("warn", "session_row_unwritten", { app: app.id, error: errorFacts(error) }),
       );
+      waitUntil(opened);
+      if (lookup !== undefined) {
+        waitUntil(
+          (async () => {
+            // The ticket's expiry, the time cap and the lookup's hour (plan 8j).
+            const copies = await storeKeyCopies(c.env, credentials, issued.expiresAt + SESSION_CAP_MS + PROVIDER_LOOKUP_WINDOW_MS, {
+              message: "session_key_copy_failed",
+              facts: { app: app.id, session: issued.sessionId },
+            });
+            if (copies === undefined) return;
+            await opened;
+            if (!(await attachLookupKeyCopies(ledger, issued.sessionId, copies))) log("warn", "session_key_copy_unattached", { app: app.id, session: issued.sessionId });
+          })().catch((error: unknown) => log("warn", "session_key_copy_unattached", { app: app.id, session: issued.sessionId, error: errorFacts(error) })),
+        );
+      }
       const body: ClientOperationResponse<"startSession"> = {
         session_id: issued.sessionId,
         ticket: issued.ticket,

@@ -26,6 +26,17 @@
  * - `POST /v1/listen`: Deepgram's transcript of 30 seconds of audio, on two
  *   channels with `multichannel=true` in the query, served by the model the
  *   query names, and in French with `detect_language=true`.
+ * - `GET /v1/listen` as a WebSocket: Deepgram's live stream (step 10a). Its
+ *   answer names the request in `dg-request-id`. Each binary frame is heard as
+ *   16 kHz 16-bit mono audio and answered with a `Results` frame of its
+ *   length; `CloseStream` gets the closing `Metadata`, then a close. A
+ *   `mock_usd` in the query is the dollar figure its request record reports.
+ * - `GET /v1/projects` and `GET /v1/projects/mock-project/requests/{id}`:
+ *   Deepgram's project, and its record of a stream, completed, with the
+ *   stream's `mock_usd` as its dollar figure (0.001 without one).
+ * - `GET /v1/text-to-speech/{voice}/stream-input` as a WebSocket: ElevenLabs'
+ *   streaming text to speech (step 10a). Each text frame with text gets an
+ *   audio frame; `{"text": ""}` gets the final frame, then a close.
  * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
  *   `x-fal-billable-units`, or none with `mock_no_units: true`.
  * - `POST /queue/fal-ai/...`, then `GET .../requests/<id>/status`,
@@ -546,6 +557,8 @@ async function answer(request: Request): Promise<Response> {
   if (url.pathname.endsWith("/v1/realtime") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return realtimeSession();
   if (url.pathname.endsWith("BidiGenerateContent") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return geminiLiveSession();
   if (url.pathname.endsWith("/v1/live/sessions") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return gptLiveSession();
+  if (/\/v1\/text-to-speech\/[^/]+\/stream-input$/u.test(url.pathname) && request.headers.get("upgrade")?.toLowerCase() === "websocket") return elevenLabsStream();
+  if (url.pathname.endsWith("/v1/listen") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return deepgramStream(url);
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -579,6 +592,24 @@ async function answer(request: Request): Promise<Response> {
       return Response.json({ error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } }, { status: 401 });
     }
     return Response.json({ object: "list", data: [] });
+  }
+  // Deepgram's project and its record of a stream (step 10a): completed, with the dollar figure the
+  // stream's `mock_usd` named, which its request id carries.
+  if (request.method === "GET" && url.pathname === "/v1/projects") return Response.json({ projects: [{ project_id: MOCK_PROJECT, name: "Mock" }] });
+  const record = /^\/v1\/projects\/mock-project\/requests\/([^/]+)$/u.exec(url.pathname);
+  if (request.method === "GET" && record !== null) {
+    const id = decodeURIComponent(record[1]!);
+    const usd = Number(/^mock_usd_([0-9.]{1,12})_/u.exec(id)?.[1] ?? "0.001");
+    // Wrapped in `request`, as Deepgram's reference shows.
+    return Response.json({
+      request: {
+        request_id: id,
+        project_uuid: MOCK_PROJECT,
+        created: new Date().toISOString(),
+        path: "/v1/listen",
+        response: { code: 101, completed: new Date().toISOString(), details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, channels: 1 } },
+      },
+    });
   }
   // A path no provider declares, for passthrough (step 5): any method,
   // answered with what came through, for the smoke checks to see. Never the key.
@@ -763,6 +794,61 @@ function gptLiveSession(): Response {
     } else if (message.type === "session.close") {
       send("session.closed", { reason: "close_requested", session, usage: { seconds: 3 } });
       server.close(1000, "closed");
+    }
+  });
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/** Deepgram's project, as the mock's key sees it. */
+const MOCK_PROJECT = "mock-project";
+
+/** Deepgram's live stream (step 10a): `Results` for each audio frame, `Metadata` at `CloseStream`. */
+function deepgramStream(url: URL): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.binaryType = "arraybuffer";
+  server.accept();
+  const usd = /^[0-9.]{1,12}$/u.test(url.searchParams.get("mock_usd") ?? "") ? url.searchParams.get("mock_usd")! : null;
+  const requestId = `${usd === null ? "mock" : `mock_usd_${usd}`}_${crypto.randomUUID()}`;
+  // 16 kHz, 16-bit, mono: 32,000 bytes a second.
+  let heard = 0;
+  server.addEventListener("message", (event) => {
+    const data = event.data;
+    if (typeof data !== "string") {
+      const start = heard / 32_000;
+      heard += (data as ArrayBuffer).byteLength;
+      const duration = (data as ArrayBuffer).byteLength / 32_000;
+      server.send(
+        JSON.stringify({ type: "Results", channel_index: [0, 1], duration, start, is_final: true, speech_final: false, channel: { alternatives: [{ transcript: "", confidence: 1, words: [] }] }, metadata: { request_id: requestId } }),
+      );
+      return;
+    }
+    if (data.includes('"CloseStream"')) {
+      server.send(JSON.stringify({ type: "Metadata", request_id: requestId, created: new Date().toISOString(), duration: heard / 32_000, channels: 1 }));
+      server.close(1000, "");
+    }
+  });
+  return new Response(null, { status: 101, webSocket: client, headers: { "dg-request-id": requestId } });
+}
+
+/** ElevenLabs' streaming text to speech (step 10a): audio for each text, the final frame at the closing `""`. */
+function elevenLabsStream(): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.accept();
+  server.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    let text: unknown;
+    try {
+      text = (JSON.parse(event.data) as { text?: unknown }).text;
+    } catch {
+      return;
+    }
+    if (text === "") {
+      server.send(JSON.stringify({ audio: null, isFinal: true }));
+      server.close(1000, "");
+    } else if (typeof text === "string" && text.trim() !== "") {
+      server.send(JSON.stringify({ audio: "AAAA", isFinal: null, normalizedAlignment: null }));
     }
   });
   return new Response(null, { status: 101, webSocket: client });

@@ -270,6 +270,98 @@
       "author": "Deepgram"
     }
   },
+  "deepgram-streaming": {
+    "nova-3": {
+      "kind": "transcription",
+      "per_minute": 0.0048,
+      "by": {
+        "language": {
+          "multi": {
+            "per_minute": 0.0058
+          },
+          "*": {}
+        },
+        "redact": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        },
+        "detect_entities": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.0017
+            }
+          }
+        },
+        "keyterm": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.0013
+            }
+          }
+        },
+        "diarize": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        }
+      },
+      "author": "Deepgram"
+    },
+    "nova-3-general": {
+      "kind": "transcription",
+      "per_minute": 0.0048,
+      "by": {
+        "language": {
+          "multi": {
+            "per_minute": 0.0058
+          },
+          "*": {}
+        },
+        "redact": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        },
+        "detect_entities": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.0017
+            }
+          }
+        },
+        "keyterm": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.0013
+            }
+          }
+        },
+        "diarize": {
+          "false": {},
+          "true": {
+            "add": {
+              "per_minute": 0.002
+            }
+          }
+        }
+      },
+      "author": "Deepgram"
+    }
+  },
   "fal": {
     "fal-ai/flux/schnell": {
       "kind": "image",

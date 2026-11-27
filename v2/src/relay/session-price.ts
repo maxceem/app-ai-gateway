@@ -17,7 +17,7 @@
  * connection's rates are malformed) is not "no price": nothing is saved.
  */
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
-import type { ModelPrice } from "../pricing/prices.ts";
+import { keyCandidates, type ModelPrice } from "../pricing/prices.ts";
 import { declaredOperation } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import type { Ticket } from "./tickets.ts";
@@ -31,7 +31,8 @@ export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | und
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {
-    return encodeSessionPrice(billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model));
+    // On the session's own operation: its section of our list, if it has one (Deepgram's streaming rates).
+    return encodeSessionPrice(billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model, ticket.operation));
   } catch {
     return null;
   }
@@ -57,16 +58,25 @@ export function decodeSessionPrice(text: string): ResolvedPrice | null {
 /** The rates a price may bill connection time with (`../pricing/units.ts`): the wall clock meter. */
 const TIME_RATES = ["per_second", "per_minute", "per_hour"] as const;
 
-/** Whether a session's operation may bill its connection time: not one billed by tokens alone (OpenAI Realtime). */
+/**
+ * Whether a session's operation may bill its connection time: not one billed by tokens alone (OpenAI
+ * Realtime), nor one billed by the units its adapter counts alone (ElevenLabs' characters, 10a).
+ */
 export function sessionBillsTime(operation: string): boolean {
   const meter = declaredOperation(operation)?.meter;
-  return !(meter?.kind === "provider_event" && meter.tokensOnly === true);
+  return !(meter?.kind === "provider_event" && (meter.tokensOnly === true || meter.units !== undefined));
 }
 
-/** Whether a price bills connection time: a provider metered by the wall clock (plan 3, meter kinds). */
+/**
+ * Whether a price bills connection time: a provider metered by the wall clock (plan 3, meter kinds). Every
+ * price it can bill at counts, its rates by key value too (Deepgram's by language): the candidates the
+ * save check judges (`keyCandidates`), so a time it saved as billable is never dropped (Sol, #273 round 1).
+ */
 export function billsTime(price: ModelPrice): boolean {
-  const rates = price.rates as Readonly<Record<string, unknown>>;
-  return TIME_RATES.some((field) => rates[field] !== undefined);
+  return keyCandidates(price).candidates.some(({ price: candidate }) => {
+    const rates = candidate.rates as Readonly<Record<string, unknown>>;
+    return TIME_RATES.some((field) => rates[field] !== undefined);
+  });
 }
 
 /**

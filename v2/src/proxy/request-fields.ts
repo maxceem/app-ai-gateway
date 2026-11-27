@@ -50,7 +50,7 @@ export function fieldValue(fields: RequestFields, ref: FieldRef): unknown {
 
 /** The form fields an operation reads, besides its model and service mode: measures, price keys and outbound fields. */
 export function requestFormFields(operation: OperationDescription): string[] {
-  const refs: FieldRef[] = (operation.priceKeys ?? []).flatMap((key) => (key.answeredWhen === undefined ? [key.from] : [key.from, key.answeredWhen]));
+  const refs: FieldRef[] = (operation.priceKeys ?? []).flatMap((key) => [key.from, ...(key.answeredWhen === undefined ? [] : [key.answeredWhen]), ...(key.alsoOn ?? [])]);
   for (const ref of operation.unpricedOptions ?? []) refs.push(ref);
   for (const measure of requestMeasuresOf(operation.meter)) {
     if (measure.measure === "one") continue;
@@ -189,7 +189,7 @@ export function priceKeyValues(operation: OperationDescription, fields: RequestF
   for (const key of keys) {
     if (key.answeredWhen !== undefined && switchedOn(fields, key.answeredWhen, "flag")) continue;
     if (key.kind !== undefined) {
-      values[key.name] = String(switchedOn(fields, key.from, key.kind));
+      values[key.name] = String(switchedOn(fields, key.from, key.kind) || (key.alsoOn ?? []).some((ref) => switchedOn(fields, ref, ref.kind)));
       continue;
     }
     // A plain key named twice in the query is unknown: its dearest value bills, as an estimate.

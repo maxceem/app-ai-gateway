@@ -223,8 +223,10 @@ is refused with `403 path_not_allowed`.
 [Vercel AI Gateway](/providers/gateways#vercel-ai-gateway).
 
 **Live sessions.** OpenAI Realtime (`openai.realtime`), OpenAI GPT-Live
-(`openai.live`), xAI voice (`xai.realtime`) and Gemini Live
-(`gemini.live.v1beta`, `gemini.live.v1alpha`) run through the gateway's relay. See [Live sessions](/integrate/live-sessions).
+(`openai.live`), xAI voice (`xai.realtime`), Gemini Live
+(`gemini.live.v1beta`, `gemini.live.v1alpha`), ElevenLabs streaming text to
+speech (`elevenlabs.tts_websocket`) and Deepgram streaming speech to text
+(`deepgram.listen_stream`) run through the gateway's relay. See [Live sessions](/integrate/live-sessions).
 For other live APIs, list the provider's token path for passthrough, such as
 ElevenLabs' conversation token paths. The gateway fills in safe settings for
 these, such as a short expiry. See

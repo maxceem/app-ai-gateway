@@ -24,6 +24,7 @@ import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
 import { KEY_COPIES_FIELD, KEY_COPIES_REMOVED } from "./write.ts";
 import { checkJob } from "../jobs/jobs.ts";
+import { deepgramLookup } from "../relay/deepgram-lookup.ts";
 
 
 /** Rows taken per run. Small, so one run stays well inside a cron invocation. */
@@ -83,7 +84,10 @@ const retry = (reason: string): HandlerResult => ({ done: false, reason });
  * Work for a provider with no entry waits. Job checks need no table: one
  * handler reads every provider's jobs from its description (`../jobs/jobs.ts`).
  */
-export const PROVIDER_LOOKUPS: Record<string, OpenWorkHandler> = {};
+export const PROVIDER_LOOKUPS: Record<string, OpenWorkHandler> = {
+  // Deepgram's request record after a stream (10a).
+  deepgram: (env, item, context) => deepgramLookup(env, item, context),
+};
 
 function byProvider(table: Record<string, OpenWorkHandler>, what: string): OpenWorkHandler {
   return async (env, item, context) => {

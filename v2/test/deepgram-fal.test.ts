@@ -81,7 +81,8 @@ describe("Deepgram operations and prices", () => {
   it("matches prerecorded transcription and serves it now", () => {
     const match = new ProviderMatcher(deepgram).match("POST", "v1/listen");
     expect(match).toMatchObject({ kind: "operation", operation: { name: "deepgram.listen" } });
-    for (const op of deepgram.operations) expect(servedNow(op), op.name).toBe(true);
+    // Its stream is a live session, started at the session endpoint (10a).
+    for (const op of deepgram.operations.filter((one) => one.lifecycle !== "session")) expect(servedNow(op), op.name).toBe(true);
   });
 
   it("refuses the project, key and token paths", () => {

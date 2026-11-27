@@ -229,3 +229,53 @@ describe("the mock's live session stand-in (step 9a, frame forwarding and T12)",
     socket.close(1000, "done");
   });
 });
+
+describe("the mock's streaming voice stand-ins (step 10a)", () => {
+  /** The mock's WebSocket at `url`, accepted, with a way to wait for its messages. */
+  async function open(url: string) {
+    const response = await mock.fetch(new Request(url, { headers: { upgrade: "websocket", authorization: "Token mock-key" } }));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const got: string[] = [];
+    let waiting: { count: number; resolve: () => void } | null = null;
+    socket.addEventListener("message", (event) => {
+      got.push(String(event.data));
+      if (waiting !== null && got.length >= waiting.count) waiting.resolve();
+    });
+    socket.accept();
+    const arrived = (count: number) => (got.length >= count ? Promise.resolve() : new Promise<void>((resolve) => (waiting = { count, resolve })));
+    return { response, socket, got, arrived };
+  }
+
+  it("answers Deepgram's stream with a request id, a Results frame for each audio frame, and Metadata at CloseStream; its record carries the stream's mock_usd", async () => {
+    const { response, socket, got, arrived } = await open("https://mock.test/v1/listen?model=nova-3&mock_usd=0.0042");
+    const requestId = response.headers.get("dg-request-id")!;
+    expect(requestId).toMatch(/^mock_usd_0\.0042_/u);
+    socket.send(new Uint8Array(32_000).buffer);
+    socket.send(new Uint8Array(16_000).buffer);
+    socket.send(JSON.stringify({ type: "KeepAlive" }));
+    socket.send(JSON.stringify({ type: "CloseStream" }));
+    await arrived(3);
+    expect(got.map((frame) => JSON.parse(frame) as Record<string, unknown>)).toEqual([
+      expect.objectContaining({ type: "Results", start: 0, duration: 1, channel_index: [0, 1] }),
+      expect.objectContaining({ type: "Results", start: 1, duration: 0.5 }),
+      expect.objectContaining({ type: "Metadata", request_id: requestId, duration: 1.5, channels: 1 }),
+    ]);
+    const projects = await mock.fetch(new Request("https://mock.test/v1/projects", { headers: { authorization: "Token mock-key" } }));
+    expect(await projects.json()).toEqual({ projects: [{ project_id: "mock-project", name: "Mock" }] });
+    const record = await mock.fetch(new Request(`https://mock.test/v1/projects/mock-project/requests/${requestId}`, { headers: { authorization: "Token mock-key" } }));
+    expect(await record.json()).toMatchObject({ request: { request_id: requestId, response: { completed: expect.any(String), details: { usd: 0.0042 } } } });
+  });
+
+  it("answers ElevenLabs' stream with audio for each text, nothing for the opening space, and the final frame at the closing empty text", async () => {
+    const { socket, got, arrived } = await open("https://mock.test/v1/text-to-speech/voice-1/stream-input?model_id=eleven_flash_v2_5");
+    socket.send(JSON.stringify({ text: " " }));
+    socket.send(JSON.stringify({ text: "Hello there " }));
+    socket.send(JSON.stringify({ text: "" }));
+    await arrived(2);
+    expect(got.map((frame) => JSON.parse(frame) as Record<string, unknown>)).toEqual([
+      { audio: "AAAA", isFinal: null, normalizedAlignment: null },
+      { audio: null, isFinal: true },
+    ]);
+  });
+});

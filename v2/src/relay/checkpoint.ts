@@ -65,8 +65,11 @@ import { decodeSessionPrice, sessionBillsTime, sliceUsage, todaySessionPrice } f
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
-/** The other counts a slice may carry, each a unit of its own: xAI's text messages, which the relay counts itself (9b). */
-export const SLICE_UNITS = ["text_messages"] as const;
+/**
+ * The other counts a slice may carry, each a unit of its own, which the relay counts itself from the
+ * client's frames: xAI's text messages (9b), ElevenLabs' characters of streamed text (10a).
+ */
+export const SLICE_UNITS = ["text_messages", "characters"] as const;
 /**
  * A slice's input transcription (OpenAI, 9e), measures of its own: its model is not the session's, so it
  * is booked apart (`transcriptionCharges`). Tokens for a model billed by them, the audio's length for one
@@ -113,6 +116,8 @@ export const SLICE_BREAKDOWN = [
   "estimated_tokens",
   // The cached input's audio share, at its own cached rate (OpenAI Realtime, 9e).
   "cached_input_audio_tokens",
+  // Characters counted while a pronunciation dictionary may change what is billed (ElevenLabs, 10a): an estimate.
+  "estimated_characters",
 ] as const;
 const MODALITY_KINDS = ["audio", "image", "video", "unknown"] as const;
 /** Every measure name a relay's slice may carry. */
@@ -148,6 +153,8 @@ export interface SliceInput {
   readonly gaps: number;
   readonly from: number;
   readonly to: number;
+  /** Deepgram confirmed keyterms turned on mid-stream: the slice bills the keyterm add-on (10a). */
+  readonly keyterms?: true;
 }
 
 export interface CheckpointInput {
@@ -222,6 +229,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       to: raw.to,
       ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }),
       ...(transcriptions === undefined ? {} : { transcriptions }),
+      ...(raw.keyterms === true ? { keyterms: true as const } : {}),
     };
   }
   return {
@@ -256,7 +264,12 @@ interface SlicePrice {
  * `unresolved`, priced later by the sweep, never billed as free (AGENTS.md):
  * the model may bill time.
  */
-export function priceSlice(measures: Readonly<Record<string, number>>, resolved: ResolvedPrice | null, sessionMs = 0): SlicePrice {
+export function priceSlice(
+  measures: Readonly<Record<string, number>>,
+  resolved: ResolvedPrice | null,
+  sessionMs = 0,
+  priceKeys?: Readonly<Record<string, string>>,
+): SlicePrice {
   const hasTokens = SLICE_MEASURES.some((name) => (measures[name] ?? 0) > 0);
   const units = { ...(sessionMs > 0 ? { session_seconds: sessionMs } : {}), ...unitsOf(measures) };
   const free: SlicePrice = { costNano: nano(0), priceSource: "list_rate", estimated: false, measured: "complete", rates: null, unit: null, units: null };
@@ -269,6 +282,8 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
       cacheWriteTokens: measures.cache_write_tokens ?? 0,
       outputTokens: measures.output_tokens ?? 0,
       ...breakdownOf(measures),
+      // The session's price key values, from its request (Deepgram's stream, 10a).
+      ...(priceKeys === undefined ? {} : { priceKeys }),
       // Session seconds are stored at the milli scale: a millisecond count is the unit count.
       ...(Object.keys(units).length > 0 ? { units } : {}),
     },
@@ -304,7 +319,7 @@ function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObse
   const cachedAudio = measures.cached_input_audio_tokens ?? 0;
   return {
     ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
-    ...((measures.estimated_tokens ?? 0) > 0 ? { reportMissing: true as const } : {}),
+    ...((measures.estimated_tokens ?? 0) > 0 || (measures.estimated_characters ?? 0) > 0 ? { reportMissing: true as const } : {}),
     // The cached input's audio share, at its own cached rate (`cached_input_audio`).
     ...(cachedAudio > 0 ? { tokenVariants: { cached_input: { audio: cachedAudio } } } : {}),
   };
@@ -318,9 +333,23 @@ function breakdownMeasures(measures: Readonly<Record<string, number>>): Record<s
     out[`${side}_split`] = 1;
     for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) out[`${side}_${kind}_tokens`] = measures[`${side}_${kind}_tokens`] as number;
   }
-  if ((measures.estimated_tokens ?? 0) > 0) out.report_missing = 1;
+  if ((measures.estimated_tokens ?? 0) > 0 || (measures.estimated_characters ?? 0) > 0) out.report_missing = 1;
   if ((measures.cached_input_audio_tokens ?? 0) > 0) out.cached_input_audio_tokens = measures.cached_input_audio_tokens as number;
   return out;
+}
+
+/**
+ * A ticket's price key values (Deepgram's stream, 10a): only short text names and values, as the gateway
+ * signed them. Empty when it has none.
+ */
+function validPriceKeys(ticket: Ticket): Record<string, string> {
+  const keys = (ticket as Ticket & { priceKeys?: unknown }).priceKeys;
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return {};
+  return Object.fromEntries(
+    Object.entries(keys as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => /^[a-z_]{1,40}$/u.test(entry[0]) && typeof entry[1] === "string" && entry[1].length <= 100,
+    ),
+  );
 }
 
 /** The time a slice bills: what the provider billed by time bills (`billedMs`), else its connection time. */
@@ -339,14 +368,16 @@ function unitsOf(measures: Readonly<Record<string, number>>): Partial<Record<(ty
  * cost (plan 4.2 and 5.2): a slice with a gap and no tokens has an unknown
  * cost, `unresolved` with no tokens for the sweep to price.
  */
-export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
+export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number, priceKeys: Readonly<Record<string, string>> = validPriceKeys(ticket)): ChargeRow {
   const gap = slice.gapMs > 0 || slice.gaps > 0;
   // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
   // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
   const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
   const billableMs = timeMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? timeMs : 0;
-  // A slice billed by time, or by its text messages alone, keeps the price of what it knows, marked `partial` below.
-  if (gap && price.unit !== "session_seconds" && price.unit !== "text_messages" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
+  // A slice billed by time, or by the counts the relay keeps itself (text messages, characters), keeps the
+  // price of what it knows, marked `partial` below.
+  const knownUnit = price.unit === "session_seconds" || (SLICE_UNITS as readonly (string | null)[]).includes(price.unit);
+  if (gap && !knownUnit && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
     price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
   }
   // Dated by its start (D18), inside the session's own time: never before its start, never after
@@ -397,6 +428,8 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
       // Kept whether priced or not, so the sweep prices an `unresolved` slice with them too.
       ...Object.fromEntries(Object.entries(unitsOf(slice.measures)).map(([unit, count]) => [`units_${unit}`, count])),
       ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}),
+      // The session's price key values, so the sweep prices an `unresolved` slice with them too.
+      ...Object.fromEntries(Object.entries(priceKeys).map(([key, value]) => [`key_${key}`, value])),
     },
     rates: price.rates,
     sessionMs: slice.sessionMs,
@@ -589,6 +622,11 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
   const facts = { app: ticket.app, session: ticket.sid };
   // A session billed by tokens alone (OpenAI Realtime) bills no connection time: it counts for plan minutes only.
   const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
+  // Read once for the slice: its price and its charge's measures. Keyterms Deepgram confirmed mid-stream
+  // switch the add-on on for the slice, where the session prices it (Sol, #273 round 3).
+  const signed = validPriceKeys(ticket);
+  const keys = slice.keyterms === true && Object.hasOwn(signed, "keyterm") ? { ...signed, keyterm: "true" } : signed;
+  const priceKeys = Object.keys(keys).length > 0 ? keys : undefined;
   const unpriced = priceSlice(slice.measures, null, timeMs);
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
@@ -598,13 +636,13 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
       } else if (saved !== "") {
         try {
-          price = priceSlice(slice.measures, decodeSessionPrice(saved), timeMs);
+          price = priceSlice(slice.measures, decodeSessionPrice(saved), timeMs, priceKeys);
         } catch {
           price = unpriced;
         }
         if (price.priceSource === "unresolved") log("warn", "checkpoint_saved_price_unusable", facts);
       }
-      return sliceCharge(ticket, slice, price, now);
+      return sliceCharge(ticket, slice, price, now, keys);
     },
   };
 }

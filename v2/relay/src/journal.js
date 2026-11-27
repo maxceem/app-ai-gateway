@@ -45,7 +45,7 @@ export const JOURNAL_MAX_BYTES = 16 * 1024;
 export const JOURNAL_ALLOW_UNCONFIRMED = true;
 
 /**
- * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number, transcriptions?: Record<string, Record<string, number>> }} Slice
+ * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number, transcriptions?: Record<string, Record<string, number>>, keyterms?: true }} Slice
  * One frozen slice: the usage between two checkpoints, and its connection time.
  * `billedMs`, for a provider billed by time (xAI): the time it bills in this
  * slice, which may differ from the connection time (`freeze`).
@@ -74,6 +74,7 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   audioMs?: number,
  *   billedMs?: number,
  *   transcriptions?: Record<string, Record<string, number>>,
+ *   keyterms?: true,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -103,10 +104,12 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * (OpenAI, 9e): a session that changes its transcription model mid-slice
  * keeps each model's usage apart.
  *
- * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number, model?: string }} UsageEvent
+ * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number, model?: string, keyterms?: true }} UsageEvent
  * One usage event, as an adapter read it (`./adapters.js`). `audioSeconds` is a
  * provider's own running total of the audio it bills (xAI's `billable_audio_seconds`).
  * `model`: an event that is not the session's own model's, OpenAI's input transcription.
+ * `keyterms`: Deepgram confirmed keyterms turned on mid-stream: the journal keeps it (`keyterms`), and every
+ * later slice says so, for the keyterm add-on (10a).
  */
 
 /**
@@ -163,6 +166,7 @@ export function markAudio(journal, ms) {
 export function carryTotals(stored, memory) {
   if (stored.audioMs !== undefined && memory.audioMs !== undefined) stored.audioMs = Math.max(stored.audioMs, memory.audioMs);
   if (stored.idle === true && memory.idle !== true && memory.activeAt !== undefined) markActive(stored, memory.activeAt);
+  if (memory.keyterms === true) stored.keyterms = true;
 }
 
 /**
@@ -357,6 +361,8 @@ export function freeze(journal, at, options = {}) {
   if (empty) return null;
   /** @type {Slice} */
   const slice = { seq: journal.nextSeq, measures: journal.measures, sessionMs, gapMs, gaps, from: journal.from, to: at, ...(billedMs === undefined ? {} : { billedMs }) };
+  // Keyterms turned on mid-stream (Deepgram): every slice from then on bills the add-on. Sticky, never billed low.
+  if (journal.keyterms === true) slice.keyterms = true;
   // Its input transcriptions, by model: each is booked at its own model's price.
   if (Object.keys(transcriptions).length > 0) slice.transcriptions = transcriptions;
   if (billedTotal !== undefined) {

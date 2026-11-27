@@ -46,7 +46,8 @@ import { sealedUpstreamRequest, upstreamUrl } from "../providers/route.ts";
 import { safeCharge, type CallAttempt } from "../proxy/call-charge.ts";
 import { attemptUsage, headerNumber } from "../proxy/meter.ts";
 import { jobSigningReady, readJobId, routeDigest, type JobClaims } from "./job-id.ts";
-import { vault, type CopyRequest, type StoredCopies } from "../vault/client.ts";
+import { vault, type StoredCopies } from "../vault/client.ts";
+import { keyCopiesOf, storeKeyCopies } from "../vault/key-copies.ts";
 import type { KeyShare } from "../vault/key-share.ts";
 
 /** When the sweep first checks a job. fal keeps results for an hour, large ones for 6 minutes (T15). */
@@ -144,8 +145,6 @@ export function jobEstimate(
  * about 62 minutes for fal).
  */
 export const JOB_KEY_COPY_MS = JOB_FIRST_CHECK_MS + JOB_MAX_CHECKS * JOB_CHECK_EVERY_MS + 5 * 60_000;
-/** How long making the copy may take: it runs after the answer is sent, and never fails the job. */
-export const JOB_KEY_COPY_DEADLINE_MS = 5_000;
 
 /**
  * For an account with split keys on, the sweep cannot open the job's key
@@ -158,42 +157,14 @@ export const JOB_KEY_COPY_DEADLINE_MS = 5_000;
  * changes for an account with split keys off.
  */
 export async function withJobKeyCopies(env: Env, entry: LedgerEntry, credentials: SealedCredentials, now: number): Promise<LedgerEntry> {
-  const credential = credentials.credential;
   const check = entry.openWork.find((work) => work.kind === "job_check");
-  if (credential === undefined || check === undefined) return entry;
-  let copies: StoredCopies | "missing";
-  try {
-    copies = await withDeadline(
-      vault(env).storeCopy(
-        {
-          ...(credentials.providerKey === null ? {} : { providerKey: credentials.providerKey as CopyRequest["providerKey"] & object }),
-          ...(credentials.cloudflareToken === null ? {} : { cloudflareToken: credentials.cloudflareToken as CopyRequest["cloudflareToken"] & object }),
-          credential,
-        },
-        now + JOB_KEY_COPY_MS,
-      ),
-      JOB_KEY_COPY_DEADLINE_MS,
-      "copying the job's key",
-    );
-  } catch (error) {
-    log("warn", "job_key_copy_failed", { app: check.appId, job: check.ownerId, error: errorFacts(error) });
-    copies = "missing";
-  }
+  if (credentials.credential === undefined || check === undefined) return entry;
+  const copies = await storeKeyCopies(env, credentials, now + JOB_KEY_COPY_MS, { message: "job_key_copy_failed", facts: { app: check.appId, job: check.ownerId } });
+  if (copies === undefined) return entry;
   const withCopies: OpenWorkRow = { ...check, detail: { ...check.detail, [KEY_COPIES_FIELD]: copies } };
   return { ...entry, openWork: entry.openWork.map((work) => (work === check ? withCopies : work)) };
 }
 
-/**
- * A check row's key copies: the copies; "missing" when they could not be made
- * or were removed (`removed`, past their expiry, `../ledger/sweep.ts`); or
- * null for an account with split keys off.
- */
-function keyCopiesOf(detail: Record<string, unknown>): StoredCopies | "missing" | null {
-  const value = detail[KEY_COPIES_FIELD];
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "object") return "missing";
-  return value as StoredCopies;
-}
 
 /**
  * How often the sweep checks a job, and how many times: from the operation,

@@ -144,9 +144,15 @@ export class UnreadableRates extends SyntaxError {
   }
 }
 
-/** A model's price on a connection: its own rate, else ours. The one place a price is looked up. */
-function resolve(connection: PriceSources, model: string): ResolvedPrice | null {
-  return resolvePrice(connection.type, model, connection.rates(), connection.listedAs(model));
+/**
+ * A model's price on a connection: its own rate, else ours. The one place a price is looked up. An
+ * operation priced from its own section of our list (`priceList`: Deepgram's streaming, 10a) reads it
+ * there, wherever the price is asked for: saving, serving, a session's slices and the pricing sweep.
+ */
+function resolve(connection: PriceSources, model: string, operation?: Pick<OperationDescription, "priceList">): ResolvedPrice | null {
+  const listed = connection.listedAs(model);
+  const list = operation?.priceList;
+  return resolvePrice(connection.type, model, connection.rates(), list === undefined ? listed : { type: list, model: listed.model });
 }
 
 /**
@@ -315,10 +321,13 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
  * Rates by key value would leave its time unbilled (Sol, #266).
  */
 function keyedClockSession(operation: OperationDescription, price: ModelPrice): boolean {
+  // A session that reads price keys from its request (Deepgram's stream, 10a) carries their values on its
+  // slices, so its rates by key value do bill.
+  if (operation.priceKeys !== undefined) return false;
   return operation.meter.kind === "wall_clock" && (price.keyed !== undefined || price.keyedAdditions !== undefined);
 }
 
-/** A live session: the relay reads and prices every one's usage (xAI's clock 9b, Gemini Live 9d, OpenAI Realtime 9e). */
+/** A live session: the relay reads and prices every one's usage (xAI's clock 9b, Gemini Live 9d, OpenAI Realtime 9e, streaming voice 10a). */
 function readSession(operation: OperationDescription): boolean {
   return operation.lifecycle === "session";
 }
@@ -335,7 +344,7 @@ function operationBillable(operation: OperationDescription, price: ModelPrice, c
 
 /** How `operation` bills `model` on a connection, in `mode` if one is asked about, by the check asked for. */
 export function billing(operation: OperationDescription, connection: PriceSources, model: string, mode?: ServiceMode, check: BillingCheck = "serve"): Billing {
-  return billingAt(operation, resolve(connection, model), mode, check);
+  return billingAt(operation, resolve(connection, model, operation), mode, check);
 }
 
 /** `billing`, given the model's resolved price: the one place the rule is written. */
@@ -467,7 +476,7 @@ export function resolveCall(
   if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
   if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
-  if (pricedModelsPath(operation) && resolve(sources, model) === null) return { kind: "refused", reason: "unpriced_path", model };
+  if (pricedModelsPath(operation) && resolve(sources, model, operation) === null) return { kind: "refused", reason: "unpriced_path", model };
   const bill = billing(operation, sources, model);
   const problem = admissionProblem(bill, listed !== null);
   if (problem !== null) return { kind: "refused", reason: problem, model };
@@ -515,7 +524,7 @@ export function backendModels(route: RouteModels, sources: PriceSources, operati
  * Saving an app and the session's ticket both ask this. May throw on unreadable rates.
  */
 export function backendModelAllowed(route: RouteModels, sources: PriceSources, operation: OperationDescription, model: string): boolean {
-  const resolved = resolve(sources, model);
+  const resolved = resolve(sources, model, operation);
   const standard = resolved === null ? undefined : priceInMode(resolved.price, STANDARD_MODE);
   if (standard?.rates.input === undefined || standard.rates.output === undefined) return false;
   return resolveCall(route, undefined, sources, operation, model, listOf(route), SAVING).kind === "admitted";
@@ -850,8 +859,7 @@ export function rewriteTargetBillable(
     connections.some((connection) => {
       const operations = operationsOf(connection.type);
       if (operations.some((operation) => couldBill(billingAt(operation, null).problem))) return true;
-      const resolved = resolve(connection, model);
-      return operations.some((operation) => couldBill(billingAt(operation, resolved).problem));
+      return operations.some((operation) => couldBill(billingAt(operation, resolve(connection, model, operation)).problem));
     })
   );
 }
@@ -870,8 +878,9 @@ export function providerListPrice(providerType: string, model: string): ModelPri
   return listPrice(providerType, model);
 }
 
-export function billingForCharge(connection: PriceSources, model: string): ResolvedPrice | null {
-  return resolve(connection, model);
+/** A charge's price, on the operation it was made on (its `priceList`, if any). */
+export function billingForCharge(connection: PriceSources, model: string, operation?: string): ResolvedPrice | null {
+  return resolve(connection, model, operation === undefined ? undefined : (declaredOperation(operation) ?? undefined));
 }
 
 /** The most price-key combinations a price may have: a stored price never has more, so pricing never tries more. */
@@ -901,8 +910,13 @@ export function savedPriceProblem(
       readonly operation: string;
       readonly byClock: boolean;
       readonly tokensOnly: boolean;
-      /** For a session billed by its clock: the rates it needs, its time's and each unit's its meter declares. */
+      /**
+       * The rates it needs: for a session billed by its clock, its time's and each unit's its meter declares;
+       * for one billed by the units its adapter counts (ElevenLabs' characters), each of theirs.
+       */
       readonly rates: readonly string[];
+      /** Its rates must be the model's own, none by key value: a clock-billed session whose slices carry none (xAI). */
+      readonly withoutBy: boolean;
     }
   | {
       readonly kind: "bills_nothing";
@@ -925,17 +939,24 @@ export function savedPriceProblem(
   // judged only once the price had already made it ineligible, and its next session refused (Sol, #266
   // rounds 2 and 3). Each session operation names its model kinds, so an image model's own price is never
   // judged by a session (Sol, #269 round 1).
-  const listed = listPrice(providerType, model);
-  const session =
-    listed === null
-      ? undefined
-      : operations.find((operation) => readSession(operation) && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
+  // Each session operation judges against our price in its own section (`priceList`: Deepgram's stream).
+  // One whose meter bills the units its adapter counts (ElevenLabs' streaming characters, 10a) is judged the
+  // same way: a custom price for a model our list prices for it must bill those units.
+  const session = operations.find((operation) => {
+    if (!readSession(operation)) return false;
+    const listed = listPrice(operation.priceList ?? providerType, model);
+    return listed !== null && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save");
+  });
   if (session !== undefined) {
-    const tokensOnly = session.meter.kind === "provider_event" && session.meter.tokensOnly === true;
-    const units = session.meter.kind === "wall_clock" ? (session.meter.units ?? []) : [];
-    // The rates named in the refusal: per_minute, and one for each unit the meter declares (xAI's text messages).
-    const rates = ["per_minute", ...UNIT_RATES.filter((rate) => rate.units.some((unit) => units.includes(unit))).map((rate) => rate.field)];
-    return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock", tokensOnly, rates };
+    const { meter } = session;
+    const tokensOnly = meter.kind === "provider_event" && meter.tokensOnly === true;
+    const byClock = meter.kind === "wall_clock";
+    const units = meter.kind === "wall_clock" || meter.kind === "provider_event" ? (meter.units ?? []) : [];
+    const unitRates = UNIT_RATES.filter((rate) => rate.units.some((unit) => units.includes(unit))).map((rate) => rate.field);
+    // The rates named in the refusal: per_minute for a clock, and one for each unit the meter declares
+    // (xAI's text messages, ElevenLabs' characters).
+    const rates = byClock ? ["per_minute", ...unitRates] : unitRates;
+    return { kind: "session_rates", operation: session.name, byClock, tokensOnly, rates, withoutBy: byClock && session.priceKeys === undefined };
   }
   try {
     effectivePrices(price);

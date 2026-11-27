@@ -24,6 +24,12 @@ These providers are served today:
 | xAI voice | `v1/realtime` | for example `grok-voice-3.0` |
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
 | OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
+| ElevenLabs text to speech | `v1/text-to-speech/{voice_id}/stream-input` | for example `eleven_flash_v2_5`; `eleven_multilingual_v2` when none is named |
+| Deepgram speech to text | `v1/listen` | for example `nova-3`, the gateway's default when none is named |
+
+Text to speech and speech to text streams have their own limit on open
+sessions, apart from voice conversations. At that limit a new stream is
+refused, since the app may still be playing or reading the one before.
 
 The app's settings must allow the operation, as for any call. See
 [Provider access](/applications/provider-access). Live sessions need a
@@ -42,7 +48,14 @@ Content-Type: application/json
 ```
 
 - `{provider}` is the connection's slug, such as `openai`.
-- `path` is the provider's own live-session path from the table above.
+- `path` is the provider's own live-session path from the table above. For
+  ElevenLabs and Deepgram streams, put the provider's own options in its
+  query, such as `v1/listen?encoding=linear16&sample_rate=16000`, the model
+  too if you like (`model`, `model_id`) when the body names none. They go to
+  the provider as they are, except the model, which is always the session's,
+  and fields that would send results elsewhere or carry a credential (a key,
+  a token or an authorization), which are removed. Other sessions take no
+  query: a path with one gets `403 path_not_allowed`.
 - `model` is the model the session runs. The relay keeps the session on this
   model, whatever the app sends later.
 - `takes_over` (optional) names an earlier session of the same user that this
@@ -217,3 +230,17 @@ Start a new session then.
   `triggers` are not allowed. Anything else ends the session with `1008` and a
   reason such as `backend_model_not_allowed`. A restart of the relay ends a
   GPT-Live session for good: start a new one.
+- **ElevenLabs text to speech.** Send ElevenLabs' own messages: the first with
+  `text` set to a single space, then your text, then `{"text": ""}` to finish.
+  The voice is the one in the path and the model the session's: no message can
+  change them. A credential in a message (`xi-api-key`, `xi_api_key`, `authorization`) is
+  removed, and a binary message is dropped: ElevenLabs' messages are text.
+  ElevenLabs doesn't support `eleven_v3` or `eleven_v4` on this path, and
+  ends such a session with its own error. The session is charged by the
+  characters of the text you send, as a text-to-speech call is.
+- **Deepgram speech to text.** Send the audio as binary messages, and
+  Deepgram's own `KeepAlive`, `Finalize` and `CloseStream`. The session is
+  charged by the audio Deepgram reports it heard, or by the time since your
+  first audio when that is longer. A few minutes after the session ends, the
+  charge is corrected to Deepgram's own figure for the stream, when the
+  connection's key may read Deepgram's usage (its `usage:read` permission).

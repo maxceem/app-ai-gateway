@@ -52,6 +52,12 @@ const BILLED_EXTRAS = [
 /** The add-ons with a rate per minute: each a price key, its rate in our list (`add`). */
 const PER_MINUTE_EXTRAS = ["redact", "detect_entities", "keyterm"] as const;
 
+/**
+ * The add-ons a stream is billed for on top, per minute, each a price key (Deepgram's pricing page):
+ * diarization is one when streaming, though included in the prerecorded rate.
+ */
+const STREAM_EXTRAS = ["redact", "detect_entities", "keyterm", "diarize"] as const;
+
 /** Language detection: Deepgram picks the language, and may fall back to an older model for it. */
 const DETECT_LANGUAGE = { in: "query", field: "detect_language" } as const;
 
@@ -111,6 +117,38 @@ export const deepgram = defineProvider({
       // then answers 504 itself (docs: pre-recorded audio, Getting Started).
       responseDeadlineMs: 20 * 60 * 1000,
       meter: { kind: "response_json", style: "deepgram-listen", units: ["audio_seconds"], perChannelWhen: { in: "query", field: "multichannel" } },
+    }),
+    // Live streaming over WebSocket (10a): a relayed session on a streaming slot. Billed at the larger of
+    // the relay's clock from the first audio and the audio Deepgram reports it heard
+    // (`relay/src/adapters.js`), at the streaming rates (`priceList`), with the request's language and
+    // add-ons as price keys. Deepgram's own dollar figure for the stream corrects it after the end
+    // (`../relay/deepgram-lookup.ts`).
+    defineOperation({
+      name: "deepgram.listen_stream",
+      match: { method: "GET", path: "v1/listen" },
+      lifecycle: "session",
+      transport: "websocket",
+      // With no model named, the gateway's default is Nova-3, priced for streaming: Deepgram's own,
+      // `base-general`, has no price, so a stream naming none would be refused (Sol, #273 round 4).
+      model: { in: "query", name: "model", default: "nova-3" },
+      modelKinds: ["transcription"],
+      priceList: "deepgram-streaming",
+      priceKeys: [
+        { name: "language", from: { in: "query", field: "language" }, default: "en" },
+        ...STREAM_EXTRAS.map((name) => ({ name, from: { in: "query" as const, field: name }, kind: name === "keyterm" ? ("text" as const) : ("flag" as const) })).map((key) =>
+          // `diarize_model` turns diarization on as well: either field switches the one price key (Sol, #273 round 1).
+          key.name === "diarize" ? { ...key, alsoOn: [{ in: "query" as const, field: "diarize_model", kind: "text" as const }] } : key,
+        ),
+      ],
+      outbound: {
+        webhooks: [
+          { in: "query", field: "callback" },
+          { in: "query", field: "callback_method" },
+        ],
+      },
+      // A credential in its query (`token`, `access_token`) is never sent: `CREDENTIAL_FIELD` in `../relay/start-session.ts`.
+      meter: { kind: "wall_clock" },
+      session: { slot: "streaming", mode: "relayed", lookup: "deepgram", queryOptions: true },
     }),
   ],
 });
