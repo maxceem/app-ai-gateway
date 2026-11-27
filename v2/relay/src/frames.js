@@ -18,7 +18,7 @@
 /** The opening handshake header a client sends to get the relay's own messages. */
 export const RELAY_MESSAGES_HEADER = "x-agw-relay-messages";
 /** The relay's own messages start with this, so one cheap check finds them. */
-const RELAY_MESSAGE_PREFIX = '{"type":"agw.';
+export const RELAY_MESSAGE_PREFIX = '{"type":"agw.';
 
 /** The fixed alarm tick of every session object (plan section 5): checkpoint, time cap, liveness. */
 export const TICK_MS = 30_000;

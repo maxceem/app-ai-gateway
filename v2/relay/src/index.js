@@ -26,9 +26,9 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { adapterFor } from "./adapters.js";
-import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, SESSION_PATH } from "./constants.js";
+import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION_PATH } from "./constants.js";
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
-import { providerFrame, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
+import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -326,11 +326,15 @@ export class Session extends DurableObject {
     const live = this.live;
     /** @type {unknown} */
     let secret;
-    try {
-      const message = typeof first === "string" ? /** @type {{ type?: unknown, secret?: unknown }} */ (JSON.parse(first)) : null;
-      secret = message?.type === "agw.reconnect" ? message.secret : undefined;
-    } catch {
-      secret = undefined;
+    // Read only when small, and written the way every relay message is (`RELAY_MESSAGE_PREFIX`):
+    // the form a live session drops, so a repeat of it never reaches the provider.
+    if (typeof first === "string" && first.length <= RECONNECT_MESSAGE_MAX && first.startsWith(RELAY_MESSAGE_PREFIX)) {
+      try {
+        const message = /** @type {{ type?: unknown, secret?: unknown }} */ (JSON.parse(first));
+        secret = message?.type === "agw.reconnect" ? message.secret : undefined;
+      } catch {
+        secret = undefined;
+      }
     }
     const refuse = () => {
       socket.removeEventListener("message", onMessage);
@@ -344,6 +348,8 @@ export class Session extends DurableObject {
     live.client = socket;
     live.owner = owner;
     live.frames = new SessionFrames({ relayMessages: true });
+    // The secret proves the client is there: the next checkpoint says connected (crash table row 20).
+    live.frames.clientSpoke = true;
     this.listen(live, socket, owner);
     handedOver = true;
     socket.removeEventListener("message", onMessage);
@@ -403,14 +409,12 @@ export class Session extends DurableObject {
     // Past the deadline, or closing: the client gets nothing more, but the frame is still read,
     // so the last answer's usage counts while the end waits for it (plan 5.1).
     const late = Date.now() >= live.deadline;
+    let overflowed = false;
     if (!late && this.core.ending === null) {
       if (live.client !== null) this.deliver(live, data);
       // Our SDK's link is down: the frame waits for it, bounded (the adapter's rule). Too much,
-      // and the session ends: nothing more could reach the client in order.
-      else if (!live.held.push(data)) {
-        console.log(JSON.stringify({ level: "warn", message: "relay_reconnect_buffer_full" }));
-        void this.core.end("client_closed");
-      }
+      // and the session ends below: nothing more could reach the client in order.
+      else overflowed = !live.held.push(data);
     }
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const event = live.adapter.read(data);
@@ -420,6 +424,11 @@ export class Session extends DurableObject {
     else if (turn === "done") {
       live.turnOpen = false;
       this.core.turnDone();
+    }
+    // Ended only after the frame was read, so its usage counts.
+    if (overflowed) {
+      console.log(JSON.stringify({ level: "warn", message: "relay_reconnect_buffer_full" }));
+      void this.core.end("client_closed");
     }
     if (late) void this.core.end("time_cap");
   }

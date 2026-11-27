@@ -121,8 +121,10 @@ only finds the session. Its first message must be, within 10 s:
 {"type":"agw.reconnect","secret":"<reconnect_secret>"}
 ```
 
-The secret goes only in this message, never in a URL or a header. The relay
-checks it against the hash it stored. Then:
+Write it like every relay message: starting exactly with `{"type":"agw.`, and
+no longer than 512 characters. Anything else is not read. The secret goes only
+in this message, never in a URL or a header. The relay checks it against the
+hash it stored. Then:
 
 - **It matches:** the relay sends
   `{"type":"agw.session.resumed","deadline":…}`, then the held frames, then

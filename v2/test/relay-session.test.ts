@@ -9,7 +9,7 @@
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { SESSION_PATH } from "../relay/src/constants.js";
+import { RECONNECT_FIRST_MESSAGE_MS, SESSION_PATH } from "../relay/src/constants.js";
 import { MAX_CLIENT_FRAME, RELAY_MESSAGES_HEADER } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
@@ -19,10 +19,15 @@ const relay = () => (env as unknown as { RELAY_TEST: Fetcher }).RELAY_TEST;
 const provider = () => (env as unknown as { PROVIDER_STUB: Fetcher }).PROVIDER_STUB;
 
 async function ticketFor(connection: string): Promise<string> {
+  return (await issued(connection)).ticket;
+}
+
+/** A ticket and its session id; `now` and `sessionId` make another ticket for the same session. */
+async function issued(connection: string, now = Date.now(), sessionId?: string): Promise<{ ticket: string; sessionId: string }> {
   const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, connection, "openai", "", "", ""];
   const blob = await sealForTest("providerKey", identity, "sk-session-object");
   const share = await testShare(ACCOUNT_ID);
-  const { ticket } = await issueTicket(env, {
+  const { ticket, sessionId: id } = await issueTicket(env, {
     accountId: ACCOUNT_ID,
     appId: "app_session",
     endUserId: null,
@@ -40,8 +45,8 @@ async function ticketFor(connection: string): Promise<string> {
     capMs: 60_000,
     credentials: { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) },
     keyPlacement: { header: "authorization", format: "Bearer {key}" },
-  });
-  return ticket;
+  }, now, sessionId);
+  return { ticket, sessionId: id };
 }
 
 /** Opens a session and collects what the client gets, until `count` messages came. */
@@ -202,19 +207,23 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     // The first link still looks open: a phone that moved from Wi-Fi to mobile data.
     const first = await open(ticket, relayMessages);
     const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
-    const second = await open(ticket, relayMessages);
+    // Both come back at once: each sends its secret before either is answered.
+    const [second, third] = await Promise.all([open(ticket, relayMessages), open(ticket, relayMessages)]);
     second.socket.send(reconnectWith(started.reconnect_secret));
-    await second.received(1);
-    expect(await first.closing).toBe("1000 reconnected");
-    const third = await open(ticket, relayMessages);
     third.socket.send(reconnectWith(started.reconnect_secret));
-    await third.received(1);
-    expect(await second.closing).toBe("1000 reconnected");
+    await Promise.all([second.received(1), third.received(1)]);
+    expect(await first.closing).toBe("1000 reconnected");
+    // Each took the session in turn: the one that went first was let go, the other has it.
+    const [winner, loser] = await Promise.race([
+      second.closing.then(() => [third, second] as const),
+      third.closing.then(() => [second, third] as const),
+    ]);
+    expect(await loser.closing).toBe("1000 reconnected");
     // Only the session's client gets its frames.
-    third.socket.send("only-third");
-    expect((await third.received(2))[1]).toBe("only-third");
-    expect(second.messages).toHaveLength(1);
-    third.socket.close(1000, "done");
+    winner.socket.send("only-winner");
+    expect((await winner.received(2))[1]).toBe("only-winner");
+    expect(loser.messages).toHaveLength(1);
+    winner.socket.close(1000, "done");
   });
 
   it("a normal close ends the session: coming back with the secret then finds it ended", async () => {
@@ -226,5 +235,65 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     const late = await open(ticket, relayMessages);
     late.socket.send(reconnectWith(started.reconnect_secret));
     expect(await late.closing).toBe("4000 session_ended");
+  });
+
+  it("reads the secret only from a small message written the relay's way, and a repeat on a live link never reaches the provider (Sol round 1)", async () => {
+    const ticket = await ticketFor("conn_reconnect_form");
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
+    first.socket.close(4001, "link lost");
+    await pause(100);
+    const secret = started.reconnect_secret;
+    for (const refused of [
+      // Too large to read, with the right secret inside.
+      JSON.stringify({ type: "agw.reconnect", secret, pad: "x".repeat(600) }),
+      // Not the relay's own form: a live session would forward these.
+      JSON.stringify({ secret, type: "agw.reconnect" }),
+      `{ "type": "agw.reconnect", "secret": "${secret}" }`,
+    ]) {
+      const attempt = await open(ticket, relayMessages);
+      attempt.socket.send(refused);
+      expect(await attempt.closing).toBe("4000 session_active");
+    }
+    const back = await open(ticket, relayMessages);
+    back.socket.send(reconnectWith(secret));
+    // A retry of the same message once back is the relay's: dropped, never echoed by the provider.
+    back.socket.send(reconnectWith(secret));
+    back.socket.send("after");
+    const got = await back.received(2);
+    expect(JSON.parse(got[0]!)).toMatchObject({ type: "agw.session.resumed" });
+    expect(got[1]).toBe("after");
+    back.socket.close(1000, "done");
+  });
+
+  it("comes back with a ticket that has expired since: it only finds the session", async () => {
+    const { ticket, sessionId } = await issued("conn_reconnect_expired");
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string; deadline: number };
+    first.socket.close(4001, "link lost");
+    await pause(100);
+    // The same session's ticket, signed as if two minutes ago: long expired.
+    const { ticket: expired } = await issued("conn_reconnect_expired", Date.now() - 120_000, sessionId);
+    const back = await open(expired, relayMessages);
+    back.socket.send(reconnectWith(started.reconnect_secret));
+    expect(JSON.parse((await back.received(1))[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline });
+    back.socket.close(1000, "done");
+  });
+
+  it("turns away a link that sends nothing within the first-message window", { timeout: RECONNECT_FIRST_MESSAGE_MS + 10_000 }, async () => {
+    const ticket = await ticketFor("conn_reconnect_silent");
+    const first = await open(ticket, relayMessages);
+    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
+    first.socket.close(4001, "link lost");
+    await pause(100);
+    const silent = await open(ticket, relayMessages);
+    const openedAt = Date.now();
+    expect(await silent.closing).toBe("4000 session_active");
+    expect(Date.now() - openedAt).toBeGreaterThanOrEqual(RECONNECT_FIRST_MESSAGE_MS - 500);
+    // The session waited on: the right secret still takes it back.
+    const back = await open(ticket, relayMessages);
+    back.socket.send(reconnectWith(started.reconnect_secret));
+    expect(JSON.parse((await back.received(1))[0]!)).toMatchObject({ type: "agw.session.resumed" });
+    back.socket.close(1000, "done");
   });
 });

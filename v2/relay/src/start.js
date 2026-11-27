@@ -245,7 +245,13 @@ export class SessionCore {
   async mayReattach(secret) {
     if (typeof secret !== "string" || secret === "" || secret.length > 128) return false;
     if (this.reconnectHash === null || this.call === null || this.ending !== null || this.now() >= this.deadline) return false;
-    return (await hashOf(secret)) === this.reconnectHash;
+    const encoder = new TextEncoder();
+    const given = encoder.encode(await hashOf(secret));
+    const stored = encoder.encode(this.reconnectHash ?? "");
+    // Both are 64 hex characters; the length check only guards the call, which needs equal sizes.
+    // `timingSafeEqual` is the Workers runtime's own, missing from the standard types.
+    const subtle = /** @type {SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }} */ (crypto.subtle);
+    return given.byteLength === stored.byteLength && subtle.timingSafeEqual(given, stored);
   }
 
   /**

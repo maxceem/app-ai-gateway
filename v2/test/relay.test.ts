@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { HEALTH_PATH, SESSION_PATH } from "../relay/src/constants.js";
 import relay, { Session } from "../relay/src/index.js";
-import { StartQueue } from "../relay/src/frames.js";
+import { SessionFrames, StartQueue } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { TEST_TICKET_PUBLIC_KEY } from "./relay-keys.ts";
@@ -204,16 +204,56 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     }
   });
 
-  it("holds the provider's frames while no client is attached, and ends the session when they don't fit", () => {
+  it("holds the provider's frames while no client is attached, and ends the session when they don't fit, counting that frame's usage first (Sol round 1)", () => {
     const ended: string[] = [];
+    const counted: unknown[] = [];
     const session = Object.create(Session.prototype) as Session;
-    (session as unknown as { core: unknown }).core = { ending: null, end: async (reason: string) => void ended.push(reason), recordUsage: async () => undefined, turnDone: () => undefined };
-    const live = { client: null, deadline: Infinity, held: new StartQueue(), adapter: { read: () => null, turn: () => null } } as never as { held: StartQueue };
+    // As the real core: an end in flight stops usage from being recorded, outside the closing wait.
+    const core: Record<string, unknown> = {
+      ending: null,
+      end: (reason: string) => {
+        ended.push(reason);
+        core.ending = Promise.resolve();
+        return core.ending;
+      },
+      recordUsage: async (event: unknown) => void (core.ending === null && counted.push(event)),
+      turnDone: () => undefined,
+    };
+    (session as unknown as { core: unknown }).core = core;
+    const usage = { id: "u1", measures: { input_tokens: 5 } };
+    const live = { client: null, deadline: Infinity, held: new StartQueue(), turnOpen: false, adapter: { shape: "per_turn", read: (data: unknown) => (data === "usage" ? usage : null), turn: (data: unknown) => (data === "usage" ? "open" : null) } } as never as { held: StartQueue; turnOpen: boolean };
     session.toClient(live as never, "first");
     expect(live.held.frames).toEqual(["first"]);
     expect(ended).toEqual([]);
     while (live.held.push("x".repeat(64 * 1024)));
-    session.toClient(live as never, "one too many");
+    // The frame that doesn't fit carries usage and opens an answer: both are read before the end.
+    session.toClient(live as never, "usage");
     expect(ended).toEqual(["client_closed"]);
+    expect(counted).toEqual([usage]);
+    expect(live.turnOpen).toBe(true);
+  });
+
+  it("a client that comes back with the secret counts as there: the next checkpoint says connected (Sol round 1)", async () => {
+    const listeners: Record<string, ((event: unknown) => void)[]> = {};
+    const sent: unknown[] = [];
+    const socket = {
+      addEventListener: (type: string, listener: (event: unknown) => void) => (listeners[type] ??= []).push(listener),
+      removeEventListener: (type: string, listener: (event: unknown) => void) => (listeners[type] = (listeners[type] ?? []).filter((l) => l !== listener)),
+      send: (data: unknown) => sent.push(data),
+      close: () => undefined,
+    } as unknown as WebSocket;
+    const session = Object.create(Session.prototype) as Session;
+    (session as unknown as { core: unknown }).core = { mayReattach: async (secret: unknown) => secret === "right", reattach: () => true };
+    // A session whose client never spoke before its link dropped.
+    const frames = new SessionFrames({ relayMessages: true });
+    const live = { client: null, owner: {}, frames, call: null, deadline: 123, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
+    session.live = live as never;
+    expect(frames.clientSpoke).toBe(false);
+    const coming = session.reconnect(socket);
+    for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: "right" }) });
+    await coming;
+    expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline: 123 })]);
+    // What the core's `proof` reads for the next checkpoint.
+    expect(live.frames.clientSpoke).toBe(true);
   });
 });
