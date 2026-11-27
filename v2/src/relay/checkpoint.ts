@@ -94,16 +94,13 @@ export const SLICE_BREAKDOWN = [
   "output_audio_tokens",
   "output_unknown_tokens",
   "estimated_tokens",
-  // The cached input's audio and image shares, at their own cached rates (OpenAI Realtime, 9e).
+  // The cached input's audio share, at its own cached rate (OpenAI Realtime, 9e).
   "cached_input_audio_tokens",
-  "cached_input_image_tokens",
 ] as const;
 const MODALITY_KINDS = ["audio", "image", "video", "unknown"] as const;
 /** Every measure name a relay's slice may carry. */
-const RELAY_MEASURES: readonly string[] = [...SLICE_MEASURES, ...SLICE_UNITS, ...SLICE_BREAKDOWN, ...SLICE_TRANSCRIPTION];
-/** How many transcription models one slice may carry: a session changes its model rarely, if ever. */
-const MAX_TRANSCRIPTION_MODELS = 8;
-/** A model name, as a slice may name its transcription's: short, with no spaces or controls. */
+const RELAY_MEASURES: readonly string[] = [...SLICE_MEASURES, ...SLICE_UNITS, ...SLICE_BREAKDOWN];
+/** A model name, as a slice may name its transcription's: short, with no spaces or controls (the relay's `transcriptionModel` reads it so). */
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u;
 /** The most billed time one slice may carry: a day, far above any real session's audio. */
 const BILLED_MS_MAX = 24 * 60 * 60_000;
@@ -183,11 +180,21 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       if (!RELAY_MEASURES.includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
-    // The transcriptions by model: an entry that can't be read is dropped with a warning, never the slice,
-    // so a relay never resends one slice forever (AGENTS.md: counting never fails). The slice is then
-    // partial: some of its usage is unknown (Sol, #270 round 2).
-    const { transcriptions, dropped } = readTranscriptions(raw.transcriptions);
-    if (dropped > 0) log("warn", "checkpoint_transcription_dropped", { session: ticket.sid, dropped });
+    // The transcriptions by model, checked as any measure is: the relay sends only names it read as models.
+    let transcriptions: Record<string, Record<string, number>> | undefined;
+    if (raw.transcriptions !== undefined) {
+      if (typeof raw.transcriptions !== "object" || raw.transcriptions === null || Array.isArray(raw.transcriptions)) throw bad();
+      transcriptions = {};
+      for (const [model, counts] of Object.entries(raw.transcriptions)) {
+        if (!MODEL_NAME.test(model) || typeof counts !== "object" || counts === null || Array.isArray(counts)) throw bad();
+        const kept: Record<string, number> = {};
+        for (const [name, value] of Object.entries(counts)) {
+          if (!(SLICE_TRANSCRIPTION as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
+          kept[name] = value;
+        }
+        transcriptions[model] = kept;
+      }
+    }
     slice = {
       seq: raw.seq,
       measures,
@@ -198,7 +205,6 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       to: raw.to,
       ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }),
       ...(transcriptions === undefined ? {} : { transcriptions }),
-      ...(dropped > 0 ? { gaps: (raw.gaps as number) + 1 } : {}),
     };
   }
   return {
@@ -208,29 +214,6 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     providerCallId: (callId as string | null | undefined) ?? null,
     ...(fields.relayVersion === undefined ? {} : { relayVersion: fields.relayVersion as number }),
   };
-}
-
-/**
- * A slice's transcriptions by model, as the relay sent them: at most `MAX_TRANSCRIPTION_MODELS` models,
- * each a model name with counts of the transcription measures. Anything else is dropped and counted.
- */
-function readTranscriptions(raw: unknown): { transcriptions: Record<string, Record<string, number>> | undefined; dropped: number } {
-  if (raw === undefined) return { transcriptions: undefined, dropped: 0 };
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { transcriptions: undefined, dropped: 1 };
-  const transcriptions: Record<string, Record<string, number>> = {};
-  let dropped = 0;
-  for (const [model, counts] of Object.entries(raw)) {
-    const valid =
-      Object.keys(transcriptions).length < MAX_TRANSCRIPTION_MODELS &&
-      MODEL_NAME.test(model) &&
-      typeof counts === "object" &&
-      counts !== null &&
-      !Array.isArray(counts) &&
-      Object.entries(counts).every(([name, value]) => (SLICE_TRANSCRIPTION as readonly string[]).includes(name) && isCount(value, MAX_MEASURE));
-    if (valid) transcriptions[model] = { ...(counts as Record<string, number>) };
-    else dropped += 1;
-  }
-  return { transcriptions: Object.keys(transcriptions).length > 0 ? transcriptions : undefined, dropped };
 }
 
 /** A slice's price: from its tokens, as a live call is priced. */
@@ -275,8 +258,7 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
     resolved.price,
   );
   if (!hasTokens && usage.units === undefined) return free;
-  // A stand-in price (a session model with none of its own) prices an estimate.
-  const priced = priceInServedMode(resolved.price, usage, STANDARD_MODE, resolved.estimated === true);
+  const priced = priceInServedMode(resolved.price, usage);
   if (priced === null) return unresolved;
   return {
     costNano: priced.cost,
@@ -302,14 +284,12 @@ function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObse
     for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) counts[kind] = measures[`${side}_${kind}_tokens`] as number;
     modalityTokens[side] = counts;
   }
-  // The cached input's audio and image shares, at their own cached rates (`cached_input_audio`, `cached_input_image`).
-  const cached: Record<string, number> = {};
-  if ((measures.cached_input_audio_tokens ?? 0) > 0) cached.audio = measures.cached_input_audio_tokens as number;
-  if ((measures.cached_input_image_tokens ?? 0) > 0) cached.image = measures.cached_input_image_tokens as number;
+  const cachedAudio = measures.cached_input_audio_tokens ?? 0;
   return {
     ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
     ...((measures.estimated_tokens ?? 0) > 0 ? { reportMissing: true as const } : {}),
-    ...(Object.keys(cached).length > 0 ? { tokenVariants: { cached_input: cached } } : {}),
+    // The cached input's audio share, at its own cached rate (`cached_input_audio`).
+    ...(cachedAudio > 0 ? { tokenVariants: { cached_input: { audio: cachedAudio } } } : {}),
   };
 }
 
@@ -322,9 +302,7 @@ function breakdownMeasures(measures: Readonly<Record<string, number>>): Record<s
     for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) out[`${side}_${kind}_tokens`] = measures[`${side}_${kind}_tokens`] as number;
   }
   if ((measures.estimated_tokens ?? 0) > 0) out.report_missing = 1;
-  for (const name of ["cached_input_audio_tokens", "cached_input_image_tokens"] as const) {
-    if ((measures[name] ?? 0) > 0) out[name] = measures[name] as number;
-  }
+  if ((measures.cached_input_audio_tokens ?? 0) > 0) out.cached_input_audio_tokens = measures.cached_input_audio_tokens as number;
   return out;
 }
 
@@ -421,18 +399,12 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
  * A slice's input transcriptions as charges of their own (OpenAI, 9e; plan, the provider table: billed
  * separately), one for each model OpenAI transcribed with: `<slice id>:transcription:<model>`, priced
  * today at that model's price, the connection's own rate, else ours (`billingForCharge`). With no price,
- * or none that can be read, a charge is `unresolved`, and the sweep prices it, never as free. None holds
- * connection time: the session's slice has that. Their ids come from the slice's, so a retry books
- * nothing twice.
- *
- * Transcription usage with no model (a relay that never saw one stated) is booked as
- * `<slice id>:transcription` under the session's model, `unresolved`: the sweep prices it at that model's
- * price, a dearer guess, never a free one.
+ * or none that can be read (the relay's `unknown`, when OpenAI never stated a model), a charge is
+ * `unresolved`, and the sweep prices it, never as free. None holds connection time: the session's slice
+ * has that. Their ids come from the slice's, so a retry books nothing twice.
  */
 export function transcriptionCharges(ticket: Ticket, slice: SliceInput, standing: CheckpointStanding | null, now: number): ChargeRow[] {
   const charges: ChargeRow[] = [];
-  const unnamed = transcriptionCharge(ticket, slice, null, slice.measures, null, now);
-  if (unnamed !== null) charges.push(unnamed);
   for (const model of Object.keys(slice.transcriptions ?? {}).sort()) {
     const charge = transcriptionCharge(ticket, slice, model, slice.transcriptions?.[model] ?? {}, standing, now);
     if (charge !== null) charges.push(charge);
@@ -444,7 +416,7 @@ export function transcriptionCharges(ticket: Ticket, slice: SliceInput, standing
 function transcriptionCharge(
   ticket: Ticket,
   slice: SliceInput,
-  model: string | null,
+  model: string,
   measures: Readonly<Record<string, number>>,
   standing: CheckpointStanding | null,
   now: number,
@@ -465,7 +437,7 @@ function transcriptionCharge(
     ...(input + output === 0 ? { noTokens: true as const } : {}),
   };
   let price: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
-  if (model !== null && standing !== null && standing.ratesJson !== undefined) {
+  if (standing !== null && standing.ratesJson !== undefined) {
     try {
       const resolved = billingForCharge(priceSources({ type: ticket.providerType, rates_json: standing.ratesJson ?? null }), model);
       const priced = resolved === null ? null : priceInServedMode(resolved.price, usage);
@@ -487,8 +459,8 @@ function transcriptionCharge(
   const row = sliceCharge(ticket, { seq: slice.seq, measures: {}, sessionMs: 0, gapMs: 0, gaps: 0, from: slice.from, to: slice.to }, price, now);
   return {
     ...row,
-    id: model === null ? `${row.id}:transcription` : `${row.id}:transcription:${model}`,
-    model: model ?? ticket.model,
+    id: `${row.id}:transcription:${model}`,
+    model,
     inputTokens: input,
     outputTokens: output,
     measures: usageMeasures(usage, STANDARD_MODE),

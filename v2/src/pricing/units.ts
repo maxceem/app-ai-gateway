@@ -168,6 +168,6 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
     case "wall_clock":
       return [[{ ...NO_TOKENS, units: { session_seconds: sample("session_seconds"), ...Object.fromEntries((meter.units ?? []).map((unit) => [unit, sample(unit)])) } }]];
     case "provider_event":
-      return [[SOME_TOKENS], [reported("session_seconds")]];
+      return meter.tokensOnly === true ? [[SOME_TOKENS]] : [[SOME_TOKENS], [reported("session_seconds")]];
   }
 }

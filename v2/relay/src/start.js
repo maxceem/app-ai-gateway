@@ -238,6 +238,8 @@ export class SessionCore {
      * during the wait: the end is waiting for the provider's answer, and usage still counts.
      */
     this.turnWaiter = null;
+    /** The last journal write failed: usage this instance saw may be missing from storage (`endOnce`). */
+    this.unwritten = false;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -647,7 +649,10 @@ export class SessionCore {
     if (this.over) return;
     try {
       await this.store.putJournal(journal);
+      // Each write holds the whole journal: one that lands covers any that failed before it.
+      this.unwritten = false;
     } catch {
+      this.unwritten = true;
       this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
     }
   }
@@ -868,6 +873,9 @@ export class SessionCore {
       journal.droppedFrom ??= sliceEnd;
       this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
     }
+    // The last journal write failed, so usage this instance saw may be missing from what storage holds:
+    // the final slice is partial, never complete without it (Sol, #270 round 3).
+    if (journal !== null && this.unwritten) journal.droppedFrom ??= sliceEnd;
     if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
@@ -1225,7 +1233,14 @@ export class SessionCore {
         level: "error",
         message: "relay_close_given_up",
         session: this.sessionIdOf(stored),
-        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs, ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }) })),
+        slices: left.map((slice) => ({
+          seq: slice.seq,
+          measures: slice.measures,
+          sessionMs: slice.sessionMs,
+          gapMs: slice.gapMs,
+          ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }),
+          ...(slice.transcriptions === undefined ? {} : { transcriptions: slice.transcriptions }),
+        })),
       });
       /** @type {Record<string, unknown>} */
       const entries = { closed: true };

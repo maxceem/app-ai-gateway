@@ -3551,10 +3551,6 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "cached_input_image": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cache_write": {
                   "type": "number",
                   "minimum": 0
@@ -3600,10 +3596,6 @@
                   "minimum": 0
                 },
                 "long_cached_input_audio": {
-                  "type": "number",
-                  "minimum": 0
-                },
-                "long_cached_input_image": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -3712,10 +3704,6 @@
                         "type": "number",
                         "minimum": 0
                       },
-                      "cached_input_image": {
-                        "type": "number",
-                        "minimum": 0
-                      },
                       "cache_write": {
                         "type": "number",
                         "minimum": 0
@@ -3761,10 +3749,6 @@
                         "minimum": 0
                       },
                       "long_cached_input_audio": {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      "long_cached_input_image": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -3871,10 +3855,6 @@
                           "type": "number",
                           "minimum": 0
                         },
-                        "cached_input_image": {
-                          "type": "number",
-                          "minimum": 0
-                        },
                         "cache_write": {
                           "type": "number",
                           "minimum": 0
@@ -3920,10 +3900,6 @@
                           "minimum": 0
                         },
                         "long_cached_input_audio": {
-                          "type": "number",
-                          "minimum": 0
-                        },
-                        "long_cached_input_image": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -4253,10 +4229,6 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "cached_input_image": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cache_write": {
                   "type": "number",
                   "minimum": 0
@@ -4302,10 +4274,6 @@
                   "minimum": 0
                 },
                 "long_cached_input_audio": {
-                  "type": "number",
-                  "minimum": 0
-                },
-                "long_cached_input_image": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -4414,10 +4382,6 @@
                         "type": "number",
                         "minimum": 0
                       },
-                      "cached_input_image": {
-                        "type": "number",
-                        "minimum": 0
-                      },
                       "cache_write": {
                         "type": "number",
                         "minimum": 0
@@ -4463,10 +4427,6 @@
                         "minimum": 0
                       },
                       "long_cached_input_audio": {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      "long_cached_input_image": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -4573,10 +4533,6 @@
                           "type": "number",
                           "minimum": 0
                         },
-                        "cached_input_image": {
-                          "type": "number",
-                          "minimum": 0
-                        },
                         "cache_write": {
                           "type": "number",
                           "minimum": 0
@@ -4622,10 +4578,6 @@
                           "minimum": 0
                         },
                         "long_cached_input_audio": {
-                          "type": "number",
-                          "minimum": 0
-                        },
-                        "long_cached_input_image": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -4899,10 +4851,6 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "cached_input_image": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cache_write": {
                   "type": "number",
                   "minimum": 0
@@ -4948,10 +4896,6 @@
                   "minimum": 0
                 },
                 "long_cached_input_audio": {
-                  "type": "number",
-                  "minimum": 0
-                },
-                "long_cached_input_image": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -5060,10 +5004,6 @@
                         "type": "number",
                         "minimum": 0
                       },
-                      "cached_input_image": {
-                        "type": "number",
-                        "minimum": 0
-                      },
                       "cache_write": {
                         "type": "number",
                         "minimum": 0
@@ -5109,10 +5049,6 @@
                         "minimum": 0
                       },
                       "long_cached_input_audio": {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      "long_cached_input_image": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -5219,10 +5155,6 @@
                           "type": "number",
                           "minimum": 0
                         },
-                        "cached_input_image": {
-                          "type": "number",
-                          "minimum": 0
-                        },
                         "cache_write": {
                           "type": "number",
                           "minimum": 0
@@ -5268,10 +5200,6 @@
                           "minimum": 0
                         },
                         "long_cached_input_audio": {
-                          "type": "number",
-                          "minimum": 0
-                        },
-                        "long_cached_input_image": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -5461,10 +5389,6 @@
                   "type": "number",
                   "minimum": 0
                 },
-                "cached_input_image": {
-                  "type": "number",
-                  "minimum": 0
-                },
                 "cache_write": {
                   "type": "number",
                   "minimum": 0
@@ -5510,10 +5434,6 @@
                   "minimum": 0
                 },
                 "long_cached_input_audio": {
-                  "type": "number",
-                  "minimum": 0
-                },
-                "long_cached_input_image": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -5622,10 +5542,6 @@
                         "type": "number",
                         "minimum": 0
                       },
-                      "cached_input_image": {
-                        "type": "number",
-                        "minimum": 0
-                      },
                       "cache_write": {
                         "type": "number",
                         "minimum": 0
@@ -5671,10 +5587,6 @@
                         "minimum": 0
                       },
                       "long_cached_input_audio": {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      "long_cached_input_image": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -5781,10 +5693,6 @@
                           "type": "number",
                           "minimum": 0
                         },
-                        "cached_input_image": {
-                          "type": "number",
-                          "minimum": 0
-                        },
                         "cache_write": {
                           "type": "number",
                           "minimum": 0
@@ -5830,10 +5738,6 @@
                           "minimum": 0
                         },
                         "long_cached_input_audio": {
-                          "type": "number",
-                          "minimum": 0
-                        },
-                        "long_cached_input_image": {
                           "type": "number",
                           "minimum": 0
                         },

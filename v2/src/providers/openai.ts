@@ -86,9 +86,10 @@ export const openai = defineProvider({
       lifecycle: "session",
       transport: "websocket",
       model: { in: "query", name: "model" },
-      // Only the Realtime models: an image or chat model's own price is not judged here (Sol, #269).
+      // Only the Realtime models billed by tokens: an image or chat model's own price is not judged here
+      // (Sol, #269), and the per-minute transcription and translation models are not this session's.
       modelKinds: ["realtime"],
-      meter: { kind: "provider_event", adapter: "openai-realtime" },
+      meter: { kind: "provider_event", adapter: "openai-realtime", tokensOnly: true },
       session: { slot: "conversational", mode: "relayed" },
     }),
   ], { chat: { cap: "chat-completion-tokens" } }),

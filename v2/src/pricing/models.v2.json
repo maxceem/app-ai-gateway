@@ -19,7 +19,6 @@
       "image_input": 5.0,
       "cached_input": 0.4,
       "cached_input_audio": 0.4,
-      "cached_input_image": 0.5,
       "output": 24.0,
       "audio_output": 64.0,
       "author": "OpenAI"
@@ -31,7 +30,6 @@
       "image_input": 0.8,
       "cached_input": 0.06,
       "cached_input_audio": 0.3,
-      "cached_input_image": 0.08,
       "output": 2.4,
       "audio_output": 20.0,
       "author": "OpenAI"
@@ -43,7 +41,6 @@
       "image_input": 5.0,
       "cached_input": 0.4,
       "cached_input_audio": 0.4,
-      "cached_input_image": 0.5,
       "output": 24.0,
       "audio_output": 64.0,
       "author": "OpenAI"
@@ -55,7 +52,6 @@
       "image_input": 5.0,
       "cached_input": 0.4,
       "cached_input_audio": 0.4,
-      "cached_input_image": 0.5,
       "output": 16.0,
       "audio_output": 64.0,
       "author": "OpenAI"
@@ -67,7 +63,6 @@
       "image_input": 0.8,
       "cached_input": 0.06,
       "cached_input_audio": 0.3,
-      "cached_input_image": 0.08,
       "output": 2.4,
       "audio_output": 20.0,
       "author": "OpenAI"
@@ -79,7 +74,6 @@
       "image_input": 5.0,
       "cached_input": 0.4,
       "cached_input_audio": 0.4,
-      "cached_input_image": 0.5,
       "output": 16.0,
       "audio_output": 64.0,
       "author": "OpenAI"
@@ -91,7 +85,6 @@
       "image_input": 0.8,
       "cached_input": 0.06,
       "cached_input_audio": 0.3,
-      "cached_input_image": 0.08,
       "output": 2.4,
       "audio_output": 20.0,
       "author": "OpenAI"
@@ -110,7 +103,6 @@
       "image_input": 5.0,
       "cached_input": 0.4,
       "cached_input_audio": 0.4,
-      "cached_input_image": 0.5,
       "output": 16.0,
       "audio_output": 64.0,
       "author": "OpenAI"

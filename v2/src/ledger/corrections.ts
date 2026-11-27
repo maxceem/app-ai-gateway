@@ -24,7 +24,7 @@
  *   stops once a final settlement exists; the settlement already includes it.
  */
 import { rate, nano, type NanoDollars } from "../money.ts";
-import { billingForCharge, priceSources, sessionEstimatePrice, type ResolvedPrice } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
 import { decodeSessionPrice, sliceUsage } from "../relay/session-price.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
@@ -335,8 +335,6 @@ export async function priceUnresolvedCharge(
   let saved: ResolvedPrice | null = null;
   /** The session's price as read here: the correction is booked only while it is unchanged. */
   let sessionPrice: { readonly sessionId: string; readonly ratesJson: string | null } | null = null;
-  /** The session's own model, for the estimate when it has no price. */
-  let sessionModel: string | null = null;
   if (original.ownerType === "session") {
     const session = await db
       .prepare("SELECT settlement, session_total_nano, rates_json, model FROM session WHERE id = ?")
@@ -346,7 +344,6 @@ export async function priceUnresolvedCharge(
     // The saved price is the session's model's: a charge of another model (OpenAI's input transcription, 9e)
     // is priced at its own model's current price instead.
     const ownModel = session !== null && session.model === original.model;
-    sessionModel = session?.model ?? null;
     if (session !== null && ownModel) sessionPrice = { sessionId: original.ownerId, ratesJson: session.rates_json };
     if (session !== null && ownModel && session.rates_json !== null && session.rates_json !== "") {
       try {
@@ -364,7 +361,7 @@ export async function priceUnresolvedCharge(
   const usageAt = (price: ResolvedPrice) => (original.ownerType === "session" ? sliceUsage(stored.usage, price.price) : stored.usage);
   const priceWith = (price: ResolvedPrice) => {
     try {
-      return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt || price.estimated === true);
+      return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt);
     } catch {
       return null;
     }
@@ -381,13 +378,8 @@ export async function priceUnresolvedCharge(
             .bind(original.providerConnectionId)
             .first<{ rates_json: string | null }>();
     resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
-    // A session's own model with no price (an app lets it through by listing it): the session estimate, as
-    // the checkpoint bills it (`sessionEstimatePrice`), so it is never unresolved for good (Sol, #270 round 2).
-    if (resolved === null && original.ownerType === "session" && sessionModel !== null && original.model === sessionModel) {
-      resolved = sessionEstimatePrice(original.providerType);
-    }
     if (resolved === null) return { status: "no_price" };
-    priced = priceInServedMode(resolved.price, usageAt(resolved), stored.mode, stored.doubt || resolved.estimated === true);
+    priced = priceInServedMode(resolved.price, usageAt(resolved), stored.mode, stored.doubt);
   }
   if (priced === null || resolved === null) return { status: "no_price" };
   // A slice with a gap whose price bills neither its tokens nor its time: its cost stays unknown,

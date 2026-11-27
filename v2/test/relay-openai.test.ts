@@ -40,15 +40,15 @@ const session = (fields: Record<string, unknown>) => JSON.stringify({ type: "ses
 const delta = (chars: number) => JSON.stringify({ type: "response.output_audio.delta", event_id: "event_d", response_id: "resp_1", delta: "A".repeat(chars) });
 
 describe("OpenAI Realtime's adapter (step 9e)", () => {
-  it("reads an answer's usage from response.done: cached at the cached rate, audio and images whole with their cached shares apart", () => {
+  it("reads an answer's usage from response.done: cached at the cached rate, audio whole with its cached share apart, a cached image as uncached", () => {
     expect(openAiMeasures(USAGE)).toEqual({
-      input_tokens: 600,
-      cached_input_tokens: 600,
+      // 600 cached, of which 10 image tokens bill as uncached: 590 at the cached rate.
+      input_tokens: 610,
+      cached_input_tokens: 590,
       input_split: 1,
       input_audio_tokens: 480,
       input_image_tokens: 20,
       cached_input_audio_tokens: 190,
-      cached_input_image_tokens: 10,
       output_tokens: 320,
       output_split: 1,
       output_audio_tokens: 260,
@@ -68,14 +68,14 @@ describe("OpenAI Realtime's adapter (step 9e)", () => {
     const journal = newJournal(0);
     addUsage(journal, { id: "r1", measures: openAiMeasures(USAGE) }, "per_turn", 1);
     addUsage(journal, { id: "r2", measures: openAiMeasures({ input_tokens: 50, output_tokens: 7 }) }, "per_turn", 2);
-    expect(freeze(journal, 3)?.measures).toMatchObject({ input_tokens: 650, input_unknown_tokens: 50, output_tokens: 327, output_unknown_tokens: 7, output_audio_tokens: 260 });
+    expect(freeze(journal, 3)?.measures).toMatchObject({ input_tokens: 660, input_unknown_tokens: 50, output_tokens: 327, output_unknown_tokens: 7, output_audio_tokens: 260 });
   });
 
   it("reads the usage inside the frame that ends the answer, keyed by the response's id, and parses no audio delta", () => {
     const event = OPENAI.read(done("resp_1", USAGE));
     expect(event).toEqual({ id: "resp_1", measures: openAiMeasures(USAGE) });
-    expect(OPENAI.turn(done("resp_1", USAGE))).toBe("done");
-    expect(OPENAI.turn('{"type":"response.created","event_id":"e","response":{"id":"resp_1"}}')).toBe("open");
+    // The call's meter, not the adapter, tells a closing session what is open.
+    expect(OPENAI.turn(done("resp_1", USAGE))).toBeNull();
     // An audio delta is never read for usage: its type is read from the frame's start.
     expect(OPENAI.read(delta(64_000))).toBeNull();
     // response.done without usage reads as nothing.
@@ -97,8 +97,8 @@ describe("an OpenAI call's memory (step 9e)", () => {
   it("names a transcription's model from OpenAI's own session.updated; the session's own usage keeps none", () => {
     const call = meter();
     const transcription = { id: "t1", measures: { transcription_input_tokens: 10 } };
-    // Before OpenAI said which model transcribes, the event goes as it is.
-    expect(call.label(transcription)).toEqual(transcription);
+    // Before OpenAI said which model transcribes, the event is `unknown`: booked unresolved, never free.
+    expect(call.label(transcription)).toEqual({ ...transcription, model: "unknown" });
     call.see(session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } }, output: { format: { type: "audio/pcm", rate: 24_000 } } } }), true);
     expect(call.label(transcription)).toEqual({ ...transcription, model: "gpt-4o-mini-transcribe" });
     expect(call.label({ id: "r1", measures: { input_tokens: 5 } })).toEqual({ id: "r1", measures: { input_tokens: 5 } });
@@ -163,37 +163,24 @@ describe("an OpenAI call's memory (step 9e)", () => {
     expect(freeze(journal, 3_000)).not.toHaveProperty("transcriptions");
   });
 
-  it("takes a transcription's model when OpenAI commits its audio: a model change after the commit never moves it (Sol, #270 round 1)", () => {
+  it("waits for each committed item's transcription until it completes, fails, or the item is deleted, and names a malformed model unknown (Sol, #270; Fable, #270 round 1)", () => {
     const call = meter();
     call.see(session({ audio: { input: { transcription: { model: "whisper-1" } } } }), true);
-    call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e1", item_id: "item_1" }), true);
+    for (const item of ["item_1", "item_2", "item_3"]) call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e", item_id: item }), true);
     expect(call.pending()).toBe(true);
-    // The app switches models before the first item's transcription comes.
-    call.see(session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } } }), true);
-    call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e2", item_id: "item_2" }), true);
-    const event = { id: "t", measures: { transcription_audio_ms: 1_000 } };
     expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1" }), true)).toBe("item:item_1");
-    expect(call.label(event)).toMatchObject({ model: "whisper-1" });
-    // Still waited for until its usage is written.
+    // Labelled with the model the session names at its completion.
+    expect(call.label({ id: "t", measures: { transcription_audio_ms: 1_000 } })).toMatchObject({ model: "whisper-1" });
     call.settled("item:item_1");
+    call.settled(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.failed", event_id: "t2", item_id: "item_2" }), true)!);
     expect(call.pending()).toBe(true);
-    // A failed transcription is no longer waited for either.
-    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.failed", event_id: "t2", item_id: "item_2" }), true)).toBe("item:item_2");
-    call.settled("item:item_2");
+    call.settled(call.see(JSON.stringify({ type: "conversation.item.deleted", event_id: "t3", item_id: "item_3" }), true)!);
     expect(call.pending()).toBe(false);
+    // A model name the gateway would not take is never sent: it is `unknown`.
+    call.see(session({ audio: { input: { transcription: { model: "bad name with spaces" } } } }), true);
+    expect(call.label({ id: "t", measures: { transcription_audio_ms: 1 } })).toMatchObject({ model: "unknown" });
   });
 
-  it("keeps each open answer's audio apart: an out-of-band answer finishing never clears the voice answer's estimate (Sol, #270 round 1)", () => {
-    const call = meter();
-    call.see('{"type":"response.created","event_id":"e1","response":{"id":"resp_voice"}}', true);
-    call.see('{"type":"response.created","event_id":"e2","response":{"id":"resp_side","conversation_id":null}}', true);
-    call.see(JSON.stringify({ type: "response.output_audio.delta", event_id: "d1", response_id: "resp_voice", delta: "A".repeat(64_000) }), true);
-    call.see(JSON.stringify({ type: "response.output_audio.delta", event_id: "d2", response_id: "resp_side", delta: "A".repeat(32_000) }), true);
-    // The side answer finishes and reports its own usage.
-    call.see(done("resp_side", { input_tokens: 5, output_tokens: 5 }), true);
-    const voice = JSON.stringify({ type: "response.output_audio.delta", event_id: "d1", response_id: "resp_voice", delta: "A".repeat(64_000) }).length;
-    expect(call.estimate()?.measures.output_audio_tokens).toBe(Math.ceil(voice / 3_200));
-  });
 });
 
 describe("the session object with an OpenAI call (step 9e)", () => {
@@ -340,6 +327,45 @@ describe("a transcription still to come when an OpenAI session closes (Sol, #270
     now += 5_000;
     await core.end("client_closed");
     expect(slices.at(-1)?.gaps).toBeGreaterThan(0);
+  });
+});
+
+describe("a journal write that fails before the close (Sol, #270 round 3)", () => {
+  it("marks the final slice partial when the last usage write failed, never complete without it; a later write that lands clears it", async () => {
+    const run = async (recover: boolean) => {
+      let now = 1_000_000;
+      const store = new MemoryStore();
+      const slices: { gaps: number; measures: Record<string, number> }[] = [];
+      const core = new SessionCore({
+        store,
+        now: () => now,
+        log: () => undefined,
+        vault: { sessionKey: async () => ({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" }) as never },
+        main: {
+          open: async () => ({ deadline: now + 30 * 60_000, mode: "relayed", operation: "openai.realtime", checkpointIntervalMs: 60_000, version: 2, adapter: "openai", model: "gpt-realtime-2.1" }) as never,
+          checkpoint: async (_ticket: string, input: { slice: { gaps: number; measures: Record<string, number> } | null }) => {
+            if (input.slice !== null) slices.push(structuredClone(input.slice));
+            return { decision: "continue", reasons: [], written: true } as never;
+          },
+          close: async () => ({ version: 2 }),
+        },
+        provider: { connect: async () => ({ callId: null, close: () => undefined }) },
+      });
+      const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.realtime", model: "gpt-realtime-2.1" });
+      await core.start(text, ticket, { close: () => undefined });
+      const write = store.putJournal.bind(store);
+      store.putJournal = () => Promise.reject(new Error("storage failed"));
+      await core.recordUsage({ id: "resp_1", measures: { input_tokens: 100, output_tokens: 20 } }, "per_turn");
+      store.putJournal = write;
+      if (recover) await core.recordUsage({ id: "resp_2", measures: { input_tokens: 1, output_tokens: 1 } }, "per_turn");
+      now += 5_000;
+      await core.end("client_closed");
+      return slices.at(-1);
+    };
+    // The answer's usage never reached storage: the final slice is partial.
+    expect((await run(false))?.gaps).toBeGreaterThan(0);
+    // A later write held the whole journal: complete, with both answers.
+    expect(await run(true)).toMatchObject({ gaps: 0, measures: { input_tokens: 101, output_tokens: 21 } });
   });
 });
 

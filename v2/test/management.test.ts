@@ -381,7 +381,7 @@ describe("validate and check", () => {
     const { body: provider } = await createProvider(key);
     const slug = provider.provider.slug as string;
     // Chat cannot bill it, but realtime, served in a later release, can: the list saves.
-    const both = apiKeyConfig({ [slug]: { operations: ["openai.chat", "openai.realtime"], models: ["gpt-realtime-whisper"] } });
+    const both = apiKeyConfig({ [slug]: { operations: ["openai.chat", "openai.realtime"], models: ["gpt-realtime-2.1"] } });
     expect((await createApp(key, both)).status).toBe(201);
     const unpriced = apiKeyConfig({ [slug]: { operations: ["openai.realtime"], models: ["no-such-model"] } });
     expect(await createApp(key, unpriced)).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });

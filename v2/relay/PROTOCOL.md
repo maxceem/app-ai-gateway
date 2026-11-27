@@ -148,16 +148,18 @@ own rates.
 
 - **The model is the session's.** It is in the address the relay connects to.
   A `session.update` that names another `model` is sent on with the session's
-  model instead. Everything else you send goes to OpenAI as it is.
+  model instead. Everything else you send goes to OpenAI as it is. The relay
+  reads text frames only: a `session.update` sent as a binary frame is not
+  checked. This is a known limit.
 - **Input transcription is billed apart**, at the transcription model's price:
-  the model OpenAI stated when it committed the audio
-  (`input_audio_buffer.committed`, after `session.created` or
-  `session.updated`), and the usage in each
-  `conversation.item.input_audio_transcription.completed`. A closing session
-  waits for transcriptions still to come, within its closing wait.
+  the model OpenAI states in `session.created` or `session.updated`, and the
+  usage in each `conversation.item.input_audio_transcription.completed`. A
+  closing session waits for transcriptions still to come, within its closing
+  wait.
 - **An answer the session's own end cuts** (its time cap, a stop) reports no
   usage: its audio is billed from what was forwarded, 20 tokens a second,
-  marked as an estimate. An answer you cancel reports its own usage.
+  marked as an estimate, in the session's audio format. An answer you cancel
+  reports its own usage.
 
 ## Reconnecting
 

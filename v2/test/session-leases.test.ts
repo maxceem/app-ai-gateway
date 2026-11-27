@@ -355,6 +355,10 @@ describe("starting a session", () => {
     // A model the list prices as another kind is not a session's: an image model never starts one.
     const image = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-image-1.5" });
     expect(image.status).toBe(400);
+    // Nor do the per-minute transcription and translation models: the session bills tokens (Fable, #270 round 1).
+    for (const model of ["gpt-realtime-whisper", "gpt-live-transcribe", "gpt-realtime-translate"]) {
+      expect((await start(appId, slug, key, { path: "v1/realtime", model })).status, model).toBe(400);
+    }
   });
 
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {

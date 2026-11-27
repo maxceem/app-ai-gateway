@@ -371,9 +371,10 @@ function countAt(record, ...path) {
  * as the slice's measures. `input_tokens` holds the cached ones;
  * `input_token_details` splits the whole prompt by modality, and its
  * `cached_tokens_details` the cached part.
- * - Input: the cached tokens bill at the cached rate; cached audio and cached
- *   images at their own (`cached_input_audio`, `cached_input_image`). Audio
- *   and images are counted whole, with their cached shares as those variants.
+ * - Input: the cached tokens bill at the cached rate, cached audio at its own
+ *   (`cached_input_audio`); audio is counted whole, with its cached share as
+ *   that variant. A cached image token bills as an uncached one: the price list
+ *   has no cached image rate, and a guess must bill high, never low.
  * - Output: audio at its own rate, the rest (text, reasoning) at the text rate.
  * - Tokens no breakdown covers, a side with none or the rest of one, are
  *   `unknown`: billed at the model's highest rate, never as text (Sol, #270).
@@ -384,7 +385,8 @@ export function openAiMeasures(usage) {
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
   const details = usage.input_token_details;
-  const cached = Math.min(input, countAt(details, "cached_tokens"));
+  const cachedImage = countAt(details, "cached_tokens_details", "image_tokens");
+  const cached = Math.min(input, Math.max(0, countAt(details, "cached_tokens") - cachedImage));
   /** @type {Record<string, number>} */
   const measures = { input_tokens: input - cached, output_tokens: output, cached_input_tokens: cached, input_split: 1, output_split: 1 };
   const audio = countAt(details, "audio_tokens");
@@ -392,7 +394,6 @@ export function openAiMeasures(usage) {
   measures.input_audio_tokens = audio;
   measures.input_image_tokens = image;
   measures.cached_input_audio_tokens = Math.min(cached, countAt(details, "cached_tokens_details", "audio_tokens"));
-  measures.cached_input_image_tokens = Math.min(cached - measures.cached_input_audio_tokens, countAt(details, "cached_tokens_details", "image_tokens"));
   // What the split doesn't account for, of the uncached input: billed at the highest rate.
   const accounted = countAt(details, "text_tokens") + audio + image;
   measures.input_unknown_tokens = Math.max(0, Math.min(input - cached, input - accounted));
@@ -434,21 +435,16 @@ const OPENAI_USAGE_TYPES = new Set(["response.done", "conversation.item.input_au
 /**
  * OpenAI Realtime over WebSocket (9e). Usage is per answer, in `response.done`
  * (answers cancelled or cut short report theirs too), and per input
- * transcription, in its own event. An answer opens at `response.created` and
- * is done at `response.done`. OpenAI keeps the conversation while our SDK's
- * link is down, so its frames are held for a reconnect.
+ * transcription, in its own event. Its answers and transcriptions in progress
+ * are the call's meter's (`perCall`). OpenAI keeps the conversation while our
+ * SDK's link is down, so its frames are held for a reconnect.
  * @type {Adapter}
  */
 const OPENAI = {
   shape: "per_turn",
   detached: "hold",
-  turn(data) {
-    if (typeof data !== "string") return null;
-    const type = typeOf(data);
-    if (type === "response.created") return "open";
-    if (type === "response.done") return "done";
-    return null;
-  },
+  // The call's meter tells a closing session what is still open (`perCall`): its answers and transcriptions.
+  turn: () => null,
   read(data) {
     if (typeof data !== "string" || !OPENAI_USAGE_TYPES.has(typeOf(data) ?? "")) return null;
     const frame = /** @type {{ type?: unknown, event_id?: unknown, response?: { id?: unknown, usage?: unknown }, usage?: unknown } | null} */ (parsed(data));
@@ -502,24 +498,28 @@ function transcriptionModel(session) {
   const transcription = session.audio?.input !== undefined ? session.audio.input.transcription : session.input_audio_transcription;
   if (transcription === undefined) return undefined;
   const model = transcription?.model;
-  return typeof model === "string" && model !== "" && model.length <= 128 ? model : null;
+  if (model === undefined || model === null) return transcription === null ? null : "unknown";
+  // Only a name the gateway takes as a model: anything else is booked as `unknown`, never sent as it is.
+  return typeof model === "string" && MODEL_NAME.test(model) ? model : "unknown";
 }
 
-/** How many answers or transcriptions a call remembers at once: far above what one session has open. */
+/** A model name the gateway takes on a slice (`src/relay/checkpoint.ts`): short, with no spaces or controls. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u;
+
+/** How many transcriptions or finished events a call remembers at once: far above what one session has open. */
 const OPENAI_OPEN_MAX = 64;
-/** An audio delta's answer, read from its start: OpenAI sends `response_id` near the front. */
-const RESPONSE_ID = /"response_id":"([^"]{1,128})"/u;
 
 /**
  * One OpenAI call's memory (`CallMeter`), from OpenAI's own events:
  * - its output audio format and its input transcription model
  *   (`session.created`, `session.updated`);
- * - each audio item's transcription model, taken when OpenAI commits the item
- *   (`input_audio_buffer.committed`), so a later model change never moves it;
- *   and the transcriptions still to come, which a closing session waits for;
- * - each answer still open, by its `response.id`, with its audio forwarded, for
- *   its estimate if the session's own end cuts it. An out-of-band answer
- *   finishing never clears another's (Sol, #270).
+ * - how many answers are open, and the audio forwarded while any is, for an
+ *   estimate if the session's own end cuts them. An out-of-band answer's audio
+ *   counts too, and the estimate uses the session's format: a guess that may
+ *   bill high, never low, marked an estimate;
+ * - the committed audio items whose transcription is still to come, and each
+ *   finished answer or transcription until its usage is written, which a
+ *   closing session waits for.
  * @param {string | null} model the session's locked model
  * @returns {CallMeter}
  */
@@ -528,55 +528,51 @@ function openAiCall(model) {
   let format = "pcm";
   /** @type {string | null} */
   let transcribedBy = null;
-  /** @type {Map<string, number>} Each open answer's audio characters forwarded. */
-  const answers = new Map();
-  /** @type {Map<string, string | null>} Each committed audio item whose transcription is still to come, and its model. */
-  const pending = new Map();
+  let open = 0;
+  let chars = 0;
+  let finishedCount = 0;
+  /** @type {Set<string>} Committed audio items whose transcription is still to come. */
+  const pending = new Set();
   /** @type {Set<string>} Answers and transcriptions that finished, whose usage is still being written. */
   const writing = new Set();
-  /** @type {string | null | undefined} The model of the transcription the frame being read carries. */
-  let current;
-  /** An answer or transcription finished: waited for until its usage is written (`settled`). @param {string} key */
+  /** A finished answer or transcription: waited for until its usage is written (`settled`). @param {string} key */
   const finished = (key) => {
     if (writing.size >= OPENAI_OPEN_MAX) writing.delete(writing.values().next().value ?? "");
     writing.add(key);
     return key;
   };
-  /** @param {Map<string, unknown>} map @param {string} key @param {any} value */
-  const remember = (map, key, value) => {
-    if (!map.has(key) && map.size >= OPENAI_OPEN_MAX) map.delete(map.keys().next().value ?? "");
-    map.set(key, value);
+  /** The item a small frame names. @param {string} data */
+  const itemOf = (data) => {
+    const item = /** @type {{ item_id?: unknown } | null} */ (parsed(data))?.item_id;
+    return typeof item === "string" ? item : "";
   };
   return {
     see(data, forwarded) {
-      current = undefined;
       if (typeof data !== "string") return null;
       const type = typeOf(data);
-      if (type !== null && OPENAI_AUDIO_DELTAS.has(type)) {
-        // Only audio that reached the client, or waits for it, is estimated if the answer is cut.
-        const id = RESPONSE_ID.exec(data.slice(0, 256))?.[1] ?? "";
-        if (forwarded && answers.has(id)) answers.set(id, (answers.get(id) ?? 0) + data.length);
-        return null;
-      }
-      if (type === null || !OPENAI_SEEN.has(type)) return null;
-      const frame = /** @type {Record<string, any> | null} */ (parsed(data));
-      if (frame === null) return null;
-      if (type === "session.created" || type === "session.updated") {
-        const session = frame.session;
+      if (type === null) return null;
+      if (OPENAI_AUDIO_DELTAS.has(type)) {
+        // Only audio that reached the client, or waits for it, is estimated if an answer is cut.
+        if (forwarded && open > 0) chars += data.length;
+      } else if (type === "response.created") {
+        open += 1;
+      } else if (type === "response.done") {
+        open = Math.max(0, open - 1);
+        if (open === 0) chars = 0;
+        finishedCount += 1;
+        return finished(`answer:${finishedCount}`);
+      } else if (type === "session.created" || type === "session.updated") {
+        const session = /** @type {{ session?: Record<string, any> } | null} */ (parsed(data))?.session;
         if (typeof session !== "object" || session === null) return null;
         format = outputFormat(session) ?? format;
         const named = transcriptionModel(session);
         if (named !== undefined) transcribedBy = named;
-      } else if (type === "response.created" || type === "response.done") {
-        const id = typeof frame.response?.id === "string" ? frame.response.id : "";
-        if (type === "response.created") remember(answers, id, 0);
-        else if (answers.delete(id)) return finished(`answer:${id}`);
       } else if (type === "input_audio_buffer.committed") {
-        if (transcribedBy !== null && typeof frame.item_id === "string") remember(pending, frame.item_id, transcribedBy);
-      } else {
-        // A transcription completed or failed: its model is the one it was committed with.
-        const item = typeof frame.item_id === "string" ? frame.item_id : "";
-        current = pending.has(item) ? pending.get(item) : transcribedBy;
+        const item = itemOf(data);
+        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) pending.add(item);
+      } else if (OPENAI_TRANSCRIPTION_ENDS.has(type)) {
+        // A transcription completed or failed, or its item was deleted: it is no longer waited for.
+        const item = itemOf(data);
         if (pending.delete(item)) return finished(`item:${item}`);
       }
       return null;
@@ -585,19 +581,17 @@ function openAiCall(model) {
       writing.delete(key);
     },
     pending() {
-      return answers.size > 0 || pending.size > 0 || writing.size > 0;
+      return open > 0 || pending.size > 0 || writing.size > 0;
     },
     label(event) {
-      const model = current === undefined ? transcribedBy : current;
       const transcription = Object.keys(event.measures).some((name) => name.startsWith("transcription_"));
-      return transcription && model !== null ? { ...event, model } : event;
+      return transcription ? { ...event, model: transcribedBy ?? "unknown" } : event;
     },
     estimate() {
-      if (answers.size === 0) return null;
-      let chars = 0;
-      for (const count of answers.values()) chars += count;
-      answers.clear();
+      if (open === 0) return null;
       const tokens = Math.ceil(chars / OPENAI_CHARS_PER_TOKEN[format]);
+      open = 0;
+      chars = 0;
       if (tokens === 0) return null;
       return { id: crypto.randomUUID(), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } };
     },
@@ -613,15 +607,11 @@ function openAiCall(model) {
   };
 }
 
-/** The frames an OpenAI call's memory parses: few and small, never an audio delta. */
-const OPENAI_SEEN = new Set([
-  "session.created",
-  "session.updated",
-  "response.created",
-  "response.done",
-  "input_audio_buffer.committed",
+/** The events that end the wait for an item's transcription. */
+const OPENAI_TRANSCRIPTION_ENDS = new Set([
   "conversation.item.input_audio_transcription.completed",
   "conversation.item.input_audio_transcription.failed",
+  "conversation.item.deleted",
 ]);
 
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */

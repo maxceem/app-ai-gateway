@@ -39,7 +39,7 @@ import { readingRules, rewrittenModel, type ApiStyle, type OperationDescription,
 import { declaredOperation, presetOperation, streamingSibling } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
-import { MoneyError, rate, type RateNanoPerMillion } from "../money.ts";
+import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
 import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
@@ -49,7 +49,6 @@ import {
   keyCandidates,
   listPrice,
   priceInMode,
-  PRICE_LIST,
   reportsCost,
   resolvePrice,
   servedModes,
@@ -70,12 +69,7 @@ export type BillingProblem =
   /** A price, but none in the service mode asked for. */
   | "no_mode_price";
 
-/**
- * A price, and where it came from. `estimated`: a stand-in for a model that has none (a live session's
- * model an app lists with no price, billed at the provider's dearest session model: `../relay/session-price.ts`),
- * so whatever it prices is marked an estimate.
- */
-export type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind; readonly estimated?: true };
+export type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind };
 
 export interface Billing {
   /** The price the operation bills the model at, or null when it has none it can use. */
@@ -321,27 +315,6 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
  */
 function keyedClockSession(operation: OperationDescription, price: ModelPrice): boolean {
   return operation.meter.kind === "wall_clock" && (price.keyed !== undefined || price.keyedAdditions !== undefined);
-}
-
-/**
- * The estimate for a live session's model with no price of its own (an app lets it through by listing it):
- * for each rate, the highest any of the provider's session models on our list (`kind: "realtime"`) has,
- * so it never bills below any of them (AGENTS.md "When the exact price is unknown"). When some of those
- * models bill by tokens, only theirs count: a session billed by tokens is never moved onto a time rate.
- * Null when the list has no session model for the provider. Saving and the sweep use the same estimate.
- */
-export function sessionEstimatePrice(providerType: string): ResolvedPrice | null {
-  const models = [...(PRICE_LIST.get(providerType)?.values() ?? [])].filter((price) => price.kind === "realtime" && price.unlistedSince === undefined);
-  const byTokens = models.filter((price) => price.rates.input !== undefined && price.rates.output !== undefined);
-  const counted = byTokens.length > 0 ? byTokens : models;
-  if (counted.length === 0) return null;
-  const rates: Record<string, RateNanoPerMillion> = {};
-  for (const price of counted) {
-    for (const [field, value] of Object.entries(price.rates)) {
-      if (value !== undefined && (rates[field] === undefined || value > rates[field])) rates[field] = value;
-    }
-  }
-  return { price: { rates, kind: "realtime", raw: {} }, source: "list_rate", estimated: true };
 }
 
 /** A live session: the relay reads and prices every one's usage (xAI's clock 9b, Gemini Live 9d, OpenAI Realtime 9e). */

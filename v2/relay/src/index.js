@@ -614,9 +614,6 @@ export class Session extends DurableObject {
     const done = () => {
       if (!current()) return;
       settle();
-      // A call with a meter (OpenAI) tells the core itself, once all its answers and transcriptions are written.
-      const meter = this.live?.call?.meter;
-      if (meter !== undefined && meter !== null) return;
       this.core.turnDone();
     };
     if (recorded === null) done();

@@ -736,12 +736,12 @@ function realtimeSession(): Response {
       const message = JSON.parse(data) as { type: string; seconds?: number; usageEvery?: number; event_id?: unknown; usage?: unknown; repeat?: number; model?: unknown };
       if (message.type === "mock.answer") {
         const frames = Math.max(1, Math.min(20 * 60, Math.round((message.seconds ?? 1) * 20)));
-        server.send(JSON.stringify({ type: "response.created" }));
+        server.send(JSON.stringify({ type: "response.created", response: { id: message.event_id } }));
         let sent = 0;
         const timer = setInterval(() => {
           try {
             if (sent < frames) {
-              server.send(JSON.stringify({ type: "response.output_audio.delta", n: sent, delta: audio }));
+              server.send(JSON.stringify({ type: "response.output_audio.delta", response_id: message.event_id, n: sent, delta: audio }));
               sent += 1;
               return;
             }
