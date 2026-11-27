@@ -25,8 +25,10 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   clock?: "first_activity",
  *   client?(data: string | ArrayBuffer): "activity" | "text" | null,
  *   keepalive?(data: string | ArrayBuffer): boolean,
- *   perCall?(model: string | null): CallMeter,
+ *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  * }} Adapter
+ * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
+ * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
  * @typedef {{
  *   see(data: string | ArrayBuffer, forwarded: boolean): string | null,
  *   settled(key: string): void,
@@ -34,7 +36,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   unfinished(): boolean,
  *   label(event: UsageEvent): UsageEvent,
  *   estimate(): UsageEvent | null,
- *   lock(data: string | ArrayBuffer): string | ArrayBuffer,
+ *   lock(data: string | ArrayBuffer): string | ArrayBuffer | { refused: string },
  * }} CallMeter
  * `perCall`, for a provider that needs to remember something about one call
  * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
@@ -46,7 +48,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * its completion event (`unfinished`: cut by the end), the model of a usage event that is not the
  * session's own (`label`: input transcription), a cut answer's estimate
  * (`estimate`, the session core's hook) and the model lock on the client's
- * frames (`lock`, before each goes to the provider).
+ * frames (`lock`, before each goes to the provider). `lock` may refuse a frame
+ * (`{ refused: code }`): the session then ends, and the client gets `1008` with the code (GPT-Live's
+ * backend rules, 9g).
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
  * `response.created` and `response.done`), so a closing session can wait for
  * the last answer's usage (plan 5.1: up to 10 s). A cheap prefix check, like `read`.
@@ -120,6 +124,19 @@ function jsonAdapter(prefix, shape, turns) {
 
 /** The highest audio total xAI can report that is real: a day (the gateway's bound on one slice's billed time). */
 const AUDIO_SECONDS_MAX = 86_400;
+
+/**
+ * A provider's running total of the audio it bills (xAI's `billable_audio_seconds`, GPT-Live's voice
+ * seconds) as a usage event, or null when it is no real figure. A figure past a day is nonsense: ignored,
+ * so the session bills its clock and its slices stay within what the gateway accepts. No event id is
+ * needed: only a higher total counts (`markAudio`).
+ * @param {unknown} seconds
+ * @returns {UsageEvent | null}
+ */
+function audioTotal(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > AUDIO_SECONDS_MAX) return null;
+  return { id: "", measures: {}, audioSeconds: seconds };
+}
 
 /** The start of a JSON frame whose first field is its `type`: the common layout, read without parsing. */
 const TYPE_FIRST = '{"type":"';
@@ -211,11 +228,7 @@ const XAI = {
     if (typeof data !== "string" || typeOf(data) !== "response.done") return null;
     try {
       const parsed = /** @type {{ usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
-      const seconds = parsed.usage?.billable_audio_seconds;
-      // A figure past a day is nonsense: ignored, so the session bills its clock and its slices stay
-      // within what the gateway accepts. No event id is needed: only a higher total counts (`markAudio`).
-      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > AUDIO_SECONDS_MAX) return null;
-      return { id: "", measures: {}, audioSeconds: seconds };
+      return audioTotal(parsed.usage?.billable_audio_seconds);
     } catch {
       return null;
     }
@@ -616,10 +629,11 @@ function openAiCall(model) {
     lock(data) {
       // A client's `session.update` may not move the session to another model: the session's
       // stays (plan: relayed mode locks the model). Anything else goes as it is.
-      if (model === null || typeof data !== "string" || plainNotUpdate(data)) return data;
+      if (model === null || typeof data !== "string") return data;
       // Read whole, as OpenAI reads it (plan: settings messages are always fully parsed).
-      const frame = /** @type {{ type?: unknown, session?: unknown } | null} */ (parsed(data));
-      if (typeof frame !== "object" || frame === null || !Object.hasOwn(frame, "session")) return data;
+      const read = settingsFrame(data, OPENAI_SETTINGS);
+      if (read.kind !== "frame" || !Object.hasOwn(read.frame, "session")) return data;
+      const { frame } = read;
       const session = frame.session;
       if (frame.type === "session.update" && typeof session === "object" && session !== null && Object.hasOwn(session, "model")) {
         return JSON.stringify({ ...frame, session: { ...session, model } });
@@ -631,18 +645,247 @@ function openAiCall(model) {
   };
 }
 
+/** OpenAI Realtime's client event that carries settings. */
+const OPENAI_SETTINGS = new Set(["session.update"]);
+
 /**
- * Whether a client frame is surely not a `session.update`, without parsing it: it starts with
- * its `type`, which is another, and has no escape and no second `"type"` key that a parse could
- * read differently. An audio append, the frame sent most, is never parsed (Gemini Neon, #270).
+ * Whether a client frame is surely none of `types`, without parsing it: it starts with its `type`,
+ * which is another, and has no escape and no second `"type"` key that a parse could read differently.
  * @param {string} data
+ * @param {ReadonlySet<string>} types
  */
-function plainNotUpdate(data) {
+function plainNotOneOf(data, types) {
   if (!data.startsWith(TYPE_FIRST) || data.includes("\\")) return false;
   const end = data.indexOf('"', TYPE_FIRST.length);
-  if (end === -1 || data.slice(TYPE_FIRST.length, end) === "session.update") return false;
+  if (end === -1 || types.has(data.slice(TYPE_FIRST.length, end))) return false;
   return data.indexOf('"type"', end) === -1;
 }
+
+/**
+ * GPT-Live (9g; T21), over WebSocket at `wss://api.openai.com/v1/live/sessions`.
+ *
+ * - Billed by the minute at the larger of the relay's clock and OpenAI's own voice seconds, as xAI is
+ *   (plan 5.2 rule 3). The clock starts at `session.started`, where OpenAI's does. OpenAI's seconds come
+ *   every 15 s in `session.usage.updated`, a running total ("do not add them"), and once more in
+ *   `session.closed`. A session the relay ends itself never gets `session.closed`: its clock bills the
+ *   last seconds, never less than OpenAI.
+ * - Each backend model call (a Responses call GPT-Live makes) is billed at its own model's price:
+ *   the usage in the nested `response.completed` (or `failed`, `incomplete`) of a `response.event`, by
+ *   the model it names, once per response id (`backendMeasures`).
+ * - GPT-Live sends audio all the time, silence too, and puts `event_id` before `type` in its own
+ *   events, so a frame is picked by its head only (`GPT_LIVE_HEAD`); every other frame is never parsed.
+ * - The client's frames are locked by the call's meter (`gptLiveCall`): the model, and what the
+ *   backend may use.
+ * - A restart ends the session: OpenAI drops it when its WebSocket goes, and it can't be rejoined. The
+ *   time since the journal's last durable write is an "unknown cost" gap (plan 9g): about 15 s at most
+ *   while OpenAI's seconds grow, longer when nothing new came.
+ * @type {Adapter}
+ */
+const GPT_LIVE = {
+  shape: "per_turn",
+  detached: "hold",
+  clock: "first_activity",
+  // `session.started` starts the clock (`../index.js`, an "open" is activity). The closing wait is the
+  // call's meter's: it follows the backend calls in progress (`gptLiveCall`).
+  turn(data) {
+    return typeof data === "string" && GPT_LIVE_STARTED.test(data.slice(0, GPT_LIVE_HEAD)) ? "open" : null;
+  },
+  read(data) {
+    if (typeof data !== "string") return null;
+    const head = data.slice(0, GPT_LIVE_HEAD);
+    if (GPT_LIVE_USAGE.test(head)) return audioTotal(/** @type {{ usage?: { seconds?: unknown } } | null} */ (parsed(data))?.usage?.seconds);
+    if (!GPT_LIVE_BACKEND.test(head) || !GPT_LIVE_BACKEND_STEP.test(data)) return null;
+    const event = /** @type {{ event?: { type?: unknown, response?: { id?: unknown, model?: unknown, usage?: unknown } } } | null} */ (parsed(data))?.event;
+    if (typeof event?.type !== "string" || !BACKEND_ENDS.has(event.type)) return null;
+    const usage = event.response?.usage;
+    if (typeof usage !== "object" || usage === null) return null;
+    const measures = backendMeasures(/** @type {Record<string, unknown>} */ (usage));
+    if (Object.keys(measures).length === 0) return null;
+    const named = event.response?.model;
+    // Only a name the gateway takes as a model: anything else is booked as `unknown`, for the sweep.
+    const model = typeof named === "string" && MODEL_NAME.test(named) ? named : "unknown";
+    // The response's id: each backend call ends once, so a repeat is skipped.
+    const id = typeof event.response?.id === "string" && event.response.id !== "" ? event.response.id : crypto.randomUUID();
+    return { id: id.slice(0, 128), model, measures };
+  },
+  perCall: (model, settings) => gptLiveCall(model, settings?.backend),
+};
+
+/** How much of a GPT-Live frame is looked at to pick it: its `event_id` and `type` (T21: 120 characters caught every event). */
+const GPT_LIVE_HEAD = 192;
+const GPT_LIVE_STARTED = /"type"\s*:\s*"session\.started"/u;
+const GPT_LIVE_USAGE = /"type"\s*:\s*"session\.(usage\.updated|closed)"/u;
+const GPT_LIVE_BACKEND = /"type"\s*:\s*"response\.event"/u;
+/** A backend call that started or ended: only then is a `response.event` read (its usage, or the call's progress). */
+const GPT_LIVE_BACKEND_STEP = /"type"\s*:\s*"response\.(created|completed|failed|incomplete)"/u;
+const BACKEND_ENDS = new Set(["response.completed", "response.failed", "response.incomplete"]);
+
+/**
+ * One backend call's usage, as Responses reports it (T21), as the slice's backend measures
+ * (`src/relay/checkpoint.ts`, `SLICE_BACKEND`): the whole input, with its cached and cache-written
+ * shares, a 12-hour write apart, and the output with its reasoning inside.
+ * @param {Record<string, unknown>} usage
+ * @returns {Record<string, number>}
+ */
+export function backendMeasures(usage) {
+  const input = tokenCount(usage.input_tokens);
+  const details = usage.input_tokens_details;
+  /** @type {Record<string, number>} */
+  const measures = {
+    backend_input_tokens: input,
+    backend_cached_tokens: Math.min(input, countAt(details, "cached_tokens")),
+    backend_cache_write_tokens: Math.min(input, countAt(details, "cache_write_tokens")),
+    backend_cache_write_12h_tokens: Math.min(input, countAt(details, "cache_write_tokens_details", "ttl_12h_tokens")),
+    backend_output_tokens: tokenCount(usage.output_tokens),
+  };
+  for (const [name, value] of Object.entries(measures)) if (value === 0) delete measures[name];
+  return measures;
+}
+
+/** A plain object: not null, not a list. @param {unknown} value @returns {value is Record<string, unknown>} */
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Why a client's settings may not reach GPT-Live, or null when they may (plan, "GPT-Live backend rules";
+ * owner, 2026-11-18). OpenAI bills what the backend does, so:
+ * - the delegation: none, the app's own (`client`), or `responses`, whose model must be one the app may
+ *   call, priced (`open`'s list), named in every frame that sets `responses`, the start's or an update's
+ *   alike (Gemini Neon, #272 round 2: an update may turn the backend on), with tools only of the kinds
+ *   allowed (function tools: a hosted tool's fees are not in the usage, T21) and no `service_tier` but the
+ *   standard one (the relay books backend calls at the standard rate). Anything else, `decisions` above
+ *   all, whose billing was never checked, is refused. A frame that sets no delegation is not checked;
+ * - transcript `triggers`, which run Decisions, unlocked and unbilled (Sol, Fable, #272): none.
+ * @param {Record<string, unknown>} session
+ * @param {Set<string>} models
+ * @param {Set<string>} tools
+ * @returns {string | null}
+ */
+function settingsProblem(session, models, tools) {
+  const triggers = session.triggers;
+  if (triggers !== undefined && triggers !== null && !(Array.isArray(triggers) && triggers.length === 0)) return "triggers_not_allowed";
+  const delegation = session.delegation;
+  if (delegation === undefined || delegation === null) return null;
+  if (!isObject(delegation) || (delegation.type !== "client" && delegation.type !== "responses")) return "delegation_not_allowed";
+  if (delegation.type === "client") return null;
+  const responses = delegation.responses;
+  if (!isObject(responses) || typeof responses.model !== "string" || !models.has(responses.model)) return "backend_model_not_allowed";
+  const tier = responses.service_tier;
+  if (tier !== undefined && tier !== null && tier !== "auto" && tier !== "default") return "backend_tier_not_allowed";
+  const kindAllowed = (/** @type {unknown} */ tool) => isObject(tool) && typeof tool.type === "string" && tools.has(tool.type);
+  if (Object.hasOwn(responses, "tools") && responses.tools !== null && (!Array.isArray(responses.tools) || !responses.tools.every(kindAllowed))) {
+    return "backend_tool_not_allowed";
+  }
+  return null;
+}
+
+/**
+ * GPT-Live's settings as sent on: the session's model at the start, and the backend's tier pinned to the
+ * standard one in every frame that sets `responses`, since `auto` or none may run at Fast, which OpenAI
+ * bills at twice the rate (Sol, #272 round 2; Gemini Neon, round 2).
+ * @param {Record<string, unknown>} session
+ * @param {boolean} start
+ * @param {string | null} model
+ */
+function lockedSettings(session, start, model) {
+  /** @type {Record<string, unknown>} */
+  const locked = { ...session };
+  if (model !== null && (start || Object.hasOwn(session, "model"))) locked.model = model;
+  const delegation = session.delegation;
+  if (isObject(delegation) && delegation.type === "responses" && isObject(delegation.responses)) {
+    locked.delegation = { ...delegation, responses: { ...delegation.responses, service_tier: "default" } };
+  }
+  return locked;
+}
+
+/**
+ * A client frame as a settings lock reads it: `plain` when it is surely none of `types` and goes as it is
+ * (never parsed: an audio append, the frame sent most); else read whole, as the provider reads it, or
+ * `invalid` when it is not a JSON object.
+ * @param {string} data
+ * @param {ReadonlySet<string>} types
+ * @returns {{ kind: "plain" } | { kind: "invalid" } | { kind: "frame", frame: Record<string, unknown> }}
+ */
+function settingsFrame(data, types) {
+  if (plainNotOneOf(data, types)) return { kind: "plain" };
+  const frame = parsed(data);
+  return isObject(frame) ? { kind: "frame", frame } : { kind: "invalid" };
+}
+
+/**
+ * One GPT-Live call's meter (`CallMeter`):
+ * - The lock on the client's frames. Every frame that can carry settings (`session.start`,
+ *   `session.update`, or any with a top-level `session`) is read whole, its settings checked
+ *   (`settingsProblem`) and locked (`lockedSettings`), and sent written again as it was read, so a
+ *   repeated key can't be read another way by OpenAI. Other frames, an audio append above all, go as they
+ *   are, never parsed. A frame that had to be read whole and isn't a JSON object is refused, and so is a
+ *   binary frame: GPT-Live's events are JSON text, and either would pass unread. OpenAI itself refuses any
+ *   first frame but `session.start`.
+ * - The backend calls in progress, from their nested `response.created` to their end, and each ended
+ *   one until its usage is written: a closing session waits for them, and one its end cuts marks the
+ *   final slice partial (Sol, #272 round 1). No estimate: a backend call's cost is unknown until it ends.
+ * @param {string | null} model the session's locked model
+ * @param {Backend | undefined} backend what the backend may use
+ * @returns {CallMeter}
+ */
+function gptLiveCall(model, backend) {
+  const models = new Set(backend?.models ?? []);
+  const tools = new Set(backend?.tools ?? []);
+  /** @type {Set<string>} Backend calls in progress, by response id. */
+  const open = new Set();
+  /** @type {Set<string>} Backend calls that ended, whose usage is still being written. */
+  const writing = new Set();
+  return {
+    see(data) {
+      if (typeof data !== "string" || !GPT_LIVE_BACKEND.test(data.slice(0, GPT_LIVE_HEAD)) || !GPT_LIVE_BACKEND_STEP.test(data)) return null;
+      const event = /** @type {{ event?: { type?: unknown, response?: { id?: unknown } } } | null} */ (parsed(data))?.event;
+      const id = event?.response?.id;
+      if (typeof id !== "string" || id === "") return null;
+      if (event?.type === "response.created") {
+        if (open.size < OPENAI_OPEN_MAX) open.add(id);
+        return null;
+      }
+      if (typeof event?.type !== "string" || !BACKEND_ENDS.has(event.type)) return null;
+      open.delete(id);
+      if (writing.size >= OPENAI_OPEN_MAX) writing.delete(writing.values().next().value ?? "");
+      writing.add(id);
+      return id;
+    },
+    settled(key) {
+      writing.delete(key);
+    },
+    pending: () => open.size > 0 || writing.size > 0,
+    unfinished: () => open.size > 0,
+    // OpenAI reports the dated snapshot it ran (`gpt-4.1-2025-04-14`), where the app named, and the price
+    // list holds, the alias: a backend call is booked under the alias it was allowed as (Gemini Neon, #272).
+    label(event) {
+      const named = event.model;
+      if (named === undefined || models.has(named)) return event;
+      const alias = named.replace(SNAPSHOT_DATE, "");
+      return alias !== named && models.has(alias) ? { ...event, model: alias } : event;
+    },
+    estimate: () => null,
+    lock(data) {
+      if (typeof data !== "string") return { refused: "binary_not_supported" };
+      const read = settingsFrame(data, GPT_LIVE_SETTINGS);
+      if (read.kind === "plain") return data;
+      if (read.kind === "invalid") return { refused: "invalid_frame" };
+      const { frame } = read;
+      if (!Object.hasOwn(frame, "session")) return data;
+      const session = frame.session;
+      if (!isObject(session)) return JSON.stringify(frame);
+      const start = frame.type === "session.start";
+      const problem = settingsProblem(session, models, tools);
+      if (problem !== null) return { refused: problem };
+      return JSON.stringify({ ...frame, session: lockedSettings(session, start, model) });
+    },
+  };
+}
+
+/** A dated snapshot's date at the end of a model's name: `-2025-04-14`. */
+const SNAPSHOT_DATE = /-\d{4}-\d{2}-\d{2}$/u;
+
+/** The GPT-Live client events that carry settings: read whole, always. */
+const GPT_LIVE_SETTINGS = new Set(["session.start", "session.update"]);
 
 /** The events that end the wait for an item's transcription. */
 const OPENAI_TRANSCRIPTION_ENDS = new Set([
@@ -665,6 +908,7 @@ const ADAPTERS = {
   xai: XAI,
   gemini: GEMINI,
   openai: OPENAI,
+  gptlive: GPT_LIVE,
 };
 
 /**

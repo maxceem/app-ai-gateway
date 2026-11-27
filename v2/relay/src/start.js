@@ -118,7 +118,7 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *
  * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string }} SessionKey
  * @typedef {{ sessionKey(ticket: string, options: { restart: boolean }): Promise<SessionKey> }} VaultPort
- * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string, model?: string | null }} Settings
+ * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string, model?: string | null, backend?: import("./adapters.js").Backend }} Settings
  * @typedef {{ decision: "continue" | "stop", reasons: string[], written: boolean }} CheckpointReply
  * @typedef {{
  *   slice: import("./journal.js").Slice | null,

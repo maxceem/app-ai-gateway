@@ -160,7 +160,7 @@ export class Session extends DurableObject {
           const { callId, socket } = await connectProvider(key);
           // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
           if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
-          const meter = adapterFor(settings.adapter).perCall?.(settings.model ?? null) ?? null;
+          const meter = adapterFor(settings.adapter).perCall?.(settings.model ?? null, settings) ?? null;
           /** @type {RelayCall} */
           const call = {
             callId,
@@ -584,7 +584,13 @@ export class Session extends DurableObject {
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
     // The model lock, for a provider whose client may name another model mid-session (OpenAI's `session.update`).
-    data = live.call?.meter?.lock(data) ?? data;
+    const locked = live.call?.meter?.lock(data) ?? data;
+    // A frame the lock refuses (GPT-Live's backend rules): the session ends, and the client is told why.
+    if (typeof locked === "object" && !(locked instanceof ArrayBuffer)) {
+      this.core.log({ level: "warn", message: "relay_frame_refused", session: this.core.sessionId, code: locked.refused });
+      return void this.endFor(live, "error", 1008, locked.refused);
+    }
+    data = locked;
     live.call?.send(data);
     // Read after it went out (plan 5.2): a provider that bills by its own clock starts it at the
     // first activity, and bills each text message (xAI). Nothing else is read here.

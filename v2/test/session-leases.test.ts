@@ -19,6 +19,8 @@ import { admitSession, releaseSessionLeases } from "../src/limits/session-admiss
 import { refusal } from "../src/proxy/serve.ts";
 import { parseAppConfig } from "../src/admin/apps.ts";
 import { parseTicket } from "../relay/src/ticket.js";
+import { BACKEND_BUDGET_BYTES, backendModelAllowed, backendModels, priceSources } from "../src/pricing/billability.ts";
+import { declaredOperation } from "../src/providers/presets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, ledger, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
 
@@ -359,6 +361,56 @@ describe("starting a session", () => {
     for (const model of ["gpt-realtime-whisper", "gpt-live-transcribe", "gpt-realtime-translate"]) {
       expect((await start(appId, slug, key, { path: "v1/realtime", model })).status, model).toBe(400);
     }
+  });
+
+  it("starts a GPT-Live session with its backend's models in the ticket, judged as Responses calls, and open passes them with the tool kinds (step 9g)", async () => {
+    const { appId, slug, key } = await setup({}, ["openai.live"]);
+    const response = await start(appId, slug, key, { path: "v1/live/sessions", model: "gpt-live-1" });
+    expect(response.status).toBe(201);
+    const { ticket } = (await response.json()) as { ticket: string };
+    const { payload } = parseTicket(ticket)!;
+    expect(payload).toMatchObject({ operation: "openai.live", model: "gpt-live-1", url: "https://api.openai.com/v1/live/sessions", mode: "relayed" });
+    expect(adapterFor(payload)).toBe("gptlive");
+    // With no model list, every model priced on the connection that a Responses call may name.
+    expect(payload.backend).toContain("gpt-6-luna");
+    expect(payload.backend).not.toContain("gpt-live-1");
+    const settings = await openForRelay(env, ticket);
+    expect(settings.backend).toEqual({ models: payload.backend, tools: ["function"] });
+    // A model with no price never starts a session, as for any live session.
+    expect((await start(appId, slug, key, { path: "v1/live/sessions", model: "gpt-live-9" })).status).toBe(400);
+  });
+
+  it("keeps a GPT-Live ticket's backend list within its budget, our list's models first (Sol, #272 round 1)", () => {
+    const responses = declaredOperation("openai.responses")!;
+    // A connection with 300 long custom model names: far past the budget if all went in.
+    const rates: Record<string, unknown> = {};
+    for (let i = 0; i < 300; i += 1) rates[`house-${"x".repeat(80)}-${String(i)}`] = { input: 1_000_000_000, output: 1_000_000_000 };
+    const backend = backendModels({}, priceSources({ type: "openai", rates: rates as never }), responses);
+    expect(JSON.stringify(backend).length).toBeLessThanOrEqual(BACKEND_BUDGET_BYTES + 64);
+    expect(backend).toContain("gpt-6-luna");
+    expect(backend.length).toBeLessThan(300);
+  });
+
+  it("lets a GPT-Live backend call a model only with token rates in the standard tier, which the relay pins (Sol, #272 round 3)", () => {
+    const responses = declaredOperation("openai.responses")!;
+    const rates = { "house-fast": { modes: { fast: { input: 1_000_000_000, output: 1_000_000_000 } } }, "house-standard": { input: 1_000_000_000, output: 1_000_000_000 } };
+    const sources = priceSources({ type: "openai", rates: rates as never });
+    expect(backendModelAllowed({}, sources, responses, "house-fast")).toBe(false);
+    expect(backendModelAllowed({}, sources, responses, "house-standard")).toBe(true);
+    expect(backendModels({}, sources, responses)).not.toContain("house-fast");
+  });
+
+  it("lets a GPT-Live backend name only the models the app lists, and only priced ones (step 9g)", async () => {
+    const { slug } = await seedConnection();
+    const appId = await seedRoutedApp(
+      { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      { providers: { [slug]: { operations: ["openai.live"], models: ["gpt-live-1", "gpt-6-luna", "house-model"] } } },
+    );
+    const key = await seedAppKey(appId);
+    const response = await start(appId, slug, key.key, { path: "v1/live/sessions", model: "gpt-live-1" });
+    expect(response.status).toBe(201);
+    const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
+    expect(payload.backend).toEqual(["gpt-6-luna"]);
   });
 
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {

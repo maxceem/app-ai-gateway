@@ -214,6 +214,11 @@ export function customerPrice(rates: CustomerRates | null | undefined, model: st
   };
 }
 
+/** The models our list prices for a provider type, in the list's order. */
+export function listedModels(providerType: string): readonly string[] {
+  return [...(PRICE_LIST.get(providerType)?.keys() ?? [])];
+}
+
 /** Our price for a model of a provider type, or null. */
 export function listPrice(providerType: string, model: string): ModelPrice | null {
   return PRICE_LIST.get(providerType)?.get(model) ?? null;

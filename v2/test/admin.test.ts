@@ -225,6 +225,34 @@ describe("provider connections", () => {
 });
 
 describe("apps", () => {
+  it("saves a GPT-Live app that lists its backend model, priced for Responses, without enabling Responses calls; an unpriced one is refused (Sol, #272 round 2)", async () => {
+    const key = await seedManagementKey();
+    const provider = await createProvider(key);
+    const slug = provider.body.provider.slug as string;
+    const app = await request(key, "POST", "/v2/admin/apps", { name: "Live", config: apiKeyConfig({ [slug]: { operations: ["openai.live"], models: ["gpt-live-1", "gpt-6-luna"] } }) });
+    expect(app.status).toBe(201);
+    const unpriced = await request(key, "POST", "/v2/admin/apps", { name: "Live 2", config: apiKeyConfig({ [slug]: { operations: ["openai.live"], models: ["gpt-live-1", "house-backend"] } }) });
+    expect(unpriced).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+    // A backend model is judged by its literal name, as the ticket judges it: a rewrite never applies (Sol, #272 round 3).
+    const rewritten = await request(key, "POST", "/v2/admin/apps", {
+      name: "Live 3",
+      config: {
+        authentication: { type: "api_key", end_user: { source: "none" } },
+        routing: { providers: { [slug]: { operations: ["openai.live"], models: ["gpt-live-1", "whisper-1"] } }, model_rewrites: { "whisper-1": "gpt-6-luna" } },
+      },
+    });
+    expect(rewritten).toMatchObject({ status: 400, body: { error: { code: "pricing_not_configured" } } });
+  });
+
+  it("refuses a price for gpt-live-1 that can't bill its sessions, naming only the rate its meter needs (Gemini Neon, #272)", async () => {
+    const key = await seedManagementKey();
+    const provider = await createProvider(key);
+    const id = provider.body.provider.id as string;
+    const tokens = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gpt-live-1": { input: 1, output: 1 } } });
+    expect(tokens).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    expect(String(tokens.body.error.message)).toContain("openai.live needs per_minute as a base rate, with no by");
+  });
+
   it("refuses an update that prices xAI's voice model in a way its sessions can't bill: by key value, or minutes alone; both base rates save (Sol, #266 rounds 2 and 3)", async () => {
     const key = await seedManagementKey();
     const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });

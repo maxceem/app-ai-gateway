@@ -525,6 +525,12 @@ export interface SessionSpec {
   readonly slot: "conversational" | "streaming";
   /** What the gateway does with the connection (D4). */
   readonly mode: "relayed" | "observed";
+  /**
+   * A session that calls other models itself (GPT-Live's backend, 9g): the operation whose rule
+   * judges which models the app may name for it, and the tool kinds it may give them. The relay
+   * checks every message that can change them (plan, "GPT-Live backend rules").
+   */
+  readonly backend?: { readonly operation: string; readonly tools: readonly string[] };
 }
 
 /** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */

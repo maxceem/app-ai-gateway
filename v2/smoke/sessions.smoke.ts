@@ -32,6 +32,8 @@ const xaiSlug = uniqueSlug("smoke-xai-session");
 const xai = { provider: "", app: "", key: "" };
 const geminiSlug = uniqueSlug("smoke-gemini-session");
 const gemini = { provider: "", app: "" };
+/** An app for GPT-Live on the session connection (step 9g). */
+const live = { app: "" };
 
 before(async () => {
   if (skip !== false) return;
@@ -59,6 +61,7 @@ after(async () => {
   if (xai.provider !== "") await admin("DELETE", `/v2/admin/providers/${xai.provider}`);
   if (gemini.app !== "") await admin("DELETE", `/v2/admin/apps/${gemini.app}?confirm=${gemini.app}`);
   if (gemini.provider !== "") await admin("DELETE", `/v2/admin/providers/${gemini.provider}`);
+  if (live.app !== "") await admin("DELETE", `/v2/admin/apps/${live.app}?confirm=${live.app}`);
 });
 
 async function startSession(body: Record<string, unknown>): Promise<Response> {
@@ -301,4 +304,76 @@ test("a Gemini Live session is billed by its turns' tokens, audio at its own rat
   // Two turns at $0.75 a million for 60 text tokens in, $3 for 40 audio in, $12 for 20 audio out.
   const cost = charges.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0);
   same(cost, 2 * (60 * 750 + 40 * 3_000 + 20 * 12_000), "the Gemini session's cost by modality");
+});
+
+test("a GPT-Live session locks its model, and books each backend call apart at the backend model's price (step 9g)", { skip, timeout: 90_000 }, async () => {
+  const app = await admin("POST", "/v2/admin/apps", {
+    name: `Smoke live ${slug}`,
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [slug]: { operations: ["openai.live"] } } },
+    },
+  });
+  same(app.status, 201, "the GPT-Live app could not be made");
+  live.app = checkId(app.body?.app?.id, "the GPT-Live app's id");
+  const key = String(app.body?.api_key?.key ?? "");
+  const response = await send(`/v2/apps/${live.app}/sessions/${slug}`, base, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "smoke-live-user" },
+    body: JSON.stringify({ path: "v1/live/sessions", model: "gpt-live-1" }),
+  });
+  await expectResponse(response, 201, "starting a GPT-Live session");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the GPT-Live session's id");
+  // The client names another model: the relay sets the session's. The backend may call gpt-6-luna.
+  const start = JSON.stringify({
+    type: "session.start",
+    session: { model: "gpt-live-other", delegation: { type: "responses", responses: { model: "gpt-6-luna", tools: [{ type: "function", name: "lookup" }] } } },
+  });
+  const frames = await exchangeFrames(
+    "/v2/relay/session",
+    relay,
+    [start, JSON.stringify({ type: "response.create" })],
+    3,
+    { authorization: `Bearer ${String(body?.ticket)}` },
+    1000,
+    1_000,
+  );
+  const started = JSON.parse(String(frames[0])) as { type?: string; session?: { model?: string } };
+  same(started.type, "session.started", "the first frame from GPT-Live");
+  same(started.session?.model, "gpt-live-1", "the model GPT-Live was started with");
+  type Charge = {
+    id: string;
+    model: string | null;
+    input_tokens: number | null;
+    cached_input_tokens: number | null;
+    cache_write_tokens: number | null;
+    output_tokens: number | null;
+    cost_nano: number | null;
+    price_source: string;
+  };
+  let backend: Charge | undefined;
+  let voice: Charge[] = [];
+  /** OpenAI's 2 seconds at $0.05 a minute: the voice time is never billed below them. */
+  const voiceFloor = 1_666_666;
+  const voiceCost = () => voice.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0);
+  for (let tries = 0; tries < 30 && (backend === undefined || voiceCost() < voiceFloor); tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${live.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the GPT-Live session's charges");
+    const charges = (listed.body?.charges ?? []) as Charge[];
+    backend = charges.find((charge) => charge.id.endsWith(":backend:gpt-6-luna"));
+    voice = charges.filter((charge) => charge.model === "gpt-live-1");
+    if (backend === undefined || voiceCost() < voiceFloor) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  check(backend !== undefined, "the backend call was not booked apart");
+  // The token columns as a call's: 781 in, of which 90 cached and 1 written.
+  same(backend.input_tokens, 690, "the backend call's uncached input tokens");
+  same(backend.cached_input_tokens, 90, "the backend call's cached input tokens");
+  same(backend.cache_write_tokens, 1, "the backend call's cache-written tokens");
+  same(backend.output_tokens, 57, "the backend call's output tokens");
+  same(backend.price_source, "list_rate", "the backend call's price");
+  // At gpt-6-luna's list price: 690 x $0.10, 90 cached x $0.01, 1 written x $0.125 and 57 x $0.50 a million tokens.
+  same(backend.cost_nano, 98_525, "the backend call's cost");
+  check(voice.length > 0 && voice.every((charge) => charge.price_source === "list_rate"), "the voice time was not billed at the list price");
+  check(voiceCost() >= voiceFloor, "the voice time was billed below OpenAI's seconds");
 });

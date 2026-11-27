@@ -25,6 +25,7 @@ import type { Preset } from "../contracts/app-config.ts";
 import {
   callGap,
   callKey,
+  backendModelAllowed,
   listedModelRefusal,
   priceSources,
   reachableCalls,
@@ -357,6 +358,12 @@ function judgeApp(config: AppConfig, stored: StoredEntries, priced: StoredEntrie
     if (skipped.has(slug) || connection === null) continue;
     const listedBefore = new Set(before.routing.providers[slug]?.models ?? []);
     const operations = connection.description.operations.filter((operation) => route.operations.includes(operation.name));
+    // A session's backend operation (GPT-Live's Responses), which need not be enabled itself: GPT-Live
+    // calls it, not the app (Sol, #272 round 2).
+    const backends = operations.flatMap((operation) => {
+      const backend = operation.session?.backend;
+      return backend === undefined ? [] : connection.description.operations.filter((one) => one.name === backend.operation);
+    });
     for (const listed of route.models ?? []) {
       const name = `${slug}\u0000${listed}`;
       if (servedNow.has(name)) continue;
@@ -364,6 +371,9 @@ function judgeApp(config: AppConfig, stored: StoredEntries, priced: StoredEntrie
       if (listedBefore.has(listed) && !servedBefore.has(name)) continue;
       const refusal = listedModelRefusal(route, config.routing.model_rewrites, connection.sources, operations, listed);
       if (refusal === null) continue;
+      // A backend model is judged by its literal name, as the session's ticket judges it: a rewrite never
+      // applies to it (Sol, #272 round 3).
+      if (backends.some((backend) => backendModelAllowed(route, connection.sources, backend, listed))) continue;
       const model = refusal.model;
       throw new GatewayError(
         400,

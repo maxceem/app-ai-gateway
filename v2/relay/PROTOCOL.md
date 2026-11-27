@@ -165,6 +165,43 @@ own rates.
   marked as an estimate, in the session's audio format. An answer you cancel
   reports its own usage.
 
+### GPT-Live
+
+A GPT-Live session (`v1/live/sessions`) is billed by the minute, plus each
+call its backend model makes, at that model's own price.
+
+- **Start with `session.start`**, as OpenAI asks. Its `model` is set to the
+  session's. GPT-Live's events are JSON text: a binary frame ends the session
+  with `1008 binary_not_supported`, and a settings frame that isn't a JSON
+  object with `1008 invalid_frame`.
+- **The time** runs from `session.started`, where OpenAI's own clock starts, to
+  the close. It is billed at the larger of the relay's clock and OpenAI's voice
+  seconds (`session.usage.updated`, `session.closed`), so never below OpenAI.
+- **The backend** (`session.delegation`): none, or your app's own (`client`), or
+  `responses` with a `model` your app may call through Responses and that has a
+  price. Every `session.start` or `session.update` that sets `responses` must
+  name that `model`, even when it only changes other backend settings. Its
+  `tools` may only be function tools. Its `service_tier` is set to `default`:
+  an explicit other tier ends the session with
+  `1008 backend_tier_not_allowed`, since backend calls are booked at the
+  standard rate. A `session.update` that sets no delegation is not checked.
+- **No transcript `triggers`**: they run Decisions, which the relay can't check
+  or bill. A non-empty `triggers` ends the session with
+  `1008 triggers_not_allowed`.
+- Any other refusal ends the session with `1008` and one of
+  `backend_model_not_allowed`, `backend_tool_not_allowed` or
+  `delegation_not_allowed`. The relay reads each settings frame whole, as
+  OpenAI reads it, and sends it written again.
+- **Each backend call** is billed apart, at its model's price, from the usage
+  in its `response.completed` (or `failed`, `incomplete`). A closing session
+  waits for backend calls in progress, within its closing wait; one still
+  running at the cutoff marks the final slice partial.
+- **A restart of the relay ends the session**: OpenAI drops it when its
+  connection goes, and it can't be rejoined. The time since the relay last
+  saved the session's usage is then an "unknown cost" gap: about 15 s at most
+  while OpenAI's voice seconds grow, longer when nothing new came. Start a new
+  session.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):

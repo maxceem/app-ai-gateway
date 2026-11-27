@@ -96,6 +96,11 @@
       "author": "OpenAI",
       "release_date": "2025-12-15"
     },
+    "gpt-live-1": {
+      "kind": "live",
+      "per_minute": 0.05,
+      "author": "OpenAI"
+    },
     "gpt-realtime-2025-08-28": {
       "kind": "realtime",
       "input": 4.0,

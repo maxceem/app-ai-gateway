@@ -560,6 +560,20 @@ public actor AppAIGatewayClient {
         try await startSession(provider: provider, path: "v1/realtime", model: model, takesOver: takesOver, send: send)
     }
 
+    /// Asks for an OpenAI GPT-Live session (`v1/live/sessions`) running
+    /// `model`, such as `gpt-live-1`. `provider` is the connection's slug.
+    /// Send `session.start` first over the ``LiveSession``: its model is set
+    /// to the session's, and its backend may only use models your app may
+    /// call through Responses, with function tools.
+    public func startGPTLiveSession(
+        model: String = "gpt-live-1",
+        provider: String = "openai",
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        try await startSession(provider: provider, path: "v1/live/sessions", model: model, takesOver: takesOver, send: send)
+    }
+
     /// Asks for an xAI voice session (`v1/realtime`) running `model`, such
     /// as `grok-voice-3.0`. `provider` is the connection's slug.
     public func startXAIVoiceSession(
