@@ -27,6 +27,7 @@ import { withDeadline } from "../core/background.ts";
 import { errorFacts } from "../core/error-facts.ts";
 import { UNRESOLVED_FIRST_TRY_MS } from "../proxy/call-charge.ts";
 import { log } from "../core/log.ts";
+import { WEBSOCKET } from "../providers/passthrough.ts";
 import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
 import { utcMonthDays } from "../limits/spend.ts";
@@ -253,7 +254,7 @@ export interface CheckpointStanding {
   readonly keyRemoved: boolean;
   /** The connection's own rates, read with its status, for pricing the slice. */
   readonly ratesJson?: string | null;
-  /** Its listed paths, read with them: a session on a listed WebSocket path is priced at its listing's rate. */
+  /** Its listed paths, read with them for a session on a listed WebSocket path, priced at its listing's rate; null for any other. */
   readonly passthroughJson?: string | null;
 }
 
@@ -566,7 +567,9 @@ export async function checkpointStanding(settings: D1Database, session: SessionR
     reads.push(settings.prepare("SELECT status FROM app_end_user WHERE app_id = ? AND id = ?").bind(session.appId, session.endUserId));
   }
   if (session.providerConnectionId !== null) {
-    reads.push(settings.prepare("SELECT status, rates_json, passthrough_json FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
+    // A listed WebSocket path's session is priced at its listing's rate: only it reads the listed paths.
+    const columns = session.operation === WEBSOCKET ? "status, rates_json, passthrough_json" : "status, rates_json";
+    reads.push(settings.prepare(`SELECT ${columns} FROM provider_connection WHERE id = ?`).bind(session.providerConnectionId));
   }
   if (reads.length === 0) return { userBlocked: false, keyRemoved: false, ratesJson: null, passthroughJson: null };
   let results: D1Result[];
