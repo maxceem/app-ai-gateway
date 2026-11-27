@@ -54,10 +54,8 @@ public actor LiveSession {
     }
 
     public nonisolated let events: AsyncStream<Event>
+    /// The session's ticket. `endsAt` says when the session ends at the latest.
     public nonisolated let ticket: LiveSessionTicket
-
-    /// When the session ends at the latest, once the relay said so.
-    public private(set) var deadline: Date?
 
     /// How often things happen. Tests make them short.
     struct Timing: Sendable {
@@ -81,19 +79,9 @@ public actor LiveSession {
     private let makeLink: @Sendable (URLRequest) -> any LiveSessionLink
     private let now: @Sendable () -> Date
     private var link: (any LiveSessionLink)?
-    /// The link's send queue: one task sends its frames, in order.
-    /// What the link's writer sends: one frame, or the frames the app sent while
-    /// no link was ready, which go out first and count as one entry.
-    enum Outgoing: Sendable {
-        case one(URLSessionWebSocketTask.Message)
-        case backlog([URLSessionWebSocketTask.Message])
-    }
-
-    private var outbox: AsyncStream<Outgoing>.Continuation?
-    /// The task that sends the link's queue, and the one of the link
-    /// `reconnect()` moved away from, until the new link takes over.
+    /// The link's send queue: one task, `writer`, sends its frames in order.
+    private var outbox: AsyncStream<URLSessionWebSocketTask.Message>.Continuation?
     private var writer: Task<Void, Never>?
-    private var retiringWriter: Task<Void, Never>?
     /// The link `reconnect()` moved away from. It stays open until the new
     /// link has taken the session over: the relay closes it then with
     /// `1000 reconnected`. A close from this side could end the session first.
@@ -113,8 +101,6 @@ public actor LiveSession {
     private var droppedAt: Date?
     private var attempts = 0
     private var finished = false
-    /// Set by `close()`: its links got a normal close, and are not let go again.
-    private var closed = false
     private var timer: Task<Void, Never>?
 
     public init(ticket: LiveSessionTicket, session: URLSession = .shared) {
@@ -143,10 +129,9 @@ public actor LiveSession {
     deinit {
         timer?.cancel()
         writer?.cancel()
-        retiringWriter?.cancel()
         if !finished {
-            link?.abandon()
-            retiring?.abandon()
+            link?.close()
+            retiring?.close()
         }
         continuation.finish()
     }
@@ -182,20 +167,12 @@ public actor LiveSession {
     public func reconnect() {
         guard !finished, ready, secret != nil else { return }
         retiring = link
-        retiringWriter = writer
-        writer = nil
         dropped()
     }
 
     /// Ends the session. The relay counts the session's time until now.
+    /// During a handoff both links are closed: the old one still owns the session.
     public func close() {
-        guard !finished else { return }
-        // During a handoff the old link still owns the session: it gets the
-        // close too, or the relay keeps the provider's side until the heartbeat ends it.
-        retiring?.close(code: 1000)
-        retiring = nil
-        link?.close(code: 1000)
-        closed = true
         finish(code: 1000, reason: "client_closed")
     }
 
@@ -212,26 +189,22 @@ public actor LiveSession {
         self.link = link
         outbox?.finish()
         writer?.cancel()
-        // Bounded like the frames held while away: a link that stopped taking
-        // frames ends the session, never memory that grows without end.
-        let (queue, outbox) = AsyncStream.makeStream(of: Outgoing.self, bufferingPolicy: .bufferingOldest(Self.pendingLimit))
+        // Bounded: room for the frames held while away and as many fresh ones.
+        // A link that stops taking frames is given up, never memory without end.
+        let (queue, outbox) = AsyncStream.makeStream(
+            of: URLSessionWebSocketTask.Message.self,
+            bufferingPolicy: .bufferingOldest(2 * Self.pendingLimit)
+        )
         self.outbox = outbox
         writer = Task {
-            for await item in queue {
-                let messages: [URLSessionWebSocketTask.Message]
-                switch item {
-                case .one(let message): messages = [message]
-                case .backlog(let backlog): messages = backlog
-                }
-                for message in messages {
-                    if Task.isCancelled { return }
-                    try? await link.send(message)
-                }
+            for await message in queue {
+                if Task.isCancelled { return }
+                try? await link.send(message)
             }
         }
         if comingBack, let secret {
             // The first message, and only here: never in a URL or a header.
-            outbox.yield(.one(.string(#"{"type":"agw.reconnect","secret":""# + secret + #""}"#)))
+            outbox.yield(.string(#"{"type":"agw.reconnect","secret":""# + secret + #""}"#))
         }
         Task { [weak self] in
             while true {
@@ -270,21 +243,17 @@ public actor LiveSession {
         else { return }
         switch type {
         case "agw.session.started":
-            secret = (object["reconnect_secret"] as? String).flatMap(Self.safeSecret)
-            noteDeadline(object["deadline"])
+            secret = object["reconnect_secret"] as? String
             becameReady()
             continuation.yield(.started)
         case "agw.session.resumed":
-            noteDeadline(object["deadline"])
             // Reports count only what came on this link, held frames included.
             received = 0
             reported = 0
             droppedAt = nil
             attempts = 0
-            retiring?.abandon()
+            retiring?.close()
             retiring = nil
-            retiringWriter?.cancel()
-            retiringWriter = nil
             becameReady()
             continuation.yield(.resumed)
         default:
@@ -292,19 +261,11 @@ public actor LiveSession {
         }
     }
 
-    private func noteDeadline(_ value: Any?) {
-        if let milliseconds = value as? Double { deadline = Date(timeIntervalSince1970: milliseconds / 1000) }
-    }
-
     private func becameReady() {
         ready = true
         let queued = pending
         pending.removeAll()
-        // One entry: the backlog never counts against the live queue's limit.
-        if !queued.isEmpty, let outbox {
-            lastSentAt = now()
-            outbox.yield(.backlog(queued))
-        }
+        for message in queued { forward(message) }
     }
 
     /// The link closed or failed. Only a lost link is taken back: any close
@@ -326,6 +287,8 @@ public actor LiveSession {
 
     private func dropped() {
         ready = false
+        // What the old link still says is not this session's any more.
+        generation += 1
         if droppedAt == nil {
             droppedAt = now()
             continuation.yield(.reconnecting)
@@ -333,10 +296,8 @@ public actor LiveSession {
         retry()
     }
 
+    /// The tick ends the session once the relay would have let it go.
     private func retry() {
-        guard let droppedAt, now().timeIntervalSince(droppedAt) < timing.reconnectFor else {
-            return finish(code: 0, reason: "reconnect_failed")
-        }
         attempts += 1
         // At once, then a little longer each time, at most 4 s apart.
         let wait = attempts == 1 ? 0 : min(timing.retryAtMost, 0.25 * pow(2, Double(attempts - 2)))
@@ -367,10 +328,13 @@ public actor LiveSession {
     private func forward(_ message: URLSessionWebSocketTask.Message) {
         guard let outbox else { return }
         lastSentAt = now()
-        if case .dropped = outbox.yield(.one(message)) {
-            // The link stopped taking frames: what the app sends can't go out.
-            link?.abandon()
-            finish(code: 0, reason: "send_queue_full")
+        if case .dropped = outbox.yield(message) {
+            // The link stopped taking frames: most likely it died without a
+            // word. Come back on a new one; this frame waits with the others.
+            guard secret != nil else { return finish(code: 0, reason: "link_lost") }
+            pending.append(message)
+            link?.close()
+            dropped()
         }
     }
 
@@ -401,30 +365,23 @@ public actor LiveSession {
         pending.removeAll()
         outbox?.finish()
         writer?.cancel()
-        retiringWriter?.cancel()
-        if droppedAt != nil, !closed { link?.abandon() }
-        retiring?.abandon()
+        link?.close()
+        retiring?.close()
         retiring = nil
         continuation.yield(.ended(code: code, reason: reason))
         continuation.finish()
     }
 
-    /// The relay's secrets are base64url. Anything else is not sent, so it
-    /// can never break the message it goes in.
-    static func safeSecret(_ secret: String) -> String? {
-        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
-        return !secret.isEmpty && secret.count <= 128 && secret.allSatisfy(allowed.contains) ? secret : nil
-    }
 }
 
 /// One WebSocket link to the relay.
 protocol LiveSessionLink: AnyObject, Sendable {
     func send(_ message: URLSessionWebSocketTask.Message) async throws
     func receive() async throws -> URLSessionWebSocketTask.Message
-    /// A normal close with this code.
-    func close(code: Int)
-    /// Lets the link go without a close: the relay sees a dropped link.
-    func abandon()
+    /// A normal close. The relay ends the session on it, unless a newer link
+    /// has taken the session over. (A plain cancel would send a close with no
+    /// code, which the relay reads as 1005: also a deliberate end.)
+    func close()
     /// The close code the relay sent, or 0 when none came.
     var closeCode: Int { get }
     var closeReason: String { get }
@@ -441,10 +398,7 @@ final class URLSessionLink: LiveSessionLink, @unchecked Sendable {
 
     func send(_ message: URLSessionWebSocketTask.Message) async throws { try await task.send(message) }
     func receive() async throws -> URLSessionWebSocketTask.Message { try await task.receive() }
-    func close(code: Int) {
-        task.cancel(with: URLSessionWebSocketTask.CloseCode(rawValue: code) ?? .normalClosure, reason: nil)
-    }
-    func abandon() { task.cancel() }
+    func close() { task.cancel(with: .normalClosure, reason: nil) }
     var closeCode: Int {
         let code = task.closeCode
         return code == .invalid ? 0 : code.rawValue

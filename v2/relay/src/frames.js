@@ -27,9 +27,9 @@ export const HEARTBEAT_TIMEOUT_MS = 90_000;
 /**
  * How far behind a client that sends received-byte reports may fall before the
  * session ends with "client too slow" (plan 5.2). Set on a phone in 9c (T37):
- * xAI sends a one-minute answer, 3–5 MB, within about 3 s, so a phone on a slow
- * mobile link needs 25–40 s to receive it while still far ahead of playback.
- * 30 s keeps that phone, and still ends a client that stopped reading.
+ * xAI sends a one-minute answer, 3–5 MB, within about 3 s. At 1 Mbit/s a phone
+ * receives about 3.75 MB in 30 s, so it keeps answers up to that size while
+ * still far ahead of playback; a client that stopped reading is still ended.
  */
 export const SLOW_CLIENT_MS = 30_000;
 /** The largest client frame forwarded (plan 5.2: a maximum frame size from the client). */
@@ -86,7 +86,8 @@ export class StartQueue {
    * with base64 audio, which is ASCII, and the runtime keeps an ASCII string at
    * one byte per character. Its length costs nothing to read. A frame with
    * other characters takes up to twice that, bounded by the frame size and
-   * rate limits.
+   * rate limits. The same count holds for the client's start queue, which the
+   * per-user session limit bounds.
    * @param {string | ArrayBuffer} data
    */
   push(data) {

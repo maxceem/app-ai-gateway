@@ -12,8 +12,7 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     private var _closeCode = 0
     private var _closeReason = ""
     private(set) var request: URLRequest
-    private(set) var abandoned = false
-    private(set) var closedWith: Int?
+    private(set) var closed = false
     /// A link that stopped taking frames: each send waits until this is cleared, or it is cancelled.
     var stallSends: Bool {
         get { lock.withLock { _stallSends } }
@@ -48,8 +47,7 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
         }
     }
 
-    func close(code: Int) { lock.withLock { closedWith = code } }
-    func abandon() { lock.withLock { abandoned = true } }
+    func close() { lock.withLock { closed = true } }
 
     /// The relay sends a frame.
     func deliver(_ text: String) { push(.success(.string(text))) }
@@ -150,7 +148,6 @@ struct LiveSessionTests {
         links[0].deliver(#"{"type":"agw.heartbeat"}"#)
         links[0].deliver(#"{"type":"session.created"}"#)
         #expect(await events.next() == .text(#"{"type":"session.created"}"#))
-        #expect(await session.deadline == Date(timeIntervalSince1970: 1_795_000_000))
     }
 
     @Test
@@ -229,11 +226,10 @@ struct LiveSessionTests {
         #expect(await events.next() == .reconnecting)
         #expect(await eventually { links.count == 2 && links[1].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
         // A close from this side now would end the session before the new link takes it over.
-        #expect(!links[0].abandoned)
-        #expect(links[0].closedWith == nil)
+        #expect(!links[0].closed)
         links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
         #expect(await events.next() == .resumed)
-        #expect(links[0].abandoned)
+        #expect(links[0].closed)
     }
 
     @Test
@@ -267,7 +263,7 @@ struct LiveSessionTests {
         clock.advance(10)
         let last = await next(&events) { if case .ended = $0 { return true } else { return false } }
         #expect(last == .ended(code: 0, reason: "reconnect_failed"))
-        #expect(links[1].abandoned)
+        #expect(links[1].closed)
     }
 
     @Test
@@ -320,24 +316,6 @@ struct LiveSessionTests {
     }
 
     @Test
-    func givesUpComingBackOnceTheRelayHasLetTheSessionGo() async {
-        let links = Links()
-        let clock = Clock()
-        let session = LiveSession(ticket: ticket, timing: fast(), now: { clock.now }, makeLink: links.make)
-        var events = session.events.makeAsyncIterator()
-        await session.start()
-        links[0].deliver(started)
-        _ = await events.next()
-        links[0].end(code: 0)
-        _ = await events.next()
-        #expect(await eventually { links.count == 2 })
-        clock.advance(10)
-        links[1].end(code: 0)
-        let last = await next(&events) { if case .ended = $0 { return true } else { return false } }
-        #expect(last == .ended(code: 0, reason: "reconnect_failed"))
-    }
-
-    @Test
     func closeEndsTheSessionNormally() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
@@ -346,12 +324,12 @@ struct LiveSessionTests {
         links[0].deliver(started)
         _ = await events.next()
         await session.close()
-        #expect(links[0].closedWith == 1000)
+        #expect(links[0].closed)
         #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
     }
 
     @Test
-    func aLinkThatStopsTakingFramesEndsTheSessionInsteadOfQueuingWithoutEnd() async {
+    func aLinkThatStopsTakingFramesIsGivenUpAndTheClientComesBack() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
         var events = session.events.makeAsyncIterator()
@@ -359,10 +337,19 @@ struct LiveSessionTests {
         links[0].deliver(started)
         _ = await events.next()
         links[0].stallSends = true
-        for index in 0..<(LiveSession.pendingLimit + 10) { await session.send(text: "audio-\(index)") }
-        let last = await next(&events) { if case .ended = $0 { return true } else { return false } }
-        #expect(last == .ended(code: 0, reason: "send_queue_full"))
-        #expect(links[0].abandoned)
+        for index in 0..<(2 * LiveSession.pendingLimit + 10) { await session.send(text: "audio-\(index)") }
+        // Most likely the link died without a word: a new one comes back to the session.
+        #expect(await events.next() == .reconnecting)
+        #expect(links[0].closed)
+        #expect(await eventually { links.count == 2 && links[1].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        // The frame that found the queue full, and what came after it, go out on the new link, in order.
+        let last = 2 * LiveSession.pendingLimit + 9
+        #expect(await eventually { links[1].sent.last == "audio-\(last)" })
+        let resent = Array(links[1].sent.dropFirst())
+        #expect(resent.count >= 9)
+        #expect(resent == ((last - resent.count + 1)...last).map { "audio-\($0)" })
     }
 
     @Test
@@ -378,7 +365,7 @@ struct LiveSessionTests {
             await session.send(text: "stuck")
         }
         #expect(await eventually { released == nil })
-        #expect(links[0].abandoned)
+        #expect(links[0].closed)
     }
 
     @Test
@@ -406,7 +393,7 @@ struct LiveSessionTests {
         #expect(await eventually { links[1].sent.filter { !$0.hasPrefix(#"{"type":"agw.received""#) }.count == expected })
         let sent = links[1].sent.filter { !$0.hasPrefix(#"{"type":"agw.received""#) }
         #expect(Array(sent.dropFirst()) == (0..<LiveSession.pendingLimit).map { "away-\($0)" } + (0..<20).map { "fresh-\($0)" })
-        #expect(!links[1].abandoned)
+        #expect(!links[1].closed)
         #expect(await events.next() == .text("provider"))
     }
 
@@ -423,18 +410,9 @@ struct LiveSessionTests {
         #expect(await eventually { links.count == 2 })
         await session.close()
         // The old link still owns the session at the relay: it is the one that must end it.
-        #expect(links[0].closedWith == 1000)
-        #expect(links[1].closedWith == 1000)
-        #expect(!links[0].abandoned)
-        #expect(!links[1].abandoned)
+        #expect(links[0].closed)
+        #expect(links[1].closed)
         #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
-    }
-
-    @Test
-    func onlyASafeSecretIsEverSent() {
-        #expect(LiveSession.safeSecret("abc-_XYZ09") == "abc-_XYZ09")
-        #expect(LiveSession.safeSecret(#"a","x":"b"#) == nil)
-        #expect(LiveSession.safeSecret("") == nil)
     }
 
     @Test

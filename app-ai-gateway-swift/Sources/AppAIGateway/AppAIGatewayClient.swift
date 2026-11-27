@@ -506,7 +506,7 @@ public actor AppAIGatewayClient {
 
     /// The gateway's route that starts a live session on one provider
     /// connection: `POST /v2/apps/{app}/sessions/{provider}`.
-    public func sessionURL(provider: String) -> URL {
+    private func sessionURL(provider: String) -> URL {
         appURL("sessions/\(provider)")
     }
 
