@@ -83,6 +83,10 @@ public actor LiveSession {
     private var link: (any LiveSessionLink)?
     /// The link's send queue: one task sends its frames, in order.
     private var outbox: AsyncStream<URLSessionWebSocketTask.Message>.Continuation?
+    /// The task that sends the link's queue, and the one of the link
+    /// `reconnect()` moved away from, until the new link takes over.
+    private var writer: Task<Void, Never>?
+    private var retiringWriter: Task<Void, Never>?
     /// The link `reconnect()` moved away from. It stays open until the new
     /// link has taken the session over: the relay closes it then with
     /// `1000 reconnected`. A close from this side could end the session first.
@@ -126,14 +130,28 @@ public actor LiveSession {
         (events, continuation) = AsyncStream.makeStream(of: Event.self)
     }
 
+    /// A session the app let go without `close()` lets its links go too.
+    deinit {
+        timer?.cancel()
+        writer?.cancel()
+        retiringWriter?.cancel()
+        if !finished {
+            link?.abandon()
+            retiring?.abandon()
+        }
+        continuation.finish()
+    }
+
     /// Opens the session's link. Call once.
     public func start() {
         guard link == nil, !finished else { return }
         openLink(comingBack: false)
+        let tick = UInt64(timing.tick * 1_000_000_000)
         timer = Task { [weak self] in
             while !Task.isCancelled {
+                // Holds the session only while it ticks, so a session the app let go is freed.
+                try? await Task.sleep(nanoseconds: tick)
                 guard let self else { return }
-                try? await Task.sleep(nanoseconds: UInt64(self.timing.tick * 1_000_000_000))
                 await self.onTick()
             }
         }
@@ -155,6 +173,8 @@ public actor LiveSession {
     public func reconnect() {
         guard !finished, ready, secret != nil else { return }
         retiring = link
+        retiringWriter = writer
+        writer = nil
         dropped()
     }
 
@@ -177,10 +197,19 @@ public actor LiveSession {
         let link = makeLink(request)
         self.link = link
         outbox?.finish()
-        let (queue, outbox) = AsyncStream.makeStream(of: URLSessionWebSocketTask.Message.self)
+        writer?.cancel()
+        // Bounded like the frames held while away: a link that stopped taking
+        // frames ends the session, never memory that grows without end.
+        let (queue, outbox) = AsyncStream.makeStream(
+            of: URLSessionWebSocketTask.Message.self,
+            bufferingPolicy: .bufferingOldest(Self.pendingLimit)
+        )
         self.outbox = outbox
-        Task {
-            for await message in queue { try? await link.send(message) }
+        writer = Task {
+            for await message in queue {
+                if Task.isCancelled { return }
+                try? await link.send(message)
+            }
         }
         if comingBack, let secret {
             // The first message, and only here: never in a URL or a header.
@@ -236,6 +265,8 @@ public actor LiveSession {
             attempts = 0
             retiring?.abandon()
             retiring = nil
+            retiringWriter?.cancel()
+            retiringWriter = nil
             becameReady()
             continuation.yield(.resumed)
         default:
@@ -314,7 +345,11 @@ public actor LiveSession {
     private func forward(_ message: URLSessionWebSocketTask.Message) {
         guard let outbox else { return }
         lastSentAt = now()
-        outbox.yield(message)
+        if case .dropped = outbox.yield(message) {
+            // The link stopped taking frames: what the app sends can't go out.
+            link?.abandon()
+            finish(code: 0, reason: "send_queue_full")
+        }
     }
 
     private func onTick() {
@@ -343,6 +378,8 @@ public actor LiveSession {
         timer?.cancel()
         pending.removeAll()
         outbox?.finish()
+        writer?.cancel()
+        retiringWriter?.cancel()
         if droppedAt != nil { link?.abandon() }
         retiring?.abandon()
         retiring = nil

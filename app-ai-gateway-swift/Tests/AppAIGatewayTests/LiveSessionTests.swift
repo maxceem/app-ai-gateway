@@ -14,6 +14,8 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     private(set) var request: URLRequest
     private(set) var abandoned = false
     private(set) var closedWith: Int?
+    /// A link that stopped taking frames: each send waits until it is cancelled.
+    var stallSends = false
 
     init(request: URLRequest) { self.request = request }
 
@@ -22,6 +24,7 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     var closeReason: String { lock.withLock { _closeReason } }
 
     func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        if lock.withLock({ stallSends }) { try await Task.sleep(nanoseconds: 3_600_000_000_000) }
         lock.withLock {
             if case .string(let text) = message { _sent.append(text) } else { _sent.append("<binary>") }
         }
@@ -341,6 +344,37 @@ struct LiveSessionTests {
         await session.close()
         #expect(links[0].closedWith == 1000)
         #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
+    }
+
+    @Test
+    func aLinkThatStopsTakingFramesEndsTheSessionInsteadOfQueuingWithoutEnd() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].stallSends = true
+        for index in 0..<(LiveSession.pendingLimit + 10) { await session.send(text: "audio-\(index)") }
+        let last = await next(&events) { if case .ended = $0 { return true } else { return false } }
+        #expect(last == .ended(code: 0, reason: "send_queue_full"))
+        #expect(links[0].abandoned)
+    }
+
+    @Test
+    func aSessionLetGoWithoutCloseLetsItsLinkGo() async {
+        let links = Links()
+        weak var released: LiveSession?
+        do {
+            let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+            released = session
+            await session.start()
+            links[0].deliver(started)
+            links[0].stallSends = true
+            await session.send(text: "stuck")
+        }
+        #expect(await eventually { released == nil })
+        #expect(links[0].abandoned)
     }
 
     @Test
