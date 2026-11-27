@@ -21,6 +21,7 @@ import type { SealedCredentials } from "../providers/connections.ts";
 import type { SessionMode, SessionSlot } from "../ledger/labels.ts";
 import type { SessionRow } from "../ledger/sessions.ts";
 import { vault, type CopyRequest } from "../vault/client.ts";
+import { declaredOperation } from "../providers/presets.ts";
 import { base64url, fromBase64url, TICKET_VERSION, verifyTicket as verifyWithPublicKey, type Ticket } from "../../relay/src/ticket.js";
 
 export type { Ticket } from "../../relay/src/ticket.js";
@@ -109,6 +110,8 @@ export interface TicketRequest {
   readonly keyPlacement: { readonly header: string; readonly format: string } | null;
   /** The models the session's backend may call (GPT-Live's, 9g), when its operation has one. */
   readonly backend?: readonly string[];
+  /** The session's price key values, read from its request (Deepgram's stream, 10a), when its operation has any. */
+  readonly priceKeys?: Readonly<Record<string, string>>;
 }
 
 export interface IssuedTicket {
@@ -176,6 +179,7 @@ export async function issueTicket(
     cap: request.capMs,
     exp: expiresAt,
     ...(request.backend === undefined ? {} : { backend: [...request.backend] }),
+    ...(request.priceKeys === undefined ? {} : { priceKeys: { ...request.priceKeys } }),
     seal: {
       ...(copies.providerKey === undefined
         ? {}
@@ -205,5 +209,7 @@ export function sessionRowOf(ticket: Ticket): SessionRow {
     timeCapMs: ticket.cap,
     startedAt: ticket.start,
     expectsSessionTotal: ticket.sessionTotal,
+    // The provider whose record settles it, by its operation (Deepgram's stream, 10a): only with a total expected.
+    lookup: ticket.sessionTotal ? (declaredOperation(ticket.operation)?.session?.lookup ?? null) : null,
   };
 }

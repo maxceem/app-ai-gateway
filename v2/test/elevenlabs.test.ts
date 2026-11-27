@@ -111,8 +111,9 @@ describe("ElevenLabs operations", () => {
     for (const [path, name] of cases) expect(matcher.match("POST", path), path).toMatchObject({ kind: "operation", operation: { name } });
   });
 
-  it("serves every ElevenLabs operation now", () => {
-    for (const op of elevenlabs.operations) expect(servedNow(op), op.name).toBe(true);
+  it("serves every ElevenLabs call now; its streaming text to speech is a live session, started at the session endpoint (10a)", () => {
+    for (const op of elevenlabs.operations.filter((one) => one.lifecycle !== "session")) expect(servedNow(op), op.name).toBe(true);
+    expect(elevenlabs.operations.find((op) => op.lifecycle === "session")).toMatchObject({ name: "elevenlabs.tts_websocket", session: { slot: "streaming", mode: "relayed" } });
   });
 
   it("prices each listed model's credits at what its characters cost, as real calls measured them (T27)", () => {
@@ -147,7 +148,10 @@ describe("ElevenLabs operations", () => {
 
   it("refuses a credits-only price for a text-to-speech model, even beside speech to text, since an answer without its header cannot be charged (4b S3)", () => {
     const stored = { eleven_multilingual_v2: { per_credit: 80_000 } };
-    expect(savedPriceProblem(stored, "eleven_multilingual_v2", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "bills_nothing", operation: expect.stringMatching(/^elevenlabs\.tts/u) });
+    // The streaming session's own rule names it first: it bills characters, and nothing else (10a).
+    expect(savedPriceProblem(stored, "eleven_multilingual_v2", "elevenlabs", elevenlabs.operations)).toMatchObject({ kind: "session_rates", operation: "elevenlabs.tts_websocket", rates: ["per_million_characters"] });
+    const calls = elevenlabs.operations.filter((op) => op.lifecycle !== "session");
+    expect(savedPriceProblem(stored, "eleven_multilingual_v2", "elevenlabs", calls)).toMatchObject({ kind: "bills_nothing", operation: expect.stringMatching(/^elevenlabs\.tts/u) });
     const enabled = elevenlabs.operations.filter((op) => op.name === "elevenlabs.tts" || op.name === "elevenlabs.stt");
     expect(listedJudgement(enabled, priceSources({ type: "elevenlabs", rates: stored }), "eleven_multilingual_v2")).toEqual({ operation: "elevenlabs.tts" });
     // Both rates: every way text to speech answers is charged, and the model lists beside speech to text.

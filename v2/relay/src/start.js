@@ -1027,12 +1027,32 @@ export class SessionCore {
    * One text message from the client, after it went to the provider: counted
    * as its own measure (xAI bills each one), in one small write.
    */
-  async countText() {
+  countText() {
+    return this.count({ text_messages: 1 });
+  }
+
+  /**
+   * Counts the provider bills from a client frame, after it went to the provider (xAI's text messages,
+   * ElevenLabs' characters), in one small write. Tracked as a usage write is (`writes`): an end waits for
+   * it, bounded, so the client's last text before it hangs up is in the final slice.
+   * @param {Record<string, number>} counts
+   * @returns {Promise<void>}
+   */
+  count(counts) {
+    const run = this.countNow(counts);
+    const tracked = run.catch(() => undefined);
+    this.writes.add(tracked);
+    void tracked.then(() => this.writes.delete(tracked));
+    return run;
+  }
+
+  /** `count`'s work. @param {Record<string, number>} counts */
+  async countNow(counts) {
     if (this.call === null || this.over || this.ending !== null) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null) return;
-    countMeasure(journal, "text_messages", 1);
+    for (const [name, value] of Object.entries(counts)) if (Number.isSafeInteger(value) && value > 0) countMeasure(journal, name, value);
     journal.savedAt = now;
     await this.writeJournal(journal);
   }

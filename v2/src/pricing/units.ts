@@ -168,6 +168,8 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
     case "wall_clock":
       return [[{ ...NO_TOKENS, units: { session_seconds: sample("session_seconds"), ...Object.fromEntries((meter.units ?? []).map((unit) => [unit, sample(unit)])) } }]];
     case "provider_event":
+      // A session billed by units its adapter counts (ElevenLabs' characters): those, together.
+      if (meter.units !== undefined) return [[{ ...NO_TOKENS, units: Object.fromEntries(meter.units.map((unit) => [unit, sample(unit)])) }]];
       return meter.tokensOnly === true ? [[SOME_TOKENS]] : [[SOME_TOKENS], [reported("session_seconds")]];
   }
 }

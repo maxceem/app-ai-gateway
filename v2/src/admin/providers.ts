@@ -186,11 +186,14 @@ function assertEffectivePrices(
   }
   if (problem.kind === "too_large") throw new GatewayError(400, "invalid_request", `${where}: a rate is too large once a service mode's factor applies`);
   if (problem.kind === "session_rates") {
-    const needs = problem.byClock
-      ? `${problem.rates.join(" and ")} as ${problem.rates.length === 1 ? "a base rate" : "base rates"}, with no by`
-      : problem.tokensOnly
-        ? "token rates"
-        : "token rates or a time rate";
+    const needs =
+      problem.rates.length > 0
+        ? problem.byClock
+          ? `${problem.rates.join(" and ")} as ${problem.rates.length === 1 ? "a base rate" : "base rates"}${problem.withoutBy ? ", with no by" : ""}`
+          : problem.rates.join(" and ")
+        : problem.tokensOnly
+          ? "token rates"
+          : "token rates or a time rate";
     throw new GatewayError(400, "invalid_request", `${where}: ${problem.operation} needs ${needs}`);
   }
   const named = Object.entries(problem.values).map(([key, value]) => `${key} ${value}`).join(", ");

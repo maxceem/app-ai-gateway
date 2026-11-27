@@ -8,7 +8,8 @@
  * usage shape: per turn, or a running total.
  *
  * The mock adapters read the smoke mock provider's frames. xAI (9b), Gemini
- * Live (9d) and OpenAI Realtime over WebSocket (9e) are the provider adapters.
+ * Live (9d), OpenAI Realtime over WebSocket (9e), GPT-Live (9g), and
+ * ElevenLabs' and Deepgram's streaming voice (10a) are the provider adapters.
  * A frame no adapter reads costs nothing but the connection time.
  */
 
@@ -23,9 +24,10 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   turn(data: string | ArrayBuffer): "open" | "done" | null,
  *   detached: "hold" | "end",
  *   clock?: "first_activity",
- *   client?(data: string | ArrayBuffer): "activity" | "text" | null,
+ *   client?(data: string | ArrayBuffer, state?: Record<string, unknown>): "activity" | "text" | { counts: Record<string, number> } | null,
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
+ *   callIdHeader?: string,
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -66,9 +68,14 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   activity, then billed to the close (`../journal.js`, `markActive`);
  * - `client`: reads a client frame after it went to the provider. `"activity"`
  *   starts the clock; `"text"` is one text message, billed on its own;
+ *   `{ counts }` adds counts the provider bills from the client's frames
+ *   (ElevenLabs' characters, 10a). `state` is the session's own, in memory, for
+ *   what one frame says about the later ones;
  * - `keepalive`: a provider frame that says nothing but "still here" (xAI's
  *   `ping` every 10 s). It does not count as the provider sending, so the 90 s
  *   rule still ends a session whose client is gone (plan 5.2).
+ * - `callIdHeader`: the provider's answer header that names the call (Deepgram's
+ *   `dg-request-id`), stored as the session's provider call id, for a lookup after it ends.
  */
 
 /**
@@ -894,6 +901,88 @@ const OPENAI_TRANSCRIPTION_ENDS = new Set([
   "conversation.item.deleted",
 ]);
 
+/**
+ * ElevenLabs streaming text to speech (10a), over WebSocket at
+ * `v1/text-to-speech/{voice_id}/stream-input`.
+ *
+ * - ElevenLabs bills the text it is sent, per character, so the session is billed on the client's text
+ *   (plan 5.1): each client frame's `text`, after it went to ElevenLabs, in code points, as a call's text
+ *   is counted. Text that is only white space counts nothing: the opening `" "` and the closing `""`.
+ * - The model and the voice are in the address the session was sealed for (`model_id`, the path), so no
+ *   frame can change them. Everything else goes as it is.
+ * - Pronunciation dictionaries may change the billed characters (as on a call, `inDoubtWhen`): once a
+ *   frame names one, every later character is an estimate too, and the slice is priced as one.
+ * - Its answers (audio, `isFinal`) are never read: nothing in them is billed.
+ * @type {Adapter}
+ */
+const ELEVENLABS_TTS = {
+  shape: "per_turn",
+  detached: "hold",
+  read: () => null,
+  turn: () => null,
+  client(data, state = {}) {
+    if (typeof data !== "string") return null;
+    const frame = parsed(data);
+    if (!isObject(frame)) return null;
+    const dictionaries = frame.pronunciation_dictionary_locators;
+    if (Array.isArray(dictionaries) && dictionaries.length > 0) state.inDoubt = true;
+    const text = frame.text;
+    if (typeof text !== "string" || text.trim() === "") return null;
+    const characters = [...text].length;
+    /** @type {Record<string, number>} */
+    const counts = { characters };
+    if (state.inDoubt === true) counts.estimated_characters = characters;
+    return { counts };
+  },
+};
+
+/**
+ * The audio Deepgram has heard, from one of its frames, in seconds, or null: a `Results` frame's end
+ * (`start` + `duration`), and the closing `Metadata` frame's `duration`, each for every channel billed
+ * (`channel_index[1]`, `channels`). Deepgram bills each channel with `multichannel`, and mixes them to one
+ * without it, which its frames then say.
+ * @param {string} data
+ * @returns {number | null}
+ */
+function deepgramHeard(data) {
+  const type = typeOf(data);
+  if (type !== "Results" && type !== "Metadata") return null;
+  const frame = parsed(data);
+  if (!isObject(frame)) return null;
+  const number = (/** @type {unknown} */ value) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+  const duration = number(frame.duration);
+  if (duration === null) return null;
+  if (type === "Metadata") return duration * Math.max(1, Math.min(32, number(frame.channels) ?? 1));
+  const start = number(frame.start);
+  const channels = Array.isArray(frame.channel_index) ? number(frame.channel_index[1]) : null;
+  return start === null ? null : (start + duration) * Math.max(1, Math.min(32, channels ?? 1));
+}
+
+/**
+ * Deepgram streaming speech to text (10a), over WebSocket at `v1/listen`.
+ *
+ * - Billed, as xAI is, at the larger of the relay's clock, from the client's first audio frame to the close,
+ *   and the audio Deepgram reports it heard, a running total (`deepgramHeard`). An end that cuts Deepgram's
+ *   last report short still bills the clock, never less than Deepgram.
+ * - Deepgram's own dollar figure for the stream corrects it after the end (the request lookup in the gateway's
+ *   sweep), by the request id in its answer's `dg-request-id` header.
+ * - The client's binary frames are audio; its text frames (`KeepAlive`, `Finalize`, `CloseStream`) are not.
+ * @type {Adapter}
+ */
+const DEEPGRAM = {
+  shape: "running_total",
+  detached: "hold",
+  clock: "first_activity",
+  callIdHeader: "dg-request-id",
+  turn: () => null,
+  read(data) {
+    if (typeof data !== "string") return null;
+    const seconds = deepgramHeard(data);
+    return seconds === null ? null : audioTotal(seconds);
+  },
+  client: (data) => (typeof data === "string" ? null : "activity"),
+};
+
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
 
@@ -909,6 +998,8 @@ const ADAPTERS = {
   gemini: GEMINI,
   openai: OPENAI,
   gptlive: GPT_LIVE,
+  elevenlabs_tts: ELEVENLABS_TTS,
+  deepgram: DEEPGRAM,
 };
 
 /**

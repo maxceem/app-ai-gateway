@@ -146,6 +146,27 @@ export const elevenlabs = defineProvider({
       rawAudioResponse: true,
       meter: ttsMeter,
     }),
+    // Streaming text to speech over WebSocket (10a): a relayed session on a streaming slot, billed on the
+    // client's text, per character, at the model's rate, as a call is. The relay counts the text frames it
+    // forwards (`relay/src/adapters.js`); the model (`model_id`) and the voice (the path) are in the address
+    // the session is sealed for. Its connection time is never billed.
+    defineOperation({
+      name: "elevenlabs.tts_websocket",
+      match: { method: "GET", path: "v1/text-to-speech/{voice_id}/stream-input" },
+      lifecycle: "session",
+      transport: "websocket",
+      model: { in: "query", name: "model_id", default: DEFAULT_TTS_MODEL },
+      modelKinds: ["speech"],
+      outbound: {
+        // A single-use token or bearer a client could send: the gateway's key is the only credential.
+        credentials: [
+          { in: "query", field: "authorization" },
+          { in: "query", field: "single_use_token" },
+        ],
+      },
+      meter: { kind: "provider_event", adapter: "elevenlabs-tts", units: ["characters"] },
+      session: { slot: "streaming", mode: "relayed" },
+    }),
     defineOperation({
       name: "elevenlabs.stt",
       match: { method: "POST", path: "v1/speech-to-text" },

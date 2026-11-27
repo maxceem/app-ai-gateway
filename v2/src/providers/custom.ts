@@ -126,6 +126,8 @@ export const CARRIED: { readonly [Field in keyof Required<OperationDescription>]
   background: "kept",
   meter: "replaced",
   priceKeys: "kept",
+  // Its own section of our price list: only a session has one (Deepgram's stream), and sessions are refused.
+  priceList: "refused",
   modelKinds: "kept",
   // A custom path is the customer's own: it serves whatever model ids they send.
   modelIds: "replaced",

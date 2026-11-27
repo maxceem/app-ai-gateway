@@ -379,7 +379,8 @@ export async function priceUnresolvedCharge(
             .prepare("SELECT rates_json FROM provider_connection WHERE id = ?")
             .bind(original.providerConnectionId)
             .first<{ rates_json: string | null }>();
-    resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model);
+    // On the charge's own operation: its section of our list, if it has one (Deepgram's streaming rates).
+    resolved = billingForCharge(priceSources({ type: original.providerType, rates_json: connection?.rates_json ?? null }), original.model, original.operation);
     if (resolved === null) return { status: "no_price" };
     priced = priceInServedMode(resolved.price, usageAt(resolved), stored.mode, stored.doubt);
   }

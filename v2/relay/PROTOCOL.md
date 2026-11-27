@@ -110,6 +110,40 @@ A long answer to a text question can bill far more audio than the clock.
 - xAI's `ping` every 10 s does not keep a session alive: a client that sends
   nothing for 90 s is gone, as for any provider.
 
+### ElevenLabs streaming text to speech
+
+An ElevenLabs stream (`v1/text-to-speech/{voice_id}/stream-input`) is billed as
+a text-to-speech call is: by the characters of the text the client sends, at
+the model's rate per character. Its connection time is not billed.
+
+- The client's text frames are counted after they went to ElevenLabs: each
+  frame's `text`, in characters as a person counts them (an emoji is one).
+  Text that is only white space counts nothing: the opening `" "` and the
+  closing `""`.
+- The model (`model_id`) and the voice (the path) are in the address the
+  session is sealed for, so no frame can change them. Everything else goes as
+  it is.
+- Once a frame names `pronunciation_dictionary_locators`, every later
+  character is an estimate: a dictionary can change what ElevenLabs bills.
+- The client's last text before it hangs up is counted: the session's end
+  waits for its count to be written, as for any usage, at most 2 s.
+
+### Deepgram streaming speech to text
+
+A Deepgram stream (`v1/listen`) is billed by time, at Deepgram's streaming
+rates with the stream's language and add-ons. The time is the larger of two
+running totals, as for xAI: the session's clock from the client's first audio
+frame to the close, and the audio Deepgram reports it heard (each `Results`
+frame's `start` plus `duration`, and the closing `Metadata`'s `duration`, for
+each channel billed).
+
+- The client's binary frames are audio; `KeepAlive`, `Finalize` and
+  `CloseStream` are not. The time before the first audio is free.
+- The relay keeps the request id Deepgram sends when the stream opens
+  (`dg-request-id`). After the end, the gateway reads Deepgram's record of the
+  request and settles the session to Deepgram's own dollar figure, for up to an
+  hour; after that, or when the key can't read it, the estimate stays.
+
 ### Gemini Live
 
 A Gemini Live session is billed by the tokens of each turn, as Gemini reports

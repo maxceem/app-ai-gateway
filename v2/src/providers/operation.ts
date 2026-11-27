@@ -282,8 +282,12 @@ export type Meter =
    */
   | { readonly kind: "wall_clock"; readonly units?: readonly Unit[] }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
-  /** `tokensOnly`: the session bills tokens alone, so a model priced by the minute is not its (OpenAI Realtime). */
-  | { readonly kind: "provider_event"; readonly adapter: string; readonly tokensOnly?: true };
+  /**
+   * `tokensOnly`: the session bills tokens alone, so a model priced by the minute is not its (OpenAI Realtime).
+   * `units`: the session bills these units alone, which its adapter counts (ElevenLabs' characters, 10a),
+   * never tokens or its connection time.
+   */
+  | { readonly kind: "provider_event"; readonly adapter: string; readonly tokensOnly?: true; readonly units?: readonly Unit[] };
 
 /** A request field naming how long its cache writes are kept, and the variant each value bills as (`cacheWriteKeptFor`). */
 export interface CacheWriteKeptFor {
@@ -531,6 +535,12 @@ export interface SessionSpec {
    * checks every message that can change them (plan, "GPT-Live backend rules").
    */
   readonly backend?: { readonly operation: string; readonly tools: readonly string[] };
+  /**
+   * The provider's own dollar figure for the session, read after it ends, that settles it (plan 4.2):
+   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`). Its key is kept, sealed, for the
+   * lookup (plan 8j, "Keys needed with no app request").
+   */
+  readonly lookup?: "deepgram";
 }
 
 /** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */
@@ -569,6 +579,13 @@ export interface OperationDescription {
   readonly background?: readonly BackgroundOption[];
   readonly meter: Meter;
   readonly priceKeys?: readonly PriceKey[];
+  /**
+   * The price list's section it is priced from, when not its provider's own: a model the provider bills
+   * at other rates on this operation (Deepgram's streaming, `deepgram-streaming`, 10a). Every price looked
+   * up for it reads that section (`resolve` in `../pricing/billability.ts`); a customer's own rate for the
+   * model is the same on every operation.
+   */
+  readonly priceList?: string;
   /**
    * The price list's kinds of model it serves, such as `speech`. A model the
    * list names with another kind (a transcription model beside it on the same

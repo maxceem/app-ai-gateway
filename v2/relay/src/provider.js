@@ -23,9 +23,10 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {typeof fetch} [send] for the tests
  * @param {(ms: number) => Promise<unknown>} [timeout] for the tests
  * @param {number} [limitMs] a shorter limit than `PROVIDER_CONNECT_TIMEOUT_MS`, such as the time left before a deadline
+ * @param {string} [callIdHeader] the answer's header that names the call (Deepgram's `dg-request-id`): its value is the call id
  * @returns {Promise<{ callId: string | null, socket: WebSocket }>}
  */
-export async function connectProvider(key, send = fetch, timeout = wait, limitMs = PROVIDER_CONNECT_TIMEOUT_MS) {
+export async function connectProvider(key, send = fetch, timeout = wait, limitMs = PROVIDER_CONNECT_TIMEOUT_MS, callIdHeader = undefined) {
   const headers = keyHeaders(key, { upgrade: "websocket" });
   const handshake = new AbortController();
   let answered = false;
@@ -47,7 +48,9 @@ export async function connectProvider(key, send = fetch, timeout = wait, limitMs
   // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
   socket.binaryType = "arraybuffer";
   socket.accept();
-  return { callId: null, socket };
+  // Only a plain id is kept: the gateway stores it and looks the call up by it.
+  const named = callIdHeader === undefined ? null : response.headers.get(callIdHeader);
+  return { callId: named !== null && /^[A-Za-z0-9_.:-]{1,200}$/u.test(named) ? named : null, socket };
 }
 
 /**

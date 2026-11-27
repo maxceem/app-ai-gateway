@@ -44,8 +44,11 @@ export const TICKET_VERSION = 1;
  *   exp: number,
  *   seal: { providerKey?: { blob: string, identity: string[], header?: string, format?: string }, cloudflareToken?: { blob: string, identity: string[] } },
  *   backend?: string[],
+ *   priceKeys?: Record<string, string>,
  * }} Ticket
  * `backend`: the models the session's backend may call (GPT-Live's, 9g), when its operation has one.
+ * `priceKeys`: the session's price key values, read from its request when it is asked for (Deepgram's
+ * stream, 10a): its slices are priced with them. Signed, so the app can't change them after.
  */
 
 /** @param {Uint8Array} bytes */

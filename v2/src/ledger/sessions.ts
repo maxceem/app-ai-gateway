@@ -31,7 +31,7 @@ import type { NanoDollars } from "../money.ts";
 import type { BudgetScope, SessionEndReason, SessionMode, SessionSlot } from "./labels.ts";
 import { utcMonthDays } from "../limits/spend.ts";
 import { bookingTooLate, logTooLate, sessionStartTakesBookings } from "./late-booking.ts";
-import { insertChargeWithCostStatement, utcDay, type ChargeRow } from "./write.ts";
+import { insertChargeWithCostStatement, KEY_COPIES_FIELD, utcDay, type ChargeRow } from "./write.ts";
 import { firstRowOf, sentOf, shapedLikeD1, type LedgerResult, type LedgerStatement } from "./database.ts";
 
 /**
@@ -52,6 +52,14 @@ export const STALE_SESSION_GRACE_MS = 5 * 60 * 1000;
 /** How soon after `close` the sweep first tries to settle the session. */
 export const SETTLE_FIRST_TRY_MS = 30 * 1000;
 
+/**
+ * How long after a session ends its provider's dollar figure is still looked up (plan 8j, "Keys needed
+ * with no app request": Deepgram's request record): past it, the slices' estimate stays.
+ */
+export const PROVIDER_LOOKUP_WINDOW_MS = 60 * 60 * 1000;
+/** How often the lookup tries while the provider's record is not ready, and how many times at most: past the window either way. */
+export const PROVIDER_LOOKUP_PACE = { retryEveryMs: 60 * 1000, maxTries: 90 } as const;
+
 /** A session row, as the code builds it (see `session` in `src/db/schema.ts`). */
 export interface SessionRow {
   readonly id: string;
@@ -71,6 +79,11 @@ export interface SessionRow {
   readonly startedAt: number;
   /** Whether the provider reports a session-level dollar total after the call. */
   readonly expectsSessionTotal: boolean;
+  /**
+   * The provider whose record is looked up for that total after the session ends (Deepgram's, 10a):
+   * the session's row comes with the open work that does it. Absent for a session with none.
+   */
+  readonly lookup?: string | null;
 }
 
 /** The open-work row that settles a session: one per session, moved by `close`. */
@@ -78,12 +91,19 @@ export function sessionWorkId(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
+/** The open-work row that looks up a session's provider total (`SessionRow.lookup`): one per session, moved by `close`. */
+export function lookupWorkId(sessionId: string): string {
+  return `lookup:${sessionId}`;
+}
+
 /** The id of a session's one session-level correction. */
 export function sessionSettlementId(sessionId: string): string {
   return `settle:session:${sessionId}`;
 }
 
+/** The session row, and its open work, each written once, whichever write comes first. */
 function insertSessionStatements(db: D1Database, session: SessionRow, now: number): D1PreparedStatement[] {
+  const lookup = session.lookup ?? null;
   return [
     // A session row that is not there is written only while a session that
     // started then could still take bookings (`./late-booking.ts`). Past that,
@@ -137,6 +157,29 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         now,
         session.id,
       ),
+    // The provider's dollar figure for the session, looked up once it ends (`close` moves it earlier),
+    // under the same rules as the stale-session row just above.
+    ...(lookup === null
+      ? []
+      : [
+          db
+            .prepare(
+              `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
+               SELECT ?, 'provider_lookup', ?, ?, 'session', ?, NULL, ?, ?, 0, ?
+               WHERE EXISTS (SELECT 1 FROM session WHERE id = ?8 AND state <> 'ended')
+               ON CONFLICT(id) DO NOTHING`,
+            )
+            .bind(
+              lookupWorkId(session.id),
+              session.accountId,
+              session.appId,
+              session.id,
+              JSON.stringify({ providerType: lookup, ...PROVIDER_LOOKUP_PACE }),
+              session.startedAt + session.timeCapMs + STALE_SESSION_GRACE_MS,
+              now,
+              session.id,
+            ),
+        ]),
   ];
 }
 
@@ -147,6 +190,24 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
  */
 export async function openSession(db: D1Database, session: SessionRow, now: number): Promise<void> {
   await db.batch(insertSessionStatements(db, session, now));
+}
+
+/**
+ * Puts the provider key's copies on a session's lookup row (plan 8j, "Keys needed with no app request"):
+ * sealed when the app asked for the session, or "missing" when they couldn't be made. Apart from the row's
+ * own write, so they reach it whichever write made it (`openSession`, or a first checkpoint that came
+ * sooner). Only once, and never on a row that gave up. Returns whether a row took them: none when the
+ * session's row isn't written yet, and its lookup then can't open the key (the estimate stays, logged).
+ */
+export async function attachLookupKeyCopies(db: D1Database, sessionId: string, copies: unknown): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE open_work SET detail_json = json_set(detail_json, '$.${KEY_COPIES_FIELD}', json(?))
+       WHERE id = ? AND gave_up_at IS NULL AND json_type(detail_json, '$.${KEY_COPIES_FIELD}') IS NULL`,
+    )
+    .bind(JSON.stringify(copies), lookupWorkId(sessionId))
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 /** A dollar budget the checkpoint checks: a scope's month against its limit. */
@@ -444,9 +505,9 @@ function unresolvedWork(db: D1Database, session: SessionRow, charge: ChargeRow, 
     );
 }
 
-/** Whether a slice holds units that may be billed (`sliceCharge` keeps them as usage): connection time, text messages, a transcription's audio. */
+/** Whether a slice holds units that may be billed (`sliceCharge` keeps them as usage): connection time, text messages, characters, a transcription's audio. */
 function billableTime(charge: ChargeRow): boolean {
-  return ["units_session_seconds", "units_text_messages", "units_audio_seconds"].some((name) => {
+  return ["units_session_seconds", "units_text_messages", "units_characters", "units_audio_seconds"].some((name) => {
     const count = charge.measures[name];
     return typeof count === "number" && count > 0;
   });
@@ -571,9 +632,10 @@ export async function closeSession(
     // `changes()` is the rows the update just above changed, in this same
     // batch: 0 for a repeated close, which must not pull the sweep's last try
     // ahead of a provider total that is still on its way.
+    // Its provider lookup too, when it has one: the provider's record is looked for from then on.
     db
-      .prepare("UPDATE open_work SET due_at = MIN(due_at, ?) WHERE id = ? AND gave_up_at IS NULL AND changes() > 0")
-      .bind(input.now + SETTLE_FIRST_TRY_MS, sessionWorkId(sessionId)),
+      .prepare("UPDATE open_work SET due_at = MIN(due_at, ?) WHERE id IN (?, ?) AND gave_up_at IS NULL AND changes() > 0")
+      .bind(input.now + SETTLE_FIRST_TRY_MS, sessionWorkId(sessionId), lookupWorkId(sessionId)),
   ]);
 }
 
