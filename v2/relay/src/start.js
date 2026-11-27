@@ -58,7 +58,7 @@
  */
 import { TICK_MS } from "./frames.js";
 import { adapterFor } from "./adapters.js";
-import { confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
+import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -830,6 +830,8 @@ export class SessionCore {
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
     const journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), settings);
+    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start.
+    if (journal !== null && this.journal !== null && this.journal !== journal) carryTotals(journal, this.journal);
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = settings?.deadline;
     const sliceEnd = Math.min(endedAt, deadline ?? Infinity);

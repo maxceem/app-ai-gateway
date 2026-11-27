@@ -157,6 +157,24 @@ describe("an xAI session's clock (step 9b)", () => {
     expect(s.slices().reduce((sum, slice) => sum + (slice.billedMs ?? 0), 0)).toBe(200_000);
   });
 
+  it("a journal write that failed loses nothing at the close: xAI's audio, and the clock's start (Sol, #268 round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client);
+    const write = s.store.putJournal.bind(s.store);
+    let failing = true;
+    s.store.putJournal = (journal: unknown) => (failing ? Promise.reject(new Error("storage failed")) : write(journal));
+    // The clock's start and xAI's 52 s both fail to reach storage.
+    await core.activity();
+    s.tick(4_000);
+    await core.recordUsage(audio("e1", 52), "running_total");
+    failing = false;
+    expect((s.store.data.get("journal") as { idle?: true }).idle).toBe(true);
+    await core.end("client_closed");
+    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 4_000, billedMs: 52_000 })]);
+    expect(s.logs.filter((event) => event.message === "relay_journal_write_failed")).toHaveLength(2);
+  });
+
   it("keeps the totals across a restart between slices: the audio that came before it is billed once", async () => {
     const s = setup();
     const first = s.instance();

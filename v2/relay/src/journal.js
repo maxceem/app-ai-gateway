@@ -144,6 +144,19 @@ export function markAudio(journal, ms) {
 }
 
 /**
+ * What this instance knew that a failed write may have kept out of the stored
+ * journal (`stored`), carried into it before the final slice: the provider's
+ * audio total, only ever up, and the clock's start. The stored slices and the
+ * billed total stay as stored (Sol, #268 round 1).
+ * @param {Journal} stored
+ * @param {Journal} memory
+ */
+export function carryTotals(stored, memory) {
+  if (stored.audioMs !== undefined && memory.audioMs !== undefined) stored.audioMs = Math.max(stored.audioMs, memory.audioMs);
+  if (stored.idle === true && memory.idle !== true && memory.activeAt !== undefined) markActive(stored, memory.activeAt);
+}
+
+/**
  * Adds `count` to a measure the relay counts itself, with no provider event
  * behind it (xAI's text messages, from the client's frames).
  * @param {Journal} journal
