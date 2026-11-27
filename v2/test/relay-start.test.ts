@@ -1143,6 +1143,19 @@ describe("reconnecting to the same session (step 9a part 3)", () => {
     expect(s.ended.provider).toEqual([]);
   });
 
+  it("a deliberate close racing a reconnect: the end starts before any wait, so the reconnect can't join (Gemini Neon, #263 round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    const client = s.client();
+    await core.start(s.text, s.ticket, client);
+    const gone = core.clientGone(client);
+    // Before clientGone reads anything: the end is already in flight, and a reconnect loses.
+    expect(core.ending).not.toBeNull();
+    expect(core.reattach(s.client())).toBe(false);
+    await gone;
+    expect(s.calls.close.map((close) => close.endReason)).toEqual(["client_closed"]);
+  });
+
   it("a detached session that nobody takes back is ended by the heartbeat, and the provider is hung up", async () => {
     const s = setup({ liveness: () => "heartbeat_timeout" });
     const core = s.instance();

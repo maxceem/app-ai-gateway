@@ -235,6 +235,8 @@ export class Session extends DurableObject {
     }
     if (!result.ok) {
       closeQuietly(client, 4000, result.code);
+      // An end the start began (a restarted instance's lost session) finishes inside this request.
+      await this.core.ending?.catch(() => undefined);
       return;
     }
     const call = /** @type {RelayCall} */ (result.call);
@@ -302,7 +304,8 @@ export class Session extends DurableObject {
    */
   async reconnect(socket) {
     const live = this.live;
-    if (live === null) return closeQuietly(socket, 4000, "session_ended");
+    // Already ending: nothing to wait for, the client needs a new session.
+    if (live === null || this.core.ending !== null) return closeQuietly(socket, 4000, "session_ended");
     // Every frame is kept from the start: the secret first, and whatever the SDK sends right after
     // it, while the secret is checked, goes to the session in order once it is taken back.
     /** @type {(string | ArrayBuffer)[]} */

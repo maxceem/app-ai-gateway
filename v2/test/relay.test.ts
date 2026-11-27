@@ -300,6 +300,16 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect((await comeBack(new SessionFrames({ relayMessages: true }), { secret: "wrong" })).closes).toEqual(["4000 session_active"]);
   });
 
+  it("a reconnect to a session already ending is told session_ended at once, without waiting for its first message (Sol round 6)", () => {
+    const closes: string[] = [];
+    const socket = { addEventListener: () => undefined, removeEventListener: () => undefined, send: () => undefined, close: (code: number, reason: string) => closes.push(`${code} ${reason}`) } as unknown as WebSocket;
+    const session = Object.create(Session.prototype) as Session;
+    (session as unknown as { core: unknown }).core = { call: {}, ending: new Promise(() => undefined) };
+    session.live = { client: null, deadline: Date.now() + 60_000 } as never;
+    void session.reconnect(socket);
+    expect(closes).toEqual(["4000 session_ended"]);
+  });
+
   it("a link that closes while its secret is hashed never joins: the session holds no dead socket (Fable, #263 round 1)", async () => {
     const { live, sent } = await comeBack(new SessionFrames({ relayMessages: true }), { closeWhileHashing: true });
     expect(live.client).toBeNull();

@@ -340,7 +340,8 @@ export class SessionCore {
         // the alarm would at its next tick, so its slot frees up for the client's new session;
         // the accounting finishes in the background (crash table row 22).
         if (this.lost(/** @type {Settings | undefined} */ (stored.get("settings")))) {
-          void endStart("error", { log: "relay_provider_lost", gap: true });
+          // Never unhandled: the session object waits for it too (`begin`), after answering.
+          endStart("error", { log: "relay_provider_lost", gap: true }).catch(() => undefined);
           return fail("session_ended");
         }
         return fail("session_active");
@@ -490,6 +491,9 @@ export class SessionCore {
   async clientGone(client) {
     if (client !== this.owner) return;
     this.owner = null;
+    // A session with its provider call: the end starts now, before any wait, so a reconnect that
+    // comes during a storage read can't join a session that is about to end.
+    if (this.call !== null) return this.end("client_closed");
     const state = (await this.store.get(["state"])).get("state");
     if (state === "active" || state === "starting") await this.end("client_closed");
   }
