@@ -26,6 +26,7 @@ These providers are served today:
 | OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
 | ElevenLabs text to speech | `v1/text-to-speech/{voice_id}/stream-input` | for example `eleven_flash_v2_5`; `eleven_multilingual_v2` when none is named |
 | Deepgram speech to text | `v1/listen` | for example `nova-3`, the gateway's default when none is named |
+| A custom provider | the WebSocket path you list | none. See [A live provider the gateway doesn't know](#a-live-provider-the-gateway-doesnt-know) |
 
 Text to speech and speech to text streams have their own limit on open
 sessions, apart from voice conversations. At that limit a new stream is
@@ -244,3 +245,37 @@ Start a new session then.
   first audio when that is longer. A few minutes after the session ends, the
   charge is corrected to Deepgram's own figure for the stream, when the
   connection's key may read Deepgram's usage (its `usage:read` permission).
+
+## A live provider the gateway doesn't know
+
+A [custom provider](/providers/custom-base-urls#a-websocket-path-for-live-sessions)
+can list one WebSocket path for live sessions, with your price per minute:
+
+```json
+{"method": "GET", "path": "v1/live", "websocket": true, "per_minute": 0.06}
+```
+
+In the console's **Paths** field, or with `agw provider add --path`, write it
+as `GET v1/live websocket $0.06/min`.
+
+- The path is a `GET`, with no API style, price per request or field settings.
+  A path without a price per minute is refused when you save it. A provider
+  lists one such path.
+- An app reaches it once it allows
+  [passthrough](/applications/provider-access#passthrough) on that provider.
+  Start the session as above, with the path and no model, such as
+  `{"path": "v1/live?voice=alloy"}`.
+- The query goes to the provider as it is, except fields that carry a
+  credential (a key, a token, a secret or an authorization, such as `api_key`
+  or `apiKey`), which are removed.
+- The relay sends your provider key only in the key header the provider's
+  settings name, in its format. The device never sees it.
+- The relay passes every message both ways as it is, and reads none of them.
+  So it cannot remove a credential your app puts inside a message: send none.
+- The session is charged by its connection time, from when the relay connects
+  to the provider to when the session ends, at your price per minute. The time
+  cap, the heartbeat and coming back after a dropped network work as for any
+  session.
+- It counts toward the limit on open voice conversations, not streams.
+- An HTTP request to the path gets `403 path_not_allowed`: the path serves live
+  sessions only.

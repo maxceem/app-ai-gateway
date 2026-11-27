@@ -4,9 +4,10 @@
  *
  * - The connection lists each method and path, and optionally a flat price
  *   per request. Stored in `provider_connection.passthrough_json` as
- *   `{ "paths": [{ "method", "path", "price_nano"?, "style"?, "set_fields"? }], "auth"? }`.
+ *   `{ "paths": [{ "method", "path", "price_nano"?, "style"?, "set_fields"?, "websocket"?, "per_minute_nano"? }], "auth"? }`.
  *   A custom provider (`./custom.ts`) stores how its key is sent in `auth`
- *   (`{ "header", "format" }`), and may name an API style per path.
+ *   (`{ "header", "format" }`), and may name an API style per path, or list
+ *   one WebSocket path, a live session with its price per minute (`WEBSOCKET_OPERATION`).
  * - An app reaches them only when its route for that connection enables the
  *   `passthrough` operation. A path a connection lists later is never added
  *   to an app that did not ask for passthrough.
@@ -55,6 +56,27 @@ export const LIVE_TOKEN = "live_token";
 /** The operation a mint through a live-session token path is charged as: a passthrough call by another name. */
 export const LIVE_TOKEN_OPERATION: OperationDescription = { ...PASSTHROUGH_OPERATION, name: LIVE_TOKEN };
 
+/** The operation name a custom provider's listed WebSocket path is charged as (plan D4, D10). */
+export const WEBSOCKET = "websocket";
+
+/**
+ * The operation a session on a custom provider's listed WebSocket path is (plan D4, D10): the generic
+ * adapter. The relay forwards its frames as they are and reads none of them, so it is billed by its
+ * connection time alone, at the listing's per-minute rate (`resolveWebsocket`, `../pricing/billability.ts`).
+ * Like any listed path it has no model, and an app reaches it by allowing passthrough. Its query is the
+ * session's options, sent on without credential fields.
+ */
+export const WEBSOCKET_OPERATION: OperationDescription = {
+  name: WEBSOCKET,
+  // Never matched by this: the listed path is matched on its own.
+  match: { method: "GET", path: WEBSOCKET },
+  lifecycle: "session",
+  transport: "websocket",
+  model: { in: "fixed", model: "" },
+  meter: { kind: "wall_clock" },
+  session: { slot: "conversational", mode: "relayed", queryOptions: true },
+};
+
 export function isPassthrough(operation: OperationDescription): boolean {
   return operation === PASSTHROUGH_OPERATION || operation === LIVE_TOKEN_OPERATION;
 }
@@ -71,6 +93,7 @@ export function storedPassthrough(paths: readonly PassthroughPath[], auth: Provi
       ...(listed.priceNano !== undefined ? { price_nano: listed.priceNano } : {}),
       ...(listed.style !== undefined ? { style: listed.style } : {}),
       ...(listed.setFields !== undefined && listed.setFields.length > 0 ? { set_fields: listed.setFields.map(storedField) } : {}),
+      ...(listed.websocket === true ? { websocket: true, per_minute_nano: listed.perMinuteNano } : {}),
     })),
     ...(auth === null ? {} : { auth: { header: auth.header, format: auth.format } }),
   });
@@ -133,9 +156,14 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
   if (!Array.isArray(paths)) return [];
   const read: PassthroughPath[] = [];
   for (const entry of paths as unknown[]) {
-    const { method, path, price_nano: priceNano, style, set_fields: setFields } = (entry ?? {}) as Record<string, unknown>;
+    const { method, path, price_nano: priceNano, style, set_fields: setFields, websocket, per_minute_nano: perMinuteNano } = (entry ?? {}) as Record<string, unknown>;
     if (typeof method !== "string" || !(PASSTHROUGH_METHODS as readonly string[]).includes(method) || typeof path !== "string") {
       log("error", "passthrough_unreadable", { reason: "entry" });
+      continue;
+    }
+    // A WebSocket path is never read without its price: one with none was never saved, and would bill nothing.
+    if (websocket === true && typeof perMinuteNano !== "number") {
+      log("error", "passthrough_unreadable", { reason: "websocket_price" });
       continue;
     }
     read.push({
@@ -153,25 +181,28 @@ export function readPassthrough(stored: unknown): readonly PassthroughPath[] {
             }),
           }
         : {}),
+      ...(websocket === true ? { websocket: true as const, perMinuteNano: perMinuteNano as number } : {}),
     });
   }
   return read;
 }
 
 const COMPILED = new WeakMap<readonly PassthroughPath[], readonly CompiledPassthrough[]>();
+const COMPILED_WEBSOCKET = new WeakMap<readonly PassthroughPath[], readonly CompiledPassthrough[]>();
 
 /**
- * A connection's listed passthrough paths, compiled once per loaded list. A
- * path that names an API style is an operation of a custom provider
- * (`./custom.ts`), not one of these. A path that no longer compiles is left
- * out and logged: it was checked when saved, so only a stricter rule in a
- * later release could do this.
+ * A connection's listed paths of one kind, compiled once per loaded list. A path that no longer compiles is
+ * left out and logged: it was checked when saved, so only a stricter rule in a later release could do this.
  */
-export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly CompiledPassthrough[] {
-  const cached = COMPILED.get(paths);
+function compiledOnce(
+  cache: WeakMap<readonly PassthroughPath[], readonly CompiledPassthrough[]>,
+  paths: readonly PassthroughPath[],
+  kept: (listed: PassthroughPath) => boolean,
+): readonly CompiledPassthrough[] {
+  const cached = cache.get(paths);
   if (cached !== undefined) return cached;
   const compiled = paths.flatMap((listed) => {
-    if (listed.style !== undefined) return [];
+    if (!kept(listed)) return [];
     try {
       return compilePassthrough([listed]);
     } catch (error) {
@@ -179,8 +210,22 @@ export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly
       return [];
     }
   });
-  COMPILED.set(paths, compiled);
+  cache.set(paths, compiled);
   return compiled;
+}
+
+/**
+ * A connection's listed passthrough paths, the ones an HTTP request reaches. A path that names an API
+ * style is an operation of a custom provider (`./custom.ts`), and a WebSocket path is a live session
+ * (`compiledWebsocket`): neither is one of these.
+ */
+export function compiledPassthrough(paths: readonly PassthroughPath[]): readonly CompiledPassthrough[] {
+  return compiledOnce(COMPILED, paths, (listed) => listed.style === undefined && listed.websocket !== true);
+}
+
+/** A custom provider's listed WebSocket path, the one a live session reaches (`WEBSOCKET_OPERATION`). */
+export function compiledWebsocket(paths: readonly PassthroughPath[]): readonly CompiledPassthrough[] {
+  return compiledOnce(COMPILED_WEBSOCKET, paths, (listed) => listed.websocket === true);
 }
 
 /**

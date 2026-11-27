@@ -550,6 +550,16 @@ export function resolvePassthrough(listed: PassthroughPath, liveToken = false): 
 }
 
 /**
+ * A listed WebSocket path's price (plan D4, D10): its connection time, at its rate a minute, as the
+ * customer's rate. Like any listed path it has no model, so no model list or rewrite applies. The session's
+ * slices are priced with it at the rate its ticket carries (`../relay/session-price.ts`), which the session
+ * saves as its price, as any session does, so the sweep prices at it too.
+ */
+export function websocketPrice(perMinuteNano: number): ResolvedPrice {
+  return { price: { rates: { per_minute: rate(perMinuteNano) }, raw: {} }, source: "customer_rate" };
+}
+
+/**
  * How serving resolves a model a request names besides its own
  * (`alternativeModels`, Vercel's fallback models), on an operation that
  * admitted the request's own model: it passes the same model list

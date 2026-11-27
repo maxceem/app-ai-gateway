@@ -206,6 +206,15 @@ Each style is an operation named `custom.<style>`, such as `custom.openai-chat`,
 which an app allows on its **Providers** tab. List one path per style; each is a
 `POST`. A path with no style is passed through, as on a built-in provider.
 
+### A WebSocket path for live sessions
+
+A custom provider can also list one WebSocket path, for live sessions through
+the gateway's relay. It is a `GET` with `websocket` and a price per minute of
+connection, written as `GET v1/live websocket $0.06/min`, or through the API
+as `{"method": "GET", "path": "v1/live", "websocket": true, "per_minute": 0.06}`.
+A WebSocket path without a price per minute is refused when you save it. See
+[A live provider the gateway doesn't know](/integrate/live-sessions#a-live-provider-the-gateway-doesnt-know).
+
 ## Listing paths
 
 On a built-in provider, **Passthrough paths** lists paths the gateway has no
@@ -214,12 +223,13 @@ lists every path it serves. The app reaches them as described under
 [Passthrough](/applications/provider-access#passthrough).
 
 Write one path per line: the method, the path, then a price or, on a custom
-provider, an API style:
+provider, an API style, or `websocket` and a price per minute:
 
 ```text
 GET v1/files/{file_id} $0.001
 POST v1/files
 POST chat/completions openai-chat
+GET v1/live websocket $0.06/min
 ```
 
 - The method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.

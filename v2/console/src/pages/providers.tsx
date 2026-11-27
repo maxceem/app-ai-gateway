@@ -674,9 +674,11 @@ export { parsePathLines, pathLine };
 /**
  * The key a listed path's field settings are kept under while its line is
  * edited: the method and the path, with each named part's name left out, so
- * renaming `{file_id}` to `{id}` keeps the same settings.
+ * renaming `{file_id}` to `{id}` keeps the same settings, and whether it is a
+ * WebSocket path, so a plain GET at the same address keeps its own.
  */
-export const pathKey = (path: { method: string; path: string }) => `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}`;
+export const pathKey = (path: { method: string; path: string; websocket?: boolean }) =>
+  `${path.method} ${path.path.replace(/^\/+/u, "").replace(/\{[^}]*\}/gu, "{}")}${path.websocket === true ? " websocket" : ""}`;
 
 /** A field setting as a request sends it: without what an answer adds about it. */
 function settingOnly({ label: _label, reason: _reason, suggested_value: _suggested, ...setting }: FieldSetting): FieldSetting {
@@ -919,7 +921,7 @@ function PathsDialog({ provider, onClose }: { provider: ProviderConnection | nul
         htmlFor="listed-paths"
         hint={
           custom
-            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. {name} stands for an id, after any API prefix and at least one fixed part, such as predictions/{id}."
+            ? "Method and path, then a price such as $0.002, or an API style such as openai-chat. For a live WebSocket path, GET, the path, websocket and a price a minute, such as GET v1/live websocket $0.06/min. {name} stands for an id, after any API prefix and at least one fixed part, such as predictions/{id}."
             : "Method and path, then a price such as $0.002 if you want one. {name} stands for an id, after the API version and an endpoint's name, such as v1/files/{file_id}."
         }
       >

@@ -242,6 +242,28 @@ call its backend model makes, at that model's own price.
   while OpenAI's voice seconds grow, longer when nothing new came. Start a new
   session.
 
+### A provider the gateway does not know
+
+A custom provider's listed WebSocket path (operation `websocket`) uses the
+`generic` adapter. It is billed by connection time alone, at the per-minute
+price the path is listed with.
+
+- **Frames pass as they are, both ways.** The relay reads none of them: no
+  usage, no answers, no settings. So it locks nothing inside a frame, and a
+  credential a client puts in a frame goes on to the provider. Only the query's
+  credential fields are removed, when the session starts.
+- **The key** goes only in the connection's own key header, in its format,
+  from the vault's seal. It is never in the address.
+- **The time** runs from the provider connection to the close, with no wait
+  for a first activity. Each checkpoint books the time since the last one. The
+  closing wait has no answer to wait for.
+- **The cap, the 90 s rule, the heartbeat and coming back to the same session**
+  work as for every session. The provider's frames are held while our SDK's
+  link is down.
+- **A restart of the relay ends the session**, as for any relayed session: the
+  provider connection went with the old instance. The time since the relay
+  last saved the session's journal is an "unknown cost" gap.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):

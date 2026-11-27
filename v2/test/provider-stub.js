@@ -11,11 +11,14 @@
 //
 // It keeps the key header of the last request, which a test reads back at
 // /last-key-header; the hang-ups it got, at /hangups; and how many calls were
-// made for an offer with the line `a=x-test:<tag>`, at /calls/<tag>.
+// made for an offer with the line `a=x-test:<tag>`, at /calls/<tag>. A custom
+// provider's key header (`x-api-key`), with the `authorization` header and the
+// query the last request had, is at /last-headers.
 import { geminiLive } from "./gemini-live-stub.js";
 import { observedCall } from "./observed-call.js";
 
 let lastKeyHeader = null;
+let lastHeaders = { authorization: null, "x-api-key": null, query: "" };
 const hangups = [];
 const calls = new Map();
 
@@ -23,9 +26,11 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/last-key-header") return Response.json({ authorization: lastKeyHeader });
+    if (url.pathname === "/last-headers") return Response.json(lastHeaders);
     if (url.pathname === "/hangups") return Response.json(hangups);
     if (url.pathname.startsWith("/calls/")) return Response.json({ made: calls.get(url.pathname.slice("/calls/".length)) ?? 0 });
     lastKeyHeader = request.headers.get("authorization");
+    lastHeaders = { authorization: lastKeyHeader, "x-api-key": request.headers.get("x-api-key"), query: url.search };
     if (request.method === "POST" && url.pathname.endsWith("/hangup")) hangups.push(decodeURIComponent(url.pathname.split("/").at(-2)));
     if (request.method === "POST" && url.pathname.endsWith("/realtime/calls")) {
       const tag = /^a=x-test:(\S+)/mu.exec(await request.clone().text())?.[1];

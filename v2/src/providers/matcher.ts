@@ -53,6 +53,13 @@ export interface PassthroughPath {
    * the app sent (plan section 4.5, "Safe defaults"). Never written when empty.
    */
   readonly setFields?: readonly FieldSetting[];
+  /**
+   * On a custom provider only: the path is a live WebSocket session (plan D4, D10), relayed as it is
+   * and billed by its connection time at `perMinuteNano`. Never served as an HTTP passthrough path.
+   */
+  readonly websocket?: true;
+  /** A WebSocket path's price per minute of connection, in nano-dollars. Always set on one. */
+  readonly perMinuteNano?: number;
 }
 
 /** Where the request goes: a key of the provider's `hosts`, and the encoded path. */
@@ -115,8 +122,10 @@ export class ProviderDescriptionError extends Error {
  */
 export function compilePassthrough(paths: readonly PassthroughPath[]): readonly CompiledPassthrough[] {
   return paths.map((listed) => {
-    if (listed.priceNano !== undefined && !(Number.isSafeInteger(listed.priceNano) && listed.priceNano >= 0)) {
-      throw new TemplateError(listed.path, "price must be a whole number of nano-dollars, 0 or more");
+    for (const price of [listed.priceNano, listed.perMinuteNano]) {
+      if (price !== undefined && !(Number.isSafeInteger(price) && price >= 0)) {
+        throw new TemplateError(listed.path, "price must be a whole number of nano-dollars, 0 or more");
+      }
     }
     // Only characters a path segment may hold as they are: a literal is
     // compared with the decoded request, so an encoded one could never match.

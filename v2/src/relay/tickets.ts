@@ -112,6 +112,8 @@ export interface TicketRequest {
   readonly backend?: readonly string[];
   /** The session's price key values, read from its request (Deepgram's stream, 10a), when its operation has any. */
   readonly priceKeys?: Readonly<Record<string, string>>;
+  /** A listed WebSocket path's rate a minute, in nano-dollars, as the session started (10b): its slices are priced at it. */
+  readonly perMinuteNano?: number;
 }
 
 export interface IssuedTicket {
@@ -180,6 +182,7 @@ export async function issueTicket(
     exp: expiresAt,
     ...(request.backend === undefined ? {} : { backend: [...request.backend] }),
     ...(request.priceKeys === undefined ? {} : { priceKeys: { ...request.priceKeys } }),
+    ...(request.perMinuteNano === undefined ? {} : { perMinuteNano: request.perMinuteNano }),
     seal: {
       ...(copies.providerKey === undefined
         ? {}

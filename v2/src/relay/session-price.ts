@@ -16,7 +16,8 @@
  * sweep, never as free. A price that couldn't be read today (D1 failed, the
  * connection's rates are malformed) is not "no price": nothing is saved.
  */
-import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, websocketPrice, type ResolvedPrice } from "../pricing/billability.ts";
+import { WEBSOCKET } from "../providers/passthrough.ts";
 import { keyCandidates, type ModelPrice } from "../pricing/prices.ts";
 import { declaredOperation } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -25,9 +26,12 @@ import type { Ticket } from "./tickets.ts";
 /**
  * Today's price for the session's model, saved form: '' when it has none.
  * Null when it couldn't be read: the connection's settings (`ratesJson`
- * undefined: D1 didn't answer) or its rates are unreadable.
+ * undefined: D1 didn't answer) or its rates are unreadable. A session on a
+ * listed WebSocket path is priced at the rate its ticket carries, the
+ * listing's as the session started, whatever the settings say now.
  */
 export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined): string | null {
+  if (ticket.operation === WEBSOCKET) return ticket.perMinuteNano === undefined ? null : encodeSessionPrice(websocketPrice(ticket.perMinuteNano));
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {

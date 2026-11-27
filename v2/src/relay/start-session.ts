@@ -21,6 +21,7 @@ import { ledgerDb } from "../ledger/database.ts";
 import { attachLookupKeyCopies, openSession, PROVIDER_LOOKUP_WINDOW_MS } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
 import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
+import { compiledWebsocket, PASSTHROUGH, WEBSOCKET_OPERATION } from "../providers/passthrough.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { priceKeyValues, removeOutbound } from "../proxy/request-fields.ts";
 import { storeKeyCopies } from "../vault/key-copies.ts";
@@ -54,11 +55,22 @@ export function relaySessionUrl(env: Env): string | null {
 }
 
 /**
- * A query field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`,
- * `api_key`, `access_token`, `authorization`, `single_use_token`). Never sent: the session's key is the
- * only credential.
+ * A name whose last word is a key, a token, a secret, an authorization, an API key or a password, after `_`
+ * or `-`, or that is only `auth`.
  */
-export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+const CREDENTIAL_NAME = /(^|[_-])(key|token|secret|authorization|apikey|password)$|^auth$/iu;
+
+/**
+ * Whether a query field is named as a credential (`CREDENTIAL_NAME`), its words joined by `_`, `-` or
+ * camelCase, acronyms too (`xi-api-key`, `api_key`, `access_token`, `single_use_token`, `apiKey`,
+ * `xiAPIKey`, `JWTToken`, `apikey`, `auth`, `password`). Never sent: the session's key is the only
+ * credential. A word that only starts that way is no credential (Deepgram's `keyterm`, `tokens_per_second`).
+ */
+export function credentialField(name: string): boolean {
+  // An acronym before a capitalised word first (`APIKey`, `xiAPIKey`), then each lower-to-upper step.
+  const words = name.replace(/([A-Z]+)([A-Z][a-z])/gu, "$1_$2").replace(/([a-z0-9])([A-Z])/gu, "$1_$2");
+  return CREDENTIAL_NAME.test(words);
+}
 
 /** A live-session path and its query, apart: the query, if any, without its `?`. */
 function splitQuery(path: string): [string, string | undefined] {
@@ -104,17 +116,20 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
 
       // The provider's own live-session path, as for any operation it declares. Its query holds the
       // session's options (Deepgram's audio format, ElevenLabs' output format), sent on as they are.
+      // A custom provider's listed WebSocket path is reached as its other listed paths are, by an app
+      // that allows passthrough, and served by the generic adapter (plan D4, D10).
       const [path = "", search] = splitQuery(request.data.path);
-      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection) });
-      const operation = match.kind === "operation" ? match.operation : null;
-      if (match.kind !== "operation" || operation === null || operation.lifecycle !== "session" || operation.session === undefined) {
+      const websocket = routing.operations.includes(PASSTHROUGH) ? compiledWebsocket(connection.passthrough ?? []) : [];
+      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection), passthrough: websocket });
+      const operation = match.kind === "operation" ? match.operation : match.kind === "passthrough" ? WEBSOCKET_OPERATION : null;
+      if (operation === null || match.kind === "refused" || operation.lifecycle !== "session" || operation.session === undefined) {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       }
       caller.facts.operation = operation.name;
       // Only a provider that takes the session's options in its query gets the app's; any other session
       // refuses a query, as the path with it never matched before (Sol, #273 round 1).
       if (search !== undefined && operation.session.queryOptions !== true) throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
-      if (!routing.operations.includes(operation.name)) {
+      if (match.kind === "operation" && !routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
       // Observed mode (WebRTC) comes with step 9a part 3.
@@ -138,9 +153,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // cannot bill never is; saving already refused a listed model with no price. Every live
       // session's usage is read by the relay (xAI 9b, Gemini 9d, OpenAI 9e), so none starts
       // unpriced. A rewrite is never applied to a session (plan D13).
-      const listed = listOf(routing);
-      const resolved = resolveCall(routing, undefined, priceSources(connection), operation, requested, listed, { asIfServed: true });
-      if (resolved.kind === "refused") throw callRefusal(resolved, operation);
+      // A listed WebSocket path has no model: its listing's rate prices it (`websocketPrice`).
+      if (match.kind === "operation") {
+        const resolved = resolveCall(routing, undefined, priceSources(connection), operation, requested, listOf(routing), { asIfServed: true });
+        if (resolved.kind === "refused") throw callRefusal(resolved, operation);
+      }
       const call = { model: requested };
       // A session that calls other models itself (GPT-Live's backend): the ones the app may call that
       // way, judged as a call to the backend's operation is, travel in the ticket for the relay to enforce.
@@ -153,12 +170,17 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");
       }
       // The app's options go on as it sent them, except the fields the operation removes (webhooks), any
-      // field named as a credential (`CREDENTIAL_FIELD`), and the model, which is always the session's own.
+      // field named as a credential (`credentialField`), and the model, which is always the session's own.
       const sent = removeOutbound(operation, null, options).query ?? new URLSearchParams(options);
-      for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
+      for (const name of [...new Set(sent.keys())]) if (credentialField(name)) sent.delete(name);
       if (location.in === "query") sent.set(location.name, call.model);
       const queryText = sent.toString();
-      const url = upstreamUrl(connection, description, { hostKey: match.upstream.host, path: match.upstream.path.replace(/^\//u, ""), query: queryText === "" ? "" : `?${queryText}` });
+      const url = upstreamUrl(connection, description, {
+        hostKey: match.upstream.host,
+        path: match.upstream.path.replace(/^\//u, ""),
+        query: queryText === "" ? "" : `?${queryText}`,
+        passthrough: match.kind === "passthrough",
+      });
       const credentials = sealedCredentials(connection, identity.keyShare);
       // The values the session's price depends on, read from its options once: its slices are priced with them.
       const priceKeys = priceKeyValues(operation, { body: {}, query: options });
@@ -201,6 +223,8 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             keyPlacement: { header: description.auth.header, format: description.auth.format },
             ...(backend === undefined ? {} : { backend }),
             ...(priceKeys === undefined ? {} : { priceKeys }),
+            // A listed WebSocket path's rate, as it is now: a later edit or removal never reprices the session.
+            ...(match.kind === "passthrough" ? { perMinuteNano: match.listed.perMinuteNano } : {}),
           },
           now,
           sessionId,

@@ -27,6 +27,7 @@ import { closeSession } from "../ledger/sessions.ts";
 import { sessionRowOf, verifyTicket, type Ticket } from "./tickets.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { declaredOperation } from "../providers/presets.ts";
+import { WEBSOCKET } from "../providers/passthrough.ts";
 import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
 
@@ -56,8 +57,9 @@ export interface OpenSettings {
    * The relay's protocol adapter: how it reads usage from the provider's
    * frames (plan 5.2). Version 2. xAI's voice API has its own (9b), Gemini
    * Live (9d), OpenAI Realtime (9e), GPT-Live (9g), and ElevenLabs' and
-   * Deepgram's streaming voice (10a). Any other session uses `mock`, which
-   * reads the smoke mock's usage events and nothing else.
+   * Deepgram's streaming voice (10a). A custom provider's listed WebSocket
+   * path uses `generic`, which reads nothing (10b). Any other session uses
+   * `mock`, which reads the smoke mock's usage events and nothing else.
    */
   readonly adapter: string;
   /**
@@ -78,6 +80,8 @@ const RELAY_ADAPTERS: Readonly<Record<string, string>> = {
   "openai.live": "gptlive",
   "elevenlabs.tts_websocket": "elevenlabs_tts",
   "deepgram.listen_stream": "deepgram",
+  // A custom provider's listed WebSocket path (10b): its frames are forwarded as they are, and its connection time is billed.
+  [WEBSOCKET]: "generic",
 };
 
 /** The backend a session may use, from its ticket and its operation (GPT-Live, 9g); undefined when it has none. */
