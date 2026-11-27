@@ -146,6 +146,36 @@ test("a client that hangs up during an answer still has that answer's usage book
   same(charges.reduce((sum, charge) => sum + (charge.output_tokens ?? 0), 0), 40, "the answer's output tokens");
 });
 
+test("an OpenAI Realtime session books its input transcription apart, at the transcription model's price (step 9e)", { skip, timeout: 90_000 }, async () => {
+  const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
+  await expectResponse(response, 201, "starting a session that transcribes");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the session's id");
+  // The mock says the session transcribes with gpt-4o-transcribe, then sends one transcription's usage.
+  const transcribe = JSON.stringify({
+    type: "mock.transcribe",
+    event_id: "smoke-transcription-1",
+    model: "gpt-4o-transcribe",
+    usage: { type: "tokens", input_tokens: 60, input_token_details: { text_tokens: 5, audio_tokens: 55 }, output_tokens: 10, total_tokens: 70 },
+  });
+  await exchangeFrames("/v2/relay/session", relay, [transcribe], 4, { authorization: `Bearer ${String(body?.ticket)}` });
+  type Charge = { id: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cost_nano: number | null; price_source: string; session_ms: number | null };
+  let transcription: Charge | undefined;
+  for (let tries = 0; tries < 30 && transcription === undefined; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${created.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the session's charges");
+    transcription = ((listed.body?.charges ?? []) as Charge[]).find((charge) => charge.id.endsWith(":transcription:gpt-4o-transcribe"));
+    if (transcription === undefined) await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  check(transcription !== undefined, "the session's input transcription was not booked apart");
+  same(transcription.model, "gpt-4o-transcribe", "the transcription's model");
+  same(transcription.input_tokens, 60, "the transcription's input tokens");
+  same(transcription.output_tokens, 10, "the transcription's output tokens");
+  // At gpt-4o-transcribe's list price: 60 x $2.50 + 10 x $10.00 a million tokens. Never free.
+  same(transcription.cost_nano, 250_000, "the transcription's cost");
+  same(transcription.session_ms ?? 0, 0, "the transcription's connection time");
+});
+
 test("our SDK comes back to the same session after its link drops, with the reconnect secret as its first message (step 9a part 3)", { skip }, async () => {
   const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
   await expectResponse(response, 201, "starting a session to reconnect to");

@@ -58,7 +58,7 @@
  */
 import { TICK_MS } from "./frames.js";
 import { adapterFor, knownAdapter } from "./adapters.js";
-import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
+import { carryOpen, carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -76,6 +76,9 @@ function stopReason(reasons) {
   const first = reasons[0] ?? "error";
   return first === "ended" ? "error" : first;
 }
+
+/** How long an ending session waits for the usage writes in flight, on local storage, before it freezes its last slice. */
+export const END_WRITES_MS = 2_000;
 
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
@@ -131,7 +134,7 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  * }} MainPort
  * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
- * `estimate`, for a provider whose cut answer never reports usage (Gemini Live): what the session's
+ * `estimate`, for a provider whose cut answer never reports usage (Gemini Live, OpenAI Realtime): what the session's
  * own end bills for the answer it cuts, asked once before the final slice.
  * @typedef {{
  *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
@@ -191,10 +194,13 @@ export class SessionCore {
    * @param {{
    *   store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger,
    *   liveness?: Liveness, proof?: () => boolean, checkpointTimeoutMs?: number,
-   *   turnOpen?: () => boolean, wait?: (ms: number) => Promise<void>,
+   *   turnOpen?: () => boolean, unfinished?: () => boolean, wait?: (ms: number) => Promise<void>,
    * }} parts
    * `proof`: whether a client message came since the start (crash table row 20), for a live checkpoint.
-   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`).
+   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`), or its usage
+   * is still being written: the closing wait waits for both.
+   * `unfinished`: whether the provider left an answer without its completion event: the end's "cut".
+   * By default `turnOpen`.
    * `wait`: a timer, for the closing wait; tests give their own.
    */
   constructor(parts) {
@@ -231,6 +237,8 @@ export class SessionCore {
     this.checkpointing = null;
     /** @type {() => boolean} */
     this.turnOpen = parts.turnOpen ?? (() => false);
+    /** @type {() => boolean} */
+    this.unfinished = parts.unfinished ?? this.turnOpen;
     /** @type {(ms: number) => Promise<void>} */
     this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     /**
@@ -238,6 +246,12 @@ export class SessionCore {
      * during the wait: the end is waiting for the provider's answer, and usage still counts.
      */
     this.turnWaiter = null;
+    /** The last journal write failed: usage this instance saw may be missing from storage (`endOnce`). */
+    this.unwritten = false;
+    /** Usage writes in flight (`recordUsage`): the end waits for all of them, bounded, before it judges what is cut. */
+    this.writes = new Set();
+    /** The end is reading and freezing the journal: usage that comes now is too late for it. */
+    this.finalizing = false;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -339,6 +353,21 @@ export class SessionCore {
     } finally {
       this.turnWaiter = null;
     }
+  }
+
+  /**
+   * Waits for the usage writes in flight (`writes`), and those they start, for at most
+   * `END_WRITES_MS`: local storage only. Returns whether they all landed.
+   */
+  async settleWrites() {
+    const until = this.now() + END_WRITES_MS;
+    while (this.writes.size > 0) {
+      const left = until - this.now();
+      if (left <= 0) return false;
+      const timedOut = await Promise.race([Promise.all([...this.writes]).then(() => false), this.wait(left).then(() => true)]);
+      if (timedOut) return this.writes.size === 0;
+    }
+    return true;
   }
 
   /**
@@ -647,7 +676,10 @@ export class SessionCore {
     if (this.over) return;
     try {
       await this.store.putJournal(journal);
+      // Each write holds the whole journal: one that lands covers any that failed before it.
+      this.unwritten = false;
     } catch {
+      this.unwritten = true;
       this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
     }
   }
@@ -814,6 +846,9 @@ export class SessionCore {
         await this.endOnce(reason, details);
       } finally {
         if (this.ending === ending) this.ending = null;
+        // An end that found nothing to end, or failed before `over`, leaves no session behind it: a
+        // retry on this instance must record its usage (Sol, Gemini Neon, #270 round 6).
+        this.finalizing = false;
       }
     });
     this.ending = ending;
@@ -837,18 +872,23 @@ export class SessionCore {
     // hung up itself, not at the time cap, and not for a start that never got its call.
     const hadCall = this.call !== null;
     if (hadCall && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
-    // An answer still open now was cut off: its usage is missing. Also when an observed call's side
-    // channel dropped during the wait: the answer never finished where the relay could see it.
-    const cut = hadCall && this.turnOpen();
     const call = this.call;
-    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini): estimated.
-    const estimate = call?.estimate?.() ?? null;
     this.call = null;
     this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
     // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
     const endedAt = this.now();
+    // Hung up first, so no new frame comes; then the usage writes already in flight land, bounded, so a
+    // write that never settles never holds the end (Sol, Gemini Neon, #270 round 5).
     call?.close?.(1000, "session ended");
+    const written = await this.settleWrites();
+    this.finalizing = true;
+    // An answer the provider never finished was cut off: its usage is missing. Also when an observed
+    // call's side channel dropped during the wait: the answer never finished where the relay could see
+    // it. A finished answer whose write ran past the limit is not cut: it is partial below (`written`).
+    const cut = hadCall && this.unfinished();
+    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini, OpenAI): estimated.
+    const estimate = call?.estimate?.() ?? null;
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
     if (details.log !== undefined) {
@@ -857,8 +897,13 @@ export class SessionCore {
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
     const journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), settings);
-    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start.
-    if (journal !== null && this.journal !== null && this.journal !== journal) carryTotals(journal, this.journal);
+    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start,
+    // and the open usage's counts when both journals agree where it starts (Sol, #270 round 4).
+    let carried = false;
+    if (journal !== null && this.journal !== null && this.journal !== journal) {
+      carryTotals(journal, this.journal);
+      carried = carryOpen(journal, this.journal);
+    }
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = settings?.deadline;
     const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
@@ -868,6 +913,11 @@ export class SessionCore {
       journal.droppedFrom ??= sliceEnd;
       this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
     }
+    // The last journal write failed, so usage this instance saw may be missing from what storage holds:
+    // the final slice is partial, never complete without it (Sol, #270 round 3).
+    if (journal !== null && this.unwritten && !carried) journal.droppedFrom ??= sliceEnd;
+    // A usage write still in flight at the wait's limit: its usage may be missing, so the slice is partial.
+    if (journal !== null && !written) journal.droppedFrom ??= sliceEnd;
     if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
@@ -914,12 +964,29 @@ export class SessionCore {
    * one small write (plan 5.2 rule 3). A repeated event changes nothing. A
    * write that fails is logged: the event may be lost, and the gap rules cover
    * a restart.
+   * `written` runs once the write is done (or nothing was to be written), before anything awaiting
+   * the write goes on: the end waits for every write in flight (`writes`) before it judges what is cut.
+   * @param {import("./journal.js").UsageEvent} event
+   * @param {"per_turn" | "running_total"} shape
+   * @param {() => void} [written]
+   * @returns {Promise<void>}
+   */
+  recordUsage(event, shape, written) {
+    const run = this.recordUsageNow(event, shape).finally(() => written?.());
+    const tracked = run.catch(() => undefined);
+    this.writes.add(tracked);
+    void tracked.then(() => this.writes.delete(tracked));
+    return run;
+  }
+
+  /**
+   * `recordUsage`'s work.
    * @param {import("./journal.js").UsageEvent} event
    * @param {"per_turn" | "running_total"} shape
    */
-  async recordUsage(event, shape) {
-    // During the closing wait, the last answer's usage still counts.
-    if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
+  async recordUsageNow(event, shape) {
+    // Usage that arrives while the call is open, or while the end waits for its writes, always counts.
+    if (this.over || this.finalizing || (this.call === null && this.ending === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null) return;
@@ -1225,7 +1292,14 @@ export class SessionCore {
         level: "error",
         message: "relay_close_given_up",
         session: this.sessionIdOf(stored),
-        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs, ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }) })),
+        slices: left.map((slice) => ({
+          seq: slice.seq,
+          measures: slice.measures,
+          sessionMs: slice.sessionMs,
+          gapMs: slice.gapMs,
+          ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }),
+          ...(slice.transcriptions === undefined ? {} : { transcriptions: slice.transcriptions }),
+        })),
       });
       /** @type {Record<string, unknown>} */
       const entries = { closed: true };

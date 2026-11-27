@@ -18,6 +18,7 @@
  */
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
 import type { ModelPrice } from "../pricing/prices.ts";
+import { declaredOperation } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import type { Ticket } from "./tickets.ts";
 
@@ -56,6 +57,12 @@ export function decodeSessionPrice(text: string): ResolvedPrice | null {
 /** The rates a price may bill connection time with (`../pricing/units.ts`): the wall clock meter. */
 const TIME_RATES = ["per_second", "per_minute", "per_hour"] as const;
 
+/** Whether a session's operation may bill its connection time: not one billed by tokens alone (OpenAI Realtime). */
+export function sessionBillsTime(operation: string): boolean {
+  const meter = declaredOperation(operation)?.meter;
+  return !(meter?.kind === "provider_event" && meter.tokensOnly === true);
+}
+
 /** Whether a price bills connection time: a provider metered by the wall clock (plan 3, meter kinds). */
 export function billsTime(price: ModelPrice): boolean {
   const rates = price.rates as Readonly<Record<string, unknown>>;
@@ -69,7 +76,14 @@ export function billsTime(price: ModelPrice): boolean {
  * bills with no tokens. Other units (xAI's text messages) are kept as they are. The checkpoint and the pricing sweep both price a
  * slice this way.
  */
-export function sliceUsage(usage: UsageObservation, price: ModelPrice): UsageObservation {
+export function sliceUsage(usage: UsageObservation, price: ModelPrice, timeBilled = true): UsageObservation {
+  // A session billed by tokens alone (OpenAI Realtime) never bills its connection time, whatever rates
+  // a custom price has: that time counts for plan minutes only (Sol, #270 round 4).
+  if (!timeBilled && usage.units?.session_seconds !== undefined) {
+    const { session_seconds: _time, ...rest } = usage.units;
+    const { units: _units, ...others } = usage;
+    return sliceUsage(Object.keys(rest).length > 0 ? { ...others, units: rest } : others, price);
+  }
   const seconds = usage.units?.session_seconds;
   // Text messages alone (xAI's, before its clock started): no tokens to price, so a price with token
   // rates too bills them by their own rate, and a gap keeps that known charge (Sol, #266 round 5).

@@ -340,6 +340,27 @@ describe("starting a session", () => {
     expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
   });
 
+  it("starts an OpenAI Realtime session with a priced model, read by OpenAI's adapter, and refuses one with no price unless the app lists it (step 9e; #259)", async () => {
+    const { appId, slug, key } = await setup();
+    const response = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime-2.1" });
+    expect(response.status).toBe(201);
+    const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
+    expect(adapterFor(payload)).toBe("openai");
+    // A dated snapshot OpenAI supports is priced at its alias's rates (Sol, #270 round 1).
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime-mini-2025-12-15" })).status).toBe(201);
+    // A model with no price is refused before any slot is taken, as a call to it is: no session model starts unpriced.
+    const unpriced = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime-9" });
+    expect(unpriced.status).toBe(400);
+    expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
+    // A model the list prices as another kind is not a session's: an image model never starts one.
+    const image = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-image-1.5" });
+    expect(image.status).toBe(400);
+    // Nor do the per-minute transcription and translation models: the session bills tokens (Fable, #270 round 1).
+    for (const model of ["gpt-realtime-whisper", "gpt-live-transcribe", "gpt-realtime-translate"]) {
+      expect((await start(appId, slug, key, { path: "v1/realtime", model })).status, model).toBe(400);
+    }
+  });
+
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {
     const chat = await setup({}, ["openai.chat"]);
     const notSession = await start(chat.appId, chat.slug, chat.key, { path: "v1/chat/completions", model: "gpt-4o-mini" });
@@ -437,7 +458,7 @@ describe("Sol 9a3 round 1", () => {
     return ledger().prepare("SELECT reason, model FROM app_rejection_event WHERE app_id = ? ORDER BY created_at DESC").bind(appId).first<{ reason: string; model: string | null }>();
   }
 
-  it("records a model the gateway doesn't know as unrecognized, never its text, whether the list or the cap refused it", async () => {
+  it("records a model the gateway doesn't know as unrecognized, never its text, whether the list or its price refused it", async () => {
     const listed = await setup();
     await env.DB.prepare("UPDATE app SET config_json = json_set(config_json, ?, json(?)) WHERE id = ?")
       .bind(`$.routing.providers.${listed.slug}.models`, JSON.stringify(["gpt-realtime-mini"]), listed.appId)
@@ -445,10 +466,14 @@ describe("Sol 9a3 round 1", () => {
     clearCaches();
     expect((await start(listed.appId, listed.slug, listed.key, { path: "v1/realtime", model: "not-a-model sk-oops" })).status).toBe(403);
     expect(await lastRejection(listed.appId)).toMatchObject({ reason: "model_not_allowed", model: "unrecognized" });
+    // With no model list, a model the gateway doesn't know is refused for its price (step 9e), before any cap.
     const capped = await setup({ per_app: { sessions: { conversational: 1 } } });
-    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "first" }, "user-1")).status).toBe(201);
-    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "second sk-oops" }, "user-2")).status).toBe(429);
-    expect(await lastRejection(capped.appId)).toMatchObject({ reason: "blocked_session_limit", model: "unrecognized" });
+    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "gpt-realtime-2.1" }, "user-1")).status).toBe(201);
+    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "second sk-oops" }, "user-2")).status).toBe(400);
+    expect(await lastRejection(capped.appId)).toMatchObject({ model: "unrecognized" });
+    // The cap refuses a known model, and records it by name.
+    expect((await start(capped.appId, capped.slug, capped.key, { path: "v1/realtime", model: "gpt-realtime-2.1" }, "user-3")).status).toBe(429);
+    expect(await lastRejection(capped.appId)).toMatchObject({ reason: "blocked_session_limit", model: "gpt-realtime-2.1" });
   });
 
   /** Minutes that answer only after the start's 2 s deadline has passed. */

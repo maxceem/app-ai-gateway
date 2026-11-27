@@ -282,7 +282,8 @@ export type Meter =
    */
   | { readonly kind: "wall_clock"; readonly units?: readonly Unit[] }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
-  | { readonly kind: "provider_event"; readonly adapter: string };
+  /** `tokensOnly`: the session bills tokens alone, so a model priced by the minute is not its (OpenAI Realtime). */
+  | { readonly kind: "provider_event"; readonly adapter: string; readonly tokensOnly?: true };
 
 /** A request field naming how long its cache writes are kept, and the variant each value bills as (`cacheWriteKeptFor`). */
 export interface CacheWriteKeptFor {

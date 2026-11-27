@@ -93,9 +93,11 @@ export default {
  *   send(data: string | ArrayBuffer): void,
  *   forward: ((data: string | ArrayBuffer) => boolean | void) | null,
  *   pending: StartQueue,
+ *   meter?: import("./adapters.js").CallMeter | null,
  * }} RelayCall
  * The provider's side of a relayed session. Its frames wait in `pending` until
- * the session is started, then go through `forward`.
+ * the session is started, then go through `forward`. `meter`: what the
+ * session's adapter remembers about this call (`perCall`, OpenAI's).
  *
  * @typedef {{
  *   client: WebSocket | null,
@@ -158,9 +160,13 @@ export class Session extends DurableObject {
           const { callId, socket } = await connectProvider(key);
           // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
           if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
+          const meter = adapterFor(settings.adapter).perCall?.(settings.model ?? null) ?? null;
           /** @type {RelayCall} */
           const call = {
             callId,
+            meter,
+            // An answer the session's own end cuts is estimated, for a provider whose adapter can (OpenAI).
+            ...(meter === null ? {} : { estimate: () => meter.estimate() }),
             // Every end hangs up through here: held frames go with the call.
             close: (code, reason) => {
               this.dropHeld(call);
@@ -199,7 +205,19 @@ export class Session extends DurableObject {
       // The tick's checks for the session this instance runs: none after a restart.
       liveness: (now) => this.live?.frames.check(now) ?? null,
       proof: () => this.live?.frames.clientSpoke ?? false,
-      turnOpen: () => this.live?.turnOpen ?? this.sideTurnOpen,
+      // An answer in progress, or an input transcription still to come (OpenAI): a closing session waits for both.
+      // OpenAI's: its answers by id and its transcriptions (the call's meter), each until its usage is written.
+      turnOpen: () => {
+        if (this.live === null) return this.sideTurnOpen;
+        const meter = this.live.call?.meter;
+        return meter === undefined || meter === null ? this.live.turnOpen : meter.pending();
+      },
+      // What the provider never finished: cut, if the session ends now.
+      unfinished: () => {
+        if (this.live === null) return this.sideTurnOpen;
+        const meter = this.live.call?.meter;
+        return meter === undefined || meter === null ? this.live.turnOpen : meter.unfinished();
+      },
     });
     /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
     this.sideTurnOpen = false;
@@ -565,6 +583,8 @@ export class Session extends DurableObject {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
+    // The model lock, for a provider whose client may name another model mid-session (OpenAI's `session.update`).
+    data = live.call?.meter?.lock(data) ?? data;
     live.call?.send(data);
     // Read after it went out (plan 5.2): a provider that bills by its own clock starts it at the
     // first activity, and bills each text message (xAI). Nothing else is read here.
@@ -577,11 +597,14 @@ export class Session extends DurableObject {
    * A provider frame's usage, journaled in its own write (plan 5.2), or null when it has none.
    * @param {import("./adapters.js").Adapter} adapter
    * @param {string | ArrayBuffer} data
+   * @param {import("./adapters.js").CallMeter | null} [meter] the call's own memory: an event's model, if not the session's
+   * @param {() => void} [written] runs once the usage is written (`SessionCore.recordUsage`)
    * @returns {Promise<void> | null}
    */
-  readUsage(adapter, data) {
-    const event = adapter.read(data);
-    return event === null ? null : this.core.recordUsage(event, adapter.shape).catch(() => undefined);
+  readUsage(adapter, data, meter = null, written = undefined) {
+    const read = adapter.read(data);
+    const event = read === null || meter === null ? read : meter.label(read);
+    return event === null ? null : this.core.recordUsage(event, adapter.shape, written).catch(() => undefined);
   }
 
   /**
@@ -622,8 +645,23 @@ export class Session extends DurableObject {
       // and the session ends below: nothing more could reach the client in order.
       else overflowed = !live.held.push(data);
     }
+    const forwarded = !late && this.core.ending === null && !overflowed;
+    // What the call remembers (OpenAI's format and transcription model, the answer's audio), after the frame went out.
+    const meter = live.call?.meter ?? null;
+    const finished = meter === null ? null : meter.see(data, forwarded);
+    // An answer or transcription the frame finished counts as open until its usage is written: settled
+    // as soon as the write is done, before the end judges what is cut. Once nothing is open, a closing
+    // session waits no more.
+    const settle =
+      meter === null || finished === null
+        ? undefined
+        : () => {
+            meter.settled(finished);
+            if (!meter.pending()) this.core.turnDone();
+          };
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
-    const recorded = this.readUsage(live.adapter, data);
+    const recorded = this.readUsage(live.adapter, data, meter, settle);
+    if (recorded === null) settle?.();
     const turn = live.adapter.turn(data);
     // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,
     // which changes nothing, since its "done" comes after its last chunk.
@@ -648,7 +686,7 @@ export class Session extends DurableObject {
       void this.core.end("client_closed");
     }
     if (late) void this.core.end("time_cap");
-    return !late && this.core.ending === null && !overflowed;
+    return forwarded;
   }
 
   /**

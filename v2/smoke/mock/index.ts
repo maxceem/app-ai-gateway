@@ -666,6 +666,14 @@ export default mock;
  * part 3): `{"type":"mock.answer","event_id":…,"usage":{…},"seconds":N}`
  * sends `response.created`, audio for N seconds, then the usage event and
  * `response.done`.
+ *
+ * Since OpenAI's own adapter reads this session (step 9e), each usage event is
+ * followed by a `response.done` carrying the same usage the way OpenAI does,
+ * in `response.usage`, keyed by the event id: sent as many times as the event,
+ * so a repeat is skipped by that id. And one more:
+ * `{"type":"mock.transcribe","event_id":…,"usage":{…},"model":M}` says the
+ * session transcribes with M (`session.updated`), commits an audio item, then
+ * sends its transcription with that usage.
  */
 /**
  * Gemini Live (step 9d), its JSON in binary frames as Gemini sends it: a
@@ -725,21 +733,21 @@ function realtimeSession(): Response {
   server.addEventListener("message", (event) => {
     const data = event.data;
     if (typeof data === "string" && data.startsWith('{"type":"mock.')) {
-      const message = JSON.parse(data) as { type: string; seconds?: number; usageEvery?: number; event_id?: unknown; usage?: unknown; repeat?: number };
+      const message = JSON.parse(data) as { type: string; seconds?: number; usageEvery?: number; event_id?: unknown; usage?: unknown; repeat?: number; model?: unknown };
       if (message.type === "mock.answer") {
         const frames = Math.max(1, Math.min(20 * 60, Math.round((message.seconds ?? 1) * 20)));
-        server.send(JSON.stringify({ type: "response.created" }));
+        server.send(JSON.stringify({ type: "response.created", response: { id: message.event_id } }));
         let sent = 0;
         const timer = setInterval(() => {
           try {
             if (sent < frames) {
-              server.send(JSON.stringify({ type: "response.output_audio.delta", n: sent, delta: audio }));
+              server.send(JSON.stringify({ type: "response.output_audio.delta", response_id: message.event_id, n: sent, delta: audio }));
               sent += 1;
               return;
             }
             clearInterval(timer);
             server.send(JSON.stringify({ type: "mock.usage", event_id: message.event_id, usage: message.usage }));
-            server.send(JSON.stringify({ type: "response.done" }));
+            server.send(JSON.stringify({ type: "response.done", event_id: `done-${String(message.event_id)}`, response: { id: message.event_id, usage: message.usage } }));
           } catch {
             clearInterval(timer);
           }
@@ -747,7 +755,16 @@ function realtimeSession(): Response {
         server.addEventListener("close", () => clearInterval(timer));
       } else if (message.type === "mock.turn") {
         const usage = JSON.stringify({ type: "mock.usage", event_id: message.event_id, usage: message.usage });
-        for (let i = 0; i < Math.max(1, Math.min(5, message.repeat ?? 1)); i += 1) server.send(usage);
+        const done = JSON.stringify({ type: "response.done", event_id: `done-${String(message.event_id)}`, response: { id: message.event_id, usage: message.usage } });
+        const times = Math.max(1, Math.min(5, message.repeat ?? 1));
+        for (let i = 0; i < times; i += 1) server.send(usage);
+        for (let i = 0; i < times; i += 1) server.send(done);
+      } else if (message.type === "mock.transcribe") {
+        const model = typeof message.model === "string" ? message.model : "gpt-4o-transcribe";
+        server.send(JSON.stringify({ type: "session.updated", event_id: "mock-session", session: { type: "realtime", audio: { input: { transcription: { model } } } } }));
+        // OpenAI commits the audio item first: its transcription comes after, under the model of that moment.
+        server.send(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "mock-commit", item_id: "mock-item" }));
+        server.send(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: message.event_id, item_id: "mock-item", transcript: "", usage: message.usage }));
       } else if (message.type === "mock.big") {
         server.send(`{"audio_base_64":"${"B".repeat(512 * 1024)}","isFinal":false,"type":"audio"}`);
       } else if (message.type === "mock.stream") {

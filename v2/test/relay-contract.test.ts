@@ -94,7 +94,7 @@ describe("relay contract versions", () => {
 
   it("answers a version 2 relay: open, checkpoints, then close with the final slice", async () => {
     const t = await ticket();
-    expect(await contract.open(t.text)).toMatchObject({ version: 2, adapter: "mock" });
+    expect(await contract.open(t.text)).toMatchObject({ version: 2, adapter: "openai" });
     expect(await contract.checkpoint(t.text, { slice: null, connected: false, accounting: false, providerCallId: "call_1", relayVersion: 2 })).toEqual({
       version: 2,
       decision: "continue",

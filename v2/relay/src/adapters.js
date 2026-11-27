@@ -7,9 +7,9 @@
  * every other frame is forwarded untouched, never parsed. It declares its
  * usage shape: per turn, or a running total.
  *
- * The mock adapters read the smoke mock provider's frames. xAI (9b) and
- * Gemini Live (9d) are the provider adapters so far; OpenAI over WebSocket
- * comes with 9e. A frame no adapter reads costs nothing but the connection time.
+ * The mock adapters read the smoke mock provider's frames. xAI (9b), Gemini
+ * Live (9d) and OpenAI Realtime over WebSocket (9e) are the provider adapters.
+ * A frame no adapter reads costs nothing but the connection time.
  */
 
 /** The token counts an adapter may report: the same list the main Worker accepts (`SLICE_MEASURES`). */
@@ -25,7 +25,28 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   clock?: "first_activity",
  *   client?(data: string | ArrayBuffer): "activity" | "text" | null,
  *   keepalive?(data: string | ArrayBuffer): boolean,
+ *   perCall?(model: string | null): CallMeter,
  * }} Adapter
+ * @typedef {{
+ *   see(data: string | ArrayBuffer, forwarded: boolean): string | null,
+ *   settled(key: string): void,
+ *   pending(): boolean,
+ *   unfinished(): boolean,
+ *   label(event: UsageEvent): UsageEvent,
+ *   estimate(): UsageEvent | null,
+ *   lock(data: string | ArrayBuffer): string | ArrayBuffer,
+ * }} CallMeter
+ * `perCall`, for a provider that needs to remember something about one call
+ * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
+ * after it was forwarded; it names an answer or a transcription the frame
+ * finished, whose usage is being written), that usage written (`settled`),
+ * whether anything is still to come that a closing session waits for
+ * (`pending`: an answer or a transcription not finished, or one whose usage is
+ * still being written), whether OpenAI left an answer or transcription without
+ * its completion event (`unfinished`: cut by the end), the model of a usage event that is not the
+ * session's own (`label`: input transcription), a cut answer's estimate
+ * (`estimate`, the session core's hook) and the model lock on the client's
+ * frames (`lock`, before each goes to the provider).
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
  * `response.created` and `response.done`), so a closing session can wait for
  * the last answer's usage (plan 5.1: up to 10 s). A cheap prefix check, like `read`.
@@ -114,7 +135,9 @@ const TYPE_FIRST = '{"type":"';
 export function typeOf(data) {
   if (data.startsWith(TYPE_FIRST)) {
     const end = data.indexOf('"', TYPE_FIRST.length);
-    return end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+    const type = end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+    // An escape in the type (`\u002e`) reads differently parsed: such a frame is parsed (Gemini Neon, #270).
+    if (type === null || !type.includes("\\")) return type;
   }
   return parsedType(parsed(data));
 }
@@ -340,6 +363,294 @@ const GEMINI = {
   },
 };
 
+/** A count OpenAI reported at `path` under `record`, or 0. @param {unknown} record @param {string[]} path */
+function countAt(record, ...path) {
+  let value = record;
+  for (const key of path) value = typeof value === "object" && value !== null ? /** @type {Record<string, unknown>} */ (value)[key] : undefined;
+  return tokenCount(value);
+}
+
+/**
+ * One answer's usage, from `response.done`'s `response.usage` (T8, T9, T21),
+ * as the slice's measures. `input_tokens` holds the cached ones;
+ * `input_token_details` splits the whole prompt by modality, and its
+ * `cached_tokens_details` the cached part.
+ * - Input: the cached tokens bill at the cached rate, cached audio at its own
+ *   (`cached_input_audio`); audio is counted whole, with its cached share as
+ *   that variant. A cached image token bills as an uncached one: the price list
+ *   has no cached image rate, and a guess must bill high, never low.
+ * - Output: audio at its own rate, the rest (text, reasoning) at the text rate.
+ * - Tokens no breakdown covers, a side with none or the rest of one, are
+ *   `unknown`: billed at the model's highest rate, never as text (Sol, #270).
+ *   So are cached tokens OpenAI doesn't split by modality: the cache discount
+ *   applies only where the cached modality is known, and the price is marked
+ *   an estimate.
+ * @param {Record<string, unknown>} usage
+ * @returns {Record<string, number>}
+ */
+export function openAiMeasures(usage) {
+  const input = tokenCount(usage.input_tokens);
+  const output = tokenCount(usage.output_tokens);
+  const details = usage.input_token_details;
+  // The cache discount applies only where the cached modality is known: text and audio. Cached images
+  // bill as uncached; cached tokens with no modality bill as unknown, at the dearest rate, as an estimate.
+  const cachedText = countAt(details, "cached_tokens_details", "text_tokens");
+  const cachedAudio = countAt(details, "cached_tokens_details", "audio_tokens");
+  const cachedImage = countAt(details, "cached_tokens_details", "image_tokens");
+  const cachedAll = Math.min(input, countAt(details, "cached_tokens"));
+  const cached = Math.min(cachedAll, cachedText + cachedAudio);
+  const unexplained = Math.max(0, cachedAll - cachedText - cachedAudio - cachedImage);
+  /** @type {Record<string, number>} */
+  const measures = { input_tokens: input - cached, output_tokens: output, cached_input_tokens: cached, input_split: 1, output_split: 1 };
+  const audio = countAt(details, "audio_tokens");
+  const image = countAt(details, "image_tokens");
+  measures.input_audio_tokens = audio;
+  measures.input_image_tokens = image;
+  measures.cached_input_audio_tokens = Math.min(cached, cachedAudio);
+  // What the split doesn't account for, of the uncached input: billed at the highest rate.
+  const accounted = countAt(details, "text_tokens") + audio + image;
+  measures.input_unknown_tokens = Math.min(input - cached, Math.max(0, input - accounted) + unexplained);
+  // Cached tokens whose modality is unknown are a guess: the price is marked an estimate.
+  if (unexplained > 0) measures.estimated_tokens = unexplained;
+  const out = usage.output_token_details;
+  const outAudio = countAt(out, "audio_tokens");
+  measures.output_audio_tokens = outAudio;
+  measures.output_unknown_tokens = Math.max(0, output - countAt(out, "text_tokens") - outAudio);
+  for (const [name, value] of Object.entries(measures)) if (value === 0 && !name.endsWith("_split")) delete measures[name];
+  return measures;
+}
+
+/**
+ * One input transcription's usage (`conversation.item.input_audio_transcription.completed`),
+ * as measures of its own: its model is not the session's, so it is booked apart
+ * (plan, the provider table). Token models report tokens; time-priced ones
+ * `{"type": "duration", "seconds"}`.
+ * @param {Record<string, unknown>} usage
+ * @returns {Record<string, number>}
+ */
+export function transcriptionMeasures(usage) {
+  /** @type {Record<string, number>} */
+  const measures = {};
+  const seconds = usage.seconds;
+  if (usage.type === "duration" && typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 && seconds <= 86_400) {
+    measures.transcription_audio_ms = Math.ceil(seconds * 1000);
+  }
+  const input = tokenCount(usage.input_tokens);
+  const output = tokenCount(usage.output_tokens);
+  if (input > 0) measures.transcription_input_tokens = input;
+  if (output > 0) measures.transcription_output_tokens = output;
+  const audio = Math.min(input, countAt(usage.input_token_details, "audio_tokens"));
+  if (audio > 0) measures.transcription_input_audio_tokens = audio;
+  return measures;
+}
+
+/** Frames whose usage the OpenAI adapter reads: few and small, never an audio delta. */
+const OPENAI_USAGE_TYPES = new Set(["response.done", "conversation.item.input_audio_transcription.completed"]);
+
+/**
+ * OpenAI Realtime over WebSocket (9e). Usage is per answer, in `response.done`
+ * (answers cancelled or cut short report theirs too), and per input
+ * transcription, in its own event. Its answers and transcriptions in progress
+ * are the call's meter's (`perCall`). OpenAI keeps the conversation while our
+ * SDK's link is down, so its frames are held for a reconnect.
+ * @type {Adapter}
+ */
+const OPENAI = {
+  shape: "per_turn",
+  detached: "hold",
+  // The call's meter tells a closing session what is still open (`perCall`): its answers and transcriptions.
+  turn: () => null,
+  read(data) {
+    if (typeof data !== "string" || !OPENAI_USAGE_TYPES.has(typeOf(data) ?? "")) return null;
+    const frame = /** @type {{ type?: unknown, event_id?: unknown, response?: { id?: unknown, usage?: unknown }, usage?: unknown } | null} */ (parsed(data));
+    if (frame === null) return null;
+    if (frame.type === "response.done") {
+      const usage = frame.response?.usage;
+      if (typeof usage !== "object" || usage === null) return null;
+      // The response's id: each answer has one `response.done`, so a repeat is skipped.
+      const id = typeof frame.response?.id === "string" && frame.response.id !== "" ? frame.response.id : crypto.randomUUID();
+      return { id: id.slice(0, 128), measures: openAiMeasures(/** @type {Record<string, unknown>} */ (usage)) };
+    }
+    const usage = frame.usage;
+    if (typeof usage !== "object" || usage === null) return null;
+    const measures = transcriptionMeasures(/** @type {Record<string, unknown>} */ (usage));
+    if (Object.keys(measures).length === 0) return null;
+    const id = typeof frame.event_id === "string" && frame.event_id !== "" ? frame.event_id : crypto.randomUUID();
+    return { id: id.slice(0, 128), measures };
+  },
+  perCall: (model) => openAiCall(model),
+};
+
+/**
+ * Characters of a forwarded audio delta per estimated output token: OpenAI's
+ * audio is 20 tokens a second (T21: 19.98–20.01 in every call). PCM at 24 kHz
+ * is 48,000 bytes a second, 64,000 in base64; G.711 is 8,000, 10,667 in base64.
+ * Each delta's JSON around the audio is counted too, so the guess bills high.
+ */
+const OPENAI_CHARS_PER_TOKEN = { pcm: 3_200, g711: 533 };
+const OPENAI_AUDIO_DELTAS = new Set(["response.output_audio.delta", "response.audio.delta"]);
+
+/**
+ * The session's output audio format, as OpenAI states it in `session.created`
+ * and `session.updated`: G.711 (`audio/pcmu`, `audio/pcma`, or the older
+ * `g711_ulaw` and `g711_alaw`), else PCM.
+ * @param {Record<string, any>} session
+ * @returns {"pcm" | "g711" | null}
+ */
+function outputFormat(session) {
+  const format = session.audio?.output?.format?.type ?? session.output_audio_format;
+  if (typeof format !== "string") return null;
+  return /pcmu|pcma|g711/u.test(format) ? "g711" : "pcm";
+}
+
+/**
+ * The session's input transcription model, as OpenAI states it; null when
+ * transcription is off, undefined when the session doesn't say.
+ * @param {Record<string, any>} session
+ * @returns {string | null | undefined}
+ */
+function transcriptionModel(session) {
+  const transcription = session.audio?.input !== undefined ? session.audio.input.transcription : session.input_audio_transcription;
+  if (transcription === undefined) return undefined;
+  const model = transcription?.model;
+  if (model === undefined || model === null) return transcription === null ? null : "unknown";
+  // Only a name the gateway takes as a model: anything else is booked as `unknown`, never sent as it is.
+  return typeof model === "string" && MODEL_NAME.test(model) ? model : "unknown";
+}
+
+/** A model name the gateway takes on a slice (`src/relay/checkpoint.ts`): short, with no spaces or controls. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u;
+
+/** How many transcriptions or finished events a call remembers at once: far above what one session has open. */
+const OPENAI_OPEN_MAX = 64;
+
+/**
+ * One OpenAI call's memory (`CallMeter`), from OpenAI's own events:
+ * - its output audio format and its input transcription model
+ *   (`session.created`, `session.updated`);
+ * - how many answers are open, and the audio forwarded while any is, for an
+ *   estimate if the session's own end cuts them. An out-of-band answer's audio
+ *   counts too, and the estimate uses the session's format: a guess that may
+ *   bill high, never low, marked an estimate;
+ * - the committed audio items whose transcription is still to come, and each
+ *   finished answer or transcription until its usage is written, which a
+ *   closing session waits for.
+ * @param {string | null} model the session's locked model
+ * @returns {CallMeter}
+ */
+function openAiCall(model) {
+  /** @type {"pcm" | "g711"} */
+  let format = "pcm";
+  /** @type {string | null} */
+  let transcribedBy = null;
+  let open = 0;
+  let chars = 0;
+  let finishedCount = 0;
+  /** @type {Set<string>} Committed audio items whose transcription is still to come. */
+  const pending = new Set();
+  /** @type {Set<string>} Answers and transcriptions that finished, whose usage is still being written. */
+  const writing = new Set();
+  /** A finished answer or transcription: waited for until its usage is written (`settled`). @param {string} key */
+  const finished = (key) => {
+    if (writing.size >= OPENAI_OPEN_MAX) writing.delete(writing.values().next().value ?? "");
+    writing.add(key);
+    return key;
+  };
+  /** The item a small frame names. @param {string} data */
+  const itemOf = (data) => {
+    const item = /** @type {{ item_id?: unknown } | null} */ (parsed(data))?.item_id;
+    return typeof item === "string" ? item : "";
+  };
+  return {
+    see(data, forwarded) {
+      if (typeof data !== "string") return null;
+      const type = typeOf(data);
+      if (type === null) return null;
+      if (OPENAI_AUDIO_DELTAS.has(type)) {
+        // Only audio that reached the client, or waits for it, is estimated if an answer is cut.
+        if (forwarded && open > 0) chars += data.length;
+      } else if (type === "response.created") {
+        open += 1;
+      } else if (type === "response.done") {
+        open = Math.max(0, open - 1);
+        if (open === 0) chars = 0;
+        finishedCount += 1;
+        return finished(`answer:${finishedCount}`);
+      } else if (type === "session.created" || type === "session.updated") {
+        const session = /** @type {{ session?: Record<string, any> } | null} */ (parsed(data))?.session;
+        if (typeof session !== "object" || session === null) return null;
+        format = outputFormat(session) ?? format;
+        const named = transcriptionModel(session);
+        if (named !== undefined) transcribedBy = named;
+      } else if (type === "input_audio_buffer.committed") {
+        const item = itemOf(data);
+        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) pending.add(item);
+      } else if (OPENAI_TRANSCRIPTION_ENDS.has(type)) {
+        // A transcription completed or failed, or its item was deleted: it is no longer waited for.
+        const item = itemOf(data);
+        if (pending.delete(item)) return finished(`item:${item}`);
+      }
+      return null;
+    },
+    settled(key) {
+      writing.delete(key);
+    },
+    pending() {
+      return open > 0 || pending.size > 0 || writing.size > 0;
+    },
+    unfinished() {
+      return open > 0 || pending.size > 0;
+    },
+    label(event) {
+      const transcription = Object.keys(event.measures).some((name) => name.startsWith("transcription_"));
+      return transcription ? { ...event, model: transcribedBy ?? "unknown" } : event;
+    },
+    estimate() {
+      if (open === 0) return null;
+      const tokens = Math.ceil(chars / OPENAI_CHARS_PER_TOKEN[format]);
+      open = 0;
+      chars = 0;
+      if (tokens === 0) return null;
+      return { id: crypto.randomUUID(), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } };
+    },
+    lock(data) {
+      // A client's `session.update` may not move the session to another model: the session's
+      // stays (plan: relayed mode locks the model). Anything else goes as it is.
+      if (model === null || typeof data !== "string" || plainNotUpdate(data)) return data;
+      // Read whole, as OpenAI reads it (plan: settings messages are always fully parsed).
+      const frame = /** @type {{ type?: unknown, session?: unknown } | null} */ (parsed(data));
+      if (typeof frame !== "object" || frame === null || !Object.hasOwn(frame, "session")) return data;
+      const session = frame.session;
+      if (frame.type === "session.update" && typeof session === "object" && session !== null && Object.hasOwn(session, "model")) {
+        return JSON.stringify({ ...frame, session: { ...session, model } });
+      }
+      // Any frame with a session is written again as it was read: a repeated key in the text, which
+      // OpenAI might read differently, is gone (Gemini Neon, #270 round 2).
+      return JSON.stringify(frame);
+    },
+  };
+}
+
+/**
+ * Whether a client frame is surely not a `session.update`, without parsing it: it starts with
+ * its `type`, which is another, and has no escape and no second `"type"` key that a parse could
+ * read differently. An audio append, the frame sent most, is never parsed (Gemini Neon, #270).
+ * @param {string} data
+ */
+function plainNotUpdate(data) {
+  if (!data.startsWith(TYPE_FIRST) || data.includes("\\")) return false;
+  const end = data.indexOf('"', TYPE_FIRST.length);
+  if (end === -1 || data.slice(TYPE_FIRST.length, end) === "session.update") return false;
+  return data.indexOf('"type"', end) === -1;
+}
+
+/** The events that end the wait for an item's transcription. */
+const OPENAI_TRANSCRIPTION_ENDS = new Set([
+  "conversation.item.input_audio_transcription.completed",
+  "conversation.item.input_audio_transcription.failed",
+  "conversation.item.deleted",
+]);
+
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
 
@@ -353,6 +664,7 @@ const ADAPTERS = {
   mock_done: jsonAdapter('{"type":"response.done"', "per_turn", MOCK_TURNS),
   xai: XAI,
   gemini: GEMINI,
+  openai: OPENAI,
 };
 
 /**
