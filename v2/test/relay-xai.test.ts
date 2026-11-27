@@ -145,6 +145,7 @@ describe("the session object reading xAI's frames (step 9b)", () => {
       adapter: adapterFor("xai"),
       frames: new SessionFrames({ relayMessages: false }),
       turnOpen: false,
+      turns: 0,
     };
     return { object, live, told, sent };
   }
@@ -191,5 +192,24 @@ describe("the session object reading xAI's frames (step 9b)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
     expect(told).toEqual(["usage written", "done"]);
     expect(live.turnOpen).toBe(false);
+  });
+
+  it("a late \"done\" for an earlier answer never closes a newer one that opened meanwhile (Gemini Neon, #266 round 1)", async () => {
+    const { object, live, told } = session();
+    let written: () => void = () => undefined;
+    (object as unknown as { core: { recordUsage: () => Promise<void> } }).core.recordUsage = () =>
+      new Promise<void>((resolve) => {
+        written = resolve;
+      });
+    live.adapter = adapterFor("mock_done");
+    object.toClient(live as never, '{"type":"response.created","response":{"id":"r1"}}');
+    object.toClient(live as never, JSON.stringify({ type: "response.done", event_id: "e1", usage: { input_tokens: 10 } }));
+    // The second answer opens before the first one's usage is written.
+    object.toClient(live as never, '{"type":"response.created","response":{"id":"r2"}}');
+    written();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    // The second answer is still open, and the closing wait was not told it is done.
+    expect(live.turnOpen).toBe(true);
+    expect(told).not.toContain("done");
   });
 });

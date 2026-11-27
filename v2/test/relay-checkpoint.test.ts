@@ -458,6 +458,11 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     // The same with a crash gap: the message keeps its price, marked partial, not left for the sweep (Fable, #266 round 1).
     await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 3, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
     expect((await charges(listed.ticket.sid))[2]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", measured: "partial" });
+    // A custom price with token rates too: a text-only slice with a gap keeps its text charge, partial (Sol, #266 round 5).
+    const tokensToo = await houseConnection(JSON.stringify({ "grok-voice-3.0": { input: 1_000_000_000, output: 1_000_000_000, per_minute: 80_000_000, per_text_message: 4_000_000 } }));
+    const mixed = await ticketFor({ ...xai, connectionId: tokensToo.connectionId });
+    await checkpointForRelay(env, mixed.text, live(slice(mixed.ticket, 1, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
+    expect(await charges(mixed.ticket.sid)).toMatchObject([{ cost_nano: 4_000_000, price_source: "customer_rate", measured: "partial" }]);
     // Today's rates can't be read: unresolved, queued, and the sweep later prices both measures.
     const { connectionId, setRates } = await houseConnection("{not json");
     const unread = await ticketFor({ ...xai, connectionId });

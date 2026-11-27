@@ -107,11 +107,13 @@ export default {
  *   relayMessages: boolean,
  *   adapter: import("./adapters.js").Adapter,
  *   turnOpen: boolean,
+ *   turns: number,
  * }} Live
  * The session in this instance. Client frames wait in `queue` while the
  * session starts, then go to the provider in order. `client` is null while our
  * SDK's link is down; the provider's frames then wait in `held` for it to come
- * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`).
+ * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`);
+ * `turns` counts the answers opened, so a late "done" for an earlier one never closes a newer one.
  */
 
 /**
@@ -184,6 +186,7 @@ export class Session extends DurableObject {
           /** @type {import("./start.js").ProviderCall} */
           const call = { callId, close: (code, reason) => closeQuietly(socket, code, reason) };
           this.sideTurnOpen = false;
+          this.sideTurns += 1;
           socket.addEventListener("message", (event) => this.sideFrame(call, adapter, event.data));
           socket.addEventListener("close", () => void this.core.sideGone(call));
           return call;
@@ -197,6 +200,8 @@ export class Session extends DurableObject {
     });
     /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
     this.sideTurnOpen = false;
+    /** The side channel's answers opened, and its attaches: a late "done" for an earlier one closes nothing. */
+    this.sideTurns = 0;
   }
 
   /**
@@ -265,11 +270,18 @@ export class Session extends DurableObject {
     if (this.core.call !== call) return;
     const recorded = this.readUsage(adapter, data);
     const turn = adapter.turn(data);
-    if (turn === "open") this.sideTurnOpen = true;
-    else if (turn === "done") {
-      this.answerDone(recorded, () => {
-        this.sideTurnOpen = false;
-      });
+    if (turn === "open") {
+      this.sideTurnOpen = true;
+      this.sideTurns += 1;
+    } else if (turn === "done") {
+      const answer = this.sideTurns;
+      this.answerDone(
+        recorded,
+        () => this.sideTurns === answer && this.core.call === call,
+        () => {
+          this.sideTurnOpen = false;
+        },
+      );
     }
   }
 
@@ -296,6 +308,7 @@ export class Session extends DurableObject {
       relayMessages,
       adapter: adapterFor(undefined),
       turnOpen: false,
+      turns: 0,
     };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     this.listen(live, client, owner);
@@ -509,11 +522,15 @@ export class Session extends DurableObject {
    * The provider finished an answer: `settle` marks it so, then the closing wait is told. When
    * the same frame carried its usage (OpenAI's `response.done`), both wait for that usage's
    * write, so an end that starts meanwhile still waits for it, and the final slice has it (plan 5.1).
+   * By then a newer answer may have opened: `current` says whether this one is still the latest,
+   * and only then is anything closed (Gemini Neon, #266 round 1).
    * @param {Promise<void> | null} recorded
+   * @param {() => boolean} current
    * @param {() => void} settle
    */
-  answerDone(recorded, settle) {
+  answerDone(recorded, current, settle) {
     const done = () => {
+      if (!current()) return;
       settle();
       this.core.turnDone();
     };
@@ -543,12 +560,18 @@ export class Session extends DurableObject {
     const turn = live.adapter.turn(data);
     if (turn === "open") {
       live.turnOpen = true;
+      live.turns += 1;
       // An answer is activity too: a provider that bills by its own clock has started it (xAI).
       if (this.core.idle) void this.core.activity().catch(() => undefined);
     } else if (turn === "done") {
-      this.answerDone(recorded, () => {
-        live.turnOpen = false;
-      });
+      const answer = live.turns;
+      this.answerDone(
+        recorded,
+        () => live.turns === answer,
+        () => {
+          live.turnOpen = false;
+        },
+      );
     }
     // Ended only after the frame was read, so its usage counts.
     if (overflowed) {

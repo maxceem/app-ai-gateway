@@ -71,7 +71,12 @@ export function billsTime(price: ModelPrice): boolean {
  */
 export function sliceUsage(usage: UsageObservation, price: ModelPrice): UsageObservation {
   const seconds = usage.units?.session_seconds;
-  if (seconds === undefined) return usage;
+  // Text messages alone (xAI's, before its clock started): no tokens to price, so a price with token
+  // rates too bills them by their own rate, and a gap keeps that known charge (Sol, #266 round 5).
+  if (seconds === undefined) {
+    const counted = Object.values(usage.units ?? {}).some((count) => count !== undefined && count > 0);
+    return counted && usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens + usage.outputTokens === 0 ? { ...usage, noTokens: true } : usage;
+  }
   const { units, noTokens: _noTokens, ...rest } = usage;
   if (seconds > 0 && billsTime(price)) {
     const tokens = rest.inputTokens + rest.cachedInputTokens + rest.cacheWriteTokens + rest.outputTokens > 0;
