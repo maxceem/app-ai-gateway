@@ -20,7 +20,7 @@ import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { openSession } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
-import { knownModel, listOf, priceSources } from "../pricing/billability.ts";
+import { knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
@@ -110,11 +110,18 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // A refusal records the model only when the gateway knows it, as for a call.
       caller.facts.modelKnown = () => knownModel(routing, app.routing.model_rewrites, priceSources(connection), requested);
       // The app's model list judges the model, as for a call; a rewrite is
-      // never applied to a session (plan D13). Its price is checked where a
-      // session is metered, at its checkpoints (step 9a part 2): no session
-      // operation has a price in the list yet.
+      // never applied to a session (plan D13).
       const listed = listOf(routing);
-      if (listed !== null && !listed.has(requested)) throw callRefusal({ kind: "refused", reason: "model_not_allowed", model: requested }, operation);
+      if (operation.meter.kind === "wall_clock") {
+        // A session billed by its clock (xAI, 9b) is judged as a call is: a model the app does not
+        // list by name is served only with a price, and one priced in a unit the session cannot
+        // bill never is. Saving already refused a listed model with no price.
+        const call = resolveCall(routing, undefined, priceSources(connection), operation, requested, listed, { asIfServed: true });
+        if (call.kind === "refused") throw callRefusal(call, operation);
+      } else if (listed !== null && !listed.has(requested)) {
+        // The other sessions' prices come with their adapters (9e): until then, the model list only.
+        throw callRefusal({ kind: "refused", reason: "model_not_allowed", model: requested }, operation);
+      }
       const call = { model: requested };
       const relayUrl = relaySessionUrl(c.env);
       if (relayUrl === null) {

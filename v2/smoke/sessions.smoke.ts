@@ -27,6 +27,9 @@ const skip =
 
 const slug = uniqueSlug("smoke-session");
 const created = { provider: "", app: "", key: "" };
+/** An xAI connection on the same mock, and an app for its voice API (step 9b). */
+const xaiSlug = uniqueSlug("smoke-xai-session");
+const xai = { provider: "", app: "", key: "" };
 
 before(async () => {
   if (skip !== false) return;
@@ -50,6 +53,8 @@ before(async () => {
 after(async () => {
   if (created.app !== "") await admin("DELETE", `/v2/admin/apps/${created.app}?confirm=${created.app}`);
   if (created.provider !== "") await admin("DELETE", `/v2/admin/providers/${created.provider}`);
+  if (xai.app !== "") await admin("DELETE", `/v2/admin/apps/${xai.app}?confirm=${xai.app}`);
+  if (xai.provider !== "") await admin("DELETE", `/v2/admin/providers/${xai.provider}`);
 });
 
 async function startSession(body: Record<string, unknown>): Promise<Response> {
@@ -160,4 +165,54 @@ test("a session the app doesn't allow, or a path that isn't a live session, is r
   expectCode(await readJson(notSession), "path_not_allowed", "a path that isn't a live session");
   const noModel = await startSession({ path: "v1/realtime" });
   same(noModel.status, 400, "a session with no model");
+});
+
+test("an xAI voice session is billed by its clock from the first audio, plus each text message, at the list price (step 9b)", { skip, timeout: 90_000 }, async () => {
+  // xAI's adapter against the mock: it reads the client's frames, so the mock's echo is enough.
+  const provider = await admin("POST", "/v2/admin/providers", { type: "xai", name: `Smoke ${xaiSlug}`, slug: xaiSlug, secret: "xai-mock-smoke-key", baseUrl: mockUrl });
+  same(provider.status, 201, "the xAI connection could not be made");
+  xai.provider = checkId(provider.body?.provider?.id, "the xAI connection's id");
+  const app = await admin("POST", "/v2/admin/apps", {
+    name: `Smoke ${xaiSlug}`,
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [xaiSlug]: { operations: ["xai.realtime"] } } },
+    },
+  });
+  same(app.status, 201, "the xAI app could not be made");
+  xai.app = checkId(app.body?.app?.id, "the xAI app's id");
+  xai.key = String(app.body?.api_key?.key ?? "");
+  const response = await send(`/v2/apps/${xai.app}/sessions/${xaiSlug}`, base, {
+    method: "POST",
+    headers: { authorization: `Bearer ${xai.key}`, "content-type": "application/json", "x-end-user-id": "smoke-xai-user" },
+    body: JSON.stringify({ path: "v1/realtime", model: "grok-voice-3.0" }),
+  });
+  await expectResponse(response, 201, "starting an xAI session");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the xAI session's id");
+  const frames = [
+    JSON.stringify({ type: "session.update", session: { voice: "eve" } }),
+    JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } }),
+    JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }),
+  ];
+  // The mock's first event, then its echo of each frame. The link stays open a second after, so the
+  // session has time on its clock: a deployed object's clock moves only between its events.
+  await exchangeFrames("/v2/relay/session", relay, frames, 4, { authorization: `Bearer ${String(body?.ticket)}` }, 1000, 1_000);
+  type Charge = { cost_nano: number | null; price_source: string; unit: string | null; session_ms: number | null };
+  let charges: Charge[] = [];
+  for (let tries = 0; tries < 30; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${xai.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the xAI session's charges");
+    charges = (listed.body?.charges ?? []) as Charge[];
+    // The first checkpoint may book the text message alone; the close books the time after it.
+    if (charges.some((charge) => (charge.session_ms ?? 0) > 0)) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  check(charges.length > 0, "the xAI session's usage was not booked");
+  // Each slice at the list price: by its time, or by its text messages alone when it has no time.
+  check(charges.every((charge) => charge.price_source === "list_rate" && (charge.unit === "session_seconds" || charge.unit === "text_messages")), "the xAI session was not billed by its clock and text messages at the list price");
+  const cost = charges.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0);
+  // One text message is $0.004 (4,000,000 nano-dollars); the time from the first audio adds to it.
+  check(cost > 4_000_000, "the xAI session cost less than one text message and its time");
+  check(charges.reduce((sum, charge) => sum + (charge.session_ms ?? 0), 0) > 0, "the xAI session booked no time from its first audio");
 });

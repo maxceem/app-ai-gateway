@@ -275,8 +275,12 @@ export type Meter =
   | ({ readonly kind: "request_measure"; readonly unit: Unit } & RequestMeasure)
   /** One unit per request, at a flat price. */
   | { readonly kind: "request_count" }
-  /** Connection time, for a provider we do not know (the generic WebSocket adapter, D4). */
-  | { readonly kind: "wall_clock" }
+  /**
+   * Connection time: for a provider we do not know (the generic WebSocket
+   * adapter, D4), or one that bills by its own clock (xAI's voice API).
+   * `units` lists what it bills on top (xAI's text messages).
+   */
+  | { readonly kind: "wall_clock"; readonly units?: readonly Unit[] }
   /** Usage events the provider sends during a session, read by a protocol adapter. */
   | { readonly kind: "provider_event"; readonly adapter: string };
 

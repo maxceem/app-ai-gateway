@@ -443,6 +443,40 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: MINUTE });
   });
 
+  it("bills an xAI session's minutes and each text message on top, at our list price, and the sweep prices them the same way (step 9b)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const xai = { providerType: "xai", operation: "xai.realtime", model: "grok-voice-3.0", url: "https://api.x.ai/v1/realtime?model=grok-voice-3.0" };
+    const listed = await ticketFor(xai);
+    // 90 s at $0.08 a minute, and two text messages at $0.004 each: $0.12 + $0.008, exactly.
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 1, { text_messages: 2 }, { sessionMs: 90_000 })));
+    expect(await charges(listed.ticket.sid)).toMatchObject([{ cost_nano: 128_000_000, price_source: "list_rate", measured: "complete", session_ms: 90_000 }]);
+    expect(JSON.parse((await booked(`${listed.ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ units_session_seconds: 90_000, units_text_messages: 2 });
+    // A text message before the clock started: a slice with no time, billed for the message alone.
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 2, { text_messages: 1 }, { sessionMs: 0 })));
+    expect((await charges(listed.ticket.sid))[1]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", session_ms: 0 });
+    // The same with a crash gap: the message keeps its price, marked partial, not left for the sweep (Fable, #266 round 1).
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 3, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
+    expect((await charges(listed.ticket.sid))[2]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", measured: "partial" });
+    // A custom price with token rates too: a text-only slice with a gap keeps its text charge, partial (Sol, #266 round 5).
+    const tokensToo = await houseConnection(JSON.stringify({ "grok-voice-3.0": { input: 1_000_000_000, output: 1_000_000_000, per_minute: 80_000_000, per_text_message: 4_000_000 } }));
+    const mixed = await ticketFor({ ...xai, connectionId: tokensToo.connectionId });
+    await checkpointForRelay(env, mixed.text, live(slice(mixed.ticket, 1, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
+    expect(await charges(mixed.ticket.sid)).toMatchObject([{ cost_nano: 4_000_000, price_source: "customer_rate", measured: "partial" }]);
+    // Today's rates can't be read: unresolved, queued, and the sweep later prices both measures.
+    const { connectionId, setRates } = await houseConnection("{not json");
+    const unread = await ticketFor({ ...xai, connectionId });
+    await checkpointForRelay(env, unread.text, live(slice(unread.ticket, 1, { text_messages: 1 }, { sessionMs: MINUTE })));
+    const id = `${unread.ticket.sid}:slice:1`;
+    expect(await booked(id)).toMatchObject({ cost_nano: null, price_source: "unresolved" });
+    expect(await queued(id)).toEqual({ kind: "unresolved" });
+    await setRates("{}");
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 84_000_000, priceSource: "list_rate", unit: "session_seconds" },
+    });
+  });
+
   it("never books connection time as $0 when the price can't be read: unresolved and queued, and the sweep prices the seconds (Sol round 1)", async () => {
     // Today's rates can't be read (as when the settings read times out): no price is saved.
     const { connectionId, setRates } = await houseConnection("{not json");

@@ -421,7 +421,8 @@ function checkpointStatements(
 /** Whether a slice holds connection time that may be billed (`sliceCharge` keeps it as usage). */
 function billableTime(charge: ChargeRow): boolean {
   const ms = charge.measures.units_session_seconds;
-  return typeof ms === "number" && ms > 0;
+  const texts = charge.measures.units_text_messages;
+  return (typeof ms === "number" && ms > 0) || (typeof texts === "number" && texts > 0);
 }
 
 /** Whether a charge holds tokens to price. */

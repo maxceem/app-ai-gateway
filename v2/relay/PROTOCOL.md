@@ -83,6 +83,21 @@ provider's side is hung up.
 - An answer that never finished was cut off. Its usage is missing, so the
   session's last charge is marked partial.
 
+### xAI's voice API
+
+An xAI session is billed as xAI bills it: by time, from the session's first
+activity to its close, plus each text message.
+
+- The first activity is the first audio frame sent to xAI (an
+  `input_audio_buffer.append`, a binary frame, or an item with audio content),
+  or xAI's first answer (`response.created`). The time before it is free. A
+  `response.create` alone starts nothing: its answer does.
+- From then on, the time is billed to the close, silence too. xAI never closes
+  a quiet session, so close it when the user is done.
+- Each `conversation.item.create` the client sends counts as one text message.
+- xAI's `ping` every 10 s does not keep a session alive: a client that sends
+  nothing for 90 s is gone, as for any provider.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):

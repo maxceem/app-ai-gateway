@@ -38,6 +38,12 @@ export interface UnitRate {
   readonly units: readonly Unit[];
   /** How many stored counts one rate amount covers: 60,000 for a rate per minute on milliseconds. */
   readonly per: number;
+  /**
+   * Billed on top of the usage's main measure, never instead of it: xAI's
+   * text messages beside its minutes. A usage that reports this unit is
+   * priced only by a price that has the rate (`withAdditions` in `./tokens.ts`).
+   */
+  readonly additive?: true;
 }
 
 const TIME_UNITS: readonly Unit[] = ["audio_seconds", "video_seconds", "session_seconds"];
@@ -58,7 +64,7 @@ export const UNIT_RATES: readonly UnitRate[] = [
   { field: "per_credit", units: ["credits"], per: MILLI_SCALE },
   { field: "per_unit", units: ["model_units"], per: MILLI_SCALE },
   { field: "per_request", units: ["requests"], per: 1 },
-  { field: "per_text_message", units: ["text_messages"], per: 1 },
+  { field: "per_text_message", units: ["text_messages"], per: 1, additive: true },
 ];
 
 /** The names of every unit rate. */
@@ -100,7 +106,8 @@ function withEstimate(usage: UsageObservation, estimate: Unit | readonly Unit[] 
  *   reads the body, and the header missing (the estimate alone).
  * - A request measure: its unit, worked out from the request.
  * - A request count: one request, exact.
- * - Connection time: session seconds.
+ * - Connection time: session seconds, with any measure the meter bills on
+ *   top (`units`: xAI's text messages).
  * - A session's provider events: tokens, or session seconds.
  */
 export function meterCases(operation: OperationDescription): readonly (readonly UsageObservation[])[] {
@@ -159,7 +166,7 @@ export function meterCases(operation: OperationDescription): readonly (readonly 
     case "request_count":
       return [[{ ...NO_TOKENS, units: { requests: 1 } }]];
     case "wall_clock":
-      return [[reported("session_seconds")]];
+      return [[{ ...NO_TOKENS, units: { session_seconds: sample("session_seconds"), ...Object.fromEntries((meter.units ?? []).map((unit) => [unit, sample(unit)])) } }]];
     case "provider_event":
       return [[SOME_TOKENS], [reported("session_seconds")]];
   }

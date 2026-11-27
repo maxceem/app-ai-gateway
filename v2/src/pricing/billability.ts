@@ -307,8 +307,19 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
   return answer;
 }
 
+/**
+ * Whether `price` has rates by key value for a session billed by its clock (xAI's voice API),
+ * which never bill it. Such a session is priced by the rates the model states itself: its slices
+ * name no key value, and the checkpoint bills their time only at a base time rate (`sliceUsage`).
+ * Rates by key value would leave its time unbilled (Sol, #266).
+ */
+function keyedClockSession(operation: OperationDescription, price: ModelPrice): boolean {
+  return operation.meter.kind === "wall_clock" && (price.keyed !== undefined || price.keyedAdditions !== undefined);
+}
+
 /** Whether `operation` can bill `price`, by the check asked for. */
 function operationBillable(operation: OperationDescription, price: ModelPrice, check: BillingCheck): boolean {
+  if (keyedClockSession(operation, price)) return false;
   if (check === "save") return chargeGap(operation, price) === null;
   // A custom provider's path is never served on a price that cannot bill some way of its in full: one rule
   // for serving and saving, so a model priced for another style is `wrong_unit` there, as whisper-1 is on chat.
@@ -832,6 +843,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
+  | { readonly kind: "session_rates"; readonly operation: string }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -847,6 +859,16 @@ export function savedPriceProblem(
   let combinations = 1;
   for (const table of Object.values(price.keyed ?? {})) combinations *= Math.max(1, Object.keys(table).length);
   if (combinations > MAX_PRICE_KEY_COMBINATIONS) return { kind: "too_many_combinations", combinations };
+  // A model our list prices for a session billed by its clock (xAI's grok-voice-3.0): a custom price
+  // must still bill that session, by its own save check (both base rates, none by key value). Refused
+  // here, since an app that routes to it would otherwise be judged only once the price had already
+  // made it ineligible, and its next session refused (Sol, #266 rounds 2 and 3).
+  const listed = listPrice(providerType, model);
+  const session =
+    listed === null
+      ? undefined
+      : operations.find((operation) => operation.meter.kind === "wall_clock" && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
+  if (session !== undefined) return { kind: "session_rates", operation: session.name };
   try {
     effectivePrices(price);
   } catch (error) {

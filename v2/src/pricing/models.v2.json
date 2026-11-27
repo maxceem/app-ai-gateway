@@ -201,5 +201,13 @@
       "per_video": 0.02,
       "author": "fal"
     }
+  },
+  "xai": {
+    "grok-voice-3.0": {
+      "kind": "realtime",
+      "per_minute": 0.08,
+      "per_text_message": 0.004,
+      "author": "xAI"
+    }
   }
 }

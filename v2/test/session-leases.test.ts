@@ -12,7 +12,7 @@ import worker from "../src/index.ts";
 import { USER_STARTING_BOUND, USER_STREAMING_LIMIT, type SessionCheckpointAnswer, type UserSessionAdmission } from "../src/do/EndUserLimiter.ts";
 import type { AppSessionAdmission } from "../src/do/AppLimiter.ts";
 import type { SlotClaim } from "../src/do/session-slots.ts";
-import { closeForRelay, openForRelay } from "../src/relay/contract.ts";
+import { adapterFor, closeForRelay, openForRelay } from "../src/relay/contract.ts";
 import { checkpointForRelay } from "../src/relay/checkpoint.ts";
 import { loadRequestApp } from "../src/apps/app-records.ts";
 import { admitSession, releaseSessionLeases } from "../src/limits/session-admission.ts";
@@ -239,24 +239,24 @@ describe("the app's session seats", () => {
 
 const SECRET = "sk-test-session-key-1234";
 
-async function seedConnection(): Promise<{ id: string; slug: string }> {
+async function seedConnection(type = "openai"): Promise<{ id: string; slug: string }> {
   await seedAccount();
   const id = crypto.randomUUID().replaceAll("-", "");
-  const slug = `openai-${id.slice(0, 6)}`;
-  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, "openai", "", "", ""], SECRET);
+  const slug = `${type}-${id.slice(0, 6)}`;
+  const blob = await sealForTest("providerKey", [ACCOUNT_ID, id, type, "", "", ""], SECRET);
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO provider_connection
       (id, account_id, type, slug, name, status, secret_blob, secret_hint, base_url, rates_json, revision, created_by, created_at, updated_at)
-     VALUES (?, ?, 'openai', ?, 'OpenAI', 'active', ?, '1234', NULL, NULL, 1, 'usr_test', ?, ?)`,
+     VALUES (?, ?, ?, ?, 'Provider', 'active', ?, '1234', NULL, NULL, 1, 'usr_test', ?, ?)`,
   )
-    .bind(id, ACCOUNT_ID, slug, blob, now, now)
+    .bind(id, ACCOUNT_ID, type, slug, blob, now, now)
     .run();
   return { id, slug };
 }
 
-async function setup(limits: Record<string, unknown> = {}, operations: string[] = ["openai.realtime"]) {
-  const { slug } = await seedConnection();
+async function setup(limits: Record<string, unknown> = {}, operations: string[] = ["openai.realtime"], type = "openai") {
+  const { slug } = await seedConnection(type);
   const appId = await seedRoutedApp(
     { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
     { providers: { [slug]: { operations } } },
@@ -308,6 +308,21 @@ describe("starting a session", () => {
     // Both slots are reserved, and the session's row is written after the reply.
     const row = await ledger().prepare("SELECT state FROM session WHERE id = ?").bind(body.session_id).first<{ state: string }>();
     expect(row?.state).toBe("starting");
+  });
+
+  it("starts an xAI voice session with a priced model, and refuses one with no price unless the app lists it (step 9b)", async () => {
+    const { appId, slug, key } = await setup({}, ["xai.realtime"], "xai");
+    const response = await start(appId, slug, key, { path: "v1/realtime", model: "grok-voice-3.0" });
+    expect(response.status).toBe(201);
+    const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
+    expect(payload).toMatchObject({ operation: "xai.realtime", model: "grok-voice-3.0", providerType: "xai", mode: "relayed", slot: "conversational" });
+    expect(payload.url).toBe("https://api.x.ai/v1/realtime?model=grok-voice-3.0");
+    // The relay reads it with xAI's adapter.
+    expect(adapterFor(payload)).toBe("xai");
+    // A model with no price is refused, as a call to it is: before any slot is taken.
+    const unpriced = await start(appId, slug, key, { path: "v1/realtime", model: "grok-voice-9" });
+    expect(unpriced.status).toBe(400);
+    expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
   });
 
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {

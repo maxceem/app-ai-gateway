@@ -7,9 +7,9 @@
  * every other frame is forwarded untouched, never parsed. It declares its
  * usage shape: per turn, or a running total.
  *
- * Only the mock adapter exists in step 9a, against the smoke mock provider.
- * The provider adapters come with 9b (xAI) to 9e (OpenAI over WebSocket).
- * A frame no adapter reads costs nothing but the connection time.
+ * The mock adapters read the smoke mock provider's frames. xAI (9b) is the
+ * first provider adapter; the rest come with 9d (Gemini) and 9e (OpenAI over
+ * WebSocket). A frame no adapter reads costs nothing but the connection time.
  */
 
 /** The token counts an adapter may report: the same list the main Worker accepts (`SLICE_MEASURES`). */
@@ -22,6 +22,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   read(data: string | ArrayBuffer): UsageEvent | null,
  *   turn(data: string | ArrayBuffer): "open" | "done" | null,
  *   detached: "hold" | "end",
+ *   clock?: "first_activity",
+ *   client?(data: string | ArrayBuffer): "activity" | "text" | null,
+ *   keepalive?(data: string | ArrayBuffer): boolean,
  * }} Adapter
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
  * `response.created` and `response.done`), so a closing session can wait for
@@ -32,6 +35,15 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * `"hold"` keeps them, bounded, and hands them to the client that reconnects;
  * `"end"` ends the session at once, for a protocol where a reconnect is a new
  * conversation anyway (ElevenLabs agents, 9e).
+ *
+ * The rest are optional, for a provider that bills by its own clock (xAI):
+ * - `clock: "first_activity"`: the session's time is free until its first
+ *   activity, then billed to the close (`../journal.js`, `markActive`);
+ * - `client`: reads a client frame after it went to the provider. `"activity"`
+ *   starts the clock; `"text"` is one text message, billed on its own;
+ * - `keepalive`: a provider frame that says nothing but "still here" (xAI's
+ *   `ping` every 10 s). It does not count as the provider sending, so the 90 s
+ *   rule still ends a session whose client is gone (plan 5.2).
  */
 
 /**
@@ -85,6 +97,112 @@ function jsonAdapter(prefix, shape, turns) {
   };
 }
 
+/** The start of a JSON frame whose first field is its `type`: the common layout, read without parsing. */
+const TYPE_FIRST = '{"type":"';
+
+/**
+ * A JSON frame's top-level `type`, or null when it has none. A frame that
+ * starts with its `type` is read from that prefix alone, never parsed. Any
+ * other layout is parsed, so a nested `type` (an item's) is never taken for
+ * the frame's: that layout is rare, and the frame is small or read once.
+ * @param {string} data
+ * @returns {string | null}
+ */
+export function typeOf(data) {
+  if (data.startsWith(TYPE_FIRST)) {
+    const end = data.indexOf('"', TYPE_FIRST.length);
+    return end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+  }
+  return parsedType(parsed(data));
+}
+
+/** A frame parsed, or null when it is not JSON. @param {string} data @returns {unknown} */
+function parsed(data) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/** A parsed frame's top-level `type`. @param {unknown} frame */
+function parsedType(frame) {
+  const type = typeof frame === "object" && frame !== null ? /** @type {{ type?: unknown }} */ (frame).type : undefined;
+  return typeof type === "string" ? type : null;
+}
+
+/**
+ * What one client `conversation.item.create` is billed as (xAI's speech-to-speech guide):
+ * - an item with audio content (`input_audio`, `audio`) goes to the audio meter: activity;
+ * - a tool result (`function_call_output`) is not billed;
+ * - every other item is one text input, $0.004.
+ * @param {string} data
+ * @returns {"activity" | "text" | null}
+ */
+function itemKind(data) {
+  const item = /** @type {{ item?: { type?: unknown, content?: unknown } } | null} */ (parsed(data))?.item;
+  if (typeof item !== "object" || item === null) return "text";
+  if (item.type === "function_call_output") return null;
+  const content = Array.isArray(item.content) ? item.content : [];
+  const audio = content.some((part) => typeof part === "object" && part !== null && (part.type === "input_audio" || part.type === "audio"));
+  return audio ? "activity" : "text";
+}
+
+/**
+ * xAI's voice API (Grok Voice, `wss://api.x.ai/v1/realtime`; T5 and T20).
+ *
+ * - Billed by wall time from the first activity to the close: the first audio
+ *   frame (even silence) or the first answer. So the relay's clock is the
+ *   meter. It starts when the client's first audio frame has gone to xAI, or
+ *   at xAI's first `response.created`, whichever comes first. A client's
+ *   `response.create` is not the start: xAI may reject it, and its answer
+ *   starts the clock when it comes (Sol, #266 round 3).
+ * - Each client `conversation.item.create` is one text message, billed on
+ *   top, except a tool result (`function_call_output`), which is not billed,
+ *   and an item with audio content, which the clock bills (`itemKind`).
+ * - `response.done` carries `billable_audio_seconds`, xAI's running total of
+ *   that clock in whole seconds. It is a check only, never billed: the
+ *   relay logs when it drifts from its own clock (`../start.js`).
+ * - xAI keeps the conversation while our SDK's link is down, so its frames
+ *   are held for a reconnect.
+ * @type {Adapter}
+ */
+const XAI = {
+  shape: "running_total",
+  detached: "hold",
+  clock: "first_activity",
+  turn(data) {
+    if (typeof data !== "string") return null;
+    const type = typeOf(data);
+    if (type === "response.created") return "open";
+    if (type === "response.done") return "done";
+    return null;
+  },
+  read(data) {
+    if (typeof data !== "string" || typeOf(data) !== "response.done") return null;
+    try {
+      const parsed = /** @type {{ event_id?: unknown, usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
+      const seconds = parsed.usage?.billable_audio_seconds;
+      if (typeof parsed.event_id !== "string" || parsed.event_id === "" || parsed.event_id.length > 128) return null;
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+      return { id: parsed.event_id, measures: {}, clockSeconds: seconds };
+    } catch {
+      return null;
+    }
+  },
+  client(data) {
+    // Binary frames are audio (xAI's `"transport": "binary"`).
+    if (typeof data !== "string") return "activity";
+    const type = typeOf(data);
+    if (type === "input_audio_buffer.append") return "activity";
+    if (type === "conversation.item.create") return itemKind(data);
+    return null;
+  },
+  keepalive(data) {
+    return typeof data === "string" && data.length < 256 && typeOf(data) === "ping";
+  },
+};
+
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
 
@@ -94,6 +212,9 @@ const ADAPTERS = {
   mock: jsonAdapter('{"type":"mock.usage"', "per_turn", MOCK_TURNS),
   // A running total, as xAI reports (9b), for the journal's tests: `{"type":"mock.total",…}`.
   mock_total: jsonAdapter('{"type":"mock.total"', "running_total", MOCK_TURNS),
+  // Usage inside the frame that ends the answer, as OpenAI's `response.done` carries it (9e), for the tests.
+  mock_done: jsonAdapter('{"type":"response.done"', "per_turn", MOCK_TURNS),
+  xai: XAI,
 };
 
 /**

@@ -342,3 +342,59 @@ describe(`an observed session through the relay's session object (step 9a part 3
     expect(await again.json()).toEqual({ error: { code: "session_active" } });
   });
 });
+
+describe(`an xAI session through the relay's session object (step 9b; split keys ${splitKeysOn ? "on" : "off"})`, () => {
+  /** A ticket for xAI's voice API, as the gateway issues one. */
+  async function xaiTicket(connection: string): Promise<{ ticket: string; sessionId: string }> {
+    const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, connection, "xai", "", "", ""];
+    const blob = await sealForTest("providerKey", identity, "xai-session-object");
+    const share = await testShare(ACCOUNT_ID);
+    return await issueTicket(env, {
+      accountId: ACCOUNT_ID,
+      appId: "app_session",
+      endUserId: null,
+      installId: null,
+      appleAccountId: null,
+      appKeyId: null,
+      providerType: "xai",
+      connectionId: connection,
+      operation: "xai.realtime",
+      model: "grok-voice-3.0",
+      mode: "relayed",
+      slot: "conversational",
+      sessionTotal: false,
+      url: "https://api.x.ai/v1/realtime?model=grok-voice-3.0",
+      capMs: 60_000,
+      credentials: { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) },
+      keyPlacement: { header: "authorization", format: "Bearer {key}" },
+    });
+  }
+
+  it("bills from the first audio to the close, and counts the text message: the time before the first audio is free", async () => {
+    const { ticket, sessionId } = await xaiTicket("conn_xai");
+    const opened = Date.now();
+    const session = await open(ticket, {});
+    await session.received(1);
+    // Nothing billable yet: a settings change is not activity.
+    session.socket.send(JSON.stringify({ type: "session.update", session: { voice: "eve" } }));
+    await session.received(2);
+    await pause(300);
+    const active = Date.now();
+    session.socket.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } }));
+    session.socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }));
+    await session.received(4);
+    // Some time on the clock before the close: the runtime's clock moves only between events.
+    await pause(200);
+    session.socket.close(1000, "done");
+    const closedAt = Date.now();
+    const seen = await closed(sessionId);
+    const slices = seen.checkpoints.flatMap((checkpoint) => (checkpoint.slice === null ? [] : [checkpoint.slice as { measures: Record<string, number>; sessionMs: number }]));
+    expect(slices.reduce((sum, slice) => sum + (slice.measures.text_messages ?? 0), 0)).toBe(1);
+    const billed = slices.reduce((sum, slice) => sum + slice.sessionMs, 0);
+    // Only the time from the first audio: the 300 ms before it are not billed.
+    expect(billed).toBeGreaterThan(0);
+    expect(billed).toBeLessThanOrEqual(closedAt - active + 200);
+    expect(billed).toBeLessThan(closedAt - opened);
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "client_closed" })]);
+  });
+});

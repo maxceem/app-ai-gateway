@@ -233,7 +233,7 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     };
     (session as unknown as { core: unknown }).core = core;
     const usage = { id: "u1", measures: { input_tokens: 5 } };
-    const live = { client: null, deadline: Infinity, held: new StartQueue(), turnOpen: false, adapter: { shape: "per_turn", read: (data: unknown) => (data === "usage" ? usage : null), turn: (data: unknown) => (data === "usage" ? "open" : null) } } as never as { held: StartQueue; turnOpen: boolean };
+    const live = { client: null, deadline: Infinity, held: new StartQueue(), turnOpen: false, turns: 0, adapter: { shape: "per_turn", read: (data: unknown) => (data === "usage" ? usage : null), turn: (data: unknown) => (data === "usage" ? "open" : null) } } as never as { held: StartQueue; turnOpen: boolean };
     session.toClient(live as never, "first");
     expect(live.held.frames).toEqual(["first"]);
     expect(ended).toEqual([]);

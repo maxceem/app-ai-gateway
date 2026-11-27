@@ -225,6 +225,26 @@ describe("provider connections", () => {
 });
 
 describe("apps", () => {
+  it("refuses an update that prices xAI's voice model in a way its sessions can't bill: by key value, or minutes alone; both base rates save (Sol, #266 rounds 2 and 3)", async () => {
+    const key = await seedManagementKey();
+    const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });
+    const id = xai.body.provider.id as string;
+    const slug = xai.body.provider.slug as string;
+    const app = await request(key, "POST", "/v2/admin/apps", { name: "Voice", config: apiKeyConfig({ [slug]: { operations: ["xai.realtime"], models: ["grok-voice-3.0"] } }) });
+    expect(app.status).toBe(201);
+    const keyed = await request(key, "PUT", `/v2/admin/providers/${id}`, {
+      revision: 1,
+      pricing: { "grok-voice-3.0": { per_minute: 0.08, per_text_message: 0.004, by: { voice: { eve: { per_minute: 0.1, per_text_message: 0.004 } } } } },
+    });
+    expect(keyed).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    expect(String(keyed.body.error.message)).toContain("xai.realtime needs per_minute and per_text_message as base rates, with no by");
+    // A rate per minute alone could bill transcriptions, but not its sessions' text messages (Sol, #266 round 3).
+    const minutesOnly = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "grok-voice-3.0": { per_minute: 0.08 } } });
+    expect(minutesOnly).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    expect(String(minutesOnly.body.error.message)).toContain("xai.realtime needs per_minute and per_text_message as base rates, with no by");
+    expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "grok-voice-3.0": { per_minute: 0.1, per_text_message: 0.005 } } })).toMatchObject({ status: 200 });
+  });
+
   it("checks each model's unit against the enabled operations, with the provider-cost exception per operation", async () => {
     const key = await seedManagementKey();
     const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });
