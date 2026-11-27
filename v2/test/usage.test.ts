@@ -225,6 +225,19 @@ describe("a Gemini prompt partly from the cache", () => {
     expect(priceTokens(rates, usage)?.cost).toBe(cost([[100, rate(1000)], [900, rate(100)], [1, rate(2000)]]));
   });
 
+  it("never infers cached images from a count: a call that names none prices as before the cached image rate came (Sol, #270 round 2)", () => {
+    // A Gemini answer whose image count runs past its uncached tokens, with no cache breakdown.
+    const usage = { inputTokens: 100, cachedInputTokens: 900, cacheWriteTokens: 0, outputTokens: 1, modalityTokens: { input: { image: 900 } } };
+    const rates = price({ input: 1000, cached_input: 100, image_input: 5000, cached_input_image: 500, output: 2000 });
+    // 100 uncached tokens at the image rate, 900 cached at the cached rate: no cached image is assumed.
+    expect(priceTokens(rates, usage)?.cost).toBe(cost([[100, rate(5000)], [900, rate(100)], [1, rate(2000)]]));
+    // Reported cached images bill at their own cached rate; with none, at the uncached image rate, then the uncached input rate.
+    const reported = { ...usage, inputTokens: 0, modalityTokens: { input: { image: 900 } }, tokenVariants: { cached_input: { image: 900 } } };
+    expect(priceTokens(rates, reported)?.cost).toBe(cost([[900, rate(500)], [1, rate(2000)]]));
+    expect(priceTokens(price({ input: 1000, cached_input: 100, image_input: 5000, output: 2000 }), reported)?.cost).toBe(cost([[900, rate(5000)], [1, rate(2000)]]));
+    expect(priceTokens(price({ input: 1000, cached_input: 100, output: 2000 }), reported)?.cost).toBe(cost([[900, rate(1000)], [1, rate(2000)]]));
+  });
+
   it("bills cached audio at the cached audio rate", () => {
     const usage = read(
       JSON.stringify({

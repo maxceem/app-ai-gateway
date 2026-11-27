@@ -28,7 +28,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   perCall?(model: string | null): CallMeter,
  * }} Adapter
  * @typedef {{
- *   see(data: string | ArrayBuffer, forwarded: boolean): boolean,
+ *   see(data: string | ArrayBuffer, forwarded: boolean): string | null,
+ *   settled(key: string): void,
  *   pending(): boolean,
  *   label(event: UsageEvent): UsageEvent,
  *   estimate(): UsageEvent | null,
@@ -36,9 +37,11 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * }} CallMeter
  * `perCall`, for a provider that needs to remember something about one call
  * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
- * after it was forwarded; true when it settled a transcription still to come),
+ * after it was forwarded; it names an answer or a transcription the frame
+ * finished, whose usage is being written), that usage written (`settled`),
  * whether anything is still to come that a closing session waits for
- * (`pending`), the model of a usage event that is not the
+ * (`pending`: an answer or a transcription not finished, or one whose usage is
+ * still being written), the model of a usage event that is not the
  * session's own (`label`: input transcription), a cut answer's estimate
  * (`estimate`, the session core's hook) and the model lock on the client's
  * frames (`lock`, before each goes to the provider).
@@ -529,8 +532,16 @@ function openAiCall(model) {
   const answers = new Map();
   /** @type {Map<string, string | null>} Each committed audio item whose transcription is still to come, and its model. */
   const pending = new Map();
+  /** @type {Set<string>} Answers and transcriptions that finished, whose usage is still being written. */
+  const writing = new Set();
   /** @type {string | null | undefined} The model of the transcription the frame being read carries. */
   let current;
+  /** An answer or transcription finished: waited for until its usage is written (`settled`). @param {string} key */
+  const finished = (key) => {
+    if (writing.size >= OPENAI_OPEN_MAX) writing.delete(writing.values().next().value ?? "");
+    writing.add(key);
+    return key;
+  };
   /** @param {Map<string, unknown>} map @param {string} key @param {any} value */
   const remember = (map, key, value) => {
     if (!map.has(key) && map.size >= OPENAI_OPEN_MAX) map.delete(map.keys().next().value ?? "");
@@ -539,39 +550,42 @@ function openAiCall(model) {
   return {
     see(data, forwarded) {
       current = undefined;
-      if (typeof data !== "string") return false;
+      if (typeof data !== "string") return null;
       const type = typeOf(data);
       if (type !== null && OPENAI_AUDIO_DELTAS.has(type)) {
         // Only audio that reached the client, or waits for it, is estimated if the answer is cut.
         const id = RESPONSE_ID.exec(data.slice(0, 256))?.[1] ?? "";
         if (forwarded && answers.has(id)) answers.set(id, (answers.get(id) ?? 0) + data.length);
-        return false;
+        return null;
       }
-      if (type === null || !OPENAI_SEEN.has(type)) return false;
+      if (type === null || !OPENAI_SEEN.has(type)) return null;
       const frame = /** @type {Record<string, any> | null} */ (parsed(data));
-      if (frame === null) return false;
+      if (frame === null) return null;
       if (type === "session.created" || type === "session.updated") {
         const session = frame.session;
-        if (typeof session !== "object" || session === null) return false;
+        if (typeof session !== "object" || session === null) return null;
         format = outputFormat(session) ?? format;
         const named = transcriptionModel(session);
         if (named !== undefined) transcribedBy = named;
       } else if (type === "response.created" || type === "response.done") {
         const id = typeof frame.response?.id === "string" ? frame.response.id : "";
         if (type === "response.created") remember(answers, id, 0);
-        else answers.delete(id);
+        else if (answers.delete(id)) return finished(`answer:${id}`);
       } else if (type === "input_audio_buffer.committed") {
         if (transcribedBy !== null && typeof frame.item_id === "string") remember(pending, frame.item_id, transcribedBy);
       } else {
-        // A transcription completed or failed: it is no longer waited for, and its model is the one it was committed with.
+        // A transcription completed or failed: its model is the one it was committed with.
         const item = typeof frame.item_id === "string" ? frame.item_id : "";
         current = pending.has(item) ? pending.get(item) : transcribedBy;
-        return pending.delete(item);
+        if (pending.delete(item)) return finished(`item:${item}`);
       }
-      return false;
+      return null;
+    },
+    settled(key) {
+      writing.delete(key);
     },
     pending() {
-      return pending.size > 0;
+      return answers.size > 0 || pending.size > 0 || writing.size > 0;
     },
     label(event) {
       const model = current === undefined ? transcribedBy : current;

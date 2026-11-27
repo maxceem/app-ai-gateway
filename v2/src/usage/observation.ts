@@ -25,7 +25,7 @@ export interface ModalityTokens {
  * response reported them. Absent means the response did not split the bucket.
  */
 export type TokenVariants = {
-  readonly cached_input?: Partial<Record<"audio", number>>;
+  readonly cached_input?: Partial<Record<"audio" | "image", number>>;
   readonly cache_write?: Partial<Record<"1h" | "12h", number>>;
 };
 

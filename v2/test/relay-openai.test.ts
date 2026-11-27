@@ -172,11 +172,14 @@ describe("an OpenAI call's memory (step 9e)", () => {
     call.see(session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } } }), true);
     call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e2", item_id: "item_2" }), true);
     const event = { id: "t", measures: { transcription_audio_ms: 1_000 } };
-    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1" }), true)).toBe(true);
+    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1" }), true)).toBe("item:item_1");
     expect(call.label(event)).toMatchObject({ model: "whisper-1" });
+    // Still waited for until its usage is written.
+    call.settled("item:item_1");
     expect(call.pending()).toBe(true);
     // A failed transcription is no longer waited for either.
-    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.failed", event_id: "t2", item_id: "item_2" }), true)).toBe(true);
+    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.failed", event_id: "t2", item_id: "item_2" }), true)).toBe("item:item_2");
+    call.settled("item:item_2");
     expect(call.pending()).toBe(false);
   });
 
@@ -218,7 +221,8 @@ describe("the session object with an OpenAI call (step 9e)", () => {
       turnOpen: false,
       turns: 0,
     };
-    return { object, live, recorded, sent, told };
+    (object as unknown as { live: unknown }).live = live;
+    return { object, live, recorded, sent, told, call };
   }
 
   it("locks the model on the client's frames before they go to OpenAI", () => {
@@ -243,6 +247,48 @@ describe("the session object with an OpenAI call (step 9e)", () => {
     ]);
     expect(told).toEqual(["done"]);
     expect(live.turnOpen).toBe(false);
+  });
+});
+
+describe("an OpenAI session's closing wait (Sol, #270 round 2)", () => {
+  it("a side answer finishing never releases the wait while the voice answer runs; the last answer's written usage does", async () => {
+    const told: string[] = [];
+    let write: () => void = () => undefined;
+    const core = {
+      idle: false,
+      ending: null,
+      call: {},
+      recordUsage: (event: { id: string }) =>
+        event.id === "resp_voice"
+          ? new Promise<void>((resolve) => {
+              write = () => {
+                told.push("voice usage");
+                resolve();
+              };
+            })
+          : Promise.resolve(void told.push(`${event.id} usage`)),
+      turnDone: () => void told.push("done"),
+    };
+    const object = Object.create(Session.prototype) as Session;
+    (object as unknown as { core: unknown }).core = core;
+    const call = { send: () => undefined, meter: meter("gpt-realtime-2.1") };
+    const live = { client: { send: () => undefined }, deadline: Infinity, call, adapter: OPENAI, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0 };
+    (object as unknown as { live: unknown }).live = live;
+    object.toClient(live as never, '{"type":"response.created","event_id":"e1","response":{"id":"resp_voice"}}');
+    object.toClient(live as never, '{"type":"response.created","event_id":"e2","response":{"id":"resp_side","conversation_id":null}}');
+    object.toClient(live as never, done("resp_side", { input_tokens: 5, output_tokens: 5 }));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    expect(told).toEqual(["resp_side usage"]);
+    expect(call.meter.pending()).toBe(true);
+    // The voice answer finishes, but its usage isn't written yet: still waited for.
+    object.toClient(live as never, done("resp_voice", USAGE));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    expect(call.meter.pending()).toBe(true);
+    expect(told).not.toContain("done");
+    write();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    expect(told).toEqual(["resp_side usage", "voice usage", "done"]);
+    expect(call.meter.pending()).toBe(false);
   });
 });
 

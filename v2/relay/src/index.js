@@ -206,7 +206,12 @@ export class Session extends DurableObject {
       liveness: (now) => this.live?.frames.check(now) ?? null,
       proof: () => this.live?.frames.clientSpoke ?? false,
       // An answer in progress, or an input transcription still to come (OpenAI): a closing session waits for both.
-      turnOpen: () => (this.live === null ? this.sideTurnOpen : this.live.turnOpen || this.live.call?.meter?.pending() === true),
+      // OpenAI's: its answers by id and its transcriptions (the call's meter), each until its usage is written.
+      turnOpen: () => {
+        if (this.live === null) return this.sideTurnOpen;
+        const meter = this.live.call?.meter;
+        return meter === undefined || meter === null ? this.live.turnOpen : meter.pending();
+      },
     });
     /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
     this.sideTurnOpen = false;
@@ -609,8 +614,9 @@ export class Session extends DurableObject {
     const done = () => {
       if (!current()) return;
       settle();
-      // A transcription still to come keeps a closing session waiting: it tells the core when it lands.
-      if (this.live?.call?.meter?.pending() === true) return;
+      // A call with a meter (OpenAI) tells the core itself, once all its answers and transcriptions are written.
+      const meter = this.live?.call?.meter;
+      if (meter !== undefined && meter !== null) return;
       this.core.turnDone();
     };
     if (recorded === null) done();
@@ -637,13 +643,19 @@ export class Session extends DurableObject {
     }
     const forwarded = !late && this.core.ending === null && !overflowed;
     // What the call remembers (OpenAI's format and transcription model, the answer's audio), after the frame went out.
-    const transcribed = live.call?.meter?.see(data, forwarded) === true;
+    const meter = live.call?.meter ?? null;
+    const finished = meter === null ? null : meter.see(data, forwarded);
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
-    const recorded = this.readUsage(live.adapter, data, live.call?.meter ?? null);
-    // The last transcription still to come landed, with no answer open: a closing session waits no more, once its usage is written.
-    if (transcribed && !live.turnOpen && live.call?.meter?.pending() !== true) {
-      if (recorded === null) this.core.turnDone();
-      else void recorded.then(() => this.core.turnDone());
+    const recorded = this.readUsage(live.adapter, data, meter);
+    // An answer or transcription the frame finished counts as open until its usage is written. Once
+    // nothing is open, a closing session waits no more.
+    if (meter !== null && finished !== null) {
+      const settle = () => {
+        meter.settled(finished);
+        if (!meter.pending()) this.core.turnDone();
+      };
+      if (recorded === null) settle();
+      else void recorded.then(settle);
     }
     const turn = live.adapter.turn(data);
     // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,

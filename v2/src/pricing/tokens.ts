@@ -160,7 +160,9 @@ function splitCachedModalities(usage: UsageObservation): { input: ModalityCounts
     const total = variantCount(input[variant.modality]);
     const shares = tokenVariants?.cached_input as Partial<Record<string, unknown>> | undefined;
     const reported = Math.min(usage.cachedInputTokens, variantCount(shares?.[variant.name]));
-    if (reported === 0 && total <= usage.inputTokens) continue;
+    // A variant with a fallback (cached images) is used only when the usage reports it: never inferred
+    // from a count, so a call that never names one prices as it did (Sol, #270 round 2).
+    if (reported === 0 && (variant.fallback !== undefined || total <= usage.inputTokens)) continue;
     const rest = Math.max(0, total - reported);
     const uncached = Math.min(rest, usage.inputTokens);
     const cached = Math.min(usage.cachedInputTokens, reported + rest - uncached);

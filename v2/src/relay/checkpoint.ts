@@ -183,22 +183,11 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       if (!RELAY_MEASURES.includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
-    let transcriptions: Record<string, Record<string, number>> | undefined;
-    if (raw.transcriptions !== undefined) {
-      if (typeof raw.transcriptions !== "object" || raw.transcriptions === null || Array.isArray(raw.transcriptions)) throw bad();
-      const models = Object.entries(raw.transcriptions);
-      if (models.length > MAX_TRANSCRIPTION_MODELS) throw bad();
-      transcriptions = {};
-      for (const [model, counts] of models) {
-        if (!MODEL_NAME.test(model) || typeof counts !== "object" || counts === null || Array.isArray(counts)) throw bad();
-        const kept: Record<string, number> = {};
-        for (const [name, value] of Object.entries(counts)) {
-          if (!(SLICE_TRANSCRIPTION as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
-          kept[name] = value;
-        }
-        transcriptions[model] = kept;
-      }
-    }
+    // The transcriptions by model: an entry that can't be read is dropped with a warning, never the slice,
+    // so a relay never resends one slice forever (AGENTS.md: counting never fails). The slice is then
+    // partial: some of its usage is unknown (Sol, #270 round 2).
+    const { transcriptions, dropped } = readTranscriptions(raw.transcriptions);
+    if (dropped > 0) log("warn", "checkpoint_transcription_dropped", { session: ticket.sid, dropped });
     slice = {
       seq: raw.seq,
       measures,
@@ -209,6 +198,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       to: raw.to,
       ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }),
       ...(transcriptions === undefined ? {} : { transcriptions }),
+      ...(dropped > 0 ? { gaps: (raw.gaps as number) + 1 } : {}),
     };
   }
   return {
@@ -218,6 +208,29 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     providerCallId: (callId as string | null | undefined) ?? null,
     ...(fields.relayVersion === undefined ? {} : { relayVersion: fields.relayVersion as number }),
   };
+}
+
+/**
+ * A slice's transcriptions by model, as the relay sent them: at most `MAX_TRANSCRIPTION_MODELS` models,
+ * each a model name with counts of the transcription measures. Anything else is dropped and counted.
+ */
+function readTranscriptions(raw: unknown): { transcriptions: Record<string, Record<string, number>> | undefined; dropped: number } {
+  if (raw === undefined) return { transcriptions: undefined, dropped: 0 };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { transcriptions: undefined, dropped: 1 };
+  const transcriptions: Record<string, Record<string, number>> = {};
+  let dropped = 0;
+  for (const [model, counts] of Object.entries(raw)) {
+    const valid =
+      Object.keys(transcriptions).length < MAX_TRANSCRIPTION_MODELS &&
+      MODEL_NAME.test(model) &&
+      typeof counts === "object" &&
+      counts !== null &&
+      !Array.isArray(counts) &&
+      Object.entries(counts).every(([name, value]) => (SLICE_TRANSCRIPTION as readonly string[]).includes(name) && isCount(value, MAX_MEASURE));
+    if (valid) transcriptions[model] = { ...(counts as Record<string, number>) };
+    else dropped += 1;
+  }
+  return { transcriptions: Object.keys(transcriptions).length > 0 ? transcriptions : undefined, dropped };
 }
 
 /** A slice's price: from its tokens, as a live call is priced. */

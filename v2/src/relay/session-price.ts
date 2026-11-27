@@ -16,7 +16,7 @@
  * sweep, never as free. A price that couldn't be read today (D1 failed, the
  * connection's rates are malformed) is not "no price": nothing is saved.
  */
-import { billingForCharge, dearestSessionPrice, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, sessionEstimatePrice, type ResolvedPrice } from "../pricing/billability.ts";
 import type { ModelPrice } from "../pricing/prices.ts";
 import type { UsageObservation } from "../usage/observation.ts";
 import type { Ticket } from "./tickets.ts";
@@ -27,18 +27,17 @@ import type { Ticket } from "./tickets.ts";
  * undefined: D1 didn't answer) or its rates are unreadable.
  *
  * A model with no price at all (the app lists it by name, so it was let
- * through) is billed at an estimate: the provider's dearest session model on
- * our list, marked `estimated`, never unresolved for good and never free
- * (AGENTS.md "When the exact price is unknown").
+ * through) is billed at an estimate: each rate the highest of the provider's
+ * session models on our list (`sessionEstimatePrice`), marked `estimated`,
+ * never unresolved for good and never free (AGENTS.md "When the exact price
+ * is unknown").
  */
 export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined): string | null {
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {
     const own = billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model);
-    if (own !== null) return encodeSessionPrice(own);
-    const dearest = dearestSessionPrice(ticket.providerType);
-    return encodeSessionPrice(dearest === null ? null : { price: dearest, source: "list_rate", estimated: true });
+    return encodeSessionPrice(own ?? sessionEstimatePrice(ticket.providerType));
   } catch {
     return null;
   }

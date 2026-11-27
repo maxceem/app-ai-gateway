@@ -102,6 +102,18 @@
       "output": 5.0,
       "author": "OpenAI",
       "release_date": "2025-12-15"
+    },
+    "gpt-realtime-2025-08-28": {
+      "kind": "realtime",
+      "input": 4.0,
+      "audio_input": 32.0,
+      "image_input": 5.0,
+      "cached_input": 0.4,
+      "cached_input_audio": 0.4,
+      "cached_input_image": 0.5,
+      "output": 16.0,
+      "audio_output": 64.0,
+      "author": "OpenAI"
     }
   },
   "elevenlabs": {

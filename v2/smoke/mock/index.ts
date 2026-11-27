@@ -672,8 +672,8 @@ export default mock;
  * in `response.usage`, keyed by the event id: sent as many times as the event,
  * so a repeat is skipped by that id. And one more:
  * `{"type":"mock.transcribe","event_id":…,"usage":{…},"model":M}` says the
- * session transcribes with M (`session.updated`), then sends an input
- * transcription with that usage.
+ * session transcribes with M (`session.updated`), commits an audio item, then
+ * sends its transcription with that usage.
  */
 /**
  * Gemini Live (step 9d), its JSON in binary frames as Gemini sends it: a
@@ -762,6 +762,8 @@ function realtimeSession(): Response {
       } else if (message.type === "mock.transcribe") {
         const model = typeof message.model === "string" ? message.model : "gpt-4o-transcribe";
         server.send(JSON.stringify({ type: "session.updated", event_id: "mock-session", session: { type: "realtime", audio: { input: { transcription: { model } } } } }));
+        // OpenAI commits the audio item first: its transcription comes after, under the model of that moment.
+        server.send(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "mock-commit", item_id: "mock-item" }));
         server.send(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: message.event_id, item_id: "mock-item", transcript: "", usage: message.usage }));
       } else if (message.type === "mock.big") {
         server.send(`{"audio_base_64":"${"B".repeat(512 * 1024)}","isFinal":false,"type":"audio"}`);

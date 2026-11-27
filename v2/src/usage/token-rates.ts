@@ -29,8 +29,9 @@ export interface Variant {
   /** A variant that is one modality's share of the cache. */
   readonly modality?: Modality;
   /**
-   * The rate a price without this variant's own bills it at, before the bucket's: for cached image
-   * tokens, the uncached image rate, so a price with no cached image rate never bills them as cached text.
+   * The rate a price without this variant's own bills it at: for cached image tokens, the uncached image
+   * rate, else the uncached input rate, so a price with no cached image rate never bills them as cached
+   * text. Such a variant is used only when a usage reports it (`splitCachedModalities`).
    */
   readonly fallback?: "image_input";
 }
@@ -125,6 +126,7 @@ export function modalityRate(rates: Rates, field: ModalityRate, longContext: boo
 export function variantRate(rates: Rates, variant: Pick<Variant, "field" | "fallback">, longContext: boolean, bucketRate: number): number {
   const own = (longContext ? rates[`long_${variant.field}`] : undefined) ?? rates[variant.field];
   if (own !== undefined) return own;
-  const fallback = variant.fallback === undefined ? undefined : ((longContext ? rates[`long_${variant.fallback}`] : undefined) ?? rates[variant.fallback]);
-  return fallback ?? bucketRate;
+  if (variant.fallback === undefined) return bucketRate;
+  const pick = (field: string) => (longContext ? rates[`long_${field}`] : undefined) ?? rates[field];
+  return pick(variant.fallback) ?? pick("input") ?? bucketRate;
 }

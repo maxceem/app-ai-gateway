@@ -158,13 +158,13 @@ test("an OpenAI Realtime session books its input transcription apart, at the tra
     model: "gpt-4o-transcribe",
     usage: { type: "tokens", input_tokens: 60, input_token_details: { text_tokens: 5, audio_tokens: 55 }, output_tokens: 10, total_tokens: 70 },
   });
-  await exchangeFrames("/v2/relay/session", relay, [transcribe], 3, { authorization: `Bearer ${String(body?.ticket)}` });
+  await exchangeFrames("/v2/relay/session", relay, [transcribe], 4, { authorization: `Bearer ${String(body?.ticket)}` });
   type Charge = { id: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cost_nano: number | null; price_source: string; session_ms: number | null };
   let transcription: Charge | undefined;
   for (let tries = 0; tries < 30 && transcription === undefined; tries += 1) {
     const listed = await admin("GET", `/v2/admin/apps/${created.app}/charges?owner=${encodeURIComponent(sessionId)}`);
     same(listed.status, 200, "listing the session's charges");
-    transcription = ((listed.body?.charges ?? []) as Charge[]).find((charge) => charge.id.endsWith(":transcription"));
+    transcription = ((listed.body?.charges ?? []) as Charge[]).find((charge) => charge.id.endsWith(":transcription:gpt-4o-transcribe"));
     if (transcription === undefined) await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   check(transcription !== undefined, "the session's input transcription was not booked apart");
