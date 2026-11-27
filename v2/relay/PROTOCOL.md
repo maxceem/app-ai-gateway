@@ -173,5 +173,6 @@ from plan step 12, which also adds what is specific to OpenAI.
   from the gateway, or the time cap. Time without the side channel is not
   counted as connection time.
 - **The end:** at the cap or on a stop, the relay hangs the call up. A hang-up
-  that fails is tried again on each wakeup for 30 minutes, then given up on
-  and logged.
+  that fails is tried again on each wakeup until the session's sealed key
+  expires, then given up on and logged. An attach never waits past the cap, and
+  usage that arrives past it is not counted.

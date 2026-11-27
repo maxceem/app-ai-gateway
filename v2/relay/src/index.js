@@ -178,8 +178,8 @@ export class Session extends DurableObject {
         },
         createCall: (key, offer) => createObservedCall(key, offer),
         // An observed call's side channel: its frames are read for usage, never forwarded anywhere.
-        attach: async (key, callId, adapterName) => {
-          const socket = await attachSideChannel(key, callId);
+        attach: async (key, callId, adapterName, limitMs) => {
+          const socket = await attachSideChannel(key, callId, limitMs);
           const adapter = adapterFor(adapterName);
           /** @type {import("./start.js").ProviderCall} */
           const call = { callId, close: (code, reason) => closeQuietly(socket, code, reason) };
@@ -248,8 +248,8 @@ export class Session extends DurableObject {
       if (this.core.ending !== null) this.ctx.waitUntil(this.core.ending.catch(() => undefined));
       return refusal(START_STATUS[result.code] ?? 503, result.code);
     }
-    this.ctx.waitUntil(this.core.attachSide());
-    this.ctx.waitUntil(this.core.checkpoint().catch(() => undefined));
+    // The first checkpoint after the first attach, so it books no time from before the side channel.
+    this.ctx.waitUntil(this.core.attachSide().then(() => this.core.checkpoint()).catch(() => undefined));
     return new Response(result.answer, { status: 201, headers: { "content-type": "application/sdp", "cache-control": "no-store" } });
   }
 

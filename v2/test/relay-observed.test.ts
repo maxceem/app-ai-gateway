@@ -11,7 +11,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { TICK_MS } from "../relay/src/frames.js";
-import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, ProviderRefused, SessionCore } from "../relay/src/start.js";
+import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
+import { SEAL_GRACE_MS as GATEWAY_SEAL_GRACE_MS } from "../src/relay/tickets.ts";
 import { MemoryStore, never, ticketFor, until } from "./relay-stand-ins.ts";
 
 type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number };
@@ -30,6 +31,10 @@ function setup(
     vault?: (restart: boolean) => Promise<unknown>;
     hangup?: () => Promise<void>;
     checkpoint?: (input: Seen) => Promise<Reply>;
+    /** Holds an attach until the test lets it go: it gets the attach's own answer once released. */
+    holdAttach?: () => Promise<void>;
+    turnOpen?: () => boolean;
+    wait?: (ms: number) => Promise<void>;
   } = {},
 ) {
   let now = 1_000_000;
@@ -39,6 +44,8 @@ function setup(
     vault: [] as boolean[],
     created: 0,
     attached: 0,
+    /** The longest wait each attach was given. */
+    limits: [] as number[],
     hangups: [] as string[],
     checkpoints: [] as Seen[],
     close: [] as { endReason: string; finalSlice: number }[],
@@ -51,6 +58,8 @@ function setup(
     store,
     now: () => now,
     log: (event: Record<string, unknown>) => logs.push(event),
+    ...(options.turnOpen === undefined ? {} : { turnOpen: options.turnOpen }),
+    ...(options.wait === undefined ? {} : { wait: options.wait }),
     vault: {
       sessionKey: async (_ticket: string, { restart }: { restart: boolean }) => {
         calls.vault.push(restart);
@@ -77,8 +86,10 @@ function setup(
         calls.created += 1;
         return await (options.createCall?.() ?? Promise.resolve({ callId: "rtc_1", answer: "v=0 answer" }));
       },
-      attach: async (_key: unknown, callId: string) => {
+      attach: async (_key: unknown, callId: string, _adapter: unknown, limitMs: number) => {
         calls.attached += 1;
+        calls.limits.push(limitMs);
+        await options.holdAttach?.();
         const answer = attachAnswers.shift() ?? 101;
         if (answer === "throw") throw new Error("network");
         if (answer !== 101) throw new ProviderRefused(answer);
@@ -260,8 +271,10 @@ describe("an observed session's side channel (plan section 5; crash table rows 2
       expect(s.store.data.get("state")).toBe("active");
     }
     expect(s.calls.attached).toBe(4);
-    // Detached, the tick still sent its checkpoint when it was due (row 23).
-    expect(s.calls.checkpoints).toHaveLength(1);
+    // Each tick that found the side channel down asked the gateway (row 23): a new slice when one
+    // was due, an empty checkpoint otherwise.
+    expect(s.calls.checkpoints).toHaveLength(2);
+    expect(s.calls.checkpoints[1]).toMatchObject({ slice: null, accounting: false });
     s.tick(TICK_MS);
     await core.alarm();
     expect(s.calls.attached).toBe(5);
@@ -363,17 +376,132 @@ describe("an observed session's end and hang-up (crash table rows 23–25)", () 
     await restarted.alarm();
     expect(s.calls.hangups).toEqual(["rtc_1"]);
     expect(s.calls.vault.at(-1)).toBe(true);
-    expect(s.store.data.get("hangup")).toBe(false);
+    expect(s.store.data.get("hangup")).not.toBe(true);
     // close went once.
     expect(s.calls.close).toHaveLength(1);
 
-    const stuck = setup({ hangup: () => Promise.reject(new ProviderRefused(500)) });
+    // A hang-up that keeps failing is tried until the session's seal expires: past close's own
+    // retry window, and storage stays meanwhile (crash table row 28).
+    let attempts = 0;
+    const stuck = setup({ hangup: () => ((attempts += 1), Promise.reject(new ProviderRefused(500))) });
     const other = await started(stuck);
     await other.end("budget_stop");
-    stuck.tick(CLOSE_RETRY_MS);
+    stuck.tick(CLOSE_RETRY_MS + CLOSE_RETRY_EVERY_MS);
     await other.alarm();
+    expect(stuck.store.data.get("hangup")).toBe(true);
+    expect(attempts).toBe(2);
+    // The seal expires at the ticket's expiry plus the cap plus the grace. After it the key is
+    // never used again, even the one this instance still holds in memory.
+    stuck.tick(stuck.ticket.exp + stuck.ticket.cap + SEAL_GRACE_MS - stuck.now());
+    await other.alarm();
+    expect(attempts).toBe(2);
     expect(stuck.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_hangup_given_up" }));
     expect(stuck.logs.some((event) => event.message === "relay_close_given_up")).toBe(false);
-    expect(stuck.store.data.get("hangup")).toBe(false);
+    // Nothing is owed any more, and the ticket has long expired: the same wakeup cleans up.
+    expect(stuck.store.data.size).toBe(0);
+  });
+});
+
+describe("an observed session's time and its cap (Sol, #265 round 1)", () => {
+  it("keeps the relay's seal grace the same as the gateway's, so the hang-up stops when the vault would refuse", () => {
+    expect(SEAL_GRACE_MS).toBe(GATEWAY_SEAL_GRACE_MS);
+  });
+
+  it("books no time from before the first side channel; a first attach that fails makes that time a gap", async () => {
+    const quick = setup();
+    const core = quick.instance();
+    await core.start(quick.text, quick.ticket, quick.owner(), OFFER);
+    quick.tick(5_000);
+    await core.attachSide();
+    quick.tick(60_000);
+    await core.checkpoint();
+    expect(quick.calls.checkpoints.at(-1)).toMatchObject({ slice: { sessionMs: 60_000, gapMs: 0, gaps: 0 } });
+
+    const refused = setup({ attach: [503] });
+    const other = refused.instance();
+    await other.start(refused.text, refused.ticket, refused.owner(), OFFER);
+    refused.tick(5_000);
+    await other.attachSide();
+    await other.checkpoint();
+    refused.tick(TICK_MS);
+    await other.alarm();
+    refused.tick(60_000);
+    await other.checkpoint();
+    const slices = refused.calls.checkpoints.flatMap((seen) => (seen.slice === null ? [] : [seen.slice]));
+    expect(slices.reduce((sum, slice) => sum + slice.gapMs, 0)).toBe(5_000 + TICK_MS);
+    expect(slices.reduce((sum, slice) => sum + slice.sessionMs, 0)).toBe(60_000);
+  });
+
+  it("never counts a restart's gap twice: two restarts in a row book only the time the side channel was really down", async () => {
+    const s = setup();
+    const core = await started(s);
+    // A checkpoint now, so none is due at the restarts' ticks: only the attach writes the journal.
+    await core.checkpoint();
+    s.tick(40_000);
+    await s.instance().alarm();
+    s.tick(10_000);
+    const second = s.instance();
+    await second.alarm();
+    s.tick(10_000);
+    await second.checkpoint();
+    const slices = s.calls.checkpoints.flatMap((seen) => (seen.slice === null ? [] : [seen.slice]));
+    // Down 40 s before the first restart's attach, then 10 s before the second's.
+    expect(slices.reduce((sum, slice) => sum + slice.gapMs, 0)).toBe(50_000);
+    expect(slices.reduce((sum, slice) => sum + slice.sessionMs, 0)).toBe(10_000);
+  });
+
+  it("an attach waits no longer than the time left; one that comes back past the deadline is let go, and the session ends at the cap", async () => {
+    let release: () => void = () => undefined;
+    let holding = false;
+    const s = setup({ holdAttach: () => (holding ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()) });
+    const core = await started(s);
+    s.tick(30 * 60_000 - 10_000);
+    holding = true;
+    const again = s.dropSide();
+    await until(() => s.calls.attached === 2);
+    expect(s.calls.limits.at(-1)).toBe(10_000);
+    // It comes back 4 s past the deadline.
+    s.tick(14_000);
+    release();
+    await again;
+    await until(() => s.calls.close.length > 0);
+    expect(s.sides.at(-1)!.closed).toBe(true);
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
+    expect(s.calls.hangups).toEqual(["rtc_1"]);
+    void core;
+  });
+
+  it("counts no usage that arrives past the deadline, also in a restarted instance, whose closing wait stops at the deadline too", async () => {
+    const waits: number[] = [];
+    const s = setup({ turnOpen: () => true, wait: (ms) => (waits.push(ms), Promise.resolve()) });
+    await started(s);
+    s.tick(30 * 60_000 - 4_000);
+    // The old instance is gone; the new one reattaches and learns the deadline from storage.
+    const restarted = s.instance();
+    await restarted.attachSide();
+    await restarted.end("client_closed");
+    // The closing wait was cut at the deadline: 4 s, not 10 s.
+    expect(waits).toEqual([4_000]);
+
+    const late = setup();
+    const core = await started(late);
+    late.tick(30 * 60_000);
+    await core.recordUsage(usage("after-cap"), "per_turn");
+    await core.end("time_cap");
+    const slices = late.calls.checkpoints.flatMap((seen) => (seen.slice === null ? [] : [seen.slice]));
+    expect(slices.reduce((sum, slice) => sum + (slice.measures.input_tokens ?? 0), 0)).toBe(0);
+  });
+
+  it("a side channel that drops while the end waits for an answer leaves the final slice marked as missing usage", async () => {
+    const s = setup({ turnOpen: () => true, wait: () => never() });
+    const core = await started(s);
+    await core.recordUsage(usage("t1"), "per_turn");
+    s.tick(5_000);
+    const ending = core.end("client_closed");
+    await until(() => core.turnWaiter !== null);
+    await s.dropSide();
+    await ending;
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { gaps: 1 } });
+    expect(s.logs).toContainEqual(expect.objectContaining({ message: "relay_answer_cut" }));
   });
 });

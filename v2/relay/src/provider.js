@@ -22,13 +22,14 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {import("./start.js").SessionKey} key
  * @param {typeof fetch} [send] for the tests
  * @param {(ms: number) => Promise<unknown>} [timeout] for the tests
+ * @param {number} [limitMs] a shorter limit than `PROVIDER_CONNECT_TIMEOUT_MS`, such as the time left before a deadline
  * @returns {Promise<{ callId: string | null, socket: WebSocket }>}
  */
-export async function connectProvider(key, send = fetch, timeout = wait) {
+export async function connectProvider(key, send = fetch, timeout = wait, limitMs = PROVIDER_CONNECT_TIMEOUT_MS) {
   const headers = keyHeaders(key, { upgrade: "websocket" });
   const handshake = new AbortController();
   let answered = false;
-  void timeout(PROVIDER_CONNECT_TIMEOUT_MS).then(() => {
+  void timeout(Math.min(PROVIDER_CONNECT_TIMEOUT_MS, limitMs)).then(() => {
     if (!answered) handshake.abort(new Error("provider_connect_timeout"));
   });
   /** @type {Response} */
@@ -129,13 +130,14 @@ export async function createObservedCall(key, offer, send = fetch, timeout = wai
  * carries its status (404: the call ended; 503: unknown, the call is kept).
  * @param {import("./start.js").SessionKey} key
  * @param {string} callId
+ * @param {number} limitMs the longest wait: the time left before the session's deadline
  * @param {typeof fetch} [send]
  * @param {(ms: number) => Promise<unknown>} [timeout]
  * @returns {Promise<WebSocket>}
  */
-export async function attachSideChannel(key, callId, send = fetch, timeout = wait) {
+export async function attachSideChannel(key, callId, limitMs, send = fetch, timeout = wait) {
   const { side } = observedUrls(key.target, callId);
-  const { socket } = await connectProvider({ ...key, target: side }, send, timeout);
+  const { socket } = await connectProvider({ ...key, target: side }, send, timeout, limitMs);
   return socket;
 }
 
