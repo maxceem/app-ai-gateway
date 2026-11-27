@@ -131,7 +131,7 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  * }} MainPort
  * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
- * `estimate`, for a provider whose cut answer never reports usage (Gemini Live): what the session's
+ * `estimate`, for a provider whose cut answer never reports usage (Gemini Live, OpenAI Realtime): what the session's
  * own end bills for the answer it cuts, asked once before the final slice.
  * @typedef {{
  *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
@@ -841,7 +841,7 @@ export class SessionCore {
     // channel dropped during the wait: the answer never finished where the relay could see it.
     const cut = hadCall && this.turnOpen();
     const call = this.call;
-    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini): estimated.
+    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini, OpenAI): estimated.
     const estimate = call?.estimate?.() ?? null;
     this.call = null;
     this.reconnectHash = null;

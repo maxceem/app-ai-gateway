@@ -12,6 +12,9 @@
  *   prices it later.
  * - The slice's id comes from the ticket's session id and the slice number,
  *   so a retry books nothing twice (S1) and still gets the stop decision (S14).
+ * - A slice's input transcription (OpenAI, 9e) is billed at its own model's
+ *   price, today's, as a second charge in the same transaction
+ *   (`transcriptionCharge`).
  * - The ledger side runs first. Only a live checkpoint with no explicit stop
  *   asks the end user's limiter whether the session was replaced (row 20).
  *   Streaming sessions, sessions with no end user, and accounting-only
@@ -51,8 +54,10 @@ import { utcDay, type ChargeRow } from "../ledger/write.ts";
 import type { ModalityCounts, UsageObservation } from "../usage/observation.ts";
 import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
-import type { ResolvedPrice } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
 import { priceInServedMode } from "../pricing/tokens.ts";
+import { usageMeasures } from "../usage/measures.ts";
+import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { CONTRACT_VERSION, ContractRefusal, checkedTicket } from "./contract.ts";
 import { sessionRowOf, SEAL_GRACE_MS, type Ticket } from "./tickets.ts";
@@ -62,6 +67,17 @@ import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-pri
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
 /** The other counts a slice may carry, each a unit of its own: xAI's text messages, which the relay counts itself (9b). */
 export const SLICE_UNITS = ["text_messages"] as const;
+/**
+ * A slice's input transcription (OpenAI, 9e), measures of its own: its model is not the session's, so it
+ * is booked apart (`transcriptionCharge`). Tokens for a model billed by them, the audio's length for one
+ * billed by time.
+ */
+export const SLICE_TRANSCRIPTION = [
+  "transcription_input_tokens",
+  "transcription_input_audio_tokens",
+  "transcription_output_tokens",
+  "transcription_audio_ms",
+] as const;
 /**
  * A slice's tokens by modality, in the names a charge keeps them under (`../usage/measures.ts`), and the
  * tokens it estimated: Gemini Live (9d). `<side>_split` counts the turns that broke a side down; the
@@ -78,8 +94,14 @@ export const SLICE_BREAKDOWN = [
   "output_audio_tokens",
   "output_unknown_tokens",
   "estimated_tokens",
+  // The cached input's audio share, at its own cached rate (OpenAI Realtime, 9e).
+  "cached_input_audio_tokens",
 ] as const;
 const MODALITY_KINDS = ["audio", "image", "video", "unknown"] as const;
+/** Every measure name a relay's slice may carry. */
+const RELAY_MEASURES: readonly string[] = [...SLICE_MEASURES, ...SLICE_UNITS, ...SLICE_BREAKDOWN, ...SLICE_TRANSCRIPTION];
+/** A model name, as a slice may name its transcription's: short, with no spaces or controls. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u;
 /** The most billed time one slice may carry: a day, far above any real session's audio. */
 const BILLED_MS_MAX = 24 * 60 * 60_000;
 /** The largest count one measure of one slice may hold: far above any real minute of a session. */
@@ -104,6 +126,8 @@ export interface SliceInput {
   readonly billedMs?: number;
   /** Time after a crash with no journal: an "unknown cost" gap (plan 5.2 rule 3). */
   readonly gapMs: number;
+  /** The model of the slice's input transcription (`SLICE_TRANSCRIPTION`), when it has some. */
+  readonly transcriptionModel?: string;
   readonly gaps: number;
   readonly from: number;
   readonly to: number;
@@ -153,10 +177,22 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     if (typeof raw.measures !== "object" || raw.measures === null || Array.isArray(raw.measures)) throw bad();
     const measures: Record<string, number> = {};
     for (const [name, value] of Object.entries(raw.measures)) {
-      if (!([...SLICE_MEASURES, ...SLICE_UNITS, ...SLICE_BREAKDOWN] as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
+      if (!RELAY_MEASURES.includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
-    slice = { seq: raw.seq, measures, sessionMs: raw.sessionMs, gapMs: raw.gapMs, gaps: raw.gaps, from: raw.from, to: raw.to, ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }) };
+    const transcriptionModel = raw.transcriptionModel;
+    if (transcriptionModel !== undefined && (typeof transcriptionModel !== "string" || !MODEL_NAME.test(transcriptionModel))) throw bad();
+    slice = {
+      seq: raw.seq,
+      measures,
+      sessionMs: raw.sessionMs,
+      gapMs: raw.gapMs,
+      gaps: raw.gaps,
+      from: raw.from,
+      to: raw.to,
+      ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }),
+      ...(transcriptionModel === undefined ? {} : { transcriptionModel }),
+    };
   }
   return {
     slice,
@@ -227,7 +263,7 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
  * at the side's rate and anything no breakdown covered at the model's highest; tokens worked out from a
  * cut answer make the price an estimate, never below the model's own (`priceInServedMode`).
  */
-function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObservation, "modalityTokens" | "reportMissing"> {
+function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObservation, "modalityTokens" | "reportMissing" | "tokenVariants"> {
   const modalityTokens: { input?: ModalityCounts; output?: ModalityCounts } = {};
   for (const side of ["input", "output"] as const) {
     if ((measures[`${side}_split`] ?? 0) === 0) continue;
@@ -235,9 +271,12 @@ function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObse
     for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) counts[kind] = measures[`${side}_${kind}_tokens`] as number;
     modalityTokens[side] = counts;
   }
+  const cachedAudio = measures.cached_input_audio_tokens ?? 0;
   return {
     ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
     ...((measures.estimated_tokens ?? 0) > 0 ? { reportMissing: true as const } : {}),
+    // The cached input's audio share, at its own cached rate (`cached_input_audio`).
+    ...(cachedAudio > 0 ? { tokenVariants: { cached_input: { audio: cachedAudio } } } : {}),
   };
 }
 
@@ -250,6 +289,7 @@ function breakdownMeasures(measures: Readonly<Record<string, number>>): Record<s
     for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) out[`${side}_${kind}_tokens`] = measures[`${side}_${kind}_tokens`] as number;
   }
   if ((measures.estimated_tokens ?? 0) > 0) out.report_missing = 1;
+  if ((measures.cached_input_audio_tokens ?? 0) > 0) out.cached_input_audio_tokens = measures.cached_input_audio_tokens as number;
   return out;
 }
 
@@ -339,6 +379,66 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     usedAt,
     usageDay: utcDay(usedAt),
     writtenAt: now,
+  };
+}
+
+/**
+ * A slice's input transcription as a charge of its own (OpenAI, 9e; plan, the provider table: billed
+ * separately), or null when it has none. Its model is the transcription model OpenAI stated for the
+ * session, priced today: the connection's own rate, else ours (`billingForCharge`). With no price, or
+ * none that can be read, it is `unresolved`, and the sweep prices it, never as free. It holds no
+ * connection time: the session's slice has that. Its id is the slice's with `:transcription`, so a
+ * retry books nothing twice.
+ *
+ * A slice that names no transcription model (a relay that never saw one stated) is booked under the
+ * session's model, `unresolved`: the sweep prices it at that model's price, a dearer guess, never a free one.
+ */
+export function transcriptionCharge(ticket: Ticket, slice: SliceInput, standing: CheckpointStanding | null, now: number): ChargeRow | null {
+  const measures = slice.measures;
+  const input = measures.transcription_input_tokens ?? 0;
+  const output = measures.transcription_output_tokens ?? 0;
+  const audio = Math.min(input, measures.transcription_input_audio_tokens ?? 0);
+  const ms = measures.transcription_audio_ms ?? 0;
+  if (input + output + ms === 0) return null;
+  const usage: UsageObservation = {
+    inputTokens: input,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: output,
+    ...(audio > 0 ? { modalityTokens: { input: { audio } } } : {}),
+    // The audio's length, at the milli scale, for a model billed by time.
+    ...(ms > 0 ? { units: { audio_seconds: ms } } : {}),
+    ...(input + output === 0 ? { noTokens: true as const } : {}),
+  };
+  const model = slice.transcriptionModel ?? null;
+  let price: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
+  if (model !== null && standing !== null && standing.ratesJson !== undefined) {
+    try {
+      const resolved = billingForCharge(priceSources({ type: ticket.providerType, rates_json: standing.ratesJson ?? null }), model);
+      const priced = resolved === null ? null : priceInServedMode(resolved.price, usage);
+      if (resolved !== null && priced !== null) {
+        price = {
+          costNano: priced.cost,
+          priceSource: resolved.source,
+          estimated: priced.estimated,
+          measured: priced.measured,
+          rates: priced.rates,
+          unit: priced.unit,
+          units: priced.units,
+        };
+      }
+    } catch {
+      // Unreadable rates, or a cost too large to store: `unresolved`, for the sweep.
+    }
+  }
+  const row = sliceCharge(ticket, { seq: slice.seq, measures: {}, sessionMs: 0, gapMs: 0, gaps: 0, from: slice.from, to: slice.to }, price, now);
+  return {
+    ...row,
+    id: `${row.id}:transcription`,
+    model: model ?? ticket.model,
+    inputTokens: input,
+    outputTokens: output,
+    measures: usageMeasures(usage, STANDARD_MODE) as ChargeRow["measures"],
   };
 }
 
@@ -435,6 +535,7 @@ export function checkpointWrite(input: LedgerCheckpointInput): LedgerCheckpointW
   return {
     session: sessionRowOf(input.ticket),
     slice: input.slice === null ? null : sliceAtSavedPrice(input.ticket, input.slice, input.now),
+    transcription: input.slice === null ? null : transcriptionCharge(input.ticket, input.slice, input.standing, input.now),
     budgets: input.budgets,
     planMinutes: input.planMinutes,
     now: input.now,

@@ -337,12 +337,15 @@ export async function priceUnresolvedCharge(
   let sessionPrice: { readonly sessionId: string; readonly ratesJson: string | null } | null = null;
   if (original.ownerType === "session") {
     const session = await db
-      .prepare("SELECT settlement, session_total_nano, rates_json FROM session WHERE id = ?")
+      .prepare("SELECT settlement, session_total_nano, rates_json, model FROM session WHERE id = ?")
       .bind(original.ownerId)
-      .first<{ settlement: string; session_total_nano: number | null; rates_json: string | null }>();
+      .first<{ settlement: string; session_total_nano: number | null; rates_json: string | null; model: string | null }>();
     if (session !== null && session.settlement === "settled" && session.session_total_nano !== null) return { status: "already" };
-    if (session !== null) sessionPrice = { sessionId: original.ownerId, ratesJson: session.rates_json };
-    if (session !== null && session.rates_json !== null && session.rates_json !== "") {
+    // The saved price is the session's model's: a charge of another model (OpenAI's input transcription, 9e)
+    // is priced at its own model's current price instead.
+    const ownModel = session !== null && session.model === original.model;
+    if (session !== null && ownModel) sessionPrice = { sessionId: original.ownerId, ratesJson: session.rates_json };
+    if (session !== null && ownModel && session.rates_json !== null && session.rates_json !== "") {
       try {
         saved = decodeSessionPrice(session.rates_json);
       } catch {

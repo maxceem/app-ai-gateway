@@ -255,7 +255,17 @@ describe("apps", () => {
     expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gemini-3.8-live": { input: 1, output: 10, audio_input: 4, audio_output: 15 } } })).toMatchObject({ status: 200 });
   });
 
-  it("still saves a per-image price for OpenAI's image model: only the sessions the relay prices check a custom price (Sol, #269 round 1)", async () => {
+  it("refuses an update that prices an OpenAI Realtime model in a way its sessions can't bill; token rates save (step 9e)", async () => {
+    const key = await seedManagementKey();
+    const openai = await createProvider(key);
+    const id = openai.body.provider.id as string;
+    const perImage = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gpt-realtime-2.1": { per_image: 0.01 } } });
+    expect(perImage).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    expect(String(perImage.body.error.message)).toContain("openai.realtime needs token rates or a time rate");
+    expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gpt-realtime-2.1": { input: 4, output: 24, audio_input: 32, audio_output: 64 } } })).toMatchObject({ status: 200 });
+  });
+
+  it("still saves a per-image price for OpenAI's image model: a session operation judges only its own kind of model (Sol, #269 round 1)", async () => {
     const key = await seedManagementKey();
     const openai = await createProvider(key);
     const imageSave = await request(key, "PUT", `/v2/admin/providers/${openai.body.provider.id as string}`, { revision: 1, pricing: { "gpt-image-1.5": { per_image: 0.04 } } });

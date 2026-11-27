@@ -11,6 +11,72 @@
       "per_million_characters": 30.0,
       "author": "OpenAI",
       "release_date": "2023-11-06"
+    },
+    "gpt-realtime-2.1": {
+      "kind": "realtime",
+      "input": 4.0,
+      "audio_input": 32.0,
+      "image_input": 5.0,
+      "cached_input": 0.4,
+      "cached_input_audio": 0.4,
+      "output": 24.0,
+      "audio_output": 64.0,
+      "author": "OpenAI"
+    },
+    "gpt-realtime-2.1-mini": {
+      "kind": "realtime",
+      "input": 0.6,
+      "audio_input": 10.0,
+      "image_input": 0.8,
+      "cached_input": 0.06,
+      "cached_input_audio": 0.3,
+      "output": 2.4,
+      "audio_output": 20.0,
+      "author": "OpenAI"
+    },
+    "gpt-realtime-2": {
+      "kind": "realtime",
+      "input": 4.0,
+      "audio_input": 32.0,
+      "image_input": 5.0,
+      "cached_input": 0.4,
+      "cached_input_audio": 0.4,
+      "output": 24.0,
+      "audio_output": 64.0,
+      "author": "OpenAI"
+    },
+    "gpt-realtime-1.5": {
+      "kind": "realtime",
+      "input": 4.0,
+      "audio_input": 32.0,
+      "image_input": 5.0,
+      "cached_input": 0.4,
+      "cached_input_audio": 0.4,
+      "output": 16.0,
+      "audio_output": 64.0,
+      "author": "OpenAI"
+    },
+    "gpt-realtime-mini": {
+      "kind": "realtime",
+      "input": 0.6,
+      "audio_input": 10.0,
+      "image_input": 0.8,
+      "cached_input": 0.06,
+      "cached_input_audio": 0.3,
+      "output": 2.4,
+      "audio_output": 20.0,
+      "author": "OpenAI"
+    },
+    "gpt-realtime": {
+      "kind": "realtime",
+      "input": 4.0,
+      "audio_input": 32.0,
+      "image_input": 5.0,
+      "cached_input": 0.4,
+      "cached_input_audio": 0.4,
+      "output": 16.0,
+      "audio_output": 64.0,
+      "author": "OpenAI"
     }
   },
   "elevenlabs": {

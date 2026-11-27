@@ -199,6 +199,8 @@ export interface CheckpointStanding {
 export interface CheckpointWrite {
   readonly session: SessionRow;
   readonly slice: ChargeRow | null;
+  /** The slice's input transcription, booked beside it at its own model's price (OpenAI, 9e). */
+  readonly transcription?: ChargeRow | null;
   readonly budgets: readonly CheckpointBudget[];
   readonly planMinutes: CheckpointPlanMinutes | null;
   readonly now: number;
@@ -248,7 +250,7 @@ export type LedgerCheckpointWrite = Omit<CheckpointWrite, "slice" | "standing"> 
 export async function writeCheckpoint(db: D1Database, settings: D1Database, input: CheckpointWrite): Promise<CheckpointAnswer> {
   const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, input.session);
   try {
-    const plan = checkpointStatements(db, input, input.slice, false);
+    const plan = checkpointStatements(db, input, input.slice, false, input.transcription ?? null);
     const results = await db.batch(plan.statements);
     return checkpointAnswer(input, input.slice, results.map((result) => result.results[0] as Row), plan.stateAt, standing);
   } catch (error) {
@@ -271,7 +273,8 @@ export function writeCheckpointIn(exec: (statements: readonly LedgerStatement[])
     const [saved, booked] = run(priceReads(BUILDER, input.session.id, input.slice.id));
     ({ slice, duplicate } = sliceToBook(input.slice, input.price, saved, booked));
   }
-  const plan = checkpointStatements(BUILDER, input, slice, duplicate);
+  // The slice's transcription goes with it: a repeated slice books neither.
+  const plan = checkpointStatements(BUILDER, input, slice, duplicate, slice === null ? null : (input.transcription ?? null));
   return checkpointAnswer(input, slice, run(plan.statements), plan.stateAt, input.standing);
 }
 
@@ -323,9 +326,10 @@ export function knownStops(standing: CheckpointStanding | null): StopReason[] {
  */
 function checkpointStatements(
   db: D1Database,
-  input: Omit<CheckpointWrite, "slice">,
+  input: Omit<CheckpointWrite, "slice" | "transcription">,
   slice: ChargeRow | null,
   duplicate: boolean,
+  transcription: ChargeRow | null = null,
 ): { statements: D1PreparedStatement[]; stateAt: number } {
   const { session, now } = input;
   const month = utcMonthDays(now);
@@ -377,24 +381,23 @@ function checkpointStatements(
     // repeated checkpoint. A slice with neither tokens nor connection time to
     // bill (a gap alone) has nothing to price: the sweep would book it at $0
     // and undo its unknown cost.
+    statements.push(unresolvedWork(db, session, slice, now));
+  }
+  if (transcription !== null) {
+    // The slice's input transcription, at its own model's price, written like the slice (OpenAI, 9e).
     statements.push(
-      db
-        .prepare(
-          `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
-           SELECT ?, 'unresolved', ?, ?, 'session', ?, ?, ?, ?, 0, ? WHERE changes() > 0
-           ON CONFLICT(id) DO NOTHING`,
-        )
-        .bind(
-          `unresolved:${slice.id}`,
-          session.accountId,
-          session.appId,
-          session.id,
-          slice.id,
-          JSON.stringify({ providerType: slice.providerType, model: slice.model }),
-          now + UNRESOLVED_FIRST_TRY_MS,
-          now,
-        ),
+      insertChargeWithCostStatement(
+        db,
+        transcription,
+        now,
+        "CASE WHEN (SELECT session_total_nano FROM session WHERE id = ? AND settlement = 'settled') IS NOT NULL THEN 0 ELSE ? END",
+        [session.id, transcription.costNano],
+        { sql: "EXISTS (SELECT 1 FROM session WHERE id = ?)", params: [session.id] },
+      ),
     );
+    if (transcription.priceSource === "unresolved" && (hasTokens(transcription) || billableTime(transcription))) {
+      statements.push(unresolvedWork(db, session, transcription, now));
+    }
   }
   const stateAt = statements.length;
   statements.push(db.prepare("SELECT state FROM session WHERE id = ?").bind(session.id));
@@ -418,11 +421,35 @@ function checkpointStatements(
   return { statements, stateAt };
 }
 
-/** Whether a slice holds connection time that may be billed (`sliceCharge` keeps it as usage). */
+/**
+ * An unpriced charge queued for pricing in the same batch (S17), only when the insert just before it really
+ * wrote it: `changes()` is 0 for a repeated checkpoint.
+ */
+function unresolvedWork(db: D1Database, session: SessionRow, charge: ChargeRow, now: number): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
+       SELECT ?, 'unresolved', ?, ?, 'session', ?, ?, ?, ?, 0, ? WHERE changes() > 0
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(
+      `unresolved:${charge.id}`,
+      session.accountId,
+      session.appId,
+      session.id,
+      charge.id,
+      JSON.stringify({ providerType: charge.providerType, model: charge.model }),
+      now + UNRESOLVED_FIRST_TRY_MS,
+      now,
+    );
+}
+
+/** Whether a slice holds units that may be billed (`sliceCharge` keeps them as usage): connection time, text messages, a transcription's audio. */
 function billableTime(charge: ChargeRow): boolean {
-  const ms = charge.measures.units_session_seconds;
-  const texts = charge.measures.units_text_messages;
-  return (typeof ms === "number" && ms > 0) || (typeof texts === "number" && texts > 0);
+  return ["units_session_seconds", "units_text_messages", "units_audio_seconds"].some((name) => {
+    const count = charge.measures[name];
+    return typeof count === "number" && count > 0;
+  });
 }
 
 /** Whether a charge holds tokens to price. */

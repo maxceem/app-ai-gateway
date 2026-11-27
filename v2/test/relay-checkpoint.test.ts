@@ -484,6 +484,70 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     });
   });
 
+  it("prices an OpenAI answer's audio, image and cached audio each at its own rate (step 9e)", async () => {
+    const openai = { model: "gpt-realtime-2.1-mini", url: "https://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini" };
+    const { text, ticket } = await ticketFor(openai);
+    // As the relay's adapter reads `response.done`: 610 uncached input tokens, 590 cached (190 of them audio).
+    const measures = {
+      input_tokens: 610,
+      cached_input_tokens: 590,
+      input_split: 1,
+      input_audio_tokens: 480,
+      input_image_tokens: 20,
+      cached_input_audio_tokens: 190,
+      output_tokens: 320,
+      output_split: 1,
+      output_audio_tokens: 260,
+    };
+    await checkpointForRelay(env, text, live(slice(ticket, 1, measures)));
+    // Per million: image 20 x 0.80, audio 290 x 10, text 300 x 0.60; cached audio 190 x 0.30, cached text
+    // 400 x 0.06; audio out 260 x 20, text out 60 x 2.40. In all $0.008521.
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 8_521_000, price_source: "list_rate", measured: "complete" }]);
+    expect(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json)).toMatchObject({ cached_input_audio_tokens: 190, input_audio_tokens: 480 });
+  });
+
+  it("books an OpenAI session's input transcription apart, at the transcription model's price; a repeated slice books neither (step 9e)", async () => {
+    const openai = { model: "gpt-realtime-2.1-mini", url: "https://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini" };
+    const { text, ticket } = await ticketFor(openai);
+    const tokens = { input_tokens: 10, output_tokens: 5, transcription_input_tokens: 60, transcription_input_audio_tokens: 55, transcription_output_tokens: 10 };
+    const one = slice(ticket, 1, tokens, { transcriptionModel: "gpt-4o-transcribe" });
+    await checkpointForRelay(env, text, live(one));
+    await checkpointForRelay(env, text, live(one));
+    const rows = await ledger()
+      .prepare("SELECT id, model, cost_nano, price_source, session_ms, input_tokens FROM charge WHERE owner_id = ? ORDER BY id")
+      .bind(ticket.sid)
+      .all()
+      .then((r) => r.results);
+    // The answer at the session's price, with no breakdown so at its highest rates (10 x 10.00 + 5 x 20.00 per
+    // million); the transcription at gpt-4o-transcribe's (60 x 2.50 + 10 x 10.00), with no connection time of its own.
+    expect(rows).toEqual([
+      { id: `${ticket.sid}:slice:1`, model: "gpt-realtime-2.1-mini", cost_nano: 200_000, price_source: "list_rate", session_ms: MINUTE, input_tokens: 10 },
+      { id: `${ticket.sid}:slice:1:transcription`, model: "gpt-4o-transcribe", cost_nano: 250_000, price_source: "list_rate", session_ms: 0, input_tokens: 60 },
+    ]);
+    // A model billed by time: whisper-1 at $0.006 a minute, 3.2 s.
+    await checkpointForRelay(env, text, live(slice(ticket, 2, { transcription_audio_ms: 3_200 }, { transcriptionModel: "whisper-1" })));
+    expect(await booked(`${ticket.sid}:slice:2:transcription`)).toMatchObject({ cost_nano: 320_000, price_source: "list_rate" });
+  });
+
+  it("never books a transcription as free: one with no price is unresolved, and the sweep prices it at its own model's price, not the session's (step 9e)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { connectionId, setRates } = await houseConnection("{}");
+    const { text, ticket } = await ticketFor({ connectionId, model: "gpt-realtime-2.1-mini", url: "https://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini" });
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 10, transcription_input_tokens: 1_000 }, { transcriptionModel: "house-transcribe" })));
+    const id = `${ticket.sid}:slice:1:transcription`;
+    expect(await booked(id)).toMatchObject({ cost_nano: null, price_source: "unresolved" });
+    expect(await queued(id)).toEqual({ kind: "unresolved" });
+    // The session's saved price is gpt-realtime-2.1-mini's: never used for the transcription.
+    expect(await savedPrice(ticket.sid)).not.toBeNull();
+    await setRates(JSON.stringify({ "house-transcribe": { input: 7_000_000_000, output: 7_000_000_000 } }));
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: id, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 7_000_000, priceSource: "customer_rate" },
+    });
+    // A model name a slice may not carry is refused, as any malformed slice.
+    await expect(checkpointForRelay(env, text, live(slice(ticket, 2, { transcription_input_tokens: 1 }, { transcriptionModel: "bad name" })))).rejects.toThrow(ContractRefusal);
+  });
+
   it("never books connection time as $0 when the price can't be read: unresolved and queued, and the sweep prices the seconds (Sol round 1)", async () => {
     // Today's rates can't be read (as when the settings read times out): no price is saved.
     const { connectionId, setRates } = await houseConnection("{not json");

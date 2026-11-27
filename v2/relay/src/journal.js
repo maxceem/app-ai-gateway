@@ -45,10 +45,13 @@ export const JOURNAL_MAX_BYTES = 16 * 1024;
 export const JOURNAL_ALLOW_UNCONFIRMED = true;
 
 /**
- * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number }} Slice
+ * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number, transcriptionModel?: string }} Slice
  * One frozen slice: the usage between two checkpoints, and its connection time.
  * `billedMs`, for a provider billed by time (xAI): the time it bills in this
  * slice, which may differ from the connection time (`freeze`).
+ * `transcriptionModel`: the model of the slice's input transcription
+ * (`transcription_*` measures, OpenAI, 9e), which is booked apart from the
+ * session's own model.
  *
  * @typedef {{
  *   v: number,
@@ -70,6 +73,7 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   clockMs?: number,
  *   audioMs?: number,
  *   billedMs?: number,
+ *   transcriptionModel?: string,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -95,9 +99,13 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * (xAI's `billable_audio_seconds`), and what the slices billed so far. Each
  * slice bills the growth of the larger of the first two (plan 5.2 rule 3).
  *
- * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number }} UsageEvent
+ * `transcriptionModel` is the latest input transcription model (OpenAI, 9e),
+ * kept for the slices after it.
+ *
+ * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number, model?: string }} UsageEvent
  * One usage event, as an adapter read it (`./adapters.js`). `audioSeconds` is a
  * provider's own running total of the audio it bills (xAI's `billable_audio_seconds`).
+ * `model`: an event that is not the session's own model's, OpenAI's input transcription.
  */
 
 /**
@@ -243,6 +251,7 @@ export function addUsage(journal, event, shape, now) {
   journal.seen = seen;
   journal.measures = measures;
   journal.baselines = baselines;
+  if (event.model !== undefined) journal.transcriptionModel = event.model;
   return true;
 }
 
@@ -312,6 +321,10 @@ export function freeze(journal, at, options = {}) {
   if (empty) return null;
   /** @type {Slice} */
   const slice = { seq: journal.nextSeq, measures: journal.measures, sessionMs, gapMs, gaps, from: journal.from, to: at, ...(billedMs === undefined ? {} : { billedMs }) };
+  // Its input transcription is booked at the transcription model's price, so the slice names it.
+  if (journal.transcriptionModel !== undefined && Object.keys(journal.measures).some((name) => name.startsWith("transcription_"))) {
+    slice.transcriptionModel = journal.transcriptionModel;
+  }
   if (billedTotal !== undefined) {
     journal.clockMs = clockMs;
     journal.billedMs = billedTotal;

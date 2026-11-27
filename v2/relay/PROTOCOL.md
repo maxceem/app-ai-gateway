@@ -140,6 +140,22 @@ them, with audio, images and video at their own rates.
   `1000 provider_closed`; if the session's time runs out during a switch, with
   `1000 time_cap`.
 
+### OpenAI Realtime
+
+An OpenAI Realtime session is billed by the tokens of each answer, as OpenAI
+reports them in `response.done`, with audio, images and cached input at their
+own rates.
+
+- **The model is the session's.** It is in the address the relay connects to.
+  A `session.update` that names another `model` is sent on with the session's
+  model instead. Everything else you send goes to OpenAI as it is.
+- **Input transcription is billed apart**, at the transcription model's price:
+  the model OpenAI states in `session.created` or `session.updated`, and the
+  usage in each `conversation.item.input_audio_transcription.completed`.
+- **An answer the session's own end cuts** (its time cap, a stop) reports no
+  usage: its audio is billed from what was forwarded, 20 tokens a second,
+  marked as an estimate. An answer you cancel reports its own usage.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):
