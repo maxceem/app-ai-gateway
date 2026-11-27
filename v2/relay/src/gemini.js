@@ -70,7 +70,7 @@ function durationMs(value) {
 /**
  * @typedef {{
  *   addEventListener(type: "message", listener: (event: { data: string | ArrayBuffer }) => void): void,
- *   addEventListener(type: "close", listener: (event: { code: number }) => void): void,
+ *   addEventListener(type: "close", listener: (event: { code: number, reason?: string }) => void): void,
  *   send(data: string | ArrayBuffer): void,
  *   close(code?: number, reason?: string): void,
  * }} Socket
@@ -140,7 +140,7 @@ export class GeminiUpstream {
   /** @param {Socket} socket */
   attach(socket) {
     socket.addEventListener("message", (event) => this.fromUpstream(socket, event.data));
-    socket.addEventListener("close", (event) => this.upstreamClosed(socket, event.code));
+    socket.addEventListener("close", (event) => this.upstreamClosed(socket, event.code, event.reason));
   }
 
   /**
@@ -291,8 +291,9 @@ export class GeminiUpstream {
    * The current connection, or a swap's new one, closed.
    * @param {Socket} socket
    * @param {number} code
+   * @param {string} [reason] Gemini's own words, cut short for the log
    */
-  upstreamClosed(socket, code) {
+  upstreamClosed(socket, code, reason) {
     if (socket === this.retiring) {
       this.retiring = null;
       this.retired?.();
@@ -311,7 +312,7 @@ export class GeminiUpstream {
     if (socket !== this.socket) return;
     // The live connection closed without warning: resumed, as after `goAway` (T19).
     this.socket = null;
-    this.events.log({ level: "warn", message: "relay_gemini_upstream_closed", code });
+    this.events.log({ level: "warn", message: "relay_gemini_upstream_closed", code, reason: String(reason ?? "").slice(0, 120) });
     this.swap("upstream_closed", false);
   }
 
