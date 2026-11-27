@@ -185,6 +185,13 @@ function assertEffectivePrices(
     );
   }
   if (problem.kind === "too_large") throw new GatewayError(400, "invalid_request", `${where}: a rate is too large once a service mode's factor applies`);
+  if (problem.kind === "keyed_session_rates") {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `${where}: ${problem.operation} sessions are billed by the rates the model states itself; rates by key value (by) can't bill them`,
+    );
+  }
   const named = Object.entries(problem.values).map(([key, value]) => `${key} ${value}`).join(", ");
   throw new GatewayError(
     400,
