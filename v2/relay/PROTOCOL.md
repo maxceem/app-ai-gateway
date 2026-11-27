@@ -102,7 +102,7 @@ When the client's link drops, the session goes on without it, and the
 provider's side stays open:
 
 - **What counts as a drop:** any close but a normal one. A close with `1000` or
-  `1001` ends the session, as before. So does any close from a client that did
+  `1001`, or with no code (`1005`), ends the session, as before. So does any close from a client that did
   not ask for the relay's messages: an official SDK starts a new session.
 - **While the link is down:** the provider's frames are held for the client, in
   order, up to 512 frames or 4 MB (text counts 2 bytes per character). More

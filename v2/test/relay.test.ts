@@ -4,8 +4,8 @@
  * object is created, and the ticket names its object.
  */
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { HEALTH_PATH, SESSION_PATH } from "../relay/src/constants.js";
+import { describe, expect, it, vi } from "vitest";
+import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, SESSION_PATH } from "../relay/src/constants.js";
 import relay, { Session } from "../relay/src/index.js";
 import { MAX_CLIENT_FRAMES_PER_WINDOW, SessionFrames, StartQueue } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
@@ -191,10 +191,12 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect(live.frames.detached).toBe(true);
   });
 
-  it("ends it on a normal close, for an official SDK, and for a protocol whose rule is to end", () => {
+  it("ends it on a deliberate close (1000, 1001, or 1005 with no code), for an official SDK, and for a protocol whose rule is to end", () => {
     for (const options of [
       { relayMessages: true, detached: "hold" as const, code: 1000 },
       { relayMessages: true, detached: "hold" as const, code: 1001 },
+      // A close with no code is deliberate too (Fable, #263 round 1).
+      { relayMessages: true, detached: "hold" as const, code: 1005 },
       { relayMessages: false, detached: "hold" as const, code: 1006 },
       { relayMessages: true, detached: "end" as const, code: 1006 },
     ]) {
@@ -248,7 +250,7 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
   /** A session object whose detached client comes back with the right secret, through `reconnect`. */
   async function comeBack(
     frames: SessionFrames,
-    options: { deadline?: number; secret?: string; whileWaiting?: (core: Record<string, unknown>) => void } = {},
+    options: { deadline?: number; secret?: string | null; whileWaiting?: (core: Record<string, unknown>) => void; closeWhileHashing?: boolean } = {},
   ) {
     const listeners: Record<string, ((event: unknown) => void)[]> = {};
     const sent: unknown[] = [];
@@ -261,14 +263,23 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     } as unknown as WebSocket;
     const session = Object.create(Session.prototype) as Session;
     // A running session: the core still holds its provider call, and nothing is ending.
-    const core: Record<string, unknown> = { call: {}, ending: null, mayReattach: async (secret: unknown) => secret === "right", reattach: () => true };
+    const core: Record<string, unknown> = {
+      call: {},
+      ending: null,
+      mayReattach: async (secret: unknown) => {
+        // The link closes while the secret is hashed.
+        if (options.closeWhileHashing === true) for (const listener of listeners.close ?? []) listener({ code: 1006 });
+        return secret === "right";
+      },
+      reattach: () => true,
+    };
     (session as unknown as { core: unknown }).core = core;
     const live = { client: null, owner: {}, frames, call: null, deadline: options.deadline ?? Date.now() + 60_000, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
     session.live = live as never;
     const coming = session.reconnect(socket);
     // What changes while the link waits for its first message.
     options.whileWaiting?.(core);
-    for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: options.secret ?? "right" }) });
+    if (options.secret !== null) for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: options.secret ?? "right" }) });
     await coming;
     return { live, sent, closes };
   }
@@ -289,22 +300,25 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect((await comeBack(new SessionFrames({ relayMessages: true }), { secret: "wrong" })).closes).toEqual(["4000 session_active"]);
   });
 
-  it("a connection from our SDK while the session is ending is told session_ended at once, before any start (Sol round 4)", async () => {
-    const { ticket } = await signed();
-    const session = Object.create(Session.prototype) as Session;
-    const started: string[] = [];
-    (session as unknown as { core: unknown }).core = { ending: new Promise(() => undefined), call: null, start: async () => void started.push("start") };
-    session.live = null;
-    (session as unknown as { ctx: unknown }).ctx = { waitUntil: () => undefined };
-    const response = await session.fetch(
-      new Request(`https://relay.example${SESSION_PATH}`, { headers: { upgrade: "websocket", authorization: `Bearer ${ticket}`, "x-agw-relay-messages": "1" } }),
-    );
-    expect(response.status).toBe(101);
-    const socket = response.webSocket!;
-    const closed = new Promise<string>((resolve) => socket.addEventListener("close", (event) => resolve(`${event.code} ${event.reason}`)));
-    socket.accept();
-    expect(await closed).toBe("4000 session_ended");
-    expect(started).toEqual([]);
+  it("a link that closes while its secret is hashed never joins: the session holds no dead socket (Fable, #263 round 1)", async () => {
+    const { live, sent } = await comeBack(new SessionFrames({ relayMessages: true }), { closeWhileHashing: true });
+    expect(live.client).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  it("turns away a link that sends nothing within the first-message window (Fable, #263 round 1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { live, closes } = await comeBack(new SessionFrames({ relayMessages: true }), {
+        secret: null,
+        whileWaiting: () => vi.advanceTimersByTime(RECONNECT_FIRST_MESSAGE_MS),
+      });
+      // A live session: the refusal any second connection gets.
+      expect(closes).toEqual(["4000 session_active"]);
+      expect(live.client).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a reconnect keeps the frame-rate window: a new link brings no fresh allowance (Sol round 2)", async () => {
@@ -312,7 +326,6 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     // The old link used up this window's allowance.
     for (let frame = 0; frame < MAX_CLIENT_FRAMES_PER_WINDOW; frame += 1) expect(frames.fromClient("x").kind).toBe("forward");
     const { live } = await comeBack(frames);
-    expect(live.frames).not.toBe(frames);
     expect(live.frames.fromClient("one more")).toEqual({ kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" });
   });
 

@@ -576,7 +576,8 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
-    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    // The session can't come back: the client is told to start a new one (Fable, #263 round 1).
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
     await until(() => s.calls.close.length === 1);
     release({ version: 1 });
     await ending;
@@ -1114,7 +1115,7 @@ describe("a session's close (step 9a part 3)", () => {
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
     await until(() => core.turnWaiter !== null);
-    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
     timer.fire();
     await ending;
     expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
@@ -1170,21 +1171,10 @@ describe("reconnecting to the same session (step 9a part 3)", () => {
     const ending = core.end("heartbeat_timeout");
     await check;
     expect(core.reattach(s.client())).toBe(false);
-    expect(await core.mayReattach(reconnectSecret)).toBe(false);
     waits.splice(0).forEach((resolve) => resolve());
     await ending;
     expect(s.calls.close.map((close) => close.endReason)).toEqual(["heartbeat_timeout"]);
     expect(s.ended.client).toEqual([]);
-  });
-
-  it("refuses the secret once the session's time is over, even before the tick ends it", async () => {
-    const s = setup();
-    const core = s.instance();
-    const client = s.client();
-    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
-    core.detach(client);
-    s.tick(30 * 60_000);
-    expect(await core.mayReattach(reconnectSecret)).toBe(false);
   });
 
   it("a restarted instance holds no provider side, so it takes nobody back: a reconnect there is a new session", async () => {

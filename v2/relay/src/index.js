@@ -147,6 +147,7 @@ export class Session extends DurableObject {
           /** @type {RelayCall} */
           const call = {
             callId,
+            // Every end hangs up through here: held frames go with the call.
             close: (code, reason) => {
               this.dropHeld(call);
               closeQuietly(socket, code, reason);
@@ -163,10 +164,7 @@ export class Session extends DurableObject {
           socket.addEventListener("message", (event) => providerFrame(call, event.data));
           // The provider hung up first: the session ends, and the client is told. A close the
           // relay caused itself, after letting go of this call, is ignored (`providerGone`).
-          socket.addEventListener("close", () => {
-            this.dropHeld(call);
-            void this.core.providerGone(call);
-          });
+          socket.addEventListener("close", () => void this.core.providerGone(call));
           return call;
         },
       },
@@ -191,11 +189,6 @@ export class Session extends DurableObject {
     // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
     server.binaryType = "arraybuffer";
     server.accept();
-    // A session ending here: nobody can join or start it again, so our SDK is told to start a new one.
-    if (relayMessages && this.core.ending !== null) {
-      closeQuietly(server, 4000, "session_ended");
-      return new Response(null, { status: 101, webSocket: client });
-    }
     // A session already running here: only our SDK coming back with its reconnect secret may join it.
     const running = this.live !== null && this.core.call !== null;
     this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
@@ -280,7 +273,7 @@ export class Session extends DurableObject {
 
   /**
    * The session's client closed. Our SDK's link dropping (any close but a
-   * normal one, 1000 or 1001) leaves the session running, so it can come back
+   * deliberate one: 1000, 1001, or 1005 with no code) leaves the session running, so it can come back
    * with its reconnect secret, when the adapter holds frames for it. Anything
    * else ends the session: an official SDK can't come back to the same
    * session, and for it a reconnect is a new session (plan 5.2).
@@ -289,7 +282,7 @@ export class Session extends DurableObject {
    * @param {number} code
    */
   clientClosed(live, owner, code) {
-    const dropped = code !== 1000 && code !== 1001;
+    const dropped = code !== 1000 && code !== 1001 && code !== 1005;
     if (live.relayMessages && dropped && live.adapter.detached === "hold" && this.live === live && this.core.detach(owner)) {
       live.client = null;
       live.frames.detached = true;
@@ -324,6 +317,8 @@ export class Session extends DurableObject {
       arrived();
     };
     socket.addEventListener("message", onMessage);
+    // A link that closes before it is handed over, even while the secret is hashed, never joins.
+    let closed = false;
     const came = await new Promise((resolve) => {
       const timer = setTimeout(() => resolve(false), RECONNECT_FIRST_MESSAGE_MS);
       arrived = () => {
@@ -331,6 +326,7 @@ export class Session extends DurableObject {
         resolve(true);
       };
       socket.addEventListener("close", () => {
+        closed = true;
         clearTimeout(timer);
         resolve(false);
       }, { once: true });
@@ -358,18 +354,11 @@ export class Session extends DurableObject {
     if (gone() || !(await this.core.mayReattach(secret))) return refuse();
     /** @type {import("./start.js").Client} */
     const owner = { close: (code, reason) => closeQuietly(socket, code, reason) };
-    if (gone() || !this.core.reattach(owner)) return refuse();
+    if (closed || gone() || !this.core.reattach(owner)) return refuse();
     const old = live.client;
     live.client = socket;
     live.owner = owner;
-    const previous = live.frames;
-    live.frames = new SessionFrames({ relayMessages: true });
-    // The secret proves the client is there: the next checkpoint says connected (crash table row 20).
-    live.frames.clientSpoke = true;
-    // Only the received-byte counts start again: the frame-rate window goes on, so a new link
-    // never brings a fresh allowance to the same provider session.
-    live.frames.windowStart = previous.windowStart;
-    live.frames.windowFrames = previous.windowFrames;
+    live.frames.reattached();
     this.listen(live, socket, owner);
     handedOver = true;
     socket.removeEventListener("message", onMessage);

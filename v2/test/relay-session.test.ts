@@ -9,7 +9,7 @@
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { RECONNECT_FIRST_MESSAGE_MS, SESSION_PATH } from "../relay/src/constants.js";
+import { SESSION_PATH } from "../relay/src/constants.js";
 import { MAX_CLIENT_FRAME, RELAY_MESSAGES_HEADER } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest, splitKeysOn, testShare } from "./split-keys.ts";
@@ -280,20 +280,4 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     back.socket.close(1000, "done");
   });
 
-  it("turns away a link that sends nothing within the first-message window", { timeout: RECONNECT_FIRST_MESSAGE_MS + 10_000 }, async () => {
-    const ticket = await ticketFor("conn_reconnect_silent");
-    const first = await open(ticket, relayMessages);
-    const started = JSON.parse((await first.received(2))[0]!) as { reconnect_secret: string };
-    first.socket.close(4001, "link lost");
-    await pause(100);
-    const silent = await open(ticket, relayMessages);
-    const openedAt = Date.now();
-    expect(await silent.closing).toBe("4000 session_active");
-    expect(Date.now() - openedAt).toBeGreaterThanOrEqual(RECONNECT_FIRST_MESSAGE_MS - 500);
-    // The session waited on: the right secret still takes it back.
-    const back = await open(ticket, relayMessages);
-    back.socket.send(reconnectWith(started.reconnect_secret));
-    expect(JSON.parse((await back.received(1))[0]!)).toMatchObject({ type: "agw.session.resumed" });
-    back.socket.close(1000, "done");
-  });
 });

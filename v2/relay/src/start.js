@@ -237,17 +237,16 @@ export class SessionCore {
   }
 
   /**
-   * Whether `secret` is this session's reconnect secret, and the session can
-   * take a client back: this instance still holds the provider's side, it is
-   * not ending, and its time is not over.
+   * Whether `secret` is this session's reconnect secret. Only while this
+   * instance holds the provider's side: the hash goes with it. Whether the
+   * session can still take a client back is the caller's check, and `reattach`'s.
    * @param {unknown} secret
    */
   async mayReattach(secret) {
-    if (typeof secret !== "string" || secret === "" || secret.length > 128) return false;
-    if (this.reconnectHash === null || this.call === null || this.ending !== null || this.now() >= this.deadline) return false;
+    if (typeof secret !== "string" || secret === "" || this.reconnectHash === null) return false;
     const encoder = new TextEncoder();
+    const stored = encoder.encode(this.reconnectHash);
     const given = encoder.encode(await hashOf(secret));
-    const stored = encoder.encode(this.reconnectHash ?? "");
     // Both are 64 hex characters; the length check only guards the call, which needs equal sizes.
     // `timingSafeEqual` is the Workers runtime's own, missing from the standard types.
     const subtle = /** @type {SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }} */ (crypto.subtle);
@@ -304,7 +303,9 @@ export class SessionCore {
    */
   async start(ticketText, ticket, client) {
     // Also while an end is in flight: a start never runs into the middle of one.
-    if (this.starting || this.ending !== null) return { ok: false, code: "start_in_flight" };
+    // An end in flight: this session can't start or be joined again, and the client needs a new one.
+    if (this.ending !== null) return { ok: false, code: "session_ended" };
+    if (this.starting) return { ok: false, code: "start_in_flight" };
     // A session already running in this instance is refused at once, before any wait: nothing a
     // second connection's start does (a storage error, say) can then touch the running one.
     if (this.call !== null || (this.owner !== null && this.owner !== undefined && this.owner !== client)) return { ok: false, code: "session_active" };

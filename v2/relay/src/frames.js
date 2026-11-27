@@ -199,6 +199,19 @@ export class SessionFrames {
     return { kind: "drop" };
   }
 
+  /**
+   * Our SDK came back on a new link with its reconnect secret (`./index.js`). The received-byte
+   * counts start again from zero; the rate window and the client hook go on as they were. The
+   * secret proves the client is there, for the next checkpoint (crash table row 20).
+   */
+  reattached() {
+    this.sent = 0;
+    this.marks = [];
+    this.detached = false;
+    this.lastClientAt = this.now();
+    this.clientSpoke = true;
+  }
+
   /** The client's report of what it got so far: the marks it has passed go. @param {number} bytes */
   received(bytes) {
     while (this.marks.length > 0 && /** @type {[number, number]} */ (this.marks[0])[0] <= bytes) this.marks.shift();
