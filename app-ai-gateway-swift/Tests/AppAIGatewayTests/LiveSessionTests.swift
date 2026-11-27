@@ -667,6 +667,43 @@ struct LiveSessionTests {
         await session.close()
     }
 
+    private static func resumed(link: Int) -> String {
+        #"{"type":"agw.session.resumed","deadline":1795000000000,"link":"# + String(link) + "}"
+    }
+
+    @Test
+    func aResumedThatComesLateForALinkTheRelayAlreadyReplacedIsIgnored() async {
+        // The relay took the fresh try first (link 1), then the hung one (link 2),
+        // but the client hears the hung one's answer first.
+        var (session, links, events) = await twoTries()
+        links[1].deliver(Self.resumed(link: 2))
+        #expect(await events.next() == .resumed)
+        links[2].deliver(Self.resumed(link: 1))
+        links[2].end(code: 1000, reason: "reconnected")
+        links[1].deliver("now")
+        #expect(await events.next() == .text("now"))
+        await session.send(text: "out")
+        #expect(await eventually { links[1].sent.contains("out") })
+        #expect(!links[2].sent.contains("out"))
+        await session.close()
+    }
+
+    @Test
+    func aLetGoTrysLateResumedWithALowerNumberIsIgnored() async {
+        // The relay took the hung try first (link 1), then the fresh one (link 2).
+        var (session, links, events) = await twoTries()
+        links[2].deliver(Self.resumed(link: 2))
+        #expect(await events.next() == .resumed)
+        links[1].deliver(Self.resumed(link: 1))
+        links[1].end(code: 1000, reason: "reconnected")
+        links[2].deliver("now")
+        #expect(await events.next() == .text("now"))
+        await session.send(text: "out")
+        #expect(await eventually { links[2].sent.contains("out") })
+        #expect(!links[1].sent.contains("out"))
+        await session.close()
+    }
+
     @Test
     func aSessionLetGoAtItsEndedStillEndsThroughTheNewLink() async {
         let links = Links()

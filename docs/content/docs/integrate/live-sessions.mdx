@@ -98,8 +98,10 @@ From the relay:
 - `{"type":"agw.session.started","reconnect_secret":"…","deadline":…}` once
   the session has started, before any provider message. Keep the secret in
   memory; it brings the app back to this session after a dropped network.
-- `{"type":"agw.session.resumed","deadline":…}` when the app came back to the
-  same session.
+- `{"type":"agw.session.resumed","deadline":…,"link":N}` when the app came
+  back to the same session. `link` counts the times the app came back: if two
+  links both get `resumed`, in either order, the one with the higher `link`
+  is the session's link.
 - `{"type":"agw.heartbeat"}` in answer to each heartbeat.
 
 From the app:
@@ -107,7 +109,8 @@ From the app:
 - `{"type":"agw.heartbeat"}` after 30 s without sending anything else.
 - `{"type":"agw.received","bytes":N}` every few seconds while provider
   messages arrive, and once more after they stop. `N` is the total received
-  since the session started: text counts as its length in UTF-16 units
+  on the current link, since `agw.session.started` or `agw.session.resumed`:
+  text counts as its length in UTF-16 units
   (`String.utf16.count` in Swift), binary as its bytes. The relay's own
   messages don't count.
 - `{"type":"agw.reconnect","secret":"…"}` as the first message on a new link,

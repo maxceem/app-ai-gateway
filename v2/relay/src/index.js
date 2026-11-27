@@ -111,12 +111,15 @@ export default {
  *   adapter: import("./adapters.js").Adapter,
  *   turnOpen: boolean,
  *   turns: number,
+ *   links: number,
  * }} Live
  * The session in this instance. Client frames wait in `queue` while the
  * session starts, then go to the provider in order. `client` is null while our
  * SDK's link is down; the provider's frames then wait in `held` for it to come
  * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`);
  * `turns` counts the answers opened, so a late "done" for an earlier one never closes a newer one.
+ * `links` counts the handoffs accepted: `agw.session.resumed` carries it, so a client that hears from
+ * two links, in either order, knows which one the relay kept.
  */
 
 /**
@@ -393,6 +396,7 @@ export class Session extends DurableObject {
       adapter: adapterFor(undefined),
       turnOpen: false,
       turns: 0,
+      links: 0,
     };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     this.listen(live, client, owner);
@@ -543,7 +547,8 @@ export class Session extends DurableObject {
     // The old link, if it still looks open, is let go: its close changes nothing now.
     if (old !== null) closeQuietly(old, 1000, "reconnected");
     console.log(JSON.stringify({ level: "info", message: "relay_client_reattached", held: live.held.frames.length }));
-    sendQuietly(socket, JSON.stringify({ type: "agw.session.resumed", deadline: live.deadline }));
+    live.links += 1;
+    sendQuietly(socket, JSON.stringify({ type: "agw.session.resumed", deadline: live.deadline, link: live.links }));
     for (const data of live.held.drain()) this.deliver(live, data);
     // What the SDK sent right after its secret goes on, in order, before anything newer.
     for (const data of inbox.slice(1)) this.fromClient(live, data);

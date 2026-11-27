@@ -182,7 +182,7 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     second.socket.send("after");
     const got = await second.received(3);
     // Same session, same deadline.
-    expect(JSON.parse(got[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline });
+    expect(JSON.parse(got[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline, link: 1 });
     expect(got.slice(1)).toEqual(["later:gap", "after"]);
     // The relay's own messages work on the new link.
     second.socket.send(JSON.stringify({ type: "agw.heartbeat" }));
@@ -228,6 +228,9 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     winner.socket.send("only-winner");
     expect((await winner.received(2))[1]).toBe("only-winner");
     expect(loser.messages).toHaveLength(1);
+    // The handoff counter goes up: the one the relay kept carries the higher number, whatever order the client hears them in.
+    const linkOf = (client: typeof winner) => (JSON.parse(client.messages[0]!) as { link: number }).link;
+    expect([linkOf(loser), linkOf(winner)]).toEqual([1, 2]);
     winner.socket.close(1000, "done");
   });
 
@@ -281,7 +284,7 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     const { ticket: expired } = await issued("conn_reconnect_expired", Date.now() - 120_000, sessionId);
     const back = await open(expired, relayMessages);
     back.socket.send(reconnectWith(started.reconnect_secret));
-    expect(JSON.parse((await back.received(1))[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline });
+    expect(JSON.parse((await back.received(1))[0]!)).toEqual({ type: "agw.session.resumed", deadline: started.deadline, link: 1 });
     back.socket.close(1000, "done");
   });
 

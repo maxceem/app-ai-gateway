@@ -106,6 +106,10 @@ public actor LiveSession {
         let writer: Task<Void, Never>
     }
     private var letGo: [Int: Attempt] = [:]
+    /// The highest handoff number the relay sent in `agw.session.resumed`.
+    /// Two links' `resumed` can arrive in either order: the higher number is
+    /// the link the relay kept. An older relay sends none.
+    private var highestLink = 0
     /// Held from a hang-up during a handoff until the new link has ended the
     /// session, so an app that lets the session go at `.ended` doesn't cut it short.
     private var keepAlive: LiveSession?
@@ -311,8 +315,10 @@ public actor LiveSession {
         // frames to the old one, such as the end of an answer: the app gets
         // them, but they don't count in the new link's reports.
         if current != generation, letGo[current] != nil {
-            // Only its taking the session over matters: then it is the session's link.
+            // Only its taking the session over matters: then it is the session's link,
+            // unless the relay already handed the session on to a later one.
             guard case .string(let text) = message, text.hasPrefix(#"{"type":"agw.session.resumed""#) else { return }
+            if let number = Self.linkNumber(text), number <= highestLink { return }
             adopt(current)
         }
         if current != generation {
@@ -354,6 +360,11 @@ public actor LiveSession {
         case "agw.session.resumed":
             // The app hung up during the handoff: this link now owns the session, so it ends it.
             if hangingUp { return finish(code: 1000, reason: "client_closed") }
+            if let number = object["link"] as? Int {
+                // A link the relay already replaced: its `resumed` came late.
+                guard number > highestLink else { return }
+                highestLink = number
+            }
             // Reports count only what came on this link, held frames included.
             received = 0
             reported = 0
@@ -366,6 +377,11 @@ public actor LiveSession {
         default:
             break // the relay's answer to a heartbeat, or a message this release does not know
         }
+    }
+
+    static func linkNumber(_ text: String) -> Int? {
+        let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+        return object?["link"] as? Int
     }
 
     private func becameReady() {

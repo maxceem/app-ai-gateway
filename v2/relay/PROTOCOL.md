@@ -16,8 +16,8 @@ SDK sees only the provider's frames.
 
 - From the relay: `{"type":"agw.session.started","reconnect_secret":…,"deadline":…}`
   once the session started, before any provider frame;
-  `{"type":"agw.session.resumed","deadline":…}` when the client came back to
-  the same session (see "Reconnecting"); and `{"type":"agw.heartbeat"}` in
+  `{"type":"agw.session.resumed","deadline":…,"link":N}` when the client came
+  back to the same session (see "Reconnecting"); and `{"type":"agw.heartbeat"}` in
   answer to the client's heartbeat, at once. Our SDK takes a heartbeat with no
   answer within 10 s as a link that died without a word, and comes back on a
   new link.
@@ -39,8 +39,9 @@ SDK sees only the provider's frames.
   they stop, so nothing received stays unreported for more than a few seconds.
   Otherwise a normal pause between turns leaves the unreported tail more than
   30 s old, and the session ends as `client_too_slow`.
-- **The value:** the total received since the session started: a whole number,
-  never more than the relay sent. A report outside that is ignored.
+- **The value:** the total received on the current link, since
+  `agw.session.started` or `agw.session.resumed`: a whole number, never more
+  than the relay sent on that link. A report outside that is ignored.
 - **What the relay does with them:** a client that falls about 30 s behind what
   the relay sent is ended with close code `4000` and reason `client_too_slow`.
   Tracking starts with the first provider frame, so a client that never reports
@@ -208,7 +209,7 @@ in this message, never in a URL or a header. The relay checks it against the
 hash it stored. Then:
 
 - **It matches:** the relay sends
-  `{"type":"agw.session.resumed","deadline":…}`, then the held frames, then
+  `{"type":"agw.session.resumed","deadline":…,"link":N}`, then the held frames, then
   everything that follows. Frames the client sent right after the secret go to
   the provider, in order. The session is the same one: same journal, same
   slices, same deadline.
@@ -216,6 +217,11 @@ hash it stored. Then:
   data): the new one takes over anyway, and the old one is closed with
   `1000 reconnected`. The same happens if two clients come back: the later one
   wins.
+- **`link`** counts the handoffs the relay accepted for this session: 1 for the
+  first, then 2, and so on. Two links' `resumed` messages can reach the client
+  in either order; the higher `link` is the one the relay kept, and a `resumed`
+  with a lower number than one already seen comes from a link the relay already
+  replaced. An older relay sends no `link`.
 - **Received-byte reports start again from zero** on the new link: count only
   what came after `agw.session.resumed`, held frames included.
 - **Anything else** (a wrong secret, another first message, nothing within
