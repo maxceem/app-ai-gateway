@@ -236,8 +236,13 @@ describe("adapters", () => {
     expect(xai.keepalive?.('{"type":"response.output_audio.delta","delta":"AAAA"}')).toBe(false);
     // `billable_audio_seconds` is read as a check, never as a measure that bills.
     const done = JSON.stringify({ type: "response.done", event_id: "e9", response: { id: "r1", usage: { input_tokens: 0 } }, usage: { output_audio_seconds: 2.9, billable_audio_seconds: 16 } });
-    expect(xai.read(done)).toEqual({ id: "e9", measures: {}, audioSeconds: 16 });
+    expect(xai.read(done)).toEqual({ id: "", measures: {}, audioSeconds: 16 });
     expect(xai.read(JSON.stringify({ type: "response.done", event_id: "e8", usage: { output_audio_seconds: 0.4 } }))).toBeNull();
+    // No event id is needed: only a higher total ever counts.
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 20 } }))).toEqual({ id: "", measures: {}, audioSeconds: 20 });
+    // A figure past a day is nonsense, and ignored: the session bills its clock (Fable, #268 round 1).
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 86_401 } }))).toBeNull();
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 86_400 } }))).toMatchObject({ audioSeconds: 86_400 });
     expect(xai.read('{"type":"ping"}')).toBeNull();
   });
 });

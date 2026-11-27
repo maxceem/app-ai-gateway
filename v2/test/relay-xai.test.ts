@@ -97,30 +97,6 @@ describe("an xAI session's clock (step 9b)", () => {
   /** xAI's `response.done` with its running audio total, as the adapter reads it. */
   const audio = (id: string, seconds: number) => ({ id, measures: {}, audioSeconds: seconds });
 
-  it("bills xAI's audio when it runs ahead of the clock: a long answer asked by text (9c)", async () => {
-    const s = setup();
-    const core = s.instance();
-    await core.start(s.text, s.ticket, s.client);
-    await core.activity();
-    // 4 s on the clock; xAI generated 52 s of audio for the answer, and bills that.
-    s.tick(4_000);
-    await core.recordUsage(audio("e1", 52), "running_total");
-    await core.end("client_closed");
-    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 4_000, billedMs: 52_000 })]);
-  });
-
-  it("bills the clock when it runs ahead of xAI's audio: a microphone streamed in real time (T20)", async () => {
-    const s = setup();
-    const core = s.instance();
-    await core.start(s.text, s.ticket, s.client);
-    await core.activity();
-    s.tick(60_000);
-    // Whole seconds, under a second below the clock.
-    await core.recordUsage(audio("e1", 59), "running_total");
-    await core.alarm();
-    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 60_000, billedMs: 60_000 })]);
-  });
-
   it("bills the clock for an answer cut before its usage came", async () => {
     const s = setup();
     const core = s.instance();

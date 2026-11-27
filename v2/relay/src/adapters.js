@@ -97,6 +97,9 @@ function jsonAdapter(prefix, shape, turns) {
   };
 }
 
+/** The highest audio total xAI can report that is real: a day (the gateway's bound on one slice's billed time). */
+const AUDIO_SECONDS_MAX = 86_400;
+
 /** The start of a JSON frame whose first field is its `type`: the common layout, read without parsing. */
 const TYPE_FIRST = '{"type":"';
 
@@ -184,11 +187,12 @@ const XAI = {
   read(data) {
     if (typeof data !== "string" || typeOf(data) !== "response.done") return null;
     try {
-      const parsed = /** @type {{ event_id?: unknown, usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
+      const parsed = /** @type {{ usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
       const seconds = parsed.usage?.billable_audio_seconds;
-      if (typeof parsed.event_id !== "string" || parsed.event_id === "" || parsed.event_id.length > 128) return null;
-      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
-      return { id: parsed.event_id, measures: {}, audioSeconds: seconds };
+      // A figure past a day is nonsense: ignored, so the session bills its clock and its slices stay
+      // within what the gateway accepts. No event id is needed: only a higher total counts (`markAudio`).
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > AUDIO_SECONDS_MAX) return null;
+      return { id: "", measures: {}, audioSeconds: seconds };
     } catch {
       return null;
     }

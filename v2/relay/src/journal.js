@@ -300,8 +300,14 @@ export function freeze(journal, at, options = {}) {
   // A provider billed at the larger of its clock and its own audio total (xAI): the slice bills the
   // growth of that larger total, so neither is counted twice across slices.
   const clockMs = (journal.clockMs ?? 0) + sessionMs;
-  const billedTotal = journal.billedMs === undefined ? undefined : Math.max(journal.billedMs, clockMs, journal.audioMs ?? 0);
-  const billedMs = billedTotal === undefined || journal.billedMs === undefined ? undefined : billedTotal - journal.billedMs;
+  /** @type {number | undefined} */
+  let billedTotal;
+  /** @type {number | undefined} */
+  let billedMs;
+  if (journal.billedMs !== undefined) {
+    billedTotal = Math.max(journal.billedMs, clockMs, journal.audioMs ?? 0);
+    billedMs = billedTotal - journal.billedMs;
+  }
   const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0 && !(billedMs !== undefined && billedMs > 0);
   if (empty) return null;
   /** @type {Slice} */

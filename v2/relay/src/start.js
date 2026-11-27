@@ -1197,7 +1197,7 @@ export class SessionCore {
         level: "error",
         message: "relay_close_given_up",
         session: this.sessionIdOf(stored),
-        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs })),
+        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs, ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }) })),
       });
       /** @type {Record<string, unknown>} */
       const entries = { closed: true };
