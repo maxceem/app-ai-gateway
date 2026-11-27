@@ -346,6 +346,8 @@ describe("starting a session", () => {
     expect(response.status).toBe(201);
     const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
     expect(adapterFor(payload)).toBe("openai");
+    // A dated snapshot OpenAI supports is priced at its alias's rates (Sol, #270 round 1).
+    expect((await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime-mini-2025-12-15" })).status).toBe(201);
     // A model with no price is refused before any slot is taken, as a call to it is: no session model starts unpriced.
     const unpriced = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime-9" });
     expect(unpriced.status).toBe(400);

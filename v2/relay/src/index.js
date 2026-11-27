@@ -205,7 +205,8 @@ export class Session extends DurableObject {
       // The tick's checks for the session this instance runs: none after a restart.
       liveness: (now) => this.live?.frames.check(now) ?? null,
       proof: () => this.live?.frames.clientSpoke ?? false,
-      turnOpen: () => this.live?.turnOpen ?? this.sideTurnOpen,
+      // An answer in progress, or an input transcription still to come (OpenAI): a closing session waits for both.
+      turnOpen: () => (this.live === null ? this.sideTurnOpen : this.live.turnOpen || this.live.call?.meter?.pending() === true),
     });
     /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
     this.sideTurnOpen = false;
@@ -608,6 +609,8 @@ export class Session extends DurableObject {
     const done = () => {
       if (!current()) return;
       settle();
+      // A transcription still to come keeps a closing session waiting: it tells the core when it lands.
+      if (this.live?.call?.meter?.pending() === true) return;
       this.core.turnDone();
     };
     if (recorded === null) done();
@@ -634,9 +637,14 @@ export class Session extends DurableObject {
     }
     const forwarded = !late && this.core.ending === null && !overflowed;
     // What the call remembers (OpenAI's format and transcription model, the answer's audio), after the frame went out.
-    live.call?.meter?.see(data, forwarded);
+    const transcribed = live.call?.meter?.see(data, forwarded) === true;
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const recorded = this.readUsage(live.adapter, data, live.call?.meter ?? null);
+    // The last transcription still to come landed, with no answer open: a closing session waits no more, once its usage is written.
+    if (transcribed && !live.turnOpen && live.call?.meter?.pending() !== true) {
+      if (recorded === null) this.core.turnDone();
+      else void recorded.then(() => this.core.turnDone());
+    }
     const turn = live.adapter.turn(data);
     // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,
     // which changes nothing, since its "done" comes after its last chunk.

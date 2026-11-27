@@ -45,13 +45,13 @@ export const JOURNAL_MAX_BYTES = 16 * 1024;
 export const JOURNAL_ALLOW_UNCONFIRMED = true;
 
 /**
- * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number, transcriptionModel?: string }} Slice
+ * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number, transcriptions?: Record<string, Record<string, number>> }} Slice
  * One frozen slice: the usage between two checkpoints, and its connection time.
  * `billedMs`, for a provider billed by time (xAI): the time it bills in this
  * slice, which may differ from the connection time (`freeze`).
- * `transcriptionModel`: the model of the slice's input transcription
- * (`transcription_*` measures, OpenAI, 9e), which is booked apart from the
- * session's own model.
+ * `transcriptions`: the slice's input transcriptions (OpenAI, 9e), their
+ * `transcription_*` measures by model, each booked apart from the session's
+ * own model. Transcription usage with no known model stays in `measures`.
  *
  * @typedef {{
  *   v: number,
@@ -73,7 +73,7 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   clockMs?: number,
  *   audioMs?: number,
  *   billedMs?: number,
- *   transcriptionModel?: string,
+ *   transcriptions?: Record<string, Record<string, number>>,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -99,8 +99,9 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * (xAI's `billable_audio_seconds`), and what the slices billed so far. Each
  * slice bills the growth of the larger of the first two (plan 5.2 rule 3).
  *
- * `transcriptionModel` is the latest input transcription model (OpenAI, 9e),
- * kept for the slices after it.
+ * `transcriptions` holds the open usage's input transcriptions by model
+ * (OpenAI, 9e): a session that changes its transcription model mid-slice
+ * keeps each model's usage apart.
  *
  * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number, model?: string }} UsageEvent
  * One usage event, as an adapter read it (`./adapters.js`). `audioSeconds` is a
@@ -233,7 +234,9 @@ export function addUsage(journal, event, shape, now) {
   const digest = digestOf(event.id);
   if (journal.seen.includes(digest)) return false;
   const seen = [...journal.seen, digest].slice(-SEEN_IDS);
-  const measures = { ...journal.measures };
+  // A transcription with its model goes to that model's totals; everything else to the open usage.
+  const byModel = event.model === undefined ? undefined : { ...journal.transcriptions, [event.model]: { ...journal.transcriptions?.[event.model] } };
+  const measures = event.model === undefined ? { ...journal.measures } : /** @type {Record<string, number>} */ (byModel?.[event.model]);
   const baselines = { ...journal.baselines };
   for (const [name, value] of Object.entries(event.measures)) {
     let add = value;
@@ -243,15 +246,16 @@ export function addUsage(journal, event, shape, now) {
     }
     if (add > 0) measures[name] = (measures[name] ?? 0) + add;
   }
-  if (sizeOf({ ...journal, seen, measures, baselines }) > JOURNAL_MAX_BYTES) {
+  const next = byModel === undefined ? { measures } : { transcriptions: byModel };
+  if (sizeOf({ ...journal, seen, baselines, ...next }) > JOURNAL_MAX_BYTES) {
     if (journal.droppedFrom !== undefined) return false;
     journal.droppedFrom = now;
     return true;
   }
   journal.seen = seen;
-  journal.measures = measures;
   journal.baselines = baselines;
-  if (event.model !== undefined) journal.transcriptionModel = event.model;
+  if (byModel === undefined) journal.measures = measures;
+  else journal.transcriptions = byModel;
   return true;
 }
 
@@ -317,14 +321,19 @@ export function freeze(journal, at, options = {}) {
     billedTotal = Math.max(journal.billedMs, clockMs, journal.audioMs ?? 0);
     billedMs = billedTotal - journal.billedMs;
   }
-  const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0 && !(billedMs !== undefined && billedMs > 0);
+  const transcriptions = journal.transcriptions ?? {};
+  const empty =
+    sessionMs === 0 &&
+    gapMs === 0 &&
+    gaps === 0 &&
+    Object.keys(journal.measures).length === 0 &&
+    Object.keys(transcriptions).length === 0 &&
+    !(billedMs !== undefined && billedMs > 0);
   if (empty) return null;
   /** @type {Slice} */
   const slice = { seq: journal.nextSeq, measures: journal.measures, sessionMs, gapMs, gaps, from: journal.from, to: at, ...(billedMs === undefined ? {} : { billedMs }) };
-  // Its input transcription is booked at the transcription model's price, so the slice names it.
-  if (journal.transcriptionModel !== undefined && Object.keys(journal.measures).some((name) => name.startsWith("transcription_"))) {
-    slice.transcriptionModel = journal.transcriptionModel;
-  }
+  // Its input transcriptions, by model: each is booked at its own model's price.
+  if (Object.keys(transcriptions).length > 0) slice.transcriptions = transcriptions;
   if (billedTotal !== undefined) {
     journal.clockMs = clockMs;
     journal.billedMs = billedTotal;
@@ -333,6 +342,7 @@ export function freeze(journal, at, options = {}) {
   journal.nextSeq += 1;
   journal.from = at;
   journal.measures = {};
+  delete journal.transcriptions;
   delete journal.droppedFrom;
   delete journal.detachedMs;
   delete journal.idleMs;

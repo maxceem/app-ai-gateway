@@ -49,6 +49,7 @@ import {
   keyCandidates,
   listPrice,
   priceInMode,
+  PRICE_LIST,
   reportsCost,
   resolvePrice,
   servedModes,
@@ -69,7 +70,12 @@ export type BillingProblem =
   /** A price, but none in the service mode asked for. */
   | "no_mode_price";
 
-export type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind };
+/**
+ * A price, and where it came from. `estimated`: a stand-in for a model that has none (a live session's
+ * model an app lists with no price, billed at the provider's dearest session model: `../relay/session-price.ts`),
+ * so whatever it prices is marked an estimate.
+ */
+export type ResolvedPrice = { readonly price: ModelPrice; readonly source: PriceSourceKind; readonly estimated?: true };
 
 export interface Billing {
   /** The price the operation bills the model at, or null when it has none it can use. */
@@ -315,6 +321,20 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
  */
 function keyedClockSession(operation: OperationDescription, price: ModelPrice): boolean {
   return operation.meter.kind === "wall_clock" && (price.keyed !== undefined || price.keyedAdditions !== undefined);
+}
+
+/**
+ * The provider's dearest session model on our list (`kind: "realtime"`): the one whose rates add up to the
+ * most, by name when two tie. Null when the list has none for the provider.
+ */
+export function dearestSessionPrice(providerType: string): ModelPrice | null {
+  let best: { name: string; total: number; price: ModelPrice } | null = null;
+  for (const [name, price] of PRICE_LIST.get(providerType) ?? []) {
+    if (price.kind !== "realtime" || price.unlistedSince !== undefined) continue;
+    const total = Object.values(price.rates).reduce<number>((sum, rate) => sum + (rate ?? 0), 0);
+    if (best === null || total > best.total || (total === best.total && name < best.name)) best = { name, total, price };
+  }
+  return best?.price ?? null;
 }
 
 /** A live session: the relay reads and prices every one's usage (xAI's clock 9b, Gemini Live 9d, OpenAI Realtime 9e). */

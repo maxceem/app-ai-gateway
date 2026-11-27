@@ -28,14 +28,17 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   perCall?(model: string | null): CallMeter,
  * }} Adapter
  * @typedef {{
- *   see(data: string | ArrayBuffer, forwarded: boolean): void,
+ *   see(data: string | ArrayBuffer, forwarded: boolean): boolean,
+ *   pending(): boolean,
  *   label(event: UsageEvent): UsageEvent,
  *   estimate(): UsageEvent | null,
  *   lock(data: string | ArrayBuffer): string | ArrayBuffer,
  * }} CallMeter
  * `perCall`, for a provider that needs to remember something about one call
  * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
- * after it was forwarded), the model of a usage event that is not the
+ * after it was forwarded; true when it settled a transcription still to come),
+ * whether anything is still to come that a closing session waits for
+ * (`pending`), the model of a usage event that is not the
  * session's own (`label`: input transcription), a cut answer's estimate
  * (`estimate`, the session core's hook) and the model lock on the client's
  * frames (`lock`, before each goes to the provider).
@@ -365,13 +368,12 @@ function countAt(record, ...path) {
  * as the slice's measures. `input_tokens` holds the cached ones;
  * `input_token_details` splits the whole prompt by modality, and its
  * `cached_tokens_details` the cached part.
- * - Input: the cached tokens bill at the cached rate, cached audio at its own
- *   (`cached_input_audio`); audio is counted whole, with its cached share as
- *   that variant. A cached image token is billed as an uncached one: the
- *   price list has no cached image rate, and a guess must bill high.
+ * - Input: the cached tokens bill at the cached rate; cached audio and cached
+ *   images at their own (`cached_input_audio`, `cached_input_image`). Audio
+ *   and images are counted whole, with their cached shares as those variants.
  * - Output: audio at its own rate, the rest (text, reasoning) at the text rate.
- * - A side with no breakdown is not split, so it bills at the model's highest
- *   rate.
+ * - Tokens no breakdown covers, a side with none or the rest of one, are
+ *   `unknown`: billed at the model's highest rate, never as text (Sol, #270).
  * @param {Record<string, unknown>} usage
  * @returns {Record<string, number>}
  */
@@ -379,21 +381,22 @@ export function openAiMeasures(usage) {
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
   const details = usage.input_token_details;
-  const cachedImage = countAt(details, "cached_tokens_details", "image_tokens");
-  const cached = Math.min(input, Math.max(0, countAt(details, "cached_tokens") - cachedImage));
+  const cached = Math.min(input, countAt(details, "cached_tokens"));
   /** @type {Record<string, number>} */
-  const measures = { input_tokens: input - cached, output_tokens: output, cached_input_tokens: cached };
-  if (typeof details === "object" && details !== null) {
-    measures.input_split = 1;
-    measures.input_audio_tokens = countAt(details, "audio_tokens");
-    measures.input_image_tokens = countAt(details, "image_tokens");
-    measures.cached_input_audio_tokens = Math.min(cached, countAt(details, "cached_tokens_details", "audio_tokens"));
-  }
+  const measures = { input_tokens: input - cached, output_tokens: output, cached_input_tokens: cached, input_split: 1, output_split: 1 };
+  const audio = countAt(details, "audio_tokens");
+  const image = countAt(details, "image_tokens");
+  measures.input_audio_tokens = audio;
+  measures.input_image_tokens = image;
+  measures.cached_input_audio_tokens = Math.min(cached, countAt(details, "cached_tokens_details", "audio_tokens"));
+  measures.cached_input_image_tokens = Math.min(cached - measures.cached_input_audio_tokens, countAt(details, "cached_tokens_details", "image_tokens"));
+  // What the split doesn't account for, of the uncached input: billed at the highest rate.
+  const accounted = countAt(details, "text_tokens") + audio + image;
+  measures.input_unknown_tokens = Math.max(0, Math.min(input - cached, input - accounted));
   const out = usage.output_token_details;
-  if (typeof out === "object" && out !== null) {
-    measures.output_split = 1;
-    measures.output_audio_tokens = countAt(out, "audio_tokens");
-  }
+  const outAudio = countAt(out, "audio_tokens");
+  measures.output_audio_tokens = outAudio;
+  measures.output_unknown_tokens = Math.max(0, output - countAt(out, "text_tokens") - outAudio);
   for (const [name, value] of Object.entries(measures)) if (value === 0 && !name.endsWith("_split")) delete measures[name];
   return measures;
 }
@@ -499,11 +502,21 @@ function transcriptionModel(session) {
   return typeof model === "string" && model !== "" && model.length <= 128 ? model : null;
 }
 
+/** How many answers or transcriptions a call remembers at once: far above what one session has open. */
+const OPENAI_OPEN_MAX = 64;
+/** An audio delta's answer, read from its start: OpenAI sends `response_id` near the front. */
+const RESPONSE_ID = /"response_id":"([^"]{1,128})"/u;
+
 /**
- * One OpenAI call's memory (`CallMeter`): its output audio format and its
- * input transcription model, from OpenAI's own `session.created` and
- * `session.updated`, and the answer in progress, for its estimate if the
- * session's own end cuts it.
+ * One OpenAI call's memory (`CallMeter`), from OpenAI's own events:
+ * - its output audio format and its input transcription model
+ *   (`session.created`, `session.updated`);
+ * - each audio item's transcription model, taken when OpenAI commits the item
+ *   (`input_audio_buffer.committed`), so a later model change never moves it;
+ *   and the transcriptions still to come, which a closing session waits for;
+ * - each answer still open, by its `response.id`, with its audio forwarded, for
+ *   its estimate if the session's own end cuts it. An out-of-band answer
+ *   finishing never clears another's (Sol, #270).
  * @param {string | null} model the session's locked model
  * @returns {CallMeter}
  */
@@ -512,38 +525,65 @@ function openAiCall(model) {
   let format = "pcm";
   /** @type {string | null} */
   let transcribedBy = null;
-  let answering = false;
-  let chars = 0;
+  /** @type {Map<string, number>} Each open answer's audio characters forwarded. */
+  const answers = new Map();
+  /** @type {Map<string, string | null>} Each committed audio item whose transcription is still to come, and its model. */
+  const pending = new Map();
+  /** @type {string | null | undefined} The model of the transcription the frame being read carries. */
+  let current;
+  /** @param {Map<string, unknown>} map @param {string} key @param {any} value */
+  const remember = (map, key, value) => {
+    if (!map.has(key) && map.size >= OPENAI_OPEN_MAX) map.delete(map.keys().next().value ?? "");
+    map.set(key, value);
+  };
   return {
     see(data, forwarded) {
-      if (typeof data !== "string") return;
+      current = undefined;
+      if (typeof data !== "string") return false;
       const type = typeOf(data);
+      if (type !== null && OPENAI_AUDIO_DELTAS.has(type)) {
+        // Only audio that reached the client, or waits for it, is estimated if the answer is cut.
+        const id = RESPONSE_ID.exec(data.slice(0, 256))?.[1] ?? "";
+        if (forwarded && answers.has(id)) answers.set(id, (answers.get(id) ?? 0) + data.length);
+        return false;
+      }
+      if (type === null || !OPENAI_SEEN.has(type)) return false;
+      const frame = /** @type {Record<string, any> | null} */ (parsed(data));
+      if (frame === null) return false;
       if (type === "session.created" || type === "session.updated") {
-        const session = /** @type {{ session?: Record<string, any> } | null} */ (parsed(data))?.session;
-        if (typeof session !== "object" || session === null) return;
+        const session = frame.session;
+        if (typeof session !== "object" || session === null) return false;
         format = outputFormat(session) ?? format;
         const named = transcriptionModel(session);
         if (named !== undefined) transcribedBy = named;
-      } else if (type === "response.created") {
-        answering = true;
-        chars = 0;
-      } else if (type === "response.done") {
-        answering = false;
-        chars = 0;
-      } else if (answering && forwarded && type !== null && OPENAI_AUDIO_DELTAS.has(type)) {
-        // Only audio that reached the client, or waits for it, is estimated if the answer is cut.
-        chars += data.length;
+      } else if (type === "response.created" || type === "response.done") {
+        const id = typeof frame.response?.id === "string" ? frame.response.id : "";
+        if (type === "response.created") remember(answers, id, 0);
+        else answers.delete(id);
+      } else if (type === "input_audio_buffer.committed") {
+        if (transcribedBy !== null && typeof frame.item_id === "string") remember(pending, frame.item_id, transcribedBy);
+      } else {
+        // A transcription completed or failed: it is no longer waited for, and its model is the one it was committed with.
+        const item = typeof frame.item_id === "string" ? frame.item_id : "";
+        current = pending.has(item) ? pending.get(item) : transcribedBy;
+        return pending.delete(item);
       }
+      return false;
+    },
+    pending() {
+      return pending.size > 0;
     },
     label(event) {
+      const model = current === undefined ? transcribedBy : current;
       const transcription = Object.keys(event.measures).some((name) => name.startsWith("transcription_"));
-      return transcription && transcribedBy !== null ? { ...event, model: transcribedBy } : event;
+      return transcription && model !== null ? { ...event, model } : event;
     },
     estimate() {
-      if (!answering) return null;
+      if (answers.size === 0) return null;
+      let chars = 0;
+      for (const count of answers.values()) chars += count;
+      answers.clear();
       const tokens = Math.ceil(chars / OPENAI_CHARS_PER_TOKEN[format]);
-      answering = false;
-      chars = 0;
       if (tokens === 0) return null;
       return { id: crypto.randomUUID(), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } };
     },
@@ -558,6 +598,17 @@ function openAiCall(model) {
     },
   };
 }
+
+/** The frames an OpenAI call's memory parses: few and small, never an audio delta. */
+const OPENAI_SEEN = new Set([
+  "session.created",
+  "session.updated",
+  "response.created",
+  "response.done",
+  "input_audio_buffer.committed",
+  "conversation.item.input_audio_transcription.completed",
+  "conversation.item.input_audio_transcription.failed",
+]);
 
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };

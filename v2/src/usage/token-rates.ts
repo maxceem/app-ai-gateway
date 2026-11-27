@@ -21,13 +21,18 @@ export type SplitBucket = "cached_input" | "cache_write";
 
 export interface Variant {
   readonly bucket: SplitBucket;
-  readonly name: "audio" | "1h" | "12h";
+  readonly name: "audio" | "image" | "1h" | "12h";
   /** The rate field: `<bucket>_<name>`. */
-  readonly field: "cached_input_audio" | "cache_write_1h" | "cache_write_12h";
+  readonly field: "cached_input_audio" | "cached_input_image" | "cache_write_1h" | "cache_write_12h";
   /** Paths from a response's `usage` object where the count may be. The first present wins. */
   readonly reportedAt: readonly (readonly string[])[];
   /** A variant that is one modality's share of the cache. */
   readonly modality?: Modality;
+  /**
+   * The rate a price without this variant's own bills it at, before the bucket's: for cached image
+   * tokens, the uncached image rate, so a price with no cached image rate never bills them as cached text.
+   */
+  readonly fallback?: "image_input";
 }
 
 /** Every variant, in billing order within its bucket. */
@@ -42,6 +47,16 @@ export const VARIANTS: readonly Variant[] = [
       ["input_tokens_details", "audio_cached_tokens"],
     ],
     modality: "audio",
+  },
+  {
+    // OpenAI Realtime (9e): cached image tokens bill at their own cached rate. A price without one
+    // bills them at its uncached image rate (`fallback`), never at the cached text rate.
+    bucket: "cached_input",
+    name: "image",
+    field: "cached_input_image",
+    reportedAt: [],
+    modality: "image",
+    fallback: "image_input",
   },
   {
     // Anthropic, and Moonshot's Messages API: a write kept for an hour bills
@@ -107,6 +122,9 @@ export function modalityRate(rates: Rates, field: ModalityRate, longContext: boo
 }
 
 /** A variant's rate: its long rate in long context, then its own, then its bucket's. */
-export function variantRate(rates: Rates, variant: Pick<Variant, "field">, longContext: boolean, bucketRate: number): number {
-  return (longContext ? rates[`long_${variant.field}`] : undefined) ?? rates[variant.field] ?? bucketRate;
+export function variantRate(rates: Rates, variant: Pick<Variant, "field" | "fallback">, longContext: boolean, bucketRate: number): number {
+  const own = (longContext ? rates[`long_${variant.field}`] : undefined) ?? rates[variant.field];
+  if (own !== undefined) return own;
+  const fallback = variant.fallback === undefined ? undefined : ((longContext ? rates[`long_${variant.fallback}`] : undefined) ?? rates[variant.fallback]);
+  return fallback ?? bucketRate;
 }

@@ -40,21 +40,35 @@ const session = (fields: Record<string, unknown>) => JSON.stringify({ type: "ses
 const delta = (chars: number) => JSON.stringify({ type: "response.output_audio.delta", event_id: "event_d", response_id: "resp_1", delta: "A".repeat(chars) });
 
 describe("OpenAI Realtime's adapter (step 9e)", () => {
-  it("reads an answer's usage from response.done: cached at the cached rate, audio whole with its cached share apart, a cached image as uncached", () => {
+  it("reads an answer's usage from response.done: cached at the cached rate, audio and images whole with their cached shares apart", () => {
     expect(openAiMeasures(USAGE)).toEqual({
-      // 600 cached, of which 10 image tokens are billed as uncached: 590 at the cached rate.
-      input_tokens: 610,
-      cached_input_tokens: 590,
+      input_tokens: 600,
+      cached_input_tokens: 600,
       input_split: 1,
       input_audio_tokens: 480,
       input_image_tokens: 20,
       cached_input_audio_tokens: 190,
+      cached_input_image_tokens: 10,
       output_tokens: 320,
       output_split: 1,
       output_audio_tokens: 260,
     });
-    // A side with no breakdown is not split: it bills at the model's highest rate.
-    expect(openAiMeasures({ input_tokens: 50, output_tokens: 7 })).toEqual({ input_tokens: 50, output_tokens: 7 });
+  });
+
+  it("records tokens no breakdown covers as unknown, so they bill at the highest rate even beside an answer that was broken down (Sol, #270 round 1)", () => {
+    // No breakdown at all: every token is unknown.
+    expect(openAiMeasures({ input_tokens: 50, output_tokens: 7 })).toEqual({ input_tokens: 50, input_split: 1, input_unknown_tokens: 50, output_tokens: 7, output_split: 1, output_unknown_tokens: 7 });
+    // A breakdown that covers only part: the rest is unknown.
+    expect(openAiMeasures({ input_tokens: 100, output_tokens: 10, input_token_details: { text_tokens: 60 }, output_token_details: { audio_tokens: 4 } })).toMatchObject({
+      input_unknown_tokens: 40,
+      output_audio_tokens: 4,
+      output_unknown_tokens: 6,
+    });
+    // Two answers in one slice, one broken down and one not: the second's tokens stay unknown, never text.
+    const journal = newJournal(0);
+    addUsage(journal, { id: "r1", measures: openAiMeasures(USAGE) }, "per_turn", 1);
+    addUsage(journal, { id: "r2", measures: openAiMeasures({ input_tokens: 50, output_tokens: 7 }) }, "per_turn", 2);
+    expect(freeze(journal, 3)?.measures).toMatchObject({ input_tokens: 650, input_unknown_tokens: 50, output_tokens: 327, output_unknown_tokens: 7, output_audio_tokens: 260 });
   });
 
   it("reads the usage inside the frame that ends the answer, keyed by the response's id, and parses no audio delta", () => {
@@ -133,14 +147,49 @@ describe("an OpenAI call's memory (step 9e)", () => {
     for (const frame of untouched) expect(call.lock(frame)).toBe(frame);
   });
 
-  it("puts the transcription's model on the slice that carries its usage, and keeps it for the slices after", () => {
+  it("keeps each transcription model's usage apart in the slice: a switch mid-slice never mixes them (Sol, #270 round 1)", () => {
     const journal = newJournal(0);
     addUsage(journal, { id: "r1", measures: { input_tokens: 10 } }, "per_turn", 1);
-    expect(freeze(journal, 1_000)).not.toHaveProperty("transcriptionModel");
-    addUsage(journal, { id: "t1", measures: { transcription_input_tokens: 10 }, model: "gpt-4o-mini-transcribe" }, "per_turn", 1_500);
-    expect(freeze(journal, 2_000)).toMatchObject({ measures: { transcription_input_tokens: 10 }, transcriptionModel: "gpt-4o-mini-transcribe" });
-    addUsage(journal, { id: "t2", measures: { transcription_audio_ms: 900 } }, "per_turn", 2_500);
-    expect(freeze(journal, 3_000)).toMatchObject({ transcriptionModel: "gpt-4o-mini-transcribe" });
+    expect(freeze(journal, 1_000)).not.toHaveProperty("transcriptions");
+    addUsage(journal, { id: "t1", measures: { transcription_audio_ms: 2_000 }, model: "whisper-1" }, "per_turn", 1_500);
+    addUsage(journal, { id: "t2", measures: { transcription_input_tokens: 10 }, model: "gpt-4o-mini-transcribe" }, "per_turn", 1_600);
+    addUsage(journal, { id: "t3", measures: { transcription_input_tokens: 5 }, model: "gpt-4o-mini-transcribe" }, "per_turn", 1_700);
+    expect(freeze(journal, 2_000)).toMatchObject({
+      measures: {},
+      transcriptions: { "whisper-1": { transcription_audio_ms: 2_000 }, "gpt-4o-mini-transcribe": { transcription_input_tokens: 15 } },
+    });
+    // The next slice starts with none.
+    addUsage(journal, { id: "r2", measures: { input_tokens: 1 } }, "per_turn", 2_500);
+    expect(freeze(journal, 3_000)).not.toHaveProperty("transcriptions");
+  });
+
+  it("takes a transcription's model when OpenAI commits its audio: a model change after the commit never moves it (Sol, #270 round 1)", () => {
+    const call = meter();
+    call.see(session({ audio: { input: { transcription: { model: "whisper-1" } } } }), true);
+    call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e1", item_id: "item_1" }), true);
+    expect(call.pending()).toBe(true);
+    // The app switches models before the first item's transcription comes.
+    call.see(session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } } }), true);
+    call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e2", item_id: "item_2" }), true);
+    const event = { id: "t", measures: { transcription_audio_ms: 1_000 } };
+    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1" }), true)).toBe(true);
+    expect(call.label(event)).toMatchObject({ model: "whisper-1" });
+    expect(call.pending()).toBe(true);
+    // A failed transcription is no longer waited for either.
+    expect(call.see(JSON.stringify({ type: "conversation.item.input_audio_transcription.failed", event_id: "t2", item_id: "item_2" }), true)).toBe(true);
+    expect(call.pending()).toBe(false);
+  });
+
+  it("keeps each open answer's audio apart: an out-of-band answer finishing never clears the voice answer's estimate (Sol, #270 round 1)", () => {
+    const call = meter();
+    call.see('{"type":"response.created","event_id":"e1","response":{"id":"resp_voice"}}', true);
+    call.see('{"type":"response.created","event_id":"e2","response":{"id":"resp_side","conversation_id":null}}', true);
+    call.see(JSON.stringify({ type: "response.output_audio.delta", event_id: "d1", response_id: "resp_voice", delta: "A".repeat(64_000) }), true);
+    call.see(JSON.stringify({ type: "response.output_audio.delta", event_id: "d2", response_id: "resp_side", delta: "A".repeat(32_000) }), true);
+    // The side answer finishes and reports its own usage.
+    call.see(done("resp_side", { input_tokens: 5, output_tokens: 5 }), true);
+    const voice = JSON.stringify({ type: "response.output_audio.delta", event_id: "d1", response_id: "resp_voice", delta: "A".repeat(64_000) }).length;
+    expect(call.estimate()?.measures.output_audio_tokens).toBe(Math.ceil(voice / 3_200));
   });
 });
 
@@ -194,6 +243,57 @@ describe("the session object with an OpenAI call (step 9e)", () => {
     ]);
     expect(told).toEqual(["done"]);
     expect(live.turnOpen).toBe(false);
+  });
+});
+
+describe("a transcription still to come when an OpenAI session closes (Sol, #270 round 1)", () => {
+  it("the answer's end does not release the closing wait while a transcription is still to come; its arrival does", async () => {
+    const told: string[] = [];
+    const core = { idle: false, ending: null, call: {}, recordUsage: async () => void told.push("usage"), turnDone: () => void told.push("done") };
+    const object = Object.create(Session.prototype) as Session;
+    (object as unknown as { core: unknown }).core = core;
+    const call = { send: () => undefined, meter: meter("gpt-realtime-2.1") };
+    const live = { client: { send: () => undefined }, deadline: Infinity, call, adapter: OPENAI, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0 };
+    (object as unknown as { live: unknown }).live = live;
+    object.toClient(live as never, session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } } }));
+    object.toClient(live as never, JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e", item_id: "item_1" }));
+    object.toClient(live as never, '{"type":"response.created","event_id":"e","response":{"id":"resp_1"}}');
+    object.toClient(live as never, done("resp_1", USAGE));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    expect(told).toEqual(["usage"]);
+    object.toClient(live as never, JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1", usage: { type: "tokens", input_tokens: 9, output_tokens: 2 } }));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // real-timer: lets the promise chain run, no time passes
+    expect(told).toEqual(["usage", "usage", "done"]);
+  });
+
+  it("a transcription still to come at the wait's cutoff marks the final slice partial: unknown cost, never free", async () => {
+    let now = 1_000_000;
+    const slices: { gaps: number }[] = [];
+    const call = meter("gpt-realtime-2.1");
+    call.see(session({ audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } } }), true);
+    const core = new SessionCore({
+      store: new MemoryStore(),
+      now: () => now,
+      log: () => undefined,
+      wait: async () => undefined,
+      vault: { sessionKey: async () => ({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" }) as never },
+      main: {
+        open: async () => ({ deadline: now + 30 * 60_000, mode: "relayed", operation: "openai.realtime", checkpointIntervalMs: 60_000, version: 2, adapter: "openai", model: "gpt-realtime-2.1" }) as never,
+        checkpoint: async (_ticket: string, input: { slice: { gaps: number } | null }) => {
+          if (input.slice !== null) slices.push(structuredClone(input.slice));
+          return { decision: "continue", reasons: [], written: true } as never;
+        },
+        close: async () => ({ version: 2 }),
+      },
+      provider: { connect: async () => ({ callId: null, close: () => undefined, estimate: () => call.estimate() }) },
+      turnOpen: () => call.pending(),
+    });
+    const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.realtime", model: "gpt-realtime-2.1" });
+    await core.start(text, ticket, { close: () => undefined });
+    call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "e", item_id: "item_1" }), true);
+    now += 5_000;
+    await core.end("client_closed");
+    expect(slices.at(-1)?.gaps).toBeGreaterThan(0);
   });
 });
 

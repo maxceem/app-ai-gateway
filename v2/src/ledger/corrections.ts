@@ -361,7 +361,7 @@ export async function priceUnresolvedCharge(
   const usageAt = (price: ResolvedPrice) => (original.ownerType === "session" ? sliceUsage(stored.usage, price.price) : stored.usage);
   const priceWith = (price: ResolvedPrice) => {
     try {
-      return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt);
+      return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt || price.estimated === true);
     } catch {
       return null;
     }

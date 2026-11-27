@@ -294,7 +294,7 @@ export interface CacheWriteKeptFor {
 export interface UsageHeader {
   readonly header: string;
   readonly bucket: "cached_input" | "cache_write";
-  readonly name: "audio" | "1h" | "12h";
+  readonly name: "audio" | "image" | "1h" | "12h";
 }
 
 /**

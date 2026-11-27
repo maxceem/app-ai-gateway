@@ -199,8 +199,8 @@ export interface CheckpointStanding {
 export interface CheckpointWrite {
   readonly session: SessionRow;
   readonly slice: ChargeRow | null;
-  /** The slice's input transcription, booked beside it at its own model's price (OpenAI, 9e). */
-  readonly transcription?: ChargeRow | null;
+  /** The slice's input transcriptions, booked beside it, each at its own model's price (OpenAI, 9e). */
+  readonly transcriptions?: readonly ChargeRow[];
   readonly budgets: readonly CheckpointBudget[];
   readonly planMinutes: CheckpointPlanMinutes | null;
   readonly now: number;
@@ -250,7 +250,7 @@ export type LedgerCheckpointWrite = Omit<CheckpointWrite, "slice" | "standing"> 
 export async function writeCheckpoint(db: D1Database, settings: D1Database, input: CheckpointWrite): Promise<CheckpointAnswer> {
   const standing = input.standing !== undefined ? input.standing : await checkpointStanding(settings, input.session);
   try {
-    const plan = checkpointStatements(db, input, input.slice, false, input.transcription ?? null);
+    const plan = checkpointStatements(db, input, input.slice, false, input.transcriptions ?? []);
     const results = await db.batch(plan.statements);
     return checkpointAnswer(input, input.slice, results.map((result) => result.results[0] as Row), plan.stateAt, standing);
   } catch (error) {
@@ -273,8 +273,8 @@ export function writeCheckpointIn(exec: (statements: readonly LedgerStatement[])
     const [saved, booked] = run(priceReads(BUILDER, input.session.id, input.slice.id));
     ({ slice, duplicate } = sliceToBook(input.slice, input.price, saved, booked));
   }
-  // The slice's transcription goes with it: a repeated slice books neither.
-  const plan = checkpointStatements(BUILDER, input, slice, duplicate, slice === null ? null : (input.transcription ?? null));
+  // The slice's transcriptions go with it: a repeated slice books none of them.
+  const plan = checkpointStatements(BUILDER, input, slice, duplicate, slice === null ? [] : (input.transcriptions ?? []));
   return checkpointAnswer(input, slice, run(plan.statements), plan.stateAt, input.standing);
 }
 
@@ -326,10 +326,10 @@ export function knownStops(standing: CheckpointStanding | null): StopReason[] {
  */
 function checkpointStatements(
   db: D1Database,
-  input: Omit<CheckpointWrite, "slice" | "transcription">,
+  input: Omit<CheckpointWrite, "slice" | "transcriptions">,
   slice: ChargeRow | null,
   duplicate: boolean,
-  transcription: ChargeRow | null = null,
+  transcriptions: readonly ChargeRow[] = [],
 ): { statements: D1PreparedStatement[]; stateAt: number } {
   const { session, now } = input;
   const month = utcMonthDays(now);
@@ -383,8 +383,8 @@ function checkpointStatements(
     // and undo its unknown cost.
     statements.push(unresolvedWork(db, session, slice, now));
   }
-  if (transcription !== null) {
-    // The slice's input transcription, at its own model's price, written like the slice (OpenAI, 9e).
+  for (const transcription of transcriptions) {
+    // The slice's input transcriptions, each at its own model's price, written like the slice (OpenAI, 9e).
     statements.push(
       insertChargeWithCostStatement(
         db,
