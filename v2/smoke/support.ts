@@ -306,6 +306,8 @@ export async function exchangeFrames(
   count: number,
   headers: Record<string, string> = {},
   closeCode = 1000,
+  /** How long to keep the link open once the frames came, before closing it. */
+  holdMs = 0,
 ): Promise<(string | Uint8Array)[]> {
   let socket: WebSocket;
   try {
@@ -331,6 +333,7 @@ export async function exchangeFrames(
     socket.addEventListener("error", () => resolve("error"));
     socket.addEventListener("close", () => resolve(received.length === count ? "ok" : "error"));
   }).finally(() => clearTimeout(timer));
+  if (done === "ok" && holdMs > 0) await new Promise((resolve) => setTimeout(resolve, holdMs));
   socket.close(closeCode, "done");
   if (done === "timeout") stop("the WebSocket answered too few frames in time");
   if (done === "error") stop("the WebSocket failed or closed early");

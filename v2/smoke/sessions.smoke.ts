@@ -195,15 +195,17 @@ test("an xAI voice session is billed by its clock from the first audio, plus eac
     JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } }),
     JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }),
   ];
-  // The mock's first event, then its echo of each frame.
-  await exchangeFrames("/v2/relay/session", relay, frames, 4, { authorization: `Bearer ${String(body?.ticket)}` });
+  // The mock's first event, then its echo of each frame. The link stays open a second after, so the
+  // session has time on its clock: a deployed object's clock moves only between its events.
+  await exchangeFrames("/v2/relay/session", relay, frames, 4, { authorization: `Bearer ${String(body?.ticket)}` }, 1000, 1_000);
   type Charge = { cost_nano: number | null; price_source: string; unit: string | null; session_ms: number | null };
   let charges: Charge[] = [];
   for (let tries = 0; tries < 30; tries += 1) {
     const listed = await admin("GET", `/v2/admin/apps/${xai.app}/charges?owner=${encodeURIComponent(sessionId)}`);
     same(listed.status, 200, "listing the xAI session's charges");
     charges = (listed.body?.charges ?? []) as Charge[];
-    if (charges.length > 0) break;
+    // The first checkpoint may book the text message alone; the close books the time after it.
+    if (charges.some((charge) => (charge.session_ms ?? 0) > 0)) break;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   check(charges.length > 0, "the xAI session's usage was not booked");
