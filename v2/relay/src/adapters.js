@@ -913,6 +913,8 @@ const OPENAI_TRANSCRIPTION_ENDS = new Set([
  * - Pronunciation dictionaries may change the billed characters (as on a call, `inDoubtWhen`): once a
  *   frame names one, every later character is an estimate too, and the slice is priced as one.
  * - Its answers (audio, `isFinal`) are never read: nothing in them is billed.
+ * - A client's own credentials in a message (the first message may carry `xi-api-key` or `authorization`)
+ *   are removed before it goes on: the session's key is the only one (`withoutCredentials`).
  * @type {Adapter}
  */
 const ELEVENLABS_TTS = {
@@ -920,6 +922,16 @@ const ELEVENLABS_TTS = {
   detached: "hold",
   read: () => null,
   turn: () => null,
+  // Nothing to wait for or estimate: only the lock, on the client's messages.
+  perCall: () => ({
+    see: () => null,
+    settled: () => undefined,
+    pending: () => false,
+    unfinished: () => false,
+    label: (event) => event,
+    estimate: () => null,
+    lock: withoutCredentials,
+  }),
   client(data, state = {}) {
     if (typeof data !== "string") return null;
     const frame = parsed(data);
@@ -935,6 +947,27 @@ const ELEVENLABS_TTS = {
     return { counts };
   },
 };
+
+/**
+ * A field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`, `xi_api_key`,
+ * `authorization`, `single_use_token`). The gateway strips the same names from a session's query
+ * (`CREDENTIAL_FIELD` in `src/relay/start-session.ts`; a test keeps them the same).
+ */
+export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+
+/**
+ * A client's JSON message with its top-level credential fields removed (`CREDENTIAL_FIELD`), written again
+ * whole so a repeated key can't be read another way; any other message as it is. Its text is parsed, as the
+ * provider reads it, so an escaped name is caught too.
+ * @param {string | ArrayBuffer} data
+ * @returns {string | ArrayBuffer}
+ */
+export function withoutCredentials(data) {
+  if (typeof data !== "string") return data;
+  const frame = parsed(data);
+  if (!isObject(frame) || !Object.keys(frame).some((name) => CREDENTIAL_FIELD.test(name))) return data;
+  return JSON.stringify(Object.fromEntries(Object.entries(frame).filter(([name]) => !CREDENTIAL_FIELD.test(name))));
+}
 
 /**
  * The audio Deepgram has heard, from one of its frames, in seconds, or null: a `Results` frame's end

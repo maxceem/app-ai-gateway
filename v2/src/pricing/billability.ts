@@ -389,7 +389,7 @@ export type CallResolution = CallRefusal | ReachableCall;
 /** Why serving refuses a call, and the model it names: the one the request names, or, after the model list, the one it is sent as. */
 export interface CallRefusal {
   readonly kind: "refused";
-  readonly reason: "not_served" | "unpriced_path" | "model_not_allowed" | "wrong_unit" | "no_price";
+  readonly reason: "not_served" | "unpriced_path" | "model_not_allowed" | "model_not_served" | "wrong_unit" | "no_price";
   readonly model: string;
 }
 
@@ -476,6 +476,8 @@ export function resolveCall(
   if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
   if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
+  // A model the session's endpoint doesn't serve never starts one, whatever its price (ElevenLabs' `eleven_v3` on `stream-input`).
+  if (operation.session?.unservedModels?.includes(model) === true) return { kind: "refused", reason: "model_not_served", model };
   if (pricedModelsPath(operation) && resolve(sources, model, operation) === null) return { kind: "refused", reason: "unpriced_path", model };
   const bill = billing(operation, sources, model);
   const problem = admissionProblem(bill, listed !== null);

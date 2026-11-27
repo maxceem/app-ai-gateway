@@ -54,6 +54,13 @@ export function relaySessionUrl(env: Env): string | null {
   return url.toString();
 }
 
+/**
+ * A query field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`,
+ * `api_key`, `access_token`, `authorization`). Never sent: the session's key is the only credential.
+ * The relay strips the same names from ElevenLabs' messages (`relay/src/adapters.js`).
+ */
+export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+
 /** A live-session path and its query, apart: the query, if any, without its `?`. */
 function splitQuery(path: string): [string, string | undefined] {
   const at = path.indexOf("?");
@@ -137,6 +144,9 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       }
       caller.facts.operation = operation.name;
+      // Only a provider that takes the session's options in its query gets the app's; any other session
+      // refuses a query, as the path with it never matched before (Sol, #273 round 1).
+      if (search !== undefined && operation.session.queryOptions !== true) throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       if (!routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
@@ -173,9 +183,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");
       }
       // The app's options go on as it sent them, except the fields the operation removes (webhooks and a
-      // client's own credentials) and the model, which is always the session's own.
+      // client's own credentials), any field named as a credential (`CREDENTIAL_FIELD`), and the model,
+      // which is always the session's own.
       const options = new URLSearchParams(search ?? "");
-      const sent = removeOutbound(operation, null, options).query ?? options;
+      const sent = removeOutbound(operation, null, options).query ?? new URLSearchParams(options);
+      for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
       if (location.in === "query") sent.set(location.name, call.model);
       const queryText = sent.toString();
       const url = upstreamUrl(connection, description, { hostKey: match.upstream.host, path: match.upstream.path.replace(/^\//u, ""), query: queryText === "" ? "" : `?${queryText}` });

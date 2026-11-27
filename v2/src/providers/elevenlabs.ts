@@ -165,7 +165,8 @@ export const elevenlabs = defineProvider({
         ],
       },
       meter: { kind: "provider_event", adapter: "elevenlabs-tts", units: ["characters"] },
-      session: { slot: "streaming", mode: "relayed" },
+      // ElevenLabs' WebSocket guide: the endpoint does not support `eleven_v3` or `eleven_v4`.
+      session: { slot: "streaming", mode: "relayed", queryOptions: true, unservedModels: ["eleven_v3", "eleven_v4"] },
     }),
     defineOperation({
       name: "elevenlabs.stt",

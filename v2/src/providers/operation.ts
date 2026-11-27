@@ -412,6 +412,8 @@ export interface PriceKey {
   readonly default?: string;
   readonly kind?: SwitchKind;
   readonly answeredWhen?: FieldRef;
+  /** For a switch (`kind`): other fields that turn the same charge on. The key is on when any is (Deepgram's `diarize_model` beside `diarize`). */
+  readonly alsoOn?: readonly SwitchRef[];
 }
 
 /** Where the model is in the request. `Part` is a part name of the match template. */
@@ -541,6 +543,14 @@ export interface SessionSpec {
    * lookup (plan 8j, "Keys needed with no app request").
    */
   readonly lookup?: "deepgram";
+  /**
+   * The provider takes the session's options in its address's query (Deepgram's audio format, ElevenLabs'
+   * output format): the app's query goes on, without credential fields, and with the session's model. A
+   * session without it refuses a query, as one always did (Sol, #273 round 1).
+   */
+  readonly queryOptions?: true;
+  /** Models of this operation's kind its endpoint does not serve (ElevenLabs' `stream-input`: `eleven_v3`, `eleven_v4`): refused at save and admission. */
+  readonly unservedModels?: readonly string[];
 }
 
 /** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */

@@ -9,14 +9,14 @@
  *   yet (404), or not complete, is tried again a minute later.
  * - At most `PROVIDER_LOOKUP_WINDOW_MS` after the stream ended (plan 8j): past it, or when the lookup can't
  *   be made at all (no request id, a key that may not read usage, a connection gone or pointed elsewhere,
- *   a key whose copy is gone), the slices' estimate stays, logged, and the session is marked so.
+ *   a key whose copy is known to be missing or removed), the slices' estimate stays, logged, and the
+ *   session is marked so. Any other failure, the vault's included, is tried again within the window.
  * - The key: for an account with split keys on, the copies made when the app asked for the session
  *   (`./start-session.ts`); for one with them off, the connection's own. The vault adds it, as for any call.
  *
  * Every write is safe to repeat: the session's first stored total wins, and settling is one correction.
  */
 import { errorFacts } from "../core/error-facts.ts";
-import { GatewayError } from "../core/errors.ts";
 import { log } from "../core/log.ts";
 import { boundedJson } from "../jobs/jobs.ts";
 import { PROVIDER_LOOKUP_WINDOW_MS, settleSession } from "../ledger/sessions.ts";
@@ -149,9 +149,8 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
     if (typeof project !== "string" || project === "") return keepEstimate("session_lookup_no_project");
     record = await deepgramGet(env, connection, description, `v1/projects/${encodeURIComponent(project)}/requests/${encodeURIComponent(session.provider_call_id)}`, copies, signal, session.app_id);
   } catch (error) {
-    // The vault can't open the key: for an account with split keys on whose copies never came (the
-    // session's row was written by a checkpoint), it never will.
-    if (error instanceof GatewayError && error.code === "provider_unavailable") return keepEstimate("session_lookup_key_unavailable");
+    // Anything else, the vault's refusal or a timeout included, may pass: tried again within the window.
+    // Only a copy known to be missing or removed ends the lookup at once, above (Sol, #273 round 1).
     log("warn", "session_lookup_failed", { ...facts, error: errorFacts(error) });
     return retry("lookup failed");
   }

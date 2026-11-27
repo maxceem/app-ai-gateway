@@ -16,7 +16,13 @@ import { parseTicket } from "../relay/src/ticket.js";
 import { adapterFor, closeForRelay } from "../src/relay/contract.ts";
 import { checkpointForRelay, priceSlice, sliceCharge } from "../src/relay/checkpoint.ts";
 import { deepgramLookup, recordFigure } from "../src/relay/deepgram-lookup.ts";
-import { billing, billingForCharge, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { billing, billingForCharge, listedModelRefusal, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { priceKeyValues } from "../src/proxy/request-fields.ts";
+import { CREDENTIAL_FIELD } from "../src/relay/start-session.ts";
+import { CREDENTIAL_FIELD as RELAY_CREDENTIAL_FIELD } from "../relay/src/adapters.js";
+import { GatewayError } from "../src/core/errors.ts";
+import { setVaultForTests, type VaultClient } from "../src/vault/client.ts";
+import { localVault } from "./local-vault.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { deepgram } from "../src/providers/deepgram.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
@@ -85,6 +91,41 @@ describe(`streaming voice prices and the save rule (step 10a, split keys ${split
     expect(charge).toMatchObject({ costNano: 40_000_000, measured: "partial", unit: "characters" });
     expect(charge.measures).toMatchObject({ units_characters: 1_000, gap_ms: 5_000 });
     expect(charge.measures.units_session_seconds).toBeUndefined();
+  });
+
+  it("bills a stream's time at a customer's rates by language alone, with no base rate: the time the save check judged billable is never dropped (Sol, #273 round 1)", () => {
+    const stored = { "nova-3": { by: { language: { multi: { per_minute: 5_800_000 }, "*": { per_minute: 4_800_000 } } } } };
+    expect(savedPriceProblem(stored, "nova-3", "deepgram", deepgram.operations)).toBeNull();
+    const resolved = billing(stream, priceSources({ type: "deepgram", rates: stored }), "nova-3").price;
+    const keys = { language: "en", redact: "false", detect_entities: "false", keyterm: "false", diarize: "false" };
+    expect(priceSlice({}, resolved, 60_000, keys)).toMatchObject({ costNano: 4_800_000, unit: "session_seconds", priceSource: "customer_rate" });
+    expect(priceSlice({}, resolved, 60_000, { ...keys, language: "multi" })).toMatchObject({ costNano: 5_800_000 });
+  });
+
+  it("switches the diarization price key on with diarize_model too (Sol, #273 round 1)", () => {
+    const keys = (query: string) => priceKeyValues(stream, { body: {}, query: new URLSearchParams(query) });
+    expect(keys("diarize_model=latest")).toMatchObject({ diarize: "true" });
+    expect(keys("diarize=true")).toMatchObject({ diarize: "true" });
+    expect(keys("diarize=false")).toMatchObject({ diarize: "false" });
+    expect(keys("")).toMatchObject({ diarize: "false" });
+  });
+
+  it("names credential fields the same way on the gateway and the relay, never an option such as Deepgram's keyterm", () => {
+    expect(String(CREDENTIAL_FIELD)).toBe(String(RELAY_CREDENTIAL_FIELD));
+    for (const name of ["xi-api-key", "xi_api_key", "api_key", "key", "token", "access_token", "single_use_token", "authorization", "Authorization", "client_secret"]) {
+      expect(CREDENTIAL_FIELD.test(name), name).toBe(true);
+    }
+    for (const name of ["keyterm", "keywords", "model", "output_format", "language", "tokens_per_second", "sample_rate"]) expect(CREDENTIAL_FIELD.test(name), name).toBe(false);
+  });
+
+  it("refuses a model the ElevenLabs stream endpoint doesn't serve, at save, beside the calls that do serve it (Sol, #273 round 1)", () => {
+    const sources = priceSources({ type: "elevenlabs", rates: null });
+    expect(listedModelRefusal({ models: ["eleven_v3"] }, undefined, sources, [tts], "eleven_v3")).toMatchObject({ reason: "model_not_served", model: "eleven_v3" });
+    expect(listedModelRefusal({ models: ["eleven_v4"] }, undefined, sources, [tts], "eleven_v4")).toMatchObject({ reason: "model_not_served" });
+    // Listed for text to speech calls as well: those serve it, so the app may list it.
+    const call = elevenlabs.operations.find((op) => op.name === "elevenlabs.tts")!;
+    expect(listedModelRefusal({ models: ["eleven_v3"] }, undefined, sources, [call, tts], "eleven_v3")).toBeNull();
+    expect(listedModelRefusal({ models: ["eleven_flash_v2_5"] }, undefined, sources, [tts], "eleven_flash_v2_5")).toBeNull();
   });
 
   it("keeps a stream's price keys on its slice, so the pricing sweep prices an unpriced one the same way", () => {
@@ -188,18 +229,38 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
     // A model with no price is refused before any slot is taken, as a call to it is.
     const unpriced = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input", model: "eleven_v9" });
     expect(unpriced.status).toBe(400);
+    // So is a model the stream endpoint doesn't serve, priced as it is (Sol, #273 round 1).
+    const unserved = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input", model: "eleven_v3" });
+    expect(unserved.status).toBe(403);
+    expect(await unserved.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    // A credential in the query never goes on, whatever its name (Sol, #273 round 1).
+    const keyed = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input?xi-api-key=theirs&output_format=mp3_44100_128&enable_ssml_parsing=true" });
+    expect(parseTicket(((await keyed.json()) as { ticket: string }).ticket)!.payload.url).toBe(
+      "https://api.elevenlabs.io/v1/text-to-speech/v/stream-input?output_format=mp3_44100_128&enable_ssml_parsing=true&model_id=eleven_multilingual_v2",
+    );
+  });
+
+  it("refuses a query on a session that takes no options in it, as before: never a client's own key to Gemini or OpenAI (Sol, #273 round 1)", async () => {
+    const gemini = await setup("gemini", "gemini.live.v1beta");
+    const path = "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+    const withKey = await start(gemini.appId, gemini.slug, gemini.key, { path: `${path}?key=theirs`, model: "gemini-3.8-live" });
+    expect(withKey.status).toBe(403);
+    expect(await withKey.json()).toMatchObject({ error: { code: "path_not_allowed" } });
+    expect((await start(gemini.appId, gemini.slug, gemini.key, { path, model: "gemini-3.8-live" })).status).toBe(201);
+    const openai = await setup("openai", "openai.realtime");
+    expect((await start(openai.appId, openai.slug, openai.key, { path: "v1/realtime?model=gpt-realtime-2.1", model: "gpt-realtime-2.1" })).status).toBe(403);
   });
 
   it("starts a Deepgram stream with its options, without webhooks or a client's token, its price keys signed, and its lookup queued", async () => {
     const { appId, slug, key } = await setup("deepgram", "deepgram.listen_stream");
-    const path = "v1/listen?model=nova-2&encoding=linear16&sample_rate=16000&language=multi&diarize=true&callback=https%3A%2F%2Fevil.test&token=theirs";
+    const path = "v1/listen?model=nova-2&encoding=linear16&sample_rate=16000&language=multi&diarize=true&keyterm=Acme&callback=https%3A%2F%2Fevil.test&token=theirs&api_key=theirs&access_token=theirs";
     const response = await start(appId, slug, key, { path, model: "nova-3" });
     expect(response.status).toBe(201);
     const body = (await response.json()) as { ticket: string; session_id: string };
     const { payload } = parseTicket(body.ticket)!;
     expect(payload).toMatchObject({ operation: "deepgram.listen_stream", model: "nova-3", slot: "streaming", sessionTotal: true });
-    expect(payload.url).toBe("https://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&language=multi&diarize=true");
-    expect(payload.priceKeys).toEqual({ language: "multi", redact: "false", detect_entities: "false", keyterm: "false", diarize: "true" });
+    expect(payload.url).toBe("https://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&language=multi&diarize=true&keyterm=Acme");
+    expect(payload.priceKeys).toEqual({ language: "multi", redact: "false", detect_entities: "false", keyterm: "true", diarize: "true" });
     expect(adapterFor(payload)).toBe("deepgram");
     // The session expects Deepgram's total, and its lookup waits for the end, with the key's copies when split keys are on.
     const session = await ledger().prepare("SELECT expects_session_total FROM session WHERE id = ?").bind(body.session_id).first<{ expects_session_total: number }>();
@@ -391,12 +452,42 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     expect(await settlementOf(sessionId)).toMatchObject({ settlement: "estimate_kept" });
   });
 
-  it.runIf(splitKeysOn)("keeps the estimate when the row came without copies (written by a checkpoint): the vault can't open the key", async () => {
+  it.runIf(splitKeysOn)("tries again when the row came without copies (written by a checkpoint) and the vault can't open the key, then keeps the estimate past the hour", async () => {
     const { sessionId, endedAt } = await closedStream();
     await ledger().prepare("UPDATE open_work SET detail_json = json_remove(detail_json, '$.keyCopies') WHERE id = ?").bind(lookupWorkId(sessionId)).run();
     const asked = deepgramApi(() => finalRecord(0.01));
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(asked).toEqual([]);
+    expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "lookup failed" });
+    await runSweep(env, ledger(), { now: endedAt + PROVIDER_LOOKUP_WINDOW_MS + 1_000 });
     expect(await settlementOf(sessionId)).toMatchObject({ settlement: "estimate_kept" });
+  });
+
+  it("tries again after the vault fails once (a timeout, say), and settles on the next try (Sol, #273 round 1)", async () => {
+    const { sessionId, endedAt } = await closedStream();
+    deepgramApi(() => finalRecord(0.0033));
+    let failures = 1;
+    setVaultForTests((vaultEnv): VaultClient => {
+      const real = localVault(vaultEnv);
+      return {
+        ...real,
+        call: async (input) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw new GatewayError(502, "provider_unavailable", "The provider credential could not be used");
+          }
+          return real.call(input);
+        },
+      };
+    });
+    try {
+      await runSweep(env, ledger(), { now: endedAt + 31_000 });
+      expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "lookup failed" });
+      expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open" });
+      await runSweep(env, ledger(), { now: endedAt + 91_000 });
+      expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 3_300_000 });
+    } finally {
+      setVaultForTests(localVault);
+    }
   });
 });

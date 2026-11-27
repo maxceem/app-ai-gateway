@@ -133,7 +133,10 @@ export const deepgram = defineProvider({
       priceList: "deepgram-streaming",
       priceKeys: [
         { name: "language", from: { in: "query", field: "language" }, default: "en" },
-        ...STREAM_EXTRAS.map((name) => ({ name, from: { in: "query" as const, field: name }, kind: name === "keyterm" ? ("text" as const) : ("flag" as const) })),
+        ...STREAM_EXTRAS.map((name) => ({ name, from: { in: "query" as const, field: name }, kind: name === "keyterm" ? ("text" as const) : ("flag" as const) })).map((key) =>
+          // `diarize_model` turns diarization on as well: either field switches the one price key (Sol, #273 round 1).
+          key.name === "diarize" ? { ...key, alsoOn: [{ in: "query" as const, field: "diarize_model", kind: "text" as const }] } : key,
+        ),
       ],
       outbound: {
         webhooks: [
@@ -146,7 +149,7 @@ export const deepgram = defineProvider({
         ],
       },
       meter: { kind: "wall_clock" },
-      session: { slot: "streaming", mode: "relayed", lookup: "deepgram" },
+      session: { slot: "streaming", mode: "relayed", lookup: "deepgram", queryOptions: true },
     }),
   ],
 });
