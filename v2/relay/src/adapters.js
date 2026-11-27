@@ -613,11 +613,15 @@ function openAiCall(model) {
       // stays (plan: relayed mode locks the model). Anything else goes as it is.
       if (model === null || typeof data !== "string" || plainNotUpdate(data)) return data;
       // Read whole, as OpenAI reads it (plan: settings messages are always fully parsed).
-      const frame = /** @type {{ type?: unknown, session?: Record<string, unknown> } | null} */ (parsed(data));
-      const session = frame?.session;
-      if (frame?.type !== "session.update" || typeof session !== "object" || session === null || !Object.hasOwn(session, "model")) return data;
-      // Written again even when the model is the session's: a repeated key in the text is gone.
-      return JSON.stringify({ ...frame, session: { ...session, model } });
+      const frame = /** @type {{ type?: unknown, session?: unknown } | null} */ (parsed(data));
+      if (typeof frame !== "object" || frame === null || !Object.hasOwn(frame, "session")) return data;
+      const session = frame.session;
+      if (frame.type === "session.update" && typeof session === "object" && session !== null && Object.hasOwn(session, "model")) {
+        return JSON.stringify({ ...frame, session: { ...session, model } });
+      }
+      // Any frame with a session is written again as it was read: a repeated key in the text, which
+      // OpenAI might read differently, is gone (Gemini Neon, #270 round 2).
+      return JSON.stringify(frame);
     },
   };
 }

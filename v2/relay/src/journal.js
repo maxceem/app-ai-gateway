@@ -179,6 +179,14 @@ export function carryOpen(stored, memory) {
   stored.baselines = { ...memory.baselines };
   if (memory.transcriptions === undefined) delete stored.transcriptions;
   else stored.transcriptions = structuredClone(memory.transcriptions);
+  // What made the open usage partial goes with it: the earlier start of a gap, the longer time detached.
+  const earlier = (/** @type {number | undefined} */ a, /** @type {number | undefined} */ b) => (a === undefined ? b : b === undefined ? a : Math.min(a, b));
+  const droppedFrom = earlier(stored.droppedFrom, memory.droppedFrom);
+  if (droppedFrom !== undefined) stored.droppedFrom = droppedFrom;
+  // Still detached in memory: since the earlier time. Attached again in memory: that time is in its `detachedMs`.
+  if (memory.detachedFrom === undefined) delete stored.detachedFrom;
+  else stored.detachedFrom = /** @type {number} */ (earlier(stored.detachedFrom, memory.detachedFrom));
+  if (memory.detachedMs !== undefined) stored.detachedMs = Math.max(stored.detachedMs ?? 0, memory.detachedMs);
   return true;
 }
 

@@ -10,8 +10,8 @@ import { adapterFor, openAiMeasures, transcriptionMeasures } from "../relay/src/
 import { carryOpen, freeze, newJournal, addUsage } from "../relay/src/journal.js";
 import { Session } from "../relay/src/index.js";
 import { SessionFrames } from "../relay/src/frames.js";
-import { SessionCore } from "../relay/src/start.js";
-import { MemoryStore, ticketFor, until } from "./relay-stand-ins.ts";
+import { END_WRITES_MS, SessionCore } from "../relay/src/start.js";
+import { MemoryStore, never, ticketFor, until } from "./relay-stand-ins.ts";
 
 const OPENAI = adapterFor("openai");
 const meter = (model: string | null = "gpt-realtime-2.1") => OPENAI.perCall!(model);
@@ -168,6 +168,20 @@ describe("an OpenAI call's memory (step 9e)", () => {
     // The frame sent most goes as it is, unparsed.
     const append = JSON.stringify({ type: "input_audio_buffer.append", audio: "A".repeat(10_000) });
     expect(call.lock(append)).toBe(append);
+  });
+
+  it("writes again any parsed frame with a session, so a repeated session or type key can't read differently at OpenAI (Gemini Neon, #270 round 2)", () => {
+    const call = meter("gpt-realtime-2.1");
+    // Two session keys: the last one, as parsed, is what goes on, once.
+    const sessions = call.lock('{"type":"session.update","session":{"model":"gpt-realtime-2.1-mini"},"session":{"instructions":"Hi"}}') as string;
+    expect(JSON.parse(sessions)).toEqual({ type: "session.update", session: { instructions: "Hi" } });
+    expect(sessions).not.toContain("gpt-realtime-2.1-mini");
+    // Two type keys around a session with a model: parsed as a session.update, and locked.
+    const types = call.lock('{"type":"response.create","session":{"model":"gpt-realtime-2.1-mini"},"type":"session.update"}') as string;
+    expect(JSON.parse(types)).toEqual({ type: "session.update", session: { model: "gpt-realtime-2.1" } });
+    // A frame with no session key stays as it was.
+    const other = '{"type":"response.create","response":{"instructions":"x"},"type":"response.create"}';
+    expect(call.lock(other)).toBe(other);
   });
 
   it("keeps each transcription model's usage apart in the slice: a switch mid-slice never mixes them (Sol, #270 round 1)", () => {
@@ -413,6 +427,24 @@ describe("a journal write that fails before the close (Sol, #270 round 3)", () =
     freeze(memory, 10);
     expect(carryOpen(stored, memory)).toBe(false);
     expect(stored.measures).toEqual({});
+    // Journals that agree: a dropped event's gap and a side channel's time detached go along, the earlier start kept (Gemini Neon, #270 round 2).
+    const kept = newJournal(0);
+    kept.droppedFrom = 300;
+    kept.detachedFrom = 200;
+    const seen = newJournal(0);
+    seen.droppedFrom = 400;
+    seen.detachedFrom = 100;
+    seen.detachedMs = 50;
+    expect(carryOpen(kept, seen)).toBe(true);
+    expect(kept).toMatchObject({ droppedFrom: 300, detachedFrom: 100, detachedMs: 50 });
+    // Attached again in memory: no longer detached, its time in detachedMs.
+    const attached = newJournal(0);
+    attached.detachedFrom = 100;
+    const again = newJournal(0);
+    again.detachedMs = 80;
+    carryOpen(attached, again);
+    expect(attached.detachedFrom).toBeUndefined();
+    expect(attached.detachedMs).toBe(80);
   });
 });
 
@@ -455,6 +487,103 @@ describe("an answer that finishes just before the session's cap (Gemini Neon, #2
     land!();
     await Promise.all([recorded, ended]);
     expect(slices.at(-1)).toMatchObject({ gaps: 0, measures: { input_tokens: 70, output_tokens: 40 } });
+  });
+});
+
+describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
+  type Slice = { gaps: number; measures: Record<string, number>; transcriptions?: Record<string, Record<string, number>> };
+  /** A core on an OpenAI call whose meter is `call`; the closing wait and the end's write wait use `wait`. */
+  async function endSession(wait: (ms: number) => Promise<void>) {
+    const now = 1_000_000;
+    const store = new MemoryStore();
+    const slices: Slice[] = [];
+    const call = meter("gpt-realtime-2.1");
+    const core = new SessionCore({
+      store,
+      now: () => now,
+      log: () => undefined,
+      wait,
+      vault: { sessionKey: async () => ({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" }) as never },
+      main: {
+        open: async () => ({ deadline: now + 30 * 60_000, mode: "relayed", operation: "openai.realtime", checkpointIntervalMs: 60_000, version: 2, adapter: "openai", model: "gpt-realtime-2.1" }) as never,
+        checkpoint: async (_ticket: string, input: { slice: Slice | null }) => {
+          if (input.slice !== null) slices.push(structuredClone(input.slice));
+          return { decision: "continue", reasons: [], written: true } as never;
+        },
+        close: async () => ({ version: 2 }),
+      },
+      provider: { connect: async () => ({ callId: null, close: () => undefined, estimate: () => call.estimate() }) },
+      turnOpen: () => call.pending(),
+    });
+    const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.realtime", model: "gpt-realtime-2.1" });
+    await core.start(text, ticket, { close: () => undefined });
+    /** A provider frame the meter sees, and its usage written as the session object writes it. */
+    const usage = (frame: string, event: { id: string; measures: Record<string, number>; model?: string }) => {
+      const key = call.see(frame, true);
+      return core.recordUsage(event, "per_turn", () => {
+        if (key === null) return;
+        call.settled(key);
+        if (!call.pending()) core.turnDone();
+      });
+    };
+    return { core, store, slices, call, usage };
+  }
+  const onlyWritesWait = (ms: number) => (ms === END_WRITES_MS ? Promise.resolve() : never<void>());
+
+  it("counts a response.done that arrives while the end waits for the answer", async () => {
+    const s = await endSession(never);
+    s.call.see('{"type":"response.created","event_id":"e","response":{"id":"resp_1"}}', true);
+    const ended = s.core.end("client_closed");
+    await Promise.resolve();
+    await s.usage(done("resp_1", USAGE), { id: "resp_1", measures: { input_tokens: 70, output_tokens: 40 } });
+    await ended;
+    expect(s.slices.at(-1)).toMatchObject({ gaps: 0, measures: { input_tokens: 70, output_tokens: 40 } });
+  });
+
+  it("counts a transcription that arrives while the end waits for it", async () => {
+    const s = await endSession(never);
+    s.call.see(session({ audio: { input: { transcription: { model: "whisper-1" } } } }), true);
+    s.call.see(JSON.stringify({ type: "input_audio_buffer.committed", event_id: "c", item_id: "item_1" }), true);
+    const ended = s.core.end("client_closed");
+    await Promise.resolve();
+    const frame = JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: "t1", item_id: "item_1" });
+    await s.usage(frame, { id: "t1", measures: { transcription_audio_ms: 1_500 }, model: "whisper-1" });
+    await ended;
+    expect(s.slices.at(-1)).toMatchObject({ gaps: 0, transcriptions: { "whisper-1": { transcription_audio_ms: 1_500 } } });
+  });
+
+  it("waits for every write in flight, the slower one too, at the cap", async () => {
+    const s = await endSession(never);
+    const write = s.store.putJournal.bind(s.store);
+    const lands: (() => void)[] = [];
+    s.store.putJournal = (journal: unknown) => new Promise<void>((resolve) => lands.push(() => void write(journal).then(resolve)));
+    s.call.see('{"type":"response.created","event_id":"e1","response":{"id":"r1"}}', true);
+    s.call.see('{"type":"response.created","event_id":"e2","response":{"id":"r2"}}', true);
+    const first = s.usage(done("r1", USAGE), { id: "r1", measures: { input_tokens: 10, output_tokens: 1 } });
+    const second = s.usage(done("r2", USAGE), { id: "r2", measures: { input_tokens: 20, output_tokens: 2 } });
+    await until(() => lands.length === 2);
+    s.store.putJournal = write;
+    // The cap: the faster second write lands while the first is still in flight.
+    const ended = s.core.end("time_cap");
+    lands[1]!();
+    await Promise.resolve();
+    lands[0]!();
+    await Promise.all([first, second, ended]);
+    expect(s.slices.at(-1)).toMatchObject({ gaps: 0, measures: { input_tokens: 30, output_tokens: 3 } });
+  });
+
+  it("never lets a write that doesn't settle hold the end: the session closes, and its last slice is partial", async () => {
+    const s = await endSession(onlyWritesWait);
+    const write = s.store.putJournal.bind(s.store);
+    let stuck = false;
+    s.store.putJournal = () => ((stuck = true), never<void>());
+    s.call.see('{"type":"response.created","event_id":"e","response":{"id":"r1"}}', true);
+    void s.usage(done("r1", USAGE), { id: "r1", measures: { input_tokens: 10, output_tokens: 1 } });
+    await until(() => stuck);
+    // Only that write hangs: the end's own writes go through.
+    s.store.putJournal = write;
+    await s.core.end("time_cap");
+    expect(s.slices.at(-1)?.gaps).toBeGreaterThan(0);
   });
 });
 

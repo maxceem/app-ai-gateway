@@ -77,6 +77,9 @@ function stopReason(reasons) {
   return first === "ended" ? "error" : first;
 }
 
+/** How long an ending session waits for the usage writes in flight, on local storage, before it freezes its last slice. */
+export const END_WRITES_MS = 2_000;
+
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
 
@@ -240,8 +243,10 @@ export class SessionCore {
     this.turnWaiter = null;
     /** The last journal write failed: usage this instance saw may be missing from storage (`endOnce`). */
     this.unwritten = false;
-    /** The latest usage write (`recordUsage`): the end waits for it, on local storage only, before it judges what is cut. */
-    this.lastWrite = Promise.resolve();
+    /** Usage writes in flight (`recordUsage`): the end waits for all of them, bounded, before it judges what is cut. */
+    this.writes = new Set();
+    /** The end is reading and freezing the journal: usage that comes now is too late for it. */
+    this.finalizing = false;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -343,6 +348,21 @@ export class SessionCore {
     } finally {
       this.turnWaiter = null;
     }
+  }
+
+  /**
+   * Waits for the usage writes in flight (`writes`), and those they start, for at most
+   * `END_WRITES_MS`: local storage only. Returns whether they all landed.
+   */
+  async settleWrites() {
+    const until = this.now() + END_WRITES_MS;
+    while (this.writes.size > 0) {
+      const left = until - this.now();
+      if (left <= 0) return false;
+      const timedOut = await Promise.race([Promise.all([...this.writes]).then(() => false), this.wait(left).then(() => true)]);
+      if (timedOut) return this.writes.size === 0;
+    }
+    return true;
   }
 
   /**
@@ -844,21 +864,22 @@ export class SessionCore {
     // hung up itself, not at the time cap, and not for a start that never got its call.
     const hadCall = this.call !== null;
     if (hadCall && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
-    // A usage write still in flight (an answer that finished just before a cap) lands first: its answer
-    // is then not cut, and the final read has it (Gemini Neon, #270).
-    await this.lastWrite;
-    // An answer still open now was cut off: its usage is missing. Also when an observed call's side
-    // channel dropped during the wait: the answer never finished where the relay could see it.
-    const cut = hadCall && this.turnOpen();
     const call = this.call;
-    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini, OpenAI): estimated.
-    const estimate = call?.estimate?.() ?? null;
     this.call = null;
     this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
     // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
     const endedAt = this.now();
+    // Hung up first, so no new frame comes; then the usage writes already in flight land, bounded, so a
+    // write that never settles never holds the end (Sol, Gemini Neon, #270 round 5).
     call?.close?.(1000, "session ended");
+    const written = await this.settleWrites();
+    this.finalizing = true;
+    // An answer still open now was cut off: its usage is missing. Also when an observed call's side
+    // channel dropped during the wait: the answer never finished where the relay could see it.
+    const cut = hadCall && this.turnOpen();
+    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini, OpenAI): estimated.
+    const estimate = call?.estimate?.() ?? null;
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
     if (details.log !== undefined) {
@@ -886,6 +907,8 @@ export class SessionCore {
     // The last journal write failed, so usage this instance saw may be missing from what storage holds:
     // the final slice is partial, never complete without it (Sol, #270 round 3).
     if (journal !== null && this.unwritten && !carried) journal.droppedFrom ??= sliceEnd;
+    // A usage write still in flight at the wait's limit: its usage may be missing, so the slice is partial.
+    if (journal !== null && !written) journal.droppedFrom ??= sliceEnd;
     if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
@@ -933,7 +956,7 @@ export class SessionCore {
    * write that fails is logged: the event may be lost, and the gap rules cover
    * a restart.
    * `written` runs once the write is done (or nothing was to be written), before anything awaiting
-   * the write goes on: the end awaits the latest one (`lastWrite`) before it judges what is cut.
+   * the write goes on: the end waits for every write in flight (`writes`) before it judges what is cut.
    * @param {import("./journal.js").UsageEvent} event
    * @param {"per_turn" | "running_total"} shape
    * @param {() => void} [written]
@@ -941,7 +964,9 @@ export class SessionCore {
    */
   recordUsage(event, shape, written) {
     const run = this.recordUsageNow(event, shape).finally(() => written?.());
-    this.lastWrite = run.catch(() => undefined);
+    const tracked = run.catch(() => undefined);
+    this.writes.add(tracked);
+    void tracked.then(() => this.writes.delete(tracked));
     return run;
   }
 
@@ -951,8 +976,8 @@ export class SessionCore {
    * @param {"per_turn" | "running_total"} shape
    */
   async recordUsageNow(event, shape) {
-    // During the closing wait, the last answer's usage still counts.
-    if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
+    // Usage that arrives while the call is open, or while the end waits for its writes, always counts.
+    if (this.over || this.finalizing || (this.call === null && this.ending === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null) return;
