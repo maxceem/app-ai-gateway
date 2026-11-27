@@ -106,10 +106,6 @@ public actor LiveSession {
     /// takes the session from it, and the relay closes it.
     /// Keyed by the id each had: a let-go link leaves when its reader ends.
     private var letGo: [Int: any LiveSessionLink] = [:]
-    /// A try was let go since the last `resumed`, or one is still open: a
-    /// `1000 reconnected` on the current link then means that try took the
-    /// session over, even if its own link has closed since.
-    private var letGoSinceResumed = false
     /// Set by `close()` during a handoff, until the new link has ended the
     /// session: the app has its `.ended`, and the session holds itself so an
     /// app that lets it go at `.ended` doesn't cut the hang-up short. The old
@@ -210,7 +206,6 @@ public actor LiveSession {
         // try takes the session from it, and the relay closes it with
         // `1000 reconnected`. A close from here could end the session instead.
         letGo[generation] = link
-        letGoSinceResumed = true
         outbox?.finish()
         writer?.cancel()
         self.link = nil
@@ -339,8 +334,6 @@ public actor LiveSession {
         case "agw.session.resumed":
             // The app hung up during the handoff: this link now owns the session, so it ends it.
             if keepAlive != nil { return finish(code: 1000, reason: "client_closed") }
-            // A let-go try still open may yet take the session over.
-            letGoSinceResumed = !letGo.isEmpty
             // Reports count only what came on this link, held frames included.
             received = 0
             reported = 0
@@ -376,11 +369,13 @@ public actor LiveSession {
         self.link = nil
         outbox = nil
         writer = nil
-        // A try `reconnect()` let go of took the session over after all: come
-        // back again, and the newer try takes the session from it. Let-go tries
-        // never come back on their own, so this can't loop.
-        let takenByLetGo = code == 1000 && reason == "reconnected" && letGoSinceResumed
-        if code == 0 || takenByLetGo {
+        // Another link of this session took it over: only this client holds
+        // the secret, so it was a try `reconnect()` let go of. Come back again,
+        // and the newer try takes the session from it. Let-go tries never come
+        // back on their own, so this can't loop; if the relay has no session
+        // left, the retry gets `session_ended`.
+        let takenOver = code == 1000 && reason == "reconnected"
+        if code == 0 || takenOver {
             guard secret != nil else { return finish(code: 0, reason: "link_lost") }
             return dropped()
         }

@@ -616,17 +616,20 @@ struct LiveSessionTests {
     }
 
     @Test
-    func aLetGoTryWhoseLinkEndedNoLongerCountsOnceTheSessionResumed() async {
+    func aReconnectedCloseAfterTheLetGoLinkEndedAndTheSessionResumedStillComesBack() async {
         var (session, links, events) = await letGoAfterAWhile()
+        // The superseded try's reader ends before the fresh link's resumed is handled.
         links[1].end(code: 0)
-        // Its reader has ended before the new link resumes.
         try? await Task.sleep(nanoseconds: 50_000_000)
         links[2].deliver(Self.resumed)
         #expect(await events.next() == .resumed)
-        // No let-go try is left to have taken over: this is someone else's takeover, and the session ends.
+        // Its takeover's close of the fresh link arrives after: come back, never end.
         links[2].end(code: 1000, reason: "reconnected")
-        #expect(await events.next() == .ended(code: 1000, reason: "reconnected"))
-        _ = session
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 4 && links[3].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        links[3].deliver(Self.resumed)
+        #expect(await events.next() == .resumed)
+        await session.close()
     }
 
     @Test
