@@ -481,7 +481,7 @@ function ProvidersTab({ app }: { app: App }) {
                             }
                           />
                           <span className="font-mono text-xs">{operation.name}</span>
-                          {operation.session ? <span className="text-xs text-muted-foreground">(live sessions, coming later)</span> : null}
+                          {operation.session ? <span className="text-xs text-muted-foreground">(live session)</span> : null}
                         </label>
                       ))}
                     </div>

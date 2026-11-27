@@ -33,8 +33,10 @@ public struct LiveSessionTicket: Sendable, Decodable, Equatable {
 ///   session's reconnect secret, and sends what the app sent meanwhile.
 ///
 /// Read ``events`` to the end. ``Event/ended(code:reason:)`` is the last
-/// event. When the reason is `session_ended`, start a new session with
-/// `takesOver` naming this one.
+/// event. When it ends a session the app still wants, start a new session
+/// with `takesOver` naming this one: for example `session_ended` (the relay
+/// let it go, such as after iOS suspended the app for longer than the relay
+/// holds a session), `heartbeat_timeout` or `reconnect_failed`.
 public actor LiveSession {
     public enum Event: Sendable, Equatable {
         /// The relay started the session. Provider frames follow.
@@ -67,6 +69,12 @@ public actor LiveSession {
         var reconnectFor: TimeInterval = 90
         /// The longest wait between two tries to come back.
         var retryAtMost: TimeInterval = 4
+        /// How long a heartbeat may go unanswered before the link counts as
+        /// dead. The relay answers each heartbeat at once.
+        var heartbeatAnswerWithin: TimeInterval = 10
+        /// How long a try to come back must wait with no answer before
+        /// `reconnect()` replaces it.
+        var hungAfter: TimeInterval = 5
     }
 
     private let timing: Timing
@@ -90,6 +98,19 @@ public actor LiveSession {
     private var retiringGeneration = 0
     /// Bumped for each new link: frames and closes from an older one are ignored.
     private var generation = 0
+    /// When the current link was opened.
+    private var openedAt: Date?
+    /// Tries to come back that `reconnect()` let go of because they hung. They
+    /// are never closed from this side while the session runs: if the relay
+    /// took one over after all, a close would end the session. The newer try
+    /// takes the session from it, and the relay closes it.
+    /// Keyed by the id each had: a let-go link leaves when its reader ends.
+    private var letGo: [Int: any LiveSessionLink] = [:]
+    /// Set by `close()` during a handoff, until the new link has ended the
+    /// session: the app has its `.ended`, and the session holds itself so an
+    /// app that lets it go at `.ended` doesn't cut the hang-up short. The old
+    /// link may be dead, so its own close may never reach the relay.
+    private var keepAlive: LiveSession?
     /// Whether frames may go out: the session started or resumed on this link.
     private var ready = false
     private var secret: String?
@@ -105,6 +126,8 @@ public actor LiveSession {
     /// When a full send queue last made the client come back on a new link.
     private var overflowedAt: Date?
     private var finished = false
+    /// When the last heartbeat went out, until anything arrives on the link.
+    private var heartbeatSentAt: Date?
     private var timer: Task<Void, Never>?
 
     public init(ticket: LiveSessionTicket, session: URLSession = .shared) {
@@ -136,6 +159,7 @@ public actor LiveSession {
         if !finished {
             link?.close()
             retiring?.close()
+            for link in letGo.values { link.close() }
         }
         continuation.finish()
     }
@@ -168,17 +192,58 @@ public actor LiveSession {
 
     /// Moves the session to a new link now, for example when the network
     /// changed: the old link is let go without waiting for it to time out.
+    /// While the client is already coming back, it starts a fresh try in
+    /// place of one that has waited a few seconds with no answer. A try that
+    /// just started is left alone: two tries at once would both be accepted,
+    /// and the frames the relay held would go to the one it let go.
     public func reconnect() {
-        guard !finished, ready, secret != nil else { return }
-        retiring = link
-        retiringGeneration = generation
-        dropped()
+        guard !finished, keepAlive == nil, secret != nil else { return }
+        if ready { return handOff() }
+        guard droppedAt != nil, let link, let openedAt,
+              now().timeIntervalSince(openedAt) >= timing.hungAfter
+        else { return }
+        // Let go without a close: if the relay took it over after all, the new
+        // try takes the session from it, and the relay closes it with
+        // `1000 reconnected`. A close from here could end the session instead.
+        letGo[generation] = link
+        outbox?.finish()
+        writer?.cancel()
+        self.link = nil
+        outbox = nil
+        writer = nil
+        attempts = 0
+        generation += 1
+        retry()
     }
 
     /// Ends the session. The relay counts the session's time until now.
-    /// During a handoff both links are closed: the old one still owns the session.
+    /// During a handoff the old link is closed at once, and the new one ends
+    /// the session as soon as the relay has handed it over: the old link may
+    /// be dead already, and then only the new one can end it.
     public func close() {
-        finish(code: 1000, reason: "client_closed")
+        guard !finished, keepAlive == nil else { return }
+        guard droppedAt != nil, secret != nil else {
+            return finish(code: 1000, reason: "client_closed")
+        }
+        keepAlive = self
+        pending.removeAll()
+        // Any of these may own the session at the relay; the current try stays
+        // open so it can still end the session if it is the one handed over.
+        retiring?.close()
+        retiring = nil
+        for link in letGo.values { link.close() }
+        letGo.removeAll()
+        continuation.yield(.ended(code: 1000, reason: "client_closed"))
+        continuation.finish()
+    }
+
+    /// The old link stays open until the new one has taken the session over:
+    /// the relay closes it then with `1000 reconnected`. A close from this
+    /// side could end the session first.
+    private func handOff() {
+        retiring = link
+        retiringGeneration = generation
+        dropped()
     }
 
     // MARK: - Links
@@ -186,6 +251,7 @@ public actor LiveSession {
     private func openLink(comingBack: Bool) {
         generation += 1
         let current = generation
+        openedAt = now()
         ready = false
         var request = URLRequest(url: ticket.relayURL)
         request.setValue("Bearer \(ticket.ticket)", forHTTPHeaderField: "Authorization")
@@ -238,6 +304,8 @@ public actor LiveSession {
             }
             return
         }
+        // Anything from the relay shows the link is alive.
+        heartbeatSentAt = nil
         switch message {
         case .string(let text):
             if text.hasPrefix(Self.relayPrefix) {
@@ -264,6 +332,8 @@ public actor LiveSession {
             becameReady()
             continuation.yield(.started)
         case "agw.session.resumed":
+            // The app hung up during the handoff: this link now owns the session, so it ends it.
+            if keepAlive != nil { return finish(code: 1000, reason: "client_closed") }
             // Reports count only what came on this link, held frames included.
             received = 0
             reported = 0
@@ -289,10 +359,23 @@ public actor LiveSession {
     /// the relay chose ends the session, except a refused secret on a session
     /// that still runs, which is tried again.
     private func lost(_ current: Int) {
+        if letGo.removeValue(forKey: current) != nil { return }
         guard current == generation, !finished, let link else { return }
         let code = link.closeCode
         let reason = link.closeReason
-        if code == 0 {
+        // The link is gone: nothing more goes out on it, and it is never let go later.
+        outbox?.finish()
+        writer?.cancel()
+        self.link = nil
+        outbox = nil
+        writer = nil
+        // Another link of this session took it over: only this client holds
+        // the secret, so it was a try `reconnect()` let go of. Come back again,
+        // and the newer try takes the session from it. Let-go tries never come
+        // back on their own, so this can't loop; if the relay has no session
+        // left, the retry gets `session_ended`.
+        let takenOver = code == 1000 && reason == "reconnected"
+        if code == 0 || takenOver {
             guard secret != nil else { return finish(code: 0, reason: "link_lost") }
             return dropped()
         }
@@ -304,6 +387,7 @@ public actor LiveSession {
 
     private func dropped() {
         ready = false
+        heartbeatSentAt = nil
         // What the old link still says is not this session's any more.
         generation += 1
         if droppedAt == nil {
@@ -333,7 +417,7 @@ public actor LiveSession {
     // MARK: - Sending
 
     private func send(_ message: URLSessionWebSocketTask.Message) async {
-        guard !finished else { return }
+        guard !finished, keepAlive == nil else { return }
         guard ready else {
             if pending.count >= Self.pendingLimit { pending.removeFirst() }
             pending.append(message)
@@ -359,9 +443,7 @@ public actor LiveSession {
         if !relay { pending.append(message) }
         // The same handoff as reconnect(): the old link stays open until the
         // new one has taken the session over, so the relay never sees it end.
-        retiring = link
-        retiringGeneration = generation
-        dropped()
+        handOff()
     }
 
     private func onTick() {
@@ -373,12 +455,19 @@ public actor LiveSession {
             return finish(code: 0, reason: "reconnect_failed")
         }
         guard ready else { return }
+        // A heartbeat the relay never answered: the link died without a word,
+        // which reading alone can't tell while the app only listens.
+        if let heartbeatSentAt, time.timeIntervalSince(heartbeatSentAt) >= timing.heartbeatAnswerWithin {
+            return handOff()
+        }
         if received != reported, time.timeIntervalSince(lastReportAt) >= timing.reportEvery {
             reported = received
             lastReportAt = time
             forward(.string(#"{"type":"agw.received","bytes":"# + String(received) + "}"), relay: true)
         }
         if time.timeIntervalSince(lastSentAt) >= timing.heartbeatAfter {
+            // The oldest unanswered one counts.
+            if heartbeatSentAt == nil { heartbeatSentAt = time }
             forward(.string(#"{"type":"agw.heartbeat"}"#), relay: true)
         }
     }
@@ -394,8 +483,11 @@ public actor LiveSession {
         link?.close()
         retiring?.close()
         retiring = nil
+        for link in letGo.values { link.close() }
+        letGo.removeAll()
         continuation.yield(.ended(code: code, reason: reason))
         continuation.finish()
+        keepAlive = nil
     }
 
 }

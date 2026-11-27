@@ -1,9 +1,9 @@
 # The relay's wire rules for our SDK
 
 Notes for clients that ask for the relay's own messages: our SDK, and any client
-that follows these rules. The full wire protocol document comes with the
-session SDK (plan step 9f). The relay's code is the reference:
-`src/frames.js` and `src/index.js`.
+that follows these rules. The guide for app developers is
+`docs/content/docs/integrate/live-sessions.mdx`. The relay's code is the
+reference: `src/frames.js` and `src/index.js`.
 
 ## Asking for the relay's messages
 
@@ -18,7 +18,9 @@ SDK sees only the provider's frames.
   once the session started, before any provider frame;
   `{"type":"agw.session.resumed","deadline":…}` when the client came back to
   the same session (see "Reconnecting"); and `{"type":"agw.heartbeat"}` in
-  answer to the client's heartbeat.
+  answer to the client's heartbeat, at once. Our SDK takes a heartbeat with no
+  answer within 10 s as a link that died without a word, and comes back on a
+  new link.
 - From the client: `{"type":"agw.heartbeat"}` after 30 s without other frames,
   `{"type":"agw.received","bytes":N}` reports, and
   `{"type":"agw.reconnect","secret":…}` as the first message when it comes back. Each starts exactly with
@@ -37,8 +39,9 @@ SDK sees only the provider's frames.
   they stop, so nothing received stays unreported for more than a few seconds.
   Otherwise a normal pause between turns leaves the unreported tail more than
   30 s old, and the session ends as `client_too_slow`.
-- **The value:** the total received since the session started: a whole number,
-  never more than the relay sent. A report outside that is ignored.
+- **The value:** the total received on the current link, since
+  `agw.session.started` or `agw.session.resumed`: a whole number, never more
+  than the relay sent on that link. A report outside that is ignored.
 - **What the relay does with them:** a client that falls about 30 s behind what
   the relay sent is ended with close code `4000` and reason `client_too_slow`.
   Tracking starts with the first provider frame, so a client that never reports
