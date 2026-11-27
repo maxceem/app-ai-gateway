@@ -147,7 +147,10 @@ export class Session extends DurableObject {
           /** @type {RelayCall} */
           const call = {
             callId,
-            close: (code, reason) => closeQuietly(socket, code, reason),
+            close: (code, reason) => {
+              this.dropHeld(call);
+              closeQuietly(socket, code, reason);
+            },
             send: (data) => sendQuietly(socket, data),
             forward: null,
             pending: new StartQueue(),
@@ -160,7 +163,10 @@ export class Session extends DurableObject {
           socket.addEventListener("message", (event) => providerFrame(call, event.data));
           // The provider hung up first: the session ends, and the client is told. A close the
           // relay caused itself, after letting go of this call, is ignored (`providerGone`).
-          socket.addEventListener("close", () => void this.core.providerGone(call));
+          socket.addEventListener("close", () => {
+            this.dropHeld(call);
+            void this.core.providerGone(call);
+          });
           return call;
         },
       },
@@ -436,6 +442,15 @@ export class Session extends DurableObject {
       void this.core.end("client_closed");
     }
     if (late) void this.core.end("time_cap");
+  }
+
+  /**
+   * The provider call is closed: frames held for a client that might have come back are let go,
+   * so they don't stay in memory until the object is evicted.
+   * @param {RelayCall} call
+   */
+  dropHeld(call) {
+    if (this.live?.call === call) this.live.held.drain();
   }
 
   /**

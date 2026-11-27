@@ -324,7 +324,7 @@ export class SessionCore {
      * Ends the session from the start's own failure: the client is told by the
      * caller, with the start's code, not by `end` with a bare reason.
      * @param {string} reason
-     * @param {{ log?: string, status?: number }} details
+     * @param {{ log?: string, status?: number, gap?: boolean }} details
      */
     const endStart = (reason, details) => {
       if (this.owner === client) this.owner = null;
@@ -334,7 +334,16 @@ export class SessionCore {
       const stored = await this.store.get(KEYS);
       const state = stored.get("state");
       if (state === "ended") return fail("session_ended");
-      if (state === "active") return fail("session_active");
+      if (state === "active") {
+        // A restarted instance holds no provider socket: the session is gone. It is ended now, as
+        // the alarm would at its next tick, so its slot frees up for the client's new session;
+        // the accounting finishes in the background (crash table row 22).
+        if (this.lost(/** @type {Settings | undefined} */ (stored.get("settings")))) {
+          void endStart("error", { log: "relay_provider_lost", gap: true });
+          return fail("session_ended");
+        }
+        return fail("session_active");
+      }
       // A restart in `starting`: `open` is done. A retry with the same ticket goes on (row 9),
       // unless "connecting" was recorded: then the outcome is unknown, and it never connects again (rows 10, 11).
       const resumed = state === "starting";
@@ -796,6 +805,15 @@ export class SessionCore {
     return Math.max(this.now(), ticketExpiry(ticketText));
   }
 
+  /**
+   * Whether an `active` session lost its provider socket with its instance: a relayed one did
+   * (rows 13, 14, 22). An observed session reattaches instead (part 3).
+   * @param {Settings | undefined} settings
+   */
+  lost(settings) {
+    return this.call === null && settings?.mode !== "observed";
+  }
+
   /** The alarm: the one place a session moves on by time (crash table rows 9–13, 25, 28). */
   async alarm() {
     const stored = await this.store.get(KEYS);
@@ -817,7 +835,7 @@ export class SessionCore {
       const deadline = settings?.deadline ?? now;
       // A relayed session whose instance is gone lost its provider socket too: the time since the
       // journal's last write is a gap even at the cap (rows 13 and 14).
-      const lost = this.call === null && settings?.mode !== "observed";
+      const lost = this.lost(settings);
       if (now >= deadline) return this.end("time_cap", lost ? { log: "relay_provider_lost", gap: true } : {});
       // The next tick is armed before anything that can fail (crash table row 29): a tick that
       // throws still leaves the session its next one.

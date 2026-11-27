@@ -233,6 +233,18 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect(live.turnOpen).toBe(true);
   });
 
+  it("lets go of the held frames when the provider call closes, and only for the session's own call (Sol round 3)", () => {
+    const session = Object.create(Session.prototype) as Session;
+    const call = {};
+    const held = new StartQueue();
+    held.push("waiting");
+    session.live = { call, held } as never;
+    session.dropHeld({} as never);
+    expect(held.frames).toEqual(["waiting"]);
+    session.dropHeld(call as never);
+    expect(held.frames).toEqual([]);
+  });
+
   /** A session object whose detached client comes back with the right secret, through `reconnect`. */
   async function comeBack(frames: SessionFrames) {
     const listeners: Record<string, ((event: unknown) => void)[]> = {};

@@ -142,6 +142,7 @@ hash it stored. Then:
   The session runs on, and the right secret can still come.
 - **The session can't be taken back** (it ended, its time is over, or the
   relay restarted and lost the provider's side): the client gets `4000` with
-  `session_ended`, `session_active` or `ticket_expired`. With the right secret
-  sent, any of these means: don't try again, ask the gateway for a new session
-  and name the old one in `takes_over`.
+  `session_ended`, or `ticket_expired` once the ended session is cleaned up.
+  After a restart the session is ended right then, so its slot is free for a
+  new one. Either way: don't try again, ask the gateway for a new session and
+  name the old one in `takes_over`.

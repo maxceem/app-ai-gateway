@@ -306,6 +306,21 @@ describe("a session's start", () => {
     expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { seq: 1, sessionMs: 0, gapMs: TICK_MS, gaps: 1 } });
   });
 
+  it("row 22: a client coming back to a restarted instance is told session_ended at once, and the session ends as the alarm would end it, so its slot frees up (Sol round 3)", async () => {
+    const s = setup();
+    await s.instance().start(s.text, s.ticket, s.client());
+    s.tick(5_000);
+    const restarted = s.instance();
+    // No wait for the accounting: the answer comes first.
+    expect(await restarted.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
+    await until(() => s.calls.close.length > 0);
+    expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 1 }]);
+    expect(s.store.data.get("state")).toBe("ended");
+    expect(s.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_provider_lost" }));
+    // The same gap the alarm books: the time since the journal's last write.
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { seq: 1, sessionMs: 0, gapMs: 5_000, gaps: 1 } });
+  });
+
   it("a slow provider handshake never brings back a session the alarm ended meanwhile; the provider's side is hung up (Sol round 1)", async () => {
     let release: (value: { callId: string | null }) => void = () => undefined;
     const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
