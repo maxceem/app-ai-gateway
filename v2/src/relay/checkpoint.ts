@@ -56,6 +56,7 @@ import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
 import { priceInServedMode } from "../pricing/tokens.ts";
+import type { ModelPrice } from "../pricing/prices.ts";
 import { usageMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
@@ -80,16 +81,14 @@ export const SLICE_TRANSCRIPTION = [
 ] as const;
 /**
  * A slice's backend model calls (GPT-Live, 9g), measures of their own under the backend model's name:
- * each call's Responses usage, summed by model, and booked apart from the session's own (`backendCharge`).
- * `backend_input_tokens` is the whole input, cached and cache-written tokens inside it, as OpenAI reports it.
+ * each call's Responses usage, summed by model and rate band, and booked apart from the session's own
+ * (`backendUsage`). `backend_input_tokens` is the whole input, cached and cache-written tokens inside it,
+ * as OpenAI reports it. `backend_long_*` are the calls whose prompt passed the model's long-context
+ * threshold, which the relay tells apart call by call, so short calls are never summed into the long
+ * band (Sol, #272 round 1).
  */
-export const SLICE_BACKEND = [
-  "backend_input_tokens",
-  "backend_cached_tokens",
-  "backend_cache_write_tokens",
-  "backend_cache_write_12h_tokens",
-  "backend_output_tokens",
-] as const;
+const BACKEND_FIELDS = ["input_tokens", "cached_tokens", "cache_write_tokens", "cache_write_12h_tokens", "output_tokens"] as const;
+export const SLICE_BACKEND = [...BACKEND_FIELDS.map((field) => `backend_${field}`), ...BACKEND_FIELDS.map((field) => `backend_long_${field}`)];
 /** What a slice may carry under another model's name: its input transcriptions (9e) and backend calls (9g). */
 const OTHER_MODEL_MEASURES: readonly string[] = [...SLICE_TRANSCRIPTION, ...SLICE_BACKEND];
 /**
@@ -424,7 +423,8 @@ export function transcriptionCharges(ticket: Ticket, slice: SliceInput, standing
     const measures = slice.transcriptions?.[model] ?? {};
     for (const [kind, usage] of [
       ["transcription", transcriptionUsage(measures)],
-      ["backend", backendUsage(measures)],
+      ["backend", backendUsage(measures, "backend_")],
+      ["backend-long", backendUsage(measures, "backend_long_")],
     ] as const) {
       if (usage !== null) charges.push(otherModelCharge(ticket, slice, model, kind, usage, standing, now));
     }
@@ -456,13 +456,13 @@ function transcriptionUsage(measures: Readonly<Record<string, number>>): UsageOb
  * `openAiUsage`): the input holds the cached and cache-written tokens, and a 12-hour cache write bills
  * at its own rate. Null when it has none.
  */
-function backendUsage(measures: Readonly<Record<string, number>>): UsageObservation | null {
-  const input = measures.backend_input_tokens ?? 0;
-  const output = measures.backend_output_tokens ?? 0;
+function backendUsage(measures: Readonly<Record<string, number>>, prefix: "backend_" | "backend_long_"): UsageObservation | null {
+  const input = measures[`${prefix}input_tokens`] ?? 0;
+  const output = measures[`${prefix}output_tokens`] ?? 0;
   if (input + output === 0) return null;
-  const cached = Math.min(input, measures.backend_cached_tokens ?? 0);
-  const written = Math.min(input - cached, measures.backend_cache_write_tokens ?? 0);
-  const longWritten = Math.min(written, measures.backend_cache_write_12h_tokens ?? 0);
+  const cached = Math.min(input, measures[`${prefix}cached_tokens`] ?? 0);
+  const written = Math.min(input - cached, measures[`${prefix}cache_write_tokens`] ?? 0);
+  const longWritten = Math.min(written, measures[`${prefix}cache_write_12h_tokens`] ?? 0);
   return {
     inputTokens: input - cached - written,
     cachedInputTokens: cached,
@@ -477,7 +477,7 @@ function otherModelCharge(
   ticket: Ticket,
   slice: SliceInput,
   model: string,
-  kind: "transcription" | "backend",
+  kind: "transcription" | "backend" | "backend-long",
   usage: UsageObservation,
   standing: CheckpointStanding | null,
   now: number,
@@ -486,7 +486,9 @@ function otherModelCharge(
   if (standing !== null && standing.ratesJson !== undefined) {
     try {
       const resolved = billingForCharge(priceSources({ type: ticket.providerType, rates_json: standing.ratesJson ?? null }), model);
-      const priced = resolved === null ? null : priceInServedMode(resolved.price, usage);
+      // Short backend calls are priced in the standard band, whatever their sum: the band is each call's.
+      const band = resolved === null || kind !== "backend" ? resolved?.price : withoutLongContext(resolved.price);
+      const priced = band === undefined ? null : priceInServedMode(band, usage);
       if (resolved !== null && priced !== null) {
         price = {
           costNano: priced.cost,
@@ -511,6 +513,13 @@ function otherModelCharge(
     outputTokens: usage.outputTokens,
     measures: usageMeasures(usage, STANDARD_MODE),
   };
+}
+
+/** A price with no long-context band: every call it prices is in the standard one. */
+function withoutLongContext(price: ModelPrice): ModelPrice {
+  if (price.longContextThreshold === undefined) return price;
+  const { longContextThreshold: _threshold, ...rest } = price;
+  return rest;
 }
 
 /** The dollar budgets the app sets: the end user's month and the app's own (as admission measures them). */

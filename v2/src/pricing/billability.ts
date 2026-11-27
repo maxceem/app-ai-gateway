@@ -474,27 +474,50 @@ export function resolveCall(
   return { kind: "admitted", operation, requested, model, bill };
 }
 
-/** The most backend models a session's ticket names: far more than a provider lists, and the ticket stays small. */
-export const BACKEND_MODELS_MAX = 128;
+/**
+ * How much room the backend's models take in a session's ticket, in bytes of JSON: with the rest of the
+ * ticket, far inside the relay's 16 KiB limit once it is encoded (Sol, #272 round 1).
+ */
+export const BACKEND_BUDGET_BYTES = 8 * 1024;
+
+/** The models a live session's backend may call, and the long-context threshold of each that has one. */
+export interface BackendModels {
+  readonly models: readonly string[];
+  /** A call whose prompt passes its model's threshold bills at the long-context rate (`../pricing/tokens.ts`). */
+  readonly long: Readonly<Record<string, number>>;
+}
 
 /**
  * The models a live session's backend may call (GPT-Live's, 9g; plan, "GPT-Live backend rules"): each
  * judged by `operation`'s own call rule, as a call to it would be (the app's model list, then the kind
  * and the price), and priced, so no backend call is ever booked without a price. With no model list,
- * the candidates are every model priced on the connection, ours or its own. Sorted, at most
- * `BACKEND_MODELS_MAX`. Never throws: a connection whose rates can't be read allows no backend model.
+ * the candidates are every model priced on the connection: our list's first, then its own. Names are
+ * taken in that order while they fit `BACKEND_BUDGET_BYTES`, so our list's short names always do. Each
+ * model's long-context threshold goes with it, so the relay can tell a long call from a short one.
+ * Never throws: a connection whose rates can't be read allows no backend model.
  */
-export function backendModels(route: RouteModels, sources: PriceSources, operation: OperationDescription): string[] {
+export function backendModels(route: RouteModels, sources: PriceSources, operation: OperationDescription): BackendModels {
+  const models: string[] = [];
+  const long: Record<string, number> = {};
   try {
     const listed = listOf(route);
     const candidates = listed !== null ? [...listed] : [...new Set([...listedModels(sources.type), ...Object.keys(sources.rates() ?? {})])];
-    return candidates
-      .filter((model) => resolve(sources, model) !== null && resolveCall(route, undefined, sources, operation, model, listed, SAVING).kind === "admitted")
-      .sort()
-      .slice(0, BACKEND_MODELS_MAX);
+    let bytes = 0;
+    for (const model of candidates) {
+      const resolved = resolve(sources, model);
+      if (resolved === null || resolveCall(route, undefined, sources, operation, model, listed, SAVING).kind !== "admitted") continue;
+      const threshold = resolved.price.longContextThreshold;
+      // The name, quoted and with its comma, and its threshold when it has one.
+      const size = JSON.stringify(model).length + 1 + (threshold === undefined ? 0 : JSON.stringify(model).length + String(threshold).length + 2);
+      if (bytes + size > BACKEND_BUDGET_BYTES) break;
+      bytes += size;
+      models.push(model);
+      if (threshold !== undefined) long[model] = threshold;
+    }
   } catch {
-    return [];
+    return { models: [], long: {} };
   }
+  return { models, long };
 }
 
 /**

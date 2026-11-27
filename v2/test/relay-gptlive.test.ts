@@ -88,6 +88,11 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
     expect(meter().lock(start(responses({ tool_choice: { type: "allowed_tools", tools: [{ type: "code_interpreter" }] } })))).toEqual({ refused: "backend_tool_not_allowed" });
     expect(meter().lock(start(responses({ prompt: { id: "pmpt_1" } })))).toEqual({ refused: "backend_prompt_not_allowed" });
     expect(meter().lock(start({ delegation: { type: "decisions", decisions: {} } }))).toEqual({ refused: "delegation_not_allowed" });
+    // A tier OpenAI bills at another rate is refused: backend calls are booked at the standard rate (Sol, #272 round 1).
+    expect(meter().lock(start(responses({ service_tier: "priority" })))).toEqual({ refused: "backend_tier_not_allowed" });
+    expect(meter().lock(start(responses({ service_tier: "flex" })))).toEqual({ refused: "backend_tier_not_allowed" });
+    expect(meter().lock(start(responses({ service_tier: "auto" })))).not.toHaveProperty("refused");
+    expect(meter().lock(start(responses({ service_tier: "default" })))).not.toHaveProperty("refused");
     // A session with no backend allowed: none may be named.
     expect(GPT_LIVE.perCall!("gpt-live-1", {}).lock(start(responses({})))).toEqual({ refused: "backend_model_not_allowed" });
   });
@@ -115,6 +120,37 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
     expect(sent).toBe('{"type":"session.update","session":{"delegation":{"type":"client"}}}');
     const append = JSON.stringify({ type: "session.input_audio.append", audio: "A".repeat(3_200) });
     expect(call.lock(append)).toBe(append);
+  });
+});
+
+describe("a GPT-Live call's backend calls in progress and their band (Sol, #272 round 1)", () => {
+  const created = (id: string) => JSON.stringify({ event_id: `event_c_${id}`, type: "response.event", delegation_id: "item_1", event: { type: "response.created", response: { id, model: "gpt-6-luna" } } });
+
+  it("waits for a backend call from its start until its usage is written, and one still running is unfinished", () => {
+    const call = meter();
+    expect(call.pending()).toBe(false);
+    expect(call.see(created("resp_1"), true)).toBeNull();
+    expect(call.pending()).toBe(true);
+    expect(call.unfinished()).toBe(true);
+    expect(call.see(backendDone("resp_1"), true)).toBe("resp_1");
+    // Ended, its usage still being written: waited for, but not cut.
+    expect(call.pending()).toBe(true);
+    expect(call.unfinished()).toBe(false);
+    call.settled("resp_1");
+    expect(call.pending()).toBe(false);
+    // Audio is never looked at.
+    expect(call.see(JSON.stringify({ type: "session.output_audio.delta", delta: "A".repeat(6_400) }), true)).toBeNull();
+  });
+
+  it("books a call whose prompt passes its model's long-context threshold in the long measures, and a short one as it is", () => {
+    const call = GPT_LIVE.perCall!("gpt-live-1", { backend: { ...BACKEND, long: { "gpt-6-luna": 1_000 } } });
+    const short = { id: "r1", model: "gpt-6-luna", measures: { backend_input_tokens: 900, backend_output_tokens: 10 } };
+    expect(call.label(short)).toEqual(short);
+    expect(call.label({ id: "r2", model: "gpt-6-luna", measures: { backend_input_tokens: 1_200, backend_cached_tokens: 100, backend_output_tokens: 10 } })).toEqual({
+      id: "r2",
+      model: "gpt-6-luna",
+      measures: { backend_long_input_tokens: 1_200, backend_long_cached_tokens: 100, backend_long_output_tokens: 10 },
+    });
   });
 });
 
@@ -171,7 +207,7 @@ describe("a GPT-Live session's billing (step 9g)", () => {
     });
     const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.live", model: "gpt-live-1", url: "https://api.openai.com/v1/live/sessions" });
     const slices = () => checkpoints.filter((slice): slice is Slice => slice !== null);
-    return { closes, slices, text, ticket, client: { close: () => undefined }, instance: () => new SessionCore(parts()), tick: (ms: number) => void (now += ms) };
+    return { closes, slices, text, ticket, parts, client: { close: () => undefined }, instance: () => new SessionCore(parts()), tick: (ms: number) => void (now += ms) };
   }
 
   it("bills the larger of its clock from session.started and OpenAI's seconds, and each backend call under its own model", async () => {
@@ -195,6 +231,18 @@ describe("a GPT-Live session's billing (step 9g)", () => {
     expect(s.closes).toEqual([{ endReason: "client_closed", finalSlice: 1 }]);
   });
 
+  it("a backend call its end cuts marks the final slice partial, with no estimate (Sol, #272 round 1)", async () => {
+    const s = setup();
+    const call = meter();
+    call.see(JSON.stringify({ event_id: "e", type: "response.event", event: { type: "response.created", response: { id: "resp_9" } } }), true);
+    const core = new SessionCore({ ...s.parts(), unfinished: () => call.unfinished(), turnOpen: () => call.pending() });
+    await core.start(s.text, s.ticket, s.client);
+    await core.activity();
+    s.tick(10_000);
+    await core.end("time_cap");
+    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 10_000, gaps: 1 })]);
+  });
+
   it("bills OpenAI's seconds when they run past the clock", async () => {
     const s = setup();
     const core = s.instance();
@@ -206,7 +254,7 @@ describe("a GPT-Live session's billing (step 9g)", () => {
     expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 10_000, billedMs: 12_000 })]);
   });
 
-  it("a restart ends the session: the time since the journal's last write is an unknown-cost gap, at most the 15 s between usage updates", async () => {
+  it("a restart ends the session: the time since the journal's last durable write is an unknown-cost gap", async () => {
     const s = setup();
     const first = s.instance();
     await first.start(s.text, s.ticket, s.client);

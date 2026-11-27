@@ -27,8 +27,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  * }} Adapter
- * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
- * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
+ * @typedef {{ models: readonly string[], tools: readonly string[], long?: Readonly<Record<string, number>> }} Backend
+ * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds, and
+ * the long-context threshold of each model that has one.
  * @typedef {{
  *   see(data: string | ArrayBuffer, forwarded: boolean): string | null,
  *   settled(key: string): void,
@@ -677,7 +678,8 @@ function plainNotOneOf(data, types) {
  * - The client's frames are locked by the call's meter (`gptLiveCall`): the model, and what the
  *   backend may use.
  * - A restart ends the session: OpenAI drops it when its WebSocket goes, and it can't be rejoined. The
- *   time since the journal's last write, at most about 15 s, is an "unknown cost" gap (plan 9g).
+ *   time since the journal's last durable write is an "unknown cost" gap (plan 9g): about 15 s at most
+ *   while OpenAI's seconds grow, longer when nothing new came.
  * @type {Adapter}
  */
 const GPT_LIVE = {
@@ -722,6 +724,8 @@ const GPT_LIVE_USAGE = /"type"\s*:\s*"session\.(usage\.updated|closed)"/u;
 const GPT_LIVE_BACKEND = /"type"\s*:\s*"response\.event"/u;
 /** A backend call that ended: only then does a `response.event` carry its usage. */
 const GPT_LIVE_BACKEND_DONE = /"type"\s*:\s*"response\.(completed|failed|incomplete)"/u;
+/** A backend call that started or ended: the call's meter follows those in progress. */
+const GPT_LIVE_BACKEND_STEP = /"type"\s*:\s*"response\.(created|completed|failed|incomplete)"/u;
 const BACKEND_ENDS = new Set(["response.completed", "response.failed", "response.incomplete"]);
 
 /**
@@ -756,7 +760,8 @@ const isObject = (value) => typeof value === "object" && value !== null && !Arra
  * - `responses`: its model must be one the app may call, priced (`open`'s list), and named at the
  *   start; an update may leave it out, keeping the one in force. Its tools only of the kinds allowed
  *   (function tools: a hosted tool's fees are not in the usage, T21). A stored `prompt` can name its own
- *   model, which the relay can't see, so it is refused too;
+ *   model, which the relay can't see, so it is refused too, and so is a `service_tier` other than the
+ *   standard one;
  * - anything else (`decisions`, whose billing was never checked) is refused.
  * @param {unknown} delegation
  * @param {boolean} start a `session.start`, where a backend must name its model
@@ -772,6 +777,10 @@ function delegationProblem(delegation, start, models, tools) {
   if (responses === undefined && !start) return null;
   if (!isObject(responses)) return "backend_model_not_allowed";
   if (Object.hasOwn(responses, "prompt")) return "backend_prompt_not_allowed";
+  // A tier OpenAI bills at another rate (Fast at 2x, Flex at half) is refused: the relay books a backend
+  // call at its model's standard rate (Sol, #272 round 1).
+  const tier = responses.service_tier;
+  if (tier !== undefined && tier !== null && tier !== "auto" && tier !== "default") return "backend_tier_not_allowed";
   if (Object.hasOwn(responses, "model") || start) {
     if (typeof responses.model !== "string" || !models.has(responses.model)) return "backend_model_not_allowed";
   }
@@ -790,15 +799,19 @@ function delegationProblem(delegation, start, models, tools) {
 }
 
 /**
- * One GPT-Live call's meter (`CallMeter`): the lock on the client's frames. It keeps nothing open, so
- * a closing session waits for nothing, and estimates nothing.
- * - The first frame must be `session.start`, read whole; anything else ends the session.
- * - `session.start` gets the session's model, whatever it named.
- * - Every frame that can carry settings (`session.start`, `session.update`, or any with a top-level
- *   `session`) is read whole, its delegation checked (`delegationProblem`), and sent written again as
- *   it was read, so a repeated key can't be read another way by OpenAI. Other frames, an audio append
- *   above all, go as they are, never parsed.
- * - A binary frame is refused: GPT-Live's events are JSON text, and a binary one would pass unread.
+ * One GPT-Live call's meter (`CallMeter`):
+ * - The lock on the client's frames. The first frame must be `session.start`, read whole; anything else
+ *   ends the session. `session.start` gets the session's model, whatever it named. Every frame that can
+ *   carry settings (`session.start`, `session.update`, or any with a top-level `session`) is read whole,
+ *   its delegation checked (`delegationProblem`), and sent written again as it was read, so a repeated
+ *   key can't be read another way by OpenAI. Other frames, an audio append above all, go as they are,
+ *   never parsed. A binary frame is refused: GPT-Live's events are JSON text, and a binary one would pass
+ *   unread.
+ * - The backend calls in progress, from their nested `response.created` to their end, and each ended
+ *   one until its usage is written: a closing session waits for them, and one its end cuts marks the
+ *   final slice partial (Sol, #272 round 1). No estimate: a backend call's cost is unknown until it ends.
+ * - A backend call's band: one whose prompt passes its model's long-context threshold is booked in the
+ *   long measures, so calls are never summed into another band (Sol, #272 round 1).
  * @param {string | null} model the session's locked model
  * @param {Backend | undefined} backend what the backend may use
  * @returns {CallMeter}
@@ -806,13 +819,41 @@ function delegationProblem(delegation, start, models, tools) {
 function gptLiveCall(model, backend) {
   const models = new Set(backend?.models ?? []);
   const tools = new Set(backend?.tools ?? []);
+  const long = backend?.long ?? {};
   let started = false;
+  /** @type {Set<string>} Backend calls in progress, by response id. */
+  const open = new Set();
+  /** @type {Set<string>} Backend calls that ended, whose usage is still being written. */
+  const writing = new Set();
   return {
-    see: () => null,
-    settled: () => undefined,
-    pending: () => false,
-    unfinished: () => false,
-    label: (event) => event,
+    see(data) {
+      if (typeof data !== "string" || !GPT_LIVE_BACKEND.test(data.slice(0, GPT_LIVE_HEAD)) || !GPT_LIVE_BACKEND_STEP.test(data)) return null;
+      const event = /** @type {{ event?: { type?: unknown, response?: { id?: unknown } } } | null} */ (parsed(data))?.event;
+      const id = event?.response?.id;
+      if (typeof id !== "string" || id === "") return null;
+      if (event?.type === "response.created") {
+        if (open.size < OPENAI_OPEN_MAX) open.add(id);
+        return null;
+      }
+      if (typeof event?.type !== "string" || !BACKEND_ENDS.has(event.type)) return null;
+      open.delete(id);
+      if (writing.size >= OPENAI_OPEN_MAX) writing.delete(writing.values().next().value ?? "");
+      writing.add(id);
+      return id;
+    },
+    settled(key) {
+      writing.delete(key);
+    },
+    pending: () => open.size > 0 || writing.size > 0,
+    unfinished: () => open.size > 0,
+    label(event) {
+      const threshold = event.model === undefined ? undefined : long[event.model];
+      if (threshold === undefined || (event.measures.backend_input_tokens ?? 0) <= threshold) return event;
+      /** @type {Record<string, number>} */
+      const measures = {};
+      for (const [name, value] of Object.entries(event.measures)) measures[name.replace(/^backend_/u, "backend_long_")] = value;
+      return { ...event, measures };
+    },
     estimate: () => null,
     lock(data) {
       if (typeof data !== "string") return { refused: "binary_not_supported" };

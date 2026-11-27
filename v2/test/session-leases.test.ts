@@ -19,6 +19,8 @@ import { admitSession, releaseSessionLeases } from "../src/limits/session-admiss
 import { refusal } from "../src/proxy/serve.ts";
 import { parseAppConfig } from "../src/admin/apps.ts";
 import { parseTicket } from "../relay/src/ticket.js";
+import { BACKEND_BUDGET_BYTES, backendModels, priceSources } from "../src/pricing/billability.ts";
+import { declaredOperation } from "../src/providers/presets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, ledger, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
 
@@ -373,9 +375,22 @@ describe("starting a session", () => {
     expect(payload.backend).toContain("gpt-6-luna");
     expect(payload.backend).not.toContain("gpt-live-1");
     const settings = await openForRelay(env, ticket);
-    expect(settings.backend).toEqual({ models: payload.backend, tools: ["function"] });
+    expect(settings.backend).toEqual({ models: payload.backend, tools: ["function"], long: payload.backendLong });
+    expect(payload.backendLong?.["gpt-6-luna"]).toBe(272_000);
     // A model with no price never starts a session, as for any live session.
     expect((await start(appId, slug, key, { path: "v1/live/sessions", model: "gpt-live-9" })).status).toBe(400);
+  });
+
+  it("keeps a GPT-Live ticket's backend list within its budget, our list's models first, with their long-context thresholds (Sol, #272 round 1)", () => {
+    const responses = declaredOperation("openai.responses")!;
+    // A connection with 300 long custom model names: far past the budget if all went in.
+    const rates: Record<string, unknown> = {};
+    for (let i = 0; i < 300; i += 1) rates[`house-${"x".repeat(80)}-${String(i)}`] = { input: 1_000_000_000, output: 1_000_000_000 };
+    const backend = backendModels({}, priceSources({ type: "openai", rates: rates as never }), responses);
+    expect(JSON.stringify(backend).length).toBeLessThanOrEqual(BACKEND_BUDGET_BYTES + 64);
+    expect(backend.models).toContain("gpt-6-luna");
+    expect(backend.models.length).toBeLessThan(300);
+    expect(backend.long["gpt-6-luna"]).toBe(272_000);
   });
 
   it("lets a GPT-Live backend name only the models the app lists, and only priced ones (step 9g)", async () => {

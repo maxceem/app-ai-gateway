@@ -580,6 +580,23 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     ]);
   });
 
+  it("prices short GPT-Live backend calls in the standard band whatever their sum, and long ones in the long band (Sol, #272 round 1)", async () => {
+    const { text, ticket } = await ticketFor({ operation: "openai.live", model: "gpt-live-1", url: "https://api.openai.com/v1/live/sessions" });
+    // Two short calls of 150,000 tokens each: 300,000 together, past gpt-6-luna's 272,000 threshold, but each below it.
+    const backend = { backend_input_tokens: 300_000, backend_long_input_tokens: 300_000 };
+    await checkpointForRelay(env, text, live(slice(ticket, 1, {}, { billedMs: 0, transcriptions: { "gpt-6-luna": backend } })));
+    const rows = await ledger()
+      .prepare("SELECT id, cost_nano FROM charge WHERE owner_id = ? AND id LIKE '%:backend%' ORDER BY id")
+      .bind(ticket.sid)
+      .all()
+      .then((r) => r.results);
+    // Standard: 300,000 x $0.10 a million. Long: 300,000 x $0.20 a million.
+    expect(rows).toEqual([
+      { id: `${ticket.sid}:slice:1:backend-long:gpt-6-luna`, cost_nano: 60_000_000 },
+      { id: `${ticket.sid}:slice:1:backend:gpt-6-luna`, cost_nano: 30_000_000 },
+    ]);
+  });
+
   it("never books a transcription as free: one with no price is unresolved, and the sweep prices it at its own model's price, not the session's (step 9e)", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { connectionId, setRates } = await houseConnection("{}");

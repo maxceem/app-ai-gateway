@@ -44,8 +44,10 @@ export const TICKET_VERSION = 1;
  *   exp: number,
  *   seal: { providerKey?: { blob: string, identity: string[], header?: string, format?: string }, cloudflareToken?: { blob: string, identity: string[] } },
  *   backend?: string[],
+ *   backendLong?: Record<string, number>,
  * }} Ticket
- * `backend`: the models the session's backend may call (GPT-Live's, 9g), when its operation has one.
+ * `backend`: the models the session's backend may call (GPT-Live's, 9g), when its operation has one;
+ * `backendLong`, their long-context thresholds, for those that have one.
  */
 
 /** @param {Uint8Array} bytes */

@@ -166,7 +166,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             capMs: SESSION_CAP_MS,
             credentials,
             keyPlacement: { header: description.auth.header, format: description.auth.format },
-            ...(backend === undefined ? {} : { backend }),
+            ...(backend === undefined ? {} : { backend: backend.models, backendLong: backend.long }),
           },
           now,
           sessionId,

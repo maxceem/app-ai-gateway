@@ -109,6 +109,8 @@ export interface TicketRequest {
   readonly keyPlacement: { readonly header: string; readonly format: string } | null;
   /** The models the session's backend may call (GPT-Live's, 9g), when its operation has one. */
   readonly backend?: readonly string[];
+  /** Their long-context thresholds, by model, for those that have one. */
+  readonly backendLong?: Readonly<Record<string, number>>;
 }
 
 export interface IssuedTicket {
@@ -175,7 +177,7 @@ export async function issueTicket(
     start: now,
     cap: request.capMs,
     exp: expiresAt,
-    ...(request.backend === undefined ? {} : { backend: [...request.backend] }),
+    ...(request.backend === undefined ? {} : { backend: [...request.backend], backendLong: { ...request.backendLong } }),
     seal: {
       ...(copies.providerKey === undefined
         ? {}

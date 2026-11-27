@@ -188,8 +188,15 @@ call its backend model makes, at that model's own price.
 - **Each backend call** is billed apart, at its model's price, from the usage
   in its `response.completed` (or `failed`, `incomplete`).
 - **A restart of the relay ends the session**: OpenAI drops it when its
-  connection goes, and it can't be rejoined. Up to about 15 s since the last
-  usage update is then an "unknown cost" gap. Start a new session.
+  connection goes, and it can't be rejoined. The time since the relay last
+  saved the session's usage is then an "unknown cost" gap: about 15 s at most
+  while OpenAI's voice seconds grow, longer when nothing new came. Start a new
+  session.
+- **A backend `service_tier`** other than the standard one (`auto`,
+  `default`) ends the session with `1008 backend_tier_not_allowed`: the relay
+  books backend calls at the standard rate.
+- **A closing session waits for backend calls in progress**, within its
+  closing wait; one still running at the cutoff marks the final slice partial.
 
 ## Reconnecting
 
