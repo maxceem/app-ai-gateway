@@ -61,6 +61,8 @@ import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-pri
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
 /** The other counts a slice may carry, each a unit of its own: xAI's text messages, which the relay counts itself (9b). */
 export const SLICE_UNITS = ["text_messages"] as const;
+/** The most billed time one slice may carry: a day, far above any real session's audio. */
+const BILLED_MS_MAX = 24 * 60 * 60_000;
 /** The largest count one measure of one slice may hold: far above any real minute of a session. */
 const MAX_MEASURE = 1_000_000_000;
 /** How long the reads before the ledger (settings, the app, the plan) may take together. */
@@ -74,6 +76,13 @@ export interface SliceInput {
   readonly measures: Readonly<Record<string, number>>;
   /** Connection time in the slice (plan minutes, D8). */
   readonly sessionMs: number;
+  /**
+   * The time a provider billed by time bills in this slice, when it differs
+   * from the connection time: xAI's, the larger of the relay's clock and its
+   * own audio total (plan 5.2 rule 3). Billed instead of `sessionMs`. A relay
+   * before it sends none, and its slices bill the connection time.
+   */
+  readonly billedMs?: number;
   /** Time after a crash with no journal: an "unknown cost" gap (plan 5.2 rule 3). */
   readonly gapMs: number;
   readonly gaps: number;
@@ -119,6 +128,8 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     const longest = ticket.cap + SEAL_GRACE_MS;
     if (!isCount(raw.seq, 1_000_000) || raw.seq < 1) throw bad();
     if (!isCount(raw.sessionMs, longest) || !isCount(raw.gapMs, longest) || !isCount(raw.gaps, 10_000)) throw bad();
+    // Generated audio can run faster than the clock (an answer asked by text): a day's worth is the bound.
+    if (raw.billedMs !== undefined && !isCount(raw.billedMs, BILLED_MS_MAX)) throw bad();
     if (!isCount(raw.from, Number.MAX_SAFE_INTEGER) || !isCount(raw.to, Number.MAX_SAFE_INTEGER) || raw.from > raw.to) throw bad();
     if (typeof raw.measures !== "object" || raw.measures === null || Array.isArray(raw.measures)) throw bad();
     const measures: Record<string, number> = {};
@@ -126,7 +137,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       if (!([...SLICE_MEASURES, ...SLICE_UNITS] as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
-    slice = { seq: raw.seq, measures, sessionMs: raw.sessionMs, gapMs: raw.gapMs, gaps: raw.gaps, from: raw.from, to: raw.to };
+    slice = { seq: raw.seq, measures, sessionMs: raw.sessionMs, gapMs: raw.gapMs, gaps: raw.gaps, from: raw.from, to: raw.to, ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }) };
   }
   return {
     slice,
@@ -191,6 +202,11 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
   };
 }
 
+/** The time a slice bills: what the provider billed by time bills (`billedMs`), else its connection time. */
+export function billedTime(slice: SliceInput): number {
+  return slice.billedMs ?? slice.sessionMs;
+}
+
 /** A slice's counts in units of their own (`SLICE_UNITS`), as a usage's units: only those above zero. */
 function unitsOf(measures: Readonly<Record<string, number>>): Partial<Record<(typeof SLICE_UNITS)[number], number>> {
   return Object.fromEntries(SLICE_UNITS.filter((unit) => (measures[unit] ?? 0) > 0).map((unit) => [unit, measures[unit] as number]));
@@ -206,7 +222,8 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
   const gap = slice.gapMs > 0 || slice.gaps > 0;
   // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
   // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
-  const billableMs = slice.sessionMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? slice.sessionMs : 0;
+  const timeMs = billedTime(slice);
+  const billableMs = timeMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? timeMs : 0;
   // A slice billed by time, or by its text messages alone, keeps the price of what it knows, marked `partial` below.
   if (gap && price.unit !== "session_seconds" && price.unit !== "text_messages" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
     price = { ...price, costNano: null, priceSource: "unresolved", estimated: false };
@@ -341,7 +358,7 @@ export interface LedgerCheckpointInput {
  */
 function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): SliceAtSavedPrice {
   const facts = { app: ticket.app, session: ticket.sid };
-  const unpriced = priceSlice(slice.measures, null, slice.sessionMs);
+  const unpriced = priceSlice(slice.measures, null, billedTime(slice));
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
     priceAt: (saved) => {
@@ -350,7 +367,7 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
       } else if (saved !== "") {
         try {
-          price = priceSlice(slice.measures, decodeSessionPrice(saved), slice.sessionMs);
+          price = priceSlice(slice.measures, decodeSessionPrice(saved), billedTime(slice));
         } catch {
           price = unpriced;
         }

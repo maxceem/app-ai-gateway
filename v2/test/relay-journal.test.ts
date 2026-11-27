@@ -4,7 +4,7 @@
  * `relay-start.test.ts`.
  */
 import { describe, expect, it } from "vitest";
-import { addUsage, confirm, countMeasure, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, markActive, markAttached, markDetached, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
+import { addUsage, confirm, countMeasure, digestOf, finalSliceOf, freeze, JOURNAL_MAX_BYTES, JOURNAL_VERSION, markActive, markAttached, markAudio, markDetached, newJournal, readJournal, SEEN_IDS } from "../relay/src/journal.js";
 import { adapterFor, typeOf } from "../relay/src/adapters.js";
 
 describe("journal", () => {
@@ -132,6 +132,21 @@ describe("journal", () => {
     expect(newJournal(0)).not.toHaveProperty("idle");
   });
 
+  it("bills each slice the growth of the larger of the clock and the provider's audio total (xAI, plan 5.2 rule 3)", () => {
+    const journal = newJournal(0, { idle: true });
+    markActive(journal, 0);
+    expect(markAudio(journal, 50_000)).toBe(true);
+    expect(markAudio(journal, 40_000)).toBe(false);
+    expect(freeze(journal, 10_000)).toMatchObject({ sessionMs: 10_000, billedMs: 50_000 });
+    expect(freeze(journal, 70_000)).toMatchObject({ sessionMs: 60_000, billedMs: 20_000 });
+    expect(journal).toMatchObject({ clockMs: 70_000, audioMs: 50_000, billedMs: 70_000 });
+    // A journal for any other provider carries no billed time.
+    expect(freeze(newJournal(0), 1_000)).not.toHaveProperty("billedMs");
+    // Audio that grows with no time passing still makes a slice.
+    markAudio(journal, 90_000);
+    expect(freeze(journal, 70_000)).toMatchObject({ sessionMs: 0, billedMs: 20_000 });
+  });
+
   it("counts a measure the relay counts itself, and freezes it with the slice (xAI's text messages)", () => {
     const journal = newJournal(0);
     countMeasure(journal, "text_messages", 1);
@@ -221,8 +236,13 @@ describe("adapters", () => {
     expect(xai.keepalive?.('{"type":"response.output_audio.delta","delta":"AAAA"}')).toBe(false);
     // `billable_audio_seconds` is read as a check, never as a measure that bills.
     const done = JSON.stringify({ type: "response.done", event_id: "e9", response: { id: "r1", usage: { input_tokens: 0 } }, usage: { output_audio_seconds: 2.9, billable_audio_seconds: 16 } });
-    expect(xai.read(done)).toEqual({ id: "e9", measures: {}, clockSeconds: 16 });
+    expect(xai.read(done)).toEqual({ id: "", measures: {}, audioSeconds: 16 });
     expect(xai.read(JSON.stringify({ type: "response.done", event_id: "e8", usage: { output_audio_seconds: 0.4 } }))).toBeNull();
+    // No event id is needed: only a higher total ever counts.
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 20 } }))).toEqual({ id: "", measures: {}, audioSeconds: 20 });
+    // A figure past a day is nonsense, and ignored: the session bills its clock (Fable, #268 round 1).
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 86_401 } }))).toBeNull();
+    expect(xai.read(JSON.stringify({ type: "response.done", usage: { billable_audio_seconds: 86_400 } }))).toMatchObject({ audioSeconds: 86_400 });
     expect(xai.read('{"type":"ping"}')).toBeNull();
   });
 });

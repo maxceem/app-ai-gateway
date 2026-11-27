@@ -58,7 +58,7 @@
  */
 import { TICK_MS } from "./frames.js";
 import { adapterFor } from "./adapters.js";
-import { confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
+import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -92,12 +92,6 @@ export const VAULT_KEY_WAIT_MS = 5_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
-/**
- * How far a provider's own running total of its billed clock (xAI's
- * `billable_audio_seconds`) may differ from the relay's before it is logged.
- * T20 measured it 0.5–1 s below over 30 minutes: it counts whole seconds.
- */
-export const CLOCK_CHECK_MS = 5_000;
 /** How soon the alarm tries `close` again. */
 export const CLOSE_RETRY_EVERY_MS = 30_000;
 
@@ -241,8 +235,6 @@ export class SessionCore {
      * during the wait: the end is waiting for the provider's answer, and usage still counts.
      */
     this.turnWaiter = null;
-    /** Whether this instance already logged a drift of the provider's clock (`checkClock`): once is enough. */
-    this.clockWarned = false;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -838,6 +830,8 @@ export class SessionCore {
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
     const journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), settings);
+    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start.
+    if (journal !== null && this.journal !== null && this.journal !== journal) carryTotals(journal, this.journal);
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = settings?.deadline;
     const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
@@ -901,8 +895,12 @@ export class SessionCore {
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null) return;
-    if (event.clockSeconds !== undefined) this.checkClock(journal, event.clockSeconds, now);
-    // Nothing to count (xAI's `response.done` carries only its clock): no write.
+    // A provider's own total of the audio it bills (xAI): kept, since a slice bills the larger of it
+    // and the relay's clock (plan 5.2 rule 3). Written only when it grows.
+    if (event.audioSeconds !== undefined && markAudio(journal, Math.round(event.audioSeconds * 1000))) {
+      journal.savedAt = now;
+      await this.writeJournal(journal);
+    }
     if (Object.keys(event.measures).length === 0) return;
     if (!addUsage(journal, event, shape, now)) return;
     // An observed session is real once usage came on its side channel (crash table row 20). Sticky.
@@ -942,24 +940,6 @@ export class SessionCore {
     countMeasure(journal, "text_messages", 1);
     journal.savedAt = now;
     await this.writeJournal(journal);
-  }
-
-  /**
-   * A provider's own total of its billed clock, against the relay's (xAI's
-   * `billable_audio_seconds`): a check only, never billed. A difference past
-   * `CLOCK_CHECK_MS` is logged once per session, so the monitor sees a meter
-   * that drifts without a line for every answer (a push-to-talk session
-   * drifts on each one: xAI bills it only for its audio).
-   * @param {import("./journal.js").Journal} journal
-   * @param {number} seconds
-   * @param {number} now
-   */
-  checkClock(journal, seconds, now) {
-    if (journal.activeAt === undefined) return;
-    const differenceMs = Math.round(seconds * 1000 - (now - journal.activeAt));
-    if (this.clockWarned || Math.abs(differenceMs) <= CLOCK_CHECK_MS) return;
-    this.clockWarned = true;
-    this.log({ level: "warn", message: "relay_clock_mismatch", session: this.sessionId, differenceMs });
   }
 
   /**
@@ -1217,7 +1197,7 @@ export class SessionCore {
         level: "error",
         message: "relay_close_given_up",
         session: this.sessionIdOf(stored),
-        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs })),
+        slices: left.map((slice) => ({ seq: slice.seq, measures: slice.measures, sessionMs: slice.sessionMs, gapMs: slice.gapMs, ...(slice.billedMs === undefined ? {} : { billedMs: slice.billedMs }) })),
       });
       /** @type {Record<string, unknown>} */
       const entries = { closed: true };

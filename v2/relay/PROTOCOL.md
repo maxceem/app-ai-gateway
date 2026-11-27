@@ -85,8 +85,11 @@ provider's side is hung up.
 
 ### xAI's voice API
 
-An xAI session is billed as xAI bills it: by time, from the session's first
-activity to its close, plus each text message.
+An xAI session is billed as xAI bills it: by time, plus each text message. The
+time is the larger of two running totals: the session's clock, from its first
+activity to its close, and the audio xAI reports it bills
+(`billable_audio_seconds`). With a microphone streamed in real time they agree.
+A long answer to a text question can bill far more audio than the clock.
 
 - The first activity is the first audio frame sent to xAI (an
   `input_audio_buffer.append`, a binary frame, or an item with audio content),
@@ -94,7 +97,9 @@ activity to its close, plus each text message.
   `response.create` alone starts nothing: its answer does.
 - From then on, the time is billed to the close, silence too. xAI never closes
   a quiet session, so close it when the user is done.
-- Each `conversation.item.create` the client sends counts as one text message.
+- Each `conversation.item.create` the client sends counts as one text message,
+  except a tool result (`function_call_output`), which is not billed, and an
+  item with audio content, which counts as audio.
 - xAI's `ping` every 10 s does not keep a session alive: a client that sends
   nothing for 90 s is gone, as for any provider.
 

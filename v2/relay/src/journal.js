@@ -45,8 +45,10 @@ export const JOURNAL_MAX_BYTES = 16 * 1024;
 export const JOURNAL_ALLOW_UNCONFIRMED = true;
 
 /**
- * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number }} Slice
+ * @typedef {{ seq: number, measures: Record<string, number>, sessionMs: number, gapMs: number, gaps: number, from: number, to: number, billedMs?: number }} Slice
  * One frozen slice: the usage between two checkpoints, and its connection time.
+ * `billedMs`, for a provider billed by time (xAI): the time it bills in this
+ * slice, which may differ from the connection time (`freeze`).
  *
  * @typedef {{
  *   v: number,
@@ -65,6 +67,9 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  *   idle?: true,
  *   idleMs?: number,
  *   activeAt?: number,
+ *   clockMs?: number,
+ *   audioMs?: number,
+ *   billedMs?: number,
  * }} Journal
  * `from` starts the open usage's connection time. `seen` holds the digests of
  * the last `SEEN_IDS` event ids, oldest first. `baselines` is a running
@@ -85,9 +90,14 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
  * `activeAt` is when it started, kept so a restart does not lose it. Optional
  * too, for the same reason.
  *
- * @typedef {{ id: string, measures: Record<string, number>, clockSeconds?: number }} UsageEvent
- * One usage event, as an adapter read it (`./adapters.js`). `clockSeconds` is a
- * provider's own running total of its billed clock (xAI), a check only.
+ * `clockMs`, `audioMs` and `billedMs` are that provider's running totals: the
+ * connection time from the first activity, the provider's own billed audio
+ * (xAI's `billable_audio_seconds`), and what the slices billed so far. Each
+ * slice bills the growth of the larger of the first two (plan 5.2 rule 3).
+ *
+ * @typedef {{ id: string, measures: Record<string, number>, audioSeconds?: number }} UsageEvent
+ * One usage event, as an adapter read it (`./adapters.js`). `audioSeconds` is a
+ * provider's own running total of the audio it bills (xAI's `billable_audio_seconds`).
  */
 
 /**
@@ -100,7 +110,7 @@ export const JOURNAL_ALLOW_UNCONFIRMED = true;
 export function newJournal(now, options = {}) {
   /** @type {Journal} */
   const journal = { v: JOURNAL_VERSION, nextSeq: 1, from: now, measures: {}, seen: [], baselines: {}, unsent: [], savedAt: now, lastCheckpointAt: 0, connected: false };
-  if (options.idle === true) journal.idle = true;
+  if (options.idle === true) Object.assign(journal, { idle: true, clockMs: 0, audioMs: 0, billedMs: 0 });
   return journal;
 }
 
@@ -118,6 +128,32 @@ export function markActive(journal, at) {
   journal.activeAt = start;
   delete journal.idle;
   return true;
+}
+
+/**
+ * The provider's own running total of the audio it bills, in milliseconds
+ * (xAI's `billable_audio_seconds`). Only a higher figure counts: a repeat or a
+ * figure out of order changes nothing. Returns whether the journal changed.
+ * @param {Journal} journal
+ * @param {number} ms
+ */
+export function markAudio(journal, ms) {
+  if (journal.audioMs === undefined || ms <= journal.audioMs) return false;
+  journal.audioMs = ms;
+  return true;
+}
+
+/**
+ * What this instance knew that a failed write may have kept out of the stored
+ * journal (`stored`), carried into it before the final slice: the provider's
+ * audio total, only ever up, and the clock's start. The stored slices and the
+ * billed total stay as stored (Sol, #268 round 1).
+ * @param {Journal} stored
+ * @param {Journal} memory
+ */
+export function carryTotals(stored, memory) {
+  if (stored.audioMs !== undefined && memory.audioMs !== undefined) stored.audioMs = Math.max(stored.audioMs, memory.audioMs);
+  if (stored.idle === true && memory.idle !== true && memory.activeAt !== undefined) markActive(stored, memory.activeAt);
 }
 
 /**
@@ -261,10 +297,25 @@ export function freeze(journal, at, options = {}) {
   const gaps = starts.length + (detachedMs > 0 ? 1 : 0);
   // Detached time may overlap a dropped-usage gap: the sum is capped at the slice's length.
   const gapMs = Math.min(at - journal.from, (starts.length === 0 ? 0 : at - Math.min(...starts)) + detachedMs);
-  const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0;
+  // A provider billed at the larger of its clock and its own audio total (xAI): the slice bills the
+  // growth of that larger total, so neither is counted twice across slices.
+  const clockMs = (journal.clockMs ?? 0) + sessionMs;
+  /** @type {number | undefined} */
+  let billedTotal;
+  /** @type {number | undefined} */
+  let billedMs;
+  if (journal.billedMs !== undefined) {
+    billedTotal = Math.max(journal.billedMs, clockMs, journal.audioMs ?? 0);
+    billedMs = billedTotal - journal.billedMs;
+  }
+  const empty = sessionMs === 0 && gapMs === 0 && gaps === 0 && Object.keys(journal.measures).length === 0 && !(billedMs !== undefined && billedMs > 0);
   if (empty) return null;
   /** @type {Slice} */
-  const slice = { seq: journal.nextSeq, measures: journal.measures, sessionMs, gapMs, gaps, from: journal.from, to: at };
+  const slice = { seq: journal.nextSeq, measures: journal.measures, sessionMs, gapMs, gaps, from: journal.from, to: at, ...(billedMs === undefined ? {} : { billedMs }) };
+  if (billedTotal !== undefined) {
+    journal.clockMs = clockMs;
+    journal.billedMs = billedTotal;
+  }
   journal.unsent.push(slice);
   journal.nextSeq += 1;
   journal.from = at;

@@ -9,10 +9,10 @@ import { describe, expect, it } from "vitest";
 import { adapterFor } from "../relay/src/adapters.js";
 import { Session } from "../relay/src/index.js";
 import { SessionFrames } from "../relay/src/frames.js";
-import { CLOCK_CHECK_MS, SessionCore } from "../relay/src/start.js";
+import { SessionCore } from "../relay/src/start.js";
 import { MemoryStore, ticketFor } from "./relay-stand-ins.ts";
 
-type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number };
+type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number; billedMs?: number };
 
 function setup() {
   let now = 1_000_000;
@@ -94,28 +94,81 @@ describe("an xAI session's clock (step 9b)", () => {
     expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 0, gapMs: 20_000, gaps: 1 })]);
   });
 
-  it("checks xAI's own total against its clock, and logs only a real drift; the total is never billed", async () => {
+  /** xAI's `response.done` with its running audio total, as the adapter reads it. */
+  const audio = (id: string, seconds: number) => ({ id, measures: {}, audioSeconds: seconds });
+
+  it("bills the clock for an answer cut before its usage came", async () => {
     const s = setup();
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client);
     await core.activity();
-    s.tick(16_700);
-    // What T20 saw: whole seconds, under a second below the relay's clock.
-    await core.recordUsage({ id: "e1", measures: {}, clockSeconds: 16 }, "running_total");
-    expect(s.logs.filter((event) => event.message === "relay_clock_mismatch")).toEqual([]);
     s.tick(10_000);
-    await core.recordUsage({ id: "e2", measures: {}, clockSeconds: 16 }, "running_total");
-    expect(s.logs.filter((event) => event.message === "relay_clock_mismatch")).toEqual([expect.objectContaining({ level: "warn", differenceMs: -10_700 })]);
-    // Logged once per session: a push-to-talk session drifts on every answer (Fable, #266 round 1).
-    s.tick(10_000);
-    await core.recordUsage({ id: "e3", measures: {}, clockSeconds: 16 }, "running_total");
-    expect(s.logs.filter((event) => event.message === "relay_clock_mismatch")).toHaveLength(1);
-    // A check with nothing to count writes nothing to the journal.
-    expect((s.store.data.get("journal") as { seen: string[] }).seen).toEqual([]);
-    expect(10_700).toBeGreaterThan(CLOCK_CHECK_MS);
+    await core.end("client_closed");
+    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 10_000, billedMs: 10_000 })]);
+  });
+
+  it("bills each slice the growth of the larger total, so nothing is counted twice", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client);
+    await core.activity();
+    // Slice 1: 80 s of audio in 5 s, then 55 s more: the audio, 80 s.
+    s.tick(5_000);
+    await core.recordUsage(audio("e1", 80), "running_total");
+    s.tick(55_000);
+    await core.alarm();
+    // Slice 2: the clock reaches 120 s and passes the audio: only the 40 s past 80.
     s.tick(60_000);
     await core.alarm();
-    expect(s.slices()).toEqual([expect.objectContaining({ measures: {}, sessionMs: 96_700 })]);
+    // The last slice: the audio jumps to 200 s, past the clock's 130: the 70 s past 130.
+    s.tick(10_000);
+    await core.recordUsage(audio("e2", 200), "running_total");
+    await core.end("client_closed");
+    expect(s.slices().map((slice) => [slice.sessionMs, slice.billedMs])).toEqual([
+      [60_000, 80_000],
+      [60_000, 40_000],
+      [10_000, 80_000],
+    ]);
+    // In all: the larger of the clock (130 s) and the audio (200 s).
+    expect(s.slices().reduce((sum, slice) => sum + (slice.billedMs ?? 0), 0)).toBe(200_000);
+  });
+
+  it("a journal write that failed loses nothing at the close: xAI's audio, and the clock's start (Sol, #268 round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client);
+    const write = s.store.putJournal.bind(s.store);
+    let failing = true;
+    s.store.putJournal = (journal: unknown) => (failing ? Promise.reject(new Error("storage failed")) : write(journal));
+    // The clock's start and xAI's 52 s both fail to reach storage.
+    await core.activity();
+    s.tick(4_000);
+    await core.recordUsage(audio("e1", 52), "running_total");
+    failing = false;
+    expect((s.store.data.get("journal") as { idle?: true }).idle).toBe(true);
+    await core.end("client_closed");
+    expect(s.slices()).toEqual([expect.objectContaining({ sessionMs: 4_000, billedMs: 52_000 })]);
+    expect(s.logs.filter((event) => event.message === "relay_journal_write_failed")).toHaveLength(2);
+  });
+
+  it("keeps the totals across a restart between slices: the audio that came before it is billed once", async () => {
+    const s = setup();
+    const first = s.instance();
+    await first.start(s.text, s.ticket, s.client);
+    await first.activity();
+    s.tick(60_000);
+    await first.recordUsage(audio("e1", 30), "running_total");
+    await first.alarm();
+    // After slice 1 (60 s on the clock), xAI reports 100 s, then the instance dies.
+    await first.recordUsage(audio("e2", 100), "running_total");
+    s.tick(20_000);
+    await s.instance().alarm();
+    expect(s.closes).toEqual([{ endReason: "error", finalSlice: 2 }]);
+    // The restarted instance books the audio past what slice 1 billed, and the time since the last write as a gap.
+    expect(s.slices().map((slice) => [slice.sessionMs, slice.billedMs, slice.gapMs])).toEqual([
+      [60_000, 60_000, 0],
+      [0, 40_000, 20_000],
+    ]);
   });
 });
 

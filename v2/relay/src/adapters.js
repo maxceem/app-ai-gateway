@@ -97,6 +97,9 @@ function jsonAdapter(prefix, shape, turns) {
   };
 }
 
+/** The highest audio total xAI can report that is real: a day (the gateway's bound on one slice's billed time). */
+const AUDIO_SECONDS_MAX = 86_400;
+
 /** The start of a JSON frame whose first field is its `type`: the common layout, read without parsing. */
 const TYPE_FIRST = '{"type":"';
 
@@ -151,18 +154,21 @@ function itemKind(data) {
 /**
  * xAI's voice API (Grok Voice, `wss://api.x.ai/v1/realtime`; T5 and T20).
  *
- * - Billed by wall time from the first activity to the close: the first audio
- *   frame (even silence) or the first answer. So the relay's clock is the
- *   meter. It starts when the client's first audio frame has gone to xAI, or
- *   at xAI's first `response.created`, whichever comes first. A client's
+ * - Billed by time: the larger of the relay's clock, from the first activity
+ *   to the close, and xAI's own `billable_audio_seconds` (plan 5.2 rule 3).
+ *   With a microphone streamed in real time the two agree (T5, T20); with
+ *   long answers asked by text, xAI bills the generated audio, far more than
+ *   the clock (9c). The first activity is the first audio frame (even
+ *   silence) or the first answer. The clock starts when the client's first
+ *   audio frame has gone to xAI, or at xAI's first `response.created`,
+ *   whichever comes first. A client's
  *   `response.create` is not the start: xAI may reject it, and its answer
  *   starts the clock when it comes (Sol, #266 round 3).
  * - Each client `conversation.item.create` is one text message, billed on
  *   top, except a tool result (`function_call_output`), which is not billed,
  *   and an item with audio content, which the clock bills (`itemKind`).
- * - `response.done` carries `billable_audio_seconds`, xAI's running total of
- *   that clock in whole seconds. It is a check only, never billed: the
- *   relay logs when it drifts from its own clock (`../start.js`).
+ * - `response.done` carries `billable_audio_seconds`, xAI's running total in
+ *   whole seconds, kept in the journal (`markAudio`).
  * - xAI keeps the conversation while our SDK's link is down, so its frames
  *   are held for a reconnect.
  * @type {Adapter}
@@ -181,11 +187,12 @@ const XAI = {
   read(data) {
     if (typeof data !== "string" || typeOf(data) !== "response.done") return null;
     try {
-      const parsed = /** @type {{ event_id?: unknown, usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
+      const parsed = /** @type {{ usage?: { billable_audio_seconds?: unknown } }} */ (JSON.parse(data));
       const seconds = parsed.usage?.billable_audio_seconds;
-      if (typeof parsed.event_id !== "string" || parsed.event_id === "" || parsed.event_id.length > 128) return null;
-      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
-      return { id: parsed.event_id, measures: {}, clockSeconds: seconds };
+      // A figure past a day is nonsense: ignored, so the session bills its clock and its slices stay
+      // within what the gateway accepts. No event id is needed: only a higher total counts (`markAudio`).
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > AUDIO_SECONDS_MAX) return null;
+      return { id: "", measures: {}, audioSeconds: seconds };
     } catch {
       return null;
     }
