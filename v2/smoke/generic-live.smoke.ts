@@ -94,7 +94,8 @@ test("a custom provider's WebSocket path is relayed as it is and billed by its c
     const listed = await admin("GET", `/v2/admin/apps/${made.app}/charges?owner=${encodeURIComponent(sessionId)}`);
     same(listed.status, 200, "listing the session's charges");
     charges = ((listed.body?.charges ?? []) as Charge[]).filter((charge) => charge.kind === "slice" && (charge.units ?? 0) > 0);
-    if (charges.length > 0) break;
+    // Until the last slice is in: the billed time reaches the 2 s the link was held.
+    if (charges.reduce((sum, charge) => sum + (charge.units ?? 0), 0) >= 2_000) break;
     await new Promise((resolve) => setTimeout(resolve, 3_000));
   }
   check(charges.length > 0, "the session was not billed");

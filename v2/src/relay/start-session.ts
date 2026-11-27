@@ -20,7 +20,7 @@ import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { attachLookupKeyCopies, openSession, PROVIDER_LOOKUP_WINDOW_MS } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
-import { backendModels, knownModel, listOf, priceSources, resolveCall, resolveWebsocket } from "../pricing/billability.ts";
+import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
 import { compiledWebsocket, PASSTHROUGH, WEBSOCKET_OPERATION } from "../providers/passthrough.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { priceKeyValues, removeOutbound } from "../proxy/request-fields.ts";
@@ -54,17 +54,22 @@ export function relaySessionUrl(env: Env): string | null {
   return url.toString();
 }
 
-/** A name's last word is a key, a token, a secret or an authorization, after `_` or `-`. */
-const CREDENTIAL_NAME = /(^|[_-])(key|token|secret|authorization)$/iu;
+/**
+ * A name whose last word is a key, a token, a secret, an authorization, an API key or a password, after `_`
+ * or `-`, or that is only `auth`.
+ */
+const CREDENTIAL_NAME = /(^|[_-])(key|token|secret|authorization|apikey|password)$|^auth$/iu;
 
 /**
- * Whether a query field is named as a credential: a key, a token, a secret or an authorization, its words
- * joined by `_`, `-` or camelCase (`xi-api-key`, `api_key`, `access_token`, `authorization`,
- * `single_use_token`, `apiKey`, `accessToken`). Never sent: the session's key is the only credential.
- * A word that only starts that way is no credential (Deepgram's `keyterm`, `tokens_per_second`).
+ * Whether a query field is named as a credential (`CREDENTIAL_NAME`), its words joined by `_`, `-` or
+ * camelCase, acronyms too (`xi-api-key`, `api_key`, `access_token`, `single_use_token`, `apiKey`,
+ * `xiAPIKey`, `JWTToken`, `apikey`, `auth`, `password`). Never sent: the session's key is the only
+ * credential. A word that only starts that way is no credential (Deepgram's `keyterm`, `tokens_per_second`).
  */
 export function credentialField(name: string): boolean {
-  return CREDENTIAL_NAME.test(name.replace(/([a-z0-9])([A-Z])/gu, "$1_$2"));
+  // An acronym before a capitalised word first (`APIKey`, `xiAPIKey`), then each lower-to-upper step.
+  const words = name.replace(/([A-Z]+)([A-Z][a-z])/gu, "$1_$2").replace(/([a-z0-9])([A-Z])/gu, "$1_$2");
+  return CREDENTIAL_NAME.test(words);
 }
 
 /** A live-session path and its query, apart: the query, if any, without its `?`. */
@@ -148,10 +153,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // cannot bill never is; saving already refused a listed model with no price. Every live
       // session's usage is read by the relay (xAI 9b, Gemini 9d, OpenAI 9e), so none starts
       // unpriced. A rewrite is never applied to a session (plan D13).
-      // A listed WebSocket path has no model: its listing's rate prices it (`resolveWebsocket`).
-      const resolved =
-        match.kind === "passthrough" ? resolveWebsocket(match.listed) : resolveCall(routing, undefined, priceSources(connection), operation, requested, listOf(routing), { asIfServed: true });
-      if (resolved.kind === "refused") throw callRefusal(resolved, operation);
+      // A listed WebSocket path has no model: its listing's rate prices it (`websocketPrice`).
+      if (match.kind === "operation") {
+        const resolved = resolveCall(routing, undefined, priceSources(connection), operation, requested, listOf(routing), { asIfServed: true });
+        if (resolved.kind === "refused") throw callRefusal(resolved, operation);
+      }
       const call = { model: requested };
       // A session that calls other models itself (GPT-Live's backend): the ones the app may call that
       // way, judged as a call to the backend's operation is, travel in the ticket for the relay to enforce.
@@ -218,7 +224,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             ...(backend === undefined ? {} : { backend }),
             ...(priceKeys === undefined ? {} : { priceKeys }),
             // A listed WebSocket path's rate, as it is now: a later edit or removal never reprices the session.
-            ...(match.kind === "passthrough" && match.listed.perMinuteNano !== undefined ? { perMinuteNano: match.listed.perMinuteNano } : {}),
+            ...(match.kind === "passthrough" ? { perMinuteNano: match.listed.perMinuteNano } : {}),
           },
           now,
           sessionId,

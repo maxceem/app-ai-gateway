@@ -41,7 +41,7 @@ import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
-import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION, WEBSOCKET_OPERATION } from "../providers/passthrough.ts";
+import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   customerPrice,
@@ -551,22 +551,12 @@ export function resolvePassthrough(listed: PassthroughPath, liveToken = false): 
 
 /**
  * A listed WebSocket path's price (plan D4, D10): its connection time, at its rate a minute, as the
- * customer's rate. The one rule: saving checks a listed rate with it (`resolveWebsocket`, `callGap`), and the
- * session's slices are priced with it at the rate its ticket carries (`../relay/session-price.ts`), which the
- * session saves as its price, as any session does, so the sweep prices at it too.
+ * customer's rate. Like any listed path it has no model, so no model list or rewrite applies. The session's
+ * slices are priced with it at the rate its ticket carries (`../relay/session-price.ts`), which the session
+ * saves as its price, as any session does, so the sweep prices at it too.
  */
 export function websocketPrice(perMinuteNano: number): ResolvedPrice {
   return { price: { rates: { per_minute: rate(perMinuteNano) }, raw: {} }, source: "customer_rate" };
-}
-
-/**
- * How a session on a custom provider's listed WebSocket path is billed: at its listing's rate
- * (`websocketPrice`). Like any listed path it has no model, so no model list or rewrite applies, and it is
- * always admitted.
- */
-export function resolveWebsocket(listed: PassthroughPath): ReachableCall {
-  const price = listed.perMinuteNano === undefined ? null : websocketPrice(listed.perMinuteNano);
-  return { kind: "admitted", operation: WEBSOCKET_OPERATION, requested: "", model: "", bill: billingAt(WEBSOCKET_OPERATION, price) };
 }
 
 /**

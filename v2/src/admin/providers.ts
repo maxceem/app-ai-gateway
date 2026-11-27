@@ -47,7 +47,7 @@ import {
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, resolveWebsocket, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { UNIT_RATE_FIELDS } from "../pricing/units.ts";
 import { selectableModes } from "../proxy/meter.ts";
@@ -79,7 +79,6 @@ import {
   compilePassthrough,
   DIRECT_ROUTE,
   listingShape,
-  listingsMeet,
   apiPrefixesOf,
   namedPartProblem,
   ProviderMatcher,
@@ -495,8 +494,8 @@ export function passthroughJson(
     const shape = listingShape(bare.method, compiled.template);
     if (seen.has(shape)) throw new GatewayError(400, "invalid_request", `${where}: ${key} matches the same requests as another listed path`);
     seen.add(shape);
-    if (callGap(bare.websocket === true ? resolveWebsocket(bare) : resolvePassthrough(bare)) !== null) {
-      throw new GatewayError(400, "invalid_request", `${where}.${bare.websocket === true ? "per_minute" : "per_request"}: the price cannot be charged`);
+    if (callGap(resolvePassthrough(bare)) !== null) {
+      throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
     }
     const isNew = !known.has(listingKey(compiled));
     if (isNew) {
@@ -511,17 +510,8 @@ export function passthroughJson(
     return { where, key, listed, compiled: { listed, template: compiled.template }, isNew };
   });
   // Two listings that can match one request need no refusal: the more specific one serves it (`moreSpecific`).
-  // A WebSocket path is the exception: an HTTP listing that could take its requests would send them on
-  // unmetered, so the two may not overlap, whichever was listed first. A pair saved before keeps saving.
-  const websocket = checked.find((one) => one.listed.websocket === true);
-  if (websocket !== undefined) {
-    const overlapped = checked.find(
-      (one) => one !== websocket && one.listed.style === undefined && (one.isNew || websocket.isNew) && listingsMeet(one.compiled, websocket.compiled),
-    );
-    if (overlapped !== undefined) {
-      throw new GatewayError(400, "invalid_request", `${websocket.where}.path: ${websocket.key} can match the requests of ${overlapped.key}; list paths that do not overlap`);
-    }
-  }
+  // A plain GET that could match a WebSocket path's address is served as listed: HTTP passthrough sends only
+  // allowed headers, so it never opens a WebSocket.
   const paths = checked.map((one) => one.listed);
   // A custom provider's description holds its API-style paths as operations, so it is built from this save.
   const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;

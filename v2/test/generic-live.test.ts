@@ -11,8 +11,8 @@
  *   operation, the `generic` adapter and the key's header. An HTTP request never reaches the path.
  * - The price: one rule (`websocketPrice`), at the listing's rate when the session started, which its signed
  *   ticket carries and the session saves as its price: a later edit or removal never reprices it.
- * - The relay's session core, on a clock faked with Vitest's timers: the clock, checkpoints, the cap,
- *   the end, and a restart.
+ * - The relay's session core, on a clock faked with Vitest's timers: the clock and checkpoints. The
+ *   cap, a stop, the provider's close and a restart are the shared core's (`relay-start.test.ts`).
  * - The real relay, vault and provider stand-in: frames both ways and the key in its own header.
  *
  * Runs with split keys off and on (`vitest.config.ts`).
@@ -27,7 +27,7 @@ import { SESSION_PATH } from "../relay/src/constants.js";
 import { SessionCore } from "../relay/src/start.js";
 import { passthroughJson } from "../src/admin/providers.ts";
 import { GatewayError } from "../src/core/errors.ts";
-import { resolveWebsocket, websocketPrice } from "../src/pricing/billability.ts";
+import { websocketPrice } from "../src/pricing/billability.ts";
 import { openai } from "../src/providers/openai.ts";
 import type { PassthroughPath } from "../src/providers/matcher.ts";
 import { compiledPassthrough, compiledWebsocket, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
@@ -113,20 +113,6 @@ describe(`saving a WebSocket path (step 10b, split keys ${splitKeysOn ? "on" : "
     expect(builtIn).toContain("only a custom provider's path can be a WebSocket session");
   });
 
-  it("refuses a WebSocket path an HTTP path could also take, whichever is listed first, and keeps a pair saved before (Sol, #274 round 1)", () => {
-    const http = { method: "GET", path: "v1/live/{id}" };
-    const live = { method: "GET", path: "v1/live/default", websocket: true, per_minute: 0.06 };
-    expect(saved([http, live])).toContain("passthrough.1.path: GET v1/live/default can match the requests of GET v1/live/{id}");
-    expect(saved([live, http])).toContain("passthrough.0.path: GET v1/live/default can match the requests of GET v1/live/{id}");
-    // The other way round: a WebSocket path with a part, an HTTP path it could take.
-    expect(saved([{ method: "GET", path: "v1/live/{voice}", websocket: true, per_minute: 0.06 }, { method: "GET", path: "v1/live/a" }])).toMatch(/^refused: .*can match the requests of/u);
-    // Paths that can't meet save; so does a POST at the same path.
-    expect(saved([{ method: "GET", path: "v1/live/{id}/events" }, live, { method: "POST", path: "v1/live/default" }])).not.toMatch(/^refused/u);
-    // Stricter checks apply at save: a pair stored before keeps saving.
-    const before = readPassthrough(storedPassthrough([{ method: "GET", path: "v1/live/{id}" }, { method: "GET", path: "v1/live/default", websocket: true, perMinuteNano: PER_MINUTE_NANO }], AUTH));
-    expect(saved([http, live], before)).not.toMatch(/^refused/u);
-  });
-
   it("refuses a WebSocket path that is a known provider's built-in session: that one is metered by its own adapter", () => {
     const xai = saved([{ method: "GET", path: "v1/realtime", websocket: true, per_minute: 0.06 }], [], { kind: "custom", baseUrl: "https://api.x.ai/", auth: AUTH });
     expect(xai).toMatch(/^refused: .*built-in xai\.realtime endpoint/u);
@@ -180,13 +166,10 @@ describe(`saving a WebSocket path (step 10b, split keys ${splitKeysOn ? "on" : "
 
 describe(`a WebSocket session's price (step 10b, split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("bills connection time at the listing's rate, as the customer's own price, whatever the model", () => {
-    const call = resolveWebsocket(LIVE);
-    expect(call).toMatchObject({ kind: "admitted", model: "", operation: { name: "websocket", lifecycle: "session" } });
-    expect(call.bill.price).toEqual({ price: { rates: { per_minute: PER_MINUTE_NANO }, raw: {} }, source: "customer_rate" });
+    const price = websocketPrice(PER_MINUTE_NANO);
+    expect(price).toEqual({ price: { rates: { per_minute: PER_MINUTE_NANO }, raw: {} }, source: "customer_rate" });
     // 90 s at $0.06 a minute: $0.09.
-    expect(priceSlice({}, call.bill.price, 90_000)).toMatchObject({ costNano: 90_000_000, unit: "session_seconds", units: 90_000, priceSource: "customer_rate", estimated: false });
-    // The session's slices are priced by the same rule, at the rate its ticket carries.
-    expect(websocketPrice(PER_MINUTE_NANO)).toEqual(call.bill.price);
+    expect(priceSlice({}, price, 90_000)).toMatchObject({ costNano: 90_000_000, unit: "session_seconds", units: 90_000, priceSource: "customer_rate", estimated: false });
   });
 });
 
@@ -247,8 +230,7 @@ describe(`starting a session on a WebSocket path (step 10b, split keys ${splitKe
     }
     expect(generic).not.toHaveProperty("lock");
     expect(generic).not.toHaveProperty("client");
-    // Its clock runs from the provider connection: no first-activity wait.
-    expect(generic.clock).toBe("connected");
+    expect(generic).not.toHaveProperty("clock");
   });
 
   it("is reached only by an app that allows passthrough, only at the listed path, and never by an HTTP request", async () => {
@@ -338,21 +320,11 @@ describe(`a WebSocket session's slices (step 10b, split keys ${splitKeysOn ? "on
 
 type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number; billedMs?: number };
 
-function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | null; accounting: boolean }) => unknown; afterConnectMs?: number; adapter?: string } = {}) {
+function core() {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(1_000_000);
   const startedAt = Date.now();
   const store = new MemoryStore();
-  // Time the start takes after the provider connected (the reconnect secret, the storage read): once.
-  let connected = false;
-  const read = store.get.bind(store);
-  store.get = async (keys) => {
-    if (connected && options.afterConnectMs !== undefined) {
-      connected = false;
-      vi.setSystemTime(Date.now() + options.afterConnectMs);
-    }
-    return read(keys);
-  };
   const checkpoints: { slice: Slice | null; accounting: boolean }[] = [];
   const closes: { endReason: string; finalSlice: number }[] = [];
   const parts = () => ({
@@ -361,24 +333,19 @@ function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | n
     log: () => undefined,
     vault: { sessionKey: async () => ({ key: { value: SECRET, header: AUTH.header, format: AUTH.format }, target: "https://live.example.com/v1/live" }) as never },
     main: {
-      open: async () => ({ deadline: startedAt + (options.capMs ?? 30 * 60_000), mode: "relayed", operation: "websocket", model: "", checkpointIntervalMs: 60_000, version: 2, adapter: options.adapter ?? "generic" }) as never,
+      open: async () => ({ deadline: startedAt + 30 * 60_000, mode: "relayed", operation: "websocket", model: "", checkpointIntervalMs: 60_000, version: 2, adapter: "generic" }) as never,
       checkpoint: async (_ticket: string, input: { slice: Slice | null; accounting: boolean }) => {
         checkpoints.push(structuredClone(input));
-        return (options.checkpoint?.(input) ?? { decision: "continue", reasons: [], written: true }) as never;
+        return { decision: "continue", reasons: [], written: true } as never;
       },
       close: async (_ticket: string, input: { endReason: string; finalSlice: number }) => {
         closes.push({ endReason: input.endReason, finalSlice: input.finalSlice });
         return { version: 2 };
       },
     },
-    provider: {
-      connect: async () => {
-        connected = true;
-        return { callId: null, close: () => undefined };
-      },
-    },
+    provider: { connect: async () => ({ callId: null, close: () => undefined }) },
   });
-  const { text, ticket } = ticketFor(startedAt, { providerType: "custom", operation: "websocket", model: "", url: "https://live.example.com/v1/live", cap: options.capMs ?? 30 * 60_000 });
+  const { text, ticket } = ticketFor(startedAt, { providerType: "custom", operation: "websocket", model: "", url: "https://live.example.com/v1/live" });
   const slices = () => checkpoints.map((one) => one.slice).filter((slice): slice is Slice => slice !== null);
   return {
     store,
@@ -392,7 +359,9 @@ function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | n
   };
 }
 
-describe("the relay's generic adapter: the clock, checkpoints, the cap, the end and a restart (step 10b)", () => {
+// The cap, a checkpoint's stop, the provider's close and a restart are the shared session core's, with the same
+// reads-nothing adapter: `relay-start.test.ts` covers them.
+describe("the relay's generic adapter: the clock and checkpoints (step 10b)", () => {
   it("bills the connection from its start to its close, one slice a checkpoint, with no usage read and no first-activity wait", async () => {
     const s = core();
     const session = s.instance();
@@ -413,73 +382,6 @@ describe("the relay's generic adapter: the clock, checkpoints, the cap, the end 
     expect(s.closes).toEqual([{ endReason: "client_closed", finalSlice: 3 }]);
   });
 
-  it("bills from the moment the provider connected, including the start's own steps after it (Sol, #274 round 1)", async () => {
-    const s = core({ afterConnectMs: 3_000 });
-    const session = s.instance();
-    await session.start(s.text, s.ticket, s.client);
-    s.tick(10_000);
-    await session.end("client_closed");
-    expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 13_000, gapMs: 0 })]);
-  });
-
-  it("leaves every other adapter's time as it was: Gemini Live's still counts from the end of the start (Sol, #274 round 2)", async () => {
-    const s = core({ afterConnectMs: 3_000, adapter: "gemini" });
-    const session = s.instance();
-    await session.start(s.text, s.ticket, s.client);
-    s.tick(10_000);
-    await session.end("client_closed");
-    expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 10_000, gapMs: 0 })]);
-  });
-
-  it("ends at the cap with time_cap, and bills nothing past it", async () => {
-    const s = core({ capMs: 150_000 });
-    const session = s.instance();
-    await session.start(s.text, s.ticket, s.client);
-    for (let tick = 0; tick < 6; tick += 1) {
-      s.tick(30_000);
-      await session.alarm();
-    }
-    expect(s.closes).toEqual([{ endReason: "time_cap", finalSlice: 3 }]);
-    expect(s.slices().reduce((sum, slice) => sum + slice.sessionMs, 0)).toBe(150_000);
-    // A late tick after the end books nothing more.
-    s.tick(60_000);
-    await session.alarm();
-    expect(s.slices().reduce((sum, slice) => sum + slice.sessionMs, 0)).toBe(150_000);
-  });
-
-  it("ends when a checkpoint answers stop, and when the provider closes, each with its own reason", async () => {
-    const stopped = core({ checkpoint: (input) => (input.accounting ? undefined : { decision: "stop", reasons: ["budget_stop"], written: true }) });
-    const first = stopped.instance();
-    await first.start(stopped.text, stopped.ticket, stopped.client);
-    stopped.tick(60_000);
-    await first.alarm();
-    expect(stopped.closes).toEqual([{ endReason: "budget_stop", finalSlice: 1 }]);
-    expect(stopped.slices()[0]).toMatchObject({ seq: 1, sessionMs: 60_000 });
-
-    const closed = core();
-    const second = closed.instance();
-    await second.start(closed.text, closed.ticket, closed.client);
-    closed.tick(12_000);
-    await second.providerGone(second.call as never);
-    expect(closed.closes).toEqual([{ endReason: "provider_closed", finalSlice: 1 }]);
-    expect(closed.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 12_000, gapMs: 0 })]);
-  });
-
-  it("after a restart, ends the session: the provider's socket went with the instance, and the time since the last write is an unknown-cost gap", async () => {
-    const s = core();
-    const first = s.instance();
-    await first.start(s.text, s.ticket, s.client);
-    s.tick(60_000);
-    await first.alarm();
-    // The instance dies 20 s later; a new one wakes at the next tick.
-    s.tick(20_000);
-    await s.instance().alarm();
-    expect(s.closes).toEqual([{ endReason: "error", finalSlice: 2 }]);
-    expect(s.slices()).toEqual([
-      expect.objectContaining({ seq: 1, sessionMs: 60_000, gapMs: 0, gaps: 0 }),
-      expect.objectContaining({ seq: 2, sessionMs: 0, gapMs: 20_000, gaps: 1 }),
-    ]);
-  });
 });
 
 // ---------------------------------------------------------------------------

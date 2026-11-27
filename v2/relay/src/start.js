@@ -524,11 +524,9 @@ export class SessionCore {
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       // The alarm's first tick: from then on it ticks every `TICK_MS` (plan section 5), so a
       // restarted object that lost its provider socket ends soon (row 13).
-      // The journal starts here: the session's connection time counts from now, or, for an adapter whose
-      // clock runs from the connection (the generic one), from when the provider connected (Sol, #274).
+      // The journal starts here: the session's connection time counts from now.
       // A provider that bills from the first activity (xAI): the time until then is free.
-      const clock = adapterFor(settings.adapter).clock;
-      const journal = newJournal(clock === "connected" ? connectedAt : this.now(), { idle: clock === "first_activity" });
+      const journal = newJournal(this.now(), { idle: adapterFor(settings.adapter).clock === "first_activity" });
       // An observed session has no side channel yet: until its first attach, no time is
       // connection time (`attachOnce`).
       if (observed) markDetached(journal, journal.from);

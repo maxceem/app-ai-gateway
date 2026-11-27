@@ -31,10 +31,7 @@ import type { Ticket } from "./tickets.ts";
  * listing's as the session started, whatever the settings say now.
  */
 export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined): string | null {
-  if (ticket.operation === WEBSOCKET) {
-    const perMinute = (ticket as Ticket & { perMinuteNano?: unknown }).perMinuteNano;
-    return typeof perMinute === "number" && Number.isSafeInteger(perMinute) && perMinute >= 0 ? encodeSessionPrice(websocketPrice(perMinute)) : null;
-  }
+  if (ticket.operation === WEBSOCKET) return ticket.perMinuteNano === undefined ? null : encodeSessionPrice(websocketPrice(ticket.perMinuteNano));
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {

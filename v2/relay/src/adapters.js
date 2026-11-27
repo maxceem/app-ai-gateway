@@ -24,7 +24,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   read(data: string | ArrayBuffer): UsageEvent | null,
  *   turn(data: string | ArrayBuffer): "open" | "done" | null,
  *   detached: "hold" | "end",
- *   clock?: "first_activity" | "connected",
+ *   clock?: "first_activity",
  *   client?(data: string | ArrayBuffer, state?: Record<string, unknown>): "activity" | "text" | { counts: Record<string, number> } | null,
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
@@ -66,9 +66,6 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * conversation anyway (ElevenLabs agents, 9e).
  *
  * The rest are optional, for a provider that bills by its own clock (xAI):
- * - `clock: "connected"`: the session's time counts from the moment the provider connected, not from
- *   the end of the start's own steps after it (the generic adapter and the mock ones; Sol, #274). Every
- *   other adapter's time counts from the end of the start, as it always has;
  * - `clock: "first_activity"`: the session's time is free until its first
  *   activity, then billed to the close (`../journal.js`, `markActive`);
  * - `client`: reads a client frame after it went to the provider. `"activity"`
@@ -119,7 +116,6 @@ function jsonAdapter(prefix, shape, turns) {
   return {
     shape,
     detached: "hold",
-    clock: "connected",
     turn(data) {
       if (typeof data !== "string") return null;
       if (data.startsWith(turns.opens)) return "open";
@@ -1051,7 +1047,7 @@ const ADAPTERS = {
   // A provider the gateway does not know (10b, plan D4): its frames, both ways, are forwarded as they are
   // and never read, so the session bills its connection time at the customer's per-minute rate. Its
   // frames are held for our SDK's reconnect, as for any provider that keeps the conversation.
-  generic: { ...NONE, clock: "connected" },
+  generic: NONE,
 };
 
 /**

@@ -117,12 +117,17 @@ describe(`streaming voice prices and the save rule (step 10a, split keys ${split
     for (const name of ["apiKey", "accessToken", "xiApiKey", "XiApiKey", "clientSecret", "singleUseToken", "proxyAuthorization", "API_KEY", "ApiKey"]) {
       expect(credentialField(name), name).toBe(true);
     }
+    // Acronyms, and plain names (Gemini Neon, Fable, #274 round 1).
+    for (const name of ["APIKey", "xiAPIKey", "JWTToken", "APIToken", "HMACSecret", "apikey", "APIKEY", "x-apikey", "auth", "Auth", "password", "user_password", "userPassword"]) {
+      expect(credentialField(name), name).toBe(true);
+    }
     // Every option ElevenLabs' and Deepgram's streams take in the query goes on.
     const options = [
       ...["model_id", "language_code", "enable_logging", "enable_ssml_parsing", "output_format", "inactivity_timeout", "sync_alignment", "auto_mode", "apply_text_normalization", "seed"],
       ...["keyterm", "keywords", "model", "language", "encoding", "sample_rate", "channels", "multichannel", "punctuate", "smart_format", "diarize", "diarize_model"],
       ...["interim_results", "utterance_end_ms", "vad_events", "endpointing", "redact", "detect_entities", "numerals", "profanity_filter", "search", "replace", "tag", "extra"],
       ...["mip_opt_out", "no_delay", "filler_words", "dictation", "version", "tokens_per_second", "maxTokens", "keyTerm", "tokenizer"],
+      ...["author", "auth_mode", "authorized", "keyterms", "KEYTERM", "IDs", "URLPath", "passwordless"],
     ];
     for (const name of options) expect(credentialField(name), name).toBe(false);
   });
