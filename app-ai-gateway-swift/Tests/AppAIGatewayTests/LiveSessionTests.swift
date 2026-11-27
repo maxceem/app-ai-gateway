@@ -101,8 +101,8 @@ private let ticket = LiveSessionTicket(
 
 private let started = #"{"type":"agw.session.started","reconnect_secret":"c2VjcmV0LXNlY3JldA","deadline":1795000000000}"#
 
-private func fast(heartbeat: TimeInterval = 60, report: TimeInterval = 60) -> LiveSession.Timing {
-    LiveSession.Timing(heartbeatAfter: heartbeat, reportEvery: report, tick: 0.01, reconnectFor: 5, retryAtMost: 0.05)
+private func fast(heartbeat: TimeInterval = 60, report: TimeInterval = 60, heartbeatAnswer: TimeInterval = 60) -> LiveSession.Timing {
+    LiveSession.Timing(heartbeatAfter: heartbeat, reportEvery: report, tick: 0.01, reconnectFor: 5, retryAtMost: 0.05, heartbeatAnswerWithin: heartbeatAnswer)
 }
 
 /// Waits until `condition` holds, for at most two seconds.
@@ -332,7 +332,7 @@ struct LiveSessionTests {
 
     @Test
     func aCloseTheRelayChoseEndsTheSessionWithoutComingBack() async {
-        for (code, reason) in [(1000, "time_cap"), (4000, "client_too_slow"), (1008, "rate_limited"), (4000, "session_active")] {
+        for (code, reason) in [(1000, "time_cap"), (4000, "client_too_slow"), (4000, "heartbeat_timeout"), (1008, "rate_limited"), (4000, "session_active")] {
             let links = Links()
             let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
             var events = session.events.makeAsyncIterator()
@@ -476,7 +476,7 @@ struct LiveSessionTests {
     }
 
     @Test
-    func closeDuringAHandoffClosesBothLinksNormally() async {
+    func closeDuringAHandoffClosesTheOldLinkAtOnceAndTheNewOneOnceItTookOver() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
         var events = session.events.makeAsyncIterator()
@@ -487,10 +487,92 @@ struct LiveSessionTests {
         _ = await events.next()
         #expect(await eventually { links.count == 2 })
         await session.close()
-        // The old link still owns the session at the relay: it is the one that must end it.
+        // The old link still owns the session at the relay: its close ends it, if it gets through.
         #expect(links[0].closed)
-        #expect(links[1].closed)
         #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
+        #expect(await events.next() == nil)
+        // A close of the new link before the relay took it over would only end the try.
+        #expect(!links[1].closed)
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await eventually { links[1].closed })
+    }
+
+    @Test
+    func aHangUpWhileComingBackFromADeadLinkEndsTheSessionThroughTheNewLink() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        // Wi-Fi to cellular: the old link is gone, its close would never reach the relay.
+        links[0].end(code: 0)
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        await session.close()
+        #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
+        // Nothing the app sends now goes anywhere.
+        await session.send(text: "late")
+        #expect(!links[1].closed)
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await eventually { links[1].closed })
+        #expect(!links[1].sent.contains("late"))
+    }
+
+    @Test
+    func aHeartbeatTheRelayNeverAnswersMovesTheSessionToANewLink() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.05, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        // The app only listens, and the link died without a word: the heartbeat gets no answer.
+        #expect(await eventually { links[0].sent.contains(#"{"type":"agw.heartbeat"}"#) })
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 && links[1].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        // The same handoff as reconnect(): the old link is not closed from this side.
+        #expect(!links[0].closed)
+    }
+
+    @Test
+    func anAnsweredHeartbeatKeepsTheLink() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.05, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        // The relay answers every heartbeat at once.
+        for _ in 0..<5 {
+            let before = links[0].sent.filter { $0 == #"{"type":"agw.heartbeat"}"# }.count
+            #expect(await eventually { links[0].sent.filter { $0 == #"{"type":"agw.heartbeat"}"# }.count > before })
+            links[0].deliver(#"{"type":"agw.heartbeat"}"#)
+        }
+        #expect(links.count == 1)
+    }
+
+    @Test
+    func reconnectWhileComingBackStartsAFreshTryInPlaceOfAHungOne() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].end(code: 0)
+        #expect(await events.next() == .reconnecting)
+        // The try to come back hangs: no answer, no close.
+        #expect(await eventually { links.count == 2 })
+        await session.reconnect()
+        #expect(await eventually { links.count == 3 && links[2].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        // The hung try is let go without a close: if the relay took it over after all, the new one takes it from it.
+        #expect(!links[1].closed)
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        links[2].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        links[2].deliver("now")
+        #expect(await events.next() == .text("now"))
     }
 
     @Test
@@ -521,6 +603,49 @@ struct LiveSessionTests {
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer agw_key")
         #expect(request.value(forHTTPHeaderField: "X-End-User-ID") == "user-1")
+    }
+
+    @Test
+    func providerHelpersAskForTheProvidersOwnLiveSessionPath() async throws {
+        let bodies = LockedBox<[String]>()
+        bodies.set([])
+        StubProtocol.handler = { request in
+            let body = request.httpBodyStream.map { stream -> Data in
+                stream.open()
+                defer { stream.close() }
+                var data = Data()
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable {
+                    let read = stream.read(&buffer, maxLength: buffer.count)
+                    if read <= 0 { break }
+                    data.append(buffer, count: read)
+                }
+                return data
+            } ?? request.httpBody ?? Data()
+            bodies.set((bodies.get() ?? []) + ["\(request.url!.lastPathComponent) " + String(decoding: body, as: UTF8.self)])
+            let answer = #"{"session_id":"s1","ticket":"t","relay_url":"wss://relay.test/v2/relay/session","expires_at":"a","ends_at":"b"}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!, Data(answer.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        let client = AppAIGatewayClient(appID: "app-1", baseURL: URL(string: "https://gateway.test")!, authMode: .apiKey(key: "agw_key"), session: urlSession)
+        let send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await urlSession.data(for: $0) }
+        _ = try await client.startOpenAIRealtimeSession(model: "gpt-realtime-2.1", send: send)
+        _ = try await client.startXAIVoiceSession(model: "grok-voice-3.0", send: send)
+        _ = try await client.startGeminiLiveSession(model: "gemini-3.1-flash-live-preview", send: send)
+        let seen = try #require(bodies.get())
+        #expect(seen.count == 3)
+        let decoded = try seen.map { line -> (String, [String: String]) in
+            let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+            return (parts[0], try JSONDecoder().decode([String: String].self, from: Data(parts[1].utf8)))
+        }
+        #expect(decoded[0].0 == "openai")
+        #expect(decoded[0].1 == ["path": "v1/realtime", "model": "gpt-realtime-2.1"])
+        #expect(decoded[1].0 == "xai")
+        #expect(decoded[1].1 == ["path": "v1/realtime", "model": "grok-voice-3.0"])
+        #expect(decoded[2].0 == "gemini")
+        #expect(decoded[2].1 == ["path": "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", "model": "gemini-3.1-flash-live-preview"])
     }
 
     @Test

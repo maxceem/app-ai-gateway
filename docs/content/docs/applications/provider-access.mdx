@@ -24,8 +24,8 @@ The gateway knows each operation's paths. A request on a path the gateway does
 not know for this provider, or on an operation the app does not allow, is
 refused with `403 path_not_allowed`.
 
-Operations marked **live sessions, coming later** cannot be served yet. To start
-a live session today, see [Passthrough](#passthrough) below.
+Operations marked **live session** run through the gateway's relay. See
+[Live sessions](/integrate/live-sessions).
 
 A request that asks the provider to run in the background, with
 `"background": true` or xAI's `"deferred": true`, is refused with

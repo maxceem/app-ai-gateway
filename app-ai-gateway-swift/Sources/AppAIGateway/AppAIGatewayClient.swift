@@ -548,6 +548,44 @@ public actor AppAIGatewayClient {
         }
     }
 
+    /// Asks for an OpenAI Realtime session (`v1/realtime`) running `model`,
+    /// such as `gpt-realtime-2.1`. `provider` is the connection's slug.
+    /// Send OpenAI's own events over the ``LiveSession``, as you would to OpenAI.
+    public func startOpenAIRealtimeSession(
+        model: String,
+        provider: String = "openai",
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        try await startSession(provider: provider, path: "v1/realtime", model: model, takesOver: takesOver, send: send)
+    }
+
+    /// Asks for an xAI voice session (`v1/realtime`) running `model`, such
+    /// as `grok-voice-3.0`. `provider` is the connection's slug.
+    public func startXAIVoiceSession(
+        model: String,
+        provider: String = "xai",
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        try await startSession(provider: provider, path: "v1/realtime", model: model, takesOver: takesOver, send: send)
+    }
+
+    /// Asks for a Gemini Live session running `model`, such as
+    /// `gemini-3.1-flash-live-preview`. `provider` is the connection's slug,
+    /// and `apiVersion` is `v1beta` or `v1alpha`. Send Gemini's `setup` as the
+    /// first message, as usual: the relay sets its model to this one.
+    public func startGeminiLiveSession(
+        model: String,
+        provider: String = "gemini",
+        apiVersion: String = "v1beta",
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        let path = "ws/google.ai.generativelanguage.\(apiVersion).GenerativeService.BidiGenerateContent"
+        return try await startSession(provider: provider, path: path, model: model, takesOver: takesOver, send: send)
+    }
+
     /// Builds a request to a provider through the gateway, hands it to `send`,
     /// and builds it again where the gateway itself refused it in a way a
     /// fresh token or a fresh proof can fix.

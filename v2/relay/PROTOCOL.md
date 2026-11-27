@@ -1,9 +1,9 @@
 # The relay's wire rules for our SDK
 
 Notes for clients that ask for the relay's own messages: our SDK, and any client
-that follows these rules. The full wire protocol document comes with the
-session SDK (plan step 9f). The relay's code is the reference:
-`src/frames.js` and `src/index.js`.
+that follows these rules. The guide for app developers is
+`docs/content/docs/integrate/live-sessions.mdx`. The relay's code is the
+reference: `src/frames.js` and `src/index.js`.
 
 ## Asking for the relay's messages
 
@@ -18,7 +18,9 @@ SDK sees only the provider's frames.
   once the session started, before any provider frame;
   `{"type":"agw.session.resumed","deadline":…}` when the client came back to
   the same session (see "Reconnecting"); and `{"type":"agw.heartbeat"}` in
-  answer to the client's heartbeat.
+  answer to the client's heartbeat, at once. Our SDK takes a heartbeat with no
+  answer within 10 s as a link that died without a word, and comes back on a
+  new link.
 - From the client: `{"type":"agw.heartbeat"}` after 30 s without other frames,
   `{"type":"agw.received","bytes":N}` reports, and
   `{"type":"agw.reconnect","secret":…}` as the first message when it comes back. Each starts exactly with

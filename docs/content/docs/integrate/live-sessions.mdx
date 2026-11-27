@@ -1,0 +1,204 @@
+---
+title: Live sessions
+description: Open a voice or other live session through the gateway's relay, keep it alive, come back after a dropped network, and read the close codes.
+---
+
+A live session is a long WebSocket conversation with a provider, such as a
+voice session. Your app does not connect to the provider. It asks the gateway
+for a session, and the gateway answers with a short-lived **ticket** and the
+address of its **relay**. The app opens a WebSocket to the relay with the
+ticket, and the relay connects to the provider with your provider key. The key
+never reaches the device.
+
+The relay passes the provider's own messages through both ways, as they are.
+Your app speaks the provider's protocol, exactly as it would to the provider.
+The relay adds a few small messages of its own, all starting with
+`{"type":"agw.`, to keep the session alive and to come back after a dropped
+network.
+
+These providers are served today:
+
+| Provider | Live-session path | Model |
+| --- | --- | --- |
+| OpenAI Realtime | `v1/realtime` | for example `gpt-realtime-2.1` |
+| xAI voice | `v1/realtime` | for example `grok-voice-3.0` |
+| Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
+
+The app's settings must allow the operation, as for any call. See
+[Provider access](/applications/provider-access).
+
+## Starting a session
+
+Ask the gateway for a session with the app's usual credentials:
+
+```http
+POST /v2/apps/{app}/sessions/{provider}
+Content-Type: application/json
+
+{"path": "v1/realtime", "model": "gpt-realtime-2.1"}
+```
+
+- `{provider}` is the connection's slug, such as `openai`.
+- `path` is the provider's own live-session path from the table above.
+- `model` is the model the session runs. The relay keeps the session on this
+  model, whatever the app sends later.
+- `takes_over` (optional) names an earlier session of the same user that this
+  one replaces. See [When to start a new session](#when-to-start-a-new-session).
+
+The answer:
+
+```json
+{
+  "session_id": "…",
+  "ticket": "…",
+  "relay_url": "wss://…",
+  "expires_at": "…",
+  "ends_at": "…"
+}
+```
+
+Open a WebSocket to `relay_url` within a minute, with these headers:
+
+- `Authorization: Bearer <ticket>`. The ticket goes only in this header, never
+  in a URL.
+- `x-agw-relay-messages: 1`, to get the relay's messages described below.
+  Without it, the relay sends only the provider's messages, which suits an
+  official provider SDK, but then a dropped network always means a new
+  session.
+
+The session lasts at most until `ends_at`, 30 minutes after it starts.
+
+In Swift, the package does all of this:
+
+```swift
+let ticket = try await client.startOpenAIRealtimeSession(model: "gpt-realtime-2.1")
+let session = LiveSession(ticket: ticket)
+await session.start()
+for await event in session.events {
+    switch event {
+    case .started: break              // send the provider's first messages
+    case .text(let json): handle(json) // a provider message
+    case .data(let bytes): play(bytes) // a binary provider message
+    case .reconnecting, .resumed: break
+    case .ended(let code, let reason): finish(code, reason)
+    }
+}
+```
+
+`startXAIVoiceSession(model:)` and `startGeminiLiveSession(model:)` work the
+same way. For Gemini Live, send Gemini's `setup` as the first message, as
+usual.
+
+## The relay's messages
+
+From the relay:
+
+- `{"type":"agw.session.started","reconnect_secret":"…","deadline":…}` once
+  the session has started, before any provider message. Keep the secret in
+  memory; it brings the app back to this session after a dropped network.
+- `{"type":"agw.session.resumed","deadline":…}` when the app came back to the
+  same session.
+- `{"type":"agw.heartbeat"}` in answer to each heartbeat.
+
+From the app:
+
+- `{"type":"agw.heartbeat"}` after 30 s without sending anything else.
+- `{"type":"agw.received","bytes":N}` every few seconds while provider
+  messages arrive, and once more after they stop. `N` is the total received
+  since the session started: text counts as its length in UTF-16 units
+  (`String.utf16.count` in Swift), binary as its bytes. The relay's own
+  messages don't count.
+- `{"type":"agw.reconnect","secret":"…"}` as the first message on a new link,
+  when coming back.
+
+Write each one exactly like this: starting with `{"type":"agw.`, with no
+space, and `type` first. The relay keeps these to itself and passes anything
+else to the provider.
+
+## Staying alive
+
+- **The heartbeat.** The relay ends a session when nothing has come from the
+  app for 90 s (`heartbeat_timeout`). An app that only listens sends the
+  heartbeat to stay. The relay answers each heartbeat at once, so an app that
+  gets no answer within about 10 s knows its link died without a word, and
+  comes back on a new link.
+- **Keeping up.** An app that falls about 30 s behind what the relay sent is
+  ended (`client_too_slow`). Sending the received-byte reports, and reading
+  messages as they come, keeps a slow network from being mistaken for a stuck
+  app.
+- **Quiet providers.** Some providers never end a quiet session on their own.
+  Close the session when the user is done.
+
+## Coming back after a dropped network
+
+When the app's link drops, for example when a phone moves from Wi-Fi to mobile
+data, the session goes on without it for a while. The relay keeps the provider
+connected and holds the provider's messages for the app, up to 512 messages or
+8 MB. The app comes back to the **same** session:
+
+1. Open the WebSocket again with the same ticket and
+   `x-agw-relay-messages: 1`. The ticket may have expired by then; it is still
+   accepted for coming back.
+2. Send `{"type":"agw.reconnect","secret":"…"}` as the first message, within
+   10 s.
+3. The relay answers `agw.session.resumed`, then sends what it held, then
+   everything new. Start the received-byte count from zero on the new link.
+
+If the old link still looks open, the new one takes over anyway, and the relay
+closes the old one with `1000 reconnected`. Keep the old link open until
+`agw.session.resumed` arrives: closing it first ends the session. Messages the
+provider sent to the old link until then still belong to the session.
+
+The app has about 90–120 s after its last message to come back. Messages that
+were on their way to the dying link when it dropped can be lost; the provider
+usually started its answer again if you ask again.
+
+The Swift `LiveSession` does all of this on its own. Call
+`session.reconnect()` when you know the network changed, to move at once
+instead of waiting for the old link to fail.
+
+## When to start a new session
+
+Ask the gateway for a new session, naming the old one in `takes_over`, when:
+
+- the app gets `4000 session_ended` or `ticket_expired` while coming back: the
+  relay no longer holds the session;
+- the session ended with `4000 heartbeat_timeout`, `1000 provider_closed`, or
+  `1000 time_cap`;
+- the Swift client ends with code `0` and `reconnect_failed`, `link_lost` or
+  `send_queue_full`.
+
+iOS suspends an app soon after another app takes the audio or the app goes to
+the background without audio. If it stays suspended for more than about
+90 s, the relay ends the session, and the app learns it when it runs again.
+Start a new session then.
+
+## Close codes
+
+| Code and reason | What happened | What to do |
+| --- | --- | --- |
+| `1000` with `time_cap`, `client_closed`, `provider_closed`, `budget_stop` or `allowance_used_up` | The session ended normally. | Start a new session if the user goes on. |
+| `1000 replaced` | A newer session of the same user took this one's place. | Nothing; the newer one goes on. |
+| `1000 reconnected` | The app came back on a newer link, and this older link was let go. | Nothing; the session goes on there. |
+| `4000 heartbeat_timeout` | Nothing came from the app for 90 s. | Start a new session. |
+| `4000 client_too_slow` | The app fell about 30 s behind. | Start a new session; send received-byte reports. |
+| `4000 session_ended` or `ticket_expired` | The session can't be taken back. | Start a new session with `takes_over`. |
+| `4000 session_active` | Another link is already on this session, or the reconnect secret was wrong. | When coming back, try again with the right secret. |
+| `4000 adapter_unknown` | The gateway and the relay are on different releases. | Try again later. |
+| `4000` with another reason, such as `start_queue_full` | The session never started. | Start a new session. |
+| `1008 rate_limited` | More than 2,000 messages in 10 s. | Send fewer, larger messages. |
+| `1008` with another reason, such as `setup_required` | The relay or the provider refused a message. | Fix the message. |
+| `1009 frame_too_large` | A message over 256 KB. | Send smaller messages. |
+| `1011 internal_error` | The relay failed. | Start a new session. |
+
+## Provider notes
+
+- **OpenAI Realtime.** A `session.update` that names another model is sent on
+  with the session's model.
+- **Gemini Live.** The relay keeps the conversation going across Gemini's own
+  connection limits: when Gemini closes a connection, the relay opens a new
+  one to the same conversation, and your link stays open. You never get
+  `goAway` or `sessionResumptionUpdate`. A `setup` that sets its own
+  `sessionResumption` has it removed.
+- **xAI voice.** xAI's `ping` does not keep a session alive. Send the
+  heartbeat.
