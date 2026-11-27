@@ -98,10 +98,8 @@ From the relay:
 - `{"type":"agw.session.started","reconnect_secret":"…","deadline":…}` once
   the session has started, before any provider message. Keep the secret in
   memory; it brings the app back to this session after a dropped network.
-- `{"type":"agw.session.resumed","deadline":…,"link":N}` when the app came
-  back to the same session. `link` counts the times the app came back: if two
-  links both get `resumed`, in either order, the one with the higher `link`
-  is the session's link.
+- `{"type":"agw.session.resumed","deadline":…}` when the app came back to the
+  same session.
 - `{"type":"agw.heartbeat"}` in answer to each heartbeat.
 
 From the app:
@@ -182,7 +180,8 @@ Start a new session then.
 
 | Code and reason | What happened | What to do |
 | --- | --- | --- |
-| `1000` with `time_cap`, `client_closed`, `provider_closed`, `budget_stop` or `allowance_used_up` | The session ended normally. | Start a new session if the user goes on. |
+| `1000` with `time_cap`, `client_closed` or `provider_closed` | The session ended normally. | Start a new session if the user goes on. |
+| `1000` with `budget_stop` or another limit's code | A limit was reached. | Don't start a new session until the limit allows it again. |
 | `1000 replaced` | A newer session of the same user took this one's place. | Nothing; the newer one goes on. |
 | `1000 reconnected` | The app came back on a newer link, and this older link was let go. | Nothing; the session goes on there. |
 | `4000 heartbeat_timeout` | Nothing came from the app for 90 s. | Start a new session. |

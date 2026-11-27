@@ -284,7 +284,7 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
       reattach: () => true,
     };
     (session as unknown as { core: unknown }).core = core;
-    const live = { client: null, owner: {}, frames, call: null, deadline: options.deadline ?? Date.now() + 60_000, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false, links: 0 };
+    const live = { client: null, owner: {}, frames, call: null, deadline: options.deadline ?? Date.now() + 60_000, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
     session.live = live as never;
     const coming = session.reconnect(socket);
     // What changes while the link waits for its first message.
@@ -355,7 +355,7 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect(frames.clientSpoke).toBe(false);
     const deadline = Date.now() + 60_000;
     const { live, sent } = await comeBack(frames, { deadline });
-    expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline, link: 1 })]);
+    expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline })]);
     // What the core's `proof` reads for the next checkpoint.
     expect(live.frames.clientSpoke).toBe(true);
   });

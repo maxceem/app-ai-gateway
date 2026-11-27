@@ -102,7 +102,7 @@ private let ticket = LiveSessionTicket(
 private let started = #"{"type":"agw.session.started","reconnect_secret":"c2VjcmV0LXNlY3JldA","deadline":1795000000000}"#
 
 private func fast(heartbeat: TimeInterval = 60, report: TimeInterval = 60, heartbeatAnswer: TimeInterval = 60) -> LiveSession.Timing {
-    LiveSession.Timing(heartbeatAfter: heartbeat, reportEvery: report, tick: 0.01, reconnectFor: 5, retryAtMost: 0.05, heartbeatAnswerWithin: heartbeatAnswer)
+    LiveSession.Timing(heartbeatAfter: heartbeat, reportEvery: report, tick: 0.01, reconnectFor: 5, retryAtMost: 0.05, heartbeatAnswerWithin: heartbeatAnswer, hungAfter: 1)
 }
 
 /// Waits until `condition` holds, for at most two seconds.
@@ -553,24 +553,61 @@ struct LiveSessionTests {
     }
 
     @Test
-    func reconnectWhileComingBackStartsAFreshTryInPlaceOfAHungOne() async {
+    func reconnectWhileComingBackReplacesOnlyATryThatHasWaitedAWhile() async {
         let links = Links()
-        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        let clock = Clock()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { clock.now }, makeLink: links.make)
         var events = session.events.makeAsyncIterator()
         await session.start()
         links[0].deliver(started)
         _ = await events.next()
         links[0].end(code: 0)
         #expect(await events.next() == .reconnecting)
-        // The try to come back hangs: no answer, no close.
         #expect(await eventually { links.count == 2 })
+        // A network monitor calls reconnect() right after the automatic try began:
+        // two tries at once would both be taken over, so it is left alone.
+        await session.reconnect()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(links.count == 2)
+        // The try hangs: no answer for a while.
+        clock.advance(2)
         await session.reconnect()
         #expect(await eventually { links.count == 3 && links[2].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
         // The hung try is let go without a close: if the relay took it over after all, the new one takes it from it.
         #expect(!links[1].closed)
-        links[2].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        links[2].deliver(Self.resumed)
         #expect(await events.next() == .resumed)
         links[2].deliver("now")
+        #expect(await events.next() == .text("now"))
+        await session.close()
+        // Ended, the let-go try is closed too.
+        #expect(links[1].closed)
+    }
+
+    @Test
+    func aLetGoTryThatTookTheSessionOverMakesTheClientComeBackAgain() async {
+        let links = Links()
+        let clock = Clock()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { clock.now }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].end(code: 0)
+        _ = await events.next()
+        #expect(await eventually { links.count == 2 })
+        clock.advance(2)
+        await session.reconnect()
+        #expect(await eventually { links.count == 3 })
+        links[2].deliver(Self.resumed)
+        #expect(await events.next() == .resumed)
+        // The let-go try got through later, and the relay closed the new link: come back again.
+        links[2].end(code: 1000, reason: "reconnected")
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 4 && links[3].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        links[3].deliver(Self.resumed)
+        #expect(await events.next() == .resumed)
+        links[3].deliver("now")
         #expect(await events.next() == .text("now"))
     }
 
@@ -605,104 +642,6 @@ struct LiveSessionTests {
     }
 
     private static let resumed = #"{"type":"agw.session.resumed","deadline":1795000000000}"#
-
-    /// A session whose first try to come back hangs, and a second try made by `reconnect()`.
-    private func twoTries() async -> (LiveSession, Links, AsyncStream<LiveSession.Event>.Iterator) {
-        let links = Links()
-        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
-        var events = session.events.makeAsyncIterator()
-        await session.start()
-        links[0].deliver(started)
-        _ = await events.next()
-        links[0].end(code: 0)
-        _ = await events.next()
-        _ = await eventually { links.count == 2 }
-        await session.reconnect()
-        _ = await eventually { links.count == 3 }
-        return (session, links, events)
-    }
-
-    @Test
-    func aLetGoTryThatTakesTheSessionOverLaterBecomesTheSessionsLink() async {
-        var (session, links, events) = await twoTries()
-        links[2].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        // The hung try gets through after all: the relay lets the later one win.
-        links[1].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        links[2].end(code: 1000, reason: "reconnected")
-        links[1].deliver("now")
-        #expect(await events.next() == .text("now"))
-        await session.send(text: "out")
-        #expect(await eventually { links[1].sent.contains("out") })
-        #expect(!links[2].sent.contains("out"))
-    }
-
-    @Test
-    func theFreshTryTakingTheSessionFromALetGoOneWins() async {
-        var (session, links, events) = await twoTries()
-        links[1].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        links[2].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        links[1].end(code: 1000, reason: "reconnected")
-        links[2].deliver("now")
-        #expect(await events.next() == .text("now"))
-        await session.send(text: "out")
-        #expect(await eventually { links[2].sent.contains("out") })
-    }
-
-    @Test
-    func aReconnectedCloseBeforeTheWinnersResumedDoesNotEndTheSession() async {
-        // The session is kept: one the app lets go ends with its links.
-        var (session, links, events) = await twoTries()
-        links[2].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        // The relay's close of the losing link can arrive before the winner's `resumed`.
-        links[2].end(code: 1000, reason: "reconnected")
-        links[1].deliver(Self.resumed)
-        #expect(await events.next() == .resumed)
-        links[1].deliver("now")
-        #expect(await events.next() == .text("now"))
-        await session.close()
-    }
-
-    private static func resumed(link: Int) -> String {
-        #"{"type":"agw.session.resumed","deadline":1795000000000,"link":"# + String(link) + "}"
-    }
-
-    @Test
-    func aResumedThatComesLateForALinkTheRelayAlreadyReplacedIsIgnored() async {
-        // The relay took the fresh try first (link 1), then the hung one (link 2),
-        // but the client hears the hung one's answer first.
-        var (session, links, events) = await twoTries()
-        links[1].deliver(Self.resumed(link: 2))
-        #expect(await events.next() == .resumed)
-        links[2].deliver(Self.resumed(link: 1))
-        links[2].end(code: 1000, reason: "reconnected")
-        links[1].deliver("now")
-        #expect(await events.next() == .text("now"))
-        await session.send(text: "out")
-        #expect(await eventually { links[1].sent.contains("out") })
-        #expect(!links[2].sent.contains("out"))
-        await session.close()
-    }
-
-    @Test
-    func aLetGoTrysLateResumedWithALowerNumberIsIgnored() async {
-        // The relay took the hung try first (link 1), then the fresh one (link 2).
-        var (session, links, events) = await twoTries()
-        links[2].deliver(Self.resumed(link: 2))
-        #expect(await events.next() == .resumed)
-        links[1].deliver(Self.resumed(link: 1))
-        links[1].end(code: 1000, reason: "reconnected")
-        links[2].deliver("now")
-        #expect(await events.next() == .text("now"))
-        await session.send(text: "out")
-        #expect(await eventually { links[2].sent.contains("out") })
-        #expect(!links[1].sent.contains("out"))
-        await session.close()
-    }
 
     @Test
     func aSessionLetGoAtItsEndedStillEndsThroughTheNewLink() async {
