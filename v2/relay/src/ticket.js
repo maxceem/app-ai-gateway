@@ -45,10 +45,13 @@ export const TICKET_VERSION = 1;
  *   seal: { providerKey?: { blob: string, identity: string[], header?: string, format?: string }, cloudflareToken?: { blob: string, identity: string[] } },
  *   backend?: string[],
  *   priceKeys?: Record<string, string>,
+ *   perMinuteNano?: number,
  * }} Ticket
  * `backend`: the models the session's backend may call (GPT-Live's, 9g), when its operation has one.
  * `priceKeys`: the session's price key values, read from its request when it is asked for (Deepgram's
  * stream, 10a): its slices are priced with them. Signed, so the app can't change them after.
+ * `perMinuteNano`: a listed WebSocket path's rate as the session started (10b), for the gateway to price
+ * its slices at. The relay never reads it.
  */
 
 /** @param {Uint8Array} bytes */

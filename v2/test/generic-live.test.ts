@@ -9,7 +9,8 @@
  *   saved before keeps saving and working as it did.
  * - The start: the app's query goes on without credential fields; the ticket names the `websocket`
  *   operation, the `generic` adapter and the key's header. An HTTP request never reaches the path.
- * - The price: one rule (`resolveWebsocket`) at the save check, the checkpoint and the pricing sweep.
+ * - The price: one rule (`websocketPrice`), at the listing's rate when the session started, which its signed
+ *   ticket carries and the session saves as its price: a later edit or removal never reprices it.
  * - The relay's session core, on a clock faked with Vitest's timers: the clock, checkpoints, the cap,
  *   the end, and a restart.
  * - The real relay, vault and provider stand-in: frames both ways and the key in its own header.
@@ -26,8 +27,7 @@ import { SESSION_PATH } from "../relay/src/constants.js";
 import { SessionCore } from "../relay/src/start.js";
 import { passthroughJson } from "../src/admin/providers.ts";
 import { GatewayError } from "../src/core/errors.ts";
-import { priceUnresolvedCharge } from "../src/ledger/corrections.ts";
-import { billingForCharge, priceSources, resolveWebsocket } from "../src/pricing/billability.ts";
+import { resolveWebsocket, websocketPrice } from "../src/pricing/billability.ts";
 import { openai } from "../src/providers/openai.ts";
 import type { PassthroughPath } from "../src/providers/matcher.ts";
 import { compiledPassthrough, compiledWebsocket, readPassthrough, storedPassthrough } from "../src/providers/passthrough.ts";
@@ -113,6 +113,20 @@ describe(`saving a WebSocket path (step 10b, split keys ${splitKeysOn ? "on" : "
     expect(builtIn).toContain("only a custom provider's path can be a WebSocket session");
   });
 
+  it("refuses a WebSocket path an HTTP path could also take, whichever is listed first, and keeps a pair saved before (Sol, #274 round 1)", () => {
+    const http = { method: "GET", path: "v1/live/{id}" };
+    const live = { method: "GET", path: "v1/live/default", websocket: true, per_minute: 0.06 };
+    expect(saved([http, live])).toContain("passthrough.1.path: GET v1/live/default can match the requests of GET v1/live/{id}");
+    expect(saved([live, http])).toContain("passthrough.0.path: GET v1/live/default can match the requests of GET v1/live/{id}");
+    // The other way round: a WebSocket path with a part, an HTTP path it could take.
+    expect(saved([{ method: "GET", path: "v1/live/{voice}", websocket: true, per_minute: 0.06 }, { method: "GET", path: "v1/live/a" }])).toMatch(/^refused: .*can match the requests of/u);
+    // Paths that can't meet save; so does a POST at the same path.
+    expect(saved([{ method: "GET", path: "v1/live/{id}/events" }, live, { method: "POST", path: "v1/live/default" }])).not.toMatch(/^refused/u);
+    // Stricter checks apply at save: a pair stored before keeps saving.
+    const before = readPassthrough(storedPassthrough([{ method: "GET", path: "v1/live/{id}" }, { method: "GET", path: "v1/live/default", websocket: true, perMinuteNano: PER_MINUTE_NANO }], AUTH));
+    expect(saved([http, live], before)).not.toMatch(/^refused/u);
+  });
+
   it("refuses a WebSocket path that is a known provider's built-in session: that one is metered by its own adapter", () => {
     const xai = saved([{ method: "GET", path: "v1/realtime", websocket: true, per_minute: 0.06 }], [], { kind: "custom", baseUrl: "https://api.x.ai/", auth: AUTH });
     expect(xai).toMatch(/^refused: .*built-in xai\.realtime endpoint/u);
@@ -171,10 +185,8 @@ describe(`a WebSocket session's price (step 10b, split keys ${splitKeysOn ? "on"
     expect(call.bill.price).toEqual({ price: { rates: { per_minute: PER_MINUTE_NANO }, raw: {} }, source: "customer_rate" });
     // 90 s at $0.06 a minute: $0.09.
     expect(priceSlice({}, call.bill.price, 90_000)).toMatchObject({ costNano: 90_000_000, unit: "session_seconds", units: 90_000, priceSource: "customer_rate", estimated: false });
-    // The checkpoint and the sweep read it through the connection's stored paths, by the same rule.
-    const sources = priceSources({ type: "custom", rates_json: null, passthrough_json: storedPassthrough([PLAIN, LIVE], AUTH) });
-    expect(billingForCharge(sources, "", "websocket")).toEqual(call.bill.price);
-    expect(billingForCharge(priceSources({ type: "custom", rates_json: null, passthrough_json: storedPassthrough([PLAIN], AUTH) }), "", "websocket")).toBeNull();
+    // The session's slices are priced by the same rule, at the rate its ticket carries.
+    expect(websocketPrice(PER_MINUTE_NANO)).toEqual(call.bill.price);
   });
 });
 
@@ -215,12 +227,14 @@ const start = (appId: string, slug: string, key: string, body: Record<string, un
 describe(`starting a session on a WebSocket path (step 10b, split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("starts it on a conversational slot with the generic adapter: the app's options go on without its own credentials, and the key goes in the connection's header", async () => {
     const { appId, slug, key } = await seedLive([PLAIN, LIVE], ["passthrough"]);
-    const response = await start(appId, slug, key, { path: "v1/live?voice=alloy&api_key=theirs&access_token=t&x-api-key=k&Authorization=b&lang=en", model: "ignored" });
+    const response = await start(appId, slug, key, { path: "v1/live?voice=alloy&api_key=theirs&access_token=t&x-api-key=k&Authorization=b&apiKey=c&accessToken=d&lang=en", model: "ignored" });
     expect(response.status).toBe(201);
     const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
     expect(payload).toMatchObject({ providerType: "custom", operation: "websocket", model: "", slot: "conversational", mode: "relayed", sessionTotal: false });
     expect(payload.url).toBe("https://live.example.com/v1/live?voice=alloy&lang=en");
     expect(adapterFor(payload)).toBe("generic");
+    // The listing's rate as the session started, signed, for the gateway to price its slices at.
+    expect(payload.perMinuteNano).toBe(PER_MINUTE_NANO);
     // The relay sends the key only in the header and format the connection names, never in the address.
     expect(payload.seal.providerKey).toMatchObject({ header: "x-api-key", format: "{key}" });
     expect(JSON.stringify(payload)).not.toContain(SECRET);
@@ -284,14 +298,14 @@ const slicesOf = async (sessionId: string) =>
     .results as Record<string, unknown>[];
 
 describe(`a WebSocket session's slices (step 10b, split keys ${splitKeysOn ? "on" : "off"})`, () => {
-  it("books each checkpoint's connection time at the price the session started with, and a price change later never reprices it", async () => {
+  it("books each checkpoint's connection time at the rate the session started with: a price change before its first checkpoint never reprices it", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const { id, ticket, sessionId, payload } = await startedSession();
-    expect((await checkpoint(ticket, 1, 60_000, payload.start, payload.start + 60_000)).decision).toBe("continue");
-    // The customer doubles the rate mid-session: the session keeps the one it started with.
+    // The customer doubles the rate right after the start, before any checkpoint (Sol, #274 round 1).
     await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
       .bind(storedPassthrough([{ ...LIVE, perMinuteNano: 2 * PER_MINUTE_NANO }], AUTH), id)
       .run();
+    expect((await checkpoint(ticket, 1, 60_000, payload.start, payload.start + 60_000)).decision).toBe("continue");
     vi.setSystemTime(payload.start + 90_000);
     await checkpoint(ticket, 2, 30_000, payload.start + 60_000, payload.start + 90_000, true);
     const ctx = createExecutionContext();
@@ -301,21 +315,20 @@ describe(`a WebSocket session's slices (step 10b, split keys ${splitKeysOn ? "on
       { id: `${sessionId}:slice:1`, operation: "websocket", model: "", cost_nano: 60_000_000, price_source: "customer_rate", unit: "session_seconds", units: 60_000, session_ms: 60_000 },
       { id: `${sessionId}:slice:2`, operation: "websocket", model: "", cost_nano: 30_000_000, price_source: "customer_rate", unit: "session_seconds", units: 30_000, session_ms: 30_000 },
     ]);
+    // Saved as the session's price, which the pricing sweep prices any of its slices at.
+    const saved = await ledger().prepare("SELECT rates_json FROM session WHERE id = ?").bind(sessionId).first<{ rates_json: string }>();
+    expect(JSON.parse(saved!.rates_json)).toEqual(websocketPrice(PER_MINUTE_NANO));
   });
 
-  it("leaves a slice unpriced when the path had no price at its first checkpoint, and the sweep prices it by the same rule once it has one", async () => {
-    const { id, ticket, sessionId, payload } = await startedSession();
-    // The listing is gone before the first checkpoint: the slice is booked unpriced, never as free.
-    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?").bind(storedPassthrough([PLAIN], AUTH), id).run();
+  it("still prices its slices at its rate when the listing is removed before its first checkpoint, never at another path's or as unpriced", async () => {
+    const { id, ticket, sessionId, payload } = await startedSession([PLAIN, LIVE]);
+    // The WebSocket path is removed, and another listed in its place at another rate.
+    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?")
+      .bind(storedPassthrough([PLAIN, { method: "GET", path: "v1/other", websocket: true, perMinuteNano: 5 * PER_MINUTE_NANO }], AUTH), id)
+      .run();
     await checkpoint(ticket, 1, 45_000, payload.start, payload.start + 45_000);
-    const [slice] = await slicesOf(sessionId);
-    expect(slice).toMatchObject({ cost_nano: null, price_source: "unresolved", session_ms: 45_000 });
-    // Listed again: the sweep prices it at the listing's rate. 45 s at $0.06 a minute: $0.045.
-    await env.DB.prepare("UPDATE provider_connection SET passthrough_json = ? WHERE id = ?").bind(storedPassthrough([PLAIN, LIVE], AUTH), id).run();
-    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: String(slice!.id), now: payload.start + 120_000 })).toMatchObject({
-      status: "priced",
-      correction: { costNano: 45_000_000, unit: "session_seconds" },
-    });
+    // 45 s at $0.06 a minute: $0.045.
+    expect(await slicesOf(sessionId)).toEqual([expect.objectContaining({ cost_nano: 45_000_000, price_source: "customer_rate", session_ms: 45_000 })]);
   });
 });
 
@@ -324,11 +337,21 @@ describe(`a WebSocket session's slices (step 10b, split keys ${splitKeysOn ? "on
 
 type Slice = { seq: number; measures: Record<string, number>; sessionMs: number; gapMs: number; gaps: number; billedMs?: number };
 
-function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | null; accounting: boolean }) => unknown } = {}) {
+function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | null; accounting: boolean }) => unknown; afterConnectMs?: number } = {}) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(1_000_000);
   const startedAt = Date.now();
   const store = new MemoryStore();
+  // Time the start takes after the provider connected (the reconnect secret, the storage read): once.
+  let connected = false;
+  const read = store.get.bind(store);
+  store.get = async (keys) => {
+    if (connected && options.afterConnectMs !== undefined) {
+      connected = false;
+      vi.setSystemTime(Date.now() + options.afterConnectMs);
+    }
+    return read(keys);
+  };
   const checkpoints: { slice: Slice | null; accounting: boolean }[] = [];
   const closes: { endReason: string; finalSlice: number }[] = [];
   const parts = () => ({
@@ -347,7 +370,12 @@ function core(options: { capMs?: number; checkpoint?: (input: { slice: Slice | n
         return { version: 2 };
       },
     },
-    provider: { connect: async () => ({ callId: null, close: () => undefined }) },
+    provider: {
+      connect: async () => {
+        connected = true;
+        return { callId: null, close: () => undefined };
+      },
+    },
   });
   const { text, ticket } = ticketFor(startedAt, { providerType: "custom", operation: "websocket", model: "", url: "https://live.example.com/v1/live", cap: options.capMs ?? 30 * 60_000 });
   const slices = () => checkpoints.map((one) => one.slice).filter((slice): slice is Slice => slice !== null);
@@ -382,6 +410,15 @@ describe("the relay's generic adapter: the clock, checkpoints, the cap, the end 
       [3, 25_000, {}, 0, undefined],
     ]);
     expect(s.closes).toEqual([{ endReason: "client_closed", finalSlice: 3 }]);
+  });
+
+  it("bills from the moment the provider connected, including the start's own steps after it (Sol, #274 round 1)", async () => {
+    const s = core({ afterConnectMs: 3_000 });
+    const session = s.instance();
+    await session.start(s.text, s.ticket, s.client);
+    s.tick(10_000);
+    await session.end("client_closed");
+    expect(s.slices()).toEqual([expect.objectContaining({ seq: 1, sessionMs: 13_000, gapMs: 0 })]);
   });
 
   it("ends at the cap with time_cap, and bills nothing past it", async () => {

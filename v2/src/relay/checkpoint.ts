@@ -690,7 +690,7 @@ export async function checkpointForRelay(
 
   // Today's price goes with the slice; the ledger prices the slice with the session's saved one,
   // and saves today's on the first checkpoint (plan 4.2; `./session-price.ts`). One call.
-  const today = todaySessionPrice(ticket, standing === null ? undefined : (standing.ratesJson ?? null), standing?.passthroughJson ?? null);
+  const today = todaySessionPrice(ticket, standing === null ? undefined : (standing.ratesJson ?? null));
   if (today === null) log("warn", "checkpoint_price_unread", facts);
 
   let answer: CheckpointAnswer;

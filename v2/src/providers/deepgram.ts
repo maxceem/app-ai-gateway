@@ -146,7 +146,7 @@ export const deepgram = defineProvider({
           { in: "query", field: "callback_method" },
         ],
       },
-      // A credential in its query (`token`, `access_token`) is never sent: `CREDENTIAL_FIELD` in `../relay/start-session.ts`.
+      // A credential in its query (`token`, `access_token`) is never sent: `credentialField` in `../relay/start-session.ts`.
       meter: { kind: "wall_clock" },
       session: { slot: "streaming", mode: "relayed", lookup: "deepgram", queryOptions: true },
     }),

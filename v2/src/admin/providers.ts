@@ -79,6 +79,7 @@ import {
   compilePassthrough,
   DIRECT_ROUTE,
   listingShape,
+  listingsMeet,
   apiPrefixesOf,
   namedPartProblem,
   ProviderMatcher,
@@ -510,6 +511,17 @@ export function passthroughJson(
     return { where, key, listed, compiled: { listed, template: compiled.template }, isNew };
   });
   // Two listings that can match one request need no refusal: the more specific one serves it (`moreSpecific`).
+  // A WebSocket path is the exception: an HTTP listing that could take its requests would send them on
+  // unmetered, so the two may not overlap, whichever was listed first. A pair saved before keeps saving.
+  const websocket = checked.find((one) => one.listed.websocket === true);
+  if (websocket !== undefined) {
+    const overlapped = checked.find(
+      (one) => one !== websocket && one.listed.style === undefined && (one.isNew || websocket.isNew) && listingsMeet(one.compiled, websocket.compiled),
+    );
+    if (overlapped !== undefined) {
+      throw new GatewayError(400, "invalid_request", `${websocket.where}.path: ${websocket.key} can match the requests of ${overlapped.key}; list paths that do not overlap`);
+    }
+  }
   const paths = checked.map((one) => one.listed);
   // A custom provider's description holds its API-style paths as operations, so it is built from this save.
   const description = subject.kind === "custom" ? customDescription({ baseUrl: subject.baseUrl, auth: subject.auth, paths }) : subject.description;

@@ -16,7 +16,8 @@
  * sweep, never as free. A price that couldn't be read today (D1 failed, the
  * connection's rates are malformed) is not "no price": nothing is saved.
  */
-import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
+import { billingForCharge, priceSources, websocketPrice, type ResolvedPrice } from "../pricing/billability.ts";
+import { WEBSOCKET } from "../providers/passthrough.ts";
 import { keyCandidates, type ModelPrice } from "../pricing/prices.ts";
 import { declaredOperation } from "../providers/presets.ts";
 import type { UsageObservation } from "../usage/observation.ts";
@@ -26,15 +27,19 @@ import type { Ticket } from "./tickets.ts";
  * Today's price for the session's model, saved form: '' when it has none.
  * Null when it couldn't be read: the connection's settings (`ratesJson`
  * undefined: D1 didn't answer) or its rates are unreadable. A session on a
- * listed WebSocket path is priced at its listing's rate (`passthroughJson`).
+ * listed WebSocket path is priced at the rate its ticket carries, the
+ * listing's as the session started, whatever the settings say now.
  */
-export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined, passthroughJson: string | null = null): string | null {
+export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined): string | null {
+  if (ticket.operation === WEBSOCKET) {
+    const perMinute = (ticket as Ticket & { perMinuteNano?: unknown }).perMinuteNano;
+    return typeof perMinute === "number" && Number.isSafeInteger(perMinute) && perMinute >= 0 ? encodeSessionPrice(websocketPrice(perMinute)) : null;
+  }
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {
     // On the session's own operation: its section of our list, if it has one (Deepgram's streaming rates).
-    const sources = priceSources({ type: ticket.providerType, rates_json: ratesJson, passthrough_json: passthroughJson });
-    return encodeSessionPrice(billingForCharge(sources, ticket.model, ticket.operation));
+    return encodeSessionPrice(billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model, ticket.operation));
   } catch {
     return null;
   }

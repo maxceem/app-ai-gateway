@@ -75,7 +75,7 @@ describe("the listed-model rule", () => {
 
 /** A connection's price sources with rates read by `rates`, listed as its own type. */
 function sources(type: string, rates: () => CustomerRates | null): PriceSources {
-  return { type, rates, listedAs: (model) => ({ type, model }), websocketPath: () => null };
+  return { type, rates, listedAs: (model) => ({ type, model }) };
 }
 
 describe("rewriteTargetBillable", () => {

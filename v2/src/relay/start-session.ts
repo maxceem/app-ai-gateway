@@ -54,12 +54,18 @@ export function relaySessionUrl(env: Env): string | null {
   return url.toString();
 }
 
+/** A name's last word is a key, a token, a secret or an authorization, after `_` or `-`. */
+const CREDENTIAL_NAME = /(^|[_-])(key|token|secret|authorization)$/iu;
+
 /**
- * A query field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`,
- * `api_key`, `access_token`, `authorization`, `single_use_token`). Never sent: the session's key is the
- * only credential.
+ * Whether a query field is named as a credential: a key, a token, a secret or an authorization, its words
+ * joined by `_`, `-` or camelCase (`xi-api-key`, `api_key`, `access_token`, `authorization`,
+ * `single_use_token`, `apiKey`, `accessToken`). Never sent: the session's key is the only credential.
+ * A word that only starts that way is no credential (Deepgram's `keyterm`, `tokens_per_second`).
  */
-export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+export function credentialField(name: string): boolean {
+  return CREDENTIAL_NAME.test(name.replace(/([a-z0-9])([A-Z])/gu, "$1_$2"));
+}
 
 /** A live-session path and its query, apart: the query, if any, without its `?`. */
 function splitQuery(path: string): [string, string | undefined] {
@@ -158,9 +164,9 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");
       }
       // The app's options go on as it sent them, except the fields the operation removes (webhooks), any
-      // field named as a credential (`CREDENTIAL_FIELD`), and the model, which is always the session's own.
+      // field named as a credential (`credentialField`), and the model, which is always the session's own.
       const sent = removeOutbound(operation, null, options).query ?? new URLSearchParams(options);
-      for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
+      for (const name of [...new Set(sent.keys())]) if (credentialField(name)) sent.delete(name);
       if (location.in === "query") sent.set(location.name, call.model);
       const queryText = sent.toString();
       const url = upstreamUrl(connection, description, {
@@ -211,6 +217,8 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             keyPlacement: { header: description.auth.header, format: description.auth.format },
             ...(backend === undefined ? {} : { backend }),
             ...(priceKeys === undefined ? {} : { priceKeys }),
+            // A listed WebSocket path's rate, as it is now: a later edit or removal never reprices the session.
+            ...(match.kind === "passthrough" && match.listed.perMinuteNano !== undefined ? { perMinuteNano: match.listed.perMinuteNano } : {}),
           },
           now,
           sessionId,

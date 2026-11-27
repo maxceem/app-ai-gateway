@@ -157,7 +157,7 @@ export const elevenlabs = defineProvider({
       transport: "websocket",
       model: { in: "query", name: "model_id", default: DEFAULT_TTS_MODEL },
       modelKinds: ["speech"],
-      // A credential in its query (`authorization`, `single_use_token`) is never sent: `CREDENTIAL_FIELD` in `../relay/start-session.ts`.
+      // A credential in its query (`authorization`, `single_use_token`) is never sent: `credentialField` in `../relay/start-session.ts`.
       meter: { kind: "provider_event", adapter: "elevenlabs-tts", units: ["characters"] },
       // ElevenLabs refuses a model its stream doesn't serve (`eleven_v3`, `eleven_v4`), and the app gets its error as it is.
       session: { slot: "streaming", mode: "relayed", queryOptions: true },

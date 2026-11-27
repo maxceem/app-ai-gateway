@@ -597,6 +597,11 @@ function moreSpecific(a: Template, b: Template): boolean {
   return a.source < b.source;
 }
 
+/** Whether some request matches two listed paths: the same method, and some path both templates match. */
+export function listingsMeet(a: CompiledPassthrough, b: CompiledPassthrough): boolean {
+  return a.listed.method === b.listed.method && templatesMeet(a.template.segments as readonly SegmentPattern[], b.template.segments, {});
+}
+
 /** Whether some path matches both a listed path (no `{name...}` part) and an operation's path, read with its closed lists. */
 function templatesMeet(listed: readonly SegmentPattern[], pattern: readonly TemplateSegment[], closedLists: ClosedLists): boolean {
   const multiAt = pattern.findIndex((segment) => segment.kind === "multi");

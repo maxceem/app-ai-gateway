@@ -18,7 +18,7 @@ import { checkpointForRelay, priceSlice, sliceCharge } from "../src/relay/checkp
 import { deepgramLookup, recordFigure } from "../src/relay/deepgram-lookup.ts";
 import { billing, billingForCharge, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { priceKeyValues } from "../src/proxy/request-fields.ts";
-import { CREDENTIAL_FIELD } from "../src/relay/start-session.ts";
+import { credentialField } from "../src/relay/start-session.ts";
 import { GatewayError } from "../src/core/errors.ts";
 import { setVaultForTests, type VaultClient } from "../src/vault/client.ts";
 import { localVault } from "./local-vault.ts";
@@ -111,9 +111,20 @@ describe(`streaming voice prices and the save rule (step 10a, split keys ${split
 
   it("names a query's credential fields, never an option such as Deepgram's keyterm", () => {
     for (const name of ["xi-api-key", "xi_api_key", "api_key", "key", "token", "access_token", "single_use_token", "authorization", "Authorization", "client_secret"]) {
-      expect(CREDENTIAL_FIELD.test(name), name).toBe(true);
+      expect(credentialField(name), name).toBe(true);
     }
-    for (const name of ["keyterm", "keywords", "model", "output_format", "language", "tokens_per_second", "sample_rate"]) expect(CREDENTIAL_FIELD.test(name), name).toBe(false);
+    // camelCase too (Sol, #274 round 1).
+    for (const name of ["apiKey", "accessToken", "xiApiKey", "XiApiKey", "clientSecret", "singleUseToken", "proxyAuthorization", "API_KEY", "ApiKey"]) {
+      expect(credentialField(name), name).toBe(true);
+    }
+    // Every option ElevenLabs' and Deepgram's streams take in the query goes on.
+    const options = [
+      ...["model_id", "language_code", "enable_logging", "enable_ssml_parsing", "output_format", "inactivity_timeout", "sync_alignment", "auto_mode", "apply_text_normalization", "seed"],
+      ...["keyterm", "keywords", "model", "language", "encoding", "sample_rate", "channels", "multichannel", "punctuate", "smart_format", "diarize", "diarize_model"],
+      ...["interim_results", "utterance_end_ms", "vad_events", "endpointing", "redact", "detect_entities", "numerals", "profanity_filter", "search", "replace", "tag", "extra"],
+      ...["mip_opt_out", "no_delay", "filler_words", "dictation", "version", "tokens_per_second", "maxTokens", "keyTerm", "tokenizer"],
+    ];
+    for (const name of options) expect(credentialField(name), name).toBe(false);
   });
 
   it("keeps a stream's price keys on its slice, so the pricing sweep prices an unpriced one the same way", () => {
