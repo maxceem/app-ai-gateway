@@ -195,14 +195,15 @@ describe("adapters", () => {
     expect(typeOf("not json")).toBeNull();
   });
 
-  it("xAI: its clock starts at the first audio or answer, each text message counts, ping is only a keepalive, and response.done's total is a check (T5, T20)", () => {
+  it("xAI: its clock starts at the first audio or xAI's first answer, each text message counts, ping is only a keepalive, and response.done's total is a check (T5, T20)", () => {
     const xai = adapterFor("xai");
     expect(xai).toMatchObject({ clock: "first_activity", detached: "hold" });
     // The client's frames, read after they went to xAI.
     expect(xai.client?.(JSON.stringify({ type: "input_audio_buffer.append", audio: "AAAA" }))).toBe("activity");
     expect(xai.client?.(`{"audio":"${"A".repeat(4_000)}","type":"input_audio_buffer.append"}`)).toBe("activity");
     expect(xai.client?.(new ArrayBuffer(960))).toBe("activity");
-    expect(xai.client?.(JSON.stringify({ type: "response.create" }))).toBe("activity");
+    // Asking for an answer is not activity: xAI's answer, when it comes, starts the clock (Sol, #266 round 3).
+    expect(xai.client?.(JSON.stringify({ type: "response.create" }))).toBeNull();
     const text = JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } });
     expect(xai.client?.(text)).toBe("text");
     // The same two frames with their fields in another order (Sol, #266 round 1).

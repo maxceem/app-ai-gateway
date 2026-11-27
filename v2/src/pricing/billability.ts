@@ -843,7 +843,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "keyed_session_rates"; readonly operation: string }
+  | { readonly kind: "session_rates"; readonly operation: string; readonly keyed: boolean; readonly measure?: string }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -859,13 +859,20 @@ export function savedPriceProblem(
   let combinations = 1;
   for (const table of Object.values(price.keyed ?? {})) combinations *= Math.max(1, Object.keys(table).length);
   if (combinations > MAX_PRICE_KEY_COMBINATIONS) return { kind: "too_many_combinations", combinations };
-  // A model our list prices for a session billed by its clock (xAI's grok-voice-3.0) keeps the rates
-  // it states itself: rates by key value can't bill its sessions (`keyedClockSession`). Refused here,
-  // since an app that routes to it would otherwise be judged only once the price had already made it
-  // ineligible (Sol, #266 round 2).
+  // A model our list prices for a session billed by its clock (xAI's grok-voice-3.0): a custom price
+  // must still bill that session, by its own save check (both base rates, none by key value). Refused
+  // here, since an app that routes to it would otherwise be judged only once the price had already
+  // made it ineligible, and its next session refused (Sol, #266 rounds 2 and 3).
   const listed = listPrice(providerType, model);
-  const session = listed === null ? undefined : operations.find((operation) => keyedClockSession(operation, price) && operationBillable(operation, listed, "save"));
-  if (session !== undefined) return { kind: "keyed_session_rates", operation: session.name };
+  const session =
+    listed === null
+      ? undefined
+      : operations.find((operation) => operation.meter.kind === "wall_clock" && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
+  if (session !== undefined) {
+    const keyed = keyedClockSession(session, price);
+    const measure = keyed ? null : missingMeasure(session, price);
+    return { kind: "session_rates", operation: session.name, keyed, ...(measure !== null ? { measure } : {}) };
+  }
   try {
     effectivePrices(price);
   } catch (error) {

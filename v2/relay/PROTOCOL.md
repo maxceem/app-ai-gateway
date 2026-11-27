@@ -89,8 +89,9 @@ An xAI session is billed as xAI bills it: by time, from the session's first
 activity to its close, plus each text message.
 
 - The first activity is the first audio frame sent to xAI (an
-  `input_audio_buffer.append`, or a binary frame), the first `response.create`,
-  or xAI's first `response.created`. The time before it is free.
+  `input_audio_buffer.append`, a binary frame, or an item with audio content),
+  or xAI's first answer (`response.created`). The time before it is free. A
+  `response.create` alone starts nothing: its answer does.
 - From then on, the time is billed to the close, silence too. xAI never closes
   a quiet session, so close it when the user is done.
 - Each `conversation.item.create` the client sends counts as one text message.

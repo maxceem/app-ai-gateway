@@ -153,8 +153,10 @@ function itemKind(data) {
  *
  * - Billed by wall time from the first activity to the close: the first audio
  *   frame (even silence) or the first answer. So the relay's clock is the
- *   meter. It starts when the client's first audio frame or `response.create`
- *   has gone to xAI, or at xAI's first `response.created`, whichever comes first.
+ *   meter. It starts when the client's first audio frame has gone to xAI, or
+ *   at xAI's first `response.created`, whichever comes first. A client's
+ *   `response.create` is not the start: xAI may reject it, and its answer
+ *   starts the clock when it comes (Sol, #266 round 3).
  * - Each client `conversation.item.create` is one text message, billed on
  *   top, except a tool result (`function_call_output`), which is not billed,
  *   and an item with audio content, which the clock bills (`itemKind`).
@@ -192,7 +194,7 @@ const XAI = {
     // Binary frames are audio (xAI's `"transport": "binary"`).
     if (typeof data !== "string") return "activity";
     const type = typeOf(data);
-    if (type === "input_audio_buffer.append" || type === "response.create") return "activity";
+    if (type === "input_audio_buffer.append") return "activity";
     if (type === "conversation.item.create") return itemKind(data);
     return null;
   },
