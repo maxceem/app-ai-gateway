@@ -65,7 +65,7 @@ export interface OpenSettings {
    * message and every update against them (plan, "GPT-Live backend rules"). Only when the operation has
    * a backend.
    */
-  readonly backend?: { readonly models: readonly string[]; readonly tools: readonly string[]; readonly long?: Readonly<Record<string, number>> };
+  readonly backend?: { readonly models: readonly string[]; readonly tools: readonly string[] };
 }
 
 /** The relay adapter of each live-session operation (plan 5.2). */
@@ -82,11 +82,7 @@ function backendOf(ticket: Ticket): OpenSettings["backend"] {
   const tools = declaredOperation(ticket.operation)?.session?.backend?.tools;
   if (tools === undefined) return undefined;
   const models = Array.isArray(ticket.backend) ? ticket.backend.filter((model) => typeof model === "string" && model !== "") : [];
-  const long: Record<string, number> = {};
-  for (const [model, threshold] of Object.entries(ticket.backendLong ?? {})) {
-    if (typeof threshold === "number" && Number.isSafeInteger(threshold) && threshold > 0) long[model] = threshold;
-  }
-  return { models, tools, long };
+  return { models, tools };
 }
 
 /** The relay adapter for a session's operation (plan 5.2). */

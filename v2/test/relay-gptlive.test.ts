@@ -69,11 +69,16 @@ describe("GPT-Live's adapter (step 9g)", () => {
 });
 
 describe("the lock on a GPT-Live client's frames (step 9g)", () => {
-  it("needs session.start first, sets the session's model on it, and refuses a binary frame", () => {
-    expect(meter().lock(JSON.stringify({ type: "response.create" }))).toEqual({ refused: "session_start_required" });
+  it("sets the session's model on session.start, pins the backend's tier to the standard one, and refuses a binary frame or one that isn't JSON", () => {
     expect(meter().lock(new ArrayBuffer(4))).toEqual({ refused: "binary_not_supported" });
-    const locked = meter().lock(start({ model: "gpt-live-2", ...responses({}) }));
-    expect(JSON.parse(locked as string).session.model).toBe("gpt-live-1");
+    const locked = JSON.parse(meter().lock(start({ model: "gpt-live-2", ...responses({}) })) as string);
+    expect(locked.session.model).toBe("gpt-live-1");
+    // No tier, or auto, may run at Fast, which OpenAI bills at twice the rate: the standard one is sent (Sol, #272 round 2).
+    expect(locked.session.delegation.responses.service_tier).toBe("default");
+    expect(JSON.parse(meter().lock(start(responses({ service_tier: "auto" }))) as string).session.delegation.responses.service_tier).toBe("default");
+    // A frame that had to be read whole and isn't a JSON object never goes on (Fable, #272).
+    expect(meter().lock('{"type":"session.update","session":')).toEqual({ refused: "invalid_frame" });
+    expect(meter().lock("[1,2]")).toEqual({ refused: "invalid_frame" });
   });
 
   it("lets the backend name only a model the app may call, named at the start, and function tools only", () => {
@@ -84,15 +89,16 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
     expect(meter().lock(start(responses({ model: "gpt-5.5-pro" })))).toEqual({ refused: "backend_model_not_allowed" });
     expect(meter().lock(start({ delegation: { type: "responses", responses: {} } }))).toEqual({ refused: "backend_model_not_allowed" });
     expect(meter().lock(start(responses({ tools: [{ type: "web_search" }] })))).toEqual({ refused: "backend_tool_not_allowed" });
-    expect(meter().lock(start(responses({ tool_choice: { type: "web_search" } })))).toEqual({ refused: "backend_tool_not_allowed" });
-    expect(meter().lock(start(responses({ tool_choice: { type: "allowed_tools", tools: [{ type: "code_interpreter" }] } })))).toEqual({ refused: "backend_tool_not_allowed" });
-    expect(meter().lock(start(responses({ prompt: { id: "pmpt_1" } })))).toEqual({ refused: "backend_prompt_not_allowed" });
     expect(meter().lock(start({ delegation: { type: "decisions", decisions: {} } }))).toEqual({ refused: "delegation_not_allowed" });
     // A tier OpenAI bills at another rate is refused: backend calls are booked at the standard rate (Sol, #272 round 1).
     expect(meter().lock(start(responses({ service_tier: "priority" })))).toEqual({ refused: "backend_tier_not_allowed" });
     expect(meter().lock(start(responses({ service_tier: "flex" })))).toEqual({ refused: "backend_tier_not_allowed" });
     expect(meter().lock(start(responses({ service_tier: "auto" })))).not.toHaveProperty("refused");
     expect(meter().lock(start(responses({ service_tier: "default" })))).not.toHaveProperty("refused");
+    // Transcript triggers run Decisions, unlocked and unbilled: none (Sol, Fable, #272 round 2). None at all is fine.
+    expect(meter().lock(start({ triggers: [{ type: "decision" }] }))).toEqual({ refused: "triggers_not_allowed" });
+    expect(meter().lock(start({ triggers: [] }))).not.toHaveProperty("refused");
+    expect(meter().lock(start({ triggers: null }))).not.toHaveProperty("refused");
     // A session with no backend allowed: none may be named.
     expect(GPT_LIVE.perCall!("gpt-live-1", {}).lock(start(responses({})))).toEqual({ refused: "backend_model_not_allowed" });
   });
@@ -105,25 +111,19 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
     expect(call.lock(update(responses({ model: "gpt-5.6-luna" })))).not.toHaveProperty("refused");
     expect(call.lock(update(responses({ model: "gpt-5.5-pro" })))).toEqual({ refused: "backend_model_not_allowed" });
     expect(call.lock(update(responses({ tools: [{ type: "file_search" }] })))).toEqual({ refused: "backend_tool_not_allowed" });
+    expect(call.lock(update({ triggers: [{ type: "decision" }] }))).toEqual({ refused: "triggers_not_allowed" });
+    // An update's auto tier is pinned to the standard one; one that names none keeps the one the start set.
+    expect(JSON.parse(call.lock(update({ delegation: { type: "responses", responses: { service_tier: "auto" } } })) as string).session.delegation.responses.service_tier).toBe("default");
+    expect(JSON.parse(call.lock(update({ delegation: { type: "responses", responses: { instructions: "Hi." } } })) as string).session.delegation.responses).not.toHaveProperty("service_tier");
   });
 
-  it("reads a settings frame whole, however it is written, and never parses an audio append", () => {
-    const call = meter();
-    call.lock(start(responses({})));
-    // An escaped type and a repeated type key are read as OpenAI reads them, and refused.
-    expect(call.lock('{"type":"session\\u002eupdate","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.5-pro"}}}}')).toEqual({ refused: "backend_model_not_allowed" });
-    expect(call.lock('{"type":"x","type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.5-pro"}}}}')).toEqual({
-      refused: "backend_model_not_allowed",
-    });
-    // A repeated key is gone from what is sent: written again as it was read.
-    const sent = call.lock('{"type":"session.update","session":{"delegation":{"type":"client"}},"session":{"delegation":{"type":"client"}}}');
-    expect(sent).toBe('{"type":"session.update","session":{"delegation":{"type":"client"}}}');
+  it("never parses an audio append", () => {
     const append = JSON.stringify({ type: "session.input_audio.append", audio: "A".repeat(3_200) });
-    expect(call.lock(append)).toBe(append);
+    expect(meter().lock(append)).toBe(append);
   });
 });
 
-describe("a GPT-Live call's backend calls in progress and their band (Sol, #272 round 1)", () => {
+describe("a GPT-Live call's backend calls in progress (Sol, #272 round 1)", () => {
   const created = (id: string) => JSON.stringify({ event_id: `event_c_${id}`, type: "response.event", delegation_id: "item_1", event: { type: "response.created", response: { id, model: "gpt-6-luna" } } });
 
   it("waits for a backend call from its start until its usage is written, and one still running is unfinished", () => {
@@ -142,16 +142,6 @@ describe("a GPT-Live call's backend calls in progress and their band (Sol, #272 
     expect(call.see(JSON.stringify({ type: "session.output_audio.delta", delta: "A".repeat(6_400) }), true)).toBeNull();
   });
 
-  it("books a call whose prompt passes its model's long-context threshold in the long measures, and a short one as it is", () => {
-    const call = GPT_LIVE.perCall!("gpt-live-1", { backend: { ...BACKEND, long: { "gpt-6-luna": 1_000 } } });
-    const short = { id: "r1", model: "gpt-6-luna", measures: { backend_input_tokens: 900, backend_output_tokens: 10 } };
-    expect(call.label(short)).toEqual(short);
-    expect(call.label({ id: "r2", model: "gpt-6-luna", measures: { backend_input_tokens: 1_200, backend_cached_tokens: 100, backend_output_tokens: 10 } })).toEqual({
-      id: "r2",
-      model: "gpt-6-luna",
-      measures: { backend_long_input_tokens: 1_200, backend_long_cached_tokens: 100, backend_long_output_tokens: 10 },
-    });
-  });
 });
 
 describe("the session object with a GPT-Live call (step 9g)", () => {

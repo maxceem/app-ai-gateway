@@ -213,7 +213,7 @@ Start a new session then.
   heartbeat.
 - **OpenAI GPT-Live.** Send `session.start` first; its model is set to the
   session's. Its backend may use a model your app may call through Responses,
-  with function tools only, and no stored `prompt`. Anything else ends the
-  session with `1008` and a reason such as `backend_model_not_allowed`. Use the
-  standard `service_tier`. A restart of the relay ends a GPT-Live session for
-  good: start a new one.
+  with function tools only, at the standard `service_tier`; transcript
+  `triggers` are not allowed. Anything else ends the session with `1008` and a
+  reason such as `backend_model_not_allowed`. A restart of the relay ends a
+  GPT-Live session for good: start a new one.

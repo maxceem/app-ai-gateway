@@ -356,7 +356,14 @@ function judgeApp(config: AppConfig, stored: StoredEntries, priced: StoredEntrie
     const connection = view(slug);
     if (skipped.has(slug) || connection === null) continue;
     const listedBefore = new Set(before.routing.providers[slug]?.models ?? []);
-    const operations = connection.description.operations.filter((operation) => route.operations.includes(operation.name));
+    const enabled = connection.description.operations.filter((operation) => route.operations.includes(operation.name));
+    // A session's backend model (GPT-Live's) is listed as a call to the backend's operation would be, which
+    // need not be enabled itself: GPT-Live calls it, not the app (Sol, #272 round 2).
+    const backends = enabled.flatMap((operation) => {
+      const backend = operation.session?.backend;
+      return backend === undefined ? [] : connection.description.operations.filter((one) => one.name === backend.operation);
+    });
+    const operations = [...new Set([...enabled, ...backends])];
     for (const listed of route.models ?? []) {
       const name = `${slug}\u0000${listed}`;
       if (servedNow.has(name)) continue;

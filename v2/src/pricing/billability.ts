@@ -480,44 +480,32 @@ export function resolveCall(
  */
 export const BACKEND_BUDGET_BYTES = 8 * 1024;
 
-/** The models a live session's backend may call, and the long-context threshold of each that has one. */
-export interface BackendModels {
-  readonly models: readonly string[];
-  /** A call whose prompt passes its model's threshold bills at the long-context rate (`../pricing/tokens.ts`). */
-  readonly long: Readonly<Record<string, number>>;
-}
-
 /**
  * The models a live session's backend may call (GPT-Live's, 9g; plan, "GPT-Live backend rules"): each
  * judged by `operation`'s own call rule, as a call to it would be (the app's model list, then the kind
  * and the price), and priced, so no backend call is ever booked without a price. With no model list,
  * the candidates are every model priced on the connection: our list's first, then its own. Names are
- * taken in that order while they fit `BACKEND_BUDGET_BYTES`, so our list's short names always do. Each
- * model's long-context threshold goes with it, so the relay can tell a long call from a short one.
+ * taken in that order while they fit `BACKEND_BUDGET_BYTES`, so our list's short names always do.
  * Never throws: a connection whose rates can't be read allows no backend model.
  */
-export function backendModels(route: RouteModels, sources: PriceSources, operation: OperationDescription): BackendModels {
+export function backendModels(route: RouteModels, sources: PriceSources, operation: OperationDescription): string[] {
   const models: string[] = [];
-  const long: Record<string, number> = {};
   try {
     const listed = listOf(route);
     const candidates = listed !== null ? [...listed] : [...new Set([...listedModels(sources.type), ...Object.keys(sources.rates() ?? {})])];
     let bytes = 0;
     for (const model of candidates) {
-      const resolved = resolve(sources, model);
-      if (resolved === null || resolveCall(route, undefined, sources, operation, model, listed, SAVING).kind !== "admitted") continue;
-      const threshold = resolved.price.longContextThreshold;
-      // The name, quoted and with its comma, and its threshold when it has one.
-      const size = JSON.stringify(model).length + 1 + (threshold === undefined ? 0 : JSON.stringify(model).length + String(threshold).length + 2);
+      if (resolve(sources, model) === null || resolveCall(route, undefined, sources, operation, model, listed, SAVING).kind !== "admitted") continue;
+      // The name, quoted, and its comma.
+      const size = JSON.stringify(model).length + 1;
       if (bytes + size > BACKEND_BUDGET_BYTES) break;
       bytes += size;
       models.push(model);
-      if (threshold !== undefined) long[model] = threshold;
     }
   } catch {
-    return { models: [], long: {} };
+    return [];
   }
-  return { models, long };
+  return models;
 }
 
 /**
