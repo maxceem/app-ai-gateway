@@ -25,7 +25,9 @@ These providers are served today:
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
 
 The app's settings must allow the operation, as for any call. See
-[Provider access](/applications/provider-access).
+[Provider access](/applications/provider-access). Live sessions need a
+connection that goes straight to the provider: a connection set up through
+Cloudflare AI Gateway gets `502 provider_unavailable`.
 
 ## Starting a session
 
@@ -200,5 +202,9 @@ Start a new session then.
   one to the same conversation, and your link stays open. You never get
   `goAway` or `sessionResumptionUpdate`. A `setup` that sets its own
   `sessionResumption` has it removed.
+- **Gemini Live refusals.** When Gemini refuses something you sent right after
+  the setup, the session ends with Gemini's own close code and reason, such as
+  `1007` or `1008`, or `1011` when Gemini's code can't be passed on. Read the
+  reason: sending the same setup again gets the same refusal.
 - **xAI voice.** xAI's `ping` does not keep a session alive. Send the
   heartbeat.
