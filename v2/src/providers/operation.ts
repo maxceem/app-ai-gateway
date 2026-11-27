@@ -539,10 +539,16 @@ export interface SessionSpec {
   readonly backend?: { readonly operation: string; readonly tools: readonly string[] };
   /**
    * The provider's own dollar figure for the session, read after it ends, that settles it (plan 4.2):
-   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`). Its key is kept, sealed, for the
-   * lookup (plan 8j, "Keys needed with no app request").
+   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`), ElevenLabs' conversation record
+   * (11a, `../relay/elevenlabs-agent.ts`). Its key is kept, sealed, for the lookup (plan 8j, "Keys needed
+   * with no app request").
    */
-  readonly lookup?: "deepgram";
+  readonly lookup?: "deepgram" | "elevenlabs";
+  /**
+   * The session connects through a single-use signed URL the gateway asks the provider for at `open`
+   * (ElevenLabs agents, 11a, `../relay/elevenlabs-agent.ts`): the relay connects there, never with the key.
+   */
+  readonly signedUrl?: "elevenlabs";
   /**
    * The provider takes the session's options in its address's query (Deepgram's audio format, ElevenLabs'
    * output format): the app's query goes on, without credential fields, and with the session's model. A
@@ -915,6 +921,13 @@ export interface ProviderDescription {
    * `gpt-4o`. A namespace not listed has no price of ours.
    */
   readonly modelNamespaces?: Readonly<Record<string, string>>;
+  /**
+   * Model ids that start with `prefix` name something of the customer's own, all priced as one entry of our
+   * list, `type`'s `model`: an ElevenLabs agent (`agent_…`, ElevenLabs' own form for its ids), billed at one
+   * base rate a minute whatever the agent (11a). Read with every operation, so a voice operation sees an
+   * agent as a model of another kind. A customer's own rate is still keyed by the id (`../providers/listing.ts`).
+   */
+  readonly listedByPrefix?: { readonly prefix: string; readonly type: string; readonly model: string };
   /**
    * Request fields naming more models the provider may serve the request
    * with: Vercel's fallback list (`providerOptions.gateway.models[]`),

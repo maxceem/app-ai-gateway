@@ -1,5 +1,5 @@
 /**
- * ElevenLabs text to speech and speech to text (plan step 4).
+ * ElevenLabs text to speech and speech to text (plan step 4), and its agents (step 11a).
  *
  * - The voice is in the path, the model in the body's `model_id`.
  * - A text-to-speech answer is audio (or JSON with timestamps); it is never
@@ -75,6 +75,8 @@ export const elevenlabs = defineProvider({
   modelAuthor: "ElevenLabs",
   label: "ElevenLabs",
   hosts: { main: "api.elevenlabs.io" },
+  // Its agents (`agent_…`) are priced as one: the base rate a minute (11a).
+  listedByPrefix: { prefix: "agent_", type: "elevenlabs-agents", model: "agent" },
   // Its US host and its data residency hosts.
   otherHosts: ["api.us.elevenlabs.io", "api.eu.residency.elevenlabs.io", "api.in.residency.elevenlabs.io", "api.sg.residency.elevenlabs.io"],
   auth: { header: "xi-api-key", format: "{key}" },
@@ -161,6 +163,23 @@ export const elevenlabs = defineProvider({
       meter: { kind: "provider_event", adapter: "elevenlabs-tts", units: ["characters"] },
       // ElevenLabs refuses a model its stream doesn't serve (`eleven_v3`, `eleven_v4`), and the app gets its error as it is.
       session: { slot: "streaming", mode: "relayed", queryOptions: true },
+    }),
+    // An ElevenLabs agent over WebSocket (11a): a relayed conversational session. The agent's id is the
+    // session's model, locked: the app lists the agents it may start, each checked when it is listed
+    // (`../admin/agents.ts`: its own auth on, the duration override off). At `open` the gateway asks for a
+    // single-use signed URL with the conversation id in it, and the relay connects there. Checkpoints bill
+    // the connection time at the base rate a minute, an estimate; after the call, ElevenLabs' own record of
+    // the conversation settles it (`../relay/elevenlabs-agent.ts`).
+    defineOperation({
+      name: "elevenlabs.agent",
+      match: { method: "GET", path: "v1/convai/conversation" },
+      lifecycle: "session",
+      transport: "websocket",
+      model: { in: "query", name: "agent_id" },
+      modelKinds: ["agent"],
+      meter: { kind: "wall_clock" },
+      // Its query's other options (`branch_id`, `environment`) go on to the signed URL's request.
+      session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: "elevenlabs", queryOptions: true },
     }),
     defineOperation({
       name: "elevenlabs.stt",

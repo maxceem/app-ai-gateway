@@ -37,6 +37,12 @@
  * - `GET /v1/text-to-speech/{voice}/stream-input` as a WebSocket: ElevenLabs'
  *   streaming text to speech (step 10a). Each text frame with text gets an
  *   audio frame; `{"text": ""}` gets the final frame, then a close.
+ * - ElevenLabs agents (step 11a): `GET /v1/convai/agents/{id}`, an agent's settings, its own auth on and
+ *   the duration override off (`agent_mock_auth_off` has its auth off);
+ *   `GET /v1/convai/conversation/get-signed-url`, a signed URL back to this mock, naming a new
+ *   conversation; `GET /v1/convai/conversation` as a WebSocket with that URL's signature, which sends
+ *   `conversation_initiation_metadata` at once and an `audio` frame for each audio chunk; and
+ *   `GET /v1/convai/conversations/{id}`, the conversation's record, done, with `cost_fiat` 0.012.
  * - `POST /fal-ai/...`: a fal image per `num_images`, with the units in
  *   `x-fal-billable-units`, or none with `mock_no_units: true`.
  * - `POST /queue/fal-ai/...`, then `GET .../requests/<id>/status`,
@@ -560,6 +566,11 @@ async function answer(request: Request): Promise<Response> {
   if (/\/v1\/text-to-speech\/[^/]+\/stream-input$/u.test(url.pathname) && request.headers.get("upgrade")?.toLowerCase() === "websocket") return elevenLabsStream();
   if (url.pathname.endsWith("/v1/listen") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return deepgramStream(url);
   if (url.pathname.endsWith("/v1/live-echo") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return echoSession(request, url);
+  // An ElevenLabs agent's call: its signed URL is its only credential, as ElevenLabs' is.
+  if (url.pathname.endsWith("/v1/convai/conversation") && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    if (url.searchParams.get("conversation_signature") !== AGENT_SIGNATURE) return Response.json({ detail: { status: "invalid_signature" } }, { status: 401 });
+    return agentCall(url.searchParams.get("conversation_id") ?? "");
+  }
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -597,6 +608,34 @@ async function answer(request: Request): Promise<Response> {
   // Deepgram's project and its record of a stream (step 10a): completed, with the dollar figure the
   // stream's `mock_usd` named, which its request id carries.
   if (request.method === "GET" && url.pathname === "/v1/projects") return Response.json({ projects: [{ project_id: MOCK_PROJECT, name: "Mock" }] });
+  // ElevenLabs agents (step 11a): an agent's settings, a signed URL for a call, and the call's record.
+  const agent = /^\/v1\/convai\/agents\/([^/]+)$/u.exec(url.pathname);
+  if (request.method === "GET" && agent !== null) {
+    const id = decodeURIComponent(agent[1]!);
+    return Response.json({
+      agent_id: id,
+      platform_settings: {
+        auth: { enable_auth: id !== "agent_mock_auth_off", allowlist: [] },
+        overrides: { conversation_config_override: { conversation: { max_duration_seconds: false }, agent: { first_message: true } } },
+      },
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/v1/convai/conversation/get-signed-url") {
+    const signed = new URL("/v1/convai/conversation", url);
+    signed.protocol = "wss:";
+    signed.searchParams.set("agent_id", url.searchParams.get("agent_id") ?? "");
+    signed.searchParams.set("conversation_signature", AGENT_SIGNATURE);
+    signed.searchParams.set("conversation_id", `conv_mock_${crypto.randomUUID().replaceAll("-", "")}`);
+    return Response.json({ signed_url: signed.toString() });
+  }
+  const conversation = /^\/v1\/convai\/conversations\/([^/]+)$/u.exec(url.pathname);
+  if (request.method === "GET" && conversation !== null) {
+    return Response.json({
+      conversation_id: decodeURIComponent(conversation[1]!),
+      status: "done",
+      metadata: { cost: 60, cost_fiat: 0.012, charging: { call_charge: 60, platform_charge: 60, llm_charge: 0, voice_surcharge_charge: null } },
+    });
+  }
   const record = /^\/v1\/projects\/mock-project\/requests\/([^/]+)$/u.exec(url.pathname);
   if (request.method === "GET" && record !== null) {
     const id = decodeURIComponent(record[1]!);
@@ -846,6 +885,30 @@ function deepgramStream(url: URL): Response {
     }
   });
   return new Response(null, { status: 101, webSocket: client, headers: { "dg-request-id": requestId } });
+}
+
+/** The signature in this mock's signed URLs for an agent's call: not a secret, the mock's own. */
+const AGENT_SIGNATURE = "mock-signature";
+
+/** An ElevenLabs agent's call (step 11a): its metadata at once, then an audio frame for each audio chunk. */
+function agentCall(conversationId: string): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.accept();
+  server.send(
+    JSON.stringify({
+      conversation_initiation_metadata_event: { conversation_id: conversationId, agent_output_audio_format: "pcm_16000", user_input_audio_format: "pcm_16000" },
+      type: "conversation_initiation_metadata",
+    }),
+  );
+  let events = 0;
+  server.addEventListener("message", (event) => {
+    if (typeof event.data === "string" && event.data.startsWith('{"user_audio_chunk"')) {
+      events += 1;
+      server.send(JSON.stringify({ audio_event: { audio_base_64: "AAAA", event_id: events }, type: "audio" }));
+    }
+  });
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 /** ElevenLabs' streaming text to speech (step 10a): audio for each text, the final frame at the closing `""`. */

@@ -25,6 +25,7 @@ These providers are served today:
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
 | OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
 | ElevenLabs text to speech | `v1/text-to-speech/{voice_id}/stream-input` | for example `eleven_flash_v2_5`; `eleven_multilingual_v2` when none is named |
+| ElevenLabs agents | `v1/convai/conversation` | the agent's id, such as `agent_7201m7pd…`. See [ElevenLabs agents](#elevenlabs-agents) |
 | Deepgram speech to text | `v1/listen` | for example `nova-3`, the gateway's default when none is named |
 | A custom provider | the WebSocket path you list | none. See [A live provider the gateway doesn't know](#a-live-provider-the-gateway-doesnt-know) |
 
@@ -50,9 +51,10 @@ Content-Type: application/json
 
 - `{provider}` is the connection's slug, such as `openai`.
 - `path` is the provider's own live-session path from the table above. For
-  ElevenLabs and Deepgram streams, put the provider's own options in its
-  query, such as `v1/listen?encoding=linear16&sample_rate=16000`, the model
-  too if you like (`model`, `model_id`) when the body names none. They go to
+  ElevenLabs and Deepgram streams and ElevenLabs agents, put the provider's own
+  options in its query, such as `v1/listen?encoding=linear16&sample_rate=16000`,
+  the model too if you like (`model`, `model_id`, an agent's `agent_id`) when
+  the body names none. They go to
   the provider as they are, except the model, which is always the session's,
   and fields that would send results elsewhere or carry a credential (a key,
   a token or an authorization), which are removed. Other sessions take no
@@ -150,7 +152,8 @@ else to the provider.
 ## Coming back after a dropped network
 
 When the app's link drops, for example when a phone moves from Wi-Fi to mobile
-data, the session goes on without it for a while. The relay keeps the provider
+data, the session goes on without it for a while. ElevenLabs agents are the
+exception: a dropped link ends the call (see [ElevenLabs agents](#elevenlabs-agents)). The relay keeps the provider
 connected and holds the provider's messages for the app, up to 512 messages or
 8 MB. The app comes back to the **same** session:
 
@@ -245,6 +248,42 @@ Start a new session then.
   first audio when that is longer. A few minutes after the session ends, the
   charge is corrected to Deepgram's own figure for the stream, when the
   connection's key may read Deepgram's usage (its `usage:read` permission).
+
+## ElevenLabs agents
+
+An ElevenLabs agent call connects the app to one of your ElevenLabs agents,
+through the relay.
+
+- **List the agents in the app's settings.** Turn on `elevenlabs.agent` for the
+  ElevenLabs connection, and list the agents the app may start, by their ids, in
+  the connection's `models`. The agent is the session's model: the app names it
+  as `agent_id` in the path's query, or as `model`.
+- **Set up each agent in ElevenLabs first.** In the agent's security settings,
+  turn its authentication on, so only the gateway can start a call, and leave the
+  override for the conversation's maximum duration off. The gateway reads the
+  agent from ElevenLabs when you list it, and refuses an agent set up otherwise.
+  It reads it with the connection's key, so the key must be allowed to read
+  agents.
+- **Send ElevenLabs' own messages**, as its WebSocket API has them. The first
+  message may override only the agent's greeting
+  (`conversation_config_override.agent.first_message`). Any other override, such
+  as the maximum duration, ends the call with `1008 override_not_allowed`.
+  Answer ElevenLabs' `ping` with a `pong`, and send the heartbeat: the `ping`
+  doesn't keep a session alive.
+- **A dropped link ends the call.** Coming back to the same call is not
+  possible: ElevenLabs makes every new connection a new conversation. Start a new
+  session. Clear the audio left from the old call first, give the new call a
+  short greeting with `first_message`, and send the earlier turns as a
+  `contextual_update` if the agent should know them.
+- **If ElevenLabs refuses the call** (a deleted agent, say), the session never
+  starts: `4000 provider_unavailable`.
+- **ElevenLabs' own limits apply.** Your ElevenLabs plan allows a number of calls
+  at once (6 on Starter). Calls above it still run, and ElevenLabs charges
+  their minutes at twice its usual rate. An app may open 10 voice sessions at
+  once by default.
+- A few minutes after a call ends, its charge is corrected to ElevenLabs' own
+  figure for the conversation, when the connection's key may read the agent's
+  conversations.
 
 ## A live provider the gateway doesn't know
 

@@ -9,7 +9,9 @@
  * - `open` checks the ticket again (its signature and its expiry) and answers
  *   the settings the relay stores. It never returns a key: the relay gets that
  *   from the vault. Its answer is a pure function of the ticket, so a repeated
- *   `open` for one session gets the same answer (crash table rows 5 and 6).
+ *   `open` for one session gets the same answer (crash table rows 5 and 6),
+ *   but for an ElevenLabs agent's signed URL (11a): each `open` asks for a new
+ *   one, and an unused one starts nothing.
  * - `close` records the session's end in the account's ledger object. It is
  *   safe to repeat: the first close wins. It checks only the signature: a
  *   session closes long after its start ticket expired.
@@ -30,6 +32,7 @@ import { declaredOperation } from "../providers/presets.ts";
 import { WEBSOCKET } from "../providers/passthrough.ts";
 import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
+import { signedSessionUrl, SignedUrlRefused } from "./elevenlabs-agent.ts";
 
 /**
  * The contract's version: the relay and the main Worker each say which they
@@ -69,6 +72,12 @@ export interface OpenSettings {
    * a backend.
    */
   readonly backend?: { readonly models: readonly string[]; readonly tools: readonly string[] };
+  /**
+   * Where the relay connects instead of the session's own address, for a session that starts through a
+   * single-use signed URL (ElevenLabs agents, 11a): the relay connects there only when it is on the address
+   * the session's key is sealed for, and sends no key to it. It names the conversation (`conversation_id`).
+   */
+  readonly signedUrl?: string;
 }
 
 /** The relay adapter of each live-session operation (plan 5.2). */
@@ -80,6 +89,7 @@ const RELAY_ADAPTERS: Readonly<Record<string, string>> = {
   "openai.live": "gptlive",
   "elevenlabs.tts_websocket": "elevenlabs_tts",
   "deepgram.listen_stream": "deepgram",
+  "elevenlabs.agent": "elevenlabs_agent",
   // A custom provider's listed WebSocket path (10b): its frames are forwarded as they are, and its connection time is billed.
   [WEBSOCKET]: "generic",
 };
@@ -99,7 +109,7 @@ export function adapterFor(ticket: Ticket): string {
 
 /** A refusal the relay can act on: its message is a code, never a value from the ticket. */
 export class ContractRefusal extends Error {
-  constructor(readonly code: "ticket_refused" | "ticket_expired" | "bad_request" | "unavailable") {
+  constructor(readonly code: "ticket_refused" | "ticket_expired" | "bad_request" | "unavailable" | "provider_unavailable") {
     super(code);
     this.name = "ContractRefusal";
   }
@@ -139,6 +149,8 @@ export async function openForRelay(
 ): Promise<OpenSettings> {
   const payload = await checkedTicket(env, ticket);
   if (now >= payload.exp) throw new ContractRefusal("ticket_expired");
+  // Asked for before the leases count the session as started: a refusal leaves them to expire with the ticket.
+  const signedUrl = declaredOperation(payload.operation)?.session?.signedUrl === undefined ? undefined : await signedUrlFor(env, payload);
   const lease = leaseOf(payload);
   await activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil);
   const backend = backendOf(payload);
@@ -153,7 +165,22 @@ export async function openForRelay(
     checkpointIntervalMs: CHECKPOINT_INTERVAL_MS,
     adapter: adapterFor(payload),
     ...(backend === undefined ? {} : { backend }),
+    ...(signedUrl === undefined ? {} : { signedUrl }),
   };
+}
+
+/**
+ * The session's signed URL (`./elevenlabs-agent.ts`). ElevenLabs' refusal (a deleted agent, a key it
+ * refuses) or no answer in time is `provider_unavailable`, the code a refused provider connection gets:
+ * the app may ask for a new session.
+ */
+async function signedUrlFor(env: Env, ticket: Ticket): Promise<string> {
+  try {
+    return await signedSessionUrl(env, ticket);
+  } catch (error) {
+    log("warn", "relay_signed_url_failed", { app: ticket.app, session: ticket.sid, ...(error instanceof SignedUrlRefused ? { status: error.status } : { error: errorFacts(error) }) });
+    throw new ContractRefusal("provider_unavailable");
+  }
 }
 
 /** What the relay says when a session ends. */

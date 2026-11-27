@@ -50,7 +50,37 @@ export async function connectProvider(key, send = fetch, timeout = wait, limitMs
   socket.accept();
   // Only a plain id is kept: the gateway stores it and looks the call up by it.
   const named = callIdHeader === undefined ? null : response.headers.get(callIdHeader);
-  return { callId: named !== null && /^[A-Za-z0-9_.:-]{1,200}$/u.test(named) ? named : null, socket };
+  return { callId: named !== null && CALL_ID.test(named) ? named : null, socket };
+}
+
+/** A provider's call id as the gateway keeps it: a plain id, never anything else. */
+const CALL_ID = /^[A-Za-z0-9_.:-]{1,200}$/u;
+
+/**
+ * Where a session that starts through a signed URL connects (ElevenLabs agents, 11a), and the conversation
+ * it names (`conversation_id`), or null when the URL is not on the address the key is sealed for: the same
+ * origin and path, no user part. `open` named it, so it is checked here like any address `open` names
+ * (crash table, "Who keeps what"). Its own query (the signature) is kept; no key goes with it.
+ * @param {string} target the address the vault named
+ * @param {string} signedUrl
+ * @returns {{ target: string, callId: string | null } | null}
+ */
+export function signedSession(target, signedUrl) {
+  /** @type {URL} */
+  let signed;
+  /** @type {URL} */
+  let sealed;
+  try {
+    signed = new URL(signedUrl);
+    sealed = new URL(target);
+  } catch {
+    return null;
+  }
+  if (signed.protocol === "wss:") signed.protocol = "https:";
+  else if (signed.protocol === "ws:") signed.protocol = "http:";
+  if (signed.username !== "" || signed.password !== "" || signed.origin !== sealed.origin || signed.pathname !== sealed.pathname) return null;
+  const named = signed.searchParams.get("conversation_id");
+  return { target: signed.toString(), callId: named !== null && CALL_ID.test(named) ? named : null };
 }
 
 /**

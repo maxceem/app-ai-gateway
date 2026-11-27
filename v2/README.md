@@ -63,6 +63,8 @@ Inside `v2/`:
   `V2_MOCK_CLOUDFLARE=1`, set only for a deployment built with the mock as Cloudflare's stand-in.
   The billing checks need `V2_BILLING_MOCK=1`, set only for a deployment bound to `smoke/billing-mock/`.
   The relay checks need `V2_RELAY_URL`, the `RELAY_URL` the deploy gave the gateway.
+  The ElevenLabs agent call checks also need `V2_MOCK_REACHABLE=1`, set only when the mock has an
+  address the gateway can reach outside an app request: Cloudflare refuses its calls to a `workers.dev` one.
   Every request the checks send names itself with the `user-agent` `agw-smoke/<version>`
   (`smoke/user-agent.ts`, which `pnpm run smoke` loads first).
 - `node --experimental-strip-types --import ./smoke/user-agent.ts --test smoke/email.smoke.ts`: the email check, run on its own. It

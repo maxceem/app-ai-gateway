@@ -25,6 +25,7 @@ import { settleSession } from "./sessions.ts";
 import { KEY_COPIES_FIELD, KEY_COPIES_REMOVED } from "./write.ts";
 import { checkJob } from "../jobs/jobs.ts";
 import { deepgramLookup } from "../relay/deepgram-lookup.ts";
+import { elevenlabsLookup } from "../relay/elevenlabs-agent.ts";
 
 
 /** Rows taken per run. Small, so one run stays well inside a cron invocation. */
@@ -87,6 +88,8 @@ const retry = (reason: string): HandlerResult => ({ done: false, reason });
 export const PROVIDER_LOOKUPS: Record<string, OpenWorkHandler> = {
   // Deepgram's request record after a stream (10a).
   deepgram: (env, item, context) => deepgramLookup(env, item, context),
+  // ElevenLabs' conversation record after an agent call (11a).
+  elevenlabs: (env, item, context) => elevenlabsLookup(env, item, context),
 };
 
 function byProvider(table: Record<string, OpenWorkHandler>, what: string): OpenWorkHandler {

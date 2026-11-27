@@ -15,7 +15,11 @@ export interface ListedModel {
 
 /** The provider type and model id `model` of a `type` connection is listed under. */
 export function listedAs(type: string, model: string): ListedModel {
-  return listedIn(builtInProvider(type)?.modelNamespaces, type, model);
+  const provider = builtInProvider(type);
+  // Something of the customer's own, all priced as one entry (an ElevenLabs agent's id, 11a).
+  const byPrefix = provider?.listedByPrefix;
+  if (byPrefix !== undefined && model.length > byPrefix.prefix.length && model.startsWith(byPrefix.prefix)) return { type: byPrefix.type, model: byPrefix.model };
+  return listedIn(provider?.modelNamespaces, type, model);
 }
 
 /** The same, with the namespaces given: an operation's own (`readingRules`), such as a custom provider's path on Vercel's host. */

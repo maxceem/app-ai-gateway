@@ -952,9 +952,11 @@ export function savedPriceProblem(
   // Each session operation judges against our price in its own section (`priceList`: Deepgram's stream).
   // One whose meter bills the units its adapter counts (ElevenLabs' streaming characters, 10a) is judged the
   // same way: a custom price for a model our list prices for it must bill those units.
+  // The model is read as live pricing reads it (`listedAs`): an ElevenLabs agent's id as the one agent price.
+  const listedModel = listedAs(providerType, model);
   const session = operations.find((operation) => {
     if (!readSession(operation)) return false;
-    const listed = listPrice(operation.priceList ?? providerType, model);
+    const listed = listPrice(operation.priceList ?? listedModel.type, listedModel.model);
     return listed !== null && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save");
   });
   if (session !== undefined) {
