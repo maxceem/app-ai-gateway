@@ -16,12 +16,19 @@
  * adapter (`./adapters.js`) reads usage from the provider's frames after they
  * are forwarded, into the journal; the alarm sends checkpoints. Observed mode
  * comes in part 3.
+ *
+ * Reconnecting to the same session (plan 5.1, 5.2): when our SDK's link drops
+ * (any close but a normal one), the session goes on without a client, and the
+ * provider's frames are held, bounded, by the adapter's rule. The SDK comes
+ * back with the same ticket and, as its first message, the reconnect secret;
+ * it then gets the held frames and the session goes on. If nothing comes back,
+ * the heartbeat ends the session after 90 s.
  */
 import { DurableObject } from "cloudflare:workers";
 import { adapterFor } from "./adapters.js";
-import { HEALTH_PATH, SESSION_PATH } from "./constants.js";
+import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION_PATH } from "./constants.js";
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
-import { providerFrame, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
+import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { connectProvider } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -81,18 +88,21 @@ export default {
  * the session is started, then go through `forward`.
  *
  * @typedef {{
- *   client: WebSocket,
+ *   client: WebSocket | null,
  *   owner: import("./start.js").Client,
  *   frames: SessionFrames,
  *   call: RelayCall | null,
  *   deadline: number,
  *   queue: StartQueue,
+ *   held: StartQueue,
+ *   relayMessages: boolean,
  *   adapter: import("./adapters.js").Adapter,
  *   turnOpen: boolean,
  * }} Live
- * One client's session in this instance. Client frames wait in `queue` while
- * the session starts, then go to the provider in order. `turnOpen`: the
- * provider is in the middle of an answer (the adapter's `turn`).
+ * The session in this instance. Client frames wait in `queue` while the
+ * session starts, then go to the provider in order. `client` is null while our
+ * SDK's link is down; the provider's frames then wait in `held` for it to come
+ * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`).
  */
 
 /**
@@ -137,7 +147,11 @@ export class Session extends DurableObject {
           /** @type {RelayCall} */
           const call = {
             callId,
-            close: (code, reason) => closeQuietly(socket, code, reason),
+            // Every end hangs up through here: held frames go with the call.
+            close: (code, reason) => {
+              this.dropHeld(call);
+              closeQuietly(socket, code, reason);
+            },
             send: (data) => sendQuietly(socket, data),
             forward: null,
             pending: new StartQueue(),
@@ -175,7 +189,9 @@ export class Session extends DurableObject {
     // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
     server.binaryType = "arraybuffer";
     server.accept();
-    this.ctx.waitUntil(this.begin(server, ticketText, parsed.payload, relayMessages));
+    // A session already running here: only our SDK coming back with its reconnect secret may join it.
+    const running = this.live !== null && this.core.call !== null;
+    this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -191,10 +207,20 @@ export class Session extends DurableObject {
     /** @type {import("./start.js").Client} What the core holds: closing it never throws. */
     const owner = { close: (code, reason) => closeQuietly(client, code, reason) };
     /** @type {Live} */
-    const live = { client, owner, frames: new SessionFrames({ relayMessages }), call: null, deadline: Infinity, queue: new StartQueue(), adapter: adapterFor(undefined), turnOpen: false };
+    const live = {
+      client,
+      owner,
+      frames: new SessionFrames({ relayMessages }),
+      call: null,
+      deadline: Infinity,
+      queue: new StartQueue(),
+      held: new StartQueue(),
+      relayMessages,
+      adapter: adapterFor(undefined),
+      turnOpen: false,
+    };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
-    client.addEventListener("close", () => void this.core.clientGone(owner));
-    client.addEventListener("message", (event) => this.fromClient(live, event.data));
+    this.listen(live, client, owner);
     /** @type {Awaited<ReturnType<SessionCore["start"]>>} */
     let result;
     try {
@@ -209,6 +235,8 @@ export class Session extends DurableObject {
     }
     if (!result.ok) {
       closeQuietly(client, 4000, result.code);
+      // An end the start began (a restarted instance's lost session) finishes inside this request.
+      await this.core.ending?.catch(() => undefined);
       return;
     }
     const call = /** @type {RelayCall} */ (result.call);
@@ -229,12 +257,131 @@ export class Session extends DurableObject {
   }
 
   /**
+   * Wires a client's socket to the session. Its frames and its close count
+   * only while it is the session's client: an old socket replaced by a
+   * reconnect changes nothing.
+   * @param {Live} live
+   * @param {WebSocket} socket
+   * @param {import("./start.js").Client} owner
+   */
+  listen(live, socket, owner) {
+    socket.addEventListener("message", (event) => {
+      if (live.client === socket) this.fromClient(live, event.data);
+    });
+    socket.addEventListener("close", (event) => {
+      if (live.client === socket) this.clientClosed(live, owner, event.code);
+    });
+  }
+
+  /**
+   * The session's client closed. Our SDK's link dropping (any close but a
+   * deliberate one: 1000, 1001, or 1005 with no code) leaves the session running, so it can come back
+   * with its reconnect secret, when the adapter holds frames for it. Anything
+   * else ends the session: an official SDK can't come back to the same
+   * session, and for it a reconnect is a new session (plan 5.2).
+   * @param {Live} live
+   * @param {import("./start.js").Client} owner
+   * @param {number} code
+   */
+  clientClosed(live, owner, code) {
+    const dropped = code !== 1000 && code !== 1001 && code !== 1005;
+    if (live.relayMessages && dropped && live.adapter.detached === "hold" && this.live === live && this.core.detach(owner)) {
+      live.client = null;
+      live.frames.detached = true;
+      console.log(JSON.stringify({ level: "info", message: "relay_client_detached", code }));
+      return;
+    }
+    void this.core.clientGone(owner);
+  }
+
+  /**
+   * Our SDK came back to a running session: its first message must be the
+   * reconnect secret, within `RECONNECT_FIRST_MESSAGE_MS`. A match takes the
+   * session over at once, even if the old link still looks open; the held
+   * frames go to it first. Anything else gets the refusal any second
+   * connection gets, `4000 session_active`.
+   * @param {WebSocket} socket
+   */
+  async reconnect(socket) {
+    const live = this.live;
+    // Already ending: nothing to wait for, the client needs a new session.
+    if (live === null || this.core.ending !== null) return closeQuietly(socket, 4000, "session_ended");
+    // Every frame is kept from the start: the secret first, and whatever the SDK sends right after
+    // it, while the secret is checked, goes to the session in order once it is taken back.
+    /** @type {(string | ArrayBuffer)[]} */
+    const inbox = [];
+    let handedOver = false;
+    /** @type {() => void} */
+    let arrived = () => undefined;
+    /** @param {MessageEvent} event */
+    const onMessage = (event) => {
+      if (handedOver) return;
+      inbox.push(/** @type {string | ArrayBuffer} */ (event.data));
+      arrived();
+    };
+    socket.addEventListener("message", onMessage);
+    // A link that closes before it is handed over, even while the secret is hashed, never joins.
+    let closed = false;
+    const came = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), RECONNECT_FIRST_MESSAGE_MS);
+      arrived = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      socket.addEventListener("close", () => {
+        closed = true;
+        clearTimeout(timer);
+        resolve(false);
+      }, { once: true });
+    });
+    const first = came ? inbox[0] : undefined;
+    /** @type {unknown} */
+    let secret;
+    // Read only when small, and written the way every relay message is (`RELAY_MESSAGE_PREFIX`):
+    // the form a live session drops, so a repeat of it never reaches the provider.
+    if (typeof first === "string" && first.length <= RECONNECT_MESSAGE_MAX && first.startsWith(RELAY_MESSAGE_PREFIX)) {
+      try {
+        const message = /** @type {{ type?: unknown, secret?: unknown }} */ (JSON.parse(first));
+        secret = message?.type === "agw.reconnect" ? message.secret : undefined;
+      } catch {
+        secret = undefined;
+      }
+    }
+    // The session ending, ended or past its time: the client needs a new one. Only a failed
+    // proof on a live session gets `session_active`, the refusal any second connection gets.
+    const gone = () => this.live !== live || this.core.call === null || this.core.ending !== null || Date.now() >= live.deadline;
+    const refuse = () => {
+      socket.removeEventListener("message", onMessage);
+      closeQuietly(socket, 4000, gone() ? "session_ended" : "session_active");
+    };
+    if (gone() || !(await this.core.mayReattach(secret))) return refuse();
+    /** @type {import("./start.js").Client} */
+    const owner = { close: (code, reason) => closeQuietly(socket, code, reason) };
+    if (closed || gone() || !this.core.reattach(owner)) return refuse();
+    const old = live.client;
+    live.client = socket;
+    live.owner = owner;
+    live.frames.reattached();
+    this.listen(live, socket, owner);
+    handedOver = true;
+    socket.removeEventListener("message", onMessage);
+    // The old link, if it still looks open, is let go: its close changes nothing now.
+    if (old !== null) closeQuietly(old, 1000, "reconnected");
+    console.log(JSON.stringify({ level: "info", message: "relay_client_reattached", held: live.held.frames.length }));
+    sendQuietly(socket, JSON.stringify({ type: "agw.session.resumed", deadline: live.deadline }));
+    for (const data of live.held.drain()) this.deliver(live, data);
+    // What the SDK sent right after its secret goes on, in order, before anything newer.
+    for (const data of inbox.slice(1)) this.fromClient(live, data);
+  }
+
+  /**
    * A frame from the client: forwarded at once, or held while the session
    * starts. The relay's own messages are answered here and never forwarded.
    * @param {Live} live
    * @param {string | ArrayBuffer} data
    */
   fromClient(live, data) {
+    if (live.client === null) return;
     const verdict = live.frames.fromClient(data);
     if (verdict.kind === "forward") {
       if (live.call === null) {
@@ -243,7 +390,7 @@ export class Session extends DurableObject {
       }
       this.toProvider(live, data);
     } else if (verdict.kind === "answer") {
-      sendQuietly(live.client, verdict.message);
+      sendQuietly(/** @type {WebSocket} */ (live.client), verdict.message);
     } else if (verdict.kind === "end") {
       if (verdict.closeCode !== undefined) this.endFor(live, verdict.reason, verdict.closeCode, verdict.closeReason ?? verdict.reason);
       // No code of its own (a client too slow): the session's end closes the client, with the code its reason has.
@@ -274,9 +421,12 @@ export class Session extends DurableObject {
     // Past the deadline, or closing: the client gets nothing more, but the frame is still read,
     // so the last answer's usage counts while the end waits for it (plan 5.1).
     const late = Date.now() >= live.deadline;
+    let overflowed = false;
     if (!late && this.core.ending === null) {
-      sendQuietly(live.client, data);
-      live.frames.toClient(data);
+      if (live.client !== null) this.deliver(live, data);
+      // Our SDK's link is down: the frame waits for it, bounded (the adapter's rule). Too much,
+      // and the session ends below: nothing more could reach the client in order.
+      else overflowed = !live.held.push(data);
     }
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const event = live.adapter.read(data);
@@ -287,7 +437,32 @@ export class Session extends DurableObject {
       live.turnOpen = false;
       this.core.turnDone();
     }
+    // Ended only after the frame was read, so its usage counts.
+    if (overflowed) {
+      console.log(JSON.stringify({ level: "warn", message: "relay_reconnect_buffer_full" }));
+      void this.core.end("client_closed");
+    }
     if (late) void this.core.end("time_cap");
+  }
+
+  /**
+   * The provider call is closed: frames held for a client that might have come back are let go,
+   * so they don't stay in memory until the object is evicted.
+   * @param {RelayCall} call
+   */
+  dropHeld(call) {
+    if (this.live?.call === call) this.live.held.drain();
+  }
+
+  /**
+   * A provider frame to the session's client, counted for the received-byte reports.
+   * @param {Live} live
+   * @param {string | ArrayBuffer} data
+   */
+  deliver(live, data) {
+    if (live.client === null) return;
+    sendQuietly(live.client, data);
+    live.frames.toClient(data);
   }
 
   /**
@@ -299,7 +474,7 @@ export class Session extends DurableObject {
    * @param {string} closeReason
    */
   endFor(live, reason, code, closeReason) {
-    closeQuietly(live.client, code, closeReason);
+    if (live.client !== null) closeQuietly(live.client, code, closeReason);
     // Only the session's own connection may end it: a turned-away one changes nothing.
     if (this.core.owner === live.owner) void this.core.end(reason);
   }

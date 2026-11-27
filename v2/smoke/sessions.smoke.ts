@@ -137,6 +137,23 @@ test("a client that hangs up during an answer still has that answer's usage book
   same(charges.reduce((sum, charge) => sum + (charge.output_tokens ?? 0), 0), 40, "the answer's output tokens");
 });
 
+test("our SDK comes back to the same session after its link drops, with the reconnect secret as its first message (step 9a part 3)", { skip }, async () => {
+  const response = await startSession({ path: "v1/realtime", model: "gpt-realtime" });
+  await expectResponse(response, 201, "starting a session to reconnect to");
+  const body = await readJson(response);
+  const headers = { authorization: `Bearer ${String(body?.ticket)}`, "x-agw-relay-messages": "1" };
+  // The first link gets the start, then drops: any close but 1000 or 1001.
+  const first = await exchangeFrames("/v2/relay/session", relay, [], 2, headers, 4001);
+  const started = JSON.parse(typeof first[0] === "string" ? first[0] : "{}") as { type?: string; reconnect_secret?: string; deadline?: number };
+  same(started.type, "agw.session.started", "the first frame our SDK gets");
+  const frame = JSON.stringify({ type: "input_audio_buffer.append", audio: "BBBB" });
+  const again = await exchangeFrames("/v2/relay/session", relay, [JSON.stringify({ type: "agw.reconnect", secret: started.reconnect_secret }), frame], 2, headers);
+  const resumed = JSON.parse(typeof again[0] === "string" ? again[0] : "{}") as { type?: string; deadline?: number };
+  same(resumed.type, "agw.session.resumed", "the first frame after coming back");
+  same(resumed.deadline, started.deadline, "the deadline after coming back");
+  same(again[1], frame, "the frame the provider echoed after coming back");
+});
+
 test("a session the app doesn't allow, or a path that isn't a live session, is refused", { skip }, async () => {
   const notSession = await startSession({ path: "v1/chat/completions", model: "gpt-4o-mini" });
   same(notSession.status, 403, "a path that isn't a live session");

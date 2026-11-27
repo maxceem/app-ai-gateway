@@ -21,10 +21,17 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   shape: "per_turn" | "running_total",
  *   read(data: string | ArrayBuffer): UsageEvent | null,
  *   turn(data: string | ArrayBuffer): "open" | "done" | null,
+ *   detached: "hold" | "end",
  * }} Adapter
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
  * `response.created` and `response.done`), so a closing session can wait for
  * the last answer's usage (plan 5.1: up to 10 s). A cheap prefix check, like `read`.
+ *
+ * `detached`: what the session does with the provider's frames while our SDK's
+ * link is down and it may come back (plan 5.2, "Heartbeats and reconnects").
+ * `"hold"` keeps them, bounded, and hands them to the client that reconnects;
+ * `"end"` ends the session at once, for a protocol where a reconnect is a new
+ * conversation anyway (ElevenLabs agents, 9e).
  */
 
 /**
@@ -60,6 +67,7 @@ function usageEvent(parsed) {
 function jsonAdapter(prefix, shape, turns) {
   return {
     shape,
+    detached: "hold",
     turn(data) {
       if (typeof data !== "string") return null;
       if (data.startsWith(turns.opens)) return "open";
@@ -93,7 +101,7 @@ const ADAPTERS = {
  * only (the wall clock meter), and never waits for an answer when it closes.
  * @type {Adapter}
  */
-const NONE = { shape: "per_turn", read: () => null, turn: () => null };
+const NONE = { shape: "per_turn", detached: "hold", read: () => null, turn: () => null };
 
 /** The adapter `open` named, or one that reads nothing. @param {string | undefined} name */
 export function adapterFor(name) {

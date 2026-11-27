@@ -18,7 +18,7 @@
 /** The opening handshake header a client sends to get the relay's own messages. */
 export const RELAY_MESSAGES_HEADER = "x-agw-relay-messages";
 /** The relay's own messages start with this, so one cheap check finds them. */
-const RELAY_MESSAGE_PREFIX = '{"type":"agw.';
+export const RELAY_MESSAGE_PREFIX = '{"type":"agw.';
 
 /** The fixed alarm tick of every session object (plan section 5): checkpoint, time cap, liveness. */
 export const TICK_MS = 30_000;
@@ -144,6 +144,11 @@ export class SessionFrames {
      * @type {[number, number][]}
      */
     this.marks = [];
+    /**
+     * The client's link is down and it may come back (`./index.js`, a reconnect to the same
+     * session): only the heartbeat counts then. Nothing is being sent to it, so "too slow" can't be judged.
+     */
+    this.detached = false;
   }
 
   /**
@@ -194,6 +199,19 @@ export class SessionFrames {
     return { kind: "drop" };
   }
 
+  /**
+   * Our SDK came back on a new link with its reconnect secret (`./index.js`). The received-byte
+   * counts start again from zero; the rate window and the client hook go on as they were. The
+   * secret proves the client is there, for the next checkpoint (crash table row 20).
+   */
+  reattached() {
+    this.sent = 0;
+    this.marks = [];
+    this.detached = false;
+    this.lastClientAt = this.now();
+    this.clientSpoke = true;
+  }
+
   /** The client's report of what it got so far: the marks it has passed go. @param {number} bytes */
   received(bytes) {
     while (this.marks.length > 0 && /** @type {[number, number]} */ (this.marks[0])[0] <= bytes) this.marks.shift();
@@ -238,7 +256,7 @@ export class SessionFrames {
     const quietClient = now - this.lastClientAt >= HEARTBEAT_TIMEOUT_MS;
     const quietProvider = now - this.lastProviderAt >= HEARTBEAT_TIMEOUT_MS;
     if (quietClient && (this.relayMessages || quietProvider)) return "heartbeat_timeout";
-    return this.slow(now);
+    return this.detached ? null : this.slow(now);
   }
 }
 

@@ -306,6 +306,21 @@ describe("a session's start", () => {
     expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { seq: 1, sessionMs: 0, gapMs: TICK_MS, gaps: 1 } });
   });
 
+  it("row 22: a client coming back to a restarted instance is told session_ended at once, and the session ends as the alarm would end it, so its slot frees up (Sol round 3)", async () => {
+    const s = setup();
+    await s.instance().start(s.text, s.ticket, s.client());
+    s.tick(5_000);
+    const restarted = s.instance();
+    // No wait for the accounting: the answer comes first.
+    expect(await restarted.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
+    await until(() => s.calls.close.length > 0);
+    expect(s.calls.close).toEqual([{ endReason: "error", finalSlice: 1 }]);
+    expect(s.store.data.get("state")).toBe("ended");
+    expect(s.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_provider_lost" }));
+    // The same gap the alarm books: the time since the journal's last write.
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ accounting: true, slice: { seq: 1, sessionMs: 0, gapMs: 5_000, gaps: 1 } });
+  });
+
   it("a slow provider handshake never brings back a session the alarm ended meanwhile; the provider's side is hung up (Sol round 1)", async () => {
     let release: (value: { callId: string | null }) => void = () => undefined;
     const s = setup({ connect: () => new Promise((resolve) => (release = resolve)) });
@@ -561,10 +576,30 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     const core = s.instance();
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
-    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    // The session can't come back: the client is told to start a new one (Fable, #263 round 1).
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
     await until(() => s.calls.close.length === 1);
     release({ version: 1 });
     await ending;
+  });
+
+  it("an ended-retry alarm that lands while the end's close is still pending waits for it: one close, and storage read after it (Sol round 4)", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const s = setup({ close: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => s.calls.close.length === 1);
+    // The retry alarm comes while the first close still waits on the main Worker.
+    s.tick(CLOSE_RETRY_EVERY_MS);
+    const alarm = core.alarm();
+    for (let step = 0; step < 50; step += 1) await Promise.resolve();
+    expect(s.calls.close).toHaveLength(1);
+    release({ version: 1 });
+    await ending;
+    await alarm;
+    expect(s.calls.close).toHaveLength(1);
+    expect(s.store.data.get("closed")).toBe(true);
   });
 
   it("the alarm ticks every TICK_MS while the session runs, arming the next tick before its checks (crash table row 29)", async () => {
@@ -1080,10 +1115,84 @@ describe("a session's close (step 9a part 3)", () => {
     await core.start(s.text, s.ticket, s.client());
     const ending = core.end("client_closed");
     await until(() => core.turnWaiter !== null);
-    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "start_in_flight" });
+    expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
     timer.fire();
     await ending;
     expect(await core.start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
     expect(await s.instance().start(s.text, s.ticket, s.client())).toEqual({ ok: false, code: "session_ended" });
+  });
+});
+
+describe("reconnecting to the same session (step 9a part 3)", () => {
+  it("our SDK's link drops: the session goes on without a client, and only the reconnect secret takes it back", async () => {
+    const s = setup();
+    const core = s.instance();
+    const first = s.client();
+    const started = (await core.start(s.text, s.ticket, first)) as { reconnectSecret: string };
+    // Only the session's own client can leave it waiting.
+    expect(core.detach(s.client())).toBe(false);
+    expect(core.detach(first)).toBe(true);
+    expect(core.owner).toBeNull();
+    for (const wrong of ["", "x".repeat(43), 42, undefined, "y".repeat(500)]) expect(await core.mayReattach(wrong)).toBe(false);
+    expect(await core.mayReattach(started.reconnectSecret)).toBe(true);
+    const second = s.client();
+    expect(core.reattach(second)).toBe(true);
+    expect(core.owner).toBe(second);
+    // Nothing ended on the way: same session, same provider call.
+    expect(s.calls.close).toEqual([]);
+    expect(s.ended.provider).toEqual([]);
+  });
+
+  it("a deliberate close racing a reconnect: the end starts before any wait, so the reconnect can't join (Gemini Neon, #263 round 1)", async () => {
+    const s = setup();
+    const core = s.instance();
+    const client = s.client();
+    await core.start(s.text, s.ticket, client);
+    const gone = core.clientGone(client);
+    // Before clientGone reads anything: the end is already in flight, and a reconnect loses.
+    expect(core.ending).not.toBeNull();
+    expect(core.reattach(s.client())).toBe(false);
+    await gone;
+    expect(s.calls.close.map((close) => close.endReason)).toEqual(["client_closed"]);
+  });
+
+  it("a detached session that nobody takes back is ended by the heartbeat, and the provider is hung up", async () => {
+    const s = setup({ liveness: () => "heartbeat_timeout" });
+    const core = s.instance();
+    const client = s.client();
+    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
+    core.detach(client);
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.close).toEqual([{ endReason: "heartbeat_timeout", finalSlice: 1 }]);
+    expect(s.ended.provider).toEqual([[1000, "session ended"]]);
+    // No client to tell, and nothing to take back.
+    expect(s.ended.client).toEqual([]);
+    expect(await core.mayReattach(reconnectSecret)).toBe(false);
+    expect(core.reattach(s.client())).toBe(false);
+  });
+
+  it("a reconnect racing the heartbeat's end loses, even while the end waits for an answer: the client is never handed an ending session", async () => {
+    const waits: (() => void)[] = [];
+    const s = setup({ turnOpen: () => true, wait: () => new Promise<void>((resolve) => waits.push(resolve)) });
+    const core = s.instance();
+    const client = s.client();
+    const { reconnectSecret } = (await core.start(s.text, s.ticket, client)) as { reconnectSecret: string };
+    core.detach(client);
+    const check = core.mayReattach(reconnectSecret);
+    // The tick's end lands while the secret is hashed, and waits for the answer in progress.
+    const ending = core.end("heartbeat_timeout");
+    await check;
+    expect(core.reattach(s.client())).toBe(false);
+    waits.splice(0).forEach((resolve) => resolve());
+    await ending;
+    expect(s.calls.close.map((close) => close.endReason)).toEqual(["heartbeat_timeout"]);
+    expect(s.ended.client).toEqual([]);
+  });
+
+  it("a restarted instance holds no provider side, so it takes nobody back: a reconnect there is a new session", async () => {
+    const s = setup();
+    const { reconnectSecret } = (await s.instance().start(s.text, s.ticket, s.client())) as { reconnectSecret: string };
+    expect(await s.instance().mayReattach(reconnectSecret)).toBe(false);
   });
 });

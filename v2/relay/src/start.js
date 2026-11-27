@@ -214,6 +214,56 @@ export class SessionCore {
     this.turnWaiter = null;
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
+    /**
+     * The reconnect secret's hash, kept by `start`: a client that lost its link proves it is the
+     * same one with the secret (plan 5.1). Only while this instance holds the provider's side: a
+     * restart loses both, and then a reconnect is a new session.
+     * @type {string | null}
+     */
+    this.reconnectHash = null;
+  }
+
+  /**
+   * The session's client lost its link, and may come back with its reconnect
+   * secret: the session goes on without one (plan 5.2, "Heartbeats and
+   * reconnects"). The heartbeat still ends it if nothing comes back within
+   * 90 s. Only the session's owner can detach.
+   * @param {Client} client
+   */
+  detach(client) {
+    if (client !== this.owner || this.call === null || this.ending !== null) return false;
+    this.owner = null;
+    return true;
+  }
+
+  /**
+   * Whether `secret` is this session's reconnect secret. Only while this
+   * instance holds the provider's side: the hash goes with it. Whether the
+   * session can still take a client back is the caller's check, and `reattach`'s.
+   * @param {unknown} secret
+   */
+  async mayReattach(secret) {
+    if (typeof secret !== "string" || secret === "" || this.reconnectHash === null) return false;
+    const encoder = new TextEncoder();
+    const stored = encoder.encode(this.reconnectHash);
+    const given = encoder.encode(await hashOf(secret));
+    // Both are 64 hex characters; the length check only guards the call, which needs equal sizes.
+    // `timingSafeEqual` is the Workers runtime's own, missing from the standard types.
+    const subtle = /** @type {SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }} */ (crypto.subtle);
+    return given.byteLength === stored.byteLength && subtle.timingSafeEqual(given, stored);
+  }
+
+  /**
+   * A client came back with the reconnect secret: it owns the session now,
+   * whether the old one is detached or still seen as open (a phone that moved
+   * from Wi-Fi to mobile data). The caller checked `mayReattach`; an end that
+   * began while the secret was hashed wins here.
+   * @param {Client} client
+   */
+  reattach(client) {
+    if (this.call === null || this.ending !== null) return false;
+    this.owner = client;
+    return true;
   }
 
   /** The provider finished an answer: a closing wait for it ends now. */
@@ -253,7 +303,9 @@ export class SessionCore {
    */
   async start(ticketText, ticket, client) {
     // Also while an end is in flight: a start never runs into the middle of one.
-    if (this.starting || this.ending !== null) return { ok: false, code: "start_in_flight" };
+    // An end in flight: this session can't start or be joined again, and the client needs a new one.
+    if (this.ending !== null) return { ok: false, code: "session_ended" };
+    if (this.starting) return { ok: false, code: "start_in_flight" };
     // A session already running in this instance is refused at once, before any wait: nothing a
     // second connection's start does (a storage error, say) can then touch the running one.
     if (this.call !== null || (this.owner !== null && this.owner !== undefined && this.owner !== client)) return { ok: false, code: "session_active" };
@@ -273,7 +325,7 @@ export class SessionCore {
      * Ends the session from the start's own failure: the client is told by the
      * caller, with the start's code, not by `end` with a bare reason.
      * @param {string} reason
-     * @param {{ log?: string, status?: number }} details
+     * @param {{ log?: string, status?: number, gap?: boolean }} details
      */
     const endStart = (reason, details) => {
       if (this.owner === client) this.owner = null;
@@ -283,7 +335,17 @@ export class SessionCore {
       const stored = await this.store.get(KEYS);
       const state = stored.get("state");
       if (state === "ended") return fail("session_ended");
-      if (state === "active") return fail("session_active");
+      if (state === "active") {
+        // A restarted instance holds no provider socket: the session is gone. It is ended now, as
+        // the alarm would at its next tick, so its slot frees up for the client's new session;
+        // the accounting finishes in the background (crash table row 22).
+        if (this.lost(/** @type {Settings | undefined} */ (stored.get("settings")))) {
+          // Never unhandled: the session object waits for it too (`begin`), after answering.
+          endStart("error", { log: "relay_provider_lost", gap: true }).catch(() => undefined);
+          return fail("session_ended");
+        }
+        return fail("session_active");
+      }
       // A restart in `starting`: `open` is done. A retry with the same ticket goes on (row 9),
       // unless "connecting" was recorded: then the outcome is unknown, and it never connects again (rows 10, 11).
       const resumed = state === "starting";
@@ -357,6 +419,7 @@ export class SessionCore {
       const journal = newJournal(this.now());
       await this.store.put({ state: "active", callId: call.callId, reconnect, [JOURNAL_KEY]: journal }, Math.min(deadline, this.now() + TICK_MS));
       this.journal = journal;
+      this.reconnectHash = reconnect;
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       // A write held past the deadline: the session's time is over before it began.
@@ -428,6 +491,9 @@ export class SessionCore {
   async clientGone(client) {
     if (client !== this.owner) return;
     this.owner = null;
+    // A session with its provider call: the end starts now, before any wait, so a reconnect that
+    // comes during a storage read can't join a session that is about to end.
+    if (this.call !== null) return this.end("client_closed");
     const state = (await this.store.get(["state"])).get("state");
     if (state === "active" || state === "starting") await this.end("client_closed");
   }
@@ -496,6 +562,7 @@ export class SessionCore {
     const cut = this.call !== null && this.turnOpen();
     const call = this.call;
     this.call = null;
+    this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
     // the end of the wait: the storage reads after it are not connection time (Sol rounds 2, 3).
     const endedAt = this.now();
@@ -743,8 +810,20 @@ export class SessionCore {
     return Math.max(this.now(), ticketExpiry(ticketText));
   }
 
+  /**
+   * Whether an `active` session lost its provider socket with its instance: a relayed one did
+   * (rows 13, 14, 22). An observed session reattaches instead (part 3).
+   * @param {Settings | undefined} settings
+   */
+  lost(settings) {
+    return this.call === null && settings?.mode !== "observed";
+  }
+
   /** The alarm: the one place a session moves on by time (crash table rows 9–13, 25, 28). */
   async alarm() {
+    // An end still in progress (its close may be waiting on the main Worker) finishes first, and
+    // storage is read after it: a second close, or a cleanup under a late reply, never runs.
+    if (this.ending !== null) await this.ending.catch(() => undefined);
     const stored = await this.store.get(KEYS);
     const state = stored.get("state");
     const ticketText = stored.get("ticket");
@@ -764,7 +843,7 @@ export class SessionCore {
       const deadline = settings?.deadline ?? now;
       // A relayed session whose instance is gone lost its provider socket too: the time since the
       // journal's last write is a gap even at the cap (rows 13 and 14).
-      const lost = this.call === null && settings?.mode !== "observed";
+      const lost = this.lost(settings);
       if (now >= deadline) return this.end("time_cap", lost ? { log: "relay_provider_lost", gap: true } : {});
       // The next tick is armed before anything that can fail (crash table row 29): a tick that
       // throws still leaves the session its next one.

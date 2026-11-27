@@ -153,6 +153,18 @@ describe("the heartbeat", () => {
     for (let second = 0; second < 95; second += 1) oneSecondOfAudio(f);
     expect(f.state.check(f.now())).toBe("heartbeat_timeout");
   });
+
+  it("while our SDK's link is down, only the heartbeat counts: \"too slow\" can't be judged with nothing being sent (step 9a part 3)", () => {
+    const f = frames();
+    oneSecondOfAudio(f);
+    f.state.fromClient(JSON.stringify({ type: "agw.received", bytes: 0 }));
+    for (let second = 0; second < 12; second += 1) oneSecondOfAudio(f);
+    expect(f.state.check(f.now())).toBe("client_too_slow");
+    f.state.detached = true;
+    expect(f.state.check(f.now())).toBeNull();
+    f.tick(HEARTBEAT_TIMEOUT_MS);
+    expect(f.state.check(f.now())).toBe("heartbeat_timeout");
+  });
 });
 
 describe("reports and the start (Sol, #260 round 1)", () => {

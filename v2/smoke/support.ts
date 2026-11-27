@@ -296,7 +296,8 @@ export async function websocketHandshake(path: string, base: string, headers: Re
  * Opens a WebSocket to `path` on `base` with the smoke checks' `user-agent`,
  * sends `frames`, and gives back the first `count` frames that come back, as
  * text or bytes. Anything else fails with fixed text: Node's own error can
- * quote the URL.
+ * quote the URL. It then closes with `closeCode`: 1000 by default, another
+ * code to look like a link that dropped.
  */
 export async function exchangeFrames(
   path: string,
@@ -304,6 +305,7 @@ export async function exchangeFrames(
   frames: (string | Uint8Array)[],
   count: number,
   headers: Record<string, string> = {},
+  closeCode = 1000,
 ): Promise<(string | Uint8Array)[]> {
   let socket: WebSocket;
   try {
@@ -329,7 +331,7 @@ export async function exchangeFrames(
     socket.addEventListener("error", () => resolve("error"));
     socket.addEventListener("close", () => resolve(received.length === count ? "ok" : "error"));
   }).finally(() => clearTimeout(timer));
-  socket.close(1000, "done");
+  socket.close(closeCode, "done");
   if (done === "timeout") stop("the WebSocket answered too few frames in time");
   if (done === "error") stop("the WebSocket failed or closed early");
   return received;
