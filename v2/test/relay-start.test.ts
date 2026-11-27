@@ -582,6 +582,25 @@ describe("a client that hangs up during the start (Sol round 2)", () => {
     await ending;
   });
 
+  it("an ended-retry alarm that lands while the end's close is still pending waits for it: one close, and storage read after it (Sol round 4)", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const s = setup({ close: () => new Promise((resolve) => (release = resolve)) });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client());
+    const ending = core.end("client_closed");
+    await until(() => s.calls.close.length === 1);
+    // The retry alarm comes while the first close still waits on the main Worker.
+    s.tick(CLOSE_RETRY_EVERY_MS);
+    const alarm = core.alarm();
+    for (let step = 0; step < 50; step += 1) await Promise.resolve();
+    expect(s.calls.close).toHaveLength(1);
+    release({ version: 1 });
+    await ending;
+    await alarm;
+    expect(s.calls.close).toHaveLength(1);
+    expect(s.store.data.get("closed")).toBe(true);
+  });
+
   it("the alarm ticks every TICK_MS while the session runs, arming the next tick before its checks (crash table row 29)", async () => {
     let failing = true;
     const s = setup({

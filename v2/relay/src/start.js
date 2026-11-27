@@ -816,6 +816,9 @@ export class SessionCore {
 
   /** The alarm: the one place a session moves on by time (crash table rows 9–13, 25, 28). */
   async alarm() {
+    // An end still in progress (its close may be waiting on the main Worker) finishes first, and
+    // storage is read after it: a second close, or a cleanup under a late reply, never runs.
+    if (this.ending !== null) await this.ending.catch(() => undefined);
     const stored = await this.store.get(KEYS);
     const state = stored.get("state");
     const ticketText = stored.get("ticket");

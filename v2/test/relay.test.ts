@@ -246,24 +246,66 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
   });
 
   /** A session object whose detached client comes back with the right secret, through `reconnect`. */
-  async function comeBack(frames: SessionFrames) {
+  async function comeBack(
+    frames: SessionFrames,
+    options: { deadline?: number; secret?: string; whileWaiting?: (core: Record<string, unknown>) => void } = {},
+  ) {
     const listeners: Record<string, ((event: unknown) => void)[]> = {};
     const sent: unknown[] = [];
+    const closes: string[] = [];
     const socket = {
       addEventListener: (type: string, listener: (event: unknown) => void) => (listeners[type] ??= []).push(listener),
       removeEventListener: (type: string, listener: (event: unknown) => void) => (listeners[type] = (listeners[type] ?? []).filter((l) => l !== listener)),
       send: (data: unknown) => sent.push(data),
-      close: () => undefined,
+      close: (code: number, reason: string) => closes.push(`${code} ${reason}`),
     } as unknown as WebSocket;
     const session = Object.create(Session.prototype) as Session;
-    (session as unknown as { core: unknown }).core = { mayReattach: async (secret: unknown) => secret === "right", reattach: () => true };
-    const live = { client: null, owner: {}, frames, call: null, deadline: 123, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
+    // A running session: the core still holds its provider call, and nothing is ending.
+    const core: Record<string, unknown> = { call: {}, ending: null, mayReattach: async (secret: unknown) => secret === "right", reattach: () => true };
+    (session as unknown as { core: unknown }).core = core;
+    const live = { client: null, owner: {}, frames, call: null, deadline: options.deadline ?? Date.now() + 60_000, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
     session.live = live as never;
     const coming = session.reconnect(socket);
-    for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: "right" }) });
+    // What changes while the link waits for its first message.
+    options.whileWaiting?.(core);
+    for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: options.secret ?? "right" }) });
     await coming;
-    return { live, sent };
+    return { live, sent, closes };
   }
+
+  it("a reconnect whose session is gone by its first message is told session_ended, not the retryable session_active (Sol round 4)", async () => {
+    // The provider hung up, an end began, or the deadline passed, while the link waited.
+    for (const [name, options] of [
+      ["provider closed", { whileWaiting: (core: Record<string, unknown>) => (core.call = null) }],
+      ["ending", { whileWaiting: (core: Record<string, unknown>) => (core.ending = new Promise(() => undefined)) }],
+      ["past the deadline", { deadline: Date.now() - 1 }],
+      ["past the deadline, wrong secret", { deadline: Date.now() - 1, secret: "wrong" }],
+    ] as const) {
+      const { sent, closes } = await comeBack(new SessionFrames({ relayMessages: true }), options);
+      expect(closes, name).toEqual(["4000 session_ended"]);
+      expect(sent, name).toEqual([]);
+    }
+    // A failed proof on a live session is the only session_active.
+    expect((await comeBack(new SessionFrames({ relayMessages: true }), { secret: "wrong" })).closes).toEqual(["4000 session_active"]);
+  });
+
+  it("a connection from our SDK while the session is ending is told session_ended at once, before any start (Sol round 4)", async () => {
+    const { ticket } = await signed();
+    const session = Object.create(Session.prototype) as Session;
+    const started: string[] = [];
+    (session as unknown as { core: unknown }).core = { ending: new Promise(() => undefined), call: null, start: async () => void started.push("start") };
+    session.live = null;
+    (session as unknown as { ctx: unknown }).ctx = { waitUntil: () => undefined };
+    const response = await session.fetch(
+      new Request(`https://relay.example${SESSION_PATH}`, { headers: { upgrade: "websocket", authorization: `Bearer ${ticket}`, "x-agw-relay-messages": "1" } }),
+    );
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const closed = new Promise<string>((resolve) => socket.addEventListener("close", (event) => resolve(`${event.code} ${event.reason}`)));
+    socket.accept();
+    expect(await closed).toBe("4000 session_ended");
+    expect(started).toEqual([]);
+  });
 
   it("a reconnect keeps the frame-rate window: a new link brings no fresh allowance (Sol round 2)", async () => {
     const frames = new SessionFrames({ relayMessages: true });
@@ -278,8 +320,9 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     // A session whose client never spoke before its link dropped.
     const frames = new SessionFrames({ relayMessages: true });
     expect(frames.clientSpoke).toBe(false);
-    const { live, sent } = await comeBack(frames);
-    expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline: 123 })]);
+    const deadline = Date.now() + 60_000;
+    const { live, sent } = await comeBack(frames, { deadline });
+    expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline })]);
     // What the core's `proof` reads for the next checkpoint.
     expect(live.frames.clientSpoke).toBe(true);
   });

@@ -140,8 +140,9 @@ hash it stored. Then:
 - **Anything else** (a wrong secret, another first message, nothing within
   10 s) gets `4000 session_active`, the refusal any second connection gets.
   The session runs on, and the right secret can still come.
-- **The session can't be taken back** (it ended, its time is over, or the
-  relay restarted and lost the provider's side): the client gets `4000` with
+- **The session can't be taken back** (it is ending or ended, its time is
+  over, or the relay restarted and lost the provider's side, also when that
+  happens while the relay waits for the first message): the client gets `4000` with
   `session_ended`, or `ticket_expired` once the ended session is cleaned up.
   After a restart the session is ended right then, so its slot is free for a
   new one. Either way: don't try again, ask the gateway for a new session and

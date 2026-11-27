@@ -191,8 +191,13 @@ export class Session extends DurableObject {
     // Binary frames as `ArrayBuffer`, not `Blob`: sizes and forwarding need the bytes at hand.
     server.binaryType = "arraybuffer";
     server.accept();
+    // A session ending here: nobody can join or start it again, so our SDK is told to start a new one.
+    if (relayMessages && this.core.ending !== null) {
+      closeQuietly(server, 4000, "session_ended");
+      return new Response(null, { status: 101, webSocket: client });
+    }
     // A session already running here: only our SDK coming back with its reconnect secret may join it.
-    const running = this.live !== null && this.core.call !== null && this.core.ending === null;
+    const running = this.live !== null && this.core.call !== null;
     this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -303,6 +308,8 @@ export class Session extends DurableObject {
    * @param {WebSocket} socket
    */
   async reconnect(socket) {
+    const live = this.live;
+    if (live === null) return closeQuietly(socket, 4000, "session_ended");
     // Every frame is kept from the start: the secret first, and whatever the SDK sends right after
     // it, while the secret is checked, goes to the session in order once it is taken back.
     /** @type {(string | ArrayBuffer)[]} */
@@ -329,7 +336,6 @@ export class Session extends DurableObject {
       }, { once: true });
     });
     const first = came ? inbox[0] : undefined;
-    const live = this.live;
     /** @type {unknown} */
     let secret;
     // Read only when small, and written the way every relay message is (`RELAY_MESSAGE_PREFIX`):
@@ -342,14 +348,17 @@ export class Session extends DurableObject {
         secret = undefined;
       }
     }
+    // The session ending, ended or past its time: the client needs a new one. Only a failed
+    // proof on a live session gets `session_active`, the refusal any second connection gets.
+    const gone = () => this.live !== live || this.core.call === null || this.core.ending !== null || Date.now() >= live.deadline;
     const refuse = () => {
       socket.removeEventListener("message", onMessage);
-      closeQuietly(socket, 4000, "session_active");
+      closeQuietly(socket, 4000, gone() ? "session_ended" : "session_active");
     };
-    if (live === null || !(await this.core.mayReattach(secret))) return refuse();
+    if (gone() || !(await this.core.mayReattach(secret))) return refuse();
     /** @type {import("./start.js").Client} */
     const owner = { close: (code, reason) => closeQuietly(socket, code, reason) };
-    if (this.live !== live || !this.core.reattach(owner)) return refuse();
+    if (gone() || !this.core.reattach(owner)) return refuse();
     const old = live.client;
     live.client = socket;
     live.owner = owner;
