@@ -47,6 +47,13 @@ describe("journal", () => {
     expect(finalSliceOf(null)).toBe(0);
   });
 
+  it("never freezes a slice that ends before it began: a clock past the deadline, or one that stepped back (Gemini Neon, #265 round 1)", () => {
+    const journal = newJournal(100_000);
+    addUsage(journal, { id: "e1", measures: { input_tokens: 5 } }, "per_turn", 100_000);
+    const slice = freeze(journal, 90_000, { gapFrom: 95_000 });
+    expect(slice).toMatchObject({ from: 100_000, to: 100_000, sessionMs: 0, gapMs: 0, measures: { input_tokens: 5 } });
+  });
+
   it("counts an observed session's time without its side channel as a gap, and a side channel still down goes on into the next slice", () => {
     const journal = newJournal(0);
     markDetached(journal, 10_000);

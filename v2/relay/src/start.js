@@ -258,6 +258,11 @@ export class SessionCore {
     /** When the side channel last attached. */
     this.attachedAt = 0;
     /**
+     * Set by an observed start, cleared by the first attach attempt: only a first attempt that
+     * succeeds books no time from before it, as no side channel existed yet (`attachOnce`).
+     */
+    this.firstAttach = false;
+    /**
      * Set once an end has stored `ended`, and never cleared: an observed call's attach or journal
      * write that finishes after the end (when `ending` is null again) changes nothing.
      */
@@ -487,6 +492,7 @@ export class SessionCore {
       if (observed) {
         this.key = key;
         this.held = true;
+        this.firstAttach = true;
       }
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
@@ -658,6 +664,8 @@ export class SessionCore {
     // A restarted instance: the side channel went with the old one, and so did any usage since the
     // journal's last write. That time is a gap (crash table row 22).
     await this.loadJournal();
+    const first = this.firstAttach;
+    this.firstAttach = false;
     let key = this.key;
     if (key === null) {
       try {
@@ -690,17 +698,16 @@ export class SessionCore {
       call.close?.(1000, "session ended");
       return;
     }
-    const startedHere = this.held;
     this.call = call;
     this.held = true;
     this.attachedAt = this.now();
     const journal = await this.loadJournal();
     if (journal !== null) {
       const now = this.now();
-      // The first attach of the call this instance made, with nothing frozen before it: the time
-      // before is neither connection time nor a gap, as no side channel existed yet. Any other
-      // attach ends a gap (row 23).
-      if (startedHere && journal.nextSeq === 1 && journal.detachedFrom === journal.from) {
+      // The first attach attempt of the call this instance made, and it succeeded: the time before is
+      // neither connection time nor a gap, as no side channel existed yet. Any other attach ends a
+      // gap (row 23).
+      if (first) {
         journal.from = now;
         delete journal.detachedFrom;
       } else markAttached(journal, now);
@@ -1119,6 +1126,8 @@ export class SessionCore {
       // reaches a detached call (row 23); a 404 has ended the session, and the checkpoint is skipped.
       const detached = settings?.mode === "observed" && this.call === null;
       if (detached) await this.attachSide();
+      // The vault or the attach may have taken the tick to the cap: it ends there, before any checkpoint.
+      if (detached && this.now() >= deadline) return this.end("time_cap");
       // The live session's own checks: a silent client, a client too far behind.
       const reason = this.liveness(now);
       if (reason !== null) return this.end(reason);

@@ -196,6 +196,9 @@ export function markAttached(journal, at) {
  * @returns {Slice | null}
  */
 export function freeze(journal, at, options = {}) {
+  // Never before the open usage's start (a clock that crossed the deadline, or stepped back): a
+  // slice that ended before it began would be refused, and block the ones after it.
+  at = Math.max(journal.from, at);
   const connectedUntil = options.gapFrom === undefined ? at : Math.min(at, Math.max(journal.from, options.gapFrom));
   const downNow = journal.detachedFrom === undefined ? 0 : Math.max(0, at - Math.max(journal.from, journal.detachedFrom));
   const detachedMs = Math.min(Math.max(0, connectedUntil - journal.from), (journal.detachedMs ?? 0) + downNow);

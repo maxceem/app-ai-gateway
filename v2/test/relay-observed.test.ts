@@ -577,3 +577,43 @@ describe("a side channel that keeps closing (Fable, #265 round 1)", () => {
     expect(s.calls.attached).toBe(3);
   });
 });
+
+describe("the cap after a detached tick, and the first attach (Sol round 6, Gemini Neon round 1)", () => {
+  it("a detached tick whose vault wait reaches the cap ends there with time_cap, before any live checkpoint", async () => {
+    let stall = false;
+    const s = setup({
+      vault: (restart) => (stall && restart ? never() : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
+      // The vault wait runs its full time on the test's clock.
+      wait: (ms) => (s.tick(ms), Promise.resolve()),
+    });
+    await started(s);
+    s.tick(30 * 60_000 - 2_000);
+    stall = true;
+    const live = () => s.calls.checkpoints.filter((seen) => !seen.accounting).length;
+    const before = live();
+    await s.instance().alarm();
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
+    expect(live()).toBe(before);
+  });
+
+  it("a first side channel that drops in the millisecond it attached: the next attach still books the time without it as a gap", async () => {
+    const s = setup();
+    const core = await started(s);
+    await s.dropSide();
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.attached).toBe(2);
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: { sessionMs: 0, gapMs: TICK_MS, gaps: 1 } });
+  });
+
+  it("a first attach that fails in the millisecond of the start: the attach that works later books the time before it as a gap", async () => {
+    const s = setup({ attach: [503] });
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.owner(), OFFER);
+    await core.attachSide();
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.attached).toBe(2);
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: { sessionMs: 0, gapMs: TICK_MS, gaps: 1 } });
+  });
+});
