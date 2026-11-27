@@ -549,8 +549,12 @@ export interface SessionSpec {
    * session without it refuses a query, as one always did (Sol, #273 round 1).
    */
   readonly queryOptions?: true;
-  /** Models of this operation's kind its endpoint does not serve (ElevenLabs' `stream-input`: `eleven_v3`, `eleven_v4`): refused at save and admission. */
-  readonly unservedModels?: readonly string[];
+  /**
+   * Model families its endpoint does not serve, by name: a model named one of these, or one of these and
+   * `_` and more (`eleven_v3`, `eleven_v3_conversational`; ElevenLabs' `stream-input`), is refused at save
+   * and admission (Sol, #273 rounds 1 and 2).
+   */
+  readonly unservedFamilies?: readonly string[];
 }
 
 /** The form of a model id: `plain` has no `/`, `namespaced` is `maker/model`. */

@@ -476,8 +476,11 @@ export function resolveCall(
   if (!options.asIfServed && !servedNow(operation)) return { kind: "refused", reason: "not_served", model: requested };
   if (listed !== null && !listed.has(requested)) return { kind: "refused", reason: "model_not_allowed", model: requested };
   const model = rewrittenModel(operation, requested, rewrites);
-  // A model the session's endpoint doesn't serve never starts one, whatever its price (ElevenLabs' `eleven_v3` on `stream-input`).
-  if (operation.session?.unservedModels?.includes(model) === true) return { kind: "refused", reason: "model_not_served", model };
+  // A model the session's endpoint doesn't serve never starts one, whatever its price (ElevenLabs' `eleven_v3`
+  // family on `stream-input`).
+  if (operation.session?.unservedFamilies?.some((family) => model === family || model.startsWith(`${family}_`)) === true) {
+    return { kind: "refused", reason: "model_not_served", model };
+  }
   if (pricedModelsPath(operation) && resolve(sources, model, operation) === null) return { kind: "refused", reason: "unpriced_path", model };
   const bill = billing(operation, sources, model);
   const problem = admissionProblem(bill, listed !== null);

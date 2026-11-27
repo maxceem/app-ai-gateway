@@ -8,9 +8,10 @@
  * - Only a final record settles: one Deepgram has `completed`, with its dollar figure. A record not there
  *   yet (404), or not complete, is tried again a minute later.
  * - At most `PROVIDER_LOOKUP_WINDOW_MS` after the stream ended (plan 8j): past it, or when the lookup can't
- *   be made at all (no request id, a key that may not read usage, a connection gone or pointed elsewhere,
- *   a key whose copy is known to be missing or removed), the slices' estimate stays, logged, and the
- *   session is marked so. Any other failure, the vault's included, is tried again within the window.
+ *   be made at all (no request id, a connection gone or pointed elsewhere, a key whose copy is known to be
+ *   missing or removed), the slices' estimate stays, logged, and the session is marked so. Any other
+ *   failure (the vault's, a refusal such as a key without `usage:read`, an answer cut short) is tried
+ *   again within the window.
  * - The key: for an account with split keys on, the copies made when the app asked for the session
  *   (`./start-session.ts`); for one with them off, the connection's own. The vault adds it, as for any call.
  *
@@ -142,11 +143,11 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
   let record: { readonly status: number; readonly body: unknown };
   try {
     projects = await deepgramGet(env, connection, description, "v1/projects", copies, signal, session.app_id);
-    if (projects.status === 401 || projects.status === 403) return keepEstimate("session_lookup_refused", { status: projects.status });
     if (projects.status !== 200) return retry(`projects answered ${projects.status}`);
     const list = (projects.body as { projects?: unknown } | null)?.projects;
     const project = Array.isArray(list) ? (list[0] as { project_id?: unknown } | undefined)?.project_id : undefined;
-    if (typeof project !== "string" || project === "") return keepEstimate("session_lookup_no_project");
+    // An answer cut short or unreadable may read on the next try.
+    if (typeof project !== "string" || project === "") return retry("no project in the answer");
     record = await deepgramGet(env, connection, description, `v1/projects/${encodeURIComponent(project)}/requests/${encodeURIComponent(session.provider_call_id)}`, copies, signal, session.app_id);
   } catch (error) {
     // Anything else, the vault's refusal or a timeout included, may pass: tried again within the window.
@@ -154,9 +155,8 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
     log("warn", "session_lookup_failed", { ...facts, error: errorFacts(error) });
     return retry("lookup failed");
   }
-  // A key that may not read usage (Deepgram's `usage:read`) never will: the estimate stays.
-  if (record.status === 401 || record.status === 403) return keepEstimate("session_lookup_refused", { status: record.status });
-  // Not there yet: Deepgram writes the record after the stream ends.
+  // Not there yet: Deepgram writes the record after the stream ends. Any other answer, a refusal included
+  // (a key without `usage:read`), is tried again within the window, then the estimate stays (Sol, #273 round 2).
   if (record.status === 404) return retry("record not ready");
   if (record.status !== 200) return retry(`record answered ${record.status}`);
   const figure = recordFigure(record.body);
