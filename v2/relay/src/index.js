@@ -276,6 +276,14 @@ export class Session extends DurableObject {
           const live = this.live;
           if (live?.call === call) this.endFor(live, "error", 1008, code);
         },
+        // Gemini closed a connection right after its setup: the client gets Gemini's code where a
+        // client may be sent it, and its reason.
+        ended: (code, reason) => {
+          const live = this.live;
+          const sendable = code === 1007 || code === 1008 || code === 1011 || (code >= 3000 && code <= 4999);
+          if (live?.call === call) this.endFor(live, "provider_closed", sendable ? code : 1011, reason);
+          else void this.core.providerGone(call);
+        },
         log: (event) => console.log(JSON.stringify({ ...event, session: this.core.sessionId })),
       },
     });

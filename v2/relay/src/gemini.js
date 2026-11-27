@@ -12,11 +12,17 @@
  *   later `setup` is dropped: Gemini takes one per connection.
  * - **Hidden from the client:** `sessionResumptionUpdate`, `goAway`, and the
  *   `setupComplete` of a resumed connection.
- * - **A swap** happens after `goAway`, at a quiet moment: nobody speaking, and
- *   no answer running or on its way (from the end of the user's turn to the
- *   answer's `turnComplete`). It waits no later than `timeLeft` less
- *   `GOAWAY_MARGIN_MS`, then swaps anyway. It also happens when the live
- *   connection closes without warning (`gemini-3.8-live` once did, T19).
+ * - **A swap** after `goAway` waits for Gemini's next resumable handle, and
+ *   happens then if no answer is open, the user is not speaking (Gemini's own
+ *   `voiceActivity`), and nothing was asked since the last `turnComplete` (any
+ *   client frame but realtime media, or the end of speech). T19 saw a fresh
+ *   handle after every `turnComplete`, 0.1–2.2 s later; swapping at the
+ *   `turnComplete` itself used an older handle and lost the answer (run I). A
+ *   wrong "busy" only delays the swap: with no such handle, it happens at
+ *   `timeLeft` less `GOAWAY_MARGIN_MS`. A swap also happens when the live
+ *   connection closes without warning (`gemini-3.8-live` once did, T19), unless
+ *   it closed within `QUICK_CLOSE_MS` of its own setup: then Gemini refused what
+ *   it got, and the session ends with Gemini's close.
  * - **How it swaps:** client frames wait from then on; the old connection is
  *   closed first, since Gemini refuses a resume while it is open; then a new
  *   one resumes with the handle, retried every `RESUME_RETRY_MS`. Once it is
@@ -54,42 +60,14 @@ function headOf(data, length) {
 
 /** A later client `setup` message: `{"setup": …}`. Gemini takes one per connection, so a later one is dropped. */
 const SETUP_START = /^\s*\{\s*"setup"\s*:/u;
-/** A client message that may ask for an answer: a text turn, or a tool's result. */
-const TURN_START = /^\s*\{\s*"(clientContent|toolResponse)"\s*:/u;
-const TURN_COMPLETE = /"turnComplete"\s*:\s*true/u;
-/** A realtime text input: Gemini answers it as it answers a turn. */
-const REALTIME_TEXT = /^\s*\{\s*"realtimeInput"\s*:\s*\{\s*"text"\s*:/u;
-/** Realtime audio from the client. */
-const REALTIME_AUDIO = /^\s*\{\s*"realtimeInput"\s*:\s*\{\s*"(audio|mediaChunks)"\s*:/u;
 /**
- * Models that send no `voiceActivity` markers (T19: Gemini 2.5 native audio). On them the relay
- * can't see when speech ends, so audio since the last `turnComplete` counts as an answer on its way.
+ * A client's realtime media: audio, video or their older chunk form, in either spelling. Every
+ * other client frame (a turn, a text input, a tool's result, a speech marker, anything unknown)
+ * may bring an answer, so it holds a swap back until the next `turnComplete`.
  */
-const NO_VOICE_MARKERS = /gemini-2\.5/u;
-/** The longest client frame read for a speech signal: `activityStart` and `activityEnd` frames are tiny. */
-const SIGNAL_MAX = 256;
-
-/**
- * What a client frame says about the conversation, read cheaply: an answer is
- * asked for (`"turn"`), a tool's result (`"tool"`), the user starts or stops
- * speaking, or nothing.
- * @param {string | ArrayBuffer} data
- * @returns {"turn" | "tool" | "start" | "end" | "audio" | null}
- */
-function clientSignal(data) {
-  const head = headOf(data, 96);
-  if (TURN_START.test(head)) {
-    if (/"toolResponse"/u.test(head.slice(0, 32))) return "tool";
-    return TURN_COMPLETE.test(typeof data === "string" ? data : new TextDecoder().decode(new Uint8Array(data))) ? "turn" : null;
-  }
-  if (REALTIME_TEXT.test(head)) return "turn";
-  if (REALTIME_AUDIO.test(head)) return "audio";
-  if (frameSize(data) > SIGNAL_MAX) return null;
-  const signal = headOf(data, SIGNAL_MAX);
-  if (signal.includes('"activityStart"')) return "start";
-  if (signal.includes('"activityEnd"')) return "end";
-  return null;
-}
+const REALTIME_MEDIA = /^\s*\{\s*"(realtimeInput|realtime_input)"\s*:\s*\{\s*"(audio|video|mediaChunks|media_chunks)"\s*:/u;
+/** A connection that closes this soon after its own `setupComplete` is not resumed: Gemini refused what it got (T19 saw 1007). */
+export const QUICK_CLOSE_MS = 5_000;
 
 /** `"50s"` as milliseconds, or null. @param {unknown} value */
 function durationMs(value) {
@@ -112,12 +90,14 @@ function durationMs(value) {
  *   gone(): void,
  *   capped(): void,
  *   refuse(code: string): void,
+ *   ended(code: number, reason: string): void,
  *   log(event: Record<string, unknown>): void,
  * }} Events
  * What the session object does with the upstream's news: a frame for the
  * client, a usage event (an estimate, or usage from a closing connection),
  * an answer cut, the end of the provider's side, the session's deadline
- * reached during a swap, and a client whose first message was not a setup.
+ * reached during a swap, a client whose first message was not a setup, and a
+ * connection Gemini closed right after its setup (with Gemini's code and reason).
  */
 
 export class GeminiUpstream {
@@ -162,13 +142,12 @@ export class GeminiUpstream {
     /** An answer is running, and how many bytes of it went to the client. */
     this.answering = false;
     this.answerBytes = 0;
-    /** Answers asked for (a finished turn, a tool's result, the end of speech) and not yet complete. */
-    this.awaiting = 0;
-    /** The user is speaking: a voice activity start with no end yet. */
+    /** The user is speaking: Gemini's voice activity start with no end yet. */
     this.speaking = false;
-    /** A model with no voice markers (`NO_VOICE_MARKERS`): audio came since the last `turnComplete`. */
-    this.noMarkers = this.model !== null && NO_VOICE_MARKERS.test(this.model);
-    this.heardAudio = false;
+    /** Something that may bring an answer went out (`REALTIME_MEDIA`), or speech ended, since the last `turnComplete`. */
+    this.asked = false;
+    /** When the current connection's `setupComplete` came (`QUICK_CLOSE_MS`). */
+    this.setupAt = 0;
     /**
      * @type {import("./journal.js").UsageEvent | null} A cut answer's estimate, held while its old
      * connection closes: that connection may still report the answer's real usage, which wins.
@@ -229,8 +208,8 @@ export class GeminiUpstream {
   }
 
   /**
-   * A frame goes to the current connection, and what it says is counted then:
-   * the speech and the answers it asks for belong to the connection that got it.
+   * A frame goes to the current connection. Anything but realtime media may bring
+   * an answer there: it is counted when it is sent, not while it waits in a swap.
    * @param {string | ArrayBuffer} data
    */
   deliver(data) {
@@ -239,16 +218,7 @@ export class GeminiUpstream {
     } catch {
       // Closed: its close event decides what happens next.
     }
-    const signal = clientSignal(data);
-    if (signal === "start") this.speaking = true;
-    else if (signal === "end") {
-      this.speaking = false;
-      this.awaiting += 1;
-    } else if (signal === "turn") this.awaiting += 1;
-    // A tool's result continues the answer that called the tool, which ends with one `turnComplete`;
-    // only a result that comes after that answer asks for a new one.
-    else if (signal === "tool" && !this.answering) this.awaiting += 1;
-    else if (signal === "audio" && this.noMarkers) this.heardAudio = true;
+    if (!REALTIME_MEDIA.test(headOf(data, 96))) this.asked = true;
   }
 
   /**
@@ -300,8 +270,13 @@ export class GeminiUpstream {
       return;
     }
     if (socket !== this.socket || this.closed) return;
-    if (message?.sessionResumptionUpdate !== undefined) return this.keepHandle(message.sessionResumptionUpdate);
+    if (message?.sessionResumptionUpdate !== undefined) {
+      // A fresh handle after `goAway`, at a quiet moment: the swap resumes with it.
+      if (this.keepHandle(message.sessionResumptionUpdate) && this.goAwayBy !== null && !this.answering && !this.speaking && !this.asked) this.swap("go_away");
+      return;
+    }
     if (message?.goAway !== undefined) return this.goAway(message.goAway);
+    if (message?.setupComplete !== undefined) this.setupAt = this.now();
     const content = message?.serverContent;
     const answer = content?.modelTurn !== undefined || message?.toolCall !== undefined;
     if (answer) this.answering = true;
@@ -316,26 +291,29 @@ export class GeminiUpstream {
     // The user stopped speaking: Gemini answers next, on this connection.
     if (activity === "ACTIVITY_END") {
       this.speaking = false;
-      this.awaiting += 1;
+      this.asked = true;
     }
     if (content?.turnComplete === true) {
       this.answering = false;
       this.answerBytes = 0;
-      this.awaiting = Math.max(0, this.awaiting - 1);
-      this.heardAudio = false;
-      this.quietNow();
+      this.asked = false;
     }
   }
 
-  /** @param {{ newHandle?: unknown, resumable?: unknown }} update */
+  /**
+   * Keeps a resumable handle. Returns whether it stored a new one.
+   * @param {{ newHandle?: unknown, resumable?: unknown }} update
+   */
   keepHandle(update) {
     // `resumable` is absent while 2.5 generates, false when the session can't be resumed now (T19).
-    if (typeof update.newHandle === "string" && update.newHandle !== "" && update.resumable !== false) this.handle = update.newHandle;
+    if (typeof update.newHandle !== "string" || update.newHandle === "" || update.resumable === false) return false;
+    this.handle = update.newHandle;
+    return true;
   }
 
   /**
-   * Gemini will close this connection soon: swap at the next quiet moment, and
-   * no later than `timeLeft` less the margin.
+   * Gemini will close this connection soon: swap with its next handle at a quiet
+   * moment, and no later than `timeLeft` less the margin.
    * @param {{ timeLeft?: unknown }} notice
    */
   goAway(notice) {
@@ -344,18 +322,10 @@ export class GeminiUpstream {
     const by = this.now() + Math.max(0, left - GOAWAY_MARGIN_MS);
     this.goAwayBy = by;
     this.events.log({ level: "info", message: "relay_gemini_go_away", leftMs: left });
-    if (this.quietNow()) return;
     const socket = this.socket;
     void this.wait(by - this.now()).then(() => {
       if (this.socket === socket && this.goAwayBy === by) this.swap("go_away_deadline");
     });
-  }
-
-  /** After `goAway`, swaps once nobody is speaking, and no answer runs or is on its way. Returns whether it did. */
-  quietNow() {
-    if (this.goAwayBy === null || this.answering || this.awaiting > 0 || this.speaking || this.heardAudio || this.socket === null) return false;
-    this.swap("go_away");
-    return true;
   }
 
   /**
@@ -381,10 +351,28 @@ export class GeminiUpstream {
       return;
     }
     if (socket !== this.socket) return;
-    // The live connection closed without warning: resumed, as after `goAway` (T19).
     this.socket = null;
-    this.events.log({ level: "warn", message: "relay_gemini_upstream_closed", code, reason: String(reason ?? "").slice(0, 120) });
+    const said = String(reason ?? "").slice(0, 120);
+    this.events.log({ level: "warn", message: "relay_gemini_upstream_closed", code, reason: said });
+    // Closed right after its own setup: Gemini refused what it got (a bad client frame: T19 saw 1007).
+    // Resuming would only repeat it; the session ends with Gemini's close.
+    if (this.setupAt > 0 && this.now() - this.setupAt < QUICK_CLOSE_MS) return this.endWith(code, said);
+    // The live connection closed without warning: resumed, as after `goAway` (T19).
     this.swap("upstream_closed", false);
+  }
+
+  /**
+   * Gemini closed the connection soon after its setup: the session ends, and the
+   * client gets Gemini's code and reason where it can.
+   * @param {number} code
+   * @param {string} reason
+   */
+  endWith(code, reason) {
+    const cut = this.estimate();
+    if (cut !== null) this.events.usage(cut);
+    this.closed = true;
+    this.waiting = null;
+    this.events.ended(code, reason);
   }
 
   /**
@@ -407,8 +395,7 @@ export class GeminiUpstream {
     this.goAwayBy = null;
     this.speaking = false;
     // Whatever was on its way went to the old connection: it will not come.
-    this.awaiting = 0;
-    this.heardAudio = false;
+    this.asked = false;
     const cut = this.takeCut();
     this.events.log({ level: "info", message: "relay_gemini_swap", why });
     const old = closeOld ? this.socket : null;
@@ -495,6 +482,7 @@ export class GeminiUpstream {
     this.next = null;
     this.waiting = null;
     this.socket = socket;
+    this.setupAt = this.now();
     for (const data of waiting) this.deliver(data);
     this.events.log({ level: "info", message: "relay_gemini_resumed", held: waiting.length });
   }

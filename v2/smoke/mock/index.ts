@@ -671,8 +671,9 @@ export default mock;
  * Gemini Live (step 9d), its JSON in binary frames as Gemini sends it: a
  * `setup` gets `setupComplete` and a resumable handle; a text turn gets one
  * audio chunk, then `turnComplete` with its usage (60 text and 40 audio
- * tokens in, 20 audio tokens out). The text "goaway" gets a `goAway` with 11 s
- * left first, so the relay swaps to a new connection once that answer is done.
+ * tokens in, 20 audio tokens out), then a fresh handle, as Gemini sends one
+ * after each `turnComplete` (T19). The text "goaway" gets a `goAway` with 11 s
+ * left first, so the relay swaps to a new connection with that handle.
  */
 function geminiLiveSession(): Response {
   const [client, server] = Object.values(new WebSocketPair());
@@ -708,6 +709,7 @@ function geminiLiveSession(): Response {
     if (said === "goaway") send({ goAway: { timeLeft: "11s" } });
     send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAAA" } }], role: "model" } } });
     send({ serverContent: { turnComplete: true }, usageMetadata: usage });
+    send({ sessionResumptionUpdate: { newHandle: crypto.randomUUID(), resumable: true } });
   });
   return new Response(null, { status: 101, webSocket: client });
 }

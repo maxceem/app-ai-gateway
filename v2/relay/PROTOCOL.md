@@ -117,14 +117,18 @@ them, with audio, images and video at their own rates.
   dropped.
 - **Gemini's connection limits are handled for you.** Gemini closes a
   connection after a while, warning first with `goAway` on some models. The
-  relay then opens a new connection to the same conversation, at a quiet
-  moment: when nobody is speaking and no answer is running or on its way (after
-  a finished turn, a realtime text input, a tool's result, or the end of
-  speech; on Gemini 2.5, which marks no speech, any audio since the last
-  answer). Your
-  link stays open. You never get `goAway`, `sessionResumptionUpdate`, or a
-  second `setupComplete`. Messages you send during the switch (usually under
-  a second, at most a few) wait and then go on, in order.
+  relay then opens a new connection to the same conversation, with the next
+  resumption handle Gemini sends, at a quiet moment: no answer running, nobody
+  speaking, and nothing asked since the last answer finished. Without such a
+  moment it switches shortly before Gemini's own close. It also reconnects when
+  Gemini closes a connection without warning. Your link stays open. You never
+  get `goAway`, `sessionResumptionUpdate`, or a second `setupComplete`.
+  Messages you send during the switch (usually under a second, at most a few)
+  wait and then go on, in order.
+- **A refused message ends the session.** If Gemini closes a connection within
+  5 s of setting it up (it refused something you sent), the relay does not
+  reconnect: the session ends with Gemini's close code and reason where they
+  can be sent, else `1011`.
 - **What can be lost.** Speech sent during a switch can lose its start on some
   models. An answer cut by a switch, or by Gemini closing the connection,
   stops: it never reports its usage, so its audio is billed from what was

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { adapterFor, geminiMeasures, geminiMessage } from "../relay/src/adapters.js";
-import { BYTES_PER_ESTIMATED_TOKEN, GeminiUpstream, GOAWAY_MARGIN_MS, OLD_CLOSE_WAIT_MS, RESUME_LIMIT_MS, RESUME_RETRY_MS } from "../relay/src/gemini.js";
+import { BYTES_PER_ESTIMATED_TOKEN, GeminiUpstream, GOAWAY_MARGIN_MS, OLD_CLOSE_WAIT_MS, QUICK_CLOSE_MS, RESUME_LIMIT_MS, RESUME_RETRY_MS } from "../relay/src/gemini.js";
 import { billingForCharge, priceSources } from "../src/pricing/billability.ts";
 import { priceSlice } from "../src/relay/checkpoint.ts";
 import { SessionCore } from "../relay/src/start.js";
@@ -32,8 +32,8 @@ class FakeSocket {
     const data = new TextEncoder().encode(JSON.stringify(message)).buffer as ArrayBuffer;
     for (const listener of this.listeners.message) listener({ data });
   }
-  fireClose(code = 1000): void {
-    for (const listener of this.listeners.close) listener({ code });
+  fireClose(code = 1000, reason = ""): void {
+    for (const listener of this.listeners.close) listener({ code, reason } as never);
   }
   /** What was sent, parsed. */
   messages(): Record<string, unknown>[] {
@@ -74,6 +74,7 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
   const handshake: { hold: Promise<void> | null } = { hold: null };
   let capped = 0;
   const refused: string[] = [];
+  const endedWith: { code: number; reason: string }[] = [];
   const upstream = new GeminiUpstream({
     socket: first,
     open: async () => {
@@ -96,6 +97,7 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
       gone: () => void (gone += 1),
       capped: () => void (capped += 1),
       refuse: (code) => void refused.push(code),
+      ended: (code, reason) => void endedWith.push({ code, reason }),
       log: (event) => logs.push(event),
     },
   });
@@ -114,7 +116,7 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
     first.emit({ setupComplete: {} });
     first.emit({ sessionResumptionUpdate: { newHandle: handle, resumable: true } });
   };
-  return { upstream, first, opened, toClient, usage, logs, refused, forwarding, handshake, advance, started, cuts: () => cuts, gone: () => gone, capped: () => capped };
+  return { upstream, first, opened, toClient, usage, logs, refused, endedWith, forwarding, handshake, advance, started, cuts: () => cuts, gone: () => gone, capped: () => capped };
 }
 
 describe("Gemini Live's adapter (step 9d)", () => {
@@ -189,122 +191,108 @@ describe("Gemini Live's upstream: the setup (step 9d)", () => {
 });
 
 describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
-  it("after goAway at a quiet moment: closes the old connection first, resumes with the handle, and sends the waiting frames in order", async () => {
+  const handle = (socket: FakeSocket, newHandle: string) => socket.emit({ sessionResumptionUpdate: { newHandle, resumable: true } });
+  const text = (said: string) => JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: said }] }], turnComplete: true } });
+  const audio = JSON.stringify({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: "AAAA" } } });
+
+  it("after goAway, swaps on Gemini's next handle at a quiet moment: the old connection closes first, the new one resumes with that handle, and waiting frames go on in order", async () => {
     const s = setup();
-    s.started("h2");
-    s.upstream.send(JSON.stringify({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: "AAAA" } } }));
+    s.started("h1");
+    s.upstream.send(audio);
     s.first.emit({ goAway: { timeLeft: "50s" } });
+    // goAway alone changes nothing: the swap waits for the next handle.
+    expect(s.first.closedWith).toBeNull();
+    handle(s.first, "h2");
     expect(s.first.closedWith?.code).toBe(1000);
-    // Frames that come during the swap wait; the old connection got nothing more.
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "during" } }));
+    s.upstream.send(text("during"));
     expect(s.first.messages().map((message) => Object.keys(message)[0])).toEqual(["setup", "realtimeInput"]);
-    expect(s.opened).toHaveLength(0);
     s.first.fireClose(1000);
     await until(() => s.opened.length === 1);
     const next = s.opened[0] as FakeSocket;
     expect(next.messages()).toEqual([{ setup: { model: "models/gemini-3.8-live", generationConfig: { responseModalities: ["AUDIO"] }, contextWindowCompression: { slidingWindow: {} }, sessionResumption: { handle: "h2" } } }]);
     next.emit({ setupComplete: {} });
-    // The waiting frame goes on; the one sent before the swap is never sent again.
-    expect(next.messages().slice(1)).toEqual([{ realtimeInput: { text: "during" } }]);
-    // The client saw one setupComplete, and no goAway.
+    expect(next.messages().slice(1)).toEqual([JSON.parse(text("during"))]);
     expect(s.toClient).toEqual([{ setupComplete: {} }]);
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "after" } }));
-    expect(next.messages().at(-1)).toEqual({ realtimeInput: { text: "after" } });
     expect(s.cuts()).toBe(0);
     expect(s.gone()).toBe(0);
   });
 
-  it("waits for an answer to finish before it swaps", async () => {
+  it("does not swap on a handle while an answer runs, while the user speaks, or after a client turn that has no answer yet", () => {
+    const answering = setup();
+    answering.started();
+    answering.first.emit(chunk());
+    answering.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(answering.first, "h2");
+    expect(answering.first.closedWith).toBeNull();
+    const speaking = setup();
+    speaking.started();
+    speaking.first.emit({ voiceActivity: { type: "ACTIVITY_START" } });
+    speaking.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(speaking.first, "h2");
+    expect(speaking.first.closedWith).toBeNull();
+    const asked = setup();
+    asked.started();
+    asked.upstream.send(text("hi"));
+    asked.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(asked.first, "h2");
+    expect(asked.first.closedWith).toBeNull();
+    // Gemini's end of speech asks too.
+    const spoke = setup();
+    spoke.started();
+    spoke.first.emit({ voiceActivity: { type: "ACTIVITY_START" } });
+    spoke.first.emit({ voiceActivity: { type: "ACTIVITY_END" } });
+    spoke.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(spoke.first, "h2");
+    expect(spoke.first.closedWith).toBeNull();
+  });
+
+  it("after a turnComplete, resumes with the handle that came after it, never one from before (T19, run I)", async () => {
+    const s = setup();
+    s.started("h1");
+    s.upstream.send(text("tell me a story"));
+    s.first.emit(chunk());
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    // Not at the turnComplete itself: the handle Gemini has then would lose the answer.
+    expect(s.first.closedWith).toBeNull();
+    handle(s.first, "h-after");
+    expect(s.first.closedWith?.code).toBe(1000);
+    s.first.fireClose(1000);
+    await until(() => s.opened.length === 1);
+    expect((s.opened[0] as FakeSocket).messages()[0]).toMatchObject({ setup: { sessionResumption: { handle: "h-after" } } });
+  });
+
+  it("never swaps on an update that brings no handle", () => {
+    const s = setup();
+    s.started();
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    s.first.emit({ sessionResumptionUpdate: { resumable: false } });
+    s.first.emit({ sessionResumptionUpdate: {} });
+    expect(s.first.closedWith).toBeNull();
+  });
+
+  it("does not swap after a barge-in: the user speaks, the old answer ends, then a handle comes", () => {
     const s = setup();
     s.started();
     s.first.emit(chunk());
     s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith).toBeNull();
+    s.first.emit({ voiceActivity: { type: "ACTIVITY_START" } });
+    s.first.emit({ serverContent: { interrupted: true } });
     s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith?.code).toBe(1000);
-    expect(s.cuts()).toBe(0);
+    handle(s.first, "h2");
+    expect(s.first.closedWith).toBeNull();
   });
 
-  it("waits while the user speaks, and for the answer that follows, then swaps", () => {
+  it("counts realtime media in either spelling as no request: a snake_case audio frame leaves the next handle free to swap", () => {
     const s = setup();
     s.started();
-    s.upstream.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+    s.upstream.send(JSON.stringify({ realtime_input: { media_chunks: [{ mime_type: "audio/pcm", data: "AAAA" }] } }));
     s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith).toBeNull();
-    s.upstream.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    // The end of speech went to the connection that heard its start, and its answer comes there.
-    expect(s.first.messages().at(-1)).toEqual({ realtimeInput: { activityEnd: {} } });
-    expect(s.first.closedWith).toBeNull();
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    handle(s.first, "h2");
     expect(s.first.closedWith?.code).toBe(1000);
   });
 
-  it("waits for the answer to a turn the client just sent, so the turn is never sent to a connection about to close", () => {
-    const s = setup();
-    s.started();
-    s.upstream.send(JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: "hi" }] }], turnComplete: true } }));
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith).toBeNull();
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith?.code).toBe(1000);
-    expect(s.cuts()).toBe(0);
-  });
-
-  it("waits for the answer to a realtime text input too", () => {
-    const s = setup();
-    s.started();
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "hi" } }));
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith).toBeNull();
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith?.code).toBe(1000);
-  });
-
-  it("counts a tool's result as part of the answer that called it: after its one turnComplete, a goAway swaps at once (Sol, #269 round 2)", () => {
-    const s = setup();
-    s.started();
-    s.upstream.send(JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: "weather?" }] }], turnComplete: true } }));
-    s.first.emit({ toolCall: { functionCalls: [{ id: "f1", name: "weather", args: {} }] } });
-    s.upstream.send(JSON.stringify({ toolResponse: { functionResponses: [{ id: "f1", name: "weather", response: { sky: "clear" } }] } }));
-    s.first.emit(chunk());
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith?.code).toBe(1000);
-  });
-
-  it("on Gemini 2.5, which sends no voice markers, waits after audio for the answer it may bring (T19, run E; Sol, #269 round 3)", () => {
-    const audio = JSON.stringify({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: "AAAA" } } });
-    // T19's order: the user's audio, goAway while the answer is still to come, then the answer.
-    const s = setup("gemini-2.5-flash-native-audio-latest");
-    s.started();
-    s.upstream.send(audio);
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(s.first.closedWith).toBeNull();
-    s.first.emit(chunk());
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith?.code).toBe(1000);
-    // A model that marks speech swaps at once after the same audio: its markers say when speech ends.
-    const t = setup("gemini-3.8-live");
-    t.started();
-    t.upstream.send(audio);
-    t.first.emit({ goAway: { timeLeft: "50s" } });
-    expect(t.first.closedWith?.code).toBe(1000);
-  });
-
-  it("waits for every answer asked for: a second turn sent before the first answer finished keeps the swap waiting", () => {
-    const s = setup();
-    s.started();
-    const turn = JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: "hi" }] }], turnComplete: true } });
-    s.upstream.send(turn);
-    s.upstream.send(turn);
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith).toBeNull();
-    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
-    expect(s.first.closedWith?.code).toBe(1000);
-  });
-
-  it("swaps at the deadline when the answer runs on, and bills the cut answer from the audio forwarded, as an estimate", async () => {
+  it("with no handle after goAway, swaps at the deadline, and bills an answer it cuts from the audio forwarded, once the old connection closed", async () => {
     const s = setup();
     s.started();
     s.first.emit(chunk());
@@ -350,7 +338,7 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.usage).toHaveLength(1);
   });
 
-  it("estimates a cut answer from what reached the client only, not audio thrown away while the session closes (Sol, #269 round 2)", async () => {
+  it("estimates a cut answer from what reached the client only, not audio thrown away while the session closes (Sol, #269 round 2)", () => {
     const s = setup();
     s.started();
     s.first.emit(chunk());
@@ -368,9 +356,23 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.cuts()).toBe(1);
   });
 
-  it("opens no resume past the cap: a handshake that ends after it is closed, and no setup goes (Sol, #269 round 2)", async () => {
-    const s = setup("gemini-3.8-live", 1_000_000 + 1_000);
+  it("counts a frame that waited in a swap when it is sent: it asks on the new connection", async () => {
+    const s = setup();
     s.started();
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(s.first, "h2");
+    s.upstream.send(text("during"));
+    expect(s.upstream.asked).toBe(false);
+    s.first.fireClose(1000);
+    await until(() => s.opened.length === 1);
+    (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
+    expect(s.upstream.asked).toBe(true);
+  });
+
+  it("opens no resume past the cap: a handshake that ends after it is closed, and no setup goes (Sol, #269 round 2)", async () => {
+    const s = setup("gemini-3.8-live", 1_000_000 + QUICK_CLOSE_MS + 1_000);
+    s.started();
+    await s.advance(QUICK_CLOSE_MS);
     let release: () => void = () => undefined;
     s.handshake.hold = new Promise<void>((resolve) => (release = resolve));
     s.first.fireClose(1011);
@@ -384,44 +386,32 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.capped()).toBe(1);
   });
 
-  it("goes on past no deadline: a swap whose new connection is set up after the session's cap sends nothing, and ends it at its cap", async () => {
+  it("goes on past no deadline: a swap set up after the session's cap sends nothing and ends it at its cap; one that starts past the cap opens nothing", async () => {
     const s = setup("gemini-3.8-live", 1_000_000 + 5_000);
     s.started();
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "late" } }));
+    s.first.emit({ goAway: { timeLeft: "10s" } });
+    await s.advance(0);
+    s.upstream.send(text("late"));
     s.first.fireClose(1000);
     await until(() => s.opened.length === 1);
     await s.advance(5_000);
     (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
     expect(s.capped()).toBe(1);
     expect((s.opened[0] as FakeSocket).messages()).toHaveLength(1);
-    // A swap that starts past the cap opens nothing.
-    const t = setup("gemini-3.8-live", 1_000_000);
+    const t = setup("gemini-3.8-live", 1_000_000 + QUICK_CLOSE_MS);
     t.started();
+    await t.advance(QUICK_CLOSE_MS);
     t.first.fireClose(1011);
-    await t.advance(OLD_CLOSE_WAIT_MS);
+    await t.advance(0);
     expect(t.opened).toHaveLength(0);
     expect(t.capped()).toBe(1);
-  });
-
-  it("counts speech and turns when a waiting frame is sent, not when it waits: speech in a swap never leaves it stuck", async () => {
-    const s = setup();
-    s.started();
-    s.first.emit({ goAway: { timeLeft: "50s" } });
-    s.upstream.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-    s.upstream.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    expect(s.upstream.speaking).toBe(false);
-    s.first.fireClose(1000);
-    await until(() => s.opened.length === 1);
-    (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
-    expect(s.upstream.speaking).toBe(false);
-    expect(s.upstream.awaiting).toBe(1);
   });
 
   it("tries a refused resume again every 250 ms, and goes on once one is set up", async () => {
     const s = setup();
     s.started();
     s.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(s.first, "h2");
     s.first.fireClose(1000);
     await until(() => s.opened.length === 1);
     // Gemini still sees the old connection: the new one is closed before it is set up (T19: 1008).
@@ -432,14 +422,15 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.opened).toHaveLength(2);
     (s.opened[1] as FakeSocket).emit({ setupComplete: {} });
     expect(s.gone()).toBe(0);
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "after" } }));
-    expect((s.opened[1] as FakeSocket).messages().at(-1)).toEqual({ realtimeInput: { text: "after" } });
+    s.upstream.send(text("after"));
+    expect((s.opened[1] as FakeSocket).messages().at(-1)).toEqual(JSON.parse(text("after")));
   });
 
   it("opens the new connection anyway when the old one's close never comes", async () => {
     const s = setup();
     s.started();
     s.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(s.first, "h2");
     await s.advance(OLD_CLOSE_WAIT_MS);
     expect(s.opened).toHaveLength(1);
   });
@@ -448,20 +439,21 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     const s = setup();
     s.started();
     s.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(s.first, "h2");
     s.first.fireClose(1000);
     await until(() => s.opened.length === 1);
     await s.advance(RESUME_LIMIT_MS);
     expect(s.gone()).toBe(1);
     expect(s.logs).toContainEqual(expect.objectContaining({ level: "warn", message: "relay_gemini_resume_failed" }));
-    // Nothing more is tried, and a late setup changes nothing.
     (s.opened[0] as FakeSocket).emit({ setupComplete: {} });
-    s.upstream.send(JSON.stringify({ realtimeInput: { text: "late" } }));
+    s.upstream.send(text("late"));
     expect((s.opened[0] as FakeSocket).messages()).toHaveLength(1);
   });
 
   it("resumes after an unexpected close, and bills the answer it cut as an estimate (T19: gemini-3.8-live's 1011)", async () => {
     const s = setup();
     s.started();
+    await s.advance(QUICK_CLOSE_MS);
     s.first.emit(chunk());
     s.first.fireClose(1011);
     expect(s.cuts()).toBe(1);
@@ -471,19 +463,40 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.gone()).toBe(0);
   });
 
-  it("ends with the connection when there is no handle to resume with", () => {
+  it("does not resume a connection Gemini closed right after its setup: the session ends with Gemini's code and reason (Fable, #269 round 1)", async () => {
+    const s = setup();
+    s.started();
+    s.first.fireClose(1007, "Request contains an invalid argument.");
+    expect(s.endedWith).toEqual([{ code: 1007, reason: "Request contains an invalid argument." }]);
+    await s.advance(OLD_CLOSE_WAIT_MS);
+    expect(s.opened).toHaveLength(0);
+    // The same after a resume: the new connection's own setup counts.
+    const t = setup();
+    t.started();
+    await t.advance(QUICK_CLOSE_MS);
+    t.first.fireClose(1011);
+    await until(() => t.opened.length === 1);
+    (t.opened[0] as FakeSocket).emit({ setupComplete: {} });
+    (t.opened[0] as FakeSocket).fireClose(1007, "bad");
+    expect(t.endedWith).toEqual([{ code: 1007, reason: "bad" }]);
+    expect(t.opened).toHaveLength(1);
+  });
+
+  it("ends with the connection when there is no handle to resume with", async () => {
     const s = setup();
     s.upstream.send(JSON.stringify({ setup: {} }));
     s.first.emit({ setupComplete: {} });
+    await s.advance(QUICK_CLOSE_MS);
     s.first.fireClose(1011);
     expect(s.gone()).toBe(1);
     expect(s.opened).toHaveLength(0);
   });
 
-  it("still counts the usage an old connection reports while it closes, and forwards nothing of it", async () => {
+  it("still counts the usage an old connection reports while it closes, and forwards nothing of it", () => {
     const s = setup();
     s.started();
     s.first.emit({ goAway: { timeLeft: "50s" } });
+    handle(s.first, "h2");
     s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
     expect(s.usage).toHaveLength(1);
     expect(s.toClient).toEqual([{ setupComplete: {} }]);

@@ -4,7 +4,8 @@
 // - A `setup` is answered with `setupComplete`, then a resumable handle,
 //   `h-<n>` for the n-th connection.
 // - A client text turn (`clientContent`) is answered with one audio chunk,
-//   then `turnComplete` with its usage. The text "goaway" gets a `goAway`
+//   then `turnComplete` with its usage, then a fresh handle, as Gemini sends
+//   one after each `turnComplete` (T19). The text "goaway" gets a `goAway`
 //   with 11 s left first.
 //
 // It keeps every setup it got, which a test reads back at /gemini-setups.
@@ -49,6 +50,7 @@ export function geminiLive(request) {
     if (said !== undefined) {
       send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAAA" } }], role: "model" } } });
       send({ serverContent: { turnComplete: true }, usageMetadata: GEMINI_STUB_USAGE });
+      send({ sessionResumptionUpdate: { newHandle: `h-${connection}-${crypto.randomUUID().slice(0, 8)}`, resumable: true } });
     }
   });
   return new Response(null, { status: 101, webSocket: client });

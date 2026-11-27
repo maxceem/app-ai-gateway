@@ -438,8 +438,8 @@ describe(`a Gemini Live session through the relay's session object (step 9d; spl
     await session.received(1);
     session.socket.send(turn("hello"));
     await session.received(3);
-    // Gemini says it will close this connection while its answer is on its way: the relay swaps once
-    // that answer is done.
+    // Gemini says it will close this connection while its answer is on its way: the relay swaps with
+    // the handle that comes after that answer.
     session.socket.send(turn("goaway"));
     await session.received(5);
     session.socket.send(turn("again"));
@@ -450,7 +450,7 @@ describe(`a Gemini Live session through the relay's session object (step 9d; spl
     const setups = ((await (await provider().fetch("https://provider.test/gemini-setups")).json()) as Record<string, unknown>[]).slice(before);
     expect(setups).toEqual([
       { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: {} },
-      { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: { handle: expect.stringMatching(/^h-\d+$/u) } },
+      { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: { handle: expect.stringMatching(/^h-\d+-[0-9a-f]{8}$/u) } },
     ]);
     session.socket.close(1000, "done");
     const seen = await closed(sessionId);
