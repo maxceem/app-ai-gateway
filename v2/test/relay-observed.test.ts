@@ -505,3 +505,103 @@ describe("an observed session's time and its cap (Sol, #265 round 1)", () => {
     expect(s.logs).toContainEqual(expect.objectContaining({ message: "relay_answer_cut" }));
   });
 });
+
+describe("an observed session's end against a late attach or a late vault (Sol, #265 round 2)", () => {
+  it("an attach that comes back after a stop has ended the session is let go, and recreates nothing, even after cleanup", async () => {
+    let release: () => void = () => undefined;
+    let holding = false;
+    let stop = false;
+    const s = setup({
+      holdAttach: () => (holding ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()),
+      checkpoint: async (seen) => ({ decision: stop && !seen.accounting ? "stop" : "continue", reasons: stop && !seen.accounting ? ["user_blocked"] : [], written: true }),
+    });
+    const core = await started(s);
+    holding = true;
+    void s.dropSide();
+    await until(() => s.calls.attached === 2);
+    stop = true;
+    await core.checkpoint();
+    expect(s.calls.close).toEqual([{ endReason: "user_blocked", finalSlice: expect.any(Number) }]);
+    expect(core.ending).toBeNull();
+    // The ticket expires and the next wakeup cleans up: storage is empty.
+    s.tick(s.ticket.exp - s.now());
+    await core.alarm();
+    expect(s.store.data.size).toBe(0);
+    release();
+    await until(() => s.sides.length === 2);
+    await core.attaching;
+    expect(s.sides.at(-1)!.closed).toBe(true);
+    expect(s.store.data.size).toBe(0);
+    expect(s.calls.close).toHaveLength(1);
+  });
+
+  it("extra checkpoints on detached ticks never put off the regular slice: new usage is booked on time", async () => {
+    const s = setup({ attach: [101, 503, 503, 503] });
+    const core = await started(s);
+    await core.checkpoint();
+    await core.recordUsage(usage("t1"), "per_turn");
+    await s.dropSide();
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: null });
+    s.tick(TICK_MS);
+    await core.alarm();
+    // 60 s since the regular checkpoint: the usage goes in a slice now, detached or not.
+    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: { measures: { input_tokens: 100 } } });
+  });
+
+  it("an attach cut at the cap ends the session with time_cap and hangs up, and so does a vault answer that comes past it", async () => {
+    let release: () => void = () => undefined;
+    const s = setup({ attach: [101, "throw"], holdAttach: () => (s.calls.attached === 2 ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()) });
+    await started(s);
+    s.tick(30 * 60_000 - 5_000);
+    const again = s.dropSide();
+    await until(() => s.calls.attached === 2);
+    s.tick(5_000);
+    release();
+    await again;
+    await until(() => s.calls.close.length > 0);
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
+    expect(s.calls.hangups).toEqual(["rtc_1"]);
+
+    let answer: (value: unknown) => void = () => undefined;
+    const slow = setup({ vault: (restart) => (restart ? new Promise((resolve) => (answer = resolve)) : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })) });
+    await started(slow);
+    slow.tick(30 * 60_000 - 5_000);
+    const restarted = slow.instance();
+    const attaching = restarted.attachSide();
+    await until(() => slow.calls.vault.length === 2);
+    slow.tick(5_000);
+    answer({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" });
+    await attaching;
+    await until(() => slow.calls.close.length > 0);
+    expect(slow.calls.attached).toBe(1);
+    expect(slow.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
+    expect(slow.calls.hangups).toEqual(["rtc_1"]);
+  });
+
+  it("a vault lookup for the hang-up that answers past the seal's expiry sends nothing to the provider", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    let hold = false;
+    let tries = 0;
+    const s = setup({
+      hangup: () => ((tries += 1), Promise.reject(new ProviderRefused(500))),
+      vault: (restart) => (hold && restart ? new Promise((resolve) => (answer = resolve)) : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
+    });
+    const core = await started(s);
+    await core.end("budget_stop");
+    expect(s.store.data.get("hangup")).toBe(true);
+    // A restarted instance holds no key: it asks the vault, which answers once the seal has expired.
+    hold = true;
+    const restarted = s.instance();
+    const waking = restarted.alarm();
+    await until(() => s.calls.vault.length === 2);
+    s.tick(s.ticket.exp + s.ticket.cap + SEAL_GRACE_MS - s.now());
+    answer({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" });
+    await waking;
+    // Only the attempt at the end itself reached the provider.
+    expect(tries).toBe(1);
+    expect(s.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_hangup_given_up" }));
+    expect(s.store.data.get("hangup")).not.toBe(true);
+  });
+});

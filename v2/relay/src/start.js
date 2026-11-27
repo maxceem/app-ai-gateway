@@ -245,6 +245,11 @@ export class SessionCore {
     this.held = false;
     /** @type {Promise<void> | null} An observed call's side-channel attach in flight: one at a time. */
     this.attaching = null;
+    /**
+     * Set once an end has found a session to end, and never cleared: an observed call's attach or
+     * journal write that finishes after the end (when `ending` is null again) changes nothing.
+     */
+    this.over = false;
   }
 
   /**
@@ -590,6 +595,8 @@ export class SessionCore {
 
   /** The journal's own small write, logged when it fails: the next write carries the change. @param {import("./journal.js").Journal} journal */
   async writeJournal(journal) {
+    // The session ended: its journal is the end's, and may be cleaned up already.
+    if (this.over) return;
     try {
       await this.store.putJournal(journal);
     } catch {
@@ -621,7 +628,7 @@ export class SessionCore {
   }
 
   async attachOnce() {
-    if (this.ending !== null || this.call !== null) return;
+    if (this.ending !== null || this.over || this.call !== null) return;
     const stored = await this.store.get(["state", "ticket", "callId", "settings"]);
     const ticket = stored.get("ticket");
     const callId = stored.get("callId");
@@ -642,9 +649,10 @@ export class SessionCore {
         key = await this.vault.sessionKey(ticket, { restart: true });
       } catch (error) {
         this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: codeOf(error) });
-        return this.noteDetached();
+        return this.now() >= settings.deadline ? this.end("time_cap") : this.noteDetached();
       }
       this.key = key;
+      if (this.now() >= settings.deadline) return this.end("time_cap");
     }
     if (this.provider.attach === undefined) return this.noteDetached();
     /** @type {ProviderCall} */
@@ -654,13 +662,15 @@ export class SessionCore {
       call = await this.provider.attach(key, callId, settings.adapter, Math.max(0, settings.deadline - this.now()));
     } catch (error) {
       if (error instanceof ProviderRefused && error.status === 404) return this.end("provider_closed");
+      // Cut at the cap (the wait is bounded by it): the session ends there, and the call is hung up.
+      if (this.now() >= settings.deadline) return this.end("time_cap");
       this.log({ level: "warn", message: "relay_side_channel_unavailable", session: this.sessionId, ...(error instanceof ProviderRefused ? { status: error.status } : {}) });
       return this.noteDetached();
     }
     // The session ended meanwhile, or the attach came past the deadline: this side channel is let go.
-    if (this.ending !== null || this.call !== null || this.now() >= settings.deadline) {
+    if (this.ending !== null || this.over || this.call !== null || this.now() >= settings.deadline) {
       call.close?.(1000, "session ended");
-      if (this.ending === null && this.call === null) return this.end("time_cap");
+      if (this.ending === null && !this.over && this.call === null) return this.end("time_cap");
       return;
     }
     const startedHere = this.held;
@@ -695,15 +705,19 @@ export class SessionCore {
     const callId = stored.get("callId");
     if (stored.get("hangup") !== true || typeof ticket !== "string" || typeof callId !== "string") return true;
     // Past the seal's expiry the key is never used again, not even one in memory (crash table row 28):
-    // the call runs on at the provider to its own limit, logged at `error`.
-    if (this.now() >= sealExpiry(ticket)) {
+    // the call runs on at the provider to its own limit, logged at `error`. Checked again right
+    // before the key is sent, as a vault lookup may have taken it past.
+    const sealed = () => this.now() < sealExpiry(ticket);
+    const giveUp = async () => {
       this.log({ level: "error", message: "relay_hangup_given_up", session: this.sessionIdOf(stored) });
       await this.store.put({ hangup: false }, null);
       return true;
-    }
+    };
+    if (!sealed()) return giveUp();
     try {
       this.key ??= await this.vault.sessionKey(ticket, { restart: true });
       if (this.provider.hangup === undefined) throw new Error("no hang-up");
+      if (!sealed()) return giveUp();
       await this.provider.hangup(this.key, callId);
     } catch (error) {
       this.log({ level: "warn", message: "relay_hangup_failed", session: this.sessionIdOf(stored), ...(error instanceof ProviderRefused ? { status: error.status } : { code: codeOf(error) }) });
@@ -774,6 +788,7 @@ export class SessionCore {
     call?.close?.(1000, "session ended");
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
+    this.over = true;
     if (details.log !== undefined) {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
@@ -837,7 +852,7 @@ export class SessionCore {
    */
   async recordUsage(event, shape) {
     // During the closing wait, the last answer's usage still counts.
-    if (this.call === null || (this.ending !== null && this.turnWaiter === null)) return;
+    if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
     // An observed call's usage after its cap is not counted: the session ends there.
     if (this.mode === "observed" && this.now() >= this.deadline) return;
     const journal = await this.loadJournal();
@@ -936,7 +951,9 @@ export class SessionCore {
     }
     // A reply that comes after the end began is not written: the end's journal is newer (Sol round 1).
     if (this.ending !== null || this.journal !== journal) return;
-    journal.lastCheckpointAt = now;
+    // Only a regular checkpoint moves the clock: an extra empty one (a detached tick) never puts off
+    // the next slice.
+    if (fresh) journal.lastCheckpointAt = now;
     if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
     try {
       await this.store.putJournal(journal);
