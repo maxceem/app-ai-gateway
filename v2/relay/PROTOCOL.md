@@ -166,13 +166,12 @@ from plan step 12, which also adds what is specific to OpenAI.
   `502 provider_unavailable`; `503` for anything else, such as
   `credential_unavailable` or `open_failed`.
 - **The side channel:** the relay attaches it after the answer, and again at
-  once whenever it closes, with its 30 s tick as the backup, also after the
-  relay restarts. An attach that gets `404` means the call ended, and the
+  once whenever it closes after at least 5 s (sooner, on its next 30 s tick),
+  with that tick as the backup, also after the relay restarts. An attach that gets `404` means the call ended, and the
   session ends with `provider_closed`. Any other refusal keeps the call: the
   relay tries again on each tick, and the session ends only on a `404`, a stop
   from the gateway, or the time cap. Time without the side channel is not
   counted as connection time.
 - **The end:** at the cap or on a stop, the relay hangs the call up. A hang-up
   that fails is tried again on each wakeup until the session's sealed key
-  expires, then given up on and logged. An attach never waits past the cap, and
-  usage that arrives past it is not counted.
+  expires, then given up on and logged. An attach never waits past the cap.

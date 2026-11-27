@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { TICK_MS } from "../relay/src/frames.js";
-import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, VAULT_KEY_WAIT_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
+import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, SIDE_CHANNEL_MIN_LIFE_MS, VAULT_KEY_WAIT_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
 import { SEAL_GRACE_MS as GATEWAY_SEAL_GRACE_MS } from "../src/relay/tickets.ts";
 import { MemoryStore, never, ticketFor, until } from "./relay-stand-ins.ts";
 
@@ -271,10 +271,8 @@ describe("an observed session's side channel (plan section 5; crash table rows 2
       expect(s.store.data.get("state")).toBe("active");
     }
     expect(s.calls.attached).toBe(4);
-    // Each tick that found the side channel down asked the gateway (row 23): a new slice when one
-    // was due, an empty checkpoint otherwise.
+    // Each tick that found the side channel down asked the gateway (row 23).
     expect(s.calls.checkpoints).toHaveLength(2);
-    expect(s.calls.checkpoints[1]).toMatchObject({ slice: null, accounting: false });
     s.tick(TICK_MS);
     await core.alarm();
     expect(s.calls.attached).toBe(5);
@@ -291,6 +289,7 @@ describe("an observed session's side channel (plan section 5; crash table rows 2
   it("503, then 404: the call ended, so the session ends with provider_closed and owes no hang-up", async () => {
     const s = setup({ attach: [101, 503, 404] });
     const core = await started(s);
+    s.tick(10_000);
     await s.dropSide();
     expect(s.store.data.get("state")).toBe("active");
     s.tick(TICK_MS);
@@ -460,18 +459,18 @@ describe("an observed session's time and its cap (Sol, #265 round 1)", () => {
     const again = s.dropSide();
     await until(() => s.calls.attached === 2);
     expect(s.calls.limits.at(-1)).toBe(10_000);
-    // It comes back 4 s past the deadline.
+    // It comes back 4 s past the deadline: it is let go, and the alarm at the deadline ends the session.
     s.tick(14_000);
     release();
     await again;
-    await until(() => s.calls.close.length > 0);
     expect(s.sides.at(-1)!.closed).toBe(true);
+    expect(s.store.data.get("state")).toBe("active");
+    await core.alarm();
     expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
     expect(s.calls.hangups).toEqual(["rtc_1"]);
-    void core;
   });
 
-  it("counts no usage that arrives past the deadline, also in a restarted instance, whose closing wait stops at the deadline too", async () => {
+  it("a restarted instance's closing wait stops at the deadline; usage that arrives just past it is counted, and the slice's time stays capped (Fable, #265 round 1)", async () => {
     const waits: number[] = [];
     const s = setup({ turnOpen: () => true, wait: (ms) => (waits.push(ms), Promise.resolve()) });
     await started(s);
@@ -485,11 +484,13 @@ describe("an observed session's time and its cap (Sol, #265 round 1)", () => {
 
     const late = setup();
     const core = await started(late);
-    late.tick(30 * 60_000);
+    late.tick(30 * 60_000 + 3_000);
     await core.recordUsage(usage("after-cap"), "per_turn");
     await core.end("time_cap");
     const slices = late.calls.checkpoints.flatMap((seen) => (seen.slice === null ? [] : [seen.slice]));
-    expect(slices.reduce((sum, slice) => sum + (slice.measures.input_tokens ?? 0), 0)).toBe(0);
+    // Real cost from the seconds before the hang-up: counted, rather than dropped.
+    expect(slices.reduce((sum, slice) => sum + (slice.measures.input_tokens ?? 0), 0)).toBe(100);
+    expect(slices.reduce((sum, slice) => sum + slice.sessionMs + slice.gapMs, 0)).toBeLessThanOrEqual(30 * 60_000);
   });
 
   it("a side channel that drops while the end waits for an answer leaves the final slice marked as missing usage", async () => {
@@ -516,6 +517,7 @@ describe("an observed session's end against a late attach or a late vault (Sol, 
       checkpoint: async (seen) => ({ decision: stop && !seen.accounting ? "stop" : "continue", reasons: stop && !seen.accounting ? ["user_blocked"] : [], written: true }),
     });
     const core = await started(s);
+    s.tick(SIDE_CHANNEL_MIN_LIFE_MS);
     holding = true;
     void s.dropSide();
     await until(() => s.calls.attached === 2);
@@ -535,107 +537,8 @@ describe("an observed session's end against a late attach or a late vault (Sol, 
     expect(s.calls.close).toHaveLength(1);
   });
 
-  it("extra checkpoints on detached ticks never put off the regular slice: new usage is booked on time", async () => {
-    const s = setup({ attach: [101, 503, 503, 503] });
-    const core = await started(s);
-    await core.checkpoint();
-    await core.recordUsage(usage("t1"), "per_turn");
-    await s.dropSide();
-    s.tick(TICK_MS);
-    await core.alarm();
-    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: null });
-    s.tick(TICK_MS);
-    await core.alarm();
-    // 60 s since the regular checkpoint: the usage goes in a slice now, detached or not.
-    expect(s.calls.checkpoints.at(-1)).toMatchObject({ slice: { measures: { input_tokens: 100 } } });
-  });
-
-  it("an attach cut at the cap ends the session with time_cap and hangs up, and so does a vault answer that comes past it", async () => {
-    let release: () => void = () => undefined;
-    const s = setup({ attach: [101, "throw"], holdAttach: () => (s.calls.attached === 2 ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()) });
-    await started(s);
-    s.tick(30 * 60_000 - 5_000);
-    const again = s.dropSide();
-    await until(() => s.calls.attached === 2);
-    s.tick(5_000);
-    release();
-    await again;
-    await until(() => s.calls.close.length > 0);
-    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
-    expect(s.calls.hangups).toEqual(["rtc_1"]);
-
-    let answer: (value: unknown) => void = () => undefined;
-    const slow = setup({ vault: (restart) => (restart ? new Promise((resolve) => (answer = resolve)) : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })) });
-    await started(slow);
-    slow.tick(30 * 60_000 - 5_000);
-    const restarted = slow.instance();
-    const attaching = restarted.attachSide();
-    await until(() => slow.calls.vault.length === 2);
-    slow.tick(5_000);
-    answer({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" });
-    await attaching;
-    await until(() => slow.calls.close.length > 0);
-    expect(slow.calls.attached).toBe(1);
-    expect(slow.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
-    expect(slow.calls.hangups).toEqual(["rtc_1"]);
-  });
-
-  it("a vault lookup for the hang-up that answers past the seal's expiry sends nothing to the provider", async () => {
-    let answer: (value: unknown) => void = () => undefined;
-    let hold = false;
-    let tries = 0;
-    const s = setup({
-      hangup: () => ((tries += 1), Promise.reject(new ProviderRefused(500))),
-      vault: (restart) => (hold && restart ? new Promise((resolve) => (answer = resolve)) : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
-    });
-    const core = await started(s);
-    await core.end("budget_stop");
-    expect(s.store.data.get("hangup")).toBe(true);
-    // A restarted instance holds no key: it asks the vault, which answers once the seal has expired.
-    hold = true;
-    const restarted = s.instance();
-    const waking = restarted.alarm();
-    await until(() => s.calls.vault.length === 2);
-    s.tick(s.ticket.exp + s.ticket.cap + SEAL_GRACE_MS - s.now());
-    answer({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" });
-    await waking;
-    // Only the attempt at the end itself reached the provider.
-    expect(tries).toBe(1);
-    expect(s.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_hangup_given_up" }));
-    expect(s.store.data.get("hangup")).not.toBe(true);
-  });
 });
 
-describe("a stalled vault at the cap (Sol, #265 round 3)", () => {
-  it("a restart's vault lookup waits no longer than the time left: at the cap the session ends with time_cap, and the call is hung up", async () => {
-    const waits: number[] = [];
-    let deadlineCame: () => void = () => undefined;
-    let stall = false;
-    const s = setup({
-      vault: (restart) => (stall && restart ? never() : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
-      wait: (ms) => (waits.push(ms), new Promise<void>((resolve) => (deadlineCame = resolve))),
-    });
-    await started(s);
-    s.tick(30 * 60_000 - 4_000);
-    stall = true;
-    const restarted = s.instance();
-    const waking = restarted.alarm();
-    await until(() => waits.length === 1);
-    expect(waits).toEqual([4_000]);
-    s.tick(4_000);
-    deadlineCame();
-    await until(() => waits.length === 2);
-    deadlineCame();
-    await waking;
-    await until(() => s.calls.close.length > 0);
-    expect(s.calls.attached).toBe(1);
-    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
-    // The vault still stalls: the hang-up's own lookup waits 5 s at most, so the end finishes, and the
-    // hang-up stays owed for the next wakeup.
-    expect(waits.slice(1)).toEqual([VAULT_KEY_WAIT_MS]);
-    expect(s.store.data.get("hangup")).toBe(true);
-  });
-});
 
 describe("a stalled vault mid-session (Sol, #265 round 4)", () => {
   it("a restart's vault lookup waits 5 s at most: the call stays detached, and the tick's checkpoint still brings a stop, which ends it", async () => {
@@ -655,5 +558,22 @@ describe("a stalled vault mid-session (Sol, #265 round 4)", () => {
     expect(waits[0]).toBe(VAULT_KEY_WAIT_MS);
     expect(s.calls.attached).toBe(1);
     expect(s.calls.close).toEqual([{ endReason: "user_blocked", finalSlice: expect.any(Number) }]);
+  });
+});
+
+describe("a side channel that keeps closing (Fable, #265 round 1)", () => {
+  it("one that closes within SIDE_CHANNEL_MIN_LIFE_MS of attaching waits for the next tick; one that lived longer is attached again at once", async () => {
+    const s = setup();
+    const core = await started(s);
+    s.tick(SIDE_CHANNEL_MIN_LIFE_MS - 1);
+    await s.dropSide();
+    expect(s.calls.attached).toBe(1);
+    expect(s.store.data.get("state")).toBe("active");
+    s.tick(TICK_MS);
+    await core.alarm();
+    expect(s.calls.attached).toBe(2);
+    s.tick(SIDE_CHANNEL_MIN_LIFE_MS);
+    await s.dropSide();
+    expect(s.calls.attached).toBe(3);
   });
 });

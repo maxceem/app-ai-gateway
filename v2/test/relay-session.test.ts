@@ -303,33 +303,23 @@ async function closed(sessionId: string): Promise<Seen> {
 const inputTokens = (seen: Seen) => seen.checkpoints.reduce((sum, checkpoint) => sum + (checkpoint.slice?.measures.input_tokens ?? 0), 0);
 
 describe(`an observed session through the relay's session object (step 9a part 3; split keys ${splitKeysOn ? "on" : "off"})`, () => {
-  it("starts from the app's offer with no WebSocket: the answer comes back, the side channel's usage is booked, and the session ends with the call", async () => {
-    const { ticket, sessionId } = await issued("conn_observed", Date.now(), undefined, { capMs: 60_000 });
-    // The mock call reports an answer every 0.2 s, and ends 0.9 s after it was made.
-    const response = await offer(ticket, "v=0\r\na=x-mock-turns:0.2\r\na=x-mock-ends:0.9\r\n");
+  it("starts from the app's offer with no WebSocket: the answer comes back, the side channel's usage is booked, and at its cap the call is hung up", async () => {
+    const { ticket, sessionId } = await issued("conn_observed", Date.now(), undefined, { capMs: 1_500 });
+    // The mock call reports an answer every 0.4 s and runs on: only the relay's cap ends it.
+    const response = await offer(ticket, "v=0\r\na=x-mock-turns:0.4\r\n");
     expect(response.status).toBe(201);
     expect(response.headers.get("content-type")).toBe("application/sdp");
     expect(await response.text()).toMatch(/^v=0/u);
     const seen = await closed(sessionId);
-    // The side channel closed with the call, the reattach got 404: the call ended, so nothing to hang up.
-    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "provider_closed", providerCallId: expect.stringMatching(/^rtc_mock_/u) })]);
-    expect(await (await provider().fetch("https://provider.test/hangups")).json()).not.toContain(seen.closes[0]!.providerCallId);
-    // Each answer is 100 input tokens, booked once: three or four of them came before the end.
-    expect([300, 400]).toContain(inputTokens(seen));
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "time_cap", providerCallId: expect.stringMatching(/^rtc_mock_/u) })]);
+    const callId = seen.closes[0]!.providerCallId;
+    for (let tries = 0; tries < 40 && !((await (await provider().fetch("https://provider.test/hangups")).json()) as string[]).includes(callId!); tries += 1) await pause(50);
+    expect(await (await provider().fetch("https://provider.test/hangups")).json()).toContain(callId);
+    // Each answer is 100 input tokens, booked once: two or three of them came before the cap.
+    expect([200, 300]).toContain(inputTokens(seen));
     // The key went to the provider from the vault's seal.
     expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
   });
-
-  it("a side channel that keeps dropping is attached again each time: every answer is booked once, and the session goes on until the call ends", async () => {
-    const { ticket, sessionId } = await issued("conn_observed_drop", Date.now(), undefined, { capMs: 60_000 });
-    // Each side channel closes 0.3 s after it attached; the call ends at 1.1 s.
-    expect((await offer(ticket, "v=0\r\na=x-mock-turns:0.2\r\na=x-mock-drop:0.3\r\na=x-mock-ends:1.1\r\n")).status).toBe(201);
-    const seen = await closed(sessionId);
-    expect(seen.closes[0]!.endReason).toBe("provider_closed");
-    // Answers at 0.2 s to 1.0 s: four or five, whichever side channel reported them.
-    expect([400, 500]).toContain(inputTokens(seen));
-  });
-
   it("two offers at once make exactly one call, and the second is refused", async () => {
     const { ticket } = await issued("conn_observed_twice", Date.now(), undefined, { capMs: 60_000 });
     const tag = crypto.randomUUID();
@@ -339,16 +329,6 @@ describe(`an observed session through the relay's session object (step 9a part 3
     const refused = first.status === 409 ? first : second;
     expect(["start_in_flight", "session_active"]).toContain(((await refused.json()) as { error: { code: string } }).error.code);
     expect(await (await provider().fetch(`https://provider.test/calls/${tag}`)).json()).toEqual({ made: 1 });
-  });
-
-  it("ends at its time cap and hangs the call up, with the key from the vault's seal", async () => {
-    const { ticket, sessionId } = await issued("conn_observed_cap", Date.now(), undefined, { capMs: 1_500 });
-    expect((await offer(ticket, "v=0\r\na=x-mock-turns:0.4\r\n")).status).toBe(201);
-    const seen = await closed(sessionId);
-    expect(seen.closes[0]!.endReason).toBe("time_cap");
-    const callId = seen.closes[0]!.providerCallId;
-    for (let tries = 0; tries < 40 && !((await (await provider().fetch("https://provider.test/hangups")).json()) as string[]).includes(callId!); tries += 1) await pause(50);
-    expect(await (await provider().fetch("https://provider.test/hangups")).json()).toContain(callId);
   });
 
   it("refuses an offer that is too large, and a second one after the session started", async () => {

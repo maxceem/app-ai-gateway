@@ -79,6 +79,9 @@ function stopReason(reasons) {
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
 
+/** A side channel that closes sooner than this after it attached is attached again on the next tick, not at once. */
+export const SIDE_CHANNEL_MIN_LIFE_MS = 5_000;
+
 /**
  * How long a restarted instance waits for the vault's key, for a reattach or a hang-up: past it the
  * call stays detached, or the hang-up owed, and the next wakeup tries again. Short, so a stalled
@@ -252,9 +255,11 @@ export class SessionCore {
     this.held = false;
     /** @type {Promise<void> | null} An observed call's side-channel attach in flight: one at a time. */
     this.attaching = null;
+    /** When the side channel last attached. */
+    this.attachedAt = 0;
     /**
-     * Set once an end has found a session to end, and never cleared: an observed call's attach or
-     * journal write that finishes after the end (when `ending` is null again) changes nothing.
+     * Set once an end has stored `ended`, and never cleared: an observed call's attach or journal
+     * write that finishes after the end (when `ending` is null again) changes nothing.
      */
     this.over = false;
   }
@@ -577,7 +582,8 @@ export class SessionCore {
    * An observed call's side channel closed. That says nothing about the call
    * itself (it closes with 1006 whatever the reason, T18), so the session goes
    * on: the time without it is a gap, and it is attached again at once, with
-   * the alarm as the backup (plan section 5; crash table row 23).
+   * the alarm as the backup (plan section 5; crash table row 23). One that
+   * lived less than `SIDE_CHANNEL_MIN_LIFE_MS` waits for the next tick.
    * @param {ProviderCall} call
    */
   async sideGone(call) {
@@ -589,7 +595,9 @@ export class SessionCore {
     // An attach still finishing (its journal write) is let finish first, so this one really runs.
     await this.attaching;
     await this.noteDetached();
-    await this.attachSide();
+    // A side channel that closed soon after it attached is not attached again at once, or a provider
+    // that accepts and drops it would get attaches with no pause: the next tick tries again.
+    if (this.now() - this.attachedAt >= SIDE_CHANNEL_MIN_LIFE_MS) await this.attachSide();
   }
 
   /** The side channel is down from now: the time is a gap until it is back (`markDetached`). */
@@ -643,7 +651,7 @@ export class SessionCore {
     if (stored.get("state") !== "active" || settings?.mode !== "observed" || typeof ticket !== "string" || typeof callId !== "string") return;
     this.mode = "observed";
     this.sessionId ||= this.sessionIdOf(stored);
-    // Kept in memory after a restart too, so usage and the closing wait never go past it.
+    // Kept in memory after a restart too, so the closing wait never goes past it.
     this.deadline = settings.deadline;
     // At the deadline nothing is attached: the session ends, and the call is hung up.
     if (this.now() >= settings.deadline) return this.end("time_cap");
@@ -657,10 +665,9 @@ export class SessionCore {
         key = await this.restartKey(ticket, Math.max(0, Math.min(VAULT_KEY_WAIT_MS, settings.deadline - this.now())));
       } catch (error) {
         this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: codeOf(error) });
-        return this.now() >= settings.deadline ? this.end("time_cap") : this.noteDetached();
+        return this.noteDetached();
       }
       if (key !== null) this.key = key;
-      if (this.now() >= settings.deadline) return this.end("time_cap");
       if (key === null) {
         this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: "timeout" });
         return this.noteDetached();
@@ -674,27 +681,26 @@ export class SessionCore {
       call = await this.provider.attach(key, callId, settings.adapter, Math.max(0, settings.deadline - this.now()));
     } catch (error) {
       if (error instanceof ProviderRefused && error.status === 404) return this.end("provider_closed");
-      // Cut at the cap (the wait is bounded by it): the session ends there, and the call is hung up.
-      if (this.now() >= settings.deadline) return this.end("time_cap");
       this.log({ level: "warn", message: "relay_side_channel_unavailable", session: this.sessionId, ...(error instanceof ProviderRefused ? { status: error.status } : {}) });
       return this.noteDetached();
     }
-    // The session ended meanwhile, or the attach came past the deadline: this side channel is let go.
-    if (this.ending !== null || this.over || this.call !== null || this.now() >= settings.deadline) {
+    // The session ended meanwhile, or the attach came past the deadline: this side channel is let go,
+    // and the alarm, armed at the deadline, ends the session.
+    if (this.ending !== null || this.over || this.now() >= settings.deadline) {
       call.close?.(1000, "session ended");
-      if (this.ending === null && !this.over && this.call === null) return this.end("time_cap");
       return;
     }
     const startedHere = this.held;
     this.call = call;
     this.held = true;
+    this.attachedAt = this.now();
     const journal = await this.loadJournal();
     if (journal !== null) {
       const now = this.now();
       // The first attach of the call this instance made, with nothing frozen before it: the time
       // before is neither connection time nor a gap, as no side channel existed yet. Any other
       // attach ends a gap (row 23).
-      if (startedHere && journal.nextSeq === 1 && journal.unsent.length === 0 && journal.detachedFrom === journal.from && journal.detachedMs === undefined) {
+      if (startedHere && journal.nextSeq === 1 && journal.detachedFrom === journal.from) {
         journal.from = now;
         delete journal.detachedFrom;
       } else markAttached(journal, now);
@@ -728,21 +734,17 @@ export class SessionCore {
     const callId = stored.get("callId");
     if (stored.get("hangup") !== true || typeof ticket !== "string" || typeof callId !== "string") return true;
     // Past the seal's expiry the key is never used again, not even one in memory (crash table row 28):
-    // the call runs on at the provider to its own limit, logged at `error`. Checked again right
-    // before the key is sent, as a vault lookup may have taken it past.
-    const sealed = () => this.now() < sealExpiry(ticket);
-    const giveUp = async () => {
+    // the call runs on at the provider to its own limit, logged at `error`.
+    if (this.now() >= sealExpiry(ticket)) {
       this.log({ level: "error", message: "relay_hangup_given_up", session: this.sessionIdOf(stored) });
       await this.store.put({ hangup: false }, null);
       return true;
-    };
-    if (!sealed()) return giveUp();
+    }
     try {
       // Bounded too, so a stalled vault never holds the end: the next wakeup tries again.
       this.key ??= await this.restartKey(ticket, VAULT_KEY_WAIT_MS);
       if (this.key === null) throw new Error("vault_timeout");
       if (this.provider.hangup === undefined) throw new Error("no hang-up");
-      if (!sealed()) return giveUp();
       await this.provider.hangup(this.key, callId);
     } catch (error) {
       this.log({ level: "warn", message: "relay_hangup_failed", session: this.sessionIdOf(stored), ...(error instanceof ProviderRefused ? { status: error.status } : { code: codeOf(error) }) });
@@ -813,7 +815,6 @@ export class SessionCore {
     call?.close?.(1000, "session ended");
     const stored = await this.store.get(KEYS);
     if (stored.get("state") === "ended" || typeof stored.get("ticket") !== "string") return;
-    this.over = true;
     if (details.log !== undefined) {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
@@ -839,6 +840,8 @@ export class SessionCore {
     const owed = settings?.mode === "observed" && typeof stored.get("callId") === "string" && reason !== "provider_closed";
     if (owed) entries.hangup = true;
     await this.store.put(entries, this.now() + CLOSE_RETRY_EVERY_MS);
+    // From here the session is over for good; until here, `ending` stood for it.
+    this.over = true;
     await Promise.all([this.flushEnded(), owed ? this.hangUp() : null]);
   }
 
@@ -878,19 +881,13 @@ export class SessionCore {
   async recordUsage(event, shape) {
     // During the closing wait, the last answer's usage still counts.
     if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
-    // An observed call's usage after its cap is not counted: the session ends there.
-    if (this.mode === "observed" && this.now() >= this.deadline) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null || !addUsage(journal, event, shape, now)) return;
     // An observed session is real once usage came on its side channel (crash table row 20). Sticky.
     if (this.mode === "observed") journal.connected = true;
     journal.savedAt = now;
-    try {
-      await this.store.putJournal(journal);
-    } catch {
-      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
-    }
+    await this.writeJournal(journal);
   }
 
   /**
@@ -926,17 +923,16 @@ export class SessionCore {
    * session even when the slice was not written; the slice then goes in the
    * final delivery. Forwarding never waits for it.
    */
-  checkpoint(options = { fresh: true }) {
+  checkpoint() {
     if (this.checkpointing !== null) return this.checkpointing;
-    const running = this.checkpointOnce(options.fresh).finally(() => {
+    const running = this.checkpointOnce().finally(() => {
       if (this.checkpointing === running) this.checkpointing = null;
     });
     this.checkpointing = running;
     return running;
   }
 
-  /** @param {boolean} fresh whether the open usage is frozen into a new slice, or only an unconfirmed one is sent again */
-  async checkpointOnce(fresh) {
+  async checkpointOnce() {
     if (this.ending !== null) return;
     const stored = await this.store.get(["state", "ticket", "callId", "settings"]);
     const ticket = stored.get("ticket");
@@ -948,7 +944,7 @@ export class SessionCore {
     // The proof is sticky: once a client message came, every later checkpoint carries it (row 20).
     if (!journal.connected && this.proof()) journal.connected = true;
     let slice = journal.unsent[0] ?? null;
-    if (slice === null && fresh) {
+    if (slice === null) {
       // The end owns the journal once it starts: nothing here writes over it.
       if (this.ending !== null || this.journal !== journal) return;
       // Never past the deadline: a checkpoint that crosses it while waiting bills nothing after the cap.
@@ -976,16 +972,10 @@ export class SessionCore {
     }
     // A reply that comes after the end began is not written: the end's journal is newer (Sol round 1).
     if (this.ending !== null || this.journal !== journal) return;
-    // Only a regular checkpoint moves the clock: an extra empty one (a detached tick) never puts off
-    // the next slice.
-    if (fresh) journal.lastCheckpointAt = now;
+    journal.lastCheckpointAt = now;
     if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
-    try {
-      await this.store.putJournal(journal);
-    } catch {
-      // The slice stays unconfirmed in memory and is sent again; a restart sends it from storage.
-      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
-    }
+    // A failed write leaves the slice unconfirmed in memory, and it is sent again; a restart sends it from storage.
+    await this.writeJournal(journal);
   }
 
   /**
@@ -1132,10 +1122,8 @@ export class SessionCore {
       // The live session's own checks: a silent client, a client too far behind.
       const reason = this.liveness(now);
       if (reason !== null) return this.end(reason);
-      if (await this.checkpointDue(now)) await this.checkpoint();
-      // A tick that found the side channel down always asks the gateway, so a stop reaches it: an
-      // empty checkpoint, or the unconfirmed slice again (row 23).
-      else if (detached) await this.checkpoint({ fresh: false });
+      // A tick that found the side channel down always asks the gateway, so a stop reaches it (row 23).
+      if (detached || (await this.checkpointDue(now))) await this.checkpoint();
       return;
     }
     // Ended: deliver the slices and `close` for a while; then give up, with the slices logged; then

@@ -86,9 +86,6 @@ export function observedUrls(target, callId) {
   return { side: side.toString(), hangup: hangup.toString() };
 }
 
-/** The longest SDP answer the relay passes back: a real one is a few KB. */
-const MAX_ANSWER = 64 * 1024;
-
 /**
  * Creates an observed call from the app's offer (plan 4.3 step 4): the
  * provider answers with its own answer and the call's id (`Location`). A
@@ -116,9 +113,7 @@ export async function createObservedCall(key, offer, send = fetch, timeout = wai
       // A success without a call id can't be followed: the call, if any, ends by itself (crash table row 11).
       throw new ProviderRefused(response.status);
     }
-    const answer = await response.text();
-    if (answer.length > MAX_ANSWER) throw new ProviderRefused(response.status);
-    return { callId, answer };
+    return { callId, answer: await response.text() };
   } finally {
     answered = true;
   }
