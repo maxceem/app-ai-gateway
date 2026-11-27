@@ -107,14 +107,27 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
     const call = meter();
     call.lock(start(responses({})));
     const update = (session: Record<string, unknown>) => JSON.stringify({ type: "session.update", session });
-    expect(call.lock(update({ delegation: { type: "responses", responses: { instructions: "Be brief." } } }))).not.toHaveProperty("refused");
+    // Every frame that sets responses names an allowed model, an update's too (Gemini Neon, #272 round 2).
+    expect(call.lock(update({ delegation: { type: "responses", responses: { instructions: "Be brief." } } }))).toEqual({ refused: "backend_model_not_allowed" });
+    expect(call.lock(update(responses({ instructions: "Be brief." })))).not.toHaveProperty("refused");
+    // An update that sets no delegation is not checked.
+    expect(call.lock(update({ instructions: "Hi." }))).not.toHaveProperty("refused");
     expect(call.lock(update(responses({ model: "gpt-5.6-luna" })))).not.toHaveProperty("refused");
     expect(call.lock(update(responses({ model: "gpt-5.5-pro" })))).toEqual({ refused: "backend_model_not_allowed" });
     expect(call.lock(update(responses({ tools: [{ type: "file_search" }] })))).toEqual({ refused: "backend_tool_not_allowed" });
     expect(call.lock(update({ triggers: [{ type: "decision" }] }))).toEqual({ refused: "triggers_not_allowed" });
-    // An update's auto tier is pinned to the standard one; one that names none keeps the one the start set.
-    expect(JSON.parse(call.lock(update({ delegation: { type: "responses", responses: { service_tier: "auto" } } })) as string).session.delegation.responses.service_tier).toBe("default");
-    expect(JSON.parse(call.lock(update({ delegation: { type: "responses", responses: { instructions: "Hi." } } })) as string).session.delegation.responses).not.toHaveProperty("service_tier");
+    // Every frame that sets responses gets the standard tier, an auto one or none alike.
+    expect(JSON.parse(call.lock(update(responses({ service_tier: "auto" }))) as string).session.delegation.responses.service_tier).toBe("default");
+    expect(JSON.parse(call.lock(update(responses({ instructions: "Hi." }))) as string).session.delegation.responses.service_tier).toBe("default");
+  });
+
+  it("checks an update that turns the backend on when the start had none: it must name an allowed model, and gets the standard tier (Gemini Neon, #272 round 2)", () => {
+    const call = meter();
+    call.lock(start({ model: "gpt-live-1" }));
+    const enable = (responsesFields: Record<string, unknown>) => JSON.stringify({ type: "session.update", session: { delegation: { type: "responses", responses: responsesFields } } });
+    expect(call.lock(enable({ instructions: "Be brief." }))).toEqual({ refused: "backend_model_not_allowed" });
+    const sent = JSON.parse(call.lock(enable({ model: "gpt-6-luna" })) as string);
+    expect(sent.session.delegation.responses).toEqual({ model: "gpt-6-luna", service_tier: "default" });
   });
 
   it("never parses an audio append", () => {

@@ -749,18 +749,18 @@ const isObject = (value) => typeof value === "object" && value !== null && !Arra
  * Why a client's settings may not reach GPT-Live, or null when they may (plan, "GPT-Live backend rules";
  * owner, 2026-11-18). OpenAI bills what the backend does, so:
  * - the delegation: none, the app's own (`client`), or `responses`, whose model must be one the app may
- *   call, priced (`open`'s list), named at the start (an update may leave it out, keeping the one in
- *   force), with tools only of the kinds allowed (function tools: a hosted tool's fees are not in the
- *   usage, T21) and no `service_tier` but the standard one (the relay books backend calls at the standard
- *   rate). Anything else, `decisions` above all, whose billing was never checked, is refused;
+ *   call, priced (`open`'s list), named in every frame that sets `responses`, the start's or an update's
+ *   alike (Gemini Neon, #272 round 2: an update may turn the backend on), with tools only of the kinds
+ *   allowed (function tools: a hosted tool's fees are not in the usage, T21) and no `service_tier` but the
+ *   standard one (the relay books backend calls at the standard rate). Anything else, `decisions` above
+ *   all, whose billing was never checked, is refused. A frame that sets no delegation is not checked;
  * - transcript `triggers`, which run Decisions, unlocked and unbilled (Sol, Fable, #272): none.
  * @param {Record<string, unknown>} session
- * @param {boolean} start a `session.start`, where a backend must name its model
  * @param {Set<string>} models
  * @param {Set<string>} tools
  * @returns {string | null}
  */
-function settingsProblem(session, start, models, tools) {
+function settingsProblem(session, models, tools) {
   const triggers = session.triggers;
   if (triggers !== undefined && triggers !== null && !(Array.isArray(triggers) && triggers.length === 0)) return "triggers_not_allowed";
   const delegation = session.delegation;
@@ -768,13 +768,9 @@ function settingsProblem(session, start, models, tools) {
   if (!isObject(delegation) || (delegation.type !== "client" && delegation.type !== "responses")) return "delegation_not_allowed";
   if (delegation.type === "client") return null;
   const responses = delegation.responses;
-  if (responses === undefined && !start) return null;
-  if (!isObject(responses)) return "backend_model_not_allowed";
+  if (!isObject(responses) || typeof responses.model !== "string" || !models.has(responses.model)) return "backend_model_not_allowed";
   const tier = responses.service_tier;
   if (tier !== undefined && tier !== null && tier !== "auto" && tier !== "default") return "backend_tier_not_allowed";
-  if (Object.hasOwn(responses, "model") || start) {
-    if (typeof responses.model !== "string" || !models.has(responses.model)) return "backend_model_not_allowed";
-  }
   const kindAllowed = (/** @type {unknown} */ tool) => isObject(tool) && typeof tool.type === "string" && tools.has(tool.type);
   if (Object.hasOwn(responses, "tools") && responses.tools !== null && (!Array.isArray(responses.tools) || !responses.tools.every(kindAllowed))) {
     return "backend_tool_not_allowed";
@@ -784,8 +780,8 @@ function settingsProblem(session, start, models, tools) {
 
 /**
  * GPT-Live's settings as sent on: the session's model at the start, and the backend's tier pinned to the
- * standard one, since `auto` or none may run at Fast, which OpenAI bills at twice the rate (Sol, #272
- * round 2). An update that names no tier keeps the one the start set.
+ * standard one in every frame that sets `responses`, since `auto` or none may run at Fast, which OpenAI
+ * bills at twice the rate (Sol, #272 round 2; Gemini Neon, round 2).
  * @param {Record<string, unknown>} session
  * @param {boolean} start
  * @param {string | null} model
@@ -796,8 +792,7 @@ function lockedSettings(session, start, model) {
   if (model !== null && (start || Object.hasOwn(session, "model"))) locked.model = model;
   const delegation = session.delegation;
   if (isObject(delegation) && delegation.type === "responses" && isObject(delegation.responses)) {
-    const responses = delegation.responses;
-    if (start || Object.hasOwn(responses, "service_tier")) locked.delegation = { ...delegation, responses: { ...responses, service_tier: "default" } };
+    locked.delegation = { ...delegation, responses: { ...delegation.responses, service_tier: "default" } };
   }
   return locked;
 }
@@ -879,7 +874,7 @@ function gptLiveCall(model, backend) {
       const session = frame.session;
       if (!isObject(session)) return JSON.stringify(frame);
       const start = frame.type === "session.start";
-      const problem = settingsProblem(session, start, models, tools);
+      const problem = settingsProblem(session, models, tools);
       if (problem !== null) return { refused: problem };
       return JSON.stringify({ ...frame, session: lockedSettings(session, start, model) });
     },

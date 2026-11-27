@@ -179,10 +179,12 @@ call its backend model makes, at that model's own price.
   seconds (`session.usage.updated`, `session.closed`), so never below OpenAI.
 - **The backend** (`session.delegation`): none, or your app's own (`client`), or
   `responses` with a `model` your app may call through Responses and that has a
-  price. Its `tools` may only be function tools. Its `service_tier` is set to
-  `default`: an explicit other tier ends the session with
+  price. Every `session.start` or `session.update` that sets `responses` must
+  name that `model`, even when it only changes other backend settings. Its
+  `tools` may only be function tools. Its `service_tier` is set to `default`:
+  an explicit other tier ends the session with
   `1008 backend_tier_not_allowed`, since backend calls are booked at the
-  standard rate. A `session.update` is checked the same way.
+  standard rate. A `session.update` that sets no delegation is not checked.
 - **No transcript `triggers`**: they run Decisions, which the relay can't check
   or bill. A non-empty `triggers` ends the session with
   `1008 triggers_not_allowed`.
