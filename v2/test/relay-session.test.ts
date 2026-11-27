@@ -17,13 +17,16 @@ import { ACCOUNT_ID } from "./helpers.ts";
 
 const relay = () => (env as unknown as { RELAY_TEST: Fetcher }).RELAY_TEST;
 const provider = () => (env as unknown as { PROVIDER_STUB: Fetcher }).PROVIDER_STUB;
+/** What the stand-in for the gateway's contract got from the relay for one session. */
+type Seen = { checkpoints: { slice: { measures: Record<string, number> } | null; connected: boolean }[]; closes: { endReason: string; providerCallId: string | null }[] };
+const seenFor = async (sessionId: string) => (await (await (env as unknown as { RELAY_MAIN_STUB: Fetcher }).RELAY_MAIN_STUB.fetch(`https://main.test/seen/${sessionId}`)).json()) as Seen;
 
 async function ticketFor(connection: string): Promise<string> {
   return (await issued(connection)).ticket;
 }
 
 /** A ticket and its session id; `now` and `sessionId` make another ticket for the same session. */
-async function issued(connection: string, now = Date.now(), sessionId?: string): Promise<{ ticket: string; sessionId: string }> {
+async function issued(connection: string, now = Date.now(), sessionId?: string, observed?: { capMs: number }): Promise<{ ticket: string; sessionId: string }> {
   const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, connection, "openai", "", "", ""];
   const blob = await sealForTest("providerKey", identity, "sk-session-object");
   const share = await testShare(ACCOUNT_ID);
@@ -36,13 +39,13 @@ async function issued(connection: string, now = Date.now(), sessionId?: string):
     appKeyId: null,
     providerType: "openai",
     connectionId: connection,
-    operation: "openai.realtime",
+    operation: observed === undefined ? "openai.realtime" : "openai.realtime.calls",
     model: "gpt-realtime",
-    mode: "relayed",
+    mode: observed === undefined ? "relayed" : "observed",
     slot: "conversational",
     sessionTotal: false,
-    url: "https://api.openai.com/v1/realtime",
-    capMs: 60_000,
+    url: observed === undefined ? "https://api.openai.com/v1/realtime" : "https://api.openai.com/v1/realtime/calls",
+    capMs: observed?.capMs ?? 60_000,
     credentials: { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) },
     keyPlacement: { header: "authorization", format: "Bearer {key}" },
   }, now, sessionId);
@@ -280,4 +283,62 @@ describe("our SDK reconnecting to the same session (step 9a part 3)", () => {
     back.socket.close(1000, "done");
   });
 
+});
+
+/** Sends an observed session's offer to the relay, as an app does: a POST, no WebSocket. */
+const offer = (ticket: string, body: string) =>
+  relay().fetch(`https://relay.test${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${ticket}`, "content-type": "application/sdp" }, body });
+
+/** Waits for the relay to close the session at the gateway's stand-in, and answers what it got. */
+async function closed(sessionId: string): Promise<Seen> {
+  for (let tries = 0; tries < 100; tries += 1) {
+    const seen = await seenFor(sessionId);
+    if (seen.closes.length > 0) return seen;
+    await pause(50);
+  }
+  throw new Error("the session never closed");
+}
+
+/** The input tokens the relay booked for a session, over all its slices. */
+const inputTokens = (seen: Seen) => seen.checkpoints.reduce((sum, checkpoint) => sum + (checkpoint.slice?.measures.input_tokens ?? 0), 0);
+
+describe(`an observed session through the relay's session object (step 9a part 3; split keys ${splitKeysOn ? "on" : "off"})`, () => {
+  it("starts from the app's offer with no WebSocket: the answer comes back, the side channel's usage is booked, and at its cap the call is hung up", async () => {
+    const { ticket, sessionId } = await issued("conn_observed", Date.now(), undefined, { capMs: 1_500 });
+    // The mock call reports an answer every 0.4 s and runs on: only the relay's cap ends it.
+    const response = await offer(ticket, "v=0\r\na=x-mock-turns:0.4\r\n");
+    expect(response.status).toBe(201);
+    expect(response.headers.get("content-type")).toBe("application/sdp");
+    expect(await response.text()).toMatch(/^v=0/u);
+    const seen = await closed(sessionId);
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "time_cap", providerCallId: expect.stringMatching(/^rtc_mock_/u) })]);
+    const callId = seen.closes[0]!.providerCallId;
+    for (let tries = 0; tries < 40 && !((await (await provider().fetch("https://provider.test/hangups")).json()) as string[]).includes(callId!); tries += 1) await pause(50);
+    expect(await (await provider().fetch("https://provider.test/hangups")).json()).toContain(callId);
+    // Each answer is 100 input tokens, booked once: two or three of them came before the cap.
+    expect([200, 300]).toContain(inputTokens(seen));
+    // The key went to the provider from the vault's seal.
+    expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
+  });
+  it("two offers at once make exactly one call, and the second is refused", async () => {
+    const { ticket } = await issued("conn_observed_twice", Date.now(), undefined, { capMs: 60_000 });
+    const tag = crypto.randomUUID();
+    const body = `v=0\r\na=x-test:${tag}\r\na=x-mock-ends:0.5\r\n`;
+    const [first, second] = await Promise.all([offer(ticket, body), offer(ticket, body)]);
+    expect([first.status, second.status].sort()).toEqual([201, 409]);
+    const refused = first.status === 409 ? first : second;
+    expect(["start_in_flight", "session_active"]).toContain(((await refused.json()) as { error: { code: string } }).error.code);
+    expect(await (await provider().fetch(`https://provider.test/calls/${tag}`)).json()).toEqual({ made: 1 });
+  });
+
+  it("refuses an offer that is too large, and a second one after the session started", async () => {
+    const { ticket } = await issued("conn_observed_big", Date.now(), undefined, { capMs: 60_000 });
+    const big = await offer(ticket, `v=0\r\n${"a=x:y\r\n".repeat(20_000)}`);
+    expect(big.status).toBe(413);
+    expect(await big.json()).toEqual({ error: { code: "offer_too_large" } });
+    expect((await offer(ticket, "v=0\r\na=x-mock-ends:0.5\r\n")).status).toBe(201);
+    const again = await offer(ticket, "v=0\r\n");
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: { code: "session_active" } });
+  });
 });

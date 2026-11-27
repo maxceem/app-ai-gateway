@@ -147,3 +147,31 @@ hash it stored. Then:
   After a restart the session is ended right then, so its slot is free for a
   new one. Either way: don't try again, ask the gateway for a new session and
   name the old one in `takes_over`.
+
+## Observed sessions
+
+An observed session has no client socket (plan section 5). Media goes between
+the app and the provider directly; the relay holds only the call's side
+channel. Only the mock is served for now: the gateway issues observed tickets
+from plan step 12, which also adds what is specific to OpenAI.
+
+- **Starting:** the app sends its offer to the session path in a `POST`, with
+  the ticket in `authorization` and the offer as the body (at most 64 KB). A
+  WebSocket with an observed ticket gets `400 offer_required`. The relay
+  creates the call, stores its id, and only then answers `201` with the
+  provider's answer (`application/sdp`).
+- **Refusals** are JSON, `{"error":{"code":…}}`, with the start's code:
+  `401 ticket_refused` or `ticket_expired`; `409 session_active`,
+  `start_in_flight` or `session_ended`; `413 offer_too_large`;
+  `502 provider_unavailable`; `503` for anything else, such as
+  `credential_unavailable` or `open_failed`.
+- **The side channel:** the relay attaches it after the answer, and again at
+  once whenever it closes after at least 5 s (sooner, on its next 30 s tick),
+  with that tick as the backup, also after the relay restarts. An attach that gets `404` means the call ended, and the
+  session ends with `provider_closed`. Any other refusal keeps the call: the
+  relay tries again on each tick, and the session ends only on a `404`, a stop
+  from the gateway, or the time cap. Time without the side channel is not
+  counted as connection time.
+- **The end:** at the cap or on a stop, the relay hangs the call up. A hang-up
+  that fails is tried again on each wakeup until the session's sealed key
+  expires, then given up on and logged. An attach never waits past the cap.

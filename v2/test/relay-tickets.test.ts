@@ -13,7 +13,7 @@ import { ledgerDb } from "../src/ledger/database.ts";
 import { openSession, settleSession, STALE_SESSION_GRACE_MS } from "../src/ledger/sessions.ts";
 import { MAX_STORED_COPY_MS } from "../vault/src/call.js";
 import { sessionKey } from "../vault/src/relay.js";
-import { connectProvider } from "../relay/src/provider.js";
+import { connectProvider, createObservedCall } from "../relay/src/provider.js";
 import { ProviderRefused, SessionCore } from "../relay/src/start.js";
 import { base64url, parseTicket } from "../relay/src/ticket.js";
 import { TEST_VAULT_ENV } from "./local-vault.ts";
@@ -193,6 +193,21 @@ describe("the provider connection's time limit (T12, first run)", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(ProviderRefused);
     // The limit given here, not a fixed 15 s signal: the test's own short limit ends it.
+  }, 2_000);
+  it("covers an observed call's answer body too: a provider that sends 201 and then stalls is cut at the limit (Sol, #265 round 4)", async () => {
+    const send = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // The headers come at once; the body never does, until the request is aborted.
+      const body = new ReadableStream({ start: (controller) => init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted"))) });
+      return new Response(body, { status: 201, headers: { location: "/v1/realtime/calls/rtc_1" } });
+    }) as typeof fetch;
+    let elapse: () => void = () => undefined;
+    const pending = createObservedCall({ ...key, target: "https://provider.test/v1/realtime/calls" }, "v=0", send, () => new Promise<void>((resolve) => (elapse = resolve)));
+    // The limit passes once the headers are in, while the body is still being read.
+    for (let step = 0; step < 10; step += 1) await Promise.resolve();
+    elapse();
+    const error = await pending.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ProviderRefused);
   }, 2_000);
 });
 

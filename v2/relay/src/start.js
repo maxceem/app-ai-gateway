@@ -15,6 +15,9 @@
  *    outcome is never retried, since a retry could start a second paid call;
  * 5. one write: `active`, the call id and the reconnect secret's hash, with
  *    the alarm at the first tick.
+ * An observed session runs the same steps, with no socket: step 4 creates the
+ * call from the app's offer, and the answer goes back only after step 5; its
+ * side channel is attached after, and again whenever it is lost (`attachSide`).
  * Then the alarm ticks every `TICK_MS` until the session ends: the time cap,
  * a lost provider socket, the liveness checks the session object gives
  * (`liveness`: the heartbeat and "client too slow", `./frames.js`), and the
@@ -54,7 +57,7 @@
  * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
-import { confirm, finalSliceOf, freeze, JOURNAL_KEY, newJournal, readJournal, addUsage } from "./journal.js";
+import { confirm, finalSliceOf, freeze, JOURNAL_KEY, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -75,6 +78,16 @@ function stopReason(reasons) {
 
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
+
+/** A side channel that closes sooner than this after it attached is attached again on the next tick, not at once. */
+export const SIDE_CHANNEL_MIN_LIFE_MS = 5_000;
+
+/**
+ * How long a restarted instance waits for the vault's key, for a reattach or a hang-up: past it the
+ * call stays detached, or the hang-up owed, and the next wakeup tries again. Short, so a stalled
+ * vault never holds a tick's checkpoint, and a stop from the gateway still reaches the call.
+ */
+export const VAULT_KEY_WAIT_MS = 5_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
@@ -116,9 +129,18 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null, relayVersion: number }): Promise<unknown>,
  * }} MainPort
  * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
- * `close` hangs up the provider's side of a relayed session.
- * @typedef {{ connect(key: SessionKey): Promise<ProviderCall> }} ProviderPort
- * `connect` throws `ProviderRefused` for a known refusal; anything else is an unknown outcome.
+ * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
+ * @typedef {{
+ *   connect(key: SessionKey): Promise<ProviderCall>,
+ *   createCall?(key: SessionKey, offer: string): Promise<{ callId: string, answer: string }>,
+ *   attach?(key: SessionKey, callId: string, adapter: string | undefined, limitMs: number): Promise<ProviderCall>,
+ *   hangup?(key: SessionKey, callId: string): Promise<void>,
+ * }} ProviderPort
+ * `connect` (relayed) and `createCall` (observed) throw `ProviderRefused` for a known refusal;
+ * anything else is an unknown outcome. `attach` attaches an observed call's side channel, and
+ * throws `ProviderRefused` with the status when it is refused (404: the call ended); it waits
+ * at most `limitMs`, the time left before the deadline, and throws past it. `hangup`
+ * ends an observed call: closing its side channel doesn't (plan, T1).
  * @typedef {(event: Record<string, unknown>) => void} Logger
  * @typedef {{ close(code: number, reason: string): void }} Client the connection a session is started for
  * @typedef {(now: number) => string | null} Liveness the live session's own checks on each tick: an end reason, or null
@@ -134,7 +156,7 @@ export class ProviderRefused extends Error {
   }
 }
 
-const KEYS = ["state", "ticket", "settings", "connecting", "callId", "end", "closed", JOURNAL_KEY];
+const KEYS = ["state", "ticket", "settings", "connecting", "callId", "end", "closed", "hangup", JOURNAL_KEY];
 
 /** @param {string} secret */
 async function hashOf(secret) {
@@ -221,6 +243,30 @@ export class SessionCore {
      * @type {string | null}
      */
     this.reconnectHash = null;
+    /** @type {SessionKey | null} The session's key, in memory only (plan 5.1): an observed call reattaches and hangs up with it. */
+    this.key = null;
+    /** @type {string | null} The session's mode, once this instance started it or attached its side channel. */
+    this.mode = null;
+    /**
+     * Whether this instance started the observed call or held its side channel. A restarted
+     * instance did neither: the side channel went with the old one, so the time since the
+     * journal's last write is a gap (crash table row 22).
+     */
+    this.held = false;
+    /** @type {Promise<void> | null} An observed call's side-channel attach in flight: one at a time. */
+    this.attaching = null;
+    /** When the side channel last attached. */
+    this.attachedAt = 0;
+    /**
+     * Set by an observed start, cleared by the first attach attempt: only a first attempt that
+     * succeeds books no time from before it, as no side channel existed yet (`attachOnce`).
+     */
+    this.firstAttach = false;
+    /**
+     * Set once an end has stored `ended`, and never cleared: an observed call's attach or journal
+     * write that finishes after the end (when `ending` is null again) changes nothing.
+     */
+    this.over = false;
   }
 
   /**
@@ -296,12 +342,18 @@ export class SessionCore {
    * entry has checked its signature and routed it to this object by its
    * session id; this checks the rest. Returns the reconnect secret, or a code
    * the client gets.
+   *
+   * An observed session (no client socket, ever) starts the same way, from
+   * the app's `offer`: the provider creates the call, the call id is stored
+   * with `active`, and only then is the provider's answer returned
+   * (4.3 step 4). The caller attaches the side channel after (`attachSide`).
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
    * @param {Client} [client]
-   * @returns {Promise<{ ok: true, reconnectSecret: string, call: ProviderCall, deadline: number, adapter: string | undefined } | { ok: false, code: string }>}
+   * @param {string} [offer] an observed session's offer
+   * @returns {Promise<{ ok: true, reconnectSecret: string | null, call: ProviderCall | null, answer: string | null, deadline: number, adapter: string | undefined } | { ok: false, code: string }>}
    */
-  async start(ticketText, ticket, client) {
+  async start(ticketText, ticket, client, offer) {
     // Also while an end is in flight: a start never runs into the middle of one.
     // An end in flight: this session can't start or be joined again, and the client needs a new one.
     if (this.ending !== null) return { ok: false, code: "session_ended" };
@@ -393,10 +445,20 @@ export class SessionCore {
       // caps its closing wait by the deadline.
       const deadline = deadlineOf(ticket);
       this.deadline = deadline;
+      const observed = ticket.mode === "observed";
+      /** @type {{ callId: string, answer: string } | null} An observed call: its id and the provider's answer. */
+      let created = null;
       try {
-        // Kept at once, so whatever happens next can hang it up.
-        ownCall = await this.provider.connect(key);
-        this.call = ownCall;
+        if (observed) {
+          // No socket to keep: if the start stops after this, the app never gets the answer, and the
+          // provider ends the call by itself (crash table row 11).
+          if (this.provider.createCall === undefined) throw new ProviderRefused(501);
+          created = await this.provider.createCall(key, offer ?? "");
+        } else {
+          // Kept at once, so whatever happens next can hang it up.
+          ownCall = await this.provider.connect(key);
+          this.call = ownCall;
+        }
       } catch (error) {
         if (error instanceof ProviderRefused) {
           await endStart("error", { log: "relay_provider_refused", status: error.status });
@@ -407,8 +469,10 @@ export class SessionCore {
         return fail("provider_unavailable");
       }
       const call = this.call;
-      const reconnectSecret = newSecret();
-      const reconnect = await hashOf(reconnectSecret);
+      const callId = created?.callId ?? call?.callId ?? null;
+      // Only a relayed session has a client link that can drop and come back (plan 5.1).
+      const reconnectSecret = observed ? null : newSecret();
+      const reconnect = reconnectSecret === null ? null : await hashOf(reconnectSecret);
       // A slow handshake: the alarm may have ended the session, the client may have gone, or
       // the time run out. Then the provider's side is hung up, and an ended session stays ended.
       // Nothing waits between this check and the `active` write.
@@ -417,9 +481,19 @@ export class SessionCore {
       // restarted object that lost its provider socket ends soon (row 13).
       // The journal starts here: the session's connection time counts from now.
       const journal = newJournal(this.now());
-      await this.store.put({ state: "active", callId: call.callId, reconnect, [JOURNAL_KEY]: journal }, Math.min(deadline, this.now() + TICK_MS));
+      // An observed session has no side channel yet: until its first attach, no time is
+      // connection time (`attachOnce`).
+      if (observed) markDetached(journal, journal.from);
+      // An observed call's id is stored here, before its answer goes back to the app (4.3 step 4).
+      await this.store.put({ state: "active", callId, reconnect, [JOURNAL_KEY]: journal }, Math.min(deadline, this.now() + TICK_MS));
       this.journal = journal;
       this.reconnectHash = reconnect;
+      this.mode = ticket.mode;
+      if (observed) {
+        this.key = key;
+        this.held = true;
+        this.firstAttach = true;
+      }
       // A hang-up during that write has ended the session (`clientGone`): nothing waits after this check.
       if (this.owner !== client) return fail("client_closed");
       // A write held past the deadline: the session's time is over before it began.
@@ -427,7 +501,7 @@ export class SessionCore {
         await endStart("time_cap", {});
         return fail("session_ended");
       }
-      return { ok: true, reconnectSecret, call, deadline, adapter: settings.adapter };
+      return { ok: true, reconnectSecret, call, answer: created?.answer ?? null, deadline, adapter: settings.adapter };
     } catch (error) {
       // Anything unexpected (a storage failure, say) never leaves this start's provider call
       // behind. Only what this start made is touched: never another client's call or owner.
@@ -510,6 +584,183 @@ export class SessionCore {
     await this.end("provider_closed");
   }
 
+  /**
+   * An observed call's side channel closed. That says nothing about the call
+   * itself (it closes with 1006 whatever the reason, T18), so the session goes
+   * on: the time without it is a gap, and it is attached again at once, with
+   * the alarm as the backup (plan section 5; crash table row 23). One that
+   * lived less than `SIDE_CHANNEL_MIN_LIFE_MS` waits for the next tick.
+   * @param {ProviderCall} call
+   */
+  async sideGone(call) {
+    if (call !== this.call) return;
+    this.call = null;
+    // A closing wait ends now: its answer can't arrive any more.
+    this.turnWaiter?.();
+    if (this.ending !== null) return;
+    // An attach still finishing (its journal write) is let finish first, so this one really runs.
+    await this.attaching;
+    await this.noteDetached();
+    // A side channel that closed soon after it attached is not attached again at once, or a provider
+    // that accepts and drops it would get attaches with no pause: the next tick tries again.
+    if (this.now() - this.attachedAt >= SIDE_CHANNEL_MIN_LIFE_MS) await this.attachSide();
+  }
+
+  /** The side channel is down from now: the time is a gap until it is back (`markDetached`). */
+  async noteDetached() {
+    const journal = await this.loadJournal();
+    if (journal === null || journal.detachedFrom !== undefined) return;
+    markDetached(journal, this.now());
+    await this.writeJournal(journal);
+  }
+
+  /** The journal's own small write, logged when it fails: the next write carries the change. @param {import("./journal.js").Journal} journal */
+  async writeJournal(journal) {
+    // The session ended: its journal is the end's, and may be cleaned up already.
+    if (this.over) return;
+    try {
+      await this.store.putJournal(journal);
+    } catch {
+      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
+    }
+  }
+
+  /**
+   * Attaches an observed call's side channel (plan section 5): after the
+   * start, at once when it closes, and on each tick while it is down, also in
+   * a restarted instance, with the key from the vault and no call to the main
+   * Worker (crash table rows 22–24). One attach at a time.
+   * - It attaches: usage flows again, and the time it was down stays a gap.
+   * - 404: the call ended. The session ends with `provider_closed`.
+   * - Anything else (503, the vault or the network failing): the call is kept
+   *   (owner, 2026-11-18), the time is a gap, and the next tick tries again.
+   *   The session then ends only on a 404, an explicit stop or the cap.
+   */
+  attachSide() {
+    if (this.attaching !== null) return this.attaching;
+    // Never rejects: a storage failure here is logged, and the next tick tries again.
+    const running = this.attachOnce()
+      .catch(() => this.log({ level: "warn", message: "relay_side_channel_attach_failed", session: this.sessionId }))
+      .finally(() => {
+        if (this.attaching === running) this.attaching = null;
+      });
+    this.attaching = running;
+    return running;
+  }
+
+  async attachOnce() {
+    if (this.ending !== null || this.over || this.call !== null) return;
+    const stored = await this.store.get(["state", "ticket", "callId", "settings"]);
+    const ticket = stored.get("ticket");
+    const callId = stored.get("callId");
+    const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
+    if (stored.get("state") !== "active" || settings?.mode !== "observed" || typeof ticket !== "string" || typeof callId !== "string") return;
+    this.mode = "observed";
+    this.sessionId ||= this.sessionIdOf(stored);
+    // Kept in memory after a restart too, so the closing wait never goes past it.
+    this.deadline = settings.deadline;
+    // At the deadline nothing is attached: the session ends, and the call is hung up.
+    if (this.now() >= settings.deadline) return this.end("time_cap");
+    // A restarted instance: the side channel went with the old one, and so did any usage since the
+    // journal's last write. That time is a gap (crash table row 22).
+    await this.loadJournal();
+    const first = this.firstAttach;
+    this.firstAttach = false;
+    let key = this.key;
+    if (key === null) {
+      try {
+        // Never long, and never past the deadline: a stalled vault can't hold the tick, or the session past its cap.
+        key = await this.restartKey(ticket, Math.max(0, Math.min(VAULT_KEY_WAIT_MS, settings.deadline - this.now())));
+      } catch (error) {
+        this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: codeOf(error) });
+        return this.noteDetached();
+      }
+      if (key !== null) this.key = key;
+      if (key === null) {
+        this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: "timeout" });
+        return this.noteDetached();
+      }
+    }
+    if (this.provider.attach === undefined) return this.noteDetached();
+    /** @type {ProviderCall} */
+    let call;
+    try {
+      // Never waits past the deadline: a slow attach can't keep the call past its cap.
+      call = await this.provider.attach(key, callId, settings.adapter, Math.max(0, settings.deadline - this.now()));
+    } catch (error) {
+      if (error instanceof ProviderRefused && error.status === 404) return this.end("provider_closed");
+      this.log({ level: "warn", message: "relay_side_channel_unavailable", session: this.sessionId, ...(error instanceof ProviderRefused ? { status: error.status } : {}) });
+      return this.noteDetached();
+    }
+    // The session ended meanwhile, or the attach came past the deadline: this side channel is let go,
+    // and the alarm, armed at the deadline, ends the session.
+    if (this.ending !== null || this.over || this.now() >= settings.deadline) {
+      call.close?.(1000, "session ended");
+      return;
+    }
+    this.call = call;
+    this.held = true;
+    this.attachedAt = this.now();
+    const journal = await this.loadJournal();
+    if (journal !== null) {
+      const now = this.now();
+      // The first attach attempt of the call this instance made, and it succeeded: the time before is
+      // neither connection time nor a gap, as no side channel existed yet. Any other attach ends a
+      // gap (row 23).
+      if (first) {
+        journal.from = now;
+        delete journal.detachedFrom;
+      } else markAttached(journal, now);
+      // The restart rule's gap runs from `savedAt`: moved here, so a later restart never counts it again.
+      journal.savedAt = now;
+      await this.writeJournal(journal);
+    }
+    this.log({ level: "info", message: "relay_side_channel_attached", session: this.sessionId });
+  }
+
+  /**
+   * The session's key from the vault, as for a restart (8j), or null when the
+   * vault has not answered within `limitMs`: the caller goes on without it.
+   * @param {string} ticket
+   * @param {number} limitMs
+   * @returns {Promise<SessionKey | null>}
+   */
+  restartKey(ticket, limitMs) {
+    return Promise.race([this.vault.sessionKey(ticket, { restart: true }), this.wait(limitMs).then(() => null)]);
+  }
+
+  /**
+   * Hangs up an ended observed call: one attempt now, and one on each wakeup
+   * while it is owed (crash table rows 23–25, 28), with the key in memory or
+   * from the vault, until the session's seal expires. The slices and `close`
+   * never wait for it. Returns whether no hang-up is owed any more.
+   */
+  async hangUp() {
+    const stored = await this.store.get(["hangup", "ticket", "callId"]);
+    const ticket = stored.get("ticket");
+    const callId = stored.get("callId");
+    if (stored.get("hangup") !== true || typeof ticket !== "string" || typeof callId !== "string") return true;
+    // Past the seal's expiry the key is never used again, not even one in memory (crash table row 28):
+    // the call runs on at the provider to its own limit, logged at `error`.
+    if (this.now() >= sealExpiry(ticket)) {
+      this.log({ level: "error", message: "relay_hangup_given_up", session: this.sessionIdOf(stored) });
+      await this.store.put({ hangup: false }, null);
+      return true;
+    }
+    try {
+      // Bounded too, so a stalled vault never holds the end: the next wakeup tries again.
+      this.key ??= await this.restartKey(ticket, VAULT_KEY_WAIT_MS);
+      if (this.key === null) throw new Error("vault_timeout");
+      if (this.provider.hangup === undefined) throw new Error("no hang-up");
+      await this.provider.hangup(this.key, callId);
+    } catch (error) {
+      this.log({ level: "warn", message: "relay_hangup_failed", session: this.sessionIdOf(stored), ...(error instanceof ProviderRefused ? { status: error.status } : { code: codeOf(error) }) });
+      return false;
+    }
+    await this.store.put({ hangup: false }, null);
+    return true;
+  }
+
   /** Whether `client` ran the last start that got past the running-session check: its failure may end the session. @param {Client} client */
   startedBy(client) {
     return this.lastStarter === client;
@@ -557,9 +808,11 @@ export class SessionCore {
     if (!this.starting) owner?.close(CLIENT_END_CODES[reason] ?? 1000, reason);
     // An answer in progress is let finish, so its usage counts (plan 5.1). Not when the provider
     // hung up itself, not at the time cap, and not for a start that never got its call.
-    if (this.call !== null && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
-    // An answer still open now was cut off: its usage is missing.
-    const cut = this.call !== null && this.turnOpen();
+    const hadCall = this.call !== null;
+    if (hadCall && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
+    // An answer still open now was cut off: its usage is missing. Also when an observed call's side
+    // channel dropped during the wait: the answer never finished where the relay could see it.
+    const cut = hadCall && this.turnOpen();
     const call = this.call;
     this.call = null;
     this.reconnectHash = null;
@@ -573,9 +826,10 @@ export class SessionCore {
       this.log({ level: reason === "error" ? "error" : "info", message: details.log, session: this.sessionIdOf(stored), ...(details.status === undefined ? {} : { status: details.status }) });
     }
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
-    const journal = readJournal(stored.get(JOURNAL_KEY));
+    const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
+    const journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), settings);
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
-    const deadline = /** @type {Settings | undefined} */ (stored.get("settings"))?.deadline;
+    const deadline = settings?.deadline;
     const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
     if (journal !== null && cut) {
       // The cut answer's usage is unknown: the final slice is booked with a gap, so it is
@@ -588,8 +842,14 @@ export class SessionCore {
     /** @type {Record<string, unknown>} */
     const entries = { state: "ended", end: { reason, at: endedAt, finalSlice: finalSliceOf(journal) } };
     if (journal !== null) entries[JOURNAL_KEY] = journal;
+    // An observed call goes on at the provider until it is hung up, except when it ended there
+    // (`provider_closed`). The hang-up is owed in the same write as the end (rows 23, 25).
+    const owed = settings?.mode === "observed" && typeof stored.get("callId") === "string" && reason !== "provider_closed";
+    if (owed) entries.hangup = true;
     await this.store.put(entries, this.now() + CLOSE_RETRY_EVERY_MS);
-    await this.flushEnded();
+    // From here the session is over for good; until here, `ending` stood for it.
+    this.over = true;
+    await Promise.all([this.flushEnded(), owed ? this.hangUp() : null]);
   }
 
   /**
@@ -598,8 +858,23 @@ export class SessionCore {
    * @returns {Promise<import("./journal.js").Journal | null>}
    */
   async loadJournal() {
-    if (this.journal === null) this.journal = readJournal((await this.store.get([JOURNAL_KEY])).get(JOURNAL_KEY));
+    if (this.journal === null) {
+      const stored = await this.store.get([JOURNAL_KEY, "settings"]);
+      this.journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), /** @type {Settings | undefined} */ (stored.get("settings")));
+    }
     return this.journal;
+  }
+
+  /**
+   * An observed session's journal as a restarted instance finds it: the side
+   * channel went with the old instance, so the time since the journal's last
+   * write is a gap until it is attached again (crash table row 22).
+   * @param {import("./journal.js").Journal | null} journal
+   * @param {Settings | undefined} settings
+   */
+  restartGap(journal, settings) {
+    if (journal !== null && settings?.mode === "observed" && !this.held) markDetached(journal, journal.savedAt);
+    return journal;
   }
 
   /**
@@ -612,16 +887,14 @@ export class SessionCore {
    */
   async recordUsage(event, shape) {
     // During the closing wait, the last answer's usage still counts.
-    if (this.call === null || (this.ending !== null && this.turnWaiter === null)) return;
+    if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
     const journal = await this.loadJournal();
     const now = this.now();
     if (journal === null || !addUsage(journal, event, shape, now)) return;
+    // An observed session is real once usage came on its side channel (crash table row 20). Sticky.
+    if (this.mode === "observed") journal.connected = true;
     journal.savedAt = now;
-    try {
-      await this.store.putJournal(journal);
-    } catch {
-      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
-    }
+    await this.writeJournal(journal);
   }
 
   /**
@@ -708,12 +981,8 @@ export class SessionCore {
     if (this.ending !== null || this.journal !== journal) return;
     journal.lastCheckpointAt = now;
     if (reply !== null && reply.written && slice !== null) confirm(journal, slice.seq);
-    try {
-      await this.store.putJournal(journal);
-    } catch {
-      // The slice stays unconfirmed in memory and is sent again; a restart sends it from storage.
-      this.log({ level: "warn", message: "relay_journal_write_failed", session: this.sessionId });
-    }
+    // A failed write leaves the slice unconfirmed in memory, and it is sent again; a restart sends it from storage.
+    await this.writeJournal(journal);
   }
 
   /**
@@ -852,18 +1121,30 @@ export class SessionCore {
       // its journal's last write is a gap (rows 13 and 14, relayed). An observed session reattaches
       // instead (part 3): until then it waits for its deadline.
       if (lost) return this.end("error", { log: "relay_provider_lost", gap: true });
+      // An observed call whose side channel is down (a close, a 503, a restarted instance): one
+      // attach per tick. The tick's checkpoint runs whatever it found, so an explicit stop still
+      // reaches a detached call (row 23); a 404 has ended the session, and the checkpoint is skipped.
+      const detached = settings?.mode === "observed" && this.call === null;
+      if (detached) await this.attachSide();
+      // The vault or the attach may have taken the tick to the cap: it ends there, before any checkpoint.
+      if (detached && this.now() >= deadline) return this.end("time_cap");
       // The live session's own checks: a silent client, a client too far behind.
       const reason = this.liveness(now);
       if (reason !== null) return this.end(reason);
-      if (await this.checkpointDue(now)) await this.checkpoint();
+      // A tick that found the side channel down always asks the gateway, so a stop reaches it (row 23).
+      if (detached || (await this.checkpointDue(now))) await this.checkpoint();
       return;
     }
     // Ended: deliver the slices and `close` for a while; then give up, with the slices logged; then
     // clean up once the ticket has expired.
     const end = /** @type {{ at: number } | undefined} */ (stored.get("end"));
     const journal = readJournal(stored.get(JOURNAL_KEY));
-    if (stored.get("closed") !== true || (journal !== null && journal.unsent.length > 0)) {
-      if (await this.flushEnded()) return;
+    const owed = stored.get("hangup") === true;
+    const accounting = stored.get("closed") !== true || (journal !== null && journal.unsent.length > 0);
+    // Two retries with their own limits: the slices and `close` for `CLOSE_RETRY_MS`, an owed
+    // hang-up until the seal expires (`hangUp`). Storage stays while either is owed.
+    const [flushed, hungUp] = await Promise.all([accounting ? this.flushEnded() : true, owed ? this.hangUp() : true]);
+    if (!flushed) {
       if (now - (end?.at ?? now) < CLOSE_RETRY_MS) return this.store.put({}, now + CLOSE_RETRY_EVERY_MS);
       // Given up: the slices are logged at `error`, the one miscount the plan accepts (4.2; row 25).
       const left = this.journal?.unsent ?? journal?.unsent ?? [];
@@ -876,12 +1157,28 @@ export class SessionCore {
       /** @type {Record<string, unknown>} */
       const entries = { closed: true };
       if (journal !== null) entries[JOURNAL_KEY] = { ...journal, unsent: [] };
-      await this.store.put(entries, this.cleanupAt(ticketText));
+      await this.store.put(entries, hungUp ? this.cleanupAt(ticketText) : now + CLOSE_RETRY_EVERY_MS);
       return;
     }
+    if (!hungUp) return this.store.put({}, now + CLOSE_RETRY_EVERY_MS);
+    // Just delivered: `close` set the cleanup alarm.
+    if (accounting) return;
     if (now >= ticketExpiry(ticketText)) return this.store.deleteAll();
     return this.store.put({}, ticketExpiry(ticketText));
   }
+}
+
+/**
+ * When a session's sealed key expires: the ticket's expiry, its cap and a grace, as the gateway
+ * seals it (`SEAL_GRACE_MS` in `src/relay/tickets.ts`; a test keeps them the same). The vault
+ * refuses the seal after it.
+ */
+export const SEAL_GRACE_MS = 5 * 60_000;
+
+/** @param {string} ticketText */
+function sealExpiry(ticketText) {
+  const ticket = parseTicket(ticketText)?.payload;
+  return ticket === undefined ? 0 : ticket.exp + ticket.cap + SEAL_GRACE_MS;
 }
 
 /** A stored ticket's expiry. It was checked before it was stored. @param {string} ticketText */

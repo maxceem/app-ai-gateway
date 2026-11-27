@@ -14,8 +14,14 @@
  *
  * The object then forwards frames both ways (`./frames.js`). The session's
  * adapter (`./adapters.js`) reads usage from the provider's frames after they
- * are forwarded, into the journal; the alarm sends checkpoints. Observed mode
- * comes in part 3.
+ * are forwarded, into the journal; the alarm sends checkpoints.
+ *
+ * An observed session has no client socket at all (plan section 5): the app
+ * sends its offer to `SESSION_PATH` in a POST, with the ticket, and gets the
+ * provider's answer back; media then goes between the app and the provider
+ * directly. The session object holds the call's side channel, reads usage
+ * from it, and attaches it again whenever it closes, also after a restart,
+ * with the key from the vault (`./start.js`).
  *
  * Reconnecting to the same session (plan 5.1, 5.2): when our SDK's link drops
  * (any close but a normal one), the session goes on without a client, and the
@@ -29,7 +35,7 @@ import { adapterFor } from "./adapters.js";
 import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION_PATH } from "./constants.js";
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
 import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
-import { connectProvider } from "./provider.js";
+import { attachSideChannel, connectProvider, createObservedCall, hangUpObservedCall } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
 
@@ -62,7 +68,9 @@ export default {
       return Response.json({ ok: true, service: "app-ai-gateway-relay" });
     }
     if (pathname !== SESSION_PATH) return refusal(404, "not_found");
-    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return refusal(426, "websocket_required");
+    // A relayed session is a WebSocket; an observed one is the app's offer, in a POST.
+    const websocket = request.headers.get("upgrade")?.toLowerCase() === "websocket";
+    if (!websocket && request.method !== "POST") return refusal(426, "websocket_required");
     /** @type {import("./ticket.js").Ticket | null} */
     let ticket;
     try {
@@ -73,7 +81,8 @@ export default {
     }
     // Checked before any session object exists: a made-up or cut ticket creates nothing.
     if (ticket === null) return refusal(401, "ticket_refused");
-    if (ticket.mode !== "relayed") return refusal(501, "mode_not_served");
+    if (ticket.mode === "observed" && websocket) return refusal(400, "offer_required");
+    if (ticket.mode === "relayed" && !websocket) return refusal(426, "websocket_required");
     return env.SESSION.get(env.SESSION.idFromName(ticket.sid)).fetch(request);
   },
 };
@@ -167,12 +176,27 @@ export class Session extends DurableObject {
           socket.addEventListener("close", () => void this.core.providerGone(call));
           return call;
         },
+        createCall: (key, offer) => createObservedCall(key, offer),
+        // An observed call's side channel: its frames are read for usage, never forwarded anywhere.
+        attach: async (key, callId, adapterName, limitMs) => {
+          const socket = await attachSideChannel(key, callId, limitMs);
+          const adapter = adapterFor(adapterName);
+          /** @type {import("./start.js").ProviderCall} */
+          const call = { callId, close: (code, reason) => closeQuietly(socket, code, reason) };
+          this.sideTurnOpen = false;
+          socket.addEventListener("message", (event) => this.sideFrame(call, adapter, event.data));
+          socket.addEventListener("close", () => void this.core.sideGone(call));
+          return call;
+        },
+        hangup: (key, callId) => hangUpObservedCall(key, callId),
       },
       // The tick's checks for the session this instance runs: none after a restart.
       liveness: (now) => this.live?.frames.check(now) ?? null,
       proof: () => this.live?.frames.clientSpoke ?? false,
-      turnOpen: () => this.live?.turnOpen ?? false,
+      turnOpen: () => this.live?.turnOpen ?? this.sideTurnOpen,
     });
+    /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
+    this.sideTurnOpen = false;
   }
 
   /**
@@ -183,6 +207,7 @@ export class Session extends DurableObject {
     const ticketText = ticketOf(request);
     const parsed = ticketText === null ? null : parseTicket(ticketText);
     if (ticketText === null || parsed === null) return refusal(401, "ticket_refused");
+    if (parsed.payload.mode === "observed") return this.observedStart(request, ticketText, parsed.payload);
     const relayMessages = request.headers.get(RELAY_MESSAGES_HEADER) === "1";
     const [client, server] = Object.values(new WebSocketPair());
     if (!client || !server) throw new Error("no WebSocket pair");
@@ -193,6 +218,59 @@ export class Session extends DurableObject {
     const running = this.live !== null && this.core.call !== null;
     this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * An observed session's start: the app's offer in, the provider's answer
+   * out, once the call id is stored (4.3 step 4). The side channel is attached
+   * after the answer, and the first checkpoint goes at once, as for a relayed
+   * session. A refusal is an HTTP status with the start's code.
+   * @param {Request} request
+   * @param {string} ticketText
+   * @param {import("./ticket.js").Ticket} ticket
+   */
+  async observedStart(request, ticketText, ticket) {
+    const offer = await readOffer(request);
+    if (offer === null) return refusal(413, "offer_too_large");
+    /** @type {import("./start.js").Client} No socket to close: the app has its answer, or its refusal. */
+    const owner = { close: () => undefined };
+    /** @type {Awaited<ReturnType<SessionCore["start"]>>} */
+    let result;
+    try {
+      result = await this.core.start(ticketText, ticket, owner, offer);
+    } catch {
+      console.log(JSON.stringify({ level: "error", message: "relay_start_failed", session: ticket.sid }));
+      if (this.core.startedBy(owner)) this.ctx.waitUntil(this.core.end("error").catch(() => undefined));
+      return refusal(500, "internal_error");
+    }
+    if (!result.ok) {
+      // An end the start began finishes inside this request, after the answer.
+      if (this.core.ending !== null) this.ctx.waitUntil(this.core.ending.catch(() => undefined));
+      return refusal(START_STATUS[result.code] ?? 503, result.code);
+    }
+    // The first checkpoint after the first attach, so it books no time from before the side channel.
+    this.ctx.waitUntil(this.core.attachSide().then(() => this.core.checkpoint()).catch(() => undefined));
+    return new Response(result.answer, { status: 201, headers: { "content-type": "application/sdp", "cache-control": "no-store" } });
+  }
+
+  /**
+   * An observed call's side-channel frame: read for usage and answers, after
+   * nothing (there is no client to forward it to). Only the current side
+   * channel counts.
+   * @param {import("./start.js").ProviderCall} call
+   * @param {import("./adapters.js").Adapter} adapter
+   * @param {string | ArrayBuffer} data
+   */
+  sideFrame(call, adapter, data) {
+    if (this.core.call !== call) return;
+    const event = adapter.read(data);
+    if (event !== null) void this.core.recordUsage(event, adapter.shape).catch(() => undefined);
+    const turn = adapter.turn(data);
+    if (turn === "open") this.sideTurnOpen = true;
+    else if (turn === "done") {
+      this.sideTurnOpen = false;
+      this.core.turnDone();
+    }
   }
 
   /**
@@ -483,6 +561,45 @@ export class Session extends DurableObject {
   async alarm() {
     await this.core.alarm();
   }
+}
+
+/** The HTTP status an observed start's refusal gets, by its code; anything else is a 503. */
+const START_STATUS = /** @type {Record<string, number>} */ ({
+  ticket_refused: 401,
+  ticket_expired: 401,
+  session_active: 409,
+  start_in_flight: 409,
+  session_ended: 409,
+  provider_unavailable: 502,
+});
+
+/** The largest offer the relay reads: a real SDP offer is a few KB. */
+const MAX_OFFER_BYTES = 64 * 1024;
+
+/** The request's offer, as text, or null when it is larger than `MAX_OFFER_BYTES`. @param {Request} request */
+async function readOffer(request) {
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_OFFER_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /** Sends to a socket that may be closed already. @param {WebSocket} socket @param {string | ArrayBuffer} data */
