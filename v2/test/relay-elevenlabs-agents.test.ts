@@ -70,14 +70,15 @@ describe("an agent's client frames: only the first message's greeting may be ove
     expect(agentLock(new Uint8Array([1, 2]).buffer)).toEqual({ refused: "binary_not_supported" });
   });
 
-  it("names the call's user as the ticket's verified end user, whatever the client sent, and no one when the ticket has none (Sol, #275 round 2)", () => {
+  it("names the call's user as the ticket says, whatever the client sent, and no one when the ticket names none (Sol, #275 rounds 2 and 3)", () => {
+    const user = "app-1:0123456789abcdef0123456789abcdef";
     const first = JSON.stringify({ type: "conversation_initiation_client_data", user_id: "someone-else", dynamic_variables: { a: 1 } });
-    expect(JSON.parse(agentLock(first, { endUser: "user-11a" }) as string)).toEqual({ type: "conversation_initiation_client_data", dynamic_variables: { a: 1 }, user_id: "user-11a" });
-    expect(JSON.parse(agentLock(JSON.stringify({ type: "conversation_initiation_client_data" }), { endUser: "user-11a" }) as string)).toMatchObject({ user_id: "user-11a" });
-    expect(JSON.parse(agentLock(first, { endUser: null }) as string)).not.toHaveProperty("user_id");
+    expect(JSON.parse(agentLock(first, { userId: user }) as string)).toEqual({ type: "conversation_initiation_client_data", dynamic_variables: { a: 1 }, user_id: user });
+    expect(JSON.parse(agentLock(JSON.stringify({ type: "conversation_initiation_client_data" }), { userId: user }) as string)).toMatchObject({ user_id: user });
+    expect(JSON.parse(agentLock(first, { userId: null }) as string)).not.toHaveProperty("user_id");
     expect(JSON.parse(agentLock(first) as string)).not.toHaveProperty("user_id");
     // Never named in a later message either.
-    expect(agentLock(JSON.stringify({ type: "user_activity", user_id: "someone-else" }), { endUser: "user-11a" })).toEqual({ refused: "override_not_allowed" });
+    expect(agentLock(JSON.stringify({ type: "user_activity", user_id: "someone-else" }), { userId: user })).toEqual({ refused: "override_not_allowed" });
   });
 
   it("takes the first messages ElevenLabs' own SDKs send: their empty fields are removed, filled ones still refused (Sol, #275 round 2)", () => {
@@ -109,12 +110,12 @@ describe("an agent's client frames: only the first message's greeting may be ove
     (object as unknown as { core: unknown }).core = { idle: false, ending: null, call: {}, sessionId: "ses_1", log: () => undefined };
     (object as unknown as { endFor: unknown }).endFor = (_live: unknown, reason: string, code: number, closeReason: string) => ended.push([reason, code, closeReason]);
     const sent: unknown[] = [];
-    const live = { client: { send: () => undefined }, deadline: Infinity, call: { send: (data: unknown) => sent.push(data), meter: null }, adapter, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0, clientState: {}, endUser: "user-11a" };
+    const live = { client: { send: () => undefined }, deadline: Infinity, call: { send: (data: unknown) => sent.push(data), meter: null }, adapter, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0, clientState: {}, providerUser: "app-1:0123456789abcdef0123456789abcdef" };
     object.toProvider(live as never, JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { agent: { first_message: "Back." } }, user_id: "someone-else" }));
     object.toProvider(live as never, audio);
     expect(sent).toHaveLength(2);
-    // The session's own end user, from its ticket.
-    expect(JSON.parse(sent[0] as string).user_id).toBe("user-11a");
+    // The id the ticket carries, copied.
+    expect(JSON.parse(sent[0] as string).user_id).toBe("app-1:0123456789abcdef0123456789abcdef");
     object.toProvider(live as never, JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { conversation: { max_duration_seconds: 7200 } } }));
     expect(sent).toHaveLength(2);
     expect(ended).toEqual([["error", 1008, "override_not_allowed"]]);

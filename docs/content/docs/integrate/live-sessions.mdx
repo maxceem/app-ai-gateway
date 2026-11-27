@@ -270,8 +270,12 @@ through the relay.
   (`conversation_config_override.agent.first_message`), and may carry
   `dynamic_variables` and `source_info`. Any other field or override, such as
   the maximum duration, ends the call with `1008 override_not_allowed`. The
-  conversation's `user_id` is always the session's own end user: a `user_id` the
-  app sends is replaced.
+  conversation's `user_id` is set by the gateway, and a `user_id` the app sends
+  is replaced. It is sent only for an end user the gateway verified (App Attest,
+  or your sign-in provider's token), as `<app id>:<hash>`: the app's id, a `:`,
+  and the first 32 hex characters of the SHA-256 of the user's id. So the same
+  person in two apps that share an agent has two histories. With an app key and
+  the end user in a header, or with no end users, no `user_id` is sent.
   Answer ElevenLabs' `ping` with a `pong`, and send the heartbeat: the `ping`
   doesn't keep a session alive.
 - **A dropped link ends the call.** Coming back to the same call is not

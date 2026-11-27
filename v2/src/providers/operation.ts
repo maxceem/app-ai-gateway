@@ -556,6 +556,12 @@ export interface SessionSpec {
    */
   readonly estimate?: true;
   /**
+   * The provider takes the end user's id in the session (an ElevenLabs agent's `user_id`, which may load that
+   * user's memory of past conversations, 11a): the ticket carries it (`providerUserId`), scoped to the app,
+   * for an end user the gateway verified only (`providerUserId` in `../relay/start-session.ts`).
+   */
+  readonly sendsUser?: true;
+  /**
    * The provider takes the session's options in its address's query (Deepgram's audio format, ElevenLabs'
    * output format): the app's query goes on, without credential fields, and with the session's model. A
    * session without it refuses a query, as one always did (Sol, #273 round 1).

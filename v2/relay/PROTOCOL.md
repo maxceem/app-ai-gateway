@@ -173,9 +173,14 @@ agent is the session's model: it can't be changed once the call starts.
   `1008 override_not_allowed`, and so does one of these fields in a later
   message. Empty fields ElevenLabs' own SDKs send (`custom_llm_extra_body: {}`,
   and `tts: {}` or `conversation: {}` in the override) are removed first. The
-  relay sets the first message's `user_id` to the session's end user, the one
-  the gateway verified, whatever the client sent, or removes it when the session
-  has none: ElevenLabs may load that user's memory of past conversations. A binary client
+  first message's `user_id` is always the one the session's ticket carries,
+  whatever the client sent: ElevenLabs may load that user's memory of past
+  conversations. The gateway gives one only for an end user it verified (an
+  App Attest install, or an issuer's token at the exchange), as
+  `<app id>:<the first 32 hex characters of the SHA-256 of the user id>`, so two
+  apps never share a person's history. For an app key sent with every request,
+  whose end user is a header the caller sets, and for an app with no end users,
+  there is none, and `user_id` is removed. A binary client
   frame ends it with `1008 binary_not_supported`, and text that isn't a JSON
   object with `1008 invalid_frame`: ElevenLabs' messages are JSON text. The
   client's other messages are sent written again as they were read; an audio

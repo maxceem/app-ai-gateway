@@ -114,6 +114,8 @@ export interface TicketRequest {
   readonly priceKeys?: Readonly<Record<string, string>>;
   /** A listed WebSocket path's rate a minute, in nano-dollars, as the session started (10b): its slices are priced at it. */
   readonly perMinuteNano?: number;
+  /** The end user's id as the provider gets it, app-scoped, for a verified end user only (`SessionSpec.sendsUser`). */
+  readonly providerUserId?: string;
 }
 
 export interface IssuedTicket {
@@ -183,6 +185,7 @@ export async function issueTicket(
     ...(request.backend === undefined ? {} : { backend: [...request.backend] }),
     ...(request.priceKeys === undefined ? {} : { priceKeys: { ...request.priceKeys } }),
     ...(request.perMinuteNano === undefined ? {} : { perMinuteNano: request.perMinuteNano }),
+    ...(request.providerUserId === undefined ? {} : { providerUserId: request.providerUserId }),
     seal: {
       ...(copies.providerKey === undefined
         ? {}

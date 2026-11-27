@@ -112,7 +112,7 @@ export default {
  *   turnOpen: boolean,
  *   turns: number,
  *   clientState: Record<string, unknown>,
- *   endUser: string | null,
+ *   providerUser: string | null,
  * }} Live
  * The session in this instance. Client frames wait in `queue` while the
  * session starts, then go to the provider in order. `client` is null while our
@@ -120,7 +120,8 @@ export default {
  * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`);
  * `turns` counts the answers opened, so a late "done" for an earlier one never closes a newer one.
  * `clientState`: what the adapter remembers from the client's frames (ElevenLabs' dictionaries).
- * `endUser`: the end user the ticket was issued for, whom the gateway verified (an ElevenLabs agent's `user_id`).
+ * `providerUser`: the end user's id as the provider gets it, from the ticket (an ElevenLabs agent's `user_id`):
+ * the gateway decided it, and the relay only copies it.
  */
 
 /**
@@ -407,7 +408,7 @@ export class Session extends DurableObject {
       turnOpen: false,
       turns: 0,
       clientState: {},
-      endUser: ticket.endUser,
+      providerUser: ticket.providerUserId ?? null,
     };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     this.listen(live, client, owner);
@@ -601,7 +602,7 @@ export class Session extends DurableObject {
     // The adapter's own lock (ElevenLabs': a client's credentials out, a binary frame dropped; an agent's
     // overrides refused), then the model lock, for a provider whose client may name another model
     // mid-session (OpenAI's `session.update`).
-    let locked = live.adapter.lock === undefined ? data : live.adapter.lock(data, { endUser: live.endUser });
+    let locked = live.adapter.lock === undefined ? data : live.adapter.lock(data, { userId: live.providerUser });
     if (locked === null) return;
     if (typeof locked !== "object" || locked instanceof ArrayBuffer) locked = live.call?.meter?.lock(locked) ?? locked;
     // A frame a lock refuses (GPT-Live's backend rules, an agent's overrides): the session ends, and the client is told why.

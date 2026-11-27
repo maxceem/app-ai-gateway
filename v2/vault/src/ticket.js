@@ -46,12 +46,16 @@ export const TICKET_VERSION = 1;
  *   backend?: string[],
  *   priceKeys?: Record<string, string>,
  *   perMinuteNano?: number,
+ *   providerUserId?: string,
  * }} Ticket
  * `backend`: the models the session's backend may call (GPT-Live's, 9g), when its operation has one.
  * `priceKeys`: the session's price key values, read from its request when it is asked for (Deepgram's
  * stream, 10a): its slices are priced with them. Signed, so the app can't change them after.
  * `perMinuteNano`: a listed WebSocket path's rate as the session started (10b), for the gateway to price
  * its slices at. The relay never reads it.
+ * `providerUserId`: the end user's id as the provider gets it (an ElevenLabs agent's `user_id`, 11a), for a
+ * session whose provider takes one: scoped to the app, and only for an end user the gateway verified. The
+ * relay copies it into the session and decides nothing about it.
  */
 
 /** @param {Uint8Array} bytes */

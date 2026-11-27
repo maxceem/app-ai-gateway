@@ -29,7 +29,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  *   callIdHeader?: string,
- *   lock?(data: string | ArrayBuffer, session?: { endUser: string | null }): string | ArrayBuffer | null | { refused: string },
+ *   lock?(data: string | ArrayBuffer, session?: { userId: string | null }): string | ArrayBuffer | null | { refused: string },
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -80,8 +80,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   `dg-request-id`), stored as the session's provider call id, for a lookup after it ends.
  * - `lock`: a client frame as it goes to the provider, for a provider that needs nothing about the call
  *   remembered (ElevenLabs): the frame, changed or not, null to drop it, or `{ refused: code }` to end the
- *   session, as a call's meter may (ElevenLabs agents' overrides, 11a). `session` names the end user the
- *   ticket was issued for, the one the gateway verified.
+ *   session, as a call's meter may (ElevenLabs agents' overrides, 11a). `session.userId` is the end user's id
+ *   as the provider gets it, from the ticket (`providerUserId`), or null: the gateway decided it.
  */
 
 /**
@@ -1027,14 +1027,14 @@ function onlyFirstMessage(override) {
  *   go unread. The rest go written again as they were read, so a repeated key can't be read another way by
  *   ElevenLabs.
  * - Fields ElevenLabs' own SDKs send empty are removed first (`AGENT_EMPTY_TOP`, `AGENT_EMPTY_OVERRIDE`).
- * - The first message's `user_id` is the session's end user, the one the gateway verified for its ticket,
- *   whatever the client sent: ElevenLabs may load that user's memory of past conversations, so a client can
- *   never name another user (Sol, #275 round 2). With no end user, it is removed.
+ * - The first message's `user_id` is the one the ticket carries, whatever the client sent: ElevenLabs may load
+ *   that user's memory of past conversations, so a client can never name another user (Sol, #275 rounds 2
+ *   and 3). The gateway gives one only for a verified end user, scoped to the app; with none, it is removed.
  * @param {string | ArrayBuffer} data
- * @param {{ endUser: string | null }} [session]
+ * @param {{ userId: string | null }} [session]
  * @returns {string | { refused: string }}
  */
-export function agentLock(data, session = { endUser: null }) {
+export function agentLock(data, session = { userId: null }) {
   if (typeof data !== "string") return { refused: "binary_not_supported" };
   if (data.startsWith(AGENT_AUDIO) && data.endsWith('"}') && data.indexOf('"', AGENT_AUDIO.length) === data.length - 2) return data;
   const frame = parsed(data);
@@ -1048,7 +1048,7 @@ export function agentLock(data, session = { endUser: null }) {
   if (!allowed || !onlyFirstMessage(frame.conversation_config_override)) return { refused: "override_not_allowed" };
   if (start) {
     delete frame.user_id;
-    if (session.endUser !== null) frame.user_id = session.endUser;
+    if (session.userId !== null) frame.user_id = session.userId;
   }
   return JSON.stringify(frame);
 }

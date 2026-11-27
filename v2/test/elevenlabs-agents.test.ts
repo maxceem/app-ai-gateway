@@ -28,7 +28,23 @@ import { elevenlabs } from "../src/providers/elevenlabs.ts";
 import { lookupWorkId, PROVIDER_LOOKUP_WINDOW_MS } from "../src/ledger/sessions.ts";
 import { runSweep } from "../src/ledger/sweep.ts";
 import { sealForTest, splitKeysOn } from "./split-keys.ts";
-import { ACCOUNT_ID, clearCaches, ledger, LOAD_MANAGEMENT_TIMEOUT_MS, loadManagement, seedAccount, seedAppKey, seedManagementKey, seedRoutedApp } from "./helpers.ts";
+import { providerUserId } from "../src/relay/start-session.ts";
+import {
+  ACCOUNT_ID,
+  attestAuthentication,
+  clearCaches,
+  ledger,
+  LOAD_MANAGEMENT_TIMEOUT_MS,
+  loadManagement,
+  registerTestInstall,
+  seedAccount,
+  seedAppKey,
+  seedManagementKey,
+  seedRoutedApp,
+  signedProof,
+  tokenForAppKey,
+  tokenForInstall,
+} from "./helpers.ts";
 
 const ORIGIN = "https://gateway.test";
 const RELAY_ENV = { ...env, RELAY_URL: "https://relay.test" } as unknown as Env;
@@ -343,6 +359,72 @@ describe(`starting an agent call and its signed URL (step 11a, split keys ${spli
     const own = priceSources({ type: "elevenlabs", rates: { J3Pbu5gP6NNKBscdCdwB: { per_minute: 80_000_000 } } });
     expect(resolveCall({ models: ["J3Pbu5gP6NNKBscdCdwB"] }, undefined, own, agentOperation, "J3Pbu5gP6NNKBscdCdwB", undefined, { asIfServed: true })).toMatchObject({ kind: "refused", reason: "wrong_unit" });
     expect(resolveCall({ models: [AGENT] }, undefined, own, agentOperation, AGENT, undefined, { asIfServed: true })).toMatchObject({ kind: "admitted" });
+  });
+
+  it("gives ElevenLabs a user id only for an end user the gateway verified, scoped to the app (Sol, #275 round 3)", async () => {
+    const hashed = async (userId: string) => {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(userId)));
+      return Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const routing = (slug: string) => ({ providers: { [slug]: { operations: ["elevenlabs.agent"], models: [AGENT] } } });
+    const body = JSON.stringify({ path: `v1/convai/conversation?agent_id=${AGENT}` });
+    const urlOf = (appId: string, slug: string) => `${ORIGIN}/v2/apps/${appId}/sessions/${slug}`;
+    const ticketOf = async (appId: string, slug: string, authorization: string, headers: Record<string, string> = {}) => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(urlOf(appId, slug), { method: "POST", headers: { authorization, "content-type": "application/json", ...headers }, body }),
+        RELAY_ENV,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      const text = await response.text();
+      expect(response.status, text).toBe(201);
+      return parseTicket((JSON.parse(text) as { ticket: string }).ticket)!.payload;
+    };
+
+    // An app key with the end user in a header the caller sets: no user id goes to ElevenLabs. The gateway keeps its own.
+    const header = await setup();
+    const unverified = await ticketOf(header.appId, header.slug, `Bearer ${header.key}`, { "x-end-user-id": "user-11a" });
+    expect(unverified.endUser).toBe("user-11a");
+    expect(unverified.providerUserId).toBeUndefined();
+
+    // An app with no end users: none either.
+    const nobody = await seedConnection();
+    const nobodyApp = await seedRoutedApp({ type: "api_key", end_user: { source: "none" } }, routing(nobody.slug));
+    const nobodyKey = await seedAppKey(nobodyApp);
+    expect((await ticketOf(nobodyApp, nobody.slug, `Bearer ${nobodyKey.key}`)).providerUserId).toBeUndefined();
+
+    // App Attest: the attested install's user, scoped to the app.
+    const attest = await seedConnection();
+    const attestApp = await seedRoutedApp(attestAuthentication(), routing(attest.slug));
+    const install = await registerTestInstall(attestApp);
+    const token = await tokenForInstall(install);
+    const proof = await signedProof({ install, token, method: "POST", url: urlOf(attestApp, attest.slug), body: new TextEncoder().encode(body), counter: 1 });
+    const attested = await ticketOf(attestApp, attest.slug, `Bearer ${token}`, { "x-app-version": "1.0", "x-appattest-proof": proof });
+    expect(attested.providerUserId).toBe(`${attestApp}:${await hashed(install.userId)}`);
+
+    // An issuer's token, exchanged with an app key: its verified user, scoped to the app.
+    const issuer = await seedConnection();
+    const issuerAuth = {
+      type: "api_key",
+      end_user: { source: "issuer", issuer: { jwks_url: "https://issuer.test/jwks.json", issuer: "https://issuer.test/", audience: "aud", user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 3600 } },
+    };
+    const issuerApps = [await seedRoutedApp(issuerAuth, routing(issuer.slug)), await seedRoutedApp(issuerAuth, routing(issuer.slug))];
+    const ids: string[] = [];
+    for (const appId of issuerApps) {
+      const appKey = await seedAppKey(appId);
+      const ticket = await ticketOf(appId, issuer.slug, `Bearer ${await tokenForAppKey(appId, "person-1", appKey)}`, { "x-app-version": "1.0" });
+      expect(ticket.endUser).toBe("person-1");
+      ids.push(ticket.providerUserId!);
+    }
+    // The same person in two apps that share an agent: two ids, so their histories never merge.
+    expect(ids).toEqual([`${issuerApps[0]}:${await hashed("person-1")}`, `${issuerApps[1]}:${await hashed("person-1")}`]);
+    expect(ids[0]).not.toBe(ids[1]);
+    // One form, whatever the id's length, and never the id itself.
+    const long = await providerUserId("app-1", { credentialType: "gateway_token", userId: `${"x".repeat(500)}@example.test` });
+    expect(long).toMatch(/^app-1:[0-9a-f]{32}$/u);
+    expect(await providerUserId("app-1", { credentialType: "api_key", userId: "user-11a" })).toBeUndefined();
+    expect(await providerUserId("app-1", { credentialType: "gateway_token", userId: null })).toBeUndefined();
   });
 
   it("refuses an agent the app doesn't list, a voice model named as one, and a call naming none", async () => {

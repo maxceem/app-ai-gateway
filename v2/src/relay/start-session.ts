@@ -72,6 +72,27 @@ export function credentialField(name: string): boolean {
   return CREDENTIAL_NAME.test(words);
 }
 
+/**
+ * The end user's id as a provider gets it, for a session whose provider takes one (`SessionSpec.sendsUser`,
+ * an ElevenLabs agent's `user_id`, which may load that user's memory of past conversations; Sol, #275 round 3):
+ *
+ * - only for an end user the gateway verified, through a gateway token (App Attest, or an issuer's token at
+ *   the exchange). An app key sent with every request names its end user in a header the caller sets, which
+ *   proves nothing: then, and with no end user, there is none, and the provider remembers no one;
+ * - scoped to the app, so two apps that share an agent never share a person's history: `<app id>:<hash>`.
+ *   An app id never holds `:`. The hash is the first 32 hex characters of the SHA-256 of the gateway's own
+ *   user id: short and of one length whatever the id (an issuer's may be long, or an email), and it shows the
+ *   provider nothing more than "the same user again". The app can work it out to match its own users.
+ *
+ * The gateway's own usage and limits keep the user id as it is.
+ */
+export async function providerUserId(appId: string, identity: { readonly credentialType: string; readonly userId: string | null }): Promise<string | undefined> {
+  if (identity.credentialType !== "gateway_token" || identity.userId === null) return undefined;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity.userId)));
+  const hex = Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${appId}:${hex}`;
+}
+
 /** A live-session path and its query, apart: the query, if any, without its `?`. */
 function splitQuery(path: string): [string, string | undefined] {
   const at = path.indexOf("?");
@@ -187,6 +208,8 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // A provider whose own dollar figure settles the session after it ends (Deepgram's request record).
       const lookup = operation.session.lookup;
 
+      // The end user's id for a provider that takes one (an ElevenLabs agent's `user_id`), worked out before any slot is taken.
+      const providerUser = operation.session.sendsUser === true ? await providerUserId(app.id, identity) : undefined;
       const now = Date.now();
       const sessionId = newSessionId();
       const claim = {
@@ -225,6 +248,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             ...(priceKeys === undefined ? {} : { priceKeys }),
             // A listed WebSocket path's rate, as it is now: a later edit or removal never reprices the session.
             ...(match.kind === "passthrough" ? { perMinuteNano: match.listed.perMinuteNano } : {}),
+            ...(providerUser === undefined ? {} : { providerUserId: providerUser }),
           },
           now,
           sessionId,
