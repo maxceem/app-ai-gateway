@@ -104,7 +104,12 @@ public actor LiveSession {
     /// are never closed from this side while the session runs: if the relay
     /// took one over after all, a close would end the session. The newer try
     /// takes the session from it, and the relay closes it.
-    private var letGo: [any LiveSessionLink] = []
+    /// Keyed by the id each had: a let-go link leaves when its reader ends.
+    private var letGo: [Int: any LiveSessionLink] = [:]
+    /// A try was let go since the last `resumed`, or one is still open: a
+    /// `1000 reconnected` on the current link then means that try took the
+    /// session over, even if its own link has closed since.
+    private var letGoSinceResumed = false
     /// Set by `close()` during a handoff, until the new link has ended the
     /// session: the app has its `.ended`, and the session holds itself so an
     /// app that lets it go at `.ended` doesn't cut the hang-up short. The old
@@ -158,7 +163,7 @@ public actor LiveSession {
         if !finished {
             link?.close()
             retiring?.close()
-            for link in letGo { link.close() }
+            for link in letGo.values { link.close() }
         }
         continuation.finish()
     }
@@ -204,7 +209,8 @@ public actor LiveSession {
         // Let go without a close: if the relay took it over after all, the new
         // try takes the session from it, and the relay closes it with
         // `1000 reconnected`. A close from here could end the session instead.
-        letGo.append(link)
+        letGo[generation] = link
+        letGoSinceResumed = true
         outbox?.finish()
         writer?.cancel()
         self.link = nil
@@ -226,8 +232,12 @@ public actor LiveSession {
         }
         keepAlive = self
         pending.removeAll()
+        // Any of these may own the session at the relay; the current try stays
+        // open so it can still end the session if it is the one handed over.
         retiring?.close()
         retiring = nil
+        for link in letGo.values { link.close() }
+        letGo.removeAll()
         continuation.yield(.ended(code: 1000, reason: "client_closed"))
         continuation.finish()
     }
@@ -329,6 +339,8 @@ public actor LiveSession {
         case "agw.session.resumed":
             // The app hung up during the handoff: this link now owns the session, so it ends it.
             if keepAlive != nil { return finish(code: 1000, reason: "client_closed") }
+            // A let-go try still open may yet take the session over.
+            letGoSinceResumed = !letGo.isEmpty
             // Reports count only what came on this link, held frames included.
             received = 0
             reported = 0
@@ -354,6 +366,7 @@ public actor LiveSession {
     /// the relay chose ends the session, except a refused secret on a session
     /// that still runs, which is tried again.
     private func lost(_ current: Int) {
+        if letGo.removeValue(forKey: current) != nil { return }
         guard current == generation, !finished, let link else { return }
         let code = link.closeCode
         let reason = link.closeReason
@@ -366,7 +379,7 @@ public actor LiveSession {
         // A try `reconnect()` let go of took the session over after all: come
         // back again, and the newer try takes the session from it. Let-go tries
         // never come back on their own, so this can't loop.
-        let takenByLetGo = code == 1000 && reason == "reconnected" && !letGo.isEmpty
+        let takenByLetGo = code == 1000 && reason == "reconnected" && letGoSinceResumed
         if code == 0 || takenByLetGo {
             guard secret != nil else { return finish(code: 0, reason: "link_lost") }
             return dropped()
@@ -475,7 +488,7 @@ public actor LiveSession {
         link?.close()
         retiring?.close()
         retiring = nil
-        for link in letGo { link.close() }
+        for link in letGo.values { link.close() }
         letGo.removeAll()
         continuation.yield(.ended(code: code, reason: reason))
         continuation.finish()

@@ -584,6 +584,63 @@ struct LiveSessionTests {
         #expect(links[1].closed)
     }
 
+    /// A session whose first try to come back hung for a while, and was let go for a second one.
+    private func letGoAfterAWhile() async -> (LiveSession, Links, AsyncStream<LiveSession.Event>.Iterator) {
+        let links = Links()
+        let clock = Clock()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { clock.now }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].end(code: 0)
+        _ = await events.next()
+        _ = await eventually { links.count == 2 }
+        clock.advance(2)
+        await session.reconnect()
+        _ = await eventually { links.count == 3 }
+        return (session, links, events)
+    }
+
+    @Test
+    func aHangUpAlsoClosesTriesThatWereLetGo() async {
+        var (session, links, events) = await letGoAfterAWhile()
+        await session.close()
+        #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
+        // A let-go try may own the session at the relay: it is closed with 1000 too.
+        #expect(links[1].closed)
+        // The current try stays, so it can still end the session if it is handed over.
+        #expect(!links[2].closed)
+        links[2].deliver(Self.resumed)
+        #expect(await eventually { links[2].closed })
+    }
+
+    @Test
+    func aLetGoTryWhoseLinkEndedNoLongerCountsOnceTheSessionResumed() async {
+        var (session, links, events) = await letGoAfterAWhile()
+        links[1].end(code: 0)
+        // Its reader has ended before the new link resumes.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        links[2].deliver(Self.resumed)
+        #expect(await events.next() == .resumed)
+        // No let-go try is left to have taken over: this is someone else's takeover, and the session ends.
+        links[2].end(code: 1000, reason: "reconnected")
+        #expect(await events.next() == .ended(code: 1000, reason: "reconnected"))
+        _ = session
+    }
+
+    @Test
+    func aLetGoTryThatTookOverAndClosedBeforeTheResumedStillMakesTheClientComeBack() async {
+        var (session, links, events) = await letGoAfterAWhile()
+        // The let-go try took the session over, then its own link closed.
+        links[1].end(code: 0)
+        links[2].end(code: 1000, reason: "reconnected")
+        #expect(await eventually { links.count == 4 && links[3].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        links[3].deliver(Self.resumed)
+        #expect(await next(&events) { $0 == .resumed } == .resumed)
+        await session.close()
+    }
+
     @Test
     func aLetGoTryThatTookTheSessionOverMakesTheClientComeBackAgain() async {
         let links = Links()
