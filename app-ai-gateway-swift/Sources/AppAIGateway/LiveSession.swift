@@ -82,7 +82,14 @@ public actor LiveSession {
     private let now: @Sendable () -> Date
     private var link: (any LiveSessionLink)?
     /// The link's send queue: one task sends its frames, in order.
-    private var outbox: AsyncStream<URLSessionWebSocketTask.Message>.Continuation?
+    /// What the link's writer sends: one frame, or the frames the app sent while
+    /// no link was ready, which go out first and count as one entry.
+    enum Outgoing: Sendable {
+        case one(URLSessionWebSocketTask.Message)
+        case backlog([URLSessionWebSocketTask.Message])
+    }
+
+    private var outbox: AsyncStream<Outgoing>.Continuation?
     /// The task that sends the link's queue, and the one of the link
     /// `reconnect()` moved away from, until the new link takes over.
     private var writer: Task<Void, Never>?
@@ -106,6 +113,8 @@ public actor LiveSession {
     private var droppedAt: Date?
     private var attempts = 0
     private var finished = false
+    /// Set by `close()`: its links got a normal close, and are not let go again.
+    private var closed = false
     private var timer: Task<Void, Never>?
 
     public init(ticket: LiveSessionTicket, session: URLSession = .shared) {
@@ -181,7 +190,12 @@ public actor LiveSession {
     /// Ends the session. The relay counts the session's time until now.
     public func close() {
         guard !finished else { return }
+        // During a handoff the old link still owns the session: it gets the
+        // close too, or the relay keeps the provider's side until the heartbeat ends it.
+        retiring?.close(code: 1000)
+        retiring = nil
         link?.close(code: 1000)
+        closed = true
         finish(code: 1000, reason: "client_closed")
     }
 
@@ -200,20 +214,24 @@ public actor LiveSession {
         writer?.cancel()
         // Bounded like the frames held while away: a link that stopped taking
         // frames ends the session, never memory that grows without end.
-        let (queue, outbox) = AsyncStream.makeStream(
-            of: URLSessionWebSocketTask.Message.self,
-            bufferingPolicy: .bufferingOldest(Self.pendingLimit)
-        )
+        let (queue, outbox) = AsyncStream.makeStream(of: Outgoing.self, bufferingPolicy: .bufferingOldest(Self.pendingLimit))
         self.outbox = outbox
         writer = Task {
-            for await message in queue {
-                if Task.isCancelled { return }
-                try? await link.send(message)
+            for await item in queue {
+                let messages: [URLSessionWebSocketTask.Message]
+                switch item {
+                case .one(let message): messages = [message]
+                case .backlog(let backlog): messages = backlog
+                }
+                for message in messages {
+                    if Task.isCancelled { return }
+                    try? await link.send(message)
+                }
             }
         }
         if comingBack, let secret {
             // The first message, and only here: never in a URL or a header.
-            outbox.yield(.string(#"{"type":"agw.reconnect","secret":""# + secret + #""}"#))
+            outbox.yield(.one(.string(#"{"type":"agw.reconnect","secret":""# + secret + #""}"#)))
         }
         Task { [weak self] in
             while true {
@@ -282,7 +300,11 @@ public actor LiveSession {
         ready = true
         let queued = pending
         pending.removeAll()
-        for message in queued { forward(message) }
+        // One entry: the backlog never counts against the live queue's limit.
+        if !queued.isEmpty, let outbox {
+            lastSentAt = now()
+            outbox.yield(.backlog(queued))
+        }
     }
 
     /// The link closed or failed. Only a lost link is taken back: any close
@@ -345,7 +367,7 @@ public actor LiveSession {
     private func forward(_ message: URLSessionWebSocketTask.Message) {
         guard let outbox else { return }
         lastSentAt = now()
-        if case .dropped = outbox.yield(message) {
+        if case .dropped = outbox.yield(.one(message)) {
             // The link stopped taking frames: what the app sends can't go out.
             link?.abandon()
             finish(code: 0, reason: "send_queue_full")
@@ -380,7 +402,7 @@ public actor LiveSession {
         outbox?.finish()
         writer?.cancel()
         retiringWriter?.cancel()
-        if droppedAt != nil { link?.abandon() }
+        if droppedAt != nil, !closed { link?.abandon() }
         retiring?.abandon()
         retiring = nil
         continuation.yield(.ended(code: code, reason: reason))

@@ -14,8 +14,12 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     private(set) var request: URLRequest
     private(set) var abandoned = false
     private(set) var closedWith: Int?
-    /// A link that stopped taking frames: each send waits until it is cancelled.
-    var stallSends = false
+    /// A link that stopped taking frames: each send waits until this is cleared, or it is cancelled.
+    var stallSends: Bool {
+        get { lock.withLock { _stallSends } }
+        set { lock.withLock { _stallSends = newValue } }
+    }
+    private var _stallSends = false
 
     init(request: URLRequest) { self.request = request }
 
@@ -24,7 +28,7 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     var closeReason: String { lock.withLock { _closeReason } }
 
     func send(_ message: URLSessionWebSocketTask.Message) async throws {
-        if lock.withLock({ stallSends }) { try await Task.sleep(nanoseconds: 3_600_000_000_000) }
+        while stallSends { try await Task.sleep(nanoseconds: 1_000_000) }
         lock.withLock {
             if case .string(let text) = message { _sent.append(text) } else { _sent.append("<binary>") }
         }
@@ -375,6 +379,55 @@ struct LiveSessionTests {
         }
         #expect(await eventually { released == nil })
         #expect(links[0].abandoned)
+    }
+
+    @Test
+    func aFullBacklogAfterAGapNeverCountsAgainstTheLiveQueue() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(report: 0.01), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].end(code: 0)
+        _ = await events.next()
+        // About ten seconds of 20 ms audio, sent while away.
+        for index in 0..<LiveSession.pendingLimit { await session.send(text: "away-\(index)") }
+        #expect(await eventually { links.count == 2 })
+        // The new link takes its first frames a moment late, as a real one may.
+        links[1].stallSends = true
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        // Fresh frames and a report right after: the link is healthy, so the session goes on.
+        links[1].deliver("provider")
+        for index in 0..<20 { await session.send(text: "fresh-\(index)") }
+        links[1].stallSends = false
+        let expected = 1 + LiveSession.pendingLimit + 20
+        #expect(await eventually { links[1].sent.filter { !$0.hasPrefix(#"{"type":"agw.received""#) }.count == expected })
+        let sent = links[1].sent.filter { !$0.hasPrefix(#"{"type":"agw.received""#) }
+        #expect(Array(sent.dropFirst()) == (0..<LiveSession.pendingLimit).map { "away-\($0)" } + (0..<20).map { "fresh-\($0)" })
+        #expect(!links[1].abandoned)
+        #expect(await events.next() == .text("provider"))
+    }
+
+    @Test
+    func closeDuringAHandoffClosesBothLinksNormally() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        await session.reconnect()
+        _ = await events.next()
+        #expect(await eventually { links.count == 2 })
+        await session.close()
+        // The old link still owns the session at the relay: it is the one that must end it.
+        #expect(links[0].closedWith == 1000)
+        #expect(links[1].closedWith == 1000)
+        #expect(!links[0].abandoned)
+        #expect(!links[1].abandoned)
+        #expect(await events.next() == .ended(code: 1000, reason: "client_closed"))
     }
 
     @Test
