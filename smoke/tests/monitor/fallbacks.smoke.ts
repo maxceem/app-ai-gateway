@@ -17,6 +17,10 @@ import { env } from "../support.ts";
 //
 // It reads the deployment's Worker logs, so it needs a read-only Cloudflare
 // token (SMOKE_CF_API_TOKEN, SMOKE_CF_ACCOUNT_ID) and is skipped without one.
+// Its failure says which happened: "the gateway fell back" names the log lines
+// found, while a `LogsUnreadable` error means Cloudflare's API could not answer
+// and nothing is known about the gateway. It still fails then, so a monitor
+// never takes logs it could not read for a gateway that did not fall back.
 
 const WINDOW_MS = 4.5 * 60_000;
 
@@ -48,6 +52,6 @@ test.skipIf(env.cloudflare === undefined)(
   async () => {
     const counts = await countLogMessages(env.cloudflare!, FALLBACKS, WINDOW_MS);
     const used = Object.entries(counts).map(([message, count]) => `${message} ×${count}`);
-    expect(used, `fallbacks in the last ${WINDOW_MS / 60_000} minutes: ${used.join(", ")}`).toEqual([]);
+    expect(used, `the gateway fell back in the last ${WINDOW_MS / 60_000} minutes: ${used.join(", ")}`).toEqual([]);
   },
 );
