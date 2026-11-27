@@ -26,6 +26,7 @@ import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
 import { callRefusal, matcherFor, refusal, serveCaller, type ProxyContext } from "../proxy/serve.ts";
 import { UNRECOGNIZED } from "../diagnostics/rejection-events.ts";
+import { hasRelayAdapter } from "./contract.ts";
 import { issueTicket, newSessionId, TICKET_TTL_MS } from "./tickets.ts";
 
 /** How long a live session lasts at most, and by default (plan section 6, owner 2026-11-17). */
@@ -112,14 +113,15 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // The app's model list judges the model, as for a call; a rewrite is
       // never applied to a session (plan D13).
       const listed = listOf(routing);
-      if (operation.meter.kind === "wall_clock") {
-        // A session billed by its clock (xAI, 9b) is judged as a call is: a model the app does not
-        // list by name is served only with a price, and one priced in a unit the session cannot
-        // bill never is. Saving already refused a listed model with no price.
+      if (operation.meter.kind === "wall_clock" || hasRelayAdapter(operation.name)) {
+        // A session whose usage the relay reads (xAI by its clock, 9b; Gemini Live by its tokens,
+        // 9d) is judged as a call is: a model the app does not list by name is served only with a
+        // price, and one priced in a unit the session cannot bill never is. Saving already refused
+        // a listed model with no price.
         const call = resolveCall(routing, undefined, priceSources(connection), operation, requested, listed, { asIfServed: true });
         if (call.kind === "refused") throw callRefusal(call, operation);
       } else if (listed !== null && !listed.has(requested)) {
-        // The other sessions' prices come with their adapters (9e): until then, the model list only.
+        // OpenAI's session prices come with its adapter (9e): until then, the model list only.
         throw callRefusal({ kind: "refused", reason: "model_not_allowed", model: requested }, operation);
       }
       const call = { model: requested };

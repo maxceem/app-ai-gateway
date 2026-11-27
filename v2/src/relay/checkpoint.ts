@@ -48,6 +48,7 @@ import {
   type StopReason,
 } from "../ledger/sessions.ts";
 import { utcDay, type ChargeRow } from "../ledger/write.ts";
+import type { ModalityCounts, UsageObservation } from "../usage/observation.ts";
 import { replacementAtCheckpoint } from "../limits/session-admission.ts";
 import { nano, type NanoDollars } from "../money.ts";
 import type { ResolvedPrice } from "../pricing/billability.ts";
@@ -61,6 +62,24 @@ import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-pri
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
 /** The other counts a slice may carry, each a unit of its own: xAI's text messages, which the relay counts itself (9b). */
 export const SLICE_UNITS = ["text_messages"] as const;
+/**
+ * A slice's tokens by modality, in the names a charge keeps them under (`../usage/measures.ts`), and the
+ * tokens it estimated: Gemini Live (9d). `<side>_split` counts the turns that broke a side down; the
+ * modality counts are shares of `input_tokens` and `output_tokens`, never more tokens; `estimated_tokens`
+ * are the share worked out from an answer cut before its usage came.
+ */
+export const SLICE_BREAKDOWN = [
+  "input_split",
+  "output_split",
+  "input_audio_tokens",
+  "input_image_tokens",
+  "input_video_tokens",
+  "input_unknown_tokens",
+  "output_audio_tokens",
+  "output_unknown_tokens",
+  "estimated_tokens",
+] as const;
+const MODALITY_KINDS = ["audio", "image", "video", "unknown"] as const;
 /** The most billed time one slice may carry: a day, far above any real session's audio. */
 const BILLED_MS_MAX = 24 * 60 * 60_000;
 /** The largest count one measure of one slice may hold: far above any real minute of a session. */
@@ -134,7 +153,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
     if (typeof raw.measures !== "object" || raw.measures === null || Array.isArray(raw.measures)) throw bad();
     const measures: Record<string, number> = {};
     for (const [name, value] of Object.entries(raw.measures)) {
-      if (!([...SLICE_MEASURES, ...SLICE_UNITS] as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
+      if (!([...SLICE_MEASURES, ...SLICE_UNITS, ...SLICE_BREAKDOWN] as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
       measures[name] = value;
     }
     slice = { seq: raw.seq, measures, sessionMs: raw.sessionMs, gapMs: raw.gapMs, gaps: raw.gaps, from: raw.from, to: raw.to, ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }) };
@@ -183,6 +202,7 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
       cachedInputTokens: measures.cached_input_tokens ?? 0,
       cacheWriteTokens: measures.cache_write_tokens ?? 0,
       outputTokens: measures.output_tokens ?? 0,
+      ...breakdownOf(measures),
       // Session seconds are stored at the milli scale: a millisecond count is the unit count.
       ...(Object.keys(units).length > 0 ? { units } : {}),
     },
@@ -200,6 +220,37 @@ export function priceSlice(measures: Readonly<Record<string, number>>, resolved:
     unit: priced.unit,
     units: priced.units,
   };
+}
+
+/**
+ * A slice's modalities and estimate as a usage's: each side a turn broke down is split, so its text bills
+ * at the side's rate and anything no breakdown covered at the model's highest; tokens worked out from a
+ * cut answer make the price an estimate, never below the model's own (`priceInServedMode`).
+ */
+function breakdownOf(measures: Readonly<Record<string, number>>): Pick<UsageObservation, "modalityTokens" | "reportMissing"> {
+  const modalityTokens: { input?: ModalityCounts; output?: ModalityCounts } = {};
+  for (const side of ["input", "output"] as const) {
+    if ((measures[`${side}_split`] ?? 0) === 0) continue;
+    const counts: Partial<Record<(typeof MODALITY_KINDS)[number], number>> = {};
+    for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) counts[kind] = measures[`${side}_${kind}_tokens`] as number;
+    modalityTokens[side] = counts;
+  }
+  return {
+    ...(modalityTokens.input !== undefined || modalityTokens.output !== undefined ? { modalityTokens } : {}),
+    ...((measures.estimated_tokens ?? 0) > 0 ? { reportMissing: true as const } : {}),
+  };
+}
+
+/** A slice's breakdown as a charge's measures, so the sweep prices it the same way (`usageFromMeasures`). */
+function breakdownMeasures(measures: Readonly<Record<string, number>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const side of ["input", "output"] as const) {
+    if ((measures[`${side}_split`] ?? 0) === 0) continue;
+    out[`${side}_split`] = 1;
+    for (const kind of MODALITY_KINDS) if ((measures[`${side}_${kind}_tokens`] ?? 0) > 0) out[`${side}_${kind}_tokens`] = measures[`${side}_${kind}_tokens`] as number;
+  }
+  if ((measures.estimated_tokens ?? 0) > 0) out.report_missing = 1;
+  return out;
 }
 
 /** The time a slice bills: what the provider billed by time bills (`billedMs`), else its connection time. */
@@ -271,6 +322,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
     units: price.units,
     measures: {
       ...tokens,
+      ...breakdownMeasures(slice.measures),
       ...(billableMs > 0 ? { units_session_seconds: billableMs } : {}),
       // Kept whether priced or not, so the sweep prices an `unresolved` slice with them too.
       ...Object.fromEntries(Object.entries(unitsOf(slice.measures)).map(([unit, count]) => [`units_${unit}`, count])),

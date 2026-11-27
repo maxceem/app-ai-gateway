@@ -104,6 +104,29 @@ A long answer to a text question can bill far more audio than the clock.
 - xAI's `ping` every 10 s does not keep a session alive: a client that sends
   nothing for 90 s is gone, as for any provider.
 
+### Gemini Live
+
+A Gemini Live session is billed by the tokens of each turn, as Gemini reports
+them, with audio, images and video at their own rates.
+
+- **The setup.** Send Gemini's `setup` as your first message, as usual. The
+  relay sets its `model` to the session's model, turns on context compression
+  unless you set your own, and removes any `sessionResumption` you set: the
+  relay resumes the session itself. A second `setup` is dropped.
+- **Gemini's connection limits are handled for you.** Gemini closes a
+  connection after a while, warning first with `goAway` on some models. The
+  relay then opens a new connection to the same conversation, at a quiet
+  moment: when nobody is speaking and no answer is running or on its way. Your
+  link stays open. You never get `goAway`, `sessionResumptionUpdate`, or a
+  second `setupComplete`. Messages you send during the switch (usually under
+  a second, at most a few) wait and then go on, in order.
+- **What can be lost.** Speech sent during a switch can lose its start on some
+  models. An answer cut by a switch, or by Gemini closing the connection,
+  stops: it never reports its usage, so its audio is billed from what was
+  forwarded, about 25 tokens a second, marked as an estimate.
+- If the relay cannot reconnect within 10 s, the session ends with
+  `1000 provider_closed`.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):

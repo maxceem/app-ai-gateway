@@ -209,5 +209,57 @@
       "per_text_message": 0.004,
       "author": "xAI"
     }
+  },
+  "gemini": {
+    "gemini-3.8-live": {
+      "kind": "realtime",
+      "input": 0.75,
+      "audio_input": 3.0,
+      "image_input": 1.0,
+      "video_input": 1.0,
+      "output": 4.5,
+      "audio_output": 12.0,
+      "author": "Google"
+    },
+    "gemini-3.8-live-extended-thinking": {
+      "kind": "realtime",
+      "input": 0.75,
+      "audio_input": 3.0,
+      "image_input": 1.0,
+      "video_input": 1.0,
+      "output": 4.5,
+      "audio_output": 12.0,
+      "author": "Google"
+    },
+    "gemini-3.1-flash-live-preview": {
+      "kind": "realtime",
+      "input": 0.75,
+      "audio_input": 3.0,
+      "image_input": 1.0,
+      "video_input": 1.0,
+      "output": 4.5,
+      "audio_output": 12.0,
+      "author": "Google"
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025": {
+      "kind": "realtime",
+      "input": 0.5,
+      "audio_input": 3.0,
+      "image_input": 3.0,
+      "video_input": 3.0,
+      "output": 2.0,
+      "audio_output": 12.0,
+      "author": "Google"
+    },
+    "gemini-2.5-flash-native-audio-latest": {
+      "kind": "realtime",
+      "input": 0.5,
+      "audio_input": 3.0,
+      "image_input": 3.0,
+      "video_input": 3.0,
+      "output": 2.0,
+      "audio_output": 12.0,
+      "author": "Google"
+    }
   }
 }

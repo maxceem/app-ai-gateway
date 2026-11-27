@@ -78,7 +78,7 @@ function withCost<C extends Candidate>(candidate: C): C & { readonly cost: NanoD
 type Part = readonly [units: number, rate: RateNanoPerMillion];
 
 const INPUT_RATES: Readonly<Partial<Record<Modality, ModalityRate>>> = { image: "image_input", audio: "audio_input", video: "video_input" };
-const OUTPUT_RATES: Readonly<Partial<Record<Modality, ModalityRate>>> = { image: "image_output" };
+const OUTPUT_RATES: Readonly<Partial<Record<Modality, ModalityRate>>> = { image: "image_output", audio: "audio_output" };
 
 function modalityRates(
   price: ModelPrice,

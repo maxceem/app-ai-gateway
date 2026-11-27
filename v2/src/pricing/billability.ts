@@ -843,7 +843,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "session_rates"; readonly operation: string }
+  | { readonly kind: "session_rates"; readonly operation: string; readonly byClock: boolean }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -859,16 +859,16 @@ export function savedPriceProblem(
   let combinations = 1;
   for (const table of Object.values(price.keyed ?? {})) combinations *= Math.max(1, Object.keys(table).length);
   if (combinations > MAX_PRICE_KEY_COMBINATIONS) return { kind: "too_many_combinations", combinations };
-  // A model our list prices for a session billed by its clock (xAI's grok-voice-3.0): a custom price
-  // must still bill that session, by its own save check (both base rates, none by key value). Refused
-  // here, since an app that routes to it would otherwise be judged only once the price had already
-  // made it ineligible, and its next session refused (Sol, #266 rounds 2 and 3).
+  // A model our list prices for a live session (xAI's grok-voice-3.0, Gemini's Live models): a custom
+  // price must still bill that session, by its own save check (for xAI, both base rates and none by key
+  // value). Refused here, since an app that routes to it would otherwise be judged only once the price
+  // had already made it ineligible, and its next session refused (Sol, #266 rounds 2 and 3).
   const listed = listPrice(providerType, model);
   const session =
     listed === null
       ? undefined
-      : operations.find((operation) => operation.meter.kind === "wall_clock" && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
-  if (session !== undefined) return { kind: "session_rates", operation: session.name };
+      : operations.find((operation) => operation.lifecycle === "session" && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
+  if (session !== undefined) return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock" };
   try {
     effectivePrices(price);
   } catch (error) {

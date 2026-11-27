@@ -115,7 +115,7 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *
  * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string }} SessionKey
  * @typedef {{ sessionKey(ticket: string, options: { restart: boolean }): Promise<SessionKey> }} VaultPort
- * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string }} Settings
+ * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string, model?: string | null }} Settings
  * @typedef {{ decision: "continue" | "stop", reasons: string[], written: boolean }} CheckpointReply
  * @typedef {{
  *   slice: import("./journal.js").Slice | null,
@@ -132,12 +132,13 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
  * @typedef {{
- *   connect(key: SessionKey): Promise<ProviderCall>,
+ *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
  *   createCall?(key: SessionKey, offer: string): Promise<{ callId: string, answer: string }>,
  *   attach?(key: SessionKey, callId: string, adapter: string | undefined, limitMs: number): Promise<ProviderCall>,
  *   hangup?(key: SessionKey, callId: string): Promise<void>,
  * }} ProviderPort
- * `connect` (relayed) and `createCall` (observed) throw `ProviderRefused` for a known refusal;
+ * `connect` (relayed) gets the session's settings, for its adapter and its locked model. It and
+ * `createCall` (observed) throw `ProviderRefused` for a known refusal;
  * anything else is an unknown outcome. `attach` attaches an observed call's side channel, and
  * throws `ProviderRefused` with the status when it is refused (404: the call ended); it waits
  * at most `limitMs`, the time left before the deadline, and throws past it. `hangup`
@@ -462,7 +463,7 @@ export class SessionCore {
           created = await this.provider.createCall(key, offer ?? "");
         } else {
           // Kept at once, so whatever happens next can hang it up.
-          ownCall = await this.provider.connect(key);
+          ownCall = await this.provider.connect(key, settings);
           this.call = ownCall;
         }
       } catch (error) {

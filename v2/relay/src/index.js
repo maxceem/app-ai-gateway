@@ -35,6 +35,7 @@ import { adapterFor } from "./adapters.js";
 import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION_PATH } from "./constants.js";
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
 import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
+import { GeminiUpstream } from "./gemini.js";
 import { attachSideChannel, connectProvider, createObservedCall, hangUpObservedCall } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -153,8 +154,10 @@ export class Session extends DurableObject {
       vault: env.VAULT,
       main: env.MAIN,
       provider: {
-        connect: async (key) => {
+        connect: async (key, settings) => {
           const { callId, socket } = await connectProvider(key);
+          // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
+          if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
           /** @type {RelayCall} */
           const call = {
             callId,
@@ -223,6 +226,50 @@ export class Session extends DurableObject {
     const running = this.live !== null && this.core.call !== null;
     this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * A Gemini Live session's provider side: an upstream the relay resumes and
+   * swaps itself (`./gemini.js`). To the rest of the session it is one call,
+   * like any other; it ends only when it can't be resumed.
+   * @param {import("./start.js").SessionKey} key
+   * @param {import("./start.js").Settings} settings
+   * @param {WebSocket} socket the first connection
+   * @returns {RelayCall}
+   */
+  geminiCall(key, settings, socket) {
+    /** @type {RelayCall} */
+    const call = {
+      callId: null,
+      close: (code, reason) => {
+        this.dropHeld(call);
+        upstream.close(code, reason);
+      },
+      send: (data) => upstream.send(data),
+      forward: null,
+      pending: new StartQueue(),
+    };
+    const upstream = new GeminiUpstream({
+      socket,
+      open: async () => (await connectProvider(key)).socket,
+      model: settings.model,
+      events: {
+        frame: (data) => providerFrame(call, data),
+        usage: (event) => void this.core.recordUsage(event, "per_turn").catch(() => undefined),
+        // The cut answer is over: a closing session waits for it no more, and a late "done" closes nothing.
+        cut: () => {
+          const live = this.live;
+          if (live?.call === call) {
+            live.turnOpen = false;
+            live.turns += 1;
+          }
+          this.core.turnDone();
+        },
+        gone: () => void this.core.providerGone(call),
+        log: (event) => console.log(JSON.stringify({ ...event, session: this.core.sessionId })),
+      },
+    });
+    return call;
   }
 
   /**
@@ -558,6 +605,8 @@ export class Session extends DurableObject {
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const recorded = this.readUsage(live.adapter, data);
     const turn = live.adapter.turn(data);
+    // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,
+    // which changes nothing, since its "done" comes after its last chunk.
     if (turn === "open") {
       live.turnOpen = true;
       live.turns += 1;

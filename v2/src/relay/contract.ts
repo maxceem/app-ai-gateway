@@ -53,8 +53,8 @@ export interface OpenSettings {
   readonly checkpointIntervalMs: number;
   /**
    * The relay's protocol adapter: how it reads usage from the provider's
-   * frames (plan 5.2). Version 2. xAI's voice API has its own (9b). Until the
-   * other provider adapters land (9d, 9e), every other session uses `mock`,
+   * frames (plan 5.2). Version 2. xAI's voice API has its own (9b), and
+   * Gemini Live (9d). Until OpenAI's lands (9e), every other session uses `mock`,
    * which reads the smoke mock's usage events and nothing else: a real
    * provider's frames carry none of them, so its session is metered by
    * connection time only.
@@ -62,8 +62,13 @@ export interface OpenSettings {
   readonly adapter: string;
 }
 
-/** The relay adapters of the operations that have one so far (plan 5.2); the rest come with 9d and 9e. */
-const RELAY_ADAPTERS: Readonly<Record<string, string>> = { "xai.realtime": "xai" };
+/** The relay adapters of the operations that have one so far (plan 5.2); OpenAI's comes with 9e. */
+const RELAY_ADAPTERS: Readonly<Record<string, string>> = { "xai.realtime": "xai", "gemini.live.v1beta": "gemini", "gemini.live.v1alpha": "gemini" };
+
+/** Whether a session's operation has a relay adapter that reads its usage, so its model needs a price to start. */
+export function hasRelayAdapter(operation: string): boolean {
+  return Object.hasOwn(RELAY_ADAPTERS, operation);
+}
 
 /** The relay adapter for a session's operation (plan 5.2). */
 export function adapterFor(ticket: Ticket): string {

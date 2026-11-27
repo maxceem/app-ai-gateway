@@ -544,6 +544,7 @@ async function answer(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") return Response.json({ ok: true });
   if (url.pathname.endsWith("/v1/realtime") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return realtimeSession();
+  if (url.pathname.endsWith("BidiGenerateContent") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return geminiLiveSession();
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -666,6 +667,51 @@ export default mock;
  * sends `response.created`, audio for N seconds, then the usage event and
  * `response.done`.
  */
+/**
+ * Gemini Live (step 9d), its JSON in binary frames as Gemini sends it: a
+ * `setup` gets `setupComplete` and a resumable handle; a text turn gets one
+ * audio chunk, then `turnComplete` with its usage (60 text and 40 audio
+ * tokens in, 20 audio tokens out). The text "goaway" gets a `goAway` with 11 s
+ * left first, so the relay swaps to a new connection once that answer is done.
+ */
+function geminiLiveSession(): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.binaryType = "arraybuffer";
+  server.accept();
+  const send = (message: unknown) => server.send(new TextEncoder().encode(JSON.stringify(message)));
+  const usage = {
+    promptTokenCount: 100,
+    responseTokenCount: 20,
+    totalTokenCount: 120,
+    promptTokensDetails: [
+      { modality: "TEXT", tokenCount: 60 },
+      { modality: "AUDIO", tokenCount: 40 },
+    ],
+    responseTokensDetails: [{ modality: "AUDIO", tokenCount: 20 }],
+  };
+  server.addEventListener("message", (event) => {
+    const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(new Uint8Array(event.data as ArrayBuffer));
+    let message: { setup?: unknown; clientContent?: { turns?: { parts?: { text?: string }[] }[] } };
+    try {
+      message = JSON.parse(text) as typeof message;
+    } catch {
+      return;
+    }
+    if (message.setup !== undefined) {
+      send({ setupComplete: {} });
+      send({ sessionResumptionUpdate: { newHandle: crypto.randomUUID(), resumable: true } });
+      return;
+    }
+    const said = message.clientContent?.turns?.[0]?.parts?.[0]?.text;
+    if (said === undefined) return;
+    if (said === "goaway") send({ goAway: { timeLeft: "11s" } });
+    send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAAA" } }], role: "model" } } });
+    send({ serverContent: { turnComplete: true }, usageMetadata: usage });
+  });
+  return new Response(null, { status: 101, webSocket: client });
+}
+
 function realtimeSession(): Response {
   const [client, server] = Object.values(new WebSocketPair());
   if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
