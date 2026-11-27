@@ -7,11 +7,12 @@
 //   300 ms: a provider frame that lands while the client's link is down (the
 //   reconnect tests).
 // - An observed call, its side channel and its hang-up are in
-//   `./observed-call.js`.
+//   `./observed-call.js`; Gemini Live is in `./gemini-live-stub.js`.
 //
 // It keeps the key header of the last request, which a test reads back at
 // /last-key-header; the hang-ups it got, at /hangups; and how many calls were
 // made for an offer with the line `a=x-test:<tag>`, at /calls/<tag>.
+import { geminiLive } from "./gemini-live-stub.js";
 import { observedCall } from "./observed-call.js";
 
 let lastKeyHeader = null;
@@ -32,6 +33,8 @@ export default {
     }
     const observed = await observedCall(request);
     if (observed !== null) return observed;
+    const gemini = geminiLive(request);
+    if (gemini !== null) return gemini;
     const [client, server] = Object.values(new WebSocketPair());
     server.binaryType = "arraybuffer";
     server.accept();

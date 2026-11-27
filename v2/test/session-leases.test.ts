@@ -325,6 +325,21 @@ describe("starting a session", () => {
     expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
   });
 
+  it("starts a Gemini Live session with a priced model, its model kept for the relay to set, and refuses one with no price unless the app lists it (step 9d)", async () => {
+    const path = "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+    const { appId, slug, key } = await setup({}, ["gemini.live.v1beta"], "gemini");
+    const response = await start(appId, slug, key, { path, model: "gemini-3.8-live" });
+    expect(response.status).toBe(201);
+    const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
+    expect(payload).toMatchObject({ operation: "gemini.live.v1beta", model: "gemini-3.8-live", providerType: "gemini", mode: "relayed", slot: "conversational" });
+    // The model is not in the address: the relay puts it in the client's setup.
+    expect(payload.url).toBe(`https://generativelanguage.googleapis.com/${path}`);
+    expect(adapterFor(payload)).toBe("gemini");
+    const unpriced = await start(appId, slug, key, { path, model: "gemini-9-live" });
+    expect(unpriced.status).toBe(400);
+    expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
+  });
+
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {
     const chat = await setup({}, ["openai.chat"]);
     const notSession = await start(chat.appId, chat.slug, chat.key, { path: "v1/chat/completions", model: "gpt-4o-mini" });

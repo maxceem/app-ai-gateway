@@ -1,7 +1,9 @@
 /**
  * Gemini: its own `generateContent` and `embedContent`, with the model in the
  * path, and its OpenAI-compatible Chat Completions. `generateContent` also
- * carries image, speech and transcription models.
+ * carries image, speech and transcription models. Its Live API
+ * (`BidiGenerateContent`, a WebSocket) is a relayed session, billed by the
+ * tokens of each turn (T4, T19; step 9d).
  */
 import { chat, DETACHED, withV1Paths } from "./llm.ts";
 import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
@@ -30,6 +32,26 @@ function generate(version: "v1" | "v1beta" | "v1alpha") {
       model: { in: "path", part: "model" },
     }),
   ];
+}
+
+/**
+ * The Live API under one API version: a relayed session (plan step 9d). Its
+ * model is in the client's first message, `setup.model`; the relay sets it to
+ * the session's model (`relay/src/gemini.js`), so the app names it when it
+ * asks for the session.
+ */
+function live(version: "v1beta" | "v1alpha") {
+  return defineOperation({
+    name: `gemini.live.${version}`,
+    match: { method: "GET", path: `ws/google.ai.generativelanguage.${version}.GenerativeService.BidiGenerateContent` },
+    lifecycle: "session",
+    transport: "websocket",
+    model: { in: "body", field: "model" },
+    // Only the Live models: a generateContent model's price, an image model's say, is not judged here.
+    modelKinds: ["realtime"],
+    meter: { kind: "provider_event", adapter: "gemini-live" },
+    session: { slot: "conversational", mode: "relayed" },
+  });
 }
 
 /**
@@ -105,5 +127,7 @@ export const gemini = defineProvider({
     embed("v1beta"),
     embed("v1"),
     chat("gemini.chat", "v1beta/openai/chat/completions"),
+    live("v1beta"),
+    live("v1alpha"),
   ]),
 });

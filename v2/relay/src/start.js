@@ -57,7 +57,7 @@
  * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
-import { adapterFor } from "./adapters.js";
+import { adapterFor, knownAdapter } from "./adapters.js";
 import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
@@ -115,7 +115,7 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *
  * @typedef {{ key?: { value: string, header: string, format: string }, cloudflareToken?: string, target: string }} SessionKey
  * @typedef {{ sessionKey(ticket: string, options: { restart: boolean }): Promise<SessionKey> }} VaultPort
- * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string }} Settings
+ * @typedef {{ deadline: number, mode: string, operation: string, checkpointIntervalMs: number, version: number, adapter?: string, model?: string | null }} Settings
  * @typedef {{ decision: "continue" | "stop", reasons: string[], written: boolean }} CheckpointReply
  * @typedef {{
  *   slice: import("./journal.js").Slice | null,
@@ -129,15 +129,18 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *   checkpoint(ticket: string, input: CheckpointCall): Promise<CheckpointReply>,
  *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null, relayVersion: number }): Promise<unknown>,
  * }} MainPort
- * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void }} ProviderCall
+ * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
+ * `estimate`, for a provider whose cut answer never reports usage (Gemini Live): what the session's
+ * own end bills for the answer it cuts, asked once before the final slice.
  * @typedef {{
- *   connect(key: SessionKey): Promise<ProviderCall>,
+ *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
  *   createCall?(key: SessionKey, offer: string): Promise<{ callId: string, answer: string }>,
  *   attach?(key: SessionKey, callId: string, adapter: string | undefined, limitMs: number): Promise<ProviderCall>,
  *   hangup?(key: SessionKey, callId: string): Promise<void>,
  * }} ProviderPort
- * `connect` (relayed) and `createCall` (observed) throw `ProviderRefused` for a known refusal;
+ * `connect` (relayed) gets the session's settings, for its adapter and its locked model. It and
+ * `createCall` (observed) throw `ProviderRefused` for a known refusal;
  * anything else is an unknown outcome. `attach` attaches an observed call's side channel, and
  * throws `ProviderRefused` with the status when it is refused (404: the call ended); it waits
  * at most `limitMs`, the time left before the deadline, and throws past it. `hangup`
@@ -443,6 +446,12 @@ export class SessionCore {
       }
 
       const openAt = this.now();
+      // An adapter this relay doesn't know (a newer gateway, this relay not deployed yet): the session
+      // would run unread, its model unlocked and its usage uncounted. It ends before the provider is called.
+      if (settings.adapter !== undefined && !knownAdapter(settings.adapter)) {
+        await endStart("error", { log: "relay_adapter_unknown" });
+        return fail("adapter_unknown");
+      }
       // The waits above may have taken the ticket past its time, or the client may have gone.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       await this.store.put({ connecting: true }, null);
@@ -462,7 +471,7 @@ export class SessionCore {
           created = await this.provider.createCall(key, offer ?? "");
         } else {
           // Kept at once, so whatever happens next can hang it up.
-          ownCall = await this.provider.connect(key);
+          ownCall = await this.provider.connect(key, settings);
           this.call = ownCall;
         }
       } catch (error) {
@@ -832,6 +841,8 @@ export class SessionCore {
     // channel dropped during the wait: the answer never finished where the relay could see it.
     const cut = hadCall && this.turnOpen();
     const call = this.call;
+    // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini): estimated.
+    const estimate = call?.estimate?.() ?? null;
     this.call = null;
     this.reconnectHash = null;
     // The session's time ends at the hang-up, in the same tick as a provider's own hang-up or
@@ -857,6 +868,7 @@ export class SessionCore {
       journal.droppedFrom ??= sliceEnd;
       this.log({ level: "warn", message: "relay_answer_cut", session: this.sessionIdOf(stored), reason });
     }
+    if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
     /** @type {Record<string, unknown>} */

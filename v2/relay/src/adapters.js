@@ -7,9 +7,9 @@
  * every other frame is forwarded untouched, never parsed. It declares its
  * usage shape: per turn, or a running total.
  *
- * The mock adapters read the smoke mock provider's frames. xAI (9b) is the
- * first provider adapter; the rest come with 9d (Gemini) and 9e (OpenAI over
- * WebSocket). A frame no adapter reads costs nothing but the connection time.
+ * The mock adapters read the smoke mock provider's frames. xAI (9b) and
+ * Gemini Live (9d) are the provider adapters so far; OpenAI over WebSocket
+ * comes with 9e. A frame no adapter reads costs nothing but the connection time.
  */
 
 /** The token counts an adapter may report: the same list the main Worker accepts (`SLICE_MEASURES`). */
@@ -210,6 +210,136 @@ const XAI = {
   },
 };
 
+/** A Gemini frame this size or smaller is parsed whole: control messages and usage are small. */
+const GEMINI_SMALL = 4096;
+/** How much of a larger frame's start and end is read to tell an answer's audio chunk apart. */
+const GEMINI_HEAD = 128;
+const GEMINI_TAIL = 384;
+/** What an answer's audio chunk reads as: never parsed, only counted (T19: about 30 KB each, many a second). */
+const GEMINI_AUDIO_CHUNK = Object.freeze({ serverContent: Object.freeze({ modelTurn: true }) });
+/** A field that, near a large frame's end, means it carries more than audio, so it is parsed. */
+const GEMINI_TAIL_FIELDS = /"(turnComplete|usageMetadata|interrupted|generationComplete|toolCall|goAway|sessionResumptionUpdate)"/u;
+const utf8 = new TextDecoder();
+
+/** Part of a frame as text. @param {string | ArrayBuffer} data @param {number} start @param {number} [end] */
+function textOf(data, start, end) {
+  if (typeof data === "string") return data.slice(start, end);
+  const to = end ?? data.byteLength;
+  return utf8.decode(new Uint8Array(data, start, Math.max(0, to - start)));
+}
+
+/** The last frame read and what it read as: the session object reads each frame up to three times in a row. */
+let lastGemini = /** @type {{ data: string | ArrayBuffer | null, value: Record<string, any> | null }} */ ({ data: null, value: null });
+
+/**
+ * A Gemini Live message (JSON, sent in binary frames; T4, T19), or null when
+ * it is not JSON. A large frame that starts as an answer's audio and has no
+ * other field near its end is never parsed: it reads as `GEMINI_AUDIO_CHUNK`.
+ * Every other frame is small and parsed whole.
+ * @param {string | ArrayBuffer} data
+ * @returns {Record<string, any> | null}
+ */
+export function geminiMessage(data) {
+  if (lastGemini.data === data) return lastGemini.value;
+  /** @type {Record<string, any> | null} */
+  let value = null;
+  const size = typeof data === "string" ? data.length : data.byteLength;
+  if (size > GEMINI_SMALL && /"modelTurn"/u.test(textOf(data, 0, GEMINI_HEAD)) && !GEMINI_TAIL_FIELDS.test(textOf(data, size - GEMINI_TAIL))) {
+    value = GEMINI_AUDIO_CHUNK;
+  } else {
+    try {
+      const parsed = JSON.parse(textOf(data, 0));
+      value = typeof parsed === "object" && parsed !== null ? parsed : null;
+    } catch {
+      value = null;
+    }
+  }
+  lastGemini = { data, value };
+  return value;
+}
+
+/** A token count Gemini reported, or 0. @param {unknown} value */
+const tokenCount = (value) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : 0);
+
+/**
+ * One side's tokens by modality, from Gemini's `*TokensDetails`. Returns null
+ * when the side has no breakdown: then all its tokens are "unknown", billed
+ * at the model's highest rate. Text is what the breakdown leaves (T19 priced
+ * it so), at the side's base rate.
+ * @param {unknown} details
+ */
+function byModality(details) {
+  if (!Array.isArray(details) || details.length === 0) return null;
+  /** @type {Record<string, number>} */
+  const counts = { AUDIO: 0, IMAGE: 0, VIDEO: 0 };
+  for (const part of details) {
+    const modality = typeof part === "object" && part !== null ? part.modality : undefined;
+    if (typeof modality === "string" && Object.hasOwn(counts, modality)) counts[modality] = (counts[modality] ?? 0) + tokenCount(part.tokenCount);
+  }
+  return counts;
+}
+
+/**
+ * Gemini's `usageMetadata`, one turn's usage (T4: per turn, with `turnComplete`),
+ * as the slice's measures. The prompt (with any tool-use prompt) is input, its
+ * cached part cached input; the answer and the thinking are output. Each side
+ * is split by modality, in the names a charge keeps them under
+ * (`src/usage/measures.ts`): `<side>_split` says the side was broken down,
+ * `<side>_<modality>_tokens` its audio, image and video shares, and
+ * `<side>_unknown_tokens` what no breakdown covered.
+ * @param {Record<string, unknown>} usage
+ * @returns {Record<string, number>}
+ */
+export function geminiMeasures(usage) {
+  const prompt = tokenCount(usage.promptTokenCount) + tokenCount(usage.toolUsePromptTokenCount);
+  const cached = Math.min(prompt, tokenCount(usage.cachedContentTokenCount));
+  const answer = tokenCount(usage.responseTokenCount ?? usage.candidatesTokenCount);
+  const output = answer + tokenCount(usage.thoughtsTokenCount);
+  /** @type {Record<string, number>} */
+  const measures = { input_tokens: prompt - cached, output_tokens: output, input_split: 1, output_split: 1 };
+  if (cached > 0) measures.cached_input_tokens = cached;
+  const input = byModality(usage.promptTokensDetails);
+  if (input === null) measures.input_unknown_tokens = prompt;
+  else {
+    measures.input_audio_tokens = input.AUDIO ?? 0;
+    measures.input_image_tokens = input.IMAGE ?? 0;
+    measures.input_video_tokens = input.VIDEO ?? 0;
+  }
+  // The thinking is text; only the answer itself is broken down.
+  const out = byModality(usage.responseTokensDetails ?? usage.candidatesTokensDetails);
+  if (out === null) measures.output_unknown_tokens = answer;
+  else measures.output_audio_tokens = out.AUDIO ?? 0;
+  for (const [name, value] of Object.entries(measures)) if (value === 0) delete measures[name];
+  return measures;
+}
+
+/**
+ * Gemini Live (T4, T19): its JSON comes in binary frames, decoded in order
+ * (`binaryType = "arraybuffer"` makes each frame's bytes arrive at once).
+ * Usage is per turn, in `usageMetadata` beside `turnComplete`. An answer
+ * opens with its first `modelTurn` (or a tool call) and is done at
+ * `turnComplete`. The upstream connection, its resumption and its swaps are
+ * the relay's (`./gemini.js`). Gemini keeps the conversation while our SDK's
+ * link is down, so its frames are held for a reconnect.
+ * @type {Adapter}
+ */
+const GEMINI = {
+  shape: "per_turn",
+  detached: "hold",
+  turn(data) {
+    const message = geminiMessage(data);
+    if (message?.serverContent?.turnComplete === true) return "done";
+    if (message?.serverContent?.modelTurn !== undefined || message?.toolCall !== undefined) return "open";
+    return null;
+  },
+  read(data) {
+    const usage = geminiMessage(data)?.usageMetadata;
+    if (typeof usage !== "object" || usage === null) return null;
+    // Gemini's usage has no id, and a turn's usage comes once: every event is new.
+    return { id: crypto.randomUUID(), measures: geminiMeasures(usage) };
+  },
+};
+
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
 
@@ -222,6 +352,7 @@ const ADAPTERS = {
   // Usage inside the frame that ends the answer, as OpenAI's `response.done` carries it (9e), for the tests.
   mock_done: jsonAdapter('{"type":"response.done"', "per_turn", MOCK_TURNS),
   xai: XAI,
+  gemini: GEMINI,
 };
 
 /**
@@ -230,6 +361,15 @@ const ADAPTERS = {
  * @type {Adapter}
  */
 const NONE = { shape: "per_turn", detached: "hold", read: () => null, turn: () => null };
+
+/**
+ * Whether this relay knows the adapter `open` named. A newer gateway can name one an older relay
+ * lacks (the gateway is deployed first): the relay then refuses the session (`./start.js`).
+ * @param {string} name
+ */
+export function knownAdapter(name) {
+  return Object.hasOwn(ADAPTERS, name);
+}
 
 /** The adapter `open` named, or one that reads nothing. @param {string | undefined} name */
 export function adapterFor(name) {

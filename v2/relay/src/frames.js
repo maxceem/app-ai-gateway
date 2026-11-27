@@ -279,10 +279,11 @@ export class SessionFrames {
  * nothing more, and the owning start ends the session with
  * `4000 start_queue_full` (`./index.js`, `begin`). A close here could end the
  * session first, with another reason (Sol, #260 round 2).
- * @param {{ forward: ((data: string | ArrayBuffer) => void) | null, pending: StartQueue }} call
+ * @param {{ forward: ((data: string | ArrayBuffer) => boolean | void) | null, pending: StartQueue }} call
+ * @returns {boolean | void} whether the frame went on, or waits to: false when it was thrown away
  * @param {string | ArrayBuffer} data
  */
 export function providerFrame(call, data) {
-  if (call.forward !== null) call.forward(data);
-  else call.pending.push(data);
+  if (call.forward !== null) return call.forward(data);
+  return call.pending.push(data);
 }

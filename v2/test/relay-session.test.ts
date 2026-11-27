@@ -57,13 +57,15 @@ async function open(ticket: string, headers: Record<string, string>) {
   const response = await relay().fetch(`https://relay.test${SESSION_PATH}`, { headers: { upgrade: "websocket", authorization: `Bearer ${ticket}`, ...headers } });
   expect(response.status).toBe(101);
   const socket = response.webSocket!;
+  // Binary frames (Gemini's) are read as their text.
+  socket.binaryType = "arraybuffer";
   const messages: string[] = [];
   let waiting: { count: number; resolve: () => void } | null = null;
   let closed = "";
   /** The close code and reason the client got, once it is closed. */
   const closing = new Promise<string>((resolve) => socket.addEventListener("close", (event) => resolve(`${event.code} ${event.reason}`)));
   socket.addEventListener("message", (event) => {
-    messages.push(String(event.data));
+    messages.push(typeof event.data === "string" ? event.data : new TextDecoder().decode(new Uint8Array(event.data as ArrayBuffer)));
     if (waiting !== null && messages.length >= waiting.count) waiting.resolve();
   });
   socket.addEventListener("close", (event) => {
@@ -395,6 +397,65 @@ describe(`an xAI session through the relay's session object (step 9b; split keys
     expect(billed).toBeGreaterThan(0);
     expect(billed).toBeLessThanOrEqual(closedAt - active + 200);
     expect(billed).toBeLessThan(closedAt - opened);
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "client_closed" })]);
+  });
+});
+
+describe(`a Gemini Live session through the relay's session object (step 9d; split keys ${splitKeysOn ? "on" : "off"})`, () => {
+  /** A ticket for Gemini Live, as the gateway issues one. */
+  async function geminiTicket(connection: string): Promise<{ ticket: string; sessionId: string }> {
+    const identity: [string, string, string, string, string, string] = [ACCOUNT_ID, connection, "gemini", "", "", ""];
+    const blob = await sealForTest("providerKey", identity, "gemini-session-object");
+    const share = await testShare(ACCOUNT_ID);
+    return await issueTicket(env, {
+      accountId: ACCOUNT_ID,
+      appId: "app_session",
+      endUserId: null,
+      installId: null,
+      appleAccountId: null,
+      appKeyId: null,
+      providerType: "gemini",
+      connectionId: connection,
+      operation: "gemini.live.v1beta",
+      model: "gemini-3.8-live",
+      mode: "relayed",
+      slot: "conversational",
+      sessionTotal: false,
+      url: "https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+      capMs: 60_000,
+      credentials: { providerKey: { blob, identity }, cloudflareToken: null, ...(share === null ? {} : { credential: share.forVault() }) },
+      keyPlacement: { header: "x-goog-api-key", format: "{key}" },
+    });
+  }
+  const turn = (text: string) => JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
+  const decoded = (message: string) => JSON.parse(message) as Record<string, unknown>;
+
+  it("locks the model, swaps the upstream after goAway with the handle, and the client sees one connection; usage counts by modality", async () => {
+    const before = ((await (await provider().fetch("https://provider.test/gemini-setups")).json()) as unknown[]).length;
+    const { ticket, sessionId } = await geminiTicket("conn_gemini");
+    const session = await open(ticket, {});
+    session.socket.send(JSON.stringify({ setup: { model: "models/gemini-cheap", sessionResumption: { handle: "the-apps" } } }));
+    await session.received(1);
+    session.socket.send(turn("hello"));
+    await session.received(3);
+    // Gemini says it will close this connection while its answer is on its way: the relay swaps with
+    // the handle that comes after that answer.
+    session.socket.send(turn("goaway"));
+    await session.received(5);
+    session.socket.send(turn("again"));
+    const all = await session.received(7);
+    // The client saw one setup, three answers, and nothing of the swap: no goAway, no handle.
+    const answer = [["serverContent"], ["serverContent", "usageMetadata"]];
+    expect(all.map((message) => Object.keys(decoded(message)))).toEqual([["setupComplete"], ...answer, ...answer, ...answer]);
+    const setups = ((await (await provider().fetch("https://provider.test/gemini-setups")).json()) as Record<string, unknown>[]).slice(before);
+    expect(setups).toEqual([
+      { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: {} },
+      { model: "models/gemini-3.8-live", contextWindowCompression: { slidingWindow: {} }, sessionResumption: { handle: expect.stringMatching(/^h-\d+-[0-9a-f]{8}$/u) } },
+    ]);
+    session.socket.close(1000, "done");
+    const seen = await closed(sessionId);
+    const sum = (name: string) => seen.checkpoints.reduce((total, checkpoint) => total + (checkpoint.slice?.measures[name] ?? 0), 0);
+    expect({ input: sum("input_tokens"), output: sum("output_tokens"), inputAudio: sum("input_audio_tokens"), outputAudio: sum("output_audio_tokens") }).toEqual({ input: 300, output: 60, inputAudio: 120, outputAudio: 60 });
     expect(seen.closes).toEqual([expect.objectContaining({ endReason: "client_closed" })]);
   });
 });

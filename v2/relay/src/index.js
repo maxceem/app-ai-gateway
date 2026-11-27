@@ -35,6 +35,7 @@ import { adapterFor } from "./adapters.js";
 import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION_PATH } from "./constants.js";
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
 import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
+import { GeminiUpstream } from "./gemini.js";
 import { attachSideChannel, connectProvider, createObservedCall, hangUpObservedCall } from "./provider.js";
 import { SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
@@ -90,7 +91,7 @@ export default {
 /**
  * @typedef {import("./start.js").ProviderCall & {
  *   send(data: string | ArrayBuffer): void,
- *   forward: ((data: string | ArrayBuffer) => void) | null,
+ *   forward: ((data: string | ArrayBuffer) => boolean | void) | null,
  *   pending: StartQueue,
  * }} RelayCall
  * The provider's side of a relayed session. Its frames wait in `pending` until
@@ -153,8 +154,10 @@ export class Session extends DurableObject {
       vault: env.VAULT,
       main: env.MAIN,
       provider: {
-        connect: async (key) => {
+        connect: async (key, settings) => {
           const { callId, socket } = await connectProvider(key);
+          // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
+          if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
           /** @type {RelayCall} */
           const call = {
             callId,
@@ -223,6 +226,69 @@ export class Session extends DurableObject {
     const running = this.live !== null && this.core.call !== null;
     this.ctx.waitUntil(running && relayMessages ? this.reconnect(server) : this.begin(server, ticketText, parsed.payload, relayMessages));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * A Gemini Live session's provider side: an upstream the relay resumes and
+   * swaps itself (`./gemini.js`). To the rest of the session it is one call,
+   * like any other; it ends only when it can't be resumed.
+   * @param {import("./start.js").SessionKey} key
+   * @param {import("./start.js").Settings} settings
+   * @param {WebSocket} socket the first connection
+   * @returns {RelayCall}
+   */
+  geminiCall(key, settings, socket) {
+    /** @type {RelayCall} */
+    const call = {
+      callId: null,
+      close: (code, reason) => {
+        this.dropHeld(call);
+        upstream.close(code, reason);
+      },
+      send: (data) => upstream.send(data),
+      estimate: () => upstream.estimate(),
+      forward: null,
+      pending: new StartQueue(),
+    };
+    const upstream = new GeminiUpstream({
+      socket,
+      open: async () => (await connectProvider(key)).socket,
+      model: settings.model,
+      deadline: settings.deadline,
+      events: {
+        frame: (data) => providerFrame(call, data),
+        usage: (event) => void this.core.recordUsage(event, "per_turn").catch(() => undefined),
+        // The cut answer is over: a closing session waits for it no more, and a late "done" closes nothing.
+        cut: () => {
+          const live = this.live;
+          if (live?.call === call) {
+            live.turnOpen = false;
+            live.turns += 1;
+          }
+          this.core.turnDone();
+        },
+        gone: () => void this.core.providerGone(call),
+        capped: () => {
+          if (this.core.call === call) void this.core.end("time_cap");
+        },
+        // The first message was not a setup: the session ends, as for any frame an adapter refuses.
+        refuse: (code) => {
+          const live = this.live;
+          if (live?.call === call) this.endFor(live, "error", 1008, code);
+        },
+        // Gemini closed a connection right after its setup: the client gets Gemini's code where a
+        // client may be sent it, and its reason.
+        ended: (code, reason) => {
+          const live = this.live;
+          const sendable = code === 1007 || code === 1008 || code === 1011 || (code >= 3000 && code <= 4999);
+          if (live?.call === call && live.client !== null) closeQuietly(live.client, sendable ? code : 1011, reason);
+          // Ended whether a client is attached or its link is down: a dead call is never joined again.
+          void this.core.providerGone(call);
+        },
+        log: (event) => console.log(JSON.stringify({ ...event, session: this.core.sessionId })),
+      },
+    });
+    return call;
   }
 
   /**
@@ -543,6 +609,7 @@ export class Session extends DurableObject {
    * deadline is the copy in memory: no storage read on the audio path.
    * @param {Live} live
    * @param {string | ArrayBuffer} data
+   * @returns {boolean} whether the frame went to the client, or waits for it: not past the deadline or while closing
    */
   toClient(live, data) {
     // Past the deadline, or closing: the client gets nothing more, but the frame is still read,
@@ -558,6 +625,8 @@ export class Session extends DurableObject {
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
     const recorded = this.readUsage(live.adapter, data);
     const turn = live.adapter.turn(data);
+    // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,
+    // which changes nothing, since its "done" comes after its last chunk.
     if (turn === "open") {
       live.turnOpen = true;
       live.turns += 1;
@@ -579,6 +648,7 @@ export class Session extends DurableObject {
       void this.core.end("client_closed");
     }
     if (late) void this.core.end("time_cap");
+    return !late && this.core.ending === null && !overflowed;
   }
 
   /**

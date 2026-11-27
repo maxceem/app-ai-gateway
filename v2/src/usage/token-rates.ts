@@ -65,7 +65,7 @@ export const VARIANTS: readonly Variant[] = [
 const BUCKETS = ["input", "cached_input", "cache_write", "output"] as const;
 export type Bucket = (typeof BUCKETS)[number];
 
-const MODALITY_RATES = ["image_input", "audio_input", "video_input", "image_output"] as const;
+const MODALITY_RATES = ["image_input", "audio_input", "video_input", "image_output", "audio_output"] as const;
 export type ModalityRate = (typeof MODALITY_RATES)[number];
 
 const SHORT_FIELDS = [

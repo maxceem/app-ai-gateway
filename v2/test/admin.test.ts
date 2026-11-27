@@ -245,6 +245,24 @@ describe("apps", () => {
     expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "grok-voice-3.0": { per_minute: 0.1, per_text_message: 0.005 } } })).toMatchObject({ status: 200 });
   });
 
+  it("refuses an update that prices a Gemini Live model in a way its sessions can't bill; token rates save (step 9d)", async () => {
+    const key = await seedManagementKey();
+    const gemini = await createProvider(key, { type: "gemini", name: "Gemini", slug: `gemini-${crypto.randomUUID().slice(0, 6)}` });
+    const id = gemini.body.provider.id as string;
+    const perImage = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gemini-3.8-live": { per_image: 0.01 } } });
+    expect(perImage).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
+    expect(String(perImage.body.error.message)).toContain("gemini.live.v1beta needs token rates or a time rate");
+    expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gemini-3.8-live": { input: 1, output: 10, audio_input: 4, audio_output: 15 } } })).toMatchObject({ status: 200 });
+  });
+
+  it("still saves a per-image price for OpenAI's image model: only the sessions the relay prices check a custom price (Sol, #269 round 1)", async () => {
+    const key = await seedManagementKey();
+    const openai = await createProvider(key);
+    const imageSave = await request(key, "PUT", `/v2/admin/providers/${openai.body.provider.id as string}`, { revision: 1, pricing: { "gpt-image-1.5": { per_image: 0.04 } } });
+    expect(imageSave.body?.error?.message ?? "", "an OpenAI image model's own price").toBe("");
+    expect(imageSave.status).toBe(200);
+  });
+
   it("checks each model's unit against the enabled operations, with the provider-cost exception per operation", async () => {
     const key = await seedManagementKey();
     const xai = await createProvider(key, { type: "xai", name: "xAI", slug: `xai-${crypto.randomUUID().slice(0, 6)}` });

@@ -55,6 +55,9 @@ SDK sees only the provider's frames.
 - `1008 rate_limited`: more than 2,000 client frames in 10 s. Heartbeats and
   reports count too.
 - `1008` with an adapter's code: an adapter refused a client frame.
+- `4000 adapter_unknown`: the gateway named a provider adapter this relay does
+  not have yet. A new provider works once both the gateway and the relay are
+  deployed.
 - `1000` with the end's reason (for example `time_cap`, `client_closed`,
   `provider_closed`, `budget_stop`, `allowance_used_up`): the session ended
   normally.
@@ -103,6 +106,39 @@ A long answer to a text question can bill far more audio than the clock.
   item with audio content, which counts as audio.
 - xAI's `ping` every 10 s does not keep a session alive: a client that sends
   nothing for 90 s is gone, as for any provider.
+
+### Gemini Live
+
+A Gemini Live session is billed by the tokens of each turn, as Gemini reports
+them, with audio, images and video at their own rates.
+
+- **The setup.** Send Gemini's `setup` as your first message, as usual. The
+  relay sets its `model` to the session's model, turns on context compression
+  unless you set your own, and removes any `sessionResumption` you set: the
+  relay resumes the session itself. A first message that is not a valid
+  `setup` ends the session with `1008 setup_required`. A second `setup` is
+  dropped.
+- **Gemini's connection limits are handled for you.** Gemini closes a
+  connection after a while, warning first with `goAway` on some models. The
+  relay then opens a new connection to the same conversation, with the next
+  resumption handle Gemini sends, at a quiet moment: no answer running, nobody
+  speaking, and nothing asked since the last answer finished. Without such a
+  moment it switches shortly before Gemini's own close. It also reconnects when
+  Gemini closes a connection without warning. Your link stays open. You never
+  get `goAway`, `sessionResumptionUpdate`, or a second `setupComplete`.
+  Messages you send during the switch (usually under a second, at most a few)
+  wait and then go on, in order.
+- **A refused message ends the session.** If Gemini closes a connection within
+  5 s of setting it up (it refused something you sent), the relay does not
+  reconnect: the session ends with Gemini's close code and reason where they
+  can be sent, else `1011`.
+- **What can be lost.** Speech sent during a switch can lose its start on some
+  models. An answer cut by a switch, or by Gemini closing the connection,
+  stops: it never reports its usage, so its audio is billed from what was
+  forwarded, about 25 tokens a second, marked as an estimate.
+- If the relay cannot reconnect within 10 s, the session ends with
+  `1000 provider_closed`; if the session's time runs out during a switch, with
+  `1000 time_cap`.
 
 ## Reconnecting
 

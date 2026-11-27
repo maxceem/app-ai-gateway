@@ -3583,6 +3583,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "audio_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_input": {
                   "type": "number",
                   "minimum": 0
@@ -3624,6 +3628,10 @@
                   "minimum": 0
                 },
                 "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -3728,6 +3736,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "audio_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "long_input": {
                         "type": "number",
                         "minimum": 0
@@ -3769,6 +3781,10 @@
                         "minimum": 0
                       },
                       "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_output": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -3871,6 +3887,10 @@
                           "type": "number",
                           "minimum": 0
                         },
+                        "audio_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
                         "long_input": {
                           "type": "number",
                           "minimum": 0
@@ -3912,6 +3932,10 @@
                           "minimum": 0
                         },
                         "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_output": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -4237,6 +4261,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "audio_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_input": {
                   "type": "number",
                   "minimum": 0
@@ -4278,6 +4306,10 @@
                   "minimum": 0
                 },
                 "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -4382,6 +4414,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "audio_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "long_input": {
                         "type": "number",
                         "minimum": 0
@@ -4423,6 +4459,10 @@
                         "minimum": 0
                       },
                       "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_output": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -4525,6 +4565,10 @@
                           "type": "number",
                           "minimum": 0
                         },
+                        "audio_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
                         "long_input": {
                           "type": "number",
                           "minimum": 0
@@ -4566,6 +4610,10 @@
                           "minimum": 0
                         },
                         "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_output": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -4835,6 +4883,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "audio_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_input": {
                   "type": "number",
                   "minimum": 0
@@ -4876,6 +4928,10 @@
                   "minimum": 0
                 },
                 "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -4980,6 +5036,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "audio_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "long_input": {
                         "type": "number",
                         "minimum": 0
@@ -5021,6 +5081,10 @@
                         "minimum": 0
                       },
                       "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_output": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -5123,6 +5187,10 @@
                           "type": "number",
                           "minimum": 0
                         },
+                        "audio_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
                         "long_input": {
                           "type": "number",
                           "minimum": 0
@@ -5164,6 +5232,10 @@
                           "minimum": 0
                         },
                         "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_output": {
                           "type": "number",
                           "minimum": 0
                         },
@@ -5349,6 +5421,10 @@
                   "type": "number",
                   "minimum": 0
                 },
+                "audio_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "long_input": {
                   "type": "number",
                   "minimum": 0
@@ -5390,6 +5466,10 @@
                   "minimum": 0
                 },
                 "long_image_output": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "long_audio_output": {
                   "type": "number",
                   "minimum": 0
                 },
@@ -5494,6 +5574,10 @@
                         "type": "number",
                         "minimum": 0
                       },
+                      "audio_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
                       "long_input": {
                         "type": "number",
                         "minimum": 0
@@ -5535,6 +5619,10 @@
                         "minimum": 0
                       },
                       "long_image_output": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "long_audio_output": {
                         "type": "number",
                         "minimum": 0
                       },
@@ -5637,6 +5725,10 @@
                           "type": "number",
                           "minimum": 0
                         },
+                        "audio_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
                         "long_input": {
                           "type": "number",
                           "minimum": 0
@@ -5678,6 +5770,10 @@
                           "minimum": 0
                         },
                         "long_image_output": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "long_audio_output": {
                           "type": "number",
                           "minimum": 0
                         },

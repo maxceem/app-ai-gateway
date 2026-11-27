@@ -30,6 +30,8 @@ const created = { provider: "", app: "", key: "" };
 /** An xAI connection on the same mock, and an app for its voice API (step 9b). */
 const xaiSlug = uniqueSlug("smoke-xai-session");
 const xai = { provider: "", app: "", key: "" };
+const geminiSlug = uniqueSlug("smoke-gemini-session");
+const gemini = { provider: "", app: "" };
 
 before(async () => {
   if (skip !== false) return;
@@ -55,6 +57,8 @@ after(async () => {
   if (created.provider !== "") await admin("DELETE", `/v2/admin/providers/${created.provider}`);
   if (xai.app !== "") await admin("DELETE", `/v2/admin/apps/${xai.app}?confirm=${xai.app}`);
   if (xai.provider !== "") await admin("DELETE", `/v2/admin/providers/${xai.provider}`);
+  if (gemini.app !== "") await admin("DELETE", `/v2/admin/apps/${gemini.app}?confirm=${gemini.app}`);
+  if (gemini.provider !== "") await admin("DELETE", `/v2/admin/providers/${gemini.provider}`);
 });
 
 async function startSession(body: Record<string, unknown>): Promise<Response> {
@@ -215,4 +219,56 @@ test("an xAI voice session is billed by its clock from the first audio, plus eac
   // One text message is $0.004 (4,000,000 nano-dollars); the time from the first audio adds to it.
   check(cost > 4_000_000, "the xAI session cost less than one text message and its time");
   check(charges.reduce((sum, charge) => sum + (charge.session_ms ?? 0), 0) > 0, "the xAI session booked no time from its first audio");
+});
+
+test("a Gemini Live session is billed by its turns' tokens, audio at its own rate, at the list price, through a goAway (step 9d)", { skip, timeout: 90_000 }, async () => {
+  const provider = await admin("POST", "/v2/admin/providers", { type: "gemini", name: `Smoke ${geminiSlug}`, slug: geminiSlug, secret: "gemini-mock-smoke-key", baseUrl: mockUrl });
+  same(provider.status, 201, "the Gemini connection could not be made");
+  gemini.provider = checkId(provider.body?.provider?.id, "the Gemini connection's id");
+  const app = await admin("POST", "/v2/admin/apps", {
+    name: `Smoke ${geminiSlug}`,
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [geminiSlug]: { operations: ["gemini.live.v1beta"] } } },
+    },
+  });
+  same(app.status, 201, "the Gemini app could not be made");
+  gemini.app = checkId(app.body?.app?.id, "the Gemini app's id");
+  const key = String(app.body?.api_key?.key ?? "");
+  const response = await send(`/v2/apps/${gemini.app}/sessions/${geminiSlug}`, base, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "smoke-gemini-user" },
+    body: JSON.stringify({ path: "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", model: "gemini-3.8-live" }),
+  });
+  await expectResponse(response, 201, "starting a Gemini Live session");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the Gemini session's id");
+  const turn = (text: string) => JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
+  // The mock warns with goAway on the second turn: the relay hides it and swaps once that answer is done.
+  const frames = await exchangeFrames(
+    "/v2/relay/session",
+    relay,
+    [JSON.stringify({ setup: { model: "models/gemini-cheap" } }), turn("hello"), turn("goaway")],
+    5,
+    { authorization: `Bearer ${String(body?.ticket)}` },
+    1000,
+    1_000,
+  );
+  const keys = frames.map((frame) => Object.keys(JSON.parse(typeof frame === "string" ? frame : new TextDecoder().decode(frame)) as object).join(","));
+  same(keys.join(" "), "setupComplete serverContent serverContent,usageMetadata serverContent serverContent,usageMetadata", "what the client got: one setup and two answers, never goAway or a handle");
+  type Charge = { cost_nano: number | null; price_source: string; input_tokens: number; output_tokens: number };
+  let charges: Charge[] = [];
+  for (let tries = 0; tries < 30; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${gemini.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the Gemini session's charges");
+    charges = (listed.body?.charges ?? []) as Charge[];
+    if (charges.reduce((sum, charge) => sum + charge.input_tokens, 0) >= 200) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  same(charges.reduce((sum, charge) => sum + charge.input_tokens, 0), 200, "the Gemini session's input tokens");
+  same(charges.reduce((sum, charge) => sum + charge.output_tokens, 0), 40, "the Gemini session's output tokens");
+  check(charges.every((charge) => charge.price_source === "list_rate"), "the Gemini session was not billed at the list price");
+  // Two turns at $0.75 a million for 60 text tokens in, $3 for 40 audio in, $12 for 20 audio out.
+  const cost = charges.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0);
+  same(cost, 2 * (60 * 750 + 40 * 3_000 + 20 * 12_000), "the Gemini session's cost by modality");
 });
