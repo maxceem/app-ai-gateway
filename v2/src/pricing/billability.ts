@@ -41,7 +41,7 @@ import type { UsageObservation } from "../usage/observation.ts";
 import { isStandardMode, serviceModeName, STANDARD_MODE, type ServiceMode } from "../usage/service-modes.ts";
 import { MoneyError, rate } from "../money.ts";
 import type { PassthroughPath } from "../providers/matcher.ts";
-import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION } from "../providers/passthrough.ts";
+import { LIVE_TOKEN_OPERATION, PASSTHROUGH_OPERATION, readPassthrough, WEBSOCKET, WEBSOCKET_OPERATION } from "../providers/passthrough.ts";
 import { requestedServiceMode } from "../proxy/meter.ts";
 import {
   customerPrice,
@@ -97,6 +97,11 @@ export interface PriceSources {
   readonly rates: () => CustomerRates | null;
   /** The provider type and id a model is priced under in our list (a gateway's `openai/gpt-4o` is OpenAI's `gpt-4o`). */
   readonly listedAs: (model: string) => ListedModel;
+  /**
+   * A custom provider's listed WebSocket path, whose per-minute rate prices its sessions
+   * (`resolveWebsocket`), read only when asked for. Null when it lists none, or when its paths were not given.
+   */
+  readonly websocketPath: () => PassthroughPath | null;
 }
 
 /**
@@ -105,13 +110,19 @@ export interface PriceSources {
  * asked for, so unreadable rates fail only a decision that needs them.
  */
 export function priceSources(
-  connection: { readonly type: string } & ({ readonly rates_json: string | null } | { readonly rates: CustomerRates | null }),
+  connection: { readonly type: string } & ({ readonly rates_json: string | null } | { readonly rates: CustomerRates | null }) &
+    // Its listed paths, as stored or as loaded: a WebSocket path's price is its listing's.
+    ({ readonly passthrough_json?: string | null } | { readonly passthrough?: readonly PassthroughPath[] }),
 ): PriceSources {
   let read: { readonly value: CustomerRates | null } | undefined;
   const type = connection.type;
   return {
     type,
     listedAs: (model) => listedAs(type, model),
+    websocketPath: () => {
+      const paths = "passthrough" in connection ? connection.passthrough : "passthrough_json" in connection ? readPassthrough(connection.passthrough_json) : undefined;
+      return paths?.find((listed) => listed.websocket === true) ?? null;
+    },
     rates: () => {
       if (read === undefined) {
         const text = "rates_json" in connection ? connection.rates_json : undefined;
@@ -550,6 +561,19 @@ export function resolvePassthrough(listed: PassthroughPath, liveToken = false): 
 }
 
 /**
+ * How a session on a custom provider's listed WebSocket path is billed (plan D4, D10): by its connection
+ * time, at the per-minute rate the connection lists for the path, as the customer's rate. Like any listed
+ * path it has no model, so no model list or rewrite applies, and it is always admitted. Saving checks the
+ * listed rate with it (`callGap`), the session start resolves it, and the session's slices are priced at
+ * it (`billingForCharge`), at the checkpoint and in the sweep alike, so none can disagree.
+ */
+export function resolveWebsocket(listed: PassthroughPath): ReachableCall {
+  const price: ResolvedPrice | null =
+    listed.perMinuteNano === undefined ? null : { price: { rates: { per_minute: rate(listed.perMinuteNano) }, raw: {} }, source: "customer_rate" };
+  return { kind: "admitted", operation: WEBSOCKET_OPERATION, requested: "", model: "", bill: billingAt(WEBSOCKET_OPERATION, price) };
+}
+
+/**
  * How serving resolves a model a request names besides its own
  * (`alternativeModels`, Vercel's fallback models), on an operation that
  * admitted the request's own model: it passes the same model list
@@ -878,8 +902,15 @@ export function providerListPrice(providerType: string, model: string): ModelPri
   return listPrice(providerType, model);
 }
 
-/** A charge's price, on the operation it was made on (its `priceList`, if any). */
+/**
+ * A charge's price, on the operation it was made on (its `priceList`, if any). A session on a listed
+ * WebSocket path is priced at its listing's rate, whatever its model (`resolveWebsocket`).
+ */
 export function billingForCharge(connection: PriceSources, model: string, operation?: string): ResolvedPrice | null {
+  if (operation === WEBSOCKET) {
+    const listed = connection.websocketPath();
+    return listed === null ? null : resolveWebsocket(listed).bill.price;
+  }
   return resolve(connection, model, operation === undefined ? undefined : (declaredOperation(operation) ?? undefined));
 }
 

@@ -47,7 +47,7 @@ import {
 import type { OperationResponse } from "../contracts/catalog.ts";
 import { GatewayError } from "../core/errors.ts";
 import { fromDollars, MoneyError, NANO_PER_DOLLAR, rateFromDollarsPerMillion } from "../money.ts";
-import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
+import { callGap, MAX_PRICE_KEY_COMBINATIONS, resolvePassthrough, resolveWebsocket, savedPriceProblem, unusedModeRate } from "../pricing/billability.ts";
 import type { CustomerRates } from "../pricing/prices.ts";
 import { UNIT_RATE_FIELDS } from "../pricing/units.ts";
 import { selectableModes } from "../proxy/meter.ts";
@@ -285,6 +285,7 @@ function passthroughView(
       ...(listed.priceNano !== undefined ? { per_request: listed.priceNano / NANO_PER_DOLLAR } : {}),
       ...(listed.style !== undefined && isCustomStyle(listed.style) ? { style: listed.style } : {}),
       ...(listed.setFields !== undefined && listed.setFields.length > 0 ? { set_fields: listed.setFields.map((field) => fieldView(field, suggested)) } : {}),
+      ...(listed.websocket === true ? { websocket: true as const, per_minute: (listed.perMinuteNano ?? 0) / NANO_PER_DOLLAR } : {}),
     };
   });
 }
@@ -406,6 +407,9 @@ interface CheckedListing {
  *   a POST, with no flat price (its models' rates price it), one per style.
  *   It is then one of the provider's operations, so no plain listing may
  *   overlap it, nor another style's path.
+ * - a custom provider may list one WebSocket path (plan D4, D10): a GET with
+ *   a price per minute, and nothing else (no style, no price per request, no
+ *   field settings). A live session reaches it, never an HTTP request.
  */
 export function passthroughJson(
   subject: ListingSubject,
@@ -429,9 +433,25 @@ export function passthroughJson(
   const builtInRoute = subject.kind === "builtIn" ? upstreamRoute(subject.description, subject) : DIRECT_ROUTE;
   const seen = new Set<string>();
   const styles = new Set<string>();
+  let websocketAt: string | null = null;
   const checked = asked.map((entry, index) => {
     const where = `passthrough.${index}`;
     const key = `${entry.method} ${entry.path}`;
+    if (entry.websocket === true) {
+      if (subject.kind !== "custom") throw new GatewayError(400, "invalid_request", `${where}.websocket: only a custom provider's path can be a WebSocket session`);
+      if (entry.method !== "GET") throw new GatewayError(400, "invalid_request", `${where}.method: a WebSocket path is a GET`);
+      if (entry.per_minute === undefined) throw new GatewayError(400, "invalid_request", `${where}.per_minute: a WebSocket path needs a price per minute`);
+      if (entry.style !== undefined || entry.per_request !== undefined) {
+        throw new GatewayError(400, "invalid_request", `${where}: a WebSocket path is priced per minute; it names no API style and no price per request`);
+      }
+      if (entry.set_fields !== undefined && entry.set_fields.length > 0) {
+        throw new GatewayError(400, "invalid_request", `${where}.set_fields: a WebSocket path is relayed as it is; it sets no fields`);
+      }
+      if (websocketAt !== null) throw new GatewayError(400, "invalid_request", `${where}.websocket: list one WebSocket path per provider; ${websocketAt} is one already`);
+      websocketAt = key;
+    } else if (entry.per_minute !== undefined) {
+      throw new GatewayError(400, "invalid_request", `${where}.per_minute: only a WebSocket path has a price per minute; a path is priced per request`);
+    }
     if (entry.style !== undefined) {
       if (subject.kind !== "custom") throw new GatewayError(400, "invalid_request", `${where}.style: only a custom provider's path names an API style`);
       if (entry.method !== "POST") throw new GatewayError(400, "invalid_request", `${where}.method: a path of the ${entry.style} style is a POST`);
@@ -444,21 +464,24 @@ export function passthroughJson(
         throw new GatewayError(400, "invalid_request", `${where}.set_fields: a path of an API style is served as that style; it sets no fields`);
       }
     }
-    let priceNano: number | undefined;
-    if (entry.per_request !== undefined) {
+    const nanoOf = (dollars: number | undefined, field: string): number | undefined => {
+      if (dollars === undefined) return undefined;
       try {
-        priceNano = fromDollars(entry.per_request);
+        return fromDollars(dollars);
       } catch (error) {
         if (!(error instanceof MoneyError)) throw error;
-        throw new GatewayError(400, "invalid_request", `${where}.per_request: the price is too large`);
+        throw new GatewayError(400, "invalid_request", `${where}.${field}: the price is too large`);
       }
-    }
+    };
+    const priceNano = nanoOf(entry.per_request, "per_request");
+    const perMinuteNano = nanoOf(entry.per_minute, "per_minute");
     const setFields = checkedFields(entry.set_fields, where, entry.method);
     const bare: PassthroughPath = {
       method: entry.method,
       path: entry.path,
       ...(priceNano !== undefined ? { priceNano } : {}),
       ...(entry.style !== undefined ? { style: entry.style } : {}),
+      ...(entry.websocket === true && perMinuteNano !== undefined ? { websocket: true as const, perMinuteNano } : {}),
     };
     let compiled: CompiledPassthrough;
     try {
@@ -471,8 +494,8 @@ export function passthroughJson(
     const shape = listingShape(bare.method, compiled.template);
     if (seen.has(shape)) throw new GatewayError(400, "invalid_request", `${where}: ${key} matches the same requests as another listed path`);
     seen.add(shape);
-    if (callGap(resolvePassthrough(bare)) !== null) {
-      throw new GatewayError(400, "invalid_request", `${where}.per_request: the price cannot be charged`);
+    if (callGap(bare.websocket === true ? resolveWebsocket(bare) : resolvePassthrough(bare)) !== null) {
+      throw new GatewayError(400, "invalid_request", `${where}.${bare.websocket === true ? "per_minute" : "per_request"}: the price cannot be charged`);
     }
     const isNew = !known.has(listingKey(compiled));
     if (isNew) {
@@ -608,9 +631,12 @@ function assertOneJobRate(description: ProviderDescription, rates: CustomerRates
   }
 }
 
-/** A listing's shape and, for a custom provider's path, its API style: what makes it the same listing as before. */
+/**
+ * A listing's shape and, for a custom provider's path, its API style or whether it is a WebSocket path: what
+ * makes it the same listing as before. A plain path turned into a WebSocket path is judged as a new one.
+ */
 function listingKey(compiled: CompiledPassthrough): string {
-  return `${listingShape(compiled.listed.method, compiled.template)}\u0000${compiled.listed.style ?? ""}`;
+  return `${listingShape(compiled.listed.method, compiled.template)}\u0000${compiled.listed.style ?? ""}${compiled.listed.websocket === true ? "\u0000websocket" : ""}`;
 }
 
 /** Whether two routes send every path to the same provider path (`upstreamTargets`). */

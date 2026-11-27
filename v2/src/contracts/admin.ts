@@ -300,6 +300,14 @@ export const PassthroughPathSchema = z
      * list sets none. Shown only when it sets some.
      */
     set_fields: z.array(FieldSettingSchema).max(20).optional(),
+    /**
+     * A custom provider's path only, a `GET`: a live WebSocket session, not an HTTP path. An app that
+     * allows passthrough starts it through the session endpoint, and the relay forwards its frames as
+     * they are. It needs `per_minute`. One per provider.
+     */
+    websocket: z.literal(true).optional(),
+    /** A WebSocket path's price per minute of connection, in dollars. Needed with `websocket`, and only there. */
+    per_minute: z.number().finite().nonnegative().optional(),
   })
   .strict()
   .meta({ id: "PassthroughPath" });

@@ -279,3 +279,24 @@ describe("the mock's streaming voice stand-ins (step 10a)", () => {
     ]);
   });
 });
+
+describe("the mock's unknown live provider (step 10b)", () => {
+  it("says which key header it got, as a label, and its query, then echoes every frame as it was sent", async () => {
+    const response = await mock.fetch(new Request("https://mock.test/v1/live-echo?voice=alloy", { headers: { upgrade: "websocket", "x-api-key": "sk-mock-smoke-key" } }));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    socket.binaryType = "arraybuffer";
+    const got: (string | number[])[] = [];
+    let waiting: (() => void) | null = null;
+    socket.addEventListener("message", (event) => {
+      got.push(typeof event.data === "string" ? event.data : [...new Uint8Array(event.data as ArrayBuffer)]);
+      if (got.length >= 3) waiting?.();
+    });
+    socket.accept();
+    socket.send('{"type":"anything"}');
+    socket.send(new Uint8Array([7, 8]).buffer);
+    if (got.length < 3) await new Promise<void>((resolve) => (waiting = resolve));
+    expect(got).toEqual([JSON.stringify({ type: "mock.hello", key: "x-api-key:fixture-smoke", query: "?voice=alloy" }), '{"type":"anything"}', [7, 8]]);
+    socket.close(1000, "done");
+  });
+});

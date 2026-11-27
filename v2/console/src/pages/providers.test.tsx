@@ -750,6 +750,10 @@ describe("listed path lines", () => {
     ["POST chat openai-chat", false, "is not a price"],
     ["POST chat speakers", true, "not a price or an API style"],
     ["POST v1/realtime/client_secrets live-token", false, "is not a price"],
+    // A WebSocket path is a custom provider's only, and its price a minute needs a number.
+    ["GET v1/live websocket", false, "is not a price"],
+    ["GET v1/live $0.06/min", false, "a price is $"],
+    ["GET v1/live websocket $/min", true, "a price is $"],
   ])("say what is wrong with %j", (text, custom, problem) => {
     const parsed = parsePathLines(text, custom);
     expect("problem" in parsed && parsed.problem).toContain(problem);
@@ -759,6 +763,7 @@ describe("listed path lines", () => {
     for (const path of [
       { method: "GET" as const, path: "v1/files/{id}", per_request: 0.001 },
       { method: "POST" as const, path: "chat/completions", style: "openai-chat" as const },
+      { method: "GET" as const, path: "v1/live", websocket: true as const, per_minute: 0.06 },
     ]) {
       expect(parsePathLines(pathLine(path), true)).toEqual({ paths: [path] });
     }

@@ -20,7 +20,8 @@ import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { attachLookupKeyCopies, openSession, PROVIDER_LOOKUP_WINDOW_MS } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
-import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
+import { backendModels, knownModel, listOf, priceSources, resolveCall, resolveWebsocket } from "../pricing/billability.ts";
+import { compiledWebsocket, PASSTHROUGH, WEBSOCKET_OPERATION } from "../providers/passthrough.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { priceKeyValues, removeOutbound } from "../proxy/request-fields.ts";
 import { storeKeyCopies } from "../vault/key-copies.ts";
@@ -104,17 +105,20 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
 
       // The provider's own live-session path, as for any operation it declares. Its query holds the
       // session's options (Deepgram's audio format, ElevenLabs' output format), sent on as they are.
+      // A custom provider's listed WebSocket path is reached as its other listed paths are, by an app
+      // that allows passthrough, and served by the generic adapter (plan D4, D10).
       const [path = "", search] = splitQuery(request.data.path);
-      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection) });
-      const operation = match.kind === "operation" ? match.operation : null;
-      if (match.kind !== "operation" || operation === null || operation.lifecycle !== "session" || operation.session === undefined) {
+      const websocket = routing.operations.includes(PASSTHROUGH) ? compiledWebsocket(connection.passthrough ?? []) : [];
+      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection), passthrough: websocket });
+      const operation = match.kind === "operation" ? match.operation : match.kind === "passthrough" ? WEBSOCKET_OPERATION : null;
+      if (operation === null || match.kind === "refused" || operation.lifecycle !== "session" || operation.session === undefined) {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
       }
       caller.facts.operation = operation.name;
       // Only a provider that takes the session's options in its query gets the app's; any other session
       // refuses a query, as the path with it never matched before (Sol, #273 round 1).
       if (search !== undefined && operation.session.queryOptions !== true) throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
-      if (!routing.operations.includes(operation.name)) {
+      if (match.kind === "operation" && !routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
       // Observed mode (WebRTC) comes with step 9a part 3.
@@ -138,8 +142,9 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // cannot bill never is; saving already refused a listed model with no price. Every live
       // session's usage is read by the relay (xAI 9b, Gemini 9d, OpenAI 9e), so none starts
       // unpriced. A rewrite is never applied to a session (plan D13).
-      const listed = listOf(routing);
-      const resolved = resolveCall(routing, undefined, priceSources(connection), operation, requested, listed, { asIfServed: true });
+      // A listed WebSocket path has no model: its listing's rate prices it (`resolveWebsocket`).
+      const resolved =
+        match.kind === "passthrough" ? resolveWebsocket(match.listed) : resolveCall(routing, undefined, priceSources(connection), operation, requested, listOf(routing), { asIfServed: true });
       if (resolved.kind === "refused") throw callRefusal(resolved, operation);
       const call = { model: requested };
       // A session that calls other models itself (GPT-Live's backend): the ones the app may call that
@@ -158,7 +163,12 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
       if (location.in === "query") sent.set(location.name, call.model);
       const queryText = sent.toString();
-      const url = upstreamUrl(connection, description, { hostKey: match.upstream.host, path: match.upstream.path.replace(/^\//u, ""), query: queryText === "" ? "" : `?${queryText}` });
+      const url = upstreamUrl(connection, description, {
+        hostKey: match.upstream.host,
+        path: match.upstream.path.replace(/^\//u, ""),
+        query: queryText === "" ? "" : `?${queryText}`,
+        passthrough: match.kind === "passthrough",
+      });
       const credentials = sealedCredentials(connection, identity.keyShare);
       // The values the session's price depends on, read from its options once: its slices are priced with them.
       const priceKeys = priceKeyValues(operation, { body: {}, query: options });

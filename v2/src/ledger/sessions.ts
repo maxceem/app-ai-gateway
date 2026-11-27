@@ -253,6 +253,8 @@ export interface CheckpointStanding {
   readonly keyRemoved: boolean;
   /** The connection's own rates, read with its status, for pricing the slice. */
   readonly ratesJson?: string | null;
+  /** Its listed paths, read with them: a session on a listed WebSocket path is priced at its listing's rate. */
+  readonly passthroughJson?: string | null;
 }
 
 /** What one checkpoint writes (`writeCheckpoint`). */
@@ -564,9 +566,9 @@ export async function checkpointStanding(settings: D1Database, session: SessionR
     reads.push(settings.prepare("SELECT status FROM app_end_user WHERE app_id = ? AND id = ?").bind(session.appId, session.endUserId));
   }
   if (session.providerConnectionId !== null) {
-    reads.push(settings.prepare("SELECT status, rates_json FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
+    reads.push(settings.prepare("SELECT status, rates_json, passthrough_json FROM provider_connection WHERE id = ?").bind(session.providerConnectionId));
   }
-  if (reads.length === 0) return { userBlocked: false, keyRemoved: false, ratesJson: null };
+  if (reads.length === 0) return { userBlocked: false, keyRemoved: false, ratesJson: null, passthroughJson: null };
   let results: D1Result[];
   try {
     results = await withDeadline(settings.batch(reads), CHECKPOINT_SETTINGS_DEADLINE_MS, "reading the checkpoint's settings");
@@ -578,16 +580,18 @@ export async function checkpointStanding(settings: D1Database, session: SessionR
   let userBlocked = false;
   let keyRemoved = false;
   let ratesJson: string | null = null;
+  let passthroughJson: string | null = null;
   if (session.endUserId !== null) {
     userBlocked = (results[index]?.results[0] as { status?: unknown } | undefined)?.status === "blocked";
     index += 1;
   }
   if (session.providerConnectionId !== null) {
-    const row = results[index]?.results[0] as { status?: unknown; rates_json?: unknown } | undefined;
+    const row = results[index]?.results[0] as { status?: unknown; rates_json?: unknown; passthrough_json?: unknown } | undefined;
     keyRemoved = row?.status === undefined || row.status === "disabled";
     ratesJson = typeof row?.rates_json === "string" ? row.rates_json : null;
+    passthroughJson = typeof row?.passthrough_json === "string" ? row.passthrough_json : null;
   }
-  return { userBlocked, keyRemoved, ratesJson };
+  return { userBlocked, keyRemoved, ratesJson, passthroughJson };
 }
 
 /**

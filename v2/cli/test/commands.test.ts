@@ -301,11 +301,15 @@ test("provider add --type custom sends its key header, format and paths, read as
     customFields("custom", {
       "key-header": "x-api-key",
       "key-format": "Key {key}",
-      path: ["post chat/completions openai-chat", "GET models $0.001"],
+      path: ["post chat/completions openai-chat", "GET models $0.001", "GET v1/live websocket $0.06/min"],
     }),
     {
       auth: { header: "x-api-key", format: "Key {key}" },
-      passthrough: [{ method: "POST", path: "chat/completions", style: "openai-chat" }, { method: "GET", path: "models", per_request: 0.001 }],
+      passthrough: [
+        { method: "POST", path: "chat/completions", style: "openai-chat" },
+        { method: "GET", path: "models", per_request: 0.001 },
+        { method: "GET", path: "v1/live", websocket: true, per_minute: 0.06 },
+      ],
     },
   );
   // The console's defaults, and no paths until some are listed.

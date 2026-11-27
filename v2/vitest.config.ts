@@ -24,6 +24,7 @@ const SPLIT_KEY_FILES = [
   "test/relay-session.test.ts",
   "test/session-leases.test.ts",
   "test/streaming-voice.test.ts",
+  "test/generic-live.test.ts",
 ];
 
 /**
@@ -122,7 +123,7 @@ const workers = (splitKeys: boolean) =>
             {
               name: "app-ai-gateway-v2-relay-main-stub",
               modules: true,
-              // The ticket's own mode and model, and the adapter the gateway answers for it (xAI's, Gemini's, else `mock`). It keeps what the
+              // The ticket's own mode and model, and the adapter the gateway answers for it (xAI's, Gemini's, the generic one, else `mock`). It keeps what the
               // relay sent, which a test reads back at /seen/<session id>.
               script: [
                 'import { WorkerEntrypoint } from "cloudflare:workers";',
@@ -133,7 +134,7 @@ const workers = (splitKeys: boolean) =>
                 "  if (!seen.has(sid)) seen.set(sid, { checkpoints: [], closes: [] });",
                 "  seen.get(sid)[kind].push(input);",
                 "};",
-                "const adapterOf = (operation) => operation === \"xai.realtime\" ? \"xai\" : operation.startsWith(\"gemini.live.\") ? \"gemini\" : \"mock\";",
+                "const adapterOf = (operation) => operation === \"xai.realtime\" ? \"xai\" : operation.startsWith(\"gemini.live.\") ? \"gemini\" : operation === \"websocket\" ? \"generic\" : \"mock\";",
                 "export class RelayContract extends WorkerEntrypoint {",
                 "  async open(ticket) { const t = payloadOf(ticket); return { version: 2, deadline: t.start + t.cap, mode: t.mode, operation: t.operation, model: t.model, checkpointIntervalMs: 60000, adapter: adapterOf(t.operation) }; }",
                 "  async checkpoint(ticket, input) { record(ticket, \"checkpoints\", input); return { decision: \"continue\", reasons: [], written: true }; }",

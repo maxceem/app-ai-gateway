@@ -10,7 +10,8 @@
  * The mock adapters read the smoke mock provider's frames. xAI (9b), Gemini
  * Live (9d), OpenAI Realtime over WebSocket (9e), GPT-Live (9g), and
  * ElevenLabs' and Deepgram's streaming voice (10a) are the provider adapters.
- * A frame no adapter reads costs nothing but the connection time.
+ * `generic` (10b) is for a provider the gateway does not know: it reads no
+ * frame. A frame no adapter reads costs nothing but the connection time.
  */
 
 /** The token counts an adapter may report: the same list the main Worker accepts (`SLICE_MEASURES`). */
@@ -1022,6 +1023,13 @@ const DEEPGRAM = {
 /** The smoke mock's answers, shaped like OpenAI's: `response.created`, then `response.done`. */
 const MOCK_TURNS = { opens: '{"type":"response.created"', closes: '{"type":"response.done"' };
 
+/**
+ * An adapter that reads nothing: the session is metered by connection time
+ * only (the wall clock meter), and never waits for an answer when it closes.
+ * @type {Adapter}
+ */
+const NONE = { shape: "per_turn", detached: "hold", read: () => null, turn: () => null };
+
 /** @type {Record<string, Adapter>} */
 const ADAPTERS = {
   // The smoke mock's per-turn usage: `{"type":"mock.usage","event_id":…,"usage":{…}}`.
@@ -1036,14 +1044,11 @@ const ADAPTERS = {
   gptlive: GPT_LIVE,
   elevenlabs_tts: ELEVENLABS_TTS,
   deepgram: DEEPGRAM,
+  // A provider the gateway does not know (10b, plan D4): its frames, both ways, are forwarded as they are
+  // and never read, so the session bills its connection time at the customer's per-minute rate. Its
+  // frames are held for our SDK's reconnect, as for any provider that keeps the conversation.
+  generic: NONE,
 };
-
-/**
- * An adapter that reads nothing: the session is metered by connection time
- * only (the wall clock meter), and never waits for an answer when it closes.
- * @type {Adapter}
- */
-const NONE = { shape: "per_turn", detached: "hold", read: () => null, turn: () => null };
 
 /**
  * Whether this relay knows the adapter `open` named. A newer gateway can name one an older relay

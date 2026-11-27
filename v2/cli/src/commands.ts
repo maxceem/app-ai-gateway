@@ -179,7 +179,8 @@ export async function providerAdd(ctx: Context, flags: Flags): Promise<ProviderR
 /**
  * A custom provider's key header and format, and the paths it serves, each
  * `--path` one line as the console's paths field reads it (`METHOD path`,
- * then `$<dollars>` or an API style). Null for a built-in type, which takes
+ * then `$<dollars>` or an API style, or `websocket $<dollars>/min` for a live
+ * WebSocket path). Null for a built-in type, which takes
  * none of them: its listed paths are a trust choice made in the console, or
  * with agw provider update.
  */

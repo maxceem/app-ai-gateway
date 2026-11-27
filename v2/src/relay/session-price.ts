@@ -25,14 +25,16 @@ import type { Ticket } from "./tickets.ts";
 /**
  * Today's price for the session's model, saved form: '' when it has none.
  * Null when it couldn't be read: the connection's settings (`ratesJson`
- * undefined: D1 didn't answer) or its rates are unreadable.
+ * undefined: D1 didn't answer) or its rates are unreadable. A session on a
+ * listed WebSocket path is priced at its listing's rate (`passthroughJson`).
  */
-export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined): string | null {
+export function todaySessionPrice(ticket: Ticket, ratesJson: string | null | undefined, passthroughJson: string | null = null): string | null {
   if (ticket.model === null) return encodeSessionPrice(null);
   if (ratesJson === undefined) return null;
   try {
     // On the session's own operation: its section of our list, if it has one (Deepgram's streaming rates).
-    return encodeSessionPrice(billingForCharge(priceSources({ type: ticket.providerType, rates_json: ratesJson }), ticket.model, ticket.operation));
+    const sources = priceSources({ type: ticket.providerType, rates_json: ratesJson, passthrough_json: passthroughJson });
+    return encodeSessionPrice(billingForCharge(sources, ticket.model, ticket.operation));
   } catch {
     return null;
   }

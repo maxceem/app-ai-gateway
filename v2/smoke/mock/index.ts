@@ -559,6 +559,7 @@ async function answer(request: Request): Promise<Response> {
   if (url.pathname.endsWith("/v1/live/sessions") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return gptLiveSession();
   if (/\/v1\/text-to-speech\/[^/]+\/stream-input$/u.test(url.pathname) && request.headers.get("upgrade")?.toLowerCase() === "websocket") return elevenLabsStream();
   if (url.pathname.endsWith("/v1/listen") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return deepgramStream(url);
+  if (url.pathname.endsWith("/v1/live-echo") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return echoSession(request, url);
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -796,6 +797,22 @@ function gptLiveSession(): Response {
       server.close(1000, "closed");
     }
   });
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/**
+ * A live provider the gateway does not know (step 10b), for a custom provider's WebSocket path: a plain
+ * echo. Its first frame says which key headers it got, as labels (`keyMarks`, never a key), and the query,
+ * so a smoke check sees the key went in its own header and no client credential came through. Then every
+ * frame comes back as it was sent, text or binary.
+ */
+function echoSession(request: Request, url: URL): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.binaryType = "arraybuffer";
+  server.accept();
+  server.send(JSON.stringify({ type: "mock.hello", key: keyMarks(request.headers), query: url.search }));
+  server.addEventListener("message", (event) => server.send(event.data));
   return new Response(null, { status: 101, webSocket: client });
 }
 

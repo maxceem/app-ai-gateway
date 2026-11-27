@@ -4058,6 +4058,16 @@
               "$ref": "#/components/schemas/FieldSetting"
             },
             "maxItems": 20
+          },
+          "websocket": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "per_minute": {
+            "type": "number",
+            "minimum": 0
           }
         },
         "required": [
