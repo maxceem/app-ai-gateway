@@ -423,6 +423,8 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
 
   /** Rates for the house model, saved form: nano-dollars, per minute of connection or per token. */
   const perMinute = (nanoPerMinute: number) => JSON.stringify({ "house-realtime": { per_minute: nanoPerMinute } });
+  /** A session whose operation bills connection time (the wall clock meter); OpenAI Realtime bills tokens alone. */
+  const CLOCK_SESSION = { providerType: "xai", operation: "xai.realtime" } as const;
   const booked = (id: string) =>
     ledger().prepare("SELECT cost_nano, price_source, measured, measures_json FROM charge WHERE id = ?").bind(id).first<{ cost_nano: number | null; price_source: string; measured: string; measures_json: string }>();
   const queued = (id: string) => ledger().prepare("SELECT kind FROM open_work WHERE charge_id = ?").bind(id).first();
@@ -430,7 +432,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("bills connection time at a price's time rate, through the checkpoint: the wall clock meter (step 9a part 3)", async () => {
     // $0.0043 a minute, as a provider billed by connection time states it: one minute is 4,300,000 nano-dollars.
     const { connectionId } = await houseConnection(perMinute(4_300_000));
-    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime", ...CLOCK_SESSION });
     await checkpointForRelay(env, text, live(slice(ticket, 1)));
     await checkpointForRelay(env, text, live(slice(ticket, 2, {}, { sessionMs: 90_000 })));
     // A gap in a slice billed by time keeps the price of the time it knows, marked partial, never $0.
@@ -510,6 +512,26 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     expect(usageFromMeasures(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json))?.usage.tokenVariants).toEqual({ cached_input: { audio: 190 } });
   });
 
+  it("never bills an OpenAI Realtime session's connection time, even at a custom price with a minute rate: it counts for plan minutes only (Sol, #270 round 4)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // Tokens at 1,000 nano-dollars a million each way, and a minute rate a slice of a minute would bill at 6,000,000.
+    const rates = JSON.stringify({ "house-realtime": { input: 1_000_000_000, output: 1_000_000_000, per_minute: 6_000_000 } });
+    const house = await houseConnection(rates);
+    const { text, ticket } = await ticketFor({ connectionId: house.connectionId, model: "house-realtime" });
+    await checkpointForRelay(env, text, live(slice(ticket, 1, { input_tokens: 1_000, output_tokens: 1_000 })));
+    expect(await charges(ticket.sid)).toMatchObject([{ cost_nano: 2_000_000, price_source: "customer_rate", session_ms: MINUTE }]);
+    expect(JSON.parse((await booked(`${ticket.sid}:slice:1`))!.measures_json)).not.toHaveProperty("units_session_seconds");
+    // The sweep prices it the same way, when the rates couldn't be read at the checkpoint.
+    const unread = await houseConnection("{not json");
+    const late = await ticketFor({ connectionId: unread.connectionId, model: "house-realtime" });
+    await checkpointForRelay(env, late.text, live(slice(late.ticket, 1, { input_tokens: 1_000, output_tokens: 1_000 })));
+    await unread.setRates(rates);
+    expect(await priceUnresolvedCharge(ledger(), env.DB, { chargeId: `${late.ticket.sid}:slice:1`, now: Date.now() })).toMatchObject({
+      status: "priced",
+      correction: { costNano: 2_000_000, unit: "tokens" },
+    });
+  });
+
   it("books an OpenAI session's input transcriptions apart, one charge per model at its own price; a repeated slice books none (step 9e; Sol, #270 round 1)", async () => {
     const openai = { model: "gpt-realtime-2.1-mini", url: "https://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini" };
     const { text, ticket } = await ticketFor(openai);
@@ -566,7 +588,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("never books connection time as $0 when the price can't be read: unresolved and queued, and the sweep prices the seconds (Sol round 1)", async () => {
     // Today's rates can't be read (as when the settings read times out): no price is saved.
     const { connectionId, setRates } = await houseConnection("{not json");
-    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime", ...CLOCK_SESSION });
     const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     await checkpointForRelay(env, text, live(slice(ticket, 1)));
@@ -598,7 +620,7 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
 
   it("the sweep books connection time at $0 when the price turns out to bill tokens only, but a slice with a gap stays an unknown cost (Sol round 1)", async () => {
     const { connectionId, setRates } = await houseConnection("{not json");
-    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime" });
+    const { text, ticket } = await ticketFor({ connectionId, model: "house-realtime", ...CLOCK_SESSION });
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     await checkpointForRelay(env, text, live(slice(ticket, 1)));

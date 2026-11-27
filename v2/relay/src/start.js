@@ -58,7 +58,7 @@
  */
 import { TICK_MS } from "./frames.js";
 import { adapterFor, knownAdapter } from "./adapters.js";
-import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
+import { carryOpen, carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
 /** The contract version this relay speaks (`src/relay/contract.ts` in the gateway): 2 adds `checkpoint`. */
@@ -240,6 +240,8 @@ export class SessionCore {
     this.turnWaiter = null;
     /** The last journal write failed: usage this instance saw may be missing from storage (`endOnce`). */
     this.unwritten = false;
+    /** The latest usage write (`recordUsage`): the end waits for it, on local storage only, before it judges what is cut. */
+    this.lastWrite = Promise.resolve();
     /** The session's deadline, kept by `start` for the closing wait: no storage read on the end path. */
     this.deadline = Infinity;
     /**
@@ -842,6 +844,9 @@ export class SessionCore {
     // hung up itself, not at the time cap, and not for a start that never got its call.
     const hadCall = this.call !== null;
     if (hadCall && reason !== "provider_closed" && reason !== "time_cap") await this.drainTurn();
+    // A usage write still in flight (an answer that finished just before a cap) lands first: its answer
+    // is then not cut, and the final read has it (Gemini Neon, #270).
+    await this.lastWrite;
     // An answer still open now was cut off: its usage is missing. Also when an observed call's side
     // channel dropped during the wait: the answer never finished where the relay could see it.
     const cut = hadCall && this.turnOpen();
@@ -862,8 +867,13 @@ export class SessionCore {
     // The rest of the usage is frozen into the final slice, in the same write as the end (rows 25, 26).
     const settings = /** @type {Settings | undefined} */ (stored.get("settings"));
     const journal = this.restartGap(readJournal(stored.get(JOURNAL_KEY)), settings);
-    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start.
-    if (journal !== null && this.journal !== null && this.journal !== journal) carryTotals(journal, this.journal);
+    // A journal write that failed must not lose what this instance saw: xAI's audio total, the clock's start,
+    // and the open usage's counts when both journals agree where it starts (Sol, #270 round 4).
+    let carried = false;
+    if (journal !== null && this.journal !== null && this.journal !== journal) {
+      carryTotals(journal, this.journal);
+      carried = carryOpen(journal, this.journal);
+    }
     // Never past the deadline: an instance that wakes late bills nothing after the cap.
     const deadline = settings?.deadline;
     const sliceEnd = Math.min(endedAt, deadline ?? Infinity);
@@ -875,7 +885,7 @@ export class SessionCore {
     }
     // The last journal write failed, so usage this instance saw may be missing from what storage holds:
     // the final slice is partial, never complete without it (Sol, #270 round 3).
-    if (journal !== null && this.unwritten) journal.droppedFrom ??= sliceEnd;
+    if (journal !== null && this.unwritten && !carried) journal.droppedFrom ??= sliceEnd;
     if (journal !== null && estimate !== null) addUsage(journal, estimate, "per_turn", sliceEnd);
     if (journal !== null) freeze(journal, sliceEnd, details.gap === true ? { gapFrom: journal.savedAt } : {});
     this.journal = journal;
@@ -922,10 +932,25 @@ export class SessionCore {
    * one small write (plan 5.2 rule 3). A repeated event changes nothing. A
    * write that fails is logged: the event may be lost, and the gap rules cover
    * a restart.
+   * `written` runs once the write is done (or nothing was to be written), before anything awaiting
+   * the write goes on: the end awaits the latest one (`lastWrite`) before it judges what is cut.
+   * @param {import("./journal.js").UsageEvent} event
+   * @param {"per_turn" | "running_total"} shape
+   * @param {() => void} [written]
+   * @returns {Promise<void>}
+   */
+  recordUsage(event, shape, written) {
+    const run = this.recordUsageNow(event, shape).finally(() => written?.());
+    this.lastWrite = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * `recordUsage`'s work.
    * @param {import("./journal.js").UsageEvent} event
    * @param {"per_turn" | "running_total"} shape
    */
-  async recordUsage(event, shape) {
+  async recordUsageNow(event, shape) {
     // During the closing wait, the last answer's usage still counts.
     if (this.call === null || this.over || (this.ending !== null && this.turnWaiter === null)) return;
     const journal = await this.loadJournal();

@@ -25,7 +25,7 @@
  */
 import { rate, nano, type NanoDollars } from "../money.ts";
 import { billingForCharge, priceSources, type ResolvedPrice } from "../pricing/billability.ts";
-import { decodeSessionPrice, sliceUsage } from "../relay/session-price.ts";
+import { decodeSessionPrice, sessionBillsTime, sliceUsage } from "../relay/session-price.ts";
 import { costOfRates, priceInServedMode } from "../pricing/tokens.ts";
 import { usageFromMeasures } from "../usage/measures.ts";
 import { STANDARD_MODE } from "../usage/service-modes.ts";
@@ -358,7 +358,8 @@ export async function priceUnresolvedCharge(
   const stored = usageFromMeasures(original.measures) ?? tokenColumns(original);
   if (stored === null) return { status: "no_price" };
   /** The usage `price` bills: a session's slice bills its connection time only at a time rate. */
-  const usageAt = (price: ResolvedPrice) => (original.ownerType === "session" ? sliceUsage(stored.usage, price.price) : stored.usage);
+  const timeBilled = sessionBillsTime(original.operation);
+  const usageAt = (price: ResolvedPrice) => (original.ownerType === "session" ? sliceUsage(stored.usage, price.price, timeBilled) : stored.usage);
   const priceWith = (price: ResolvedPrice) => {
     try {
       return priceInServedMode(price.price, usageAt(price), stored.mode, stored.doubt);

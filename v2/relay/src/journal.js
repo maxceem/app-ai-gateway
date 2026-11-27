@@ -166,6 +166,23 @@ export function carryTotals(stored, memory) {
 }
 
 /**
+ * The open usage this instance holds, carried into the stored journal before the final slice, when
+ * a failed write kept it out: only when both agree where the open usage starts (the same slice
+ * number and start), so nothing frozen or confirmed is counted again. Returns whether it carried.
+ * @param {Journal} stored
+ * @param {Journal} memory
+ */
+export function carryOpen(stored, memory) {
+  if (stored.nextSeq !== memory.nextSeq || stored.from !== memory.from) return false;
+  stored.measures = { ...memory.measures };
+  stored.seen = [...memory.seen];
+  stored.baselines = { ...memory.baselines };
+  if (memory.transcriptions === undefined) delete stored.transcriptions;
+  else stored.transcriptions = structuredClone(memory.transcriptions);
+  return true;
+}
+
+/**
  * Adds `count` to a measure the relay counts itself, with no provider event
  * behind it (xAI's text messages, from the client's frames).
  * @param {Journal} journal

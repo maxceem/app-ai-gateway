@@ -848,7 +848,7 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "session_rates"; readonly operation: string; readonly byClock: boolean }
+  | { readonly kind: "session_rates"; readonly operation: string; readonly byClock: boolean; readonly tokensOnly: boolean }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -875,7 +875,10 @@ export function savedPriceProblem(
     listed === null
       ? undefined
       : operations.find((operation) => readSession(operation) && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
-  if (session !== undefined) return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock" };
+  if (session !== undefined) {
+    const tokensOnly = session.meter.kind === "provider_event" && session.meter.tokensOnly === true;
+    return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock", tokensOnly };
+  }
   try {
     effectivePrices(price);
   } catch (error) {

@@ -261,7 +261,7 @@ describe("apps", () => {
     const id = openai.body.provider.id as string;
     const perImage = await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gpt-realtime-2.1": { per_image: 0.01 } } });
     expect(perImage).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
-    expect(String(perImage.body.error.message)).toContain("openai.realtime needs token rates or a time rate");
+    expect(String(perImage.body.error.message)).toMatch(/openai\.realtime needs token rates$/u);
     expect(await request(key, "PUT", `/v2/admin/providers/${id}`, { revision: 1, pricing: { "gpt-realtime-2.1": { input: 4, output: 24, audio_input: 32, audio_output: 64 } } })).toMatchObject({ status: 200 });
   });
 

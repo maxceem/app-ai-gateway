@@ -592,12 +592,13 @@ export class Session extends DurableObject {
    * @param {import("./adapters.js").Adapter} adapter
    * @param {string | ArrayBuffer} data
    * @param {import("./adapters.js").CallMeter | null} [meter] the call's own memory: an event's model, if not the session's
+   * @param {() => void} [written] runs once the usage is written (`SessionCore.recordUsage`)
    * @returns {Promise<void> | null}
    */
-  readUsage(adapter, data, meter = null) {
+  readUsage(adapter, data, meter = null, written = undefined) {
     const read = adapter.read(data);
     const event = read === null || meter === null ? read : meter.label(read);
-    return event === null ? null : this.core.recordUsage(event, adapter.shape).catch(() => undefined);
+    return event === null ? null : this.core.recordUsage(event, adapter.shape, written).catch(() => undefined);
   }
 
   /**
@@ -642,18 +643,19 @@ export class Session extends DurableObject {
     // What the call remembers (OpenAI's format and transcription model, the answer's audio), after the frame went out.
     const meter = live.call?.meter ?? null;
     const finished = meter === null ? null : meter.see(data, forwarded);
+    // An answer or transcription the frame finished counts as open until its usage is written: settled
+    // as soon as the write is done, before the end judges what is cut. Once nothing is open, a closing
+    // session waits no more.
+    const settle =
+      meter === null || finished === null
+        ? undefined
+        : () => {
+            meter.settled(finished);
+            if (!meter.pending()) this.core.turnDone();
+          };
     // Usage is read after the frame went out, and journaled in its own write (plan 5.2).
-    const recorded = this.readUsage(live.adapter, data, meter);
-    // An answer or transcription the frame finished counts as open until its usage is written. Once
-    // nothing is open, a closing session waits no more.
-    if (meter !== null && finished !== null) {
-      const settle = () => {
-        meter.settled(finished);
-        if (!meter.pending()) this.core.turnDone();
-      };
-      if (recorded === null) settle();
-      else void recorded.then(settle);
-    }
+    const recorded = this.readUsage(live.adapter, data, meter, settle);
+    if (recorded === null) settle?.();
     const turn = live.adapter.turn(data);
     // Gemini says "open" on each of an answer's audio chunks: each counts as the answer opening again,
     // which changes nothing, since its "done" comes after its last chunk.

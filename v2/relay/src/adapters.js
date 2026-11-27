@@ -133,7 +133,9 @@ const TYPE_FIRST = '{"type":"';
 export function typeOf(data) {
   if (data.startsWith(TYPE_FIRST)) {
     const end = data.indexOf('"', TYPE_FIRST.length);
-    return end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+    const type = end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+    // An escape in the type (`\u002e`) reads differently parsed: such a frame is parsed (Gemini Neon, #270).
+    if (type === null || !type.includes("\\")) return type;
   }
   return parsedType(parsed(data));
 }
@@ -378,6 +380,9 @@ function countAt(record, ...path) {
  * - Output: audio at its own rate, the rest (text, reasoning) at the text rate.
  * - Tokens no breakdown covers, a side with none or the rest of one, are
  *   `unknown`: billed at the model's highest rate, never as text (Sol, #270).
+ *   So are cached tokens OpenAI doesn't split by modality: the cache discount
+ *   applies only where the cached modality is known, and the price is marked
+ *   an estimate.
  * @param {Record<string, unknown>} usage
  * @returns {Record<string, number>}
  */
@@ -385,18 +390,26 @@ export function openAiMeasures(usage) {
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
   const details = usage.input_token_details;
+  // The cache discount applies only where the cached modality is known: text and audio. Cached images
+  // bill as uncached; cached tokens with no modality bill as unknown, at the dearest rate, as an estimate.
+  const cachedText = countAt(details, "cached_tokens_details", "text_tokens");
+  const cachedAudio = countAt(details, "cached_tokens_details", "audio_tokens");
   const cachedImage = countAt(details, "cached_tokens_details", "image_tokens");
-  const cached = Math.min(input, Math.max(0, countAt(details, "cached_tokens") - cachedImage));
+  const cachedAll = Math.min(input, countAt(details, "cached_tokens"));
+  const cached = Math.min(cachedAll, cachedText + cachedAudio);
+  const unexplained = Math.max(0, cachedAll - cachedText - cachedAudio - cachedImage);
   /** @type {Record<string, number>} */
   const measures = { input_tokens: input - cached, output_tokens: output, cached_input_tokens: cached, input_split: 1, output_split: 1 };
   const audio = countAt(details, "audio_tokens");
   const image = countAt(details, "image_tokens");
   measures.input_audio_tokens = audio;
   measures.input_image_tokens = image;
-  measures.cached_input_audio_tokens = Math.min(cached, countAt(details, "cached_tokens_details", "audio_tokens"));
+  measures.cached_input_audio_tokens = Math.min(cached, cachedAudio);
   // What the split doesn't account for, of the uncached input: billed at the highest rate.
   const accounted = countAt(details, "text_tokens") + audio + image;
-  measures.input_unknown_tokens = Math.max(0, Math.min(input - cached, input - accounted));
+  measures.input_unknown_tokens = Math.min(input - cached, Math.max(0, input - accounted) + unexplained);
+  // Cached tokens whose modality is unknown are a guess: the price is marked an estimate.
+  if (unexplained > 0) measures.estimated_tokens = unexplained;
   const out = usage.output_token_details;
   const outAudio = countAt(out, "audio_tokens");
   measures.output_audio_tokens = outAudio;
@@ -598,13 +611,28 @@ function openAiCall(model) {
     lock(data) {
       // A client's `session.update` may not move the session to another model: the session's
       // stays (plan: relayed mode locks the model). Anything else goes as it is.
-      if (model === null || typeof data !== "string" || typeOf(data) !== "session.update") return data;
-      const frame = /** @type {{ session?: Record<string, unknown> } | null} */ (parsed(data));
+      if (model === null || typeof data !== "string" || plainNotUpdate(data)) return data;
+      // Read whole, as OpenAI reads it (plan: settings messages are always fully parsed).
+      const frame = /** @type {{ type?: unknown, session?: Record<string, unknown> } | null} */ (parsed(data));
       const session = frame?.session;
-      if (typeof session !== "object" || session === null || !Object.hasOwn(session, "model") || session.model === model) return data;
+      if (frame?.type !== "session.update" || typeof session !== "object" || session === null || !Object.hasOwn(session, "model")) return data;
+      // Written again even when the model is the session's: a repeated key in the text is gone.
       return JSON.stringify({ ...frame, session: { ...session, model } });
     },
   };
+}
+
+/**
+ * Whether a client frame is surely not a `session.update`, without parsing it: it starts with
+ * its `type`, which is another, and has no escape and no second `"type"` key that a parse could
+ * read differently. An audio append, the frame sent most, is never parsed (Gemini Neon, #270).
+ * @param {string} data
+ */
+function plainNotUpdate(data) {
+  if (!data.startsWith(TYPE_FIRST) || data.includes("\\")) return false;
+  const end = data.indexOf('"', TYPE_FIRST.length);
+  if (end === -1 || data.slice(TYPE_FIRST.length, end) === "session.update") return false;
+  return data.indexOf('"type"', end) === -1;
 }
 
 /** The events that end the wait for an item's transcription. */

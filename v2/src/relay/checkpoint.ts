@@ -61,7 +61,7 @@ import { STANDARD_MODE } from "../usage/service-modes.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
 import { CONTRACT_VERSION, ContractRefusal, checkedTicket } from "./contract.ts";
 import { sessionRowOf, SEAL_GRACE_MS, type Ticket } from "./tickets.ts";
-import { decodeSessionPrice, sliceUsage, todaySessionPrice } from "./session-price.ts";
+import { decodeSessionPrice, sessionBillsTime, sliceUsage, todaySessionPrice } from "./session-price.ts";
 
 /** The token counts a slice may carry, as the relay's adapters report them. */
 export const SLICE_MEASURES = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens"] as const;
@@ -326,7 +326,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
   const gap = slice.gapMs > 0 || slice.gaps > 0;
   // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
   // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
-  const timeMs = billedTime(slice);
+  const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
   const billableMs = timeMs > 0 && (price.unit === "session_seconds" || price.priceSource === "unresolved") ? timeMs : 0;
   // A slice billed by time, or by its text messages alone, keeps the price of what it knows, marked `partial` below.
   if (gap && price.unit !== "session_seconds" && price.unit !== "text_messages" && !SLICE_MEASURES.some((name) => (slice.measures[name] ?? 0) > 0)) {
@@ -535,7 +535,9 @@ export interface LedgerCheckpointInput {
  */
 function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): SliceAtSavedPrice {
   const facts = { app: ticket.app, session: ticket.sid };
-  const unpriced = priceSlice(slice.measures, null, billedTime(slice));
+  // A session billed by tokens alone (OpenAI Realtime) bills no connection time: it counts for plan minutes only.
+  const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
+  const unpriced = priceSlice(slice.measures, null, timeMs);
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
     priceAt: (saved) => {
@@ -544,7 +546,7 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         if (unpriced.priceSource === "unresolved") log("warn", "checkpoint_price_unsaved", facts);
       } else if (saved !== "") {
         try {
-          price = priceSlice(slice.measures, decodeSessionPrice(saved), billedTime(slice));
+          price = priceSlice(slice.measures, decodeSessionPrice(saved), timeMs);
         } catch {
           price = unpriced;
         }

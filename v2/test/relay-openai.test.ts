@@ -7,11 +7,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { adapterFor, openAiMeasures, transcriptionMeasures } from "../relay/src/adapters.js";
-import { freeze, newJournal, addUsage } from "../relay/src/journal.js";
+import { carryOpen, freeze, newJournal, addUsage } from "../relay/src/journal.js";
 import { Session } from "../relay/src/index.js";
 import { SessionFrames } from "../relay/src/frames.js";
 import { SessionCore } from "../relay/src/start.js";
-import { MemoryStore, ticketFor } from "./relay-stand-ins.ts";
+import { MemoryStore, ticketFor, until } from "./relay-stand-ins.ts";
 
 const OPENAI = adapterFor("openai");
 const meter = (model: string | null = "gpt-realtime-2.1") => OPENAI.perCall!(model);
@@ -53,6 +53,13 @@ describe("OpenAI Realtime's adapter (step 9e)", () => {
       output_split: 1,
       output_audio_tokens: 260,
     });
+  });
+
+  it("applies the cache discount only where the cached modality is known: unexplained cached tokens bill as unknown, an estimate (Sol, #270 round 4)", () => {
+    // 1,000 input tokens, 800 of them audio, 600 cached with no split by modality.
+    const usage = { input_tokens: 1_000, output_tokens: 0, input_token_details: { text_tokens: 200, audio_tokens: 800, cached_tokens: 600 } };
+    expect(openAiMeasures(usage)).toMatchObject({ input_tokens: 1_000, input_unknown_tokens: 600, input_audio_tokens: 800, estimated_tokens: 600 });
+    expect(openAiMeasures(usage)).not.toHaveProperty("cached_input_tokens");
   });
 
   it("records tokens no breakdown covers as unknown, so they bill at the highest rate even beside an answer that was broken down (Sol, #270 round 1)", () => {
@@ -147,6 +154,22 @@ describe("an OpenAI call's memory (step 9e)", () => {
     for (const frame of untouched) expect(call.lock(frame)).toBe(frame);
   });
 
+  it("locks the model through an escaped type, a repeated type key and a repeated model key, and never parses an audio append (Gemini Neon, #270 round 1)", () => {
+    const call = meter("gpt-realtime-2.1");
+    const locked = (frame: string) => (JSON.parse(call.lock(frame) as string) as { session: { model: string } }).session.model;
+    // An escaped dot in the type reads as session.update once parsed.
+    expect(locked('{"type":"session\\u002eupdate","session":{"model":"gpt-realtime-2.1-mini"}}')).toBe("gpt-realtime-2.1");
+    // A repeated type key: the last one wins when parsed.
+    expect(locked('{"type":"response.create","type":"session.update","session":{"model":"gpt-realtime-2.1-mini"}}')).toBe("gpt-realtime-2.1");
+    // A repeated model key: the frame is written again, so only the session's model is left.
+    const twice = call.lock('{"type":"session.update","session":{"model":"gpt-realtime-2.1","model":"gpt-realtime-2.1-mini"}}') as string;
+    expect(twice).not.toContain("gpt-realtime-2.1-mini");
+    expect(locked(twice)).toBe("gpt-realtime-2.1");
+    // The frame sent most goes as it is, unparsed.
+    const append = JSON.stringify({ type: "input_audio_buffer.append", audio: "A".repeat(10_000) });
+    expect(call.lock(append)).toBe(append);
+  });
+
   it("keeps each transcription model's usage apart in the slice: a switch mid-slice never mixes them (Sol, #270 round 1)", () => {
     const journal = newJournal(0);
     addUsage(journal, { id: "r1", measures: { input_tokens: 10 } }, "per_turn", 1);
@@ -192,7 +215,10 @@ describe("the session object with an OpenAI call (step 9e)", () => {
       idle: false,
       ending: null,
       call: {},
-      recordUsage: async (event: unknown) => void recorded.push(event),
+      recordUsage: async (event: unknown, _shape: unknown, written?: () => void) => {
+        recorded.push(event);
+        written?.();
+      },
       turnDone: () => void told.push("done"),
     };
     const object = Object.create(Session.prototype) as Session;
@@ -245,15 +271,19 @@ describe("an OpenAI session's closing wait (Sol, #270 round 2)", () => {
       idle: false,
       ending: null,
       call: {},
-      recordUsage: (event: { id: string }) =>
+      recordUsage: (event: { id: string }, _shape: unknown, written?: () => void) =>
         event.id === "resp_voice"
           ? new Promise<void>((resolve) => {
               write = () => {
                 told.push("voice usage");
+                written?.();
                 resolve();
               };
             })
-          : Promise.resolve(void told.push(`${event.id} usage`)),
+          : Promise.resolve().then(() => {
+              told.push(`${event.id} usage`);
+              written?.();
+            }),
       turnDone: () => void told.push("done"),
     };
     const object = Object.create(Session.prototype) as Session;
@@ -282,7 +312,16 @@ describe("an OpenAI session's closing wait (Sol, #270 round 2)", () => {
 describe("a transcription still to come when an OpenAI session closes (Sol, #270 round 1)", () => {
   it("the answer's end does not release the closing wait while a transcription is still to come; its arrival does", async () => {
     const told: string[] = [];
-    const core = { idle: false, ending: null, call: {}, recordUsage: async () => void told.push("usage"), turnDone: () => void told.push("done") };
+    const core = {
+      idle: false,
+      ending: null,
+      call: {},
+      recordUsage: async (_event: unknown, _shape: unknown, written?: () => void) => {
+        told.push("usage");
+        written?.();
+      },
+      turnDone: () => void told.push("done"),
+    };
     const object = Object.create(Session.prototype) as Session;
     (object as unknown as { core: unknown }).core = core;
     const call = { send: () => undefined, meter: meter("gpt-realtime-2.1") };
@@ -331,7 +370,7 @@ describe("a transcription still to come when an OpenAI session closes (Sol, #270
 });
 
 describe("a journal write that fails before the close (Sol, #270 round 3)", () => {
-  it("marks the final slice partial when the last usage write failed, never complete without it; a later write that lands clears it", async () => {
+  it("carries the usage a failed write left out into the final write, when both journals agree on the open usage (Sol, #270 rounds 3 and 4)", async () => {
     const run = async (recover: boolean) => {
       let now = 1_000_000;
       const store = new MemoryStore();
@@ -362,10 +401,60 @@ describe("a journal write that fails before the close (Sol, #270 round 3)", () =
       await core.end("client_closed");
       return slices.at(-1);
     };
-    // The answer's usage never reached storage: the final slice is partial.
-    expect((await run(false))?.gaps).toBeGreaterThan(0);
+    // The answer's usage never reached storage, but this instance held it, for the same open usage: carried into
+    // the final write, so the slice is complete (Sol, #270 round 4).
+    expect(await run(false)).toMatchObject({ gaps: 0, measures: { input_tokens: 100, output_tokens: 20 } });
     // A later write held the whole journal: complete, with both answers.
     expect(await run(true)).toMatchObject({ gaps: 0, measures: { input_tokens: 101, output_tokens: 21 } });
+    // Journals that disagree on the open usage (a slice frozen since) carry nothing: the slice stays partial.
+    const stored = newJournal(0);
+    const memory = newJournal(0);
+    addUsage(memory, { id: "r", measures: { input_tokens: 5 } }, "per_turn", 1);
+    freeze(memory, 10);
+    expect(carryOpen(stored, memory)).toBe(false);
+    expect(stored.measures).toEqual({});
+  });
+});
+
+describe("an answer that finishes just before the session's cap (Gemini Neon, #270 round 1)", () => {
+  it("is not cut: the end waits for its usage write, on local storage, before it judges what is cut", async () => {
+    let now = 1_000_000;
+    const store = new MemoryStore();
+    const slices: { gaps: number; measures: Record<string, number> }[] = [];
+    const call = meter("gpt-realtime-2.1");
+    const core = new SessionCore({
+      store,
+      now: () => now,
+      log: () => undefined,
+      vault: { sessionKey: async () => ({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" }) as never },
+      main: {
+        open: async () => ({ deadline: now + 60_000, mode: "relayed", operation: "openai.realtime", checkpointIntervalMs: 60_000, version: 2, adapter: "openai", model: "gpt-realtime-2.1" }) as never,
+        checkpoint: async (_ticket: string, input: { slice: { gaps: number; measures: Record<string, number> } | null }) => {
+          if (input.slice !== null) slices.push(structuredClone(input.slice));
+          return { decision: "continue", reasons: [], written: true } as never;
+        },
+        close: async () => ({ version: 2 }),
+      },
+      provider: { connect: async () => ({ callId: null, close: () => undefined, estimate: () => call.estimate() }) },
+      turnOpen: () => call.pending(),
+    });
+    const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.realtime", model: "gpt-realtime-2.1" });
+    await core.start(text, ticket, { close: () => undefined });
+    call.see('{"type":"response.created","event_id":"e","response":{"id":"resp_1"}}', true);
+    const key = call.see(done("resp_1", USAGE), true)!;
+    // Its usage write is slow: the cap comes while it is in flight.
+    const write = store.putJournal.bind(store);
+    let land: (() => void) | null = null;
+    store.putJournal = (journal: unknown) => new Promise<void>((resolve) => (land = () => void write(journal).then(resolve)));
+    const recorded = core.recordUsage({ id: "resp_1", measures: { input_tokens: 70, output_tokens: 40 } }, "per_turn", () => call.settled(key));
+    await until(() => land !== null);
+    now += 60_000;
+    const ended = core.end("time_cap");
+    await Promise.resolve();
+    store.putJournal = write;
+    land!();
+    await Promise.all([recorded, ended]);
+    expect(slices.at(-1)).toMatchObject({ gaps: 0, measures: { input_tokens: 70, output_tokens: 40 } });
   });
 });
 
