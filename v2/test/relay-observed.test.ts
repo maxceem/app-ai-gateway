@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { TICK_MS } from "../relay/src/frames.js";
-import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, HANGUP_KEY_WAIT_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
+import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, VAULT_KEY_WAIT_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
 import { SEAL_GRACE_MS as GATEWAY_SEAL_GRACE_MS } from "../src/relay/tickets.ts";
 import { MemoryStore, never, ticketFor, until } from "./relay-stand-ins.ts";
 
@@ -616,13 +616,13 @@ describe("a stalled vault at the cap (Sol, #265 round 3)", () => {
       wait: (ms) => (waits.push(ms), new Promise<void>((resolve) => (deadlineCame = resolve))),
     });
     await started(s);
-    s.tick(30 * 60_000 - 8_000);
+    s.tick(30 * 60_000 - 4_000);
     stall = true;
     const restarted = s.instance();
     const waking = restarted.alarm();
     await until(() => waits.length === 1);
-    expect(waits).toEqual([8_000]);
-    s.tick(8_000);
+    expect(waits).toEqual([4_000]);
+    s.tick(4_000);
     deadlineCame();
     await until(() => waits.length === 2);
     deadlineCame();
@@ -632,7 +632,28 @@ describe("a stalled vault at the cap (Sol, #265 round 3)", () => {
     expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
     // The vault still stalls: the hang-up's own lookup waits 5 s at most, so the end finishes, and the
     // hang-up stays owed for the next wakeup.
-    expect(waits.slice(1)).toEqual([HANGUP_KEY_WAIT_MS]);
+    expect(waits.slice(1)).toEqual([VAULT_KEY_WAIT_MS]);
     expect(s.store.data.get("hangup")).toBe(true);
+  });
+});
+
+describe("a stalled vault mid-session (Sol, #265 round 4)", () => {
+  it("a restart's vault lookup waits 5 s at most: the call stays detached, and the tick's checkpoint still brings a stop, which ends it", async () => {
+    const waits: number[] = [];
+    let stall = false;
+    let stop = false;
+    const s = setup({
+      vault: (restart) => (stall && restart ? never() : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
+      wait: (ms) => (waits.push(ms), Promise.resolve()),
+      checkpoint: async (seen) => ({ decision: stop && !seen.accounting ? "stop" : "continue", reasons: stop && !seen.accounting ? ["user_blocked"] : [], written: true }),
+    });
+    await started(s);
+    s.tick(5 * 60_000);
+    stall = true;
+    stop = true;
+    await s.instance().alarm();
+    expect(waits[0]).toBe(VAULT_KEY_WAIT_MS);
+    expect(s.calls.attached).toBe(1);
+    expect(s.calls.close).toEqual([{ endReason: "user_blocked", finalSlice: expect.any(Number) }]);
   });
 });

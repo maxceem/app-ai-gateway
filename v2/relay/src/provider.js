@@ -106,23 +106,22 @@ export async function createObservedCall(key, offer, send = fetch, timeout = wai
   void timeout(PROVIDER_CONNECT_TIMEOUT_MS).then(() => {
     if (!answered) handshake.abort(new Error("provider_connect_timeout"));
   });
-  /** @type {Response} */
-  let response;
+  // The limit covers the answer's body too: a provider that stalls in it never leaves the app's POST waiting.
   try {
-    response = await send(key.target, { method: "POST", headers: keyHeaders(key, { "content-type": "application/sdp" }), body: offer, redirect: "manual", signal: handshake.signal });
+    const response = await send(key.target, { method: "POST", headers: keyHeaders(key, { "content-type": "application/sdp" }), body: offer, redirect: "manual", signal: handshake.signal });
+    const location = response.headers.get("location") ?? "";
+    const callId = decodeURIComponent(location.split("/").filter((part) => part !== "").pop() ?? "");
+    if ((response.status !== 200 && response.status !== 201) || !/^[A-Za-z0-9_.-]{1,200}$/u.test(callId)) {
+      await response.body?.cancel();
+      // A success without a call id can't be followed: the call, if any, ends by itself (crash table row 11).
+      throw new ProviderRefused(response.status);
+    }
+    const answer = await response.text();
+    if (answer.length > MAX_ANSWER) throw new ProviderRefused(response.status);
+    return { callId, answer };
   } finally {
     answered = true;
   }
-  const location = response.headers.get("location") ?? "";
-  const callId = decodeURIComponent(location.split("/").filter((part) => part !== "").pop() ?? "");
-  if ((response.status !== 200 && response.status !== 201) || !/^[A-Za-z0-9_.-]{1,200}$/u.test(callId)) {
-    await response.body?.cancel();
-    // A success without a call id can't be followed: the call, if any, ends by itself (crash table row 11).
-    throw new ProviderRefused(response.status);
-  }
-  const answer = await response.text();
-  if (answer.length > MAX_ANSWER) throw new ProviderRefused(response.status);
-  return { callId, answer };
 }
 
 /**

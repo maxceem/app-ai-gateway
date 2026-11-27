@@ -79,8 +79,12 @@ function stopReason(reasons) {
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
 
-/** How long a hang-up waits for the vault's key: it is tried again on the next wakeup. */
-export const HANGUP_KEY_WAIT_MS = 5_000;
+/**
+ * How long a restarted instance waits for the vault's key, for a reattach or a hang-up: past it the
+ * call stays detached, or the hang-up owed, and the next wakeup tries again. Short, so a stalled
+ * vault never holds a tick's checkpoint, and a stop from the gateway still reaches the call.
+ */
+export const VAULT_KEY_WAIT_MS = 5_000;
 
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
@@ -649,14 +653,18 @@ export class SessionCore {
     let key = this.key;
     if (key === null) {
       try {
-        // Never waits past the deadline, as the attach: a stalled vault can't hold the session past its cap.
-        key = await this.restartKey(ticket, Math.max(0, settings.deadline - this.now()));
+        // Never long, and never past the deadline: a stalled vault can't hold the tick, or the session past its cap.
+        key = await this.restartKey(ticket, Math.max(0, Math.min(VAULT_KEY_WAIT_MS, settings.deadline - this.now())));
       } catch (error) {
         this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: codeOf(error) });
         return this.now() >= settings.deadline ? this.end("time_cap") : this.noteDetached();
       }
       if (key !== null) this.key = key;
-      if (key === null || this.now() >= settings.deadline) return this.end("time_cap");
+      if (this.now() >= settings.deadline) return this.end("time_cap");
+      if (key === null) {
+        this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: "timeout" });
+        return this.noteDetached();
+      }
     }
     if (this.provider.attach === undefined) return this.noteDetached();
     /** @type {ProviderCall} */
@@ -731,7 +739,7 @@ export class SessionCore {
     if (!sealed()) return giveUp();
     try {
       // Bounded too, so a stalled vault never holds the end: the next wakeup tries again.
-      this.key ??= await this.restartKey(ticket, HANGUP_KEY_WAIT_MS);
+      this.key ??= await this.restartKey(ticket, VAULT_KEY_WAIT_MS);
       if (this.key === null) throw new Error("vault_timeout");
       if (this.provider.hangup === undefined) throw new Error("no hang-up");
       if (!sealed()) return giveUp();
