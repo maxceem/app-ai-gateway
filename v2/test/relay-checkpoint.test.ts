@@ -458,6 +458,13 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     // The same with a crash gap: the message keeps its price, marked partial, not left for the sweep (Fable, #266 round 1).
     await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 3, { text_messages: 1 }, { sessionMs: 0, gapMs: 5_000, gaps: 1 })));
     expect((await charges(listed.ticket.sid))[2]).toMatchObject({ cost_nano: 4_000_000, price_source: "list_rate", measured: "partial" });
+    // xAI's audio ran ahead of the clock (a long answer asked by text, 9c): the slice bills the
+    // relay's billed time, 52 s, while its connection time, 4 s, stays what plan minutes count.
+    await checkpointForRelay(env, listed.text, live(slice(listed.ticket, 4, {}, { sessionMs: 4_000, billedMs: 52_000 })));
+    expect((await charges(listed.ticket.sid))[3]).toMatchObject({ cost_nano: 69_333_334, price_source: "list_rate", session_ms: 4_000 });
+    expect(JSON.parse((await booked(`${listed.ticket.sid}:slice:4`))!.measures_json)).toMatchObject({ units_session_seconds: 52_000 });
+    // More than a day of billed time in one slice is not real: refused, as any malformed slice.
+    await expect(checkpointForRelay(env, listed.text, live(slice(listed.ticket, 5, {}, { billedMs: 24 * 60 * MINUTE + 1 })))).rejects.toThrow(ContractRefusal);
     // A custom price with token rates too: a text-only slice with a gap keeps its text charge, partial (Sol, #266 round 5).
     const tokensToo = await houseConnection(JSON.stringify({ "grok-voice-3.0": { input: 1_000_000_000, output: 1_000_000_000, per_minute: 80_000_000, per_text_message: 4_000_000 } }));
     const mixed = await ticketFor({ ...xai, connectionId: tokensToo.connectionId });
