@@ -184,10 +184,13 @@ describe("adapters", () => {
     expect(mock.turn(new ArrayBuffer(8))).toBeNull();
   });
 
-  it("reads a frame's type from its start, or its end for a frame whose type comes after a long field", () => {
+  it("reads a frame's top-level type: from its start when it comes first, else by parsing, never a nested one (Sol, #266 round 1)", () => {
     expect(typeOf('{"type":"ping","event_id":"e1"}')).toBe("ping");
     expect(typeOf('{"event_id":"0d6c3a41-2c55-4a7c-9a3c-6a4b1c0f8f31", "type" : "response.done"}')).toBe("response.done");
-    expect(typeOf(`{"audio":"${"A".repeat(4_000)}","type":"input_audio_buffer.append"}`)).toBe("input_audio_buffer.append");
+    // An item's own `type` comes first in the text, but it is not the frame's.
+    expect(typeOf(JSON.stringify({ item: { type: "message", content: [{ type: "input_text", text: "Hi" }] }, type: "conversation.item.create" }))).toBe("conversation.item.create");
+    // The type far from both ends of a long frame.
+    expect(typeOf(JSON.stringify({ event_id: "e1", audio: "A".repeat(4_000), type: "input_audio_buffer.append", note: "B".repeat(4_000) }))).toBe("input_audio_buffer.append");
     expect(typeOf(`{"audio":"${"A".repeat(4_000)}"}`)).toBeNull();
     expect(typeOf("not json")).toBeNull();
   });
@@ -202,6 +205,13 @@ describe("adapters", () => {
     expect(xai.client?.(JSON.stringify({ type: "response.create" }))).toBe("activity");
     const text = JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } });
     expect(xai.client?.(text)).toBe("text");
+    // The same two frames with their fields in another order (Sol, #266 round 1).
+    expect(xai.client?.(JSON.stringify({ item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] }, type: "conversation.item.create" }))).toBe("text");
+    expect(xai.client?.(JSON.stringify({ audio: "A".repeat(4_000), type: "input_audio_buffer.append", event_id: "B".repeat(400) }))).toBe("activity");
+    // A tool result is not billed; an item with audio goes to the audio meter (xAI's speech-to-speech guide).
+    expect(xai.client?.(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "{}" } }))).toBeNull();
+    expect(xai.client?.(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_audio", audio: "AAAA" }] } }))).toBe("activity");
+    expect(xai.client?.(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "audio", audio: "AAAA" }] } }))).toBe("activity");
     expect(xai.client?.(JSON.stringify({ type: "session.update", session: { voice: "eve" } }))).toBeNull();
     // xAI's frames: an answer opens and ends, and a ping says only "still here".
     expect(xai.turn('{"type":"response.created","response":{"id":"r1"}}')).toBe("open");

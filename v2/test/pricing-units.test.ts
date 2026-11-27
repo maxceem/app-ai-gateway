@@ -122,6 +122,13 @@ describe("unit rates", () => {
     expect(billing(xaiVoice, sources, "grok-voice-3.0").problem).toBeNull();
     // Saving a rate for the minutes alone would leave text messages unpriced: it can't bill this way.
     expect(billing(xaiVoice, priceSources({ type: "xai", rates: { "house-voice": { per_minute: rate(80_000_000) } } }), "house-voice").problem).toBe("wrong_unit");
+    // Rates by key value: the session names none, and its time would go unbilled. Never saved, never served (Sol, #266 round 1).
+    const keyed = priceSources({ type: "xai", rates: { "house-voice": { per_text_message: rate(4_000_000), by: { voice: { eve: { per_minute: rate(80_000_000), per_text_message: rate(4_000_000) } } } } as never } });
+    expect(billing(xaiVoice, keyed, "house-voice", undefined, "save").problem).toBe("wrong_unit");
+    expect(billing(xaiVoice, keyed, "house-voice").problem).toBe("wrong_unit");
+    // Both base rates, stated by the model itself: saved.
+    const base = priceSources({ type: "xai", rates: { "house-voice": { per_minute: rate(80_000_000), per_text_message: rate(4_000_000) } } });
+    expect(billing(xaiVoice, base, "house-voice", undefined, "save").problem).toBeNull();
   });
 
   it("lets an operation bill a model only in a unit it measures", () => {

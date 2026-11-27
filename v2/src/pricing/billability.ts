@@ -309,6 +309,10 @@ function servable(operation: OperationDescription, price: ModelPrice): boolean {
 
 /** Whether `operation` can bill `price`, by the check asked for. */
 function operationBillable(operation: OperationDescription, price: ModelPrice, check: BillingCheck): boolean {
+  // A session billed by its clock (xAI's voice API) is priced by the rates the model states itself:
+  // its slices name no key value, and the checkpoint bills their time only at a base time rate
+  // (`sliceUsage`). Rates by key value would leave its time unbilled, so they never bill it (Sol, #266).
+  if (operation.meter.kind === "wall_clock" && (price.keyed !== undefined || price.keyedAdditions !== undefined)) return false;
   if (check === "save") return chargeGap(operation, price) === null;
   // A custom provider's path is never served on a price that cannot bill some way of its in full: one rule
   // for serving and saving, so a model priced for another style is `wrong_unit` there, as whisper-1 is on chat.

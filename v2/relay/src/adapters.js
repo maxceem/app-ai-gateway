@@ -97,19 +97,55 @@ function jsonAdapter(prefix, shape, turns) {
   };
 }
 
+/** The start of a JSON frame whose first field is its `type`: the common layout, read without parsing. */
+const TYPE_FIRST = '{"type":"';
+
 /**
- * A JSON frame's `type`, from its first 128 characters, or its last 128 for a
- * frame whose type comes after a long field (audio). Null when neither has
- * one. Never parses the whole frame.
+ * A JSON frame's top-level `type`, or null when it has none. A frame that
+ * starts with its `type` is read from that prefix alone, never parsed. Any
+ * other layout is parsed, so a nested `type` (an item's) is never taken for
+ * the frame's: that layout is rare, and the frame is small or read once.
  * @param {string} data
  * @returns {string | null}
  */
 export function typeOf(data) {
-  const pattern = /"type"\s*:\s*"([^"]{1,64})"/u;
-  const head = pattern.exec(data.slice(0, 128));
-  if (head !== null) return head[1] ?? null;
-  if (data.length <= 128) return null;
-  return pattern.exec(data.slice(-128))?.[1] ?? null;
+  if (data.startsWith(TYPE_FIRST)) {
+    const end = data.indexOf('"', TYPE_FIRST.length);
+    return end > TYPE_FIRST.length && end - TYPE_FIRST.length <= 64 ? data.slice(TYPE_FIRST.length, end) : null;
+  }
+  return parsedType(parsed(data));
+}
+
+/** A frame parsed, or null when it is not JSON. @param {string} data @returns {unknown} */
+function parsed(data) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/** A parsed frame's top-level `type`. @param {unknown} frame */
+function parsedType(frame) {
+  const type = typeof frame === "object" && frame !== null ? /** @type {{ type?: unknown }} */ (frame).type : undefined;
+  return typeof type === "string" ? type : null;
+}
+
+/**
+ * What one client `conversation.item.create` is billed as (xAI's speech-to-speech guide):
+ * - an item with audio content (`input_audio`, `audio`) goes to the audio meter: activity;
+ * - a tool result (`function_call_output`) is not billed;
+ * - every other item is one text input, $0.004.
+ * @param {string} data
+ * @returns {"activity" | "text" | null}
+ */
+function itemKind(data) {
+  const item = /** @type {{ item?: { type?: unknown, content?: unknown } } | null} */ (parsed(data))?.item;
+  if (typeof item !== "object" || item === null) return "text";
+  if (item.type === "function_call_output") return null;
+  const content = Array.isArray(item.content) ? item.content : [];
+  const audio = content.some((part) => typeof part === "object" && part !== null && (part.type === "input_audio" || part.type === "audio"));
+  return audio ? "activity" : "text";
 }
 
 /**
@@ -119,9 +155,9 @@ export function typeOf(data) {
  *   frame (even silence) or the first answer. So the relay's clock is the
  *   meter. It starts when the client's first audio frame or `response.create`
  *   has gone to xAI, or at xAI's first `response.created`, whichever comes first.
- * - Each client `conversation.item.create` is one text message, billed on top.
- *   Every one is counted, whatever its content: counting one too many is
- *   better than billing one as free.
+ * - Each client `conversation.item.create` is one text message, billed on
+ *   top, except a tool result (`function_call_output`), which is not billed,
+ *   and an item with audio content, which the clock bills (`itemKind`).
  * - `response.done` carries `billable_audio_seconds`, xAI's running total of
  *   that clock in whole seconds. It is a check only, never billed: the
  *   relay logs when it drifts from its own clock (`../start.js`).
@@ -157,7 +193,7 @@ const XAI = {
     if (typeof data !== "string") return "activity";
     const type = typeOf(data);
     if (type === "input_audio_buffer.append" || type === "response.create") return "activity";
-    if (type === "conversation.item.create") return "text";
+    if (type === "conversation.item.create") return itemKind(data);
     return null;
   },
   keepalive(data) {
