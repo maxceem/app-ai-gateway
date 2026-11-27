@@ -79,6 +79,9 @@ function stopReason(reasons) {
 /** How long a closing session waits for the provider's answer in progress to finish (plan 5.1). */
 export const CLOSE_DRAIN_MS = 10_000;
 
+/** How long a hang-up waits for the vault's key: it is tried again on the next wakeup. */
+export const HANGUP_KEY_WAIT_MS = 5_000;
+
 /** How long an ended session keeps retrying `close` before it gives up and logs (crash table row 25). */
 export const CLOSE_RETRY_MS = 30 * 60_000;
 /** How soon the alarm tries `close` again. */
@@ -646,13 +649,14 @@ export class SessionCore {
     let key = this.key;
     if (key === null) {
       try {
-        key = await this.vault.sessionKey(ticket, { restart: true });
+        // Never waits past the deadline, as the attach: a stalled vault can't hold the session past its cap.
+        key = await this.restartKey(ticket, Math.max(0, settings.deadline - this.now()));
       } catch (error) {
         this.log({ level: "warn", message: "relay_vault_refused", session: this.sessionId, code: codeOf(error) });
         return this.now() >= settings.deadline ? this.end("time_cap") : this.noteDetached();
       }
-      this.key = key;
-      if (this.now() >= settings.deadline) return this.end("time_cap");
+      if (key !== null) this.key = key;
+      if (key === null || this.now() >= settings.deadline) return this.end("time_cap");
     }
     if (this.provider.attach === undefined) return this.noteDetached();
     /** @type {ProviderCall} */
@@ -694,6 +698,17 @@ export class SessionCore {
   }
 
   /**
+   * The session's key from the vault, as for a restart (8j), or null when the
+   * vault has not answered within `limitMs`: the caller goes on without it.
+   * @param {string} ticket
+   * @param {number} limitMs
+   * @returns {Promise<SessionKey | null>}
+   */
+  restartKey(ticket, limitMs) {
+    return Promise.race([this.vault.sessionKey(ticket, { restart: true }), this.wait(limitMs).then(() => null)]);
+  }
+
+  /**
    * Hangs up an ended observed call: one attempt now, and one on each wakeup
    * while it is owed (crash table rows 23–25, 28), with the key in memory or
    * from the vault, until the session's seal expires. The slices and `close`
@@ -715,7 +730,9 @@ export class SessionCore {
     };
     if (!sealed()) return giveUp();
     try {
-      this.key ??= await this.vault.sessionKey(ticket, { restart: true });
+      // Bounded too, so a stalled vault never holds the end: the next wakeup tries again.
+      this.key ??= await this.restartKey(ticket, HANGUP_KEY_WAIT_MS);
+      if (this.key === null) throw new Error("vault_timeout");
       if (this.provider.hangup === undefined) throw new Error("no hang-up");
       if (!sealed()) return giveUp();
       await this.provider.hangup(this.key, callId);

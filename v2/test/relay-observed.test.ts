@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { TICK_MS } from "../relay/src/frames.js";
-import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
+import { CLOSE_RETRY_EVERY_MS, CLOSE_RETRY_MS, HANGUP_KEY_WAIT_MS, ProviderRefused, SEAL_GRACE_MS, SessionCore } from "../relay/src/start.js";
 import { SEAL_GRACE_MS as GATEWAY_SEAL_GRACE_MS } from "../src/relay/tickets.ts";
 import { MemoryStore, never, ticketFor, until } from "./relay-stand-ins.ts";
 
@@ -480,8 +480,8 @@ describe("an observed session's time and its cap (Sol, #265 round 1)", () => {
     const restarted = s.instance();
     await restarted.attachSide();
     await restarted.end("client_closed");
-    // The closing wait was cut at the deadline: 4 s, not 10 s.
-    expect(waits).toEqual([4_000]);
+    // The closing wait was cut at the deadline: 4 s, not 10 s. (The first wait bounds the vault lookup.)
+    expect(waits).toEqual([4_000, 4_000]);
 
     const late = setup();
     const core = await started(late);
@@ -603,5 +603,36 @@ describe("an observed session's end against a late attach or a late vault (Sol, 
     expect(tries).toBe(1);
     expect(s.logs).toContainEqual(expect.objectContaining({ level: "error", message: "relay_hangup_given_up" }));
     expect(s.store.data.get("hangup")).not.toBe(true);
+  });
+});
+
+describe("a stalled vault at the cap (Sol, #265 round 3)", () => {
+  it("a restart's vault lookup waits no longer than the time left: at the cap the session ends with time_cap, and the call is hung up", async () => {
+    const waits: number[] = [];
+    let deadlineCame: () => void = () => undefined;
+    let stall = false;
+    const s = setup({
+      vault: (restart) => (stall && restart ? never() : Promise.resolve({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime/calls" })),
+      wait: (ms) => (waits.push(ms), new Promise<void>((resolve) => (deadlineCame = resolve))),
+    });
+    await started(s);
+    s.tick(30 * 60_000 - 8_000);
+    stall = true;
+    const restarted = s.instance();
+    const waking = restarted.alarm();
+    await until(() => waits.length === 1);
+    expect(waits).toEqual([8_000]);
+    s.tick(8_000);
+    deadlineCame();
+    await until(() => waits.length === 2);
+    deadlineCame();
+    await waking;
+    await until(() => s.calls.close.length > 0);
+    expect(s.calls.attached).toBe(1);
+    expect(s.calls.close).toEqual([{ endReason: "time_cap", finalSlice: expect.any(Number) }]);
+    // The vault still stalls: the hang-up's own lookup waits 5 s at most, so the end finishes, and the
+    // hang-up stays owed for the next wakeup.
+    expect(waits.slice(1)).toEqual([HANGUP_KEY_WAIT_MS]);
+    expect(s.store.data.get("hangup")).toBe(true);
   });
 });
