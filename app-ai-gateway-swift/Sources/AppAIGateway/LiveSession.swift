@@ -100,6 +100,8 @@ public actor LiveSession {
     private var lastSentAt: Date
     private var droppedAt: Date?
     private var attempts = 0
+    /// When a full send queue last made the client come back on a new link.
+    private var overflowedAt: Date?
     private var finished = false
     private var timer: Task<Void, Never>?
 
@@ -325,17 +327,25 @@ public actor LiveSession {
         forward(message)
     }
 
-    private func forward(_ message: URLSessionWebSocketTask.Message) {
+    /// `relay` marks the client's own reports and heartbeats: they belong to
+    /// this link, so they are never carried over to a new one.
+    private func forward(_ message: URLSessionWebSocketTask.Message, relay: Bool = false) {
         guard let outbox else { return }
-        lastSentAt = now()
-        if case .dropped = outbox.yield(message) {
-            // The link stopped taking frames: most likely it died without a
-            // word. Come back on a new one; this frame waits with the others.
-            guard secret != nil else { return finish(code: 0, reason: "link_lost") }
-            pending.append(message)
-            link?.close()
-            dropped()
+        let time = now()
+        lastSentAt = time
+        guard case .dropped = outbox.yield(message) else { return }
+        // The link stopped taking frames: most likely it died without a word.
+        // A second time within the relay's window means the link is too slow
+        // for what the app sends, and coming back would only loop.
+        if secret == nil || overflowedAt.map({ time.timeIntervalSince($0) < timing.reconnectFor }) == true {
+            return finish(code: 0, reason: "send_queue_full")
         }
+        overflowedAt = time
+        if !relay { pending.append(message) }
+        // The same handoff as reconnect(): the old link stays open until the
+        // new one has taken the session over, so the relay never sees it end.
+        retiring = link
+        dropped()
     }
 
     private func onTick() {
@@ -350,10 +360,10 @@ public actor LiveSession {
         if received != reported, time.timeIntervalSince(lastReportAt) >= timing.reportEvery {
             reported = received
             lastReportAt = time
-            forward(.string(#"{"type":"agw.received","bytes":"# + String(received) + "}"))
+            forward(.string(#"{"type":"agw.received","bytes":"# + String(received) + "}"), relay: true)
         }
         if time.timeIntervalSince(lastSentAt) >= timing.heartbeatAfter {
-            forward(.string(#"{"type":"agw.heartbeat"}"#))
+            forward(.string(#"{"type":"agw.heartbeat"}"#), relay: true)
         }
     }
 

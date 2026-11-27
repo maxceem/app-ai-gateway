@@ -19,6 +19,9 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
         set { lock.withLock { _stallSends = newValue } }
     }
     private var _stallSends = false
+    private var _sendsStarted = 0
+    /// Sends the writer has begun, stalled or not.
+    var sendsStarted: Int { lock.withLock { _sendsStarted } }
 
     init(request: URLRequest) { self.request = request }
 
@@ -27,6 +30,7 @@ final class FakeLink: LiveSessionLink, @unchecked Sendable {
     var closeReason: String { lock.withLock { _closeReason } }
 
     func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        lock.withLock { _sendsStarted += 1 }
         while stallSends { try await Task.sleep(nanoseconds: 1_000_000) }
         lock.withLock {
             if case .string(let text) = message { _sent.append(text) } else { _sent.append("<binary>") }
@@ -340,16 +344,64 @@ struct LiveSessionTests {
         for index in 0..<(2 * LiveSession.pendingLimit + 10) { await session.send(text: "audio-\(index)") }
         // Most likely the link died without a word: a new one comes back to the session.
         #expect(await events.next() == .reconnecting)
-        #expect(links[0].closed)
         #expect(await eventually { links.count == 2 && links[1].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        // The old link stays open until the new one has taken over: a close now could end the session.
+        #expect(!links[0].closed)
         links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
         #expect(await events.next() == .resumed)
+        #expect(links[0].closed)
         // The frame that found the queue full, and what came after it, go out on the new link, in order.
         let last = 2 * LiveSession.pendingLimit + 9
         #expect(await eventually { links[1].sent.last == "audio-\(last)" })
         let resent = Array(links[1].sent.dropFirst())
         #expect(resent.count >= 9)
         #expect(resent == ((last - resent.count + 1)...last).map { "audio-\($0)" })
+    }
+
+    @Test
+    func aSecondFullQueueSoonAfterEndsTheSessionInsteadOfLooping() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].stallSends = true
+        for index in 0..<(2 * LiveSession.pendingLimit + 10) { await session.send(text: "a-\(index)") }
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        links[1].stallSends = true
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        // The new link is just as slow: the app's frames fill it again.
+        for index in 0..<(2 * LiveSession.pendingLimit + 10) { await session.send(text: "b-\(index)") }
+        #expect(await events.next() == .ended(code: 0, reason: "send_queue_full"))
+        #expect(links.count == 2)
+    }
+
+    @Test
+    func aReportThatFindsTheQueueFullIsNotCarriedToTheNewLink() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(report: 0.01), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].stallSends = true
+        // One frame in the writer's hands, then the queue exactly full.
+        await session.send(text: "first")
+        #expect(await eventually { links[0].sendsStarted == 1 })
+        for index in 0..<(2 * LiveSession.pendingLimit) { await session.send(text: "app-\(index)") }
+        // Something arrives, so the next tick sends a report: it finds the queue full.
+        links[0].deliver("provider")
+        _ = await events.next()
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        // Reports on the new link count from zero: the old link's report never goes there.
+        #expect(!links[1].sent.contains { $0.hasPrefix(#"{"type":"agw.received""#) })
     }
 
     @Test
