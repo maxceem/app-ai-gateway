@@ -362,6 +362,15 @@ const ADAPTERS = {
  */
 const NONE = { shape: "per_turn", detached: "hold", read: () => null, turn: () => null };
 
+/**
+ * Whether this relay knows the adapter `open` named. A newer gateway can name one an older relay
+ * lacks (the gateway is deployed first): the relay then refuses the session (`./start.js`).
+ * @param {string} name
+ */
+export function knownAdapter(name) {
+  return Object.hasOwn(ADAPTERS, name);
+}
+
 /** The adapter `open` named, or one that reads nothing. @param {string | undefined} name */
 export function adapterFor(name) {
   return (name !== undefined && Object.hasOwn(ADAPTERS, name) ? ADAPTERS[name] : undefined) ?? NONE;

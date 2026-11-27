@@ -57,7 +57,7 @@
  * close, so it does not reconnect on its own (`PROTOCOL.md`).
  */
 import { TICK_MS } from "./frames.js";
-import { adapterFor } from "./adapters.js";
+import { adapterFor, knownAdapter } from "./adapters.js";
 import { carryTotals, confirm, countMeasure, finalSliceOf, freeze, JOURNAL_KEY, markActive, markAudio, markAttached, markDetached, newJournal, readJournal, addUsage } from "./journal.js";
 import { deadlineOf, parseTicket } from "./ticket.js";
 
@@ -446,6 +446,12 @@ export class SessionCore {
       }
 
       const openAt = this.now();
+      // An adapter this relay doesn't know (a newer gateway, this relay not deployed yet): the session
+      // would run unread, its model unlocked and its usage uncounted. It ends before the provider is called.
+      if (settings.adapter !== undefined && !knownAdapter(settings.adapter)) {
+        await endStart("error", { log: "relay_adapter_unknown" });
+        return fail("adapter_unknown");
+      }
       // The waits above may have taken the ticket past its time, or the client may have gone.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       await this.store.put({ connecting: true }, null);

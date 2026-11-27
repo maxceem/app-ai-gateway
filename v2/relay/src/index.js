@@ -281,8 +281,9 @@ export class Session extends DurableObject {
         ended: (code, reason) => {
           const live = this.live;
           const sendable = code === 1007 || code === 1008 || code === 1011 || (code >= 3000 && code <= 4999);
-          if (live?.call === call) this.endFor(live, "provider_closed", sendable ? code : 1011, reason);
-          else void this.core.providerGone(call);
+          if (live?.call === call && live.client !== null) closeQuietly(live.client, sendable ? code : 1011, reason);
+          // Ended whether a client is attached or its link is down: a dead call is never joined again.
+          void this.core.providerGone(call);
         },
         log: (event) => console.log(JSON.stringify({ ...event, session: this.core.sessionId })),
       },

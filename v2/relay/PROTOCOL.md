@@ -55,6 +55,9 @@ SDK sees only the provider's frames.
 - `1008 rate_limited`: more than 2,000 client frames in 10 s. Heartbeats and
   reports count too.
 - `1008` with an adapter's code: an adapter refused a client frame.
+- `4000 adapter_unknown`: the gateway named a provider adapter this relay does
+  not have yet. A new provider works once both the gateway and the relay are
+  deployed.
 - `1000` with the end's reason (for example `time_cap`, `client_closed`,
   `provider_closed`, `budget_stop`, `allowance_used_up`): the session ended
   normally.

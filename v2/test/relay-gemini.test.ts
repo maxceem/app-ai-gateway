@@ -9,6 +9,7 @@ import { adapterFor, geminiMeasures, geminiMessage } from "../relay/src/adapters
 import { BYTES_PER_ESTIMATED_TOKEN, GeminiUpstream, GOAWAY_MARGIN_MS, OLD_CLOSE_WAIT_MS, QUICK_CLOSE_MS, RESUME_LIMIT_MS, RESUME_RETRY_MS } from "../relay/src/gemini.js";
 import { billingForCharge, priceSources } from "../src/pricing/billability.ts";
 import { priceSlice } from "../src/relay/checkpoint.ts";
+import { Session } from "../relay/src/index.js";
 import { SessionCore } from "../relay/src/start.js";
 import { MemoryStore, ticketFor, until } from "./relay-stand-ins.ts";
 
@@ -565,6 +566,71 @@ describe("a Gemini Live session's own end (step 9d)", () => {
     await core.alarm();
     expect(asked).toBe(1);
     expect(slices.at(-1)?.measures).toMatchObject({ output_tokens: 7, output_audio_tokens: 7, estimated_tokens: 7 });
+  });
+});
+
+describe("a relay that doesn't know a session's adapter (Sol, #269 round 5)", () => {
+  it("ends the session before it calls the provider: an older relay never runs a newer gateway's session unread", async () => {
+    const now = 1_000_000;
+    const closes: { endReason: string }[] = [];
+    let connects = 0;
+    const core = new SessionCore({
+      store: new MemoryStore(),
+      now: () => now,
+      log: () => undefined,
+      vault: { sessionKey: async () => ({ key: { value: "k", header: "x-goog-api-key", format: "{key}" }, target: "https://provider.test/ws" }) as never },
+      main: {
+        open: async () => ({ deadline: now + 60_000, mode: "relayed", operation: "future.live", checkpointIntervalMs: 60_000, version: 2, adapter: "future-adapter" }) as never,
+        checkpoint: async () => ({ decision: "continue", reasons: [], written: true }) as never,
+        close: async (_ticket: string, input: { endReason: string }) => {
+          closes.push({ endReason: input.endReason });
+          return { version: 2 };
+        },
+      },
+      provider: {
+        connect: async () => {
+          connects += 1;
+          return { callId: null };
+        },
+      },
+    });
+    const { text, ticket } = ticketFor(now);
+    expect(await core.start(text, ticket, { close: () => undefined })).toEqual({ ok: false, code: "adapter_unknown" });
+    expect(connects).toBe(0);
+    await until(() => closes.length === 1);
+    expect(closes).toEqual([{ endReason: "error" }]);
+  });
+});
+
+describe("the session object when Gemini closes a connection right after its setup (Sol, #269 round 5)", () => {
+  /** The session object without its constructor, its core a stand-in. */
+  function session(client: { closed: unknown[]; close: (code: number, reason: string) => void } | null) {
+    const gone: unknown[] = [];
+    const core = { providerGone: async (call: unknown) => void gone.push(call), turnDone: () => undefined, recordUsage: async () => undefined, sessionId: "ses_1", call: null as unknown };
+    const object = Object.create(Session.prototype) as unknown as { geminiCall: (key: unknown, settings: unknown, socket: unknown) => { send: (data: string) => void } };
+    (object as unknown as { core: unknown }).core = core;
+    const socket = new FakeSocket();
+    const call = object.geminiCall({ target: "https://g.test" }, { deadline: Date.now() + 60_000, model: "gemini-3.8-live" }, socket);
+    core.call = call;
+    (object as unknown as { live: unknown }).live = { client, call, held: { drain: () => [] } };
+    call.send(JSON.stringify({ setup: {} }));
+    socket.emit({ setupComplete: {} });
+    socket.emit({ sessionResumptionUpdate: { newHandle: "h1", resumable: true } });
+    return { call, socket, gone };
+  }
+
+  it("ends the session even when the client's link is down, so no client can come back to a dead call", () => {
+    const s = session(null);
+    s.socket.fireClose(1007, "bad frame");
+    expect(s.gone).toEqual([s.call]);
+  });
+
+  it("closes an attached client with Gemini's code and reason, and ends the session", () => {
+    const client = { closed: [] as unknown[], close(code: number, reason: string) { this.closed.push([code, reason]); } };
+    const s = session(client);
+    s.socket.fireClose(1007, "bad frame");
+    expect(client.closed).toEqual([[1007, "bad frame"]]);
+    expect(s.gone).toEqual([s.call]);
   });
 });
 
