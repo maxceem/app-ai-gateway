@@ -568,15 +568,26 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     };
     await checkpointForRelay(env, text, live(slice(ticket, 1, {}, { billedMs: 90_000, transcriptions: { "gpt-6-luna": backend } })));
     const rows = await ledger()
-      .prepare("SELECT id, model, cost_nano, price_source, session_ms, input_tokens, output_tokens FROM charge WHERE owner_id = ? ORDER BY id")
+      .prepare("SELECT id, model, cost_nano, price_source, session_ms, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM charge WHERE owner_id = ? ORDER BY id")
       .bind(ticket.sid)
       .all()
       .then((r) => r.results);
     // The voice: 90 s billed at $0.05 a minute. The backend call at gpt-6-luna's list price, per million:
     // 500 x $0.10, 300 cached x $0.01, 100 written x $0.125, 100 written for 12 hours x $0.25, 50 x $0.50.
     expect(rows).toEqual([
-      { id: `${ticket.sid}:slice:1`, model: "gpt-live-1", cost_nano: 75_000_000, price_source: "list_rate", session_ms: MINUTE, input_tokens: 0, output_tokens: 0 },
-      { id: `${ticket.sid}:slice:1:backend:gpt-6-luna`, model: "gpt-6-luna", cost_nano: 115_500, price_source: "list_rate", session_ms: 0, input_tokens: 1_000, output_tokens: 50 },
+      { id: `${ticket.sid}:slice:1`, model: "gpt-live-1", cost_nano: 75_000_000, price_source: "list_rate", session_ms: MINUTE, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0 },
+      // The token columns as a call's: cached and cache-written tokens apart (Gemini Neon, #272).
+      {
+        id: `${ticket.sid}:slice:1:backend:gpt-6-luna`,
+        model: "gpt-6-luna",
+        cost_nano: 115_500,
+        price_source: "list_rate",
+        session_ms: 0,
+        input_tokens: 500,
+        cached_input_tokens: 300,
+        cache_write_tokens: 200,
+        output_tokens: 50,
+      },
     ]);
   });
 

@@ -860,7 +860,14 @@ function gptLiveCall(model, backend) {
     },
     pending: () => open.size > 0 || writing.size > 0,
     unfinished: () => open.size > 0,
-    label: (event) => event,
+    // OpenAI reports the dated snapshot it ran (`gpt-4.1-2025-04-14`), where the app named, and the price
+    // list holds, the alias: a backend call is booked under the alias it was allowed as (Gemini Neon, #272).
+    label(event) {
+      const named = event.model;
+      if (named === undefined || models.has(named)) return event;
+      const alias = named.replace(SNAPSHOT_DATE, "");
+      return alias !== named && models.has(alias) ? { ...event, model: alias } : event;
+    },
     estimate: () => null,
     lock(data) {
       if (typeof data !== "string") return { refused: "binary_not_supported" };
@@ -878,6 +885,9 @@ function gptLiveCall(model, backend) {
     },
   };
 }
+
+/** A dated snapshot's date at the end of a model's name: `-2025-04-14`. */
+const SNAPSHOT_DATE = /-\d{4}-\d{2}-\d{2}$/u;
 
 /** The GPT-Live client events that carry settings: read whole, always. */
 const GPT_LIVE_SETTINGS = new Set(["session.start", "session.update"]);

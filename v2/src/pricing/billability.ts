@@ -495,7 +495,7 @@ export function backendModels(route: RouteModels, sources: PriceSources, operati
     const candidates = listed !== null ? [...listed] : [...new Set([...listedModels(sources.type), ...Object.keys(sources.rates() ?? {})])];
     let bytes = 0;
     for (const model of candidates) {
-      if (resolve(sources, model) === null || resolveCall(route, undefined, sources, operation, model, listed, SAVING).kind !== "admitted") continue;
+      if (!backendModelAllowed(route, sources, operation, model)) continue;
       // The name, quoted, and its comma.
       const size = JSON.stringify(model).length + 1;
       if (bytes + size > BACKEND_BUDGET_BYTES) break;
@@ -506,6 +506,19 @@ export function backendModels(route: RouteModels, sources: PriceSources, operati
     return [];
   }
   return models;
+}
+
+/**
+ * Whether a live session's backend may call `model` (GPT-Live's, 9g): by its literal name, as the relay
+ * checks it (no rewrite), judged by `operation`'s own call rule, and with token rates in the standard
+ * tier, the one the relay pins (Sol, #272 round 3): a model priced only under Fast could never be billed.
+ * Saving an app and the session's ticket both ask this. May throw on unreadable rates.
+ */
+export function backendModelAllowed(route: RouteModels, sources: PriceSources, operation: OperationDescription, model: string): boolean {
+  const resolved = resolve(sources, model);
+  const standard = resolved === null ? undefined : priceInMode(resolved.price, STANDARD_MODE);
+  if (standard?.rates.input === undefined || standard.rates.output === undefined) return false;
+  return resolveCall(route, undefined, sources, operation, model, listOf(route), SAVING).kind === "admitted";
 }
 
 /**
@@ -883,7 +896,14 @@ export function savedPriceProblem(
 ):
   | { readonly kind: "too_large" }
   | { readonly kind: "too_many_combinations"; readonly combinations: number }
-  | { readonly kind: "session_rates"; readonly operation: string; readonly byClock: boolean; readonly tokensOnly: boolean }
+  | {
+      readonly kind: "session_rates";
+      readonly operation: string;
+      readonly byClock: boolean;
+      readonly tokensOnly: boolean;
+      /** For a session billed by its clock: the rates it needs, its time's and each unit's its meter declares. */
+      readonly rates: readonly string[];
+    }
   | {
       readonly kind: "bills_nothing";
       readonly values: Readonly<Record<string, string>>;
@@ -912,7 +932,10 @@ export function savedPriceProblem(
       : operations.find((operation) => readSession(operation) && operationBillable(operation, listed, "save") && !operationBillable(operation, price, "save"));
   if (session !== undefined) {
     const tokensOnly = session.meter.kind === "provider_event" && session.meter.tokensOnly === true;
-    return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock", tokensOnly };
+    const units = session.meter.kind === "wall_clock" ? (session.meter.units ?? []) : [];
+    // The rates named in the refusal: per_minute, and one for each unit the meter declares (xAI's text messages).
+    const rates = ["per_minute", ...UNIT_RATES.filter((rate) => rate.units.some((unit) => units.includes(unit))).map((rate) => rate.field)];
+    return { kind: "session_rates", operation: session.name, byClock: session.meter.kind === "wall_clock", tokensOnly, rates };
   }
   try {
     effectivePrices(price);

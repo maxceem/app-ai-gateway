@@ -123,6 +123,17 @@ describe("the lock on a GPT-Live client's frames (step 9g)", () => {
   });
 });
 
+describe("a GPT-Live backend call's model (Gemini Neon, #272 round 1)", () => {
+  it("books a dated snapshot OpenAI reports under the alias the app may call, and leaves any other name as it is", () => {
+    const call = meter();
+    const event = (model: string) => ({ id: "r1", model, measures: { backend_input_tokens: 10 } });
+    expect(call.label(event("gpt-6-luna-2026-09-22")).model).toBe("gpt-6-luna");
+    expect(call.label(event("gpt-6-luna")).model).toBe("gpt-6-luna");
+    // A snapshot of a model the app may not call keeps its own name: booked unresolved, never under another.
+    expect(call.label(event("gpt-5.5-pro-2026-04-23")).model).toBe("gpt-5.5-pro-2026-04-23");
+  });
+});
+
 describe("a GPT-Live call's backend calls in progress (Sol, #272 round 1)", () => {
   const created = (id: string) => JSON.stringify({ event_id: `event_c_${id}`, type: "response.event", delegation_id: "item_1", event: { type: "response.created", response: { id, model: "gpt-6-luna" } } });
 

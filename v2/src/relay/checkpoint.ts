@@ -510,7 +510,10 @@ function otherModelCharge(
     ...row,
     id: `${row.id}:${kind}:${model}`,
     model,
-    inputTokens: usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens,
+    // The token columns as a call's: cached and cache-written tokens apart (Gemini Neon, #272).
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
     outputTokens: usage.outputTokens,
     measures: usageMeasures(usage, STANDARD_MODE),
   };

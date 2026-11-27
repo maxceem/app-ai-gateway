@@ -342,7 +342,16 @@ test("a GPT-Live session locks its model, and books each backend call apart at t
   const started = JSON.parse(String(frames[0])) as { type?: string; session?: { model?: string } };
   same(started.type, "session.started", "the first frame from GPT-Live");
   same(started.session?.model, "gpt-live-1", "the model GPT-Live was started with");
-  type Charge = { id: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cost_nano: number | null; price_source: string };
+  type Charge = {
+    id: string;
+    model: string | null;
+    input_tokens: number | null;
+    cached_input_tokens: number | null;
+    cache_write_tokens: number | null;
+    output_tokens: number | null;
+    cost_nano: number | null;
+    price_source: string;
+  };
   let backend: Charge | undefined;
   let voice: Charge[] = [];
   /** OpenAI's 2 seconds at $0.05 a minute: the voice time is never billed below them. */
@@ -357,7 +366,10 @@ test("a GPT-Live session locks its model, and books each backend call apart at t
     if (backend === undefined || voiceCost() < voiceFloor) await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   check(backend !== undefined, "the backend call was not booked apart");
-  same(backend.input_tokens, 781, "the backend call's input tokens");
+  // The token columns as a call's: 781 in, of which 90 cached and 1 written.
+  same(backend.input_tokens, 690, "the backend call's uncached input tokens");
+  same(backend.cached_input_tokens, 90, "the backend call's cached input tokens");
+  same(backend.cache_write_tokens, 1, "the backend call's cache-written tokens");
   same(backend.output_tokens, 57, "the backend call's output tokens");
   same(backend.price_source, "list_rate", "the backend call's price");
   // At gpt-6-luna's list price: 690 x $0.10, 90 cached x $0.01, 1 written x $0.125 and 57 x $0.50 a million tokens.

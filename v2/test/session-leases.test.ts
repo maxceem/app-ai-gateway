@@ -19,7 +19,7 @@ import { admitSession, releaseSessionLeases } from "../src/limits/session-admiss
 import { refusal } from "../src/proxy/serve.ts";
 import { parseAppConfig } from "../src/admin/apps.ts";
 import { parseTicket } from "../relay/src/ticket.js";
-import { BACKEND_BUDGET_BYTES, backendModels, priceSources } from "../src/pricing/billability.ts";
+import { BACKEND_BUDGET_BYTES, backendModelAllowed, backendModels, priceSources } from "../src/pricing/billability.ts";
 import { declaredOperation } from "../src/providers/presets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, ledger, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -389,6 +389,15 @@ describe("starting a session", () => {
     expect(JSON.stringify(backend).length).toBeLessThanOrEqual(BACKEND_BUDGET_BYTES + 64);
     expect(backend).toContain("gpt-6-luna");
     expect(backend.length).toBeLessThan(300);
+  });
+
+  it("lets a GPT-Live backend call a model only with token rates in the standard tier, which the relay pins (Sol, #272 round 3)", () => {
+    const responses = declaredOperation("openai.responses")!;
+    const rates = { "house-fast": { modes: { fast: { input: 1_000_000_000, output: 1_000_000_000 } } }, "house-standard": { input: 1_000_000_000, output: 1_000_000_000 } };
+    const sources = priceSources({ type: "openai", rates: rates as never });
+    expect(backendModelAllowed({}, sources, responses, "house-fast")).toBe(false);
+    expect(backendModelAllowed({}, sources, responses, "house-standard")).toBe(true);
+    expect(backendModels({}, sources, responses)).not.toContain("house-fast");
   });
 
   it("lets a GPT-Live backend name only the models the app lists, and only priced ones (step 9g)", async () => {
