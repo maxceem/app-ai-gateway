@@ -91,7 +91,7 @@ export default {
 /**
  * @typedef {import("./start.js").ProviderCall & {
  *   send(data: string | ArrayBuffer): void,
- *   forward: ((data: string | ArrayBuffer) => void) | null,
+ *   forward: ((data: string | ArrayBuffer) => boolean | void) | null,
  *   pending: StartQueue,
  * }} RelayCall
  * The provider's side of a relayed session. Its frames wait in `pending` until
@@ -600,6 +600,7 @@ export class Session extends DurableObject {
    * deadline is the copy in memory: no storage read on the audio path.
    * @param {Live} live
    * @param {string | ArrayBuffer} data
+   * @returns {boolean} whether the frame went to the client, or waits for it: not past the deadline or while closing
    */
   toClient(live, data) {
     // Past the deadline, or closing: the client gets nothing more, but the frame is still read,
@@ -638,6 +639,7 @@ export class Session extends DurableObject {
       void this.core.end("client_closed");
     }
     if (late) void this.core.end("time_cap");
+    return !late && this.core.ending === null && !overflowed;
   }
 
   /**

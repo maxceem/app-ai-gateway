@@ -68,11 +68,16 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
   const logs: Record<string, unknown>[] = [];
   let cuts = 0;
   let gone = 0;
+  /** Whether the session object forwards frames (false: it is closing, and throws them away). */
+  const forwarding = { on: true };
+  /** A test's way to hold a resume's handshake until it lets it finish. */
+  const handshake: { hold: Promise<void> | null } = { hold: null };
   let capped = 0;
   const refused: string[] = [];
   const upstream = new GeminiUpstream({
     socket: first,
     open: async () => {
+      if (handshake.hold !== null) await handshake.hold;
       const socket = new FakeSocket();
       opened.push(socket);
       return socket;
@@ -82,7 +87,10 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
     now: () => now,
     wait: (ms) => new Promise<void>((resolve) => timers.push({ at: now + ms, resolve })),
     events: {
-      frame: (data) => toClient.push(JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as Record<string, unknown>),
+      frame: (data) => {
+        toClient.push(JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as Record<string, unknown>);
+        return forwarding.on;
+      },
       usage: (event) => usage.push(event),
       cut: () => void (cuts += 1),
       gone: () => void (gone += 1),
@@ -106,7 +114,7 @@ function setup(model: string | null = "gemini-3.8-live", deadline = Infinity) {
     first.emit({ setupComplete: {} });
     first.emit({ sessionResumptionUpdate: { newHandle: handle, resumable: true } });
   };
-  return { upstream, first, opened, toClient, usage, logs, refused, advance, started, cuts: () => cuts, gone: () => gone, capped: () => capped };
+  return { upstream, first, opened, toClient, usage, logs, refused, forwarding, handshake, advance, started, cuts: () => cuts, gone: () => gone, capped: () => capped };
 }
 
 describe("Gemini Live's adapter (step 9d)", () => {
@@ -252,6 +260,18 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.first.closedWith?.code).toBe(1000);
   });
 
+  it("counts a tool's result as part of the answer that called it: after its one turnComplete, a goAway swaps at once (Sol, #269 round 2)", () => {
+    const s = setup();
+    s.started();
+    s.upstream.send(JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: "weather?" }] }], turnComplete: true } }));
+    s.first.emit({ toolCall: { functionCalls: [{ id: "f1", name: "weather", args: {} }] } });
+    s.upstream.send(JSON.stringify({ toolResponse: { functionResponses: [{ id: "f1", name: "weather", response: { sky: "clear" } }] } }));
+    s.first.emit(chunk());
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    expect(s.first.closedWith?.code).toBe(1000);
+  });
+
   it("waits for every answer asked for: a second turn sent before the first answer finished keeps the swap waiting", () => {
     const s = setup();
     s.started();
@@ -296,6 +316,45 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     await until(() => s.opened.length === 1);
     expect(s.usage).toEqual([{ id: expect.any(String), measures: expect.objectContaining({ input_tokens: 638, output_tokens: 99 }) }]);
     expect(s.usage[0]?.measures.estimated_tokens).toBeUndefined();
+  });
+
+  it("stops reading the old connection when its close wait ends: usage it sends after that never adds to the estimate (Sol, #269 round 2)", async () => {
+    const s = setup();
+    s.started();
+    s.first.emit(chunk());
+    s.first.emit({ goAway: { timeLeft: "10s" } });
+    await s.advance(0);
+    await s.advance(OLD_CLOSE_WAIT_MS);
+    await until(() => s.usage.length === 1);
+    expect(s.usage[0]?.measures.estimated_tokens).toBeGreaterThan(0);
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    expect(s.usage).toHaveLength(1);
+  });
+
+  it("estimates a cut answer from what reached the client only, not audio thrown away while the session closes (Sol, #269 round 2)", async () => {
+    const s = setup();
+    s.started();
+    s.first.emit(chunk());
+    s.forwarding.on = false;
+    s.first.emit(chunk());
+    s.first.emit(chunk());
+    expect(s.upstream.estimate()?.measures.estimated_tokens).toBe(Math.ceil(chunkBytes / BYTES_PER_ESTIMATED_TOKEN));
+  });
+
+  it("opens no resume past the cap: a handshake that ends after it is closed, and no setup goes (Sol, #269 round 2)", async () => {
+    const s = setup("gemini-3.8-live", 1_000_000 + 1_000);
+    s.started();
+    let release: () => void = () => undefined;
+    s.handshake.hold = new Promise<void>((resolve) => (release = resolve));
+    s.first.fireClose(1011);
+    await s.advance(500);
+    await s.advance(1_000);
+    release();
+    await until(() => s.opened.length === 1);
+    await s.advance(0);
+    expect((s.opened[0] as FakeSocket).closedWith?.code).toBe(1000);
+    expect((s.opened[0] as FakeSocket).sent).toHaveLength(0);
+    expect(s.capped()).toBe(1);
   });
 
   it("goes on past no deadline: a swap whose new connection is set up after the session's cap sends nothing, and ends it at its cap", async () => {

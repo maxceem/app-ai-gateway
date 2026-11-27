@@ -64,14 +64,15 @@ const SIGNAL_MAX = 256;
 
 /**
  * What a client frame says about the conversation, read cheaply: an answer is
- * asked for (`"turn"`), the user starts or stops speaking, or nothing.
+ * asked for (`"turn"`), a tool's result (`"tool"`), the user starts or stops
+ * speaking, or nothing.
  * @param {string | ArrayBuffer} data
- * @returns {"turn" | "start" | "end" | null}
+ * @returns {"turn" | "tool" | "start" | "end" | null}
  */
 function clientSignal(data) {
   const head = headOf(data, 96);
   if (TURN_START.test(head)) {
-    if (/"toolResponse"/u.test(head.slice(0, 32))) return "turn";
+    if (/"toolResponse"/u.test(head.slice(0, 32))) return "tool";
     return TURN_COMPLETE.test(typeof data === "string" ? data : new TextDecoder().decode(new Uint8Array(data))) ? "turn" : null;
   }
   if (REALTIME_TEXT.test(head)) return "turn";
@@ -97,7 +98,7 @@ function durationMs(value) {
  *   close(code?: number, reason?: string): void,
  * }} Socket
  * @typedef {{
- *   frame(data: string | ArrayBuffer): void,
+ *   frame(data: string | ArrayBuffer): boolean | void,
  *   usage(event: import("./journal.js").UsageEvent): void,
  *   cut(): void,
  *   gone(): void,
@@ -233,6 +234,9 @@ export class GeminiUpstream {
       this.speaking = false;
       this.awaiting += 1;
     } else if (signal === "turn") this.awaiting += 1;
+    // A tool's result continues the answer that called the tool, which ends with one `turnComplete`;
+    // only a result that comes after that answer asks for a new one.
+    else if (signal === "tool" && !this.answering) this.awaiting += 1;
   }
 
   /**
@@ -287,13 +291,14 @@ export class GeminiUpstream {
     if (message?.sessionResumptionUpdate !== undefined) return this.keepHandle(message.sessionResumptionUpdate);
     if (message?.goAway !== undefined) return this.goAway(message.goAway);
     const content = message?.serverContent;
-    if (content?.modelTurn !== undefined || message?.toolCall !== undefined) {
-      this.answering = true;
-      this.answerBytes += frameSize(data);
-    }
+    const answer = content?.modelTurn !== undefined || message?.toolCall !== undefined;
+    if (answer) this.answering = true;
     const activity = message?.voiceActivity?.type;
     if (activity === "ACTIVITY_START") this.speaking = true;
-    this.events.frame(data);
+    // Only what reached the client (or waits for it) is estimated if the answer is cut: audio the
+    // relay throws away while the session closes is not.
+    const forwarded = this.events.frame(data);
+    if (answer && forwarded !== false) this.answerBytes += frameSize(data);
     // The user stopped speaking: Gemini answers next, on this connection.
     if (activity === "ACTIVITY_END") {
       this.speaking = false;
@@ -426,6 +431,8 @@ export class GeminiUpstream {
     }
     await Promise.race([closed, this.wait(OLD_CLOSE_WAIT_MS)]);
     this.retired = null;
+    // Nothing more from it counts: an estimate held for its cut answer is booked next, and only once.
+    if (this.retiring === old) this.retiring = null;
   }
 
   /**
@@ -440,6 +447,11 @@ export class GeminiUpstream {
     let socket;
     try {
       socket = await this.open();
+      // A handshake that began before the cap and ended after it: no resume past the session's time.
+      if (this.now() >= this.deadline) {
+        socket.close(1000, "session ended");
+        return this.timeUp();
+      }
     } catch {
       if (this.swaps !== swap || this.waiting === null) return;
       await this.wait(RESUME_RETRY_MS);
