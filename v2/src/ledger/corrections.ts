@@ -341,7 +341,8 @@ export async function priceUnresolvedCharge(
       .bind(original.ownerId)
       .first<{ settlement: string; session_total_nano: number | null; rates_json: string | null; model: string | null }>();
     if (session !== null && session.settlement === "settled" && session.session_total_nano !== null) return { status: "already" };
-    // The saved price is the session's model's: a charge of another model (OpenAI's input transcription, 9e)
+    // The saved price is the session's model's: a charge of another model (OpenAI's input transcription, 9e;
+    // a GPT-Live backend call, 9g)
     // is priced at its own model's current price instead.
     const ownModel = session !== null && session.model === original.model;
     if (session !== null && ownModel) sessionPrice = { sessionId: original.ownerId, ratesJson: session.rates_json };

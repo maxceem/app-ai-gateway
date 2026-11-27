@@ -26,6 +26,7 @@ import { ledgerDb } from "../ledger/database.ts";
 import { closeSession } from "../ledger/sessions.ts";
 import { sessionRowOf, verifyTicket, type Ticket } from "./tickets.ts";
 import { deadlineOf } from "../../relay/src/ticket.js";
+import { declaredOperation } from "../providers/presets.ts";
 import { activateSessionLeases, releaseSessionLeases, type LeaseOwner } from "../limits/session-admission.ts";
 import type { SlotClaim } from "../do/session-slots.ts";
 
@@ -58,6 +59,13 @@ export interface OpenSettings {
    * reads the smoke mock's usage events and nothing else.
    */
   readonly adapter: string;
+  /**
+   * What the session's backend may use, for a session that calls other models itself (GPT-Live, 9g):
+   * the models the app may call (priced ones only) and the tool kinds. The relay checks the start
+   * message and every update against them (plan, "GPT-Live backend rules"). Only when the operation has
+   * a backend.
+   */
+  readonly backend?: { readonly models: readonly string[]; readonly tools: readonly string[] };
 }
 
 /** The relay adapter of each live-session operation (plan 5.2). */
@@ -66,7 +74,16 @@ const RELAY_ADAPTERS: Readonly<Record<string, string>> = {
   "gemini.live.v1beta": "gemini",
   "gemini.live.v1alpha": "gemini",
   "openai.realtime": "openai",
+  "openai.live": "gptlive",
 };
+
+/** The backend a session may use, from its ticket and its operation (GPT-Live, 9g); undefined when it has none. */
+function backendOf(ticket: Ticket): OpenSettings["backend"] {
+  const tools = declaredOperation(ticket.operation)?.session?.backend?.tools;
+  if (tools === undefined) return undefined;
+  const models = Array.isArray(ticket.backend) ? ticket.backend.filter((model) => typeof model === "string" && model !== "") : [];
+  return { models, tools };
+}
 
 /** The relay adapter for a session's operation (plan 5.2). */
 export function adapterFor(ticket: Ticket): string {
@@ -117,6 +134,7 @@ export async function openForRelay(
   if (now >= payload.exp) throw new ContractRefusal("ticket_expired");
   const lease = leaseOf(payload);
   await activateSessionLeases(env, lease.owner, lease.claim, now, waitUntil);
+  const backend = backendOf(payload);
   return {
     version: CONTRACT_VERSION,
     sessionId: payload.sid,
@@ -127,6 +145,7 @@ export async function openForRelay(
     deadline: deadlineOf(payload),
     checkpointIntervalMs: CHECKPOINT_INTERVAL_MS,
     adapter: adapterFor(payload),
+    ...(backend === undefined ? {} : { backend }),
   };
 }
 

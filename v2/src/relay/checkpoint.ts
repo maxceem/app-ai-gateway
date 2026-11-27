@@ -79,6 +79,20 @@ export const SLICE_TRANSCRIPTION = [
   "transcription_audio_ms",
 ] as const;
 /**
+ * A slice's backend model calls (GPT-Live, 9g), measures of their own under the backend model's name:
+ * each call's Responses usage, summed by model, and booked apart from the session's own (`backendCharge`).
+ * `backend_input_tokens` is the whole input, cached and cache-written tokens inside it, as OpenAI reports it.
+ */
+export const SLICE_BACKEND = [
+  "backend_input_tokens",
+  "backend_cached_tokens",
+  "backend_cache_write_tokens",
+  "backend_cache_write_12h_tokens",
+  "backend_output_tokens",
+] as const;
+/** What a slice may carry under another model's name: its input transcriptions (9e) and backend calls (9g). */
+const OTHER_MODEL_MEASURES: readonly string[] = [...SLICE_TRANSCRIPTION, ...SLICE_BACKEND];
+/**
  * A slice's tokens by modality, in the names a charge keeps them under (`../usage/measures.ts`), and the
  * tokens it estimated: Gemini Live (9d). `<side>_split` counts the turns that broke a side down; the
  * modality counts are shares of `input_tokens` and `output_tokens`, never more tokens; `estimated_tokens`
@@ -189,7 +203,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
         if (!MODEL_NAME.test(model) || typeof counts !== "object" || counts === null || Array.isArray(counts)) throw bad();
         const kept: Record<string, number> = {};
         for (const [name, value] of Object.entries(counts)) {
-          if (!(SLICE_TRANSCRIPTION as readonly string[]).includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
+          if (!OTHER_MODEL_MEASURES.includes(name) || !isCount(value, MAX_MEASURE)) throw bad();
           kept[name] = value;
         }
         transcriptions[model] = kept;
@@ -396,37 +410,36 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
 }
 
 /**
- * A slice's input transcriptions as charges of their own (OpenAI, 9e; plan, the provider table: billed
- * separately), one for each model OpenAI transcribed with: `<slice id>:transcription:<model>`, priced
- * today at that model's price, the connection's own rate, else ours (`billingForCharge`). With no price,
- * or none that can be read (the relay's `unknown`, when OpenAI never stated a model), a charge is
- * `unresolved`, and the sweep prices it, never as free. None holds connection time: the session's slice
- * has that. Their ids come from the slice's, so a retry books nothing twice.
+ * A slice's usage under other models' names as charges of their own, one for each model: its input
+ * transcriptions (OpenAI, 9e; plan, the provider table: billed separately), `<slice id>:transcription:<model>`,
+ * and its backend model calls (GPT-Live, 9g), `<slice id>:backend:<model>`. Each is priced today at that
+ * model's price, the connection's own rate, else ours (`billingForCharge`). With no price, or none that can
+ * be read (the relay's `unknown`, when OpenAI never stated a model), a charge is `unresolved`, and the sweep
+ * prices it, never as free. None holds connection time: the session's slice has that. Their ids come from
+ * the slice's, so a retry books nothing twice.
  */
 export function transcriptionCharges(ticket: Ticket, slice: SliceInput, standing: CheckpointStanding | null, now: number): ChargeRow[] {
   const charges: ChargeRow[] = [];
   for (const model of Object.keys(slice.transcriptions ?? {}).sort()) {
-    const charge = transcriptionCharge(ticket, slice, model, slice.transcriptions?.[model] ?? {}, standing, now);
-    if (charge !== null) charges.push(charge);
+    const measures = slice.transcriptions?.[model] ?? {};
+    for (const [kind, usage] of [
+      ["transcription", transcriptionUsage(measures)],
+      ["backend", backendUsage(measures)],
+    ] as const) {
+      if (usage !== null) charges.push(otherModelCharge(ticket, slice, model, kind, usage, standing, now));
+    }
   }
   return charges;
 }
 
-/** One model's transcription charge, or null when it has no usage. */
-function transcriptionCharge(
-  ticket: Ticket,
-  slice: SliceInput,
-  model: string,
-  measures: Readonly<Record<string, number>>,
-  standing: CheckpointStanding | null,
-  now: number,
-): ChargeRow | null {
+/** One model's transcription usage, or null when it has none. */
+function transcriptionUsage(measures: Readonly<Record<string, number>>): UsageObservation | null {
   const input = measures.transcription_input_tokens ?? 0;
   const output = measures.transcription_output_tokens ?? 0;
   const audio = Math.min(input, measures.transcription_input_audio_tokens ?? 0);
   const ms = measures.transcription_audio_ms ?? 0;
   if (input + output + ms === 0) return null;
-  const usage: UsageObservation = {
+  return {
     inputTokens: input,
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
@@ -436,6 +449,39 @@ function transcriptionCharge(
     ...(ms > 0 ? { units: { audio_seconds: ms } } : {}),
     ...(input + output === 0 ? { noTokens: true as const } : {}),
   };
+}
+
+/**
+ * One backend model's usage (GPT-Live, 9g), as a Responses call reports it (`../usage/readers.ts`,
+ * `openAiUsage`): the input holds the cached and cache-written tokens, and a 12-hour cache write bills
+ * at its own rate. Null when it has none.
+ */
+function backendUsage(measures: Readonly<Record<string, number>>): UsageObservation | null {
+  const input = measures.backend_input_tokens ?? 0;
+  const output = measures.backend_output_tokens ?? 0;
+  if (input + output === 0) return null;
+  const cached = Math.min(input, measures.backend_cached_tokens ?? 0);
+  const written = Math.min(input - cached, measures.backend_cache_write_tokens ?? 0);
+  const longWritten = Math.min(written, measures.backend_cache_write_12h_tokens ?? 0);
+  return {
+    inputTokens: input - cached - written,
+    cachedInputTokens: cached,
+    cacheWriteTokens: written,
+    outputTokens: output,
+    ...(longWritten > 0 ? { tokenVariants: { cache_write: { "12h": longWritten } } } : {}),
+  };
+}
+
+/** One other model's charge: its usage priced at that model's own price, today. */
+function otherModelCharge(
+  ticket: Ticket,
+  slice: SliceInput,
+  model: string,
+  kind: "transcription" | "backend",
+  usage: UsageObservation,
+  standing: CheckpointStanding | null,
+  now: number,
+): ChargeRow {
   let price: SlicePrice = { costNano: null, priceSource: "unresolved", estimated: false, measured: "complete", rates: null, unit: null, units: null };
   if (standing !== null && standing.ratesJson !== undefined) {
     try {
@@ -459,10 +505,10 @@ function transcriptionCharge(
   const row = sliceCharge(ticket, { seq: slice.seq, measures: {}, sessionMs: 0, gapMs: 0, gaps: 0, from: slice.from, to: slice.to }, price, now);
   return {
     ...row,
-    id: `${row.id}:transcription:${model}`,
+    id: `${row.id}:${kind}:${model}`,
     model,
-    inputTokens: input,
-    outputTokens: output,
+    inputTokens: usage.inputTokens + usage.cachedInputTokens + usage.cacheWriteTokens,
+    outputTokens: usage.outputTokens,
     measures: usageMeasures(usage, STANDARD_MODE),
   };
 }

@@ -20,7 +20,7 @@ import { log } from "../core/log.ts";
 import { ledgerDb } from "../ledger/database.ts";
 import { openSession } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
-import { knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
+import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
 import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
@@ -118,6 +118,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       const resolved = resolveCall(routing, undefined, priceSources(connection), operation, requested, listed, { asIfServed: true });
       if (resolved.kind === "refused") throw callRefusal(resolved, operation);
       const call = { model: requested };
+      // A session that calls other models itself (GPT-Live's backend): the ones the app may call that
+      // way, judged as a call to the backend's operation is, travel in the ticket for the relay to enforce.
+      const backendSpec = operation.session.backend;
+      const backendOperation = backendSpec === undefined ? undefined : description.operations.find((one) => one.name === backendSpec.operation);
+      const backend = backendOperation === undefined ? undefined : backendModels(routing, priceSources(connection), backendOperation);
       const relayUrl = relaySessionUrl(c.env);
       if (relayUrl === null) {
         log("error", "relay_url_missing", {});
@@ -161,6 +166,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
             capMs: SESSION_CAP_MS,
             credentials,
             keyPlacement: { header: description.auth.header, format: description.auth.format },
+            ...(backend === undefined ? {} : { backend }),
           },
           now,
           sessionId,

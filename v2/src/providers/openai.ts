@@ -92,5 +92,19 @@ export const openai = defineProvider({
       meter: { kind: "provider_event", adapter: "openai-realtime", tokensOnly: true },
       session: { slot: "conversational", mode: "relayed" },
     }),
+    // GPT-Live (9g): billed by the minute, by OpenAI's own voice seconds and the relay's clock
+    // (`relay/src/adapters.js`), plus each backend model call at its own model's price. The model is in
+    // the client's first message, `session.start`; the relay sets it to the session's, and lets the
+    // backend name only a model the app may call through Responses, with function tools only.
+    defineOperation({
+      name: "openai.live",
+      match: { method: "GET", path: "v1/live/sessions" },
+      lifecycle: "session",
+      transport: "websocket",
+      model: { in: "body", field: "model" },
+      modelKinds: ["live"],
+      meter: { kind: "wall_clock" },
+      session: { slot: "conversational", mode: "relayed", backend: { operation: "openai.responses", tools: ["function"] } },
+    }),
   ], { chat: { cap: "chat-completion-tokens" } }),
 });

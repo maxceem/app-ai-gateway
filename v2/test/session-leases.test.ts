@@ -361,6 +361,36 @@ describe("starting a session", () => {
     }
   });
 
+  it("starts a GPT-Live session with its backend's models in the ticket, judged as Responses calls, and open passes them with the tool kinds (step 9g)", async () => {
+    const { appId, slug, key } = await setup({}, ["openai.live"]);
+    const response = await start(appId, slug, key, { path: "v1/live/sessions", model: "gpt-live-1" });
+    expect(response.status).toBe(201);
+    const { ticket } = (await response.json()) as { ticket: string };
+    const { payload } = parseTicket(ticket)!;
+    expect(payload).toMatchObject({ operation: "openai.live", model: "gpt-live-1", url: "https://api.openai.com/v1/live/sessions", mode: "relayed" });
+    expect(adapterFor(payload)).toBe("gptlive");
+    // With no model list, every model priced on the connection that a Responses call may name.
+    expect(payload.backend).toContain("gpt-6-luna");
+    expect(payload.backend).not.toContain("gpt-live-1");
+    const settings = await openForRelay(env, ticket);
+    expect(settings.backend).toEqual({ models: payload.backend, tools: ["function"] });
+    // A model with no price never starts a session, as for any live session.
+    expect((await start(appId, slug, key, { path: "v1/live/sessions", model: "gpt-live-9" })).status).toBe(400);
+  });
+
+  it("lets a GPT-Live backend name only the models the app lists, and only priced ones (step 9g)", async () => {
+    const { slug } = await seedConnection();
+    const appId = await seedRoutedApp(
+      { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      { providers: { [slug]: { operations: ["openai.live"], models: ["gpt-live-1", "gpt-6-luna", "house-model"] } } },
+    );
+    const key = await seedAppKey(appId);
+    const response = await start(appId, slug, key.key, { path: "v1/live/sessions", model: "gpt-live-1" });
+    expect(response.status).toBe(201);
+    const { payload } = parseTicket(((await response.json()) as { ticket: string }).ticket)!;
+    expect(payload.backend).toEqual(["gpt-6-luna"]);
+  });
+
   it("refuses a path that isn't a live session, an operation the app doesn't allow, and a model it doesn't list", async () => {
     const chat = await setup({}, ["openai.chat"]);
     const notSession = await start(chat.appId, chat.slug, chat.key, { path: "v1/chat/completions", model: "gpt-4o-mini" });

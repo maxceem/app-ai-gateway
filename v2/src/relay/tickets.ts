@@ -107,6 +107,8 @@ export interface TicketRequest {
   /** The connection's credentials, still sealed, with the header and format the key goes in. */
   readonly credentials: SealedCredentials;
   readonly keyPlacement: { readonly header: string; readonly format: string } | null;
+  /** The models the session's backend may call (GPT-Live's, 9g), when its operation has one. */
+  readonly backend?: readonly string[];
 }
 
 export interface IssuedTicket {
@@ -173,6 +175,7 @@ export async function issueTicket(
     start: now,
     cap: request.capMs,
     exp: expiresAt,
+    ...(request.backend === undefined ? {} : { backend: [...request.backend] }),
     seal: {
       ...(copies.providerKey === undefined
         ? {}

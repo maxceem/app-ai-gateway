@@ -556,6 +556,30 @@ describe(`checkpoint (split keys ${splitKeysOn ? "on" : "off"})`, () => {
     ]);
   });
 
+  it("bills a GPT-Live session's time by the minute, and books each backend call apart at its own model's price, the 12-hour write at its rate (step 9g)", async () => {
+    const live1 = { operation: "openai.live", model: "gpt-live-1", url: "https://api.openai.com/v1/live/sessions" };
+    const { text, ticket } = await ticketFor(live1);
+    const backend = {
+      backend_input_tokens: 1_000,
+      backend_cached_tokens: 300,
+      backend_cache_write_tokens: 200,
+      backend_cache_write_12h_tokens: 100,
+      backend_output_tokens: 50,
+    };
+    await checkpointForRelay(env, text, live(slice(ticket, 1, {}, { billedMs: 90_000, transcriptions: { "gpt-6-luna": backend } })));
+    const rows = await ledger()
+      .prepare("SELECT id, model, cost_nano, price_source, session_ms, input_tokens, output_tokens FROM charge WHERE owner_id = ? ORDER BY id")
+      .bind(ticket.sid)
+      .all()
+      .then((r) => r.results);
+    // The voice: 90 s billed at $0.05 a minute. The backend call at gpt-6-luna's list price, per million:
+    // 500 x $0.10, 300 cached x $0.01, 100 written x $0.125, 100 written for 12 hours x $0.25, 50 x $0.50.
+    expect(rows).toEqual([
+      { id: `${ticket.sid}:slice:1`, model: "gpt-live-1", cost_nano: 75_000_000, price_source: "list_rate", session_ms: MINUTE, input_tokens: 0, output_tokens: 0 },
+      { id: `${ticket.sid}:slice:1:backend:gpt-6-luna`, model: "gpt-6-luna", cost_nano: 115_500, price_source: "list_rate", session_ms: 0, input_tokens: 1_000, output_tokens: 50 },
+    ]);
+  });
+
   it("never books a transcription as free: one with no price is unresolved, and the sweep prices it at its own model's price, not the session's (step 9e)", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { connectionId, setRates } = await houseConnection("{}");

@@ -545,6 +545,7 @@ async function answer(request: Request): Promise<Response> {
   if (url.pathname === "/health") return Response.json({ ok: true });
   if (url.pathname.endsWith("/v1/realtime") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return realtimeSession();
   if (url.pathname.endsWith("BidiGenerateContent") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return geminiLiveSession();
+  if (url.pathname.endsWith("/v1/live/sessions") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return gptLiveSession();
   if (request.method === "GET") {
     const jwks = jwksFromPath(url.pathname);
     if (jwks !== null) return Response.json(jwks, { headers: { "cache-control": "no-store" } });
@@ -718,6 +719,51 @@ function geminiLiveSession(): Response {
     send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAAA" } }], role: "model" } } });
     send({ serverContent: { turnComplete: true }, usageMetadata: usage });
     send({ sessionResumptionUpdate: { newHandle: crypto.randomUUID(), resumable: true } });
+  });
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/**
+ * GPT-Live (step 9g), shaped as T21 saw it: its own events put `event_id` before `type`.
+ * - `session.start` gets `session.started`, echoing the session it was given (so a test sees the
+ *   model the relay set), and a `session.usage.updated` of 2 seconds.
+ * - `response.create` runs one backend call on the session's backend model: a `response.event` whose
+ *   nested `response.completed` carries 781 input tokens (90 cached, 1 written) and 57 output.
+ * - `session.close` gets `session.closed` with 3 seconds, then the socket closes.
+ */
+function gptLiveSession(): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.accept();
+  let session: Record<string, unknown> = {};
+  let backendCalls = 0;
+  const send = (type: string, rest: Record<string, unknown>) => server.send(JSON.stringify({ event_id: `event_${crypto.randomUUID()}`, type, ...rest }));
+  server.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    let message: { type?: string; session?: Record<string, unknown> };
+    try {
+      message = JSON.parse(event.data) as typeof message;
+    } catch {
+      return;
+    }
+    if (message.type === "session.start") {
+      session = { id: `live_${crypto.randomUUID()}`, ...message.session, status: "active" };
+      send("session.started", { session });
+      send("session.usage.updated", { usage: { seconds: 2 } });
+    } else if (message.type === "response.create") {
+      backendCalls += 1;
+      const delegation = session.delegation as { responses?: { model?: string } } | undefined;
+      const response = {
+        id: `resp_mock_${String(backendCalls)}`,
+        model: delegation?.responses?.model ?? "gpt-6-luna",
+        status: "completed",
+        usage: { input_tokens: 781, input_tokens_details: { cached_tokens: 90, cache_write_tokens: 1 }, output_tokens: 57, output_tokens_details: { reasoning_tokens: 43 }, total_tokens: 838 },
+      };
+      send("response.event", { delegation_id: `item_${String(backendCalls)}`, event: { type: "response.completed", sequence_number: 1, response } });
+    } else if (message.type === "session.close") {
+      send("session.closed", { reason: "close_requested", session, usage: { seconds: 3 } });
+      server.close(1000, "closed");
+    }
   });
   return new Response(null, { status: 101, webSocket: client });
 }

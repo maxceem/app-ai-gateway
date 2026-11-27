@@ -165,6 +165,32 @@ own rates.
   marked as an estimate, in the session's audio format. An answer you cancel
   reports its own usage.
 
+### GPT-Live
+
+A GPT-Live session (`v1/live/sessions`) is billed by the minute, plus each
+call its backend model makes, at that model's own price.
+
+- **The first frame must be `session.start`.** Anything else ends the session
+  with `1008 session_start_required`. Its `model` is set to the session's.
+  GPT-Live's events are JSON text: a binary frame ends the session with
+  `1008 binary_not_supported`.
+- **The time** runs from `session.started`, where OpenAI's own clock starts, to
+  the close. It is billed at the larger of the relay's clock and OpenAI's voice
+  seconds (`session.usage.updated`, `session.closed`), so never below OpenAI.
+- **The backend** (`session.delegation`): none, or your app's own (`client`), or
+  `responses` with a `model` your app may call through Responses and that has a
+  price. Its `tools` may only be function tools, and a stored `prompt` is not
+  allowed, since it can name its own model. A `session.update` is checked the
+  same way. Anything else ends the session with `1008` and one of
+  `backend_model_not_allowed`, `backend_tool_not_allowed`,
+  `backend_prompt_not_allowed` or `delegation_not_allowed`. The relay reads
+  each settings frame whole, as OpenAI reads it, and sends it written again.
+- **Each backend call** is billed apart, at its model's price, from the usage
+  in its `response.completed` (or `failed`, `incomplete`).
+- **A restart of the relay ends the session**: OpenAI drops it when its
+  connection goes, and it can't be rejoined. Up to about 15 s since the last
+  usage update is then an "unknown cost" gap. Start a new session.
+
 ## Reconnecting
 
 There are two kinds, kept apart (plan 5.1):

@@ -23,6 +23,7 @@ These providers are served today:
 | OpenAI Realtime | `v1/realtime` | for example `gpt-realtime-2.1` |
 | xAI voice | `v1/realtime` | for example `grok-voice-3.0` |
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
+| OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
 
 The app's settings must allow the operation, as for any call. See
 [Provider access](/applications/provider-access). Live sessions need a
@@ -210,3 +211,8 @@ Start a new session then.
   reason: sending the same setup again gets the same refusal.
 - **xAI voice.** xAI's `ping` does not keep a session alive. Send the
   heartbeat.
+- **OpenAI GPT-Live.** Send `session.start` first; its model is set to the
+  session's. Its backend may use a model your app may call through Responses,
+  with function tools only, and no stored `prompt`. Anything else ends the
+  session with `1008` and a reason such as `backend_model_not_allowed`. A
+  restart of the relay ends a GPT-Live session for good: start a new one.
