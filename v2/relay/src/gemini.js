@@ -59,6 +59,13 @@ const TURN_START = /^\s*\{\s*"(clientContent|toolResponse)"\s*:/u;
 const TURN_COMPLETE = /"turnComplete"\s*:\s*true/u;
 /** A realtime text input: Gemini answers it as it answers a turn. */
 const REALTIME_TEXT = /^\s*\{\s*"realtimeInput"\s*:\s*\{\s*"text"\s*:/u;
+/** Realtime audio from the client. */
+const REALTIME_AUDIO = /^\s*\{\s*"realtimeInput"\s*:\s*\{\s*"(audio|mediaChunks)"\s*:/u;
+/**
+ * Models that send no `voiceActivity` markers (T19: Gemini 2.5 native audio). On them the relay
+ * can't see when speech ends, so audio since the last `turnComplete` counts as an answer on its way.
+ */
+const NO_VOICE_MARKERS = /gemini-2\.5/u;
 /** The longest client frame read for a speech signal: `activityStart` and `activityEnd` frames are tiny. */
 const SIGNAL_MAX = 256;
 
@@ -67,7 +74,7 @@ const SIGNAL_MAX = 256;
  * asked for (`"turn"`), a tool's result (`"tool"`), the user starts or stops
  * speaking, or nothing.
  * @param {string | ArrayBuffer} data
- * @returns {"turn" | "tool" | "start" | "end" | null}
+ * @returns {"turn" | "tool" | "start" | "end" | "audio" | null}
  */
 function clientSignal(data) {
   const head = headOf(data, 96);
@@ -76,6 +83,7 @@ function clientSignal(data) {
     return TURN_COMPLETE.test(typeof data === "string" ? data : new TextDecoder().decode(new Uint8Array(data))) ? "turn" : null;
   }
   if (REALTIME_TEXT.test(head)) return "turn";
+  if (REALTIME_AUDIO.test(head)) return "audio";
   if (frameSize(data) > SIGNAL_MAX) return null;
   const signal = headOf(data, SIGNAL_MAX);
   if (signal.includes('"activityStart"')) return "start";
@@ -158,6 +166,9 @@ export class GeminiUpstream {
     this.awaiting = 0;
     /** The user is speaking: a voice activity start with no end yet. */
     this.speaking = false;
+    /** A model with no voice markers (`NO_VOICE_MARKERS`): audio came since the last `turnComplete`. */
+    this.noMarkers = this.model !== null && NO_VOICE_MARKERS.test(this.model);
+    this.heardAudio = false;
     /**
      * @type {import("./journal.js").UsageEvent | null} A cut answer's estimate, held while its old
      * connection closes: that connection may still report the answer's real usage, which wins.
@@ -237,6 +248,7 @@ export class GeminiUpstream {
     // A tool's result continues the answer that called the tool, which ends with one `turnComplete`;
     // only a result that comes after that answer asks for a new one.
     else if (signal === "tool" && !this.answering) this.awaiting += 1;
+    else if (signal === "audio" && this.noMarkers) this.heardAudio = true;
   }
 
   /**
@@ -293,12 +305,14 @@ export class GeminiUpstream {
     const content = message?.serverContent;
     const answer = content?.modelTurn !== undefined || message?.toolCall !== undefined;
     if (answer) this.answering = true;
+    // Only an answer's audio is estimated if it is cut: a tool call's JSON is not audio.
+    const audio = content?.modelTurn !== undefined;
     const activity = message?.voiceActivity?.type;
     if (activity === "ACTIVITY_START") this.speaking = true;
     // Only what reached the client (or waits for it) is estimated if the answer is cut: audio the
     // relay throws away while the session closes is not.
     const forwarded = this.events.frame(data);
-    if (answer && forwarded !== false) this.answerBytes += frameSize(data);
+    if (audio && forwarded !== false) this.answerBytes += frameSize(data);
     // The user stopped speaking: Gemini answers next, on this connection.
     if (activity === "ACTIVITY_END") {
       this.speaking = false;
@@ -308,6 +322,7 @@ export class GeminiUpstream {
       this.answering = false;
       this.answerBytes = 0;
       this.awaiting = Math.max(0, this.awaiting - 1);
+      this.heardAudio = false;
       this.quietNow();
     }
   }
@@ -338,7 +353,7 @@ export class GeminiUpstream {
 
   /** After `goAway`, swaps once nobody is speaking, and no answer runs or is on its way. Returns whether it did. */
   quietNow() {
-    if (this.goAwayBy === null || this.answering || this.awaiting > 0 || this.speaking || this.socket === null) return false;
+    if (this.goAwayBy === null || this.answering || this.awaiting > 0 || this.speaking || this.heardAudio || this.socket === null) return false;
     this.swap("go_away");
     return true;
   }
@@ -393,6 +408,7 @@ export class GeminiUpstream {
     this.speaking = false;
     // Whatever was on its way went to the old connection: it will not come.
     this.awaiting = 0;
+    this.heardAudio = false;
     const cut = this.takeCut();
     this.events.log({ level: "info", message: "relay_gemini_swap", why });
     const old = closeOld ? this.socket : null;

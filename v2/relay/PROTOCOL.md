@@ -120,7 +120,8 @@ them, with audio, images and video at their own rates.
   relay then opens a new connection to the same conversation, at a quiet
   moment: when nobody is speaking and no answer is running or on its way (after
   a finished turn, a realtime text input, a tool's result, or the end of
-  speech). Your
+  speech; on Gemini 2.5, which marks no speech, any audio since the last
+  answer). Your
   link stays open. You never get `goAway`, `sessionResumptionUpdate`, or a
   second `setupComplete`. Messages you send during the switch (usually under
   a second, at most a few) wait and then go on, in order.

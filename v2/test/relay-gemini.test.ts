@@ -272,6 +272,25 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     expect(s.first.closedWith?.code).toBe(1000);
   });
 
+  it("on Gemini 2.5, which sends no voice markers, waits after audio for the answer it may bring (T19, run E; Sol, #269 round 3)", () => {
+    const audio = JSON.stringify({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: "AAAA" } } });
+    // T19's order: the user's audio, goAway while the answer is still to come, then the answer.
+    const s = setup("gemini-2.5-flash-native-audio-latest");
+    s.started();
+    s.upstream.send(audio);
+    s.first.emit({ goAway: { timeLeft: "50s" } });
+    expect(s.first.closedWith).toBeNull();
+    s.first.emit(chunk());
+    s.first.emit({ serverContent: { turnComplete: true }, usageMetadata: USAGE });
+    expect(s.first.closedWith?.code).toBe(1000);
+    // A model that marks speech swaps at once after the same audio: its markers say when speech ends.
+    const t = setup("gemini-3.8-live");
+    t.started();
+    t.upstream.send(audio);
+    t.first.emit({ goAway: { timeLeft: "50s" } });
+    expect(t.first.closedWith?.code).toBe(1000);
+  });
+
   it("waits for every answer asked for: a second turn sent before the first answer finished keeps the swap waiting", () => {
     const s = setup();
     s.started();
@@ -339,6 +358,14 @@ describe("Gemini Live's upstream: the swap (step 9d; T19)", () => {
     s.first.emit(chunk());
     s.first.emit(chunk());
     expect(s.upstream.estimate()?.measures.estimated_tokens).toBe(Math.ceil(chunkBytes / BYTES_PER_ESTIMATED_TOKEN));
+  });
+
+  it("estimates a cut tool call as nothing: only an answer's audio is billed as audio (Sol, #269 round 3)", () => {
+    const s = setup();
+    s.started();
+    s.first.emit({ toolCall: { functionCalls: [{ id: "f1", name: "weather", args: { city: "x".repeat(8_000) } }] } });
+    expect(s.upstream.estimate()).toBeNull();
+    expect(s.cuts()).toBe(1);
   });
 
   it("opens no resume past the cap: a handshake that ends after it is closed, and no setup goes (Sol, #269 round 2)", async () => {
