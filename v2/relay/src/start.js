@@ -415,6 +415,8 @@ export class SessionCore {
         return fail("session_ended");
       }
       if (this.now() >= ticket.exp) return fail("ticket_expired");
+      // How long each step of the start took, logged once it succeeded (9c, T10).
+      const startedAt = this.now();
 
       /** @type {SessionKey} */
       let key;
@@ -426,6 +428,7 @@ export class SessionCore {
         return fail("credential_unavailable");
       }
 
+      const vaultAt = this.now();
       // The client left while the vault answered: no `open`, so no open-then-close round trip.
       if (this.owner !== client) return fail("client_closed");
 
@@ -447,9 +450,11 @@ export class SessionCore {
         await this.store.put({ state: "starting", ticket: ticketText, settings }, ticket.exp);
       }
 
+      const openAt = this.now();
       // The waits above may have taken the ticket past its time, or the client may have gone.
       if (!(await this.mayGoOn(client, ticket))) return fail(await this.stop(client, ticket));
       await this.store.put({ connecting: true }, null);
+      const connectFrom = this.now();
       // Known before the provider is called, so an end that comes in the window below still
       // caps its closing wait by the deadline.
       const deadline = deadlineOf(ticket);
@@ -477,6 +482,7 @@ export class SessionCore {
         }
         return fail("provider_unavailable");
       }
+      const connectedAt = this.now();
       const call = this.call;
       const callId = created?.callId ?? call?.callId ?? null;
       // Only a relayed session has a client link that can drop and come back (plan 5.1).
@@ -511,6 +517,16 @@ export class SessionCore {
         await endStart("time_cap", {});
         return fail("session_ended");
       }
+      const now = this.now();
+      this.log({
+        level: "info",
+        message: "relay_start_timing",
+        session: ticket.sid,
+        vaultMs: vaultAt - startedAt,
+        openMs: openAt - vaultAt,
+        connectMs: connectedAt - connectFrom,
+        totalMs: now - startedAt,
+      });
       return { ok: true, reconnectSecret, call, answer: created?.answer ?? null, deadline, adapter: settings.adapter };
     } catch (error) {
       // Anything unexpected (a storage failure, say) never leaves this start's provider call
