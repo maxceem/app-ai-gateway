@@ -29,7 +29,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  *   callIdHeader?: string,
- *   lock?(data: string | ArrayBuffer): string | ArrayBuffer | null | { refused: string },
+ *   lock?(data: string | ArrayBuffer, session?: { endUser: string | null }): string | ArrayBuffer | null | { refused: string },
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -80,7 +80,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   `dg-request-id`), stored as the session's provider call id, for a lookup after it ends.
  * - `lock`: a client frame as it goes to the provider, for a provider that needs nothing about the call
  *   remembered (ElevenLabs): the frame, changed or not, null to drop it, or `{ refused: code }` to end the
- *   session, as a call's meter may (ElevenLabs agents' overrides, 11a).
+ *   session, as a call's meter may (ElevenLabs agents' overrides, 11a). `session` names the end user the
+ *   ticket was issued for, the one the gateway verified.
  */
 
 /**
@@ -983,7 +984,24 @@ const AGENT_AUDIO = '{"user_audio_chunk":"';
 const AGENT_START_FIELDS = new Set(["type", "conversation_config_override", "dynamic_variables", "user_id", "source_info"]);
 
 /** The first message's fields refused in any later frame too, so none hides in another message. */
-const AGENT_START_ONLY = ["conversation_config_override", "custom_llm_extra_body", "starting_workflow_node_id", "procedure_ids", "start_procedure_ids", "branch_id", "environment"];
+const AGENT_START_ONLY = ["conversation_config_override", "custom_llm_extra_body", "starting_workflow_node_id", "procedure_ids", "start_procedure_ids", "branch_id", "environment", "user_id"];
+
+/**
+ * Fields ElevenLabs' own SDKs send empty (`{}`), which say nothing: the Python SDK's `custom_llm_extra_body`
+ * at the top level, the JavaScript SDK's `tts` and `conversation` beside the greeting override. Removed when
+ * exactly empty, before the frame is judged; a field with anything in it is judged as any other (Sol, #275
+ * round 2).
+ */
+const AGENT_EMPTY_TOP = ["custom_llm_extra_body"];
+const AGENT_EMPTY_OVERRIDE = ["tts", "conversation"];
+
+/** Whether a value is `{}`: an object with no field at all. @param {unknown} value */
+const emptyObject = (value) => isObject(value) && Object.keys(value).length === 0;
+
+/** Removes `names` from `record` where they are exactly `{}`. @param {Record<string, unknown>} record @param {readonly string[]} names */
+function dropEmpty(record, names) {
+  for (const name of names) if (emptyObject(record[name])) delete record[name];
+}
 
 /**
  * Whether the client's overrides are only the one it may make (plan step 11): the agent's `first_message`,
@@ -1008,19 +1026,30 @@ function onlyFirstMessage(override) {
  *   and so is one that is not a JSON object, or binary: ElevenLabs' messages are JSON text, and either would
  *   go unread. The rest go written again as they were read, so a repeated key can't be read another way by
  *   ElevenLabs.
+ * - Fields ElevenLabs' own SDKs send empty are removed first (`AGENT_EMPTY_TOP`, `AGENT_EMPTY_OVERRIDE`).
+ * - The first message's `user_id` is the session's end user, the one the gateway verified for its ticket,
+ *   whatever the client sent: ElevenLabs may load that user's memory of past conversations, so a client can
+ *   never name another user (Sol, #275 round 2). With no end user, it is removed.
  * @param {string | ArrayBuffer} data
+ * @param {{ endUser: string | null }} [session]
  * @returns {string | { refused: string }}
  */
-export function agentLock(data) {
+export function agentLock(data, session = { endUser: null }) {
   if (typeof data !== "string") return { refused: "binary_not_supported" };
   if (data.startsWith(AGENT_AUDIO) && data.endsWith('"}') && data.indexOf('"', AGENT_AUDIO.length) === data.length - 2) return data;
   const frame = parsed(data);
   if (!isObject(frame)) return { refused: "invalid_frame" };
+  dropEmpty(frame, AGENT_EMPTY_TOP);
+  if (isObject(frame.conversation_config_override)) dropEmpty(frame.conversation_config_override, AGENT_EMPTY_OVERRIDE);
   const start = frame.type === "conversation_initiation_client_data";
   const allowed = start
     ? Object.keys(frame).every((name) => AGENT_START_FIELDS.has(name))
     : AGENT_START_ONLY.every((name) => name === "conversation_config_override" || !Object.hasOwn(frame, name));
   if (!allowed || !onlyFirstMessage(frame.conversation_config_override)) return { refused: "override_not_allowed" };
+  if (start) {
+    delete frame.user_id;
+    if (session.endUser !== null) frame.user_id = session.endUser;
+  }
   return JSON.stringify(frame);
 }
 
@@ -1046,7 +1075,7 @@ const ELEVENLABS_AGENT = {
   detached: "end",
   read: () => null,
   turn: () => null,
-  lock: (data) => agentLock(data),
+  lock: (data, session) => agentLock(data, session),
   keepalive: (data) => typeof data === "string" && data.length < 256 && data.startsWith(AGENT_PING),
 };
 

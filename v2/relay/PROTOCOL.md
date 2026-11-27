@@ -157,7 +157,8 @@ An ElevenLabs agent call (`v1/convai/conversation`, with the agent's id as
 agent is the session's model: it can't be changed once the call starts.
 
 - **Opening.** The gateway asks ElevenLabs for a single-use signed URL for the
-  agent, with `include_conversation_id=true`, when the relay calls `open`. The
+  agent, with `include_conversation_id=true`, when the relay calls `open`. Of
+  the app's query, only `branch_id` and `environment` go with that request. The
   relay connects there, and sends no key with it; it connects only when the URL
   is on the address the session's key is sealed for. If ElevenLabs refuses (a
   deleted agent, say), the session never starts:
@@ -165,10 +166,16 @@ agent is the session's model: it can't be changed once the call starts.
   ElevenLabs' own WebSocket API has them.
 - **The first message.** The client may override only the agent's greeting:
   `conversation_config_override` with `agent.first_message` and nothing else, so
-  a new conversation after a lost one doesn't repeat the whole greeting. Any
-  other override (the duration above all, `conversation.max_duration_seconds`)
-  or a `custom_llm_extra_body` ends the session with
-  `1008 override_not_allowed`, whichever message carries it. A binary client
+  a new conversation after a lost one doesn't repeat the whole greeting. Beside
+  it, the first message may carry `dynamic_variables` and `source_info`. Any
+  other field or override (the duration above all,
+  `conversation.max_duration_seconds`) ends the session with
+  `1008 override_not_allowed`, and so does one of these fields in a later
+  message. Empty fields ElevenLabs' own SDKs send (`custom_llm_extra_body: {}`,
+  and `tts: {}` or `conversation: {}` in the override) are removed first. The
+  relay sets the first message's `user_id` to the session's end user, the one
+  the gateway verified, whatever the client sent, or removes it when the session
+  has none: ElevenLabs may load that user's memory of past conversations. A binary client
   frame ends it with `1008 binary_not_supported`, and text that isn't a JSON
   object with `1008 invalid_frame`: ElevenLabs' messages are JSON text. The
   client's other messages are sent written again as they were read; an audio

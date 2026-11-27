@@ -35,8 +35,8 @@ describe("an agent's client frames: only the first message's greeting may be ove
     for (const frame of [{ type: "pong", event_id: 2 }, { type: "contextual_update", text: "Earlier: …" }, { type: "user_message", text: "Hi" }, { type: "conversation_initiation_client_data" }]) {
       expect(JSON.parse(agentLock(JSON.stringify(frame)) as string)).toEqual(frame);
     }
-    // Who started the call, and the agent's own placeholders, go too.
-    const named = { type: "conversation_initiation_client_data", dynamic_variables: { name: "Ann" }, user_id: "user-1", source_info: { source: "swift_sdk", version: "2.0.0" } };
+    // What started the call, and the agent's own placeholders, go too.
+    const named = { type: "conversation_initiation_client_data", dynamic_variables: { name: "Ann" }, source_info: { source: "swift_sdk", version: "2.0.0" } };
     expect(JSON.parse(agentLock(JSON.stringify(named)) as string)).toEqual(named);
     // A repeated key goes as ElevenLabs reads it: once, the last.
     expect(agentLock('{"type":"pong","event_id":1,"event_id":2}')).toBe('{"type":"pong","event_id":2}');
@@ -70,16 +70,51 @@ describe("an agent's client frames: only the first message's greeting may be ove
     expect(agentLock(new Uint8Array([1, 2]).buffer)).toEqual({ refused: "binary_not_supported" });
   });
 
+  it("names the call's user as the ticket's verified end user, whatever the client sent, and no one when the ticket has none (Sol, #275 round 2)", () => {
+    const first = JSON.stringify({ type: "conversation_initiation_client_data", user_id: "someone-else", dynamic_variables: { a: 1 } });
+    expect(JSON.parse(agentLock(first, { endUser: "user-11a" }) as string)).toEqual({ type: "conversation_initiation_client_data", dynamic_variables: { a: 1 }, user_id: "user-11a" });
+    expect(JSON.parse(agentLock(JSON.stringify({ type: "conversation_initiation_client_data" }), { endUser: "user-11a" }) as string)).toMatchObject({ user_id: "user-11a" });
+    expect(JSON.parse(agentLock(first, { endUser: null }) as string)).not.toHaveProperty("user_id");
+    expect(JSON.parse(agentLock(first) as string)).not.toHaveProperty("user_id");
+    // Never named in a later message either.
+    expect(agentLock(JSON.stringify({ type: "user_activity", user_id: "someone-else" }), { endUser: "user-11a" })).toEqual({ refused: "override_not_allowed" });
+  });
+
+  it("takes the first messages ElevenLabs' own SDKs send: their empty fields are removed, filled ones still refused (Sol, #275 round 2)", () => {
+    // The Python SDK's default first message.
+    const python = { type: "conversation_initiation_client_data", custom_llm_extra_body: {}, conversation_config_override: {}, dynamic_variables: {} };
+    expect(JSON.parse(agentLock(JSON.stringify(python)) as string)).toEqual({ type: "conversation_initiation_client_data", conversation_config_override: {}, dynamic_variables: {} });
+    // The JavaScript SDK's, with the greeting.
+    const js = {
+      type: "conversation_initiation_client_data",
+      conversation_config_override: { agent: { first_message: "I am back." }, tts: {}, conversation: {} },
+      source_info: { source: "js_sdk", version: "1.37.0" },
+    };
+    expect(JSON.parse(agentLock(JSON.stringify(js)) as string)).toEqual({
+      type: "conversation_initiation_client_data",
+      conversation_config_override: { agent: { first_message: "I am back." } },
+      source_info: { source: "js_sdk", version: "1.37.0" },
+    });
+    const filled = (override: Record<string, unknown>) => JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { agent: { first_message: "Hi" }, ...override } });
+    expect(agentLock(filled({ tts: { voice_id: "other" } }))).toEqual({ refused: "override_not_allowed" });
+    expect(agentLock(filled({ conversation: { max_duration_seconds: 7200 } }))).toEqual({ refused: "override_not_allowed" });
+    expect(agentLock(JSON.stringify({ ...python, custom_llm_extra_body: { temperature: 2 } }))).toEqual({ refused: "override_not_allowed" });
+    // Only those fields: another empty override is still one ElevenLabs may refuse or read.
+    expect(agentLock(filled({ asr: {} }))).toEqual({ refused: "override_not_allowed" });
+  });
+
   it("the session object sends the locked frames and ends the session with 1008 on one the lock refuses, sending it nowhere", () => {
     const ended: unknown[] = [];
     const object = Object.create(Session.prototype) as Session;
     (object as unknown as { core: unknown }).core = { idle: false, ending: null, call: {}, sessionId: "ses_1", log: () => undefined };
     (object as unknown as { endFor: unknown }).endFor = (_live: unknown, reason: string, code: number, closeReason: string) => ended.push([reason, code, closeReason]);
     const sent: unknown[] = [];
-    const live = { client: { send: () => undefined }, deadline: Infinity, call: { send: (data: unknown) => sent.push(data), meter: null }, adapter, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0, clientState: {} };
-    object.toProvider(live as never, JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { agent: { first_message: "Back." } } }));
+    const live = { client: { send: () => undefined }, deadline: Infinity, call: { send: (data: unknown) => sent.push(data), meter: null }, adapter, frames: new SessionFrames({ relayMessages: false }), turnOpen: false, turns: 0, clientState: {}, endUser: "user-11a" };
+    object.toProvider(live as never, JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { agent: { first_message: "Back." } }, user_id: "someone-else" }));
     object.toProvider(live as never, audio);
     expect(sent).toHaveLength(2);
+    // The session's own end user, from its ticket.
+    expect(JSON.parse(sent[0] as string).user_id).toBe("user-11a");
     object.toProvider(live as never, JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: { conversation: { max_duration_seconds: 7200 } } }));
     expect(sent).toHaveLength(2);
     expect(ended).toEqual([["error", 1008, "override_not_allowed"]]);

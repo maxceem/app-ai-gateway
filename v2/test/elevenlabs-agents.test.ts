@@ -355,14 +355,19 @@ describe(`starting an agent call and its signed URL (step 11a, split keys ${spli
 
   it("asks ElevenLabs for a single-use signed URL at open, with the session's own key, and hands it to the relay", async () => {
     const { appId, slug, key } = await setup();
-    const { ticket } = (await (await start(appId, slug, key, { path: `v1/convai/conversation?agent_id=${AGENT}&branch_id=agtbrch_1` })).json()) as { ticket: string };
+    // Editor-only debug events and any other field of the app's query never reach the signing request (Sol, #275 round 2).
+    const path = `v1/convai/conversation?agent_id=${AGENT}&branch_id=agtbrch_1&environment=staging&debug_events_request=true&version_id=agtvrsn_1&include_conversation_id=false`;
+    const { ticket } = (await (await start(appId, slug, key, { path })).json()) as { ticket: string };
     const asked = elevenLabsApi();
     const ctx = createExecutionContext();
     const settings = await openForRelay(env, ticket, Date.now(), (promise) => ctx.waitUntil(promise));
     await waitOnExecutionContext(ctx);
     expect(settings).toMatchObject({ adapter: "elevenlabs_agent", model: AGENT, signedUrl: `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${AGENT}&conversation_signature=sig_test&conversation_id=${CONVERSATION}` });
-    // The app's options go on; the URL starts one conversation only; the vault added the key from the session's copy.
-    expect(asked).toEqual([{ url: `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${AGENT}&branch_id=agtbrch_1&include_conversation_id=true`, key: SECRET }]);
+    // The locked agent, the app's branch and environment only; the URL starts one conversation only; the vault
+    // added the key from the session's copy.
+    expect(asked).toEqual([
+      { url: `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${AGENT}&branch_id=agtbrch_1&environment=staging&include_conversation_id=true`, key: SECRET },
+    ]);
     // A session that doesn't start through one gets none.
     expect(settings.signedUrl).toBeDefined();
   });

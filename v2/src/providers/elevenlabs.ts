@@ -183,7 +183,7 @@ export const elevenlabs = defineProvider({
       // Only agents, in ElevenLabs' own form for their ids: never a legacy id, which no setup check would read.
       modelPrefix: AGENT_PREFIX,
       meter: { kind: "wall_clock" },
-      // Its query's other options (`branch_id`, `environment`) go on to the signed URL's request.
+      // Of its query, only `branch_id` and `environment` go on to the signed URL's request.
       // Its clock is billed at the base rate, so every priced slice is an estimate until the record settles it.
       session: { slot: "conversational", mode: "relayed", lookup: "elevenlabs", signedUrl: "elevenlabs", queryOptions: true, estimate: true },
     }),

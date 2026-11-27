@@ -28,16 +28,28 @@ export class SignedUrlRefused extends Error {
   }
 }
 
+/** The app's options the signing request takes (ElevenLabs' reference): the agent's branch, and its environment. */
+const SIGNING_OPTIONS = ["branch_id", "environment"];
+
 /**
  * The session's signed URL, from ElevenLabs: its request is the session's address with `/get-signed-url`
- * after the path, the same query (the agent, and the app's options such as `branch_id`), and
- * `include_conversation_id=true`, which makes the URL start one conversation only. Throws
+ * after the path, with the session's locked agent (`agent_id`), only the app's `SIGNING_OPTIONS`, and
+ * `include_conversation_id=true`, which makes the URL start one conversation only. Every other field of the
+ * app's query is dropped: the request carries the key, and some fields are for the agent's editors only,
+ * such as `debug_events_request` (Sol, #275 round 2). Throws
  * `SignedUrlRefused` when ElevenLabs refuses or answers no URL; anything else (the vault, a timeout) throws
  * as it is. The URL is never logged: it starts a conversation.
  */
 export async function signedSessionUrl(env: Env, ticket: Ticket): Promise<string> {
-  const ask = new URL(ticket.url);
+  const session = new URL(ticket.url);
+  const ask = new URL(session);
   ask.pathname = `${ask.pathname.replace(/\/+$/u, "")}/get-signed-url`;
+  ask.search = "";
+  ask.searchParams.set("agent_id", ticket.model ?? "");
+  for (const name of SIGNING_OPTIONS) {
+    const value = session.searchParams.get(name);
+    if (value !== null) ask.searchParams.set(name, value);
+  }
   ask.searchParams.set("include_conversation_id", "true");
   const deadline = Date.now() + SIGNED_URL_MS;
   const response = await vault(env).call({

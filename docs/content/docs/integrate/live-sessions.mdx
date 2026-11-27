@@ -257,7 +257,8 @@ through the relay.
 - **List the agents in the app's settings.** Turn on `elevenlabs.agent` for the
   ElevenLabs connection, and list the agents the app may start, by their ids, in
   the connection's `models`. The agent is the session's model: the app names it
-  as `agent_id` in the path's query, or as `model`.
+  as `agent_id` in the path's query, or as `model`. Of the query's other
+  options, only `branch_id` and `environment` go on.
 - **Set up each agent in ElevenLabs first.** In the agent's security settings,
   turn its authentication on, so only the gateway can start a call, and leave the
   override for the conversation's maximum duration off. The gateway reads the
@@ -266,8 +267,11 @@ through the relay.
   agents.
 - **Send ElevenLabs' own messages**, as its WebSocket API has them. The first
   message may override only the agent's greeting
-  (`conversation_config_override.agent.first_message`). Any other override, such
-  as the maximum duration, ends the call with `1008 override_not_allowed`.
+  (`conversation_config_override.agent.first_message`), and may carry
+  `dynamic_variables` and `source_info`. Any other field or override, such as
+  the maximum duration, ends the call with `1008 override_not_allowed`. The
+  conversation's `user_id` is always the session's own end user: a `user_id` the
+  app sends is replaced.
   Answer ElevenLabs' `ping` with a `pong`, and send the heartbeat: the `ping`
   doesn't keep a session alive.
 - **A dropped link ends the call.** Coming back to the same call is not
