@@ -95,6 +95,9 @@ describe("ElevenLabs streaming text to speech: the client's text is counted (ste
     const plain = JSON.stringify({ text: "Hello ", flush: true });
     expect(withoutCredentials(plain)).toBe(plain);
     expect(withoutCredentials("not json")).toBe("not json");
+    // ElevenLabs' documented first message spells the key `xi_api_key` (Sol, #273 round 3).
+    const documented = { text: " ", voice_settings: { stability: 0.5, similarity_boost: 0.8 }, xi_api_key: "<XI_API_KEY>" };
+    expect(JSON.parse(withoutCredentials(JSON.stringify(documented))!)).toEqual({ text: " ", voice_settings: { stability: 0.5, similarity_boost: 0.8 } });
     // ElevenLabs' messages are JSON text: a binary frame would go unchecked and unbilled.
     expect(withoutCredentials(new Uint8Array([1]).buffer)).toBeNull();
   });
@@ -237,6 +240,29 @@ describe("Deepgram streaming speech to text: metered as Deepgram reports it, or 
       expect(adapter.read(other), other).toBeNull();
     }
     expect(adapter.read(new Uint8Array([1]).buffer)).toBeNull();
+  });
+
+  it("reads keyterms Deepgram confirms in ConfigureSuccess, and only a non-empty list (Sol, #273 round 3)", () => {
+    expect(adapter.read(JSON.stringify({ type: "ConfigureSuccess", request_id: "r", keyterms: ["Acme"] }))).toEqual({ id: "", measures: {}, keyterms: true });
+    expect(adapter.read(JSON.stringify({ type: "ConfigureSuccess", request_id: "r", keyterms: [] }))).toBeNull();
+    expect(adapter.read(JSON.stringify({ type: "ConfigureSuccess", request_id: "r" }))).toBeNull();
+    expect(adapter.read(JSON.stringify({ type: "ConfigureFailure", code: "CONFIGURE_KEYTERMS_NOT_SUPPORTED" }))).toBeNull();
+  });
+
+  it("marks every slice after Deepgram confirmed keyterms, the one it came in too, and never before (Sol, #273 round 3)", async () => {
+    const s = setup("deepgram");
+    const core = s.instance();
+    await core.start(s.text, s.ticket, s.client);
+    await core.activity();
+    s.tick(61_000);
+    await core.alarm();
+    await core.recordUsage({ id: "", measures: {}, keyterms: true }, "running_total");
+    s.tick(61_000);
+    await core.alarm();
+    s.tick(10_000);
+    await core.end("provider_closed");
+    const slices = s.slices() as (Slice & { keyterms?: true })[];
+    expect(slices.map((slice) => slice.keyterms === true)).toEqual([false, true, true]);
   });
 
   it("starts the clock at the client's first audio frame, never at a KeepAlive, and names its call by Deepgram's request id header", () => {

@@ -996,6 +996,12 @@ export class SessionCore {
       journal.savedAt = now;
       await this.writeJournal(journal);
     }
+    // Keyterms Deepgram confirmed mid-stream: every later slice says so. Written once.
+    if (event.keyterms === true && journal.keyterms !== true) {
+      journal.keyterms = true;
+      journal.savedAt = now;
+      await this.writeJournal(journal);
+    }
     if (Object.keys(event.measures).length === 0) return;
     if (!addUsage(journal, event, shape, now)) return;
     // An observed session is real once usage came on its side channel (crash table row 20). Sticky.

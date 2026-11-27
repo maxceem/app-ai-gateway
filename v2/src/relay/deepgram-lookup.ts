@@ -7,8 +7,8 @@
  *
  * - Only a final record settles: one Deepgram has `completed`, with its dollar figure. A record not there
  *   yet (404), or not complete, is tried again, at the sweep's own pace (a minute, then doubling). A
- *   completed record that bills $0 or less for a stream whose slices cost more is not trusted: its shape
- *   is not checked against a real record yet, so the estimate stays, logged, rather than a refund.
+ *   completed record that bills $0 or less is not trusted: its shape is not checked against a real
+ *   record yet, so the estimate stays, logged, rather than a refund.
  * - At most `PROVIDER_LOOKUP_WINDOW_MS` after the stream ended (plan 8j): past it, or when the lookup can't
  *   be made at all (no request id, a key that may not read usage, a connection gone or pointed elsewhere,
  *   a key whose copy is known to be missing or removed), the slices' estimate stays, logged, and the
@@ -166,14 +166,9 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
     if (!(error instanceof MoneyError)) throw error;
     return keepEstimate("session_lookup_figure_unusable");
   }
-  // A free stream whose slices cost something: not trusted until a real record shows the shape (Fable, #273 round 1).
-  if (total <= 0) {
-    const booked = await ledger
-      .prepare("SELECT COALESCE(SUM(cost_nano), 0) AS cost FROM charge WHERE owner_type = 'session' AND owner_id = ?")
-      .bind(sessionId)
-      .first<{ cost: number }>();
-    if ((booked?.cost ?? 0) > 0) return keepEstimate("session_lookup_figure_doubtful");
-  }
+  // A free stream is not trusted until real records show the shape: the estimate stays, whatever was booked so
+  // far, since a late or unpriced slice can make that $0 too (Sol round 3, Gemini Neon round 1, #273).
+  if (total <= 0) return keepEstimate("session_lookup_figure_doubtful");
   // The final figure is in hand: it is applied even if the item's time runs out meanwhile.
   const applying = settleSession(ledger, { sessionId, providerTotal: total, now });
   keepAlive?.(applying.catch(() => undefined));

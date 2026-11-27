@@ -125,7 +125,7 @@ the model's rate per character. Its connection time is not billed.
   it is.
 - Once a frame names `pronunciation_dictionary_locators`, every later
   character is an estimate: a dictionary can change what ElevenLabs bills.
-- ElevenLabs' two credential fields (`xi-api-key`, `authorization`) are
+- ElevenLabs' credential fields (`xi-api-key`, `xi_api_key`, `authorization`) are
   removed from a client's JSON message before it goes on, and the message is
   sent written again whole. A binary client frame is dropped: ElevenLabs'
   messages are JSON text, and a binary one would go unchecked and unbilled.
@@ -143,6 +143,8 @@ each channel billed).
 
 - The client's binary frames are audio; `KeepAlive`, `Finalize` and
   `CloseStream` are not. The time before the first audio is free.
+- Keyterms turned on mid-stream with `Configure` bill the keyterm add-on from
+  the slice in which Deepgram confirms them (`ConfigureSuccess`) to the end.
 - The relay keeps the request id Deepgram sends when the stream opens
   (`dg-request-id`). After the end, the gateway reads Deepgram's record of the
   request and settles the session to Deepgram's own dollar figure, for up to an

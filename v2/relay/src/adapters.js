@@ -943,8 +943,11 @@ const ELEVENLABS_TTS = {
   },
 };
 
-/** The credential fields ElevenLabs reads in a client's first message (its `stream-input` reference). */
-const ELEVENLABS_CREDENTIALS = ["xi-api-key", "authorization"];
+/**
+ * The credential fields ElevenLabs reads in a client's first message: its `stream-input` reference names
+ * `xi-api-key` and `authorization`, and its first-message example spells the key `xi_api_key` (Sol, #273 round 3).
+ */
+const ELEVENLABS_CREDENTIALS = ["xi-api-key", "xi_api_key", "authorization"];
 
 /**
  * An ElevenLabs client message as it goes on: a binary frame dropped (null), since its messages are JSON
@@ -993,6 +996,8 @@ function deepgramHeard(data) {
  * - Deepgram's own dollar figure for the stream corrects it after the end (the request lookup in the gateway's
  *   sweep), by the request id in its answer's `dg-request-id` header.
  * - The client's binary frames are audio; its text frames (`KeepAlive`, `Finalize`, `CloseStream`) are not.
+ * - Keyterms a `Configure` message turns on, once Deepgram confirms them (`ConfigureSuccess`), mark every
+ *   later slice for the keyterm add-on (`keyterms` in the journal), which the gateway prices.
  * @type {Adapter}
  */
 const DEEPGRAM = {
@@ -1003,6 +1008,11 @@ const DEEPGRAM = {
   turn: () => null,
   read(data) {
     if (typeof data !== "string") return null;
+    // Keyterms turned on mid-stream (`Configure`), as Deepgram confirms them: billed on top from then on.
+    if (typeOf(data) === "ConfigureSuccess") {
+      const keyterms = /** @type {{ keyterms?: unknown } | null} */ (parsed(data))?.keyterms;
+      return Array.isArray(keyterms) && keyterms.length > 0 ? { id: "", measures: {}, keyterms: true } : null;
+    }
     const seconds = deepgramHeard(data);
     return seconds === null ? null : audioTotal(seconds);
   },

@@ -153,6 +153,8 @@ export interface SliceInput {
   readonly gaps: number;
   readonly from: number;
   readonly to: number;
+  /** Deepgram confirmed keyterms turned on mid-stream: the slice bills the keyterm add-on (10a). */
+  readonly keyterms?: true;
 }
 
 export interface CheckpointInput {
@@ -227,6 +229,7 @@ function checkedInput(input: unknown, ticket: Ticket): CheckpointInput {
       to: raw.to,
       ...(raw.billedMs === undefined ? {} : { billedMs: raw.billedMs as number }),
       ...(transcriptions === undefined ? {} : { transcriptions }),
+      ...(raw.keyterms === true ? { keyterms: true as const } : {}),
     };
   }
   return {
@@ -619,8 +622,10 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
   const facts = { app: ticket.app, session: ticket.sid };
   // A session billed by tokens alone (OpenAI Realtime) bills no connection time: it counts for plan minutes only.
   const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
-  // Read once for the slice: its price and its charge's measures.
-  const keys = validPriceKeys(ticket);
+  // Read once for the slice: its price and its charge's measures. Keyterms Deepgram confirmed mid-stream
+  // switch the add-on on for the slice, where the session prices it (Sol, #273 round 3).
+  const signed = validPriceKeys(ticket);
+  const keys = slice.keyterms === true && Object.hasOwn(signed, "keyterm") ? { ...signed, keyterm: "true" } : signed;
   const priceKeys = Object.keys(keys).length > 0 ? keys : undefined;
   const unpriced = priceSlice(slice.measures, null, timeMs);
   return {

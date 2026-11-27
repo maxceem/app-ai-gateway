@@ -270,7 +270,7 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
 });
 
 /** A Deepgram stream through the endpoint, one slice booked and closed as the relay does; returns its ids. */
-async function closedStream(sliceMs = 30_000, requestId: string | null = "dg-req-1") {
+async function closedStream(sliceMs = 30_000, requestId: string | null = "dg-req-1", extra: Record<string, unknown> = {}) {
   const { appId, slug, key, connectionId } = await setup("deepgram", "deepgram.listen_stream");
   const response = await start(appId, slug, key, { path: "v1/listen?encoding=linear16&sample_rate=16000", model: "nova-3" });
   const { ticket, session_id: sessionId } = (await response.json()) as { ticket: string; session_id: string };
@@ -281,7 +281,7 @@ async function closedStream(sliceMs = 30_000, requestId: string | null = "dg-req
     env,
     ticket,
     {
-      slice: { seq: 1, measures: {}, sessionMs: sliceMs, billedMs: sliceMs, gapMs: 0, gaps: 0, from: payload.start, to: payload.start + sliceMs },
+      slice: { seq: 1, measures: {}, sessionMs: sliceMs, billedMs: sliceMs, gapMs: 0, gaps: 0, from: payload.start, to: payload.start + sliceMs, ...extra },
       connected: true,
       accounting: true,
       providerCallId: requestId,
@@ -444,15 +444,48 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 2_700_000 });
   });
 
-  it("never refunds a stream on a completed record of $0 while its slices cost more: the estimate stays, logged (Fable, #273 round 1)", async () => {
-    const { sessionId, endedAt } = await closedStream();
+  it("prices the keyterm add-on on a slice once Deepgram confirmed keyterms mid-stream (Sol, #273 round 3)", async () => {
+    const { sessionId } = await closedStream(30_000, "dg-req-1", { keyterms: true });
+    // 30 s at $0.0048 a minute plus the keyterm add-on, $0.0013.
+    expect(await sessionCost(sessionId)).toBe(3_050_000);
+  });
+
+  it("keeps the estimate on a completed record of $0, whatever was booked so far: a late slice then counts in full (Sol round 3, Gemini Neon round 1, #273)", async () => {
     const lines: string[] = [];
     for (const method of ["log", "warn"] as const) vi.spyOn(console, method).mockImplementation((line: unknown) => void lines.push(String(line)));
+    // The stream is closed, and its only slice is still on its way: nothing booked yet.
+    const { appId, slug, key } = await setup("deepgram", "deepgram.listen_stream");
+    const response = await start(appId, slug, key, { path: "v1/listen?encoding=linear16", model: "nova-3" });
+    const { ticket, session_id: sessionId } = (await response.json()) as { ticket: string; session_id: string };
+    const { payload } = parseTicket(ticket)!;
+    const endedAt = payload.start + 31_000;
+    const ctx = createExecutionContext();
+    await closeForRelay(env, ticket, { finalSlice: 1, endReason: "provider_closed", endedAt, providerCallId: "dg-req-1" }, endedAt, (promise) => ctx.waitUntil(promise));
+    await waitOnExecutionContext(ctx);
     deepgramApi(() => finalRecord(0));
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
-    expect(await sessionCost(sessionId)).toBe(2_400_000);
     expect(lines.some((line) => line.includes("session_lookup_figure_doubtful"))).toBe(true);
+    // The late slice arrives: never zeroed by a $0 total, it counts.
+    const late = createExecutionContext();
+    await checkpointForRelay(
+      env,
+      ticket,
+      { slice: { seq: 1, measures: {}, sessionMs: 30_000, billedMs: 30_000, gapMs: 0, gaps: 0, from: payload.start, to: payload.start + 30_000 }, connected: true, accounting: true, providerCallId: "dg-req-1" },
+      endedAt + 60_000,
+      (promise) => late.waitUntil(promise),
+    );
+    await waitOnExecutionContext(late);
+    expect(await sessionCost(sessionId)).toBe(2_400_000);
+  });
+
+  it("keeps the estimate on a completed record of $0 when the slice is still unpriced, so the pricing sweep still prices it (Sol round 3, Gemini Neon round 1, #273)", async () => {
+    const { sessionId, endedAt } = await closedStream();
+    await ledger().prepare("UPDATE charge SET cost_nano = NULL, price_source = 'unresolved' WHERE owner_id = ?").bind(sessionId).run();
+    deepgramApi(() => finalRecord(0));
+    await runSweep(env, ledger(), { now: endedAt + 31_000 });
+    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ? AND kind = 'correction'").bind(sessionId).first("n")).toBe(0);
   });
 
   it("never settles before the stream has ended: it waits for close", async () => {
