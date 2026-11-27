@@ -493,15 +493,16 @@ describe("an answer that finishes just before the session's cap (Gemini Neon, #2
 describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
   type Slice = { gaps: number; measures: Record<string, number>; transcriptions?: Record<string, Record<string, number>> };
   /** A core on an OpenAI call whose meter is `call`; the closing wait and the end's write wait use `wait`. */
-  async function endSession(wait: (ms: number) => Promise<void>) {
+  async function endSession(wait: (ms: number) => Promise<void>, started = true) {
     const now = 1_000_000;
     const store = new MemoryStore();
     const slices: Slice[] = [];
+    const logs: string[] = [];
     const call = meter("gpt-realtime-2.1");
     const core = new SessionCore({
       store,
       now: () => now,
-      log: () => undefined,
+      log: (event: Record<string, unknown>) => void logs.push(String(event.message)),
       wait,
       vault: { sessionKey: async () => ({ key: { value: "sk", header: "authorization", format: "Bearer {key}" }, target: "https://api.openai.com/v1/realtime" }) as never },
       main: {
@@ -514,9 +515,11 @@ describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
       },
       provider: { connect: async () => ({ callId: null, close: () => undefined, estimate: () => call.estimate() }) },
       turnOpen: () => call.pending(),
+      unfinished: () => call.unfinished(),
     });
     const { text, ticket } = ticketFor(now, { providerType: "openai", operation: "openai.realtime", model: "gpt-realtime-2.1" });
-    await core.start(text, ticket, { close: () => undefined });
+    const start = () => core.start(text, ticket, { close: () => undefined });
+    if (started) await start();
     /** A provider frame the meter sees, and its usage written as the session object writes it. */
     const usage = (frame: string, event: { id: string; measures: Record<string, number>; model?: string }) => {
       const key = call.see(frame, true);
@@ -526,7 +529,7 @@ describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
         if (!call.pending()) core.turnDone();
       });
     };
-    return { core, store, slices, call, usage };
+    return { core, store, slices, call, usage, logs, start };
   }
   const onlyWritesWait = (ms: number) => (ms === END_WRITES_MS ? Promise.resolve() : never<void>());
 
@@ -572,7 +575,7 @@ describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
     expect(s.slices.at(-1)).toMatchObject({ gaps: 0, measures: { input_tokens: 30, output_tokens: 3 } });
   });
 
-  it("never lets a write that doesn't settle hold the end: the session closes, and its last slice is partial", async () => {
+  it("never lets a write that doesn't settle hold the end: the session closes, and its last slice is partial, not cut (Sol, #270 round 6)", async () => {
     const s = await endSession(onlyWritesWait);
     const write = s.store.putJournal.bind(s.store);
     let stuck = false;
@@ -584,6 +587,19 @@ describe("the end path's usage writes (Sol, Gemini Neon, #270 round 5)", () => {
     s.store.putJournal = write;
     await s.core.end("time_cap");
     expect(s.slices.at(-1)?.gaps).toBeGreaterThan(0);
+    // OpenAI finished the answer: its write ran late, so the slice is partial, but nothing was cut or estimated.
+    expect(s.logs).not.toContain("relay_answer_cut");
+    expect(s.slices.at(-1)?.measures).not.toHaveProperty("estimated_tokens");
+  });
+
+  it("an end that finds nothing to end leaves no stop behind: a start on the same instance after it records its usage (Sol, Gemini Neon, #270 round 6)", async () => {
+    const s = await endSession(never, false);
+    // The first start failed before anything was stored: its end finds no session.
+    await s.core.end("error");
+    await s.start();
+    await s.core.recordUsage({ id: "r1", measures: { input_tokens: 12, output_tokens: 3 } }, "per_turn");
+    await s.core.end("client_closed");
+    expect(s.slices.at(-1)).toMatchObject({ measures: { input_tokens: 12, output_tokens: 3 } });
   });
 });
 

@@ -31,6 +31,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   see(data: string | ArrayBuffer, forwarded: boolean): string | null,
  *   settled(key: string): void,
  *   pending(): boolean,
+ *   unfinished(): boolean,
  *   label(event: UsageEvent): UsageEvent,
  *   estimate(): UsageEvent | null,
  *   lock(data: string | ArrayBuffer): string | ArrayBuffer,
@@ -41,7 +42,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * finished, whose usage is being written), that usage written (`settled`),
  * whether anything is still to come that a closing session waits for
  * (`pending`: an answer or a transcription not finished, or one whose usage is
- * still being written), the model of a usage event that is not the
+ * still being written), whether OpenAI left an answer or transcription without
+ * its completion event (`unfinished`: cut by the end), the model of a usage event that is not the
  * session's own (`label`: input transcription), a cut answer's estimate
  * (`estimate`, the session core's hook) and the model lock on the client's
  * frames (`lock`, before each goes to the provider).
@@ -595,6 +597,9 @@ function openAiCall(model) {
     },
     pending() {
       return open > 0 || pending.size > 0 || writing.size > 0;
+    },
+    unfinished() {
+      return open > 0 || pending.size > 0;
     },
     label(event) {
       const transcription = Object.keys(event.measures).some((name) => name.startsWith("transcription_"));

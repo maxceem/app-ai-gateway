@@ -212,6 +212,12 @@ export class Session extends DurableObject {
         const meter = this.live.call?.meter;
         return meter === undefined || meter === null ? this.live.turnOpen : meter.pending();
       },
+      // What the provider never finished: cut, if the session ends now.
+      unfinished: () => {
+        if (this.live === null) return this.sideTurnOpen;
+        const meter = this.live.call?.meter;
+        return meter === undefined || meter === null ? this.live.turnOpen : meter.unfinished();
+      },
     });
     /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
     this.sideTurnOpen = false;

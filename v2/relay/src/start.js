@@ -194,10 +194,13 @@ export class SessionCore {
    * @param {{
    *   store: Store, vault: VaultPort, main: MainPort, provider: ProviderPort, now?: () => number, log?: Logger,
    *   liveness?: Liveness, proof?: () => boolean, checkpointTimeoutMs?: number,
-   *   turnOpen?: () => boolean, wait?: (ms: number) => Promise<void>,
+   *   turnOpen?: () => boolean, unfinished?: () => boolean, wait?: (ms: number) => Promise<void>,
    * }} parts
    * `proof`: whether a client message came since the start (crash table row 20), for a live checkpoint.
-   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`).
+   * `turnOpen`: whether the provider is in the middle of an answer (the adapter's `turn`), or its usage
+   * is still being written: the closing wait waits for both.
+   * `unfinished`: whether the provider left an answer without its completion event: the end's "cut".
+   * By default `turnOpen`.
    * `wait`: a timer, for the closing wait; tests give their own.
    */
   constructor(parts) {
@@ -234,6 +237,8 @@ export class SessionCore {
     this.checkpointing = null;
     /** @type {() => boolean} */
     this.turnOpen = parts.turnOpen ?? (() => false);
+    /** @type {() => boolean} */
+    this.unfinished = parts.unfinished ?? this.turnOpen;
     /** @type {(ms: number) => Promise<void>} */
     this.wait = parts.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     /**
@@ -841,6 +846,9 @@ export class SessionCore {
         await this.endOnce(reason, details);
       } finally {
         if (this.ending === ending) this.ending = null;
+        // An end that found nothing to end, or failed before `over`, leaves no session behind it: a
+        // retry on this instance must record its usage (Sol, Gemini Neon, #270 round 6).
+        this.finalizing = false;
       }
     });
     this.ending = ending;
@@ -875,9 +883,10 @@ export class SessionCore {
     call?.close?.(1000, "session ended");
     const written = await this.settleWrites();
     this.finalizing = true;
-    // An answer still open now was cut off: its usage is missing. Also when an observed call's side
-    // channel dropped during the wait: the answer never finished where the relay could see it.
-    const cut = hadCall && this.turnOpen();
+    // An answer the provider never finished was cut off: its usage is missing. Also when an observed
+    // call's side channel dropped during the wait: the answer never finished where the relay could see
+    // it. A finished answer whose write ran past the limit is not cut: it is partial below (`written`).
+    const cut = hadCall && this.unfinished();
     // An answer this end cuts, for a provider that never reports a cut answer's usage (Gemini, OpenAI): estimated.
     const estimate = call?.estimate?.() ?? null;
     const stored = await this.store.get(KEYS);
