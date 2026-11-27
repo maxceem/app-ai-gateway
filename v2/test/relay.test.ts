@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { HEALTH_PATH, SESSION_PATH } from "../relay/src/constants.js";
 import relay, { Session } from "../relay/src/index.js";
-import { SessionFrames, StartQueue } from "../relay/src/frames.js";
+import { MAX_CLIENT_FRAMES_PER_WINDOW, SessionFrames, StartQueue } from "../relay/src/frames.js";
 import { issueTicket } from "../src/relay/tickets.ts";
 import { sealForTest } from "./split-keys.ts";
 import { TEST_TICKET_PUBLIC_KEY } from "./relay-keys.ts";
@@ -233,7 +233,8 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     expect(live.turnOpen).toBe(true);
   });
 
-  it("a client that comes back with the secret counts as there: the next checkpoint says connected (Sol round 1)", async () => {
+  /** A session object whose detached client comes back with the right secret, through `reconnect`. */
+  async function comeBack(frames: SessionFrames) {
     const listeners: Record<string, ((event: unknown) => void)[]> = {};
     const sent: unknown[] = [];
     const socket = {
@@ -244,14 +245,28 @@ describe("our SDK's link dropping (step 9a part 3)", () => {
     } as unknown as WebSocket;
     const session = Object.create(Session.prototype) as Session;
     (session as unknown as { core: unknown }).core = { mayReattach: async (secret: unknown) => secret === "right", reattach: () => true };
-    // A session whose client never spoke before its link dropped.
-    const frames = new SessionFrames({ relayMessages: true });
     const live = { client: null, owner: {}, frames, call: null, deadline: 123, queue: new StartQueue(), held: new StartQueue(), relayMessages: true, adapter: {}, turnOpen: false };
     session.live = live as never;
-    expect(frames.clientSpoke).toBe(false);
     const coming = session.reconnect(socket);
     for (const listener of listeners.message ?? []) listener({ data: JSON.stringify({ type: "agw.reconnect", secret: "right" }) });
     await coming;
+    return { live, sent };
+  }
+
+  it("a reconnect keeps the frame-rate window: a new link brings no fresh allowance (Sol round 2)", async () => {
+    const frames = new SessionFrames({ relayMessages: true });
+    // The old link used up this window's allowance.
+    for (let frame = 0; frame < MAX_CLIENT_FRAMES_PER_WINDOW; frame += 1) expect(frames.fromClient("x").kind).toBe("forward");
+    const { live } = await comeBack(frames);
+    expect(live.frames).not.toBe(frames);
+    expect(live.frames.fromClient("one more")).toEqual({ kind: "end", reason: "error", closeCode: 1008, closeReason: "rate_limited" });
+  });
+
+  it("a client that comes back with the secret counts as there: the next checkpoint says connected (Sol round 1)", async () => {
+    // A session whose client never spoke before its link dropped.
+    const frames = new SessionFrames({ relayMessages: true });
+    expect(frames.clientSpoke).toBe(false);
+    const { live, sent } = await comeBack(frames);
     expect(sent).toEqual([JSON.stringify({ type: "agw.session.resumed", deadline: 123 })]);
     // What the core's `proof` reads for the next checkpoint.
     expect(live.frames.clientSpoke).toBe(true);

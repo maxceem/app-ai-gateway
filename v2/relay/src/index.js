@@ -347,9 +347,14 @@ export class Session extends DurableObject {
     const old = live.client;
     live.client = socket;
     live.owner = owner;
+    const previous = live.frames;
     live.frames = new SessionFrames({ relayMessages: true });
     // The secret proves the client is there: the next checkpoint says connected (crash table row 20).
     live.frames.clientSpoke = true;
+    // Only the received-byte counts start again: the frame-rate window goes on, so a new link
+    // never brings a fresh allowance to the same provider session.
+    live.frames.windowStart = previous.windowStart;
+    live.frames.windowFrames = previous.windowFrames;
     this.listen(live, socket, owner);
     handedOver = true;
     socket.removeEventListener("message", onMessage);
