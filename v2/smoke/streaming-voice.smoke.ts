@@ -3,8 +3,11 @@
  * `smoke/mock/`, so nothing is billed:
  *
  * - an ElevenLabs stream is billed by the characters of the text the client sends, at the list price;
- * - a Deepgram stream is billed by time at the streaming list price, then settled to the dollar figure
- *   in Deepgram's request record, which the gateway's sweep looks up after the stream ends.
+ * - a Deepgram stream is billed by time at the streaming list price.
+ *
+ * Deepgram's request lookup after a stream is not checked here: it runs from the ledger object's alarm,
+ * and Cloudflare refuses that call to the mock's workers.dev address (error 1042, one Worker fetching
+ * another of the same account). The tests cover it (`test/streaming-voice.test.ts`).
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \
@@ -93,13 +96,12 @@ test("an ElevenLabs stream is billed by the characters of the text the client se
   same(billed.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0), 480_000, "the stream's cost");
 });
 
-test("a Deepgram stream is billed by time at the streaming price, then settled to Deepgram's own dollars by its request lookup (step 10a)", { skip, timeout: 240_000 }, async () => {
+test("a Deepgram stream is billed by time at the streaming price, from the first audio to the close (step 10a)", { skip, timeout: 120_000 }, async () => {
   const { app, key, slug } = await streamApp("deepgram", "deepgram.listen_stream");
-  // `mock_usd` goes on to the mock with the app's other options: its request record reports that figure.
   const response = await send(`/v2/apps/${app}/sessions/${slug}`, base, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-end-user-id": "smoke-stt-user" },
-    body: JSON.stringify({ path: "v1/listen?encoding=linear16&sample_rate=16000&mock_usd=0.0042", model: "nova-3" }),
+    body: JSON.stringify({ path: "v1/listen?encoding=linear16&sample_rate=16000", model: "nova-3" }),
   });
   await expectResponse(response, 201, "starting a Deepgram stream");
   const body = await readJson(response);
@@ -108,14 +110,11 @@ test("a Deepgram stream is billed by time at the streaming price, then settled t
   const second = new Uint8Array(32_000);
   const got = await exchangeFrames("/v2/relay/session", relay, [second, second, JSON.stringify({ type: "CloseStream" })], 3, { authorization: `Bearer ${String(body?.ticket)}` });
   same((JSON.parse(typeof got[2] === "string" ? got[2] : "{}") as { type?: string }).type, "Metadata", "Deepgram's closing frame");
-  // The slices first, by time at the streaming price.
-  const sliced = await chargesOf(app, sessionId, (list) => list.some((charge) => charge.kind === "slice" && (charge.cost_nano ?? 0) > 0));
-  check(
-    sliced.filter((charge) => charge.kind === "slice" && (charge.cost_nano ?? 0) > 0).every((charge) => charge.unit === "session_seconds" && charge.price_source === "list_rate"),
-    "the stream was not billed by time at the list price",
-  );
-  // Then the lookup, about a minute after the end: the session totals Deepgram's $0.0042.
-  const settled = await chargesOf(app, sessionId, (list) => list.some((charge) => charge.kind === "correction" && charge.correction_kind === "dollars"), 60);
-  check(settled.some((charge) => charge.kind === "correction" && charge.correction_kind === "dollars" && charge.price_source === "provider_usd"), "the stream was never settled to Deepgram's dollars");
-  same(settled.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0), 4_200_000, "the stream's cost after Deepgram's figure");
+  // By time at the streaming price: the larger of the clock from the first audio and the 2 s Deepgram heard.
+  const charges = await chargesOf(app, sessionId, (list) => list.some((charge) => charge.kind === "slice" && (charge.cost_nano ?? 0) > 0));
+  const billed = charges.filter((charge) => charge.kind === "slice" && (charge.cost_nano ?? 0) > 0);
+  check(billed.length > 0 && billed.every((charge) => charge.unit === "session_seconds" && charge.price_source === "list_rate"), "the stream was not billed by time at the list price");
+  // At least the 2 s Deepgram heard, at $0.0048 a minute: 160,000 nano-dollars.
+  check(billed.reduce((sum, charge) => sum + (charge.units ?? 0), 0) >= 2_000, "the stream billed less than the audio Deepgram heard");
+  check(billed.reduce((sum, charge) => sum + (charge.cost_nano ?? 0), 0) >= 160_000, "the stream cost less than the audio Deepgram heard");
 });
