@@ -128,7 +128,9 @@ export const deepgram = defineProvider({
       match: { method: "GET", path: "v1/listen" },
       lifecycle: "session",
       transport: "websocket",
-      model: { in: "query", name: "model", default: "base-general" },
+      // With no model named, the gateway's default is Nova-3, priced for streaming: Deepgram's own,
+      // `base-general`, has no price, so a stream naming none would be refused (Sol, #273 round 4).
+      model: { in: "query", name: "model", default: "nova-3" },
       modelKinds: ["transcription"],
       priceList: "deepgram-streaming",
       priceKeys: [

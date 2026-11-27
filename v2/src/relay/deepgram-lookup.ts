@@ -6,7 +6,8 @@
  * stored as the session's provider call id); the project is the key's own (`GET v1/projects`).
  *
  * - Only a final record settles: one Deepgram has `completed`, with its dollar figure. A record not there
- *   yet (404), or not complete, is tried again, at the sweep's own pace (a minute, then doubling). A
+ *   yet (404), or not complete, is tried again, at the sweep's own pace (a minute, then doubling). The
+ *   record is wrapped in `request`, its result in `request.response`, as Deepgram's reference shows. A
  *   completed record that bills $0 or less is not trusted: its shape is not checked against a real
  *   record yet, so the estimate stays, logged, rather than a refund.
  * - At most `PROVIDER_LOOKUP_WINDOW_MS` after the stream ended (plan 8j): past it, or when the lookup can't
@@ -50,15 +51,17 @@ interface LookedUpSession {
 }
 
 /**
- * What a request record says: its dollar figure once Deepgram has completed it; `pending` while it has
- * not (no `completed`, or no figure yet). Deepgram's example nests both in `response`.
+ * What a request record says: its dollar figure once Deepgram has completed it, whatever its sign (the
+ * caller judges it); `pending` while it has not (no `completed`, or no figure yet). Deepgram's reference
+ * wraps the record in `request`, its result in `request.response` (Sol, #273 round 4).
  */
 export function recordFigure(record: unknown): { readonly kind: "final"; readonly usd: number } | { readonly kind: "pending" } {
-  const response = typeof record === "object" && record !== null ? (record as { response?: unknown }).response : undefined;
+  const request = typeof record === "object" && record !== null ? (record as { request?: unknown }).request : undefined;
+  const response = typeof request === "object" && request !== null ? (request as { response?: unknown }).response : undefined;
   if (typeof response !== "object" || response === null) return { kind: "pending" };
   const { completed, details } = response as { completed?: unknown; details?: unknown };
   const usd = typeof details === "object" && details !== null ? (details as { usd?: unknown }).usd : undefined;
-  if (typeof completed !== "string" || completed === "" || typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return { kind: "pending" };
+  if (typeof completed !== "string" || completed === "" || typeof usd !== "number" || !Number.isFinite(usd)) return { kind: "pending" };
   return { kind: "final", usd };
 }
 
@@ -159,6 +162,9 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
   if (record.status !== 200) return retry(`record answered ${record.status}`);
   const figure = recordFigure(record.body);
   if (figure.kind === "pending") return retry("record not complete");
+  // A free (or negative) stream is not trusted until real records show the shape: the estimate stays, whatever
+  // was booked so far, since a late or unpriced slice can make that $0 too (Sol round 3, Gemini Neon round 1, #273).
+  if (figure.usd <= 0) return keepEstimate("session_lookup_figure_doubtful");
   let total;
   try {
     total = fromDollars(figure.usd);
@@ -166,8 +172,7 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
     if (!(error instanceof MoneyError)) throw error;
     return keepEstimate("session_lookup_figure_unusable");
   }
-  // A free stream is not trusted until real records show the shape: the estimate stays, whatever was booked so
-  // far, since a late or unpriced slice can make that $0 too (Sol round 3, Gemini Neon round 1, #273).
+  // Rounded to nothing (a figure below a nano-dollar): as doubtful as $0.
   if (total <= 0) return keepEstimate("session_lookup_figure_doubtful");
   // The final figure is in hand: it is applied even if the item's time runs out meanwhile.
   const applying = settleSession(ledger, { sessionId, providerTotal: total, now });

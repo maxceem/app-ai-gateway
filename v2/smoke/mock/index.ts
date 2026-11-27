@@ -600,12 +600,15 @@ async function answer(request: Request): Promise<Response> {
   if (request.method === "GET" && record !== null) {
     const id = decodeURIComponent(record[1]!);
     const usd = Number(/^mock_usd_([0-9.]{1,12})_/u.exec(id)?.[1] ?? "0.001");
+    // Wrapped in `request`, as Deepgram's reference shows.
     return Response.json({
-      request_id: id,
-      project_uuid: MOCK_PROJECT,
-      created: new Date().toISOString(),
-      path: "/v1/listen",
-      response: { code: 101, completed: new Date().toISOString(), details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, channels: 1 } },
+      request: {
+        request_id: id,
+        project_uuid: MOCK_PROJECT,
+        created: new Date().toISOString(),
+        path: "/v1/listen",
+        response: { code: 101, completed: new Date().toISOString(), details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, channels: 1 } },
+      },
     });
   }
   // A path no provider declares, for passthrough (step 5): any method,

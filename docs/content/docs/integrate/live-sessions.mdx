@@ -25,7 +25,7 @@ These providers are served today:
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
 | OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
 | ElevenLabs text to speech | `v1/text-to-speech/{voice_id}/stream-input` | for example `eleven_flash_v2_5`; `eleven_multilingual_v2` when none is named |
-| Deepgram speech to text | `v1/listen` | for example `nova-3` |
+| Deepgram speech to text | `v1/listen` | for example `nova-3`, the gateway's default when none is named |
 
 Text to speech and speech to text streams have their own limit on open
 sessions, apart from voice conversations. At that limit a new stream is

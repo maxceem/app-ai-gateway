@@ -264,7 +264,7 @@ describe("the mock's streaming voice stand-ins (step 10a)", () => {
     const projects = await mock.fetch(new Request("https://mock.test/v1/projects", { headers: { authorization: "Token mock-key" } }));
     expect(await projects.json()).toEqual({ projects: [{ project_id: "mock-project", name: "Mock" }] });
     const record = await mock.fetch(new Request(`https://mock.test/v1/projects/mock-project/requests/${requestId}`, { headers: { authorization: "Token mock-key" } }));
-    expect(await record.json()).toMatchObject({ request_id: requestId, response: { completed: expect.any(String), details: { usd: 0.0042 } } });
+    expect(await record.json()).toMatchObject({ request: { request_id: requestId, response: { completed: expect.any(String), details: { usd: 0.0042 } } } });
   });
 
   it("answers ElevenLabs' stream with audio for each text, nothing for the opening space, and the final frame at the closing empty text", async () => {

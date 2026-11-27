@@ -260,8 +260,12 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
     expect(detail).not.toHaveProperty("retryEveryMs");
     if (splitKeysOn) expect(detail.keyCopies).toMatchObject({ providerKey: { blob: expect.any(String) } });
     else expect(detail.keyCopies).toBeUndefined();
-    // No model, no price: Deepgram's default has none.
-    expect((await start(appId, slug, key, { path: "v1/listen" })).status).toBe(400);
+    // With no model named, the gateway's default, Nova-3: the guide's own example starts (Sol, #273 round 4).
+    const unnamed = await start(appId, slug, key, { path: "v1/listen?encoding=linear16&sample_rate=16000" });
+    expect(unnamed.status).toBe(201);
+    expect(parseTicket(((await unnamed.json()) as { ticket: string }).ticket)!.payload.url).toBe(
+      "https://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&model=nova-3",
+    );
     // A model named only in the query is the session's (Fable, #273 round 1).
     const queried = await start(appId, slug, key, { path: "v1/listen?model=nova-3&encoding=linear16" });
     expect(queried.status).toBe(201);
@@ -310,9 +314,10 @@ function deepgramApi(record: () => Answer, projects: () => Answer = () => ({ sta
   return asked;
 }
 
+/** A completed request record, wrapped in `request` as Deepgram's reference shows. */
 const finalRecord = (usd: number): Answer => ({
   status: 200,
-  body: { request_id: "dg-req-1", created: "2026-11-28T10:00:00Z", path: "/v1/listen", response: { code: 101, completed: "2026-11-28T10:00:31Z", details: { usd, duration: 30 } } },
+  body: { request: { request_id: "dg-req-1", created: "2026-11-28T10:00:00Z", path: "/v1/listen", response: { code: 101, completed: "2026-11-28T10:00:31Z", details: { usd, duration: 30 } } } },
 });
 
 async function settlementOf(sessionId: string) {
@@ -327,9 +332,12 @@ async function sessionCost(sessionId: string): Promise<number> {
 describe(`Deepgram's request lookup after a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("reads only a completed record's dollar figure as final", () => {
     expect(recordFigure(finalRecord(0.0024).body)).toEqual({ kind: "final", usd: 0.0024 });
-    expect(recordFigure({ response: { details: { usd: 0.0024 } } })).toEqual({ kind: "pending" });
-    expect(recordFigure({ response: { completed: "2026-11-28T10:00:31Z", details: {} } })).toEqual({ kind: "pending" });
-    expect(recordFigure({ response: { completed: "2026-11-28T10:00:31Z", details: { usd: -1 } } })).toEqual({ kind: "pending" });
+    expect(recordFigure({ request: { response: { details: { usd: 0.0024 } } } })).toEqual({ kind: "pending" });
+    expect(recordFigure({ request: { response: { completed: "2026-11-28T10:00:31Z", details: {} } } })).toEqual({ kind: "pending" });
+    // A negative figure is a completed one: the caller keeps the estimate for it (Sol, #273 round 4).
+    expect(recordFigure({ request: { response: { completed: "2026-11-28T10:00:31Z", details: { usd: -1 } } } })).toEqual({ kind: "final", usd: -1 });
+    // The result is under `request.response`: one at the top level is not Deepgram's shape.
+    expect(recordFigure({ response: { completed: "2026-11-28T10:00:31Z", details: { usd: 0.0024 } } })).toEqual({ kind: "pending" });
     expect(recordFigure(null)).toEqual({ kind: "pending" });
   });
 
@@ -359,7 +367,7 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "record not ready", due_at: endedAt + 31_000 + 60_000 });
     // There, but not complete yet.
-    answer = { status: 200, body: { request_id: "dg-req-1", response: { details: { usd: 0.003 } } } };
+    answer = { status: 200, body: { request: { request_id: "dg-req-1", response: { details: { usd: 0.003 } } } } };
     await runSweep(env, ledger(), { now: endedAt + 91_000 });
     expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "record not complete", due_at: endedAt + 91_000 + 120_000 });
     expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open", session_total_nano: null });
@@ -476,6 +484,14 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
       (promise) => late.waitUntil(promise),
     );
     await waitOnExecutionContext(late);
+    expect(await sessionCost(sessionId)).toBe(2_400_000);
+  });
+
+  it("keeps the estimate on a completed record with a negative figure: never a refund (Sol, #273 round 4)", async () => {
+    const { sessionId, endedAt } = await closedStream();
+    deepgramApi(() => finalRecord(-0.002));
+    await runSweep(env, ledger(), { now: endedAt + 31_000 });
+    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
     expect(await sessionCost(sessionId)).toBe(2_400_000);
   });
 
