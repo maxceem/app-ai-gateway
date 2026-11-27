@@ -211,7 +211,7 @@ struct LiveSessionTests {
     }
 
     @Test
-    func reconnectLetsTheOldLinkGoAndComesBackAtOnce() async {
+    func reconnectKeepsTheOldLinkOpenUntilTheNewOneHasTakenOver() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
         var events = session.events.makeAsyncIterator()
@@ -219,9 +219,48 @@ struct LiveSessionTests {
         links[0].deliver(started)
         _ = await events.next()
         await session.reconnect()
-        #expect(links[0].abandoned)
         #expect(await events.next() == .reconnecting)
         #expect(await eventually { links.count == 2 && links[1].sent.first?.hasPrefix(#"{"type":"agw.reconnect""#) == true })
+        // A close from this side now would end the session before the new link takes it over.
+        #expect(!links[0].abandoned)
+        #expect(links[0].closedWith == nil)
+        links[1].deliver(#"{"type":"agw.session.resumed","deadline":1795000000000}"#)
+        #expect(await events.next() == .resumed)
+        #expect(links[0].abandoned)
+    }
+
+    @Test
+    func framesGoOutInTheOrderTheAppSentThem() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        // Some wait for the start, the rest go out as they come.
+        for index in 0..<50 { await session.send(text: "frame-\(index)") }
+        links[0].deliver(started)
+        _ = await events.next()
+        for index in 50..<200 { await session.send(text: "frame-\(index)") }
+        #expect(await eventually { links[0].sent.count == 200 })
+        #expect(links[0].sent == (0..<200).map { "frame-\($0)" })
+    }
+
+    @Test
+    func aNewLinkThatNeverAnswersEndsTheSessionWhenTheRelayWouldHaveLetItGo() async {
+        let links = Links()
+        let clock = Clock()
+        let session = LiveSession(ticket: ticket, timing: fast(), now: { clock.now }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        links[0].end(code: 0)
+        _ = await events.next()
+        #expect(await eventually { links.count == 2 })
+        // The new link stays silent: no answer, no close.
+        clock.advance(10)
+        let last = await next(&events) { if case .ended = $0 { return true } else { return false } }
+        #expect(last == .ended(code: 0, reason: "reconnect_failed"))
+        #expect(links[1].abandoned)
     }
 
     @Test

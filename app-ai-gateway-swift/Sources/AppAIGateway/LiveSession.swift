@@ -81,6 +81,12 @@ public actor LiveSession {
     private let makeLink: @Sendable (URLRequest) -> any LiveSessionLink
     private let now: @Sendable () -> Date
     private var link: (any LiveSessionLink)?
+    /// The link's send queue: one task sends its frames, in order.
+    private var outbox: AsyncStream<URLSessionWebSocketTask.Message>.Continuation?
+    /// The link `reconnect()` moved away from. It stays open until the new
+    /// link has taken the session over: the relay closes it then with
+    /// `1000 reconnected`. A close from this side could end the session first.
+    private var retiring: (any LiveSessionLink)?
     /// Bumped for each new link: frames and closes from an older one are ignored.
     private var generation = 0
     /// Whether frames may go out: the session started or resumed on this link.
@@ -148,7 +154,7 @@ public actor LiveSession {
     /// changed: the old link is let go without waiting for it to time out.
     public func reconnect() {
         guard !finished, ready, secret != nil else { return }
-        link?.abandon()
+        retiring = link
         dropped()
     }
 
@@ -170,10 +176,15 @@ public actor LiveSession {
         request.setValue("1", forHTTPHeaderField: "x-agw-relay-messages")
         let link = makeLink(request)
         self.link = link
+        outbox?.finish()
+        let (queue, outbox) = AsyncStream.makeStream(of: URLSessionWebSocketTask.Message.self)
+        self.outbox = outbox
+        Task {
+            for await message in queue { try? await link.send(message) }
+        }
         if comingBack, let secret {
             // The first message, and only here: never in a URL or a header.
-            let message = #"{"type":"agw.reconnect","secret":""# + secret + #""}"#
-            Task { try? await link.send(.string(message)) }
+            outbox.yield(.string(#"{"type":"agw.reconnect","secret":""# + secret + #""}"#))
         }
         Task { [weak self] in
             while true {
@@ -223,6 +234,8 @@ public actor LiveSession {
             reported = 0
             droppedAt = nil
             attempts = 0
+            retiring?.abandon()
+            retiring = nil
             becameReady()
             continuation.yield(.resumed)
         default:
@@ -299,14 +312,20 @@ public actor LiveSession {
     }
 
     private func forward(_ message: URLSessionWebSocketTask.Message) {
-        guard let link else { return }
+        guard let outbox else { return }
         lastSentAt = now()
-        Task { try? await link.send(message) }
+        outbox.yield(message)
     }
 
     private func onTick() {
-        guard !finished, ready else { return }
+        guard !finished else { return }
         let time = now()
+        // A new link that never answers must not keep the session past the
+        // time the relay holds it.
+        if let droppedAt, time.timeIntervalSince(droppedAt) >= timing.reconnectFor {
+            return finish(code: 0, reason: "reconnect_failed")
+        }
+        guard ready else { return }
         if received != reported, time.timeIntervalSince(lastReportAt) >= timing.reportEvery {
             reported = received
             lastReportAt = time
@@ -323,6 +342,10 @@ public actor LiveSession {
         ready = false
         timer?.cancel()
         pending.removeAll()
+        outbox?.finish()
+        if droppedAt != nil { link?.abandon() }
+        retiring?.abandon()
+        retiring = nil
         continuation.yield(.ended(code: code, reason: reason))
         continuation.finish()
     }
