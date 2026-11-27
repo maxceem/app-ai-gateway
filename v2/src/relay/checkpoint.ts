@@ -365,7 +365,7 @@ function unitsOf(measures: Readonly<Record<string, number>>): Partial<Record<(ty
  * cost (plan 4.2 and 5.2): a slice with a gap and no tokens has an unknown
  * cost, `unresolved` with no tokens for the sweep to price.
  */
-export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number): ChargeRow {
+export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice, now: number, priceKeys: Readonly<Record<string, string>> = validPriceKeys(ticket)): ChargeRow {
   const gap = slice.gapMs > 0 || slice.gaps > 0;
   // Connection time that may be billed is kept as usage, so the sweep can price it later: time the
   // price billed, or time with no price yet. A gap with no such time stays an unknown cost.
@@ -426,7 +426,7 @@ export function sliceCharge(ticket: Ticket, slice: SliceInput, price: SlicePrice
       ...Object.fromEntries(Object.entries(unitsOf(slice.measures)).map(([unit, count]) => [`units_${unit}`, count])),
       ...(slice.gapMs > 0 ? { gap_ms: slice.gapMs } : {}),
       // The session's price key values, so the sweep prices an `unresolved` slice with them too.
-      ...Object.fromEntries(Object.entries(validPriceKeys(ticket)).map(([key, value]) => [`key_${key}`, value])),
+      ...Object.fromEntries(Object.entries(priceKeys).map(([key, value]) => [`key_${key}`, value])),
     },
     rates: price.rates,
     sessionMs: slice.sessionMs,
@@ -619,7 +619,9 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
   const facts = { app: ticket.app, session: ticket.sid };
   // A session billed by tokens alone (OpenAI Realtime) bills no connection time: it counts for plan minutes only.
   const timeMs = sessionBillsTime(ticket.operation) ? billedTime(slice) : 0;
-  const priceKeys = Object.keys(validPriceKeys(ticket)).length > 0 ? validPriceKeys(ticket) : undefined;
+  // Read once for the slice: its price and its charge's measures.
+  const keys = validPriceKeys(ticket);
+  const priceKeys = Object.keys(keys).length > 0 ? keys : undefined;
   const unpriced = priceSlice(slice.measures, null, timeMs);
   return {
     id: `${ticket.sid}:slice:${slice.seq}`,
@@ -635,7 +637,7 @@ function sliceAtSavedPrice(ticket: Ticket, slice: SliceInput, now: number): Slic
         }
         if (price.priceSource === "unresolved") log("warn", "checkpoint_saved_price_unusable", facts);
       }
-      return sliceCharge(ticket, slice, price, now);
+      return sliceCharge(ticket, slice, price, now, keys);
     },
   };
 }

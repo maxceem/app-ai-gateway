@@ -125,9 +125,10 @@ the model's rate per character. Its connection time is not billed.
   it is.
 - Once a frame names `pronunciation_dictionary_locators`, every later
   character is an estimate: a dictionary can change what ElevenLabs bills.
-- A top-level field named as a credential (`xi-api-key`, `authorization`, a
-  key or a token) is removed from a client's JSON message before it goes on,
-  and the message is sent written again whole.
+- ElevenLabs' two credential fields (`xi-api-key`, `authorization`) are
+  removed from a client's JSON message before it goes on, and the message is
+  sent written again whole. A binary client frame is dropped: ElevenLabs'
+  messages are JSON text, and a binary one would go unchecked and unbilled.
 - The client's last text before it hangs up is counted: the session's end
   waits for its count to be written, as for any usage, at most 2 s.
 

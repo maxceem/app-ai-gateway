@@ -6,12 +6,14 @@
  * stored as the session's provider call id); the project is the key's own (`GET v1/projects`).
  *
  * - Only a final record settles: one Deepgram has `completed`, with its dollar figure. A record not there
- *   yet (404), or not complete, is tried again a minute later.
+ *   yet (404), or not complete, is tried again, at the sweep's own pace (a minute, then doubling). A
+ *   completed record that bills $0 or less for a stream whose slices cost more is not trusted: its shape
+ *   is not checked against a real record yet, so the estimate stays, logged, rather than a refund.
  * - At most `PROVIDER_LOOKUP_WINDOW_MS` after the stream ended (plan 8j): past it, or when the lookup can't
- *   be made at all (no request id, a connection gone or pointed elsewhere, a key whose copy is known to be
- *   missing or removed), the slices' estimate stays, logged, and the session is marked so. Any other
- *   failure (the vault's, a refusal such as a key without `usage:read`, an answer cut short) is tried
- *   again within the window.
+ *   be made at all (no request id, a key that may not read usage, a connection gone or pointed elsewhere,
+ *   a key whose copy is known to be missing or removed), the slices' estimate stays, logged, and the
+ *   session is marked so. Any other failure (the vault's, an answer cut short) is tried again within the
+ *   window.
  * - The key: for an account with split keys on, the copies made when the app asked for the session
  *   (`./start-session.ts`); for one with them off, the connection's own. The vault adds it, as for any call.
  *
@@ -22,12 +24,12 @@ import { log } from "../core/log.ts";
 import { boundedJson } from "../jobs/jobs.ts";
 import { PROVIDER_LOOKUP_WINDOW_MS, settleSession } from "../ledger/sessions.ts";
 import type { HandlerResult, OpenWorkHandler } from "../ledger/sweep.ts";
-import { KEY_COPIES_FIELD } from "../ledger/write.ts";
 import { fromDollars, MoneyError } from "../money.ts";
 import { connectionDescription, readConnection, sealedCredentials, withStoredCopies, type ConnectionRecord } from "../providers/connections.ts";
 import type { ProviderDescription } from "../providers/operation.ts";
 import { sealedUpstreamRequest } from "../providers/route.ts";
 import { vault, type StoredCopies } from "../vault/client.ts";
+import { keyCopiesOf } from "../vault/key-copies.ts";
 
 const DONE: HandlerResult = { done: true };
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
@@ -60,12 +62,6 @@ export function recordFigure(record: unknown): { readonly kind: "final"; readonl
   return { kind: "final", usd };
 }
 
-/** A row's key copies: the copies; "missing" when they couldn't be made or were removed; null when it needs none. */
-function keyCopiesOf(detail: Readonly<Record<string, unknown>> | null): StoredCopies | "missing" | null {
-  const value = detail?.[KEY_COPIES_FIELD];
-  if (value === undefined || value === null) return null;
-  return typeof value === "object" ? (value as StoredCopies) : "missing";
-}
 
 /** One GET to Deepgram through the vault, with the session's key: its status, and its JSON when it has any. */
 async function deepgramGet(
@@ -143,6 +139,8 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
   let record: { readonly status: number; readonly body: unknown };
   try {
     projects = await deepgramGet(env, connection, description, "v1/projects", copies, signal, session.app_id);
+    // A key without `usage:read` won't gain it within the hour: the estimate stays at once (Fable, #273 round 1).
+    if (projects.status === 401 || projects.status === 403) return keepEstimate("session_lookup_refused", { status: projects.status });
     if (projects.status !== 200) return retry(`projects answered ${projects.status}`);
     const list = (projects.body as { projects?: unknown } | null)?.projects;
     const project = Array.isArray(list) ? (list[0] as { project_id?: unknown } | undefined)?.project_id : undefined;
@@ -155,8 +153,8 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
     log("warn", "session_lookup_failed", { ...facts, error: errorFacts(error) });
     return retry("lookup failed");
   }
-  // Not there yet: Deepgram writes the record after the stream ends. Any other answer, a refusal included
-  // (a key without `usage:read`), is tried again within the window, then the estimate stays (Sol, #273 round 2).
+  if (record.status === 401 || record.status === 403) return keepEstimate("session_lookup_refused", { status: record.status });
+  // Not there yet: Deepgram writes the record after the stream ends. Any other answer is tried again within the window.
   if (record.status === 404) return retry("record not ready");
   if (record.status !== 200) return retry(`record answered ${record.status}`);
   const figure = recordFigure(record.body);
@@ -167,6 +165,14 @@ export const deepgramLookup: OpenWorkHandler = async (env, item, { ledger, now, 
   } catch (error) {
     if (!(error instanceof MoneyError)) throw error;
     return keepEstimate("session_lookup_figure_unusable");
+  }
+  // A free stream whose slices cost something: not trusted until a real record shows the shape (Fable, #273 round 1).
+  if (total <= 0) {
+    const booked = await ledger
+      .prepare("SELECT COALESCE(SUM(cost_nano), 0) AS cost FROM charge WHERE owner_type = 'session' AND owner_id = ?")
+      .bind(sessionId)
+      .first<{ cost: number }>();
+    if ((booked?.cost ?? 0) > 0) return keepEstimate("session_lookup_figure_doubtful");
   }
   // The final figure is in hand: it is applied even if the item's time runs out meanwhile.
   const applying = settleSession(ledger, { sessionId, providerTotal: total, now });

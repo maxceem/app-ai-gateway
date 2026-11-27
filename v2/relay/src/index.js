@@ -586,6 +586,12 @@ export class Session extends DurableObject {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
+    // The adapter's own lock (ElevenLabs': a client's credentials out, a binary frame dropped).
+    if (live.adapter.lock !== undefined) {
+      const kept = live.adapter.lock(data);
+      if (kept === null) return;
+      data = kept;
+    }
     // The model lock, for a provider whose client may name another model mid-session (OpenAI's `session.update`).
     const locked = live.call?.meter?.lock(data) ?? data;
     // A frame the lock refuses (GPT-Live's backend rules): the session ends, and the client is told why.

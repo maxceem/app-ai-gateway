@@ -157,16 +157,10 @@ export const elevenlabs = defineProvider({
       transport: "websocket",
       model: { in: "query", name: "model_id", default: DEFAULT_TTS_MODEL },
       modelKinds: ["speech"],
-      outbound: {
-        // A single-use token or bearer a client could send: the gateway's key is the only credential.
-        credentials: [
-          { in: "query", field: "authorization" },
-          { in: "query", field: "single_use_token" },
-        ],
-      },
+      // A credential in its query (`authorization`, `single_use_token`) is never sent: `CREDENTIAL_FIELD` in `../relay/start-session.ts`.
       meter: { kind: "provider_event", adapter: "elevenlabs-tts", units: ["characters"] },
-      // ElevenLabs' WebSocket guide: the endpoint does not support `eleven_v3` or `eleven_v4`, nor their variants.
-      session: { slot: "streaming", mode: "relayed", queryOptions: true, unservedFamilies: ["eleven_v3", "eleven_v4"] },
+      // ElevenLabs refuses a model its stream doesn't serve (`eleven_v3`, `eleven_v4`), and the app gets its error as it is.
+      session: { slot: "streaming", mode: "relayed", queryOptions: true },
     }),
     defineOperation({
       name: "elevenlabs.stt",

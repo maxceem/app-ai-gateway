@@ -50,7 +50,8 @@ Content-Type: application/json
 - `{provider}` is the connection's slug, such as `openai`.
 - `path` is the provider's own live-session path from the table above. For
   ElevenLabs and Deepgram streams, put the provider's own options in its
-  query, such as `v1/listen?encoding=linear16&sample_rate=16000`. They go to
+  query, such as `v1/listen?encoding=linear16&sample_rate=16000`, the model
+  too if you like (`model`, `model_id`) when the body names none. They go to
   the provider as they are, except the model, which is always the session's,
   and fields that would send results elsewhere or carry a credential (a key,
   a token or an authorization), which are removed. Other sessions take no
@@ -232,10 +233,11 @@ Start a new session then.
 - **ElevenLabs text to speech.** Send ElevenLabs' own messages: the first with
   `text` set to a single space, then your text, then `{"text": ""}` to finish.
   The voice is the one in the path and the model the session's: no message can
-  change them. A credential in a message, such as `xi-api-key`, is removed.
-  `eleven_v3` and `eleven_v4` are not served on this path: ElevenLabs doesn't
-  support them there. The session is charged by the characters of the text
-  you send, as a text-to-speech call is.
+  change them. A credential in a message (`xi-api-key`, `authorization`) is
+  removed, and a binary message is dropped: ElevenLabs' messages are text.
+  ElevenLabs doesn't support `eleven_v3` or `eleven_v4` on this path, and
+  ends such a session with its own error. The session is charged by the
+  characters of the text you send, as a text-to-speech call is.
 - **Deepgram speech to text.** Send the audio as binary messages, and
   Deepgram's own `KeepAlive`, `Finalize` and `CloseStream`. The session is
   charged by the audio Deepgram reports it heard, or by the time since your

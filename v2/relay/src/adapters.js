@@ -28,6 +28,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  *   callIdHeader?: string,
+ *   lock?(data: string | ArrayBuffer): string | ArrayBuffer | null,
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -76,6 +77,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   rule still ends a session whose client is gone (plan 5.2).
  * - `callIdHeader`: the provider's answer header that names the call (Deepgram's
  *   `dg-request-id`), stored as the session's provider call id, for a lookup after it ends.
+ * - `lock`: a client frame as it goes to the provider, for a provider that needs nothing about the call
+ *   remembered (ElevenLabs): the frame, changed or not, or null to drop it.
  */
 
 /**
@@ -914,7 +917,8 @@ const OPENAI_TRANSCRIPTION_ENDS = new Set([
  *   frame names one, every later character is an estimate too, and the slice is priced as one.
  * - Its answers (audio, `isFinal`) are never read: nothing in them is billed.
  * - A client's own credentials in a message (the first message may carry `xi-api-key` or `authorization`)
- *   are removed before it goes on: the session's key is the only one (`withoutCredentials`).
+ *   are removed before it goes on: the session's key is the only one. Its messages are JSON text, so a
+ *   binary frame, which would go unchecked and unbilled, is dropped (`withoutCredentials`).
  * @type {Adapter}
  */
 const ELEVENLABS_TTS = {
@@ -922,16 +926,7 @@ const ELEVENLABS_TTS = {
   detached: "hold",
   read: () => null,
   turn: () => null,
-  // Nothing to wait for or estimate: only the lock, on the client's messages.
-  perCall: () => ({
-    see: () => null,
-    settled: () => undefined,
-    pending: () => false,
-    unfinished: () => false,
-    label: (event) => event,
-    estimate: () => null,
-    lock: withoutCredentials,
-  }),
+  lock: (data) => withoutCredentials(data),
   client(data, state = {}) {
     if (typeof data !== "string") return null;
     const frame = parsed(data);
@@ -948,25 +943,23 @@ const ELEVENLABS_TTS = {
   },
 };
 
-/**
- * A field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`, `xi_api_key`,
- * `authorization`, `single_use_token`). The gateway strips the same names from a session's query
- * (`CREDENTIAL_FIELD` in `src/relay/start-session.ts`; a test keeps them the same).
- */
-export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
+/** The credential fields ElevenLabs reads in a client's first message (its `stream-input` reference). */
+const ELEVENLABS_CREDENTIALS = ["xi-api-key", "authorization"];
 
 /**
- * A client's JSON message with its top-level credential fields removed (`CREDENTIAL_FIELD`), written again
- * whole so a repeated key can't be read another way; any other message as it is. Its text is parsed, as the
- * provider reads it, so an escaped name is caught too.
+ * An ElevenLabs client message as it goes on: a binary frame dropped (null), since its messages are JSON
+ * text; a JSON one without its credential fields (`ELEVENLABS_CREDENTIALS`), written again whole so a
+ * repeated key can't be read another way; any other text as it is. Its text is parsed, as ElevenLabs reads
+ * it, so an escaped name is caught too.
  * @param {string | ArrayBuffer} data
- * @returns {string | ArrayBuffer}
+ * @returns {string | null}
  */
 export function withoutCredentials(data) {
-  if (typeof data !== "string") return data;
+  if (typeof data !== "string") return null;
   const frame = parsed(data);
-  if (!isObject(frame) || !Object.keys(frame).some((name) => CREDENTIAL_FIELD.test(name))) return data;
-  return JSON.stringify(Object.fromEntries(Object.entries(frame).filter(([name]) => !CREDENTIAL_FIELD.test(name))));
+  if (!isObject(frame) || !ELEVENLABS_CREDENTIALS.some((name) => Object.hasOwn(frame, name))) return data;
+  for (const name of ELEVENLABS_CREDENTIALS) delete frame[name];
+  return JSON.stringify(frame);
 }
 
 /**

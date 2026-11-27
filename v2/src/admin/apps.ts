@@ -375,11 +375,6 @@ function judgeApp(config: AppConfig, stored: StoredEntries, priced: StoredEntrie
       // applies to it (Sol, #272 round 3).
       if (backends.some((backend) => backendModelAllowed(route, connection.sources, backend, listed))) continue;
       const model = refusal.model;
-      if (refusal.reason === "model_not_served") {
-        throw new GatewayError(400, "invalid_request", `config.routing.providers.${slug}.models: ${operations.map((operation) => operation.name).join(", ")} does not serve ${model}`, undefined, {
-          data: { slug, model },
-        });
-      }
       throw new GatewayError(
         400,
         "pricing_not_configured",

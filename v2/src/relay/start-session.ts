@@ -21,10 +21,9 @@ import { ledgerDb } from "../ledger/database.ts";
 import { attachLookupKeyCopies, openSession, PROVIDER_LOOKUP_WINDOW_MS } from "../ledger/sessions.ts";
 import { admitSession, releaseSessionLeases } from "../limits/session-admission.ts";
 import { backendModels, knownModel, listOf, priceSources, resolveCall } from "../pricing/billability.ts";
-import { connectionDescription, loadConnection, sealedCredentials, type SealedCredentials } from "../providers/connections.ts";
-import { withDeadline } from "../core/background.ts";
+import { connectionDescription, loadConnection, sealedCredentials } from "../providers/connections.ts";
 import { priceKeyValues, removeOutbound } from "../proxy/request-fields.ts";
-import { vault, type CopyRequest, type StoredCopies } from "../vault/client.ts";
+import { storeKeyCopies } from "../vault/key-copies.ts";
 import { upstreamRoute } from "../providers/matcher.ts";
 import { upstreamUrl } from "../providers/route.ts";
 import { callRefusal, matcherFor, refusal, serveCaller, type ProxyContext } from "../proxy/serve.ts";
@@ -56,8 +55,8 @@ export function relaySessionUrl(env: Env): string | null {
 
 /**
  * A query field named as a credential: a key, a token, a secret or an authorization (`xi-api-key`,
- * `api_key`, `access_token`, `authorization`). Never sent: the session's key is the only credential.
- * The relay strips the same names from ElevenLabs' messages (`relay/src/adapters.js`).
+ * `api_key`, `access_token`, `authorization`, `single_use_token`). Never sent: the session's key is the
+ * only credential.
  */
 export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
 
@@ -65,38 +64,6 @@ export const CREDENTIAL_FIELD = /(^|[_-])(key|token|secret|authorization)$/iu;
 function splitQuery(path: string): [string, string | undefined] {
   const at = path.indexOf("?");
   return at === -1 ? [path, undefined] : [path.slice(0, at), path.slice(at + 1)];
-}
-
-/** How long making the lookup's key copies may take: after the answer, never failing the session. */
-const LOOKUP_KEY_COPY_DEADLINE_MS = 5_000;
-
-/**
- * The key's copies for a lookup after the session ends (plan 8j, "Keys needed with no app request"):
- * for an account with split keys on, the app's credential is here only now, so the vault copies the
- * connection's credentials, sealed with the KEK alone until `expiresAt` (the ticket's expiry, the time
- * cap, and the lookup's hour). Undefined for an account with split keys off, which needs none, and
- * "missing" when they couldn't be made: the lookup then keeps the estimate, logged.
- */
-async function lookupKeyCopies(env: Env, appId: string, credentials: SealedCredentials, expiresAt: number): Promise<StoredCopies | "missing" | undefined> {
-  const credential = credentials.credential;
-  if (credential === undefined) return undefined;
-  try {
-    return await withDeadline(
-      vault(env).storeCopy(
-        {
-          ...(credentials.providerKey === null ? {} : { providerKey: credentials.providerKey as CopyRequest["providerKey"] & object }),
-          ...(credentials.cloudflareToken === null ? {} : { cloudflareToken: credentials.cloudflareToken as CopyRequest["cloudflareToken"] & object }),
-          credential,
-        },
-        expiresAt,
-      ),
-      LOOKUP_KEY_COPY_DEADLINE_MS,
-      "copying the session's key for its lookup",
-    );
-  } catch (error) {
-    log("warn", "session_key_copy_failed", { app: appId, error: errorFacts(error) });
-    return "missing";
-  }
 }
 
 export async function startSessionHandler(c: ProxyContext): Promise<Response> {
@@ -157,8 +124,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         throw new GatewayError(502, "provider_unavailable", "Live sessions cannot go through Cloudflare AI Gateway yet");
       }
       const location = operation.model;
-      // As for a call: the model the app names, else the operation's default (ElevenLabs' text to speech has one).
-      const requested = location.in === "fixed" ? location.model : (request.data.model ?? ("default" in location ? location.default : undefined));
+      // As for a call: the model the app names, in the body or, for a provider that takes it there, in the
+      // query (Deepgram's `model`, ElevenLabs' `model_id`), else the operation's default.
+      const options = new URLSearchParams(search ?? "");
+      const inQuery = location.in === "query" ? (options.get(location.name) ?? undefined) : undefined;
+      const requested = location.in === "fixed" ? location.model : (request.data.model ?? inQuery ?? ("default" in location ? location.default : undefined));
       if (requested === undefined) throw new GatewayError(400, "invalid_request", `${operation.name} needs a model`);
       caller.facts.model = requested;
       // A refusal records the model only when the gateway knows it, as for a call.
@@ -182,10 +152,8 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
         log("error", "relay_url_missing", {});
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");
       }
-      // The app's options go on as it sent them, except the fields the operation removes (webhooks and a
-      // client's own credentials), any field named as a credential (`CREDENTIAL_FIELD`), and the model,
-      // which is always the session's own.
-      const options = new URLSearchParams(search ?? "");
+      // The app's options go on as it sent them, except the fields the operation removes (webhooks), any
+      // field named as a credential (`CREDENTIAL_FIELD`), and the model, which is always the session's own.
       const sent = removeOutbound(operation, null, options).query ?? new URLSearchParams(options);
       for (const name of [...new Set(sent.keys())]) if (CREDENTIAL_FIELD.test(name)) sent.delete(name);
       if (location.in === "query") sent.set(location.name, call.model);
@@ -254,7 +222,11 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       if (lookup !== undefined) {
         waitUntil(
           (async () => {
-            const copies = await lookupKeyCopies(c.env, app.id, credentials, issued.expiresAt + SESSION_CAP_MS + PROVIDER_LOOKUP_WINDOW_MS);
+            // The ticket's expiry, the time cap and the lookup's hour (plan 8j).
+            const copies = await storeKeyCopies(c.env, credentials, issued.expiresAt + SESSION_CAP_MS + PROVIDER_LOOKUP_WINDOW_MS, {
+              message: "session_key_copy_failed",
+              facts: { app: app.id, session: issued.sessionId },
+            });
             if (copies === undefined) return;
             await opened;
             if (!(await attachLookupKeyCopies(ledger, issued.sessionId, copies))) log("warn", "session_key_copy_unattached", { app: app.id, session: issued.sessionId });

@@ -57,8 +57,6 @@ export const SETTLE_FIRST_TRY_MS = 30 * 1000;
  * with no app request": Deepgram's request record): past it, the slices' estimate stays.
  */
 export const PROVIDER_LOOKUP_WINDOW_MS = 60 * 60 * 1000;
-/** How often the lookup tries while the provider's record is not ready, and how many times at most: past the window either way. */
-export const PROVIDER_LOOKUP_PACE = { retryEveryMs: 60 * 1000, maxTries: 90 } as const;
 
 /** A session row, as the code builds it (see `session` in `src/db/schema.ts`). */
 export interface SessionRow {
@@ -158,7 +156,8 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
         session.id,
       ),
     // The provider's dollar figure for the session, looked up once it ends (`close` moves it earlier),
-    // under the same rules as the stale-session row just above.
+    // under the same rules as the stale-session row just above. Tried at the sweep's own pace, a minute
+    // then doubling, so about seven times within the hour the lookup ends at (Fable, #273 round 1).
     ...(lookup === null
       ? []
       : [
@@ -174,7 +173,7 @@ function insertSessionStatements(db: D1Database, session: SessionRow, now: numbe
               session.accountId,
               session.appId,
               session.id,
-              JSON.stringify({ providerType: lookup, ...PROVIDER_LOOKUP_PACE }),
+              JSON.stringify({ providerType: lookup }),
               session.startedAt + session.timeCapMs + STALE_SESSION_GRACE_MS,
               now,
               session.id,

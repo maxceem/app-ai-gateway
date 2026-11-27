@@ -87,38 +87,39 @@ describe("ElevenLabs streaming text to speech: the client's text is counted (ste
     expect(client(JSON.stringify({ text: "Plain ", pronunciation_dictionary_locators: [] }), {})).toEqual({ counts: { characters: 6 } });
   });
 
-  it("removes a client's own credentials from its messages before they go on, written again whole; anything else goes as it is (Sol, #273 round 1)", () => {
+  it("removes ElevenLabs' two credential fields from a client's message, written again whole, and drops a binary frame (Sol and Fable, #273 round 1)", () => {
     const init = { text: " ", voice_settings: { stability: 0.5 }, "xi-api-key": "theirs", authorization: "Bearer theirs" };
-    expect(JSON.parse(withoutCredentials(JSON.stringify(init)) as string)).toEqual({ text: " ", voice_settings: { stability: 0.5 } });
+    expect(JSON.parse(withoutCredentials(JSON.stringify(init))!)).toEqual({ text: " ", voice_settings: { stability: 0.5 } });
     // An escaped name and a repeated key are read as ElevenLabs reads them.
-    expect(JSON.parse(withoutCredentials('{"text":" ","xi_api_\\u006bey":"a","xi_api_key":"b"}') as string)).toEqual({ text: " " });
+    expect(JSON.parse(withoutCredentials('{"text":" ","xi-api-\\u006bey":"a","xi-api-key":"b"}')!)).toEqual({ text: " " });
     const plain = JSON.stringify({ text: "Hello ", flush: true });
     expect(withoutCredentials(plain)).toBe(plain);
     expect(withoutCredentials("not json")).toBe("not json");
-    const bytes = new Uint8Array([1]).buffer;
-    expect(withoutCredentials(bytes)).toBe(bytes);
+    // ElevenLabs' messages are JSON text: a binary frame would go unchecked and unbilled.
+    expect(withoutCredentials(new Uint8Array([1]).buffer)).toBeNull();
   });
 
-  it("the session object sends ElevenLabs the message without the client's credentials, through the call's lock", () => {
-    const core = { idle: false, ending: null, call: {}, count: async () => undefined, countText: async () => undefined };
+  it("the session object sends ElevenLabs the message without the client's credentials, and never a binary frame, through the adapter's lock", () => {
+    const told: unknown[] = [];
+    const core = { idle: false, ending: null, call: {}, count: async (counts: unknown) => void told.push(counts), countText: async () => undefined };
     const object = Object.create(Session.prototype) as Session;
     (object as unknown as { core: unknown }).core = core;
     const sent: unknown[] = [];
     const adapter = adapterFor("elevenlabs_tts");
-    const meter = adapter.perCall!("eleven_flash_v2_5");
-    expect(meter.pending()).toBe(false);
     const live = {
       client: { send: () => undefined },
       deadline: Infinity,
-      call: { send: (data: unknown) => sent.push(data), meter },
+      call: { send: (data: unknown) => sent.push(data) },
       adapter,
       frames: new SessionFrames({ relayMessages: false }),
       turnOpen: false,
       turns: 0,
       clientState: {},
     };
-    object.toProvider(live as never, JSON.stringify({ text: " ", xi_api_key: "theirs" }));
+    object.toProvider(live as never, JSON.stringify({ text: " ", "xi-api-key": "theirs" }));
+    object.toProvider(live as never, new TextEncoder().encode(JSON.stringify({ text: "Free text? " })).buffer);
     expect(sent).toEqual([JSON.stringify({ text: " " })]);
+    expect(told).toEqual([]);
   });
 
   it("reads no provider frame, never starts a clock, and keeps no turn open: its answers bill nothing", () => {

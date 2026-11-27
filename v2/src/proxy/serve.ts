@@ -124,9 +124,6 @@ export function callRefusal(call: CallRefusal, operation: OperationDescription):
   if (call.reason === "not_served") return new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
   // A path naming a model outside its closed list was never declared.
   if (call.reason === "unpriced_path") return new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-  if (call.reason === "model_not_served") {
-    return new GatewayError(403, "model_not_allowed", `${operation.name} does not serve ${model}`, undefined, { data: { model } });
-  }
   if (call.reason === "model_not_allowed") {
     return new GatewayError(403, "model_not_allowed", "Model is not allowed", undefined, { data: { model } });
   }

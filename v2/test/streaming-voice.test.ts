@@ -16,10 +16,9 @@ import { parseTicket } from "../relay/src/ticket.js";
 import { adapterFor, closeForRelay } from "../src/relay/contract.ts";
 import { checkpointForRelay, priceSlice, sliceCharge } from "../src/relay/checkpoint.ts";
 import { deepgramLookup, recordFigure } from "../src/relay/deepgram-lookup.ts";
-import { billing, billingForCharge, listedModelRefusal, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
+import { billing, billingForCharge, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { priceKeyValues } from "../src/proxy/request-fields.ts";
 import { CREDENTIAL_FIELD } from "../src/relay/start-session.ts";
-import { CREDENTIAL_FIELD as RELAY_CREDENTIAL_FIELD } from "../relay/src/adapters.js";
 import { GatewayError } from "../src/core/errors.ts";
 import { setVaultForTests, type VaultClient } from "../src/vault/client.ts";
 import { localVault } from "./local-vault.ts";
@@ -110,28 +109,11 @@ describe(`streaming voice prices and the save rule (step 10a, split keys ${split
     expect(keys("")).toMatchObject({ diarize: "false" });
   });
 
-  it("names credential fields the same way on the gateway and the relay, never an option such as Deepgram's keyterm", () => {
-    expect(String(CREDENTIAL_FIELD)).toBe(String(RELAY_CREDENTIAL_FIELD));
+  it("names a query's credential fields, never an option such as Deepgram's keyterm", () => {
     for (const name of ["xi-api-key", "xi_api_key", "api_key", "key", "token", "access_token", "single_use_token", "authorization", "Authorization", "client_secret"]) {
       expect(CREDENTIAL_FIELD.test(name), name).toBe(true);
     }
     for (const name of ["keyterm", "keywords", "model", "output_format", "language", "tokens_per_second", "sample_rate"]) expect(CREDENTIAL_FIELD.test(name), name).toBe(false);
-  });
-
-  it("refuses a model the ElevenLabs stream endpoint doesn't serve, at save, beside the calls that do serve it (Sol, #273 round 1)", () => {
-    const sources = priceSources({ type: "elevenlabs", rates: null });
-    expect(listedModelRefusal({ models: ["eleven_v3"] }, undefined, sources, [tts], "eleven_v3")).toMatchObject({ reason: "model_not_served", model: "eleven_v3" });
-    expect(listedModelRefusal({ models: ["eleven_v4"] }, undefined, sources, [tts], "eleven_v4")).toMatchObject({ reason: "model_not_served" });
-    // Their variants too, priced or not, by one rule: the family's name, then `_` (Sol, #273 round 2).
-    for (const model of ["eleven_v3_conversational", "eleven_v4_turbo"]) {
-      expect(listedModelRefusal({ models: [model] }, undefined, sources, [tts], model), model).toMatchObject({ reason: "model_not_served" });
-    }
-    // A name that only begins like one is another model.
-    expect(listedModelRefusal({ models: ["eleven_v30"] }, undefined, sources, [tts], "eleven_v30")).not.toMatchObject({ reason: "model_not_served" });
-    // Listed for text to speech calls as well: those serve it, so the app may list it.
-    const call = elevenlabs.operations.find((op) => op.name === "elevenlabs.tts")!;
-    expect(listedModelRefusal({ models: ["eleven_v3"] }, undefined, sources, [call, tts], "eleven_v3")).toBeNull();
-    expect(listedModelRefusal({ models: ["eleven_flash_v2_5"] }, undefined, sources, [tts], "eleven_flash_v2_5")).toBeNull();
   });
 
   it("keeps a stream's price keys on its slice, so the pricing sweep prices an unpriced one the same way", () => {
@@ -235,10 +217,9 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
     // A model with no price is refused before any slot is taken, as a call to it is.
     const unpriced = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input", model: "eleven_v9" });
     expect(unpriced.status).toBe(400);
-    // So is a model the stream endpoint doesn't serve, priced as it is (Sol, #273 round 1).
-    const unserved = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input", model: "eleven_v3" });
-    expect(unserved.status).toBe(403);
-    expect(await unserved.json()).toMatchObject({ error: { code: "model_not_allowed" } });
+    // A model named only in the query is the session's (Fable, #273 round 1).
+    const queried = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input?model_id=eleven_flash_v2_5" });
+    expect(parseTicket(((await queried.json()) as { ticket: string }).ticket)!.payload).toMatchObject({ model: "eleven_flash_v2_5" });
     // A credential in the query never goes on, whatever its name (Sol, #273 round 1).
     const keyed = await start(appId, slug, key, { path: "v1/text-to-speech/v/stream-input?xi-api-key=theirs&output_format=mp3_44100_128&enable_ssml_parsing=true" });
     expect(parseTicket(((await keyed.json()) as { ticket: string }).ticket)!.payload.url).toBe(
@@ -274,11 +255,17 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
     const row = await lookupRow(body.session_id);
     expect(row).toMatchObject({ kind: "provider_lookup", tries: 0 });
     const detail = JSON.parse(row!.detail_json) as Record<string, unknown>;
-    expect(detail).toMatchObject({ providerType: "deepgram", retryEveryMs: 60_000 });
+    // At the sweep's own pace: no pace of its own (Fable, #273 round 1).
+    expect(detail).toEqual(expect.objectContaining({ providerType: "deepgram" }));
+    expect(detail).not.toHaveProperty("retryEveryMs");
     if (splitKeysOn) expect(detail.keyCopies).toMatchObject({ providerKey: { blob: expect.any(String) } });
     else expect(detail.keyCopies).toBeUndefined();
     // No model, no price: Deepgram's default has none.
     expect((await start(appId, slug, key, { path: "v1/listen" })).status).toBe(400);
+    // A model named only in the query is the session's (Fable, #273 round 1).
+    const queried = await start(appId, slug, key, { path: "v1/listen?model=nova-3&encoding=linear16" });
+    expect(queried.status).toBe(201);
+    expect(parseTicket(((await queried.json()) as { ticket: string }).ticket)!.payload).toMatchObject({ model: "nova-3" });
   });
 });
 
@@ -365,7 +352,7 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     expect(await sessionCost(sessionId)).toBe(3_100_000);
   });
 
-  it("tries a record that isn't ready again a minute later, until it is complete (pending)", async () => {
+  it("tries a record that isn't ready again, a minute later and then doubling, until it is complete (pending)", async () => {
     const { sessionId, endedAt } = await closedStream();
     let answer: Answer = { status: 404, body: { err_code: "NOT_FOUND" } };
     deepgramApi(() => answer);
@@ -374,10 +361,10 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     // There, but not complete yet.
     answer = { status: 200, body: { request_id: "dg-req-1", response: { details: { usd: 0.003 } } } };
     await runSweep(env, ledger(), { now: endedAt + 91_000 });
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "record not complete" });
+    expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "record not complete", due_at: endedAt + 91_000 + 120_000 });
     expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open", session_total_nano: null });
     answer = finalRecord(0.0029);
-    await runSweep(env, ledger(), { now: endedAt + 151_000 });
+    await runSweep(env, ledger(), { now: endedAt + 211_000 });
     expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 2_900_000 });
     expect(await sessionCost(sessionId)).toBe(2_900_000);
   });
@@ -392,14 +379,17 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     expect(await lookupRow(sessionId)).toBeNull();
   });
 
-  it("tries a refused record again within the hour (a key without usage:read), then keeps the estimate; a stream with no request id keeps it at once", async () => {
+  it("keeps the estimate at once when the key may not read usage (401 or 403, on the record or the projects), or the stream has no request id (Fable, #273 round 1)", async () => {
     const refused = await closedStream();
     deepgramApi(() => ({ status: 403, body: { err_code: "INSUFFICIENT_PERMISSIONS" } }));
     await runSweep(env, ledger(), { now: refused.endedAt + 31_000 });
-    expect(await lookupRow(refused.sessionId)).toMatchObject({ tries: 1, last_error: "record answered 403" });
-    expect(await settlementOf(refused.sessionId)).toMatchObject({ settlement: "open" });
-    await runSweep(env, ledger(), { now: refused.endedAt + PROVIDER_LOOKUP_WINDOW_MS + 1_000 });
     expect(await settlementOf(refused.sessionId)).toMatchObject({ settlement: "estimate_kept" });
+    expect(await lookupRow(refused.sessionId)).toBeNull();
+
+    const noProjects = await closedStream();
+    deepgramApi(() => finalRecord(0.01), () => ({ status: 401 }));
+    await runSweep(env, ledger(), { now: noProjects.endedAt + 31_000 });
+    expect(await settlementOf(noProjects.sessionId)).toMatchObject({ settlement: "estimate_kept" });
 
     const unnamed = await closedStream(30_000, null);
     const asked = deepgramApi(() => finalRecord(0.01));
@@ -443,18 +433,26 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     expect(await attachLookupKeyCopies(ledger(), other.id, "missing")).toBe(false);
   });
 
-  it("tries again after a projects answer that can't be read, cut short or refused, and settles once it can (Sol, #273 round 2)", async () => {
+  it("tries again after a projects answer that can't be read, and settles once it can (Sol, #273 round 2)", async () => {
     const { sessionId, endedAt } = await closedStream();
     let projects: Answer = { status: 200, body: { projects: "cut" } };
     deepgramApi(() => finalRecord(0.0027), () => projects);
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "no project in the answer" });
-    projects = { status: 401 };
-    await runSweep(env, ledger(), { now: endedAt + 91_000 });
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "projects answered 401" });
     projects = { status: 200, body: { projects: [{ project_id: "proj-1" }] } };
-    await runSweep(env, ledger(), { now: endedAt + 151_000 });
+    await runSweep(env, ledger(), { now: endedAt + 91_000 });
     expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 2_700_000 });
+  });
+
+  it("never refunds a stream on a completed record of $0 while its slices cost more: the estimate stays, logged (Fable, #273 round 1)", async () => {
+    const { sessionId, endedAt } = await closedStream();
+    const lines: string[] = [];
+    for (const method of ["log", "warn"] as const) vi.spyOn(console, method).mockImplementation((line: unknown) => void lines.push(String(line)));
+    deepgramApi(() => finalRecord(0));
+    await runSweep(env, ledger(), { now: endedAt + 31_000 });
+    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
+    expect(await sessionCost(sessionId)).toBe(2_400_000);
+    expect(lines.some((line) => line.includes("session_lookup_figure_doubtful"))).toBe(true);
   });
 
   it("never settles before the stream has ended: it waits for close", async () => {
