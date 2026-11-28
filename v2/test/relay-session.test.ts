@@ -18,7 +18,7 @@ import { ACCOUNT_ID } from "./helpers.ts";
 const relay = () => (env as unknown as { RELAY_TEST: Fetcher }).RELAY_TEST;
 const provider = () => (env as unknown as { PROVIDER_STUB: Fetcher }).PROVIDER_STUB;
 /** What the stand-in for the gateway's contract got from the relay for one session. */
-type Seen = { checkpoints: { slice: { measures: Record<string, number> } | null; connected: boolean }[]; closes: { endReason: string; providerCallId: string | null }[] };
+type Seen = { checkpoints: { slice: { measures: Record<string, number>; gaps?: number } | null; connected: boolean; accounting?: boolean }[]; closes: { endReason: string; providerCallId: string | null }[] };
 const seenFor = async (sessionId: string) => (await (await (env as unknown as { RELAY_MAIN_STUB: Fetcher }).RELAY_MAIN_STUB.fetch(`https://main.test/seen/${sessionId}`)).json()) as Seen;
 
 async function ticketFor(connection: string): Promise<string> {
@@ -319,6 +319,8 @@ describe(`an observed session through the relay's session object (step 9a part 3
     expect(await (await provider().fetch("https://provider.test/hangups")).json()).toContain(callId);
     // Each answer is 100 input tokens, booked once: two or three of them came before the cap.
     expect([200, 300]).toContain(inputTokens(seen));
+    // Each answer was closed by its own response.done, so the cap cut none: the final slice has no gap.
+    expect(seen.checkpoints.filter((checkpoint) => checkpoint.accounting === true).at(-1)?.slice).toMatchObject({ gaps: 0 });
     // The key went to the provider from the vault's seal.
     expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
   });

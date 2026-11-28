@@ -406,10 +406,6 @@ channel. OpenAI Realtime over WebRTC is the one observed session (plan step
   `start_in_flight` or `session_ended`; `413 offer_too_large`;
   `502 provider_unavailable`; `503` for anything else, such as
   `credential_unavailable` or `open_failed`.
-- **The model** is set when the call is created. The relay can't see the
-  app's own data channel, so a `session.update` sent there is not checked; if
-  OpenAI's `session.updated` then names another model, the relay logs it
-  (`relay_model_changed`), and the session is still counted at its own model.
 - **The keepalive:** OpenAI closes a side channel that sends nothing for 5
   minutes. So the relay sends `{"type":"session.update","session":{"type":"realtime"}}`
   on it when it attaches, then about once a minute. It changes no setting and

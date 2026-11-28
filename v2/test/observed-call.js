@@ -101,7 +101,8 @@ function sideChannel(callId, call, now) {
     const next = (/** @type {number} */ number) => {
       timers.push(setTimeout(() => { // real-timer: the provider's own clock, in another Worker
         try {
-          server.send(JSON.stringify({ type: "response.created" }));
+          // Both name the answer, as OpenAI's do: its own `response.done` closes it.
+          server.send(JSON.stringify({ type: "response.created", response: { id: `${callId}-${number}` } }));
           server.send(JSON.stringify({ type: "response.done", response: { id: `${callId}-${number}`, usage: { input_tokens: 100, output_tokens: 20 } } }));
         } catch {
           stop();

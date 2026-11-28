@@ -161,17 +161,6 @@ describe("the idle rule (plan section 5; T18)", () => {
     expect(s.closes).toEqual(["provider_closed"]);
     expect(s.hangups).toEqual([]);
   });
-
-  it("never lets go of a side channel with no keepalive: a quiet one says nothing then (the mock's)", async () => {
-    const s = setup();
-    const core = await s.started();
-    (s.sides[0] as { keepalive?: unknown }).keepalive = undefined;
-    // The core holds the same object: without a keepalive, the rule doesn't apply.
-    s.tick(SIDE_IDLE_MS + TICK_MS);
-    await core.alarm();
-    expect(s.sides).toHaveLength(1);
-    expect(s.sides[0]!.closed).toBe(false);
-  });
 });
 
 describe("billing while detached (plan step 12: no plan minutes and no clock charges; the slot held)", () => {
@@ -241,7 +230,7 @@ describe("OpenAI's events on the side channel (the session object, step 12)", ()
       turnDone: () => undefined,
     };
     const object = Object.create(Session.prototype) as Session;
-    Object.assign(object, { core, live: null, otherModel: null, sideTurnOpen: false, sideTurns: 0 });
+    Object.assign(object, { core, live: null });
     const meter = OPENAI.perCall!("gpt-realtime-2.1");
     (object as unknown as { sideMeter: unknown }).sideMeter = meter;
     const frame = (data: Record<string, unknown>) => object.sideFrame(side as never, OPENAI, meter, JSON.stringify(data));
@@ -281,15 +270,6 @@ describe("OpenAI's events on the side channel (the session object, step 12)", ()
       expect(one.meter.pending()).toBe(false);
       expect(one.logs).toEqual([]);
     }
-  });
-
-  it("logs, once, a session.updated that states another model than the session's: the relay never sees the app's own data channel", () => {
-    const { frame, logs } = sideSetup();
-    frame(updated({}));
-    expect(logs).toEqual([]);
-    frame(updated({ model: "gpt-realtime-2.1-pro" }));
-    frame(updated({ model: "gpt-realtime-2.1-pro" }));
-    expect(logs).toEqual([{ level: "warn", message: "relay_model_changed", session: "ses_1" }]);
   });
 });
 
@@ -358,26 +338,5 @@ describe("OpenAI's answers and transcriptions across a reattach or a settings ch
     // An item the relay never saw committed (before a reattach): the session's model now.
     expect(through(meter, completedFor("item_0"))).toMatchObject({ model: "gpt-4o-transcribe" });
     expect(meter.unfinished()).toBe(false);
-  });
-
-  it("a replacement side channel keeps each committed item's model: an item committed before a reattach and a model switch is billed at its commit's model (Sol, #277 round 2)", () => {
-    const first = OPENAI.perCall!("gpt-realtime-2.1");
-    through(first, updated("gpt-4o-mini-transcribe"));
-    through(first, committed("item_1"));
-    through(first, created("resp_1"));
-    // The side channel is replaced on the same call, as the session object does at a reattach.
-    const second = first.next!();
-    // Its answers and waits start fresh: the old channel's open answer and pending item are not waited for.
-    expect(second.unfinished()).toBe(false);
-    expect(second.pending()).toBe(false);
-    through(second, updated("gpt-4o-transcribe"));
-    expect(through(second, completedFor("item_1"))).toMatchObject({ model: "gpt-4o-mini-transcribe" });
-    // An item committed on the new channel takes the model of its own commit, and is waited for.
-    through(second, committed("item_2"));
-    expect(second.unfinished()).toBe(true);
-    expect(through(second, completedFor("item_2"))).toMatchObject({ model: "gpt-4o-transcribe" });
-    expect(second.unfinished()).toBe(false);
-    // The model last stated goes on too: an item the relay never saw committed takes it.
-    expect(through(first.next!(), completedFor("item_9"))).toMatchObject({ model: "gpt-4o-mini-transcribe" });
   });
 });

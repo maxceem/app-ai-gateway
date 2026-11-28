@@ -144,14 +144,8 @@ export class Session extends DurableObject {
     const storage = ctx.storage;
     /** @type {Live | null} The session this instance runs, once it started. A restart loses it. */
     this.live = null;
-    /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
-    this.sideTurnOpen = false;
-    /** The side channel's answers opened, and its attaches: a late "done" for an earlier one closes nothing. */
-    this.sideTurns = 0;
     /** @type {import("./adapters.js").CallMeter | null} What the current side channel's adapter remembers (OpenAI's). */
     this.sideMeter = null;
-    /** @type {string | null} A model the provider stated that is not the session's, logged once (`sideFrame`). */
-    this.otherModel = null;
     this.core = new SessionCore({
       store: {
         get: (keys) => storage.get(keys),
@@ -215,8 +209,7 @@ export class Session extends DurableObject {
           const socket = await attachSideChannel(key, callId, limitMs);
           const adapter = adapterFor(settings.adapter);
           // A side channel starts with nothing open: an answer a lost one missed is in its gap (OpenAI's meter).
-          // What the one it replaces on this call must not forget goes on (`next`: committed items' models).
-          const meter = this.sideMeter?.next?.() ?? adapter.perCall?.(settings.model ?? null, settings) ?? null;
+          const meter = adapter.perCall?.(settings.model ?? null, settings) ?? null;
           const keepalive = adapter.sideKeepalive;
           /** @type {import("./start.js").ProviderCall} */
           const call = {
@@ -225,9 +218,6 @@ export class Session extends DurableObject {
             ...(keepalive === undefined ? {} : { keepalive: () => sendQuietly(socket, keepalive) }),
           };
           this.sideMeter = meter;
-          this.sideTurnOpen = false;
-          this.sideTurns += 1;
-          this.otherModel = null;
           socket.addEventListener("message", (event) => this.sideFrame(call, adapter, meter, event.data));
           socket.addEventListener("close", () => void this.core.sideGone(call));
           return call;
@@ -240,13 +230,13 @@ export class Session extends DurableObject {
       // An answer in progress, or an input transcription still to come (OpenAI): a closing session waits for both.
       // OpenAI's: its answers by id and its transcriptions (the call's meter), each until its usage is written.
       turnOpen: () => {
-        if (this.live === null) return this.sideMeter?.pending() ?? this.sideTurnOpen;
+        if (this.live === null) return this.sideMeter?.pending() ?? false;
         const meter = this.live.call?.meter;
         return meter === undefined || meter === null ? this.live.turnOpen : meter.pending();
       },
       // What the provider never finished: cut, if the session ends now.
       unfinished: () => {
-        if (this.live === null) return this.sideMeter?.unfinished() ?? this.sideTurnOpen;
+        if (this.live === null) return this.sideMeter?.unfinished() ?? false;
         const meter = this.live.call?.meter;
         return meter === undefined || meter === null ? this.live.turnOpen : meter.unfinished();
       },
@@ -373,9 +363,9 @@ export class Session extends DurableObject {
   /**
    * An observed call's side-channel frame: read for usage and answers, after
    * nothing (there is no client to forward it to). Only the current side
-   * channel counts. Any frame says it is alive (the idle rule). With the
-   * adapter's meter (OpenAI's), its answers and transcriptions are tracked as
-   * a relayed call's are (`toClient`).
+   * channel counts. Any frame says it is alive (the idle rule). The adapter's
+   * meter (OpenAI's) tracks its answers and transcriptions as a relayed call's
+   * are (`toClient`).
    * @param {import("./start.js").ProviderCall} call
    * @param {import("./adapters.js").Adapter} adapter
    * @param {import("./adapters.js").CallMeter | null} meter
@@ -384,40 +374,15 @@ export class Session extends DurableObject {
   sideFrame(call, adapter, meter, data) {
     if (this.core.call !== call) return;
     this.core.heard();
-    if (meter !== null) {
-      const finished = meter.see(data, false);
-      // The app named another model on its own data channel, which the relay never sees: the session is
-      // still billed at its own model, so it is logged, once per model (AGENTS.md: never miscount silently).
-      const other = meter.otherModel?.() ?? null;
-      if (other !== null && other !== this.otherModel) {
-        this.otherModel = other;
-        this.core.log({ level: "warn", message: "relay_model_changed", session: this.core.sessionId });
-      }
-      const settle =
-        finished === null
-          ? undefined
-          : () => {
-              meter.settled(finished);
-              if (!meter.pending()) this.core.turnDone();
-            };
-      if (this.readUsage(adapter, data, meter, settle) === null) settle?.();
-      return;
-    }
-    const recorded = this.readUsage(adapter, data);
-    const turn = adapter.turn(data);
-    if (turn === "open") {
-      this.sideTurnOpen = true;
-      this.sideTurns += 1;
-    } else if (turn === "done") {
-      const answer = this.sideTurns;
-      this.answerDone(
-        recorded,
-        () => this.sideTurns === answer && this.core.call === call,
-        () => {
-          this.sideTurnOpen = false;
-        },
-      );
-    }
+    const finished = meter?.see(data, false) ?? null;
+    const settle =
+      meter === null || finished === null
+        ? undefined
+        : () => {
+            meter.settled(finished);
+            if (!meter.pending()) this.core.turnDone();
+          };
+    if (this.readUsage(adapter, data, meter, settle) === null) settle?.();
   }
 
   /**
