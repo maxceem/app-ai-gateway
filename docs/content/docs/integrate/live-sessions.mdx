@@ -286,12 +286,169 @@ through the relay.
 - **If ElevenLabs refuses the call** (a deleted agent, say), the session never
   starts: `4000 provider_unavailable`.
 - **ElevenLabs' own limits apply.** Your ElevenLabs plan allows a number of calls
-  at once (6 on Starter). Calls above it still run, and ElevenLabs charges
-  their minutes at twice its usual rate. An app may open 10 voice sessions at
-  once by default.
+  at once across its workspace (6 on Starter). Calls above it may run at a
+  higher price, wait in a queue, or be refused, depending on the agent's
+  settings: see [Voice in an iOS app](#voice-in-an-ios-app). An app may open
+  10 voice sessions at once by default.
 - A few minutes after a call ends, its charge is corrected to ElevenLabs' own
   figure for the conversation, when the connection's key may read the agent's
   conversations.
+
+### Voice in an iOS app
+
+ElevenLabs' own Swift SDK talks to agents over WebRTC only, so it can't go
+through the relay. The Swift package has a voice client of its own for this:
+add the `AppAIGatewayElevenLabs` product to your target, beside
+`AppAIGateway`. It is a separate library, so apps that don't use it stay
+small.
+
+Before the first call:
+
+- add `NSMicrophoneUsageDescription` to the app's `Info.plist`, and ask for
+  microphone permission before you start;
+- turn on the `audio` background mode, so a call goes on with the screen
+  locked or the app in the background.
+
+```swift
+import AppAIGateway
+import AppAIGatewayElevenLabs
+import Foundation
+
+/// The call screen's state: it keeps the voice client for the whole call.
+@MainActor
+final class CallScreenModel {
+    let voice: ElevenLabsVoiceClient
+    let variables: [String: ElevenLabsVoiceClient.DynamicVariable] = ["user_name": "Ann"]
+    // What the screen shows.
+    private(set) var connected = false
+    private(set) var queue: String?
+    private(set) var lines: [String] = []
+
+    init(gateway: AppAIGatewayClient) {
+        voice = ElevenLabsVoiceClient(gateway: gateway, agentID: "agent_7201m7pd…")
+    }
+
+    func run() async throws {
+        var restarts = 0
+        try await voice.start(dynamicVariables: variables)
+        call: for await event in voice.events {
+            switch event {
+            case .connected:
+                connected = true
+            case .message(let json):
+                if let status = queueStatus(json) { queue = status }
+            case .userTranscript(let text), .agentResponse(let text):
+                lines.append(text)
+            case .ended(let ending) where ending.connectionLost && restarts < 2:
+                // A new conversation, with a short greeting and the earlier turns.
+                connected = false
+                queue = nil
+                restarts += 1
+                try await voice.start(
+                    firstMessage: "Sorry, the line dropped.",
+                    dynamicVariables: variables,
+                    context: ElevenLabsVoiceClient.contextualUpdate(for: voice.transcript)
+                )
+            case .ended:
+                // Ended on purpose (by the app, the agent or a limit), or lost too often.
+                connected = false
+                break call
+            default:
+                break
+            }
+        }
+    }
+
+    /// ElevenLabs' `queue_status`: `waiting`, `admitted` or `timed_out`.
+    func queueStatus(_ json: String) -> String? {
+        let message = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        guard message?["type"] as? String == "queue_status" else { return nil }
+        return (message?["queue_status_event"] as? [String: Any])?["status"] as? String
+    }
+}
+```
+
+`.connected` means ElevenLabs started the conversation and sent its metadata.
+The agent may still be busy: when your ElevenLabs workspace is at its limit
+on calls at once, ElevenLabs can hold the call in a queue (see below). It then
+sends a `queue_status` message, which comes as a `.message`:
+
+- `waiting` comes right after the conversation starts. Show that the call is
+  waiting. ElevenLabs plays hold audio meanwhile, which the client plays like
+  the agent's speech.
+- `admitted` means the agent takes the call now.
+- `timed_out` means the wait was too long. ElevenLabs then ends the call.
+
+A call that the agent takes at once gets no `queue_status`.
+
+Keep the client where the call screen keeps its state, as here, not in a
+local variable. A client that is let go ends the call and stops its audio at
+once, so the end of the loop would cut off the agent's goodbye.
+
+A new greeting with `firstMessage` works only if the agent allows it. In
+ElevenLabs, open the agent's **Security** settings and turn on the override
+for the **first message**. Without it, ElevenLabs refuses the new
+conversation, so the first try to start again after a lost connection fails.
+
+Use one client for one call. Call `voice.end()` to hang up. What the client
+does for you:
+
+- **It records and plays the audio.** It uses the iPhone's voice processing,
+  so the agent doesn't hear itself on the speaker. It works with the speaker,
+  the earpiece and AirPods, and goes on when iOS changes the audio setup, such
+  as after another app took the audio for a while.
+- **It clears the agent's audio when the user talks over it.** ElevenLabs
+  sends a whole answer much faster than it plays, so a long answer can be
+  minutes of queued audio. On an interruption that audio is cleared at once.
+- **`stopSpeaking()` is a stop button.** ElevenLabs often ignores a short
+  spoken "stop" while the agent talks, so give the user a button. It clears
+  the answer and tells the agent the user didn't hear the rest.
+- **Audio already received plays to its end** when a conversation ends, so a
+  goodbye is heard in full. Starting a new conversation clears it first.
+- **A lost connection means a new conversation.** The client first tries to
+  keep the same one on a new link, such as when the phone moves from Wi-Fi to
+  mobile data. When that can't work, the conversation ends with
+  `connectionLost` set. `start()` again begins a new conversation that takes
+  the old session's place. The new agent knows nothing of the old
+  conversation, unless you send it the earlier turns, as above.
+- **Answer the agent's tools and send other messages** with `send(text:)`, in
+  ElevenLabs' own format. Messages the client doesn't handle itself come as
+  `.message` events.
+
+**Other voices near the phone break turn-taking.** ElevenLabs decides when
+the user has finished speaking. People talking nearby, or a TV, keep the
+user's turn open, and the agent may not answer for a long time. Louder voices
+can cut the agent off. The phone's Voice Isolation doesn't help, because it
+removes sounds that aren't a voice, not other voices. For noisy places, give
+the user push-to-talk or a mute button: set `isMicrophoneMuted`. The client
+then sends silence, so ElevenLabs still sees the user's turn end.
+
+**Mind ElevenLabs' limit on calls at once.** Your ElevenLabs plan allows a
+number of calls at once, 6 on Starter. The limit is for the whole ElevenLabs
+workspace: every agent, and every app that uses the same workspace, shares
+it. Above it, what happens depends on the agent's settings in ElevenLabs:
+
+- With burst pricing on, ElevenLabs still serves extra calls, up to its own
+  limit for bursts, and charges their minutes at twice its usual rate.
+- Without burst pricing, or past the burst limit, ElevenLabs holds the extra
+  calls in a queue until a place is free, when call queueing is on (it is by
+  default), or refuses them.
+
+An app may open 10 voice sessions at once by default. You can lower
+that with `limits.per_app.sessions.conversational` in the app's
+[settings](/applications/limits). That caps only this app's share of the
+workspace's calls: calls from your other apps and agents still count toward
+ElevenLabs' limit.
+
+**If the voice client doesn't suit your app,** use ElevenLabs' official SDK
+over WebRTC instead. List ElevenLabs' token path,
+`GET v1/convai/conversation/token`, as a
+[passthrough](/applications/provider-access#passthrough) path on the
+ElevenLabs connection, and have the app get its token through the gateway.
+The call itself then runs between the app and ElevenLabs directly: the gateway
+checks who asks for the token, but the call's minutes are outside the app's
+budgets and usage, and no time cap applies. A token can also start more calls
+for about 15 minutes.
 
 ## A live provider the gateway doesn't know
 

@@ -536,6 +536,30 @@ struct LiveSessionTests {
     }
 
     @Test
+    func anAppThatAlwaysSendsStillNoticesALinkThatDiedSilently() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.1, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        // A microphone sends all the time, so the link is never quiet on this side.
+        let microphone = Task {
+            while !Task.isCancelled {
+                await session.send(text: #"{"user_audio_chunk":"AAAA"}"#)
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        defer { microphone.cancel() }
+        // Nothing comes back: the heartbeat asks, gets no answer, and the session moves on.
+        #expect(await eventually { links[0].sent.contains(#"{"type":"agw.heartbeat"}"#) })
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        // One heartbeat while it waited for the answer, not one a tick.
+        #expect(links[0].sent.filter { $0 == #"{"type":"agw.heartbeat"}"# }.count == 1)
+    }
+
+    @Test
     func anAnsweredHeartbeatKeepsTheLink() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.05, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)
@@ -753,8 +777,9 @@ struct LiveSessionTests {
         _ = try await client.startXAIVoiceSession(model: "grok-voice-3.0", send: send)
         _ = try await client.startGeminiLiveSession(model: "gemini-3.1-flash-live-preview", send: send)
         _ = try await client.startGPTLiveSession(send: send)
+        _ = try await client.startElevenLabsAgentSession(agentID: "agent_1", takesOver: "s0", send: send)
         let seen = try #require(bodies.get())
-        #expect(seen.count == 4)
+        #expect(seen.count == 5)
         let decoded = try seen.map { line -> (String, [String: String]) in
             let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
             return (parts[0], try JSONDecoder().decode([String: String].self, from: Data(parts[1].utf8)))
@@ -767,6 +792,8 @@ struct LiveSessionTests {
         #expect(decoded[2].1 == ["path": "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", "model": "gemini-3.1-flash-live-preview"])
         #expect(decoded[3].0 == "openai")
         #expect(decoded[3].1 == ["path": "v1/live/sessions", "model": "gpt-live-1"])
+        #expect(decoded[4].0 == "elevenlabs")
+        #expect(decoded[4].1 == ["path": "v1/convai/conversation", "model": "agent_1", "takes_over": "s0"])
     }
 
     @Test
