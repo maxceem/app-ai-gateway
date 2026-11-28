@@ -138,12 +138,15 @@ public final class ElevenLabsVoiceClient {
     /// talking near the phone keep the user's turn open on ElevenLabs' side
     /// (T17b). Silence is sent instead, so ElevenLabs still sees a turn end.
     ///
-    /// One rule: every microphone chunk that overlaps muted time is sent as
-    /// silence, up to the first chunk that starts fully unmuted. So speech
-    /// captured while muted is never sent; up to 100 ms after unmuting may be
-    /// lost.
+    /// Two rules. The microphone is muted at its source, so muted audio is
+    /// never captured. And every chunk that overlaps muted time is sent as
+    /// silence, up to the first chunk that starts fully unmuted, for the
+    /// chunks around a change. Up to 100 ms after unmuting may be lost.
     public var isMicrophoneMuted = false {
-        didSet { if isMicrophoneMuted { chunkOverlapsMute = true } }
+        didSet {
+            audio.muted = isMicrophoneMuted
+            if isMicrophoneMuted { chunkOverlapsMute = true }
+        }
     }
     /// Whether the chunk being built started while muted, or was muted since.
     private var chunkOverlapsMute = false

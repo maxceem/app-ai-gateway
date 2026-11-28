@@ -75,6 +75,7 @@ final class FakeAudio: AgentAudio {
     let micIn: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
     var onLostAudio: ((TimeInterval) -> Void)?
+    var muted = false
     var running = false
     var starts = 0
     var rates: (input: Double, output: Double) = (16000, 16000)
@@ -104,6 +105,11 @@ final class FakeAudio: AgentAudio {
     func stop() {
         running = false
         queuedSeconds = 0
+    }
+    /// The microphone captures one chunk of speech. Muted, it gives silence,
+    /// as the real input node does.
+    func capture(_ chunk: Data = Data(repeating: 7, count: 3200)) {
+        micIn.yield(muted ? Data(count: chunk.count) : chunk)
     }
     /// The queue played to its end.
     func drain() {
@@ -408,12 +414,13 @@ struct ElevenLabsVoiceClientTests {
         /// Sends one chunk of speech, and answers how it went out.
         func chunk() async -> String? {
             let before = session.sent.count
-            audio.micIn.yield(Data(repeating: 7, count: 3200))
+            audio.capture()
             _ = await eventually { session.sent.count > before }
             return session.sent.last
         }
         // Muted while the chunk was being built: all of it is silence.
         client.isMicrophoneMuted = true
+        #expect(audio.muted)
         #expect(await chunk() == silence)
         #expect(await chunk() == silence)
         // Unmuted: the chunk being built started while muted, so it is silence too.
@@ -425,6 +432,21 @@ struct ElevenLabsVoiceClientTests {
         client.isMicrophoneMuted = false
         #expect(await chunk() == silence)
         #expect(await chunk() == speech)
+        #expect(!audio.muted)
+    }
+
+    @Test
+    func chunksCapturedWhileMutedButSentAfterUnmuteCarryNoSpeech() async throws {
+        let session = try await started()
+        let silence = #"{"user_audio_chunk":""# + Data(count: 3200).base64EncodedString() + #""}"#
+        let before = session.sent.count
+        // The audio thread queues two chunks while muted; the main actor reads them after unmute.
+        client.isMicrophoneMuted = true
+        audio.capture()
+        audio.capture()
+        client.isMicrophoneMuted = false
+        #expect(await eventually { session.sent.count == before + 2 })
+        #expect(Array(session.sent[before...]) == [silence, silence])
     }
 
     @Test

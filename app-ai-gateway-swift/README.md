@@ -202,6 +202,7 @@ separate library, so apps that don't use it don't carry its audio code. Add
 it to your target beside `AppAIGateway`:
 
 ```swift
+import AppAIGateway
 import AppAIGatewayElevenLabs
 
 /// The call screen's state: it keeps the client for the whole call.

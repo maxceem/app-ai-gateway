@@ -16,6 +16,8 @@ protocol AgentAudio: AnyObject, Sendable {
     /// Called with the seconds of queued audio a rebuild of the audio engine
     /// threw away. The queue is already empty then.
     var onLostAudio: ((TimeInterval) -> Void)? { get set }
+    /// Mutes the microphone at its source: muted audio is never captured.
+    var muted: Bool { get set }
     /// Starts the audio session and the engine. Does nothing when they run.
     func start() throws
     /// The rates the conversation uses, from ElevenLabs' `pcm_…` formats.
@@ -41,6 +43,11 @@ final class AgentAudioEngine: AgentAudio {
     private let micOut: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
     var onLostAudio: ((TimeInterval) -> Void)?
+    /// Muted in voice processing: the microphone gives silence. Set again on
+    /// every engine setup, since a rebuilt or new engine starts unmuted.
+    var muted = false {
+        didSet { if running { engine.inputNode.isVoiceProcessingInputMuted = muted } }
+    }
 
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
@@ -182,6 +189,7 @@ final class AgentAudioEngine: AgentAudio {
         // Echo cancellation: with it, the agent never heard itself in T17a.
         // Turning it on changes the configuration, so only when it is off.
         if !engine.inputNode.isVoiceProcessingEnabled { try engine.inputNode.setVoiceProcessingEnabled(true) }
+        engine.inputNode.isVoiceProcessingInputMuted = muted
         if player.engine == nil { engine.attach(player) }
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
         try installTap()
