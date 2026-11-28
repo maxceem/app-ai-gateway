@@ -298,7 +298,7 @@ describe("Deepgram streaming speech to text: metered as Deepgram reports it, or 
     expect(s.closes).toEqual([{ endReason: "provider_closed", finalSlice: 3 }]);
   });
 
-  it("stores Deepgram's request id as the session's call id, for the lookup after the end", async () => {
+  it("stores Deepgram's request id as the session's call id", async () => {
     const s = setup("deepgram");
     await s.instance().start(s.text, s.ticket, s.client);
     expect(s.store.data.get("callId")).toBe("dg-req-1");

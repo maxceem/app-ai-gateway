@@ -54,7 +54,7 @@ export const SETTLE_FIRST_TRY_MS = 30 * 1000;
 
 /**
  * How long after a session ends its provider's dollar figure is still looked up (plan 8j, "Keys needed
- * with no app request": Deepgram's request record): past it, the slices' estimate stays.
+ * with no app request": an ElevenLabs agent's conversation record): past it, the slices' estimate stays.
  */
 export const PROVIDER_LOOKUP_WINDOW_MS = 60 * 60 * 1000;
 
@@ -78,7 +78,7 @@ export interface SessionRow {
   /** Whether the provider reports a session-level dollar total after the call. */
   readonly expectsSessionTotal: boolean;
   /**
-   * The provider whose record is looked up for that total after the session ends (Deepgram's, 10a):
+   * The provider whose record is looked up for that total after the session ends (an ElevenLabs agent's, 11a):
    * the session's row comes with the open work that does it. Absent for a session with none.
    */
   readonly lookup?: string | null;

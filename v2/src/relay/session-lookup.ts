@@ -1,9 +1,9 @@
 /**
  * A provider's own record of a session, read after it ends (plan 4.2, "a session-level total"): the sweep
  * settles the session to the provider's dollar figure, minus every slice already booked (`settleSession`).
- * One set of rules for every provider that has one: Deepgram's request record (10a, `./deepgram-lookup.ts`)
- * and ElevenLabs' conversation record (11a, `./elevenlabs-agent.ts`). Each provider says only how its
- * record is read (`ReadFigure`); everything else is here.
+ * One set of rules for every provider that has one, today ElevenLabs' conversation record (11a,
+ * `./elevenlabs-agent.ts`). Each provider says only how its record is read (`ReadFigure`); everything else
+ * is here.
  *
  * - Only a final record settles. One not there yet, or not final, is tried again, at the sweep's own pace
  *   (a minute, then doubling).

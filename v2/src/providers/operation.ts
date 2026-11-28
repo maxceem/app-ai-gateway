@@ -539,11 +539,10 @@ export interface SessionSpec {
   readonly backend?: { readonly operation: string; readonly tools: readonly string[] };
   /**
    * The provider's own dollar figure for the session, read after it ends, that settles it (plan 4.2):
-   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`), ElevenLabs' conversation record
-   * (11a, `../relay/elevenlabs-agent.ts`). Its key is kept, sealed, for the lookup (plan 8j, "Keys needed
-   * with no app request").
+   * ElevenLabs' conversation record (11a, `../relay/elevenlabs-agent.ts`). Its key is kept, sealed, for
+   * the lookup (plan 8j, "Keys needed with no app request").
    */
-  readonly lookup?: "deepgram" | "elevenlabs";
+  readonly lookup?: "elevenlabs";
   /**
    * The session connects through a single-use signed URL the gateway asks the provider for at `open`
    * (ElevenLabs agents, 11a, `../relay/elevenlabs-agent.ts`): the relay connects there, never with the key.

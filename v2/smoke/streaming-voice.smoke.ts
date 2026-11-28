@@ -3,11 +3,8 @@
  * `smoke/mock/`, so nothing is billed:
  *
  * - an ElevenLabs stream is billed by the characters of the text the client sends, at the list price;
- * - a Deepgram stream is billed by time at the streaming list price.
- *
- * Deepgram's request lookup after a stream is not checked here: it runs from the ledger object's alarm,
- * and Cloudflare refuses that call to the mock's workers.dev address (error 1042, one Worker fetching
- * another of the same account). The tests cover it (`test/streaming-voice.test.ts`).
+ * - a Deepgram stream is billed by time at the streaming list price, and settles on it: the gateway reads
+ *   no record from Deepgram afterwards.
  *
  *   V2_BASE_URL=https://gateway.example.com \
  *   V2_MANAGEMENT_KEY=agw_mgmt_… \

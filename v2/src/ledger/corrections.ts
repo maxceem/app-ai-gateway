@@ -223,8 +223,8 @@ async function writeCorrection(
 }
 
 /**
- * Settles one charge from the provider's final figure, such as a Deepgram
- * request record or a provider cost lookup. Safe to call twice: the second
+ * Settles one charge from the provider's final figure, such as a provider
+ * cost lookup. Safe to call twice: the second
  * call finds the correction id taken. `doneWork` is an open-work row to remove
  * in the same batch.
  */

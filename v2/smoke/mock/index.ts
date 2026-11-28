@@ -29,11 +29,7 @@
  * - `GET /v1/listen` as a WebSocket: Deepgram's live stream (step 10a). Its
  *   answer names the request in `dg-request-id`. Each binary frame is heard as
  *   16 kHz 16-bit mono audio and answered with a `Results` frame of its
- *   length; `CloseStream` gets the closing `Metadata`, then a close. A
- *   `mock_usd` in the query is the dollar figure its request record reports.
- * - `GET /v1/projects` and `GET /v1/projects/mock-project/requests/{id}`:
- *   Deepgram's project, and its record of a stream, completed, with the
- *   stream's `mock_usd` as its dollar figure (0.001 without one).
+ *   length; `CloseStream` gets the closing `Metadata`, then a close.
  * - `GET /v1/text-to-speech/{voice}/stream-input` as a WebSocket: ElevenLabs'
  *   streaming text to speech (step 10a). Each text frame with text gets an
  *   audio frame; `{"text": ""}` gets the final frame, then a close.
@@ -568,7 +564,7 @@ async function answer(request: Request): Promise<Response> {
   if (url.pathname.endsWith("BidiGenerateContent") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return geminiLiveSession();
   if (url.pathname.endsWith("/v1/live/sessions") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return gptLiveSession();
   if (/\/v1\/text-to-speech\/[^/]+\/stream-input$/u.test(url.pathname) && request.headers.get("upgrade")?.toLowerCase() === "websocket") return elevenLabsStream();
-  if (url.pathname.endsWith("/v1/listen") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return deepgramStream(url);
+  if (url.pathname.endsWith("/v1/listen") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return deepgramStream();
   if (url.pathname.endsWith("/v1/live-echo") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return echoSession(request, url);
   // An ElevenLabs agent's call: its signed URL is its only credential, as ElevenLabs' is.
   if (url.pathname.endsWith("/v1/convai/conversation") && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -609,9 +605,6 @@ async function answer(request: Request): Promise<Response> {
     }
     return Response.json({ object: "list", data: [] });
   }
-  // Deepgram's project and its record of a stream (step 10a): completed, with the dollar figure the
-  // stream's `mock_usd` named, which its request id carries.
-  if (request.method === "GET" && url.pathname === "/v1/projects") return Response.json({ projects: [{ project_id: MOCK_PROJECT, name: "Mock" }] });
   // ElevenLabs agents (step 11a): an agent's settings, a signed URL for a call, and the call's record.
   const agent = /^\/v1\/convai\/agents\/([^/]+)$/u.exec(url.pathname);
   if (request.method === "GET" && agent !== null) {
@@ -638,21 +631,6 @@ async function answer(request: Request): Promise<Response> {
       conversation_id: decodeURIComponent(conversation[1]!),
       status: "done",
       metadata: { cost: 60, cost_fiat: 0.012, charging: { call_charge: 60, platform_charge: 60, llm_charge: 0, voice_surcharge_charge: null, analysis: { total: { price: 0, charge: 0, runs: 0 }, last_run: { price: 0, charge: 0 } } } },
-    });
-  }
-  const record = /^\/v1\/projects\/mock-project\/requests\/([^/]+)$/u.exec(url.pathname);
-  if (request.method === "GET" && record !== null) {
-    const id = decodeURIComponent(record[1]!);
-    const usd = Number(/^mock_usd_([0-9.]{1,12})_/u.exec(id)?.[1] ?? "0.001");
-    // Wrapped in `request`, as Deepgram's reference shows.
-    return Response.json({
-      request: {
-        request_id: id,
-        project_uuid: MOCK_PROJECT,
-        created: new Date().toISOString(),
-        path: "/v1/listen",
-        response: { code: 101, completed: new Date().toISOString(), details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, channels: 1 } },
-      },
     });
   }
   // A path no provider declares, for passthrough (step 5): any method,
@@ -859,17 +837,13 @@ function echoSession(request: Request, url: URL): Response {
   return new Response(null, { status: 101, webSocket: client });
 }
 
-/** Deepgram's project, as the mock's key sees it. */
-const MOCK_PROJECT = "mock-project";
-
 /** Deepgram's live stream (step 10a): `Results` for each audio frame, `Metadata` at `CloseStream`. */
-function deepgramStream(url: URL): Response {
+function deepgramStream(): Response {
   const [client, server] = Object.values(new WebSocketPair());
   if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
   server.binaryType = "arraybuffer";
   server.accept();
-  const usd = /^[0-9.]{1,12}$/u.test(url.searchParams.get("mock_usd") ?? "") ? url.searchParams.get("mock_usd")! : null;
-  const requestId = `${usd === null ? "mock" : `mock_usd_${usd}`}_${crypto.randomUUID()}`;
+  const requestId = `mock_${crypto.randomUUID()}`;
   // 16 kHz, 16-bit, mono: 32,000 bytes a second.
   let heard = 0;
   server.addEventListener("message", (event) => {
