@@ -9,7 +9,7 @@
  *
  * The mock adapters read the smoke mock provider's frames. xAI (9b), Gemini
  * Live (9d), OpenAI Realtime over WebSocket (9e), GPT-Live (9g), and
- * ElevenLabs' and Deepgram's streaming voice (10a) are the provider adapters.
+ * ElevenLabs' and Deepgram's streaming voice (10a) and ElevenLabs agents (11a) are the provider adapters.
  * `generic` (10b) is for a provider the gateway does not know: it reads no
  * frame. A frame no adapter reads costs nothing but the connection time.
  */
@@ -29,7 +29,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   keepalive?(data: string | ArrayBuffer): boolean,
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  *   callIdHeader?: string,
- *   lock?(data: string | ArrayBuffer): string | ArrayBuffer | null,
+ *   lock?(data: string | ArrayBuffer, session?: { userId: string | null }): string | ArrayBuffer | null | { refused: string },
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -79,7 +79,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * - `callIdHeader`: the provider's answer header that names the call (Deepgram's
  *   `dg-request-id`), stored as the session's provider call id, for a lookup after it ends.
  * - `lock`: a client frame as it goes to the provider, for a provider that needs nothing about the call
- *   remembered (ElevenLabs): the frame, changed or not, or null to drop it.
+ *   remembered (ElevenLabs): the frame, changed or not, null to drop it, or `{ refused: code }` to end the
+ *   session, as a call's meter may (ElevenLabs agents' overrides, 11a). `session.userId` is the end user's id
+ *   as the provider gets it, from the ticket (`providerUserId`), or null: the gateway decided it.
  */
 
 /**
@@ -966,6 +968,117 @@ export function withoutCredentials(data) {
   return JSON.stringify(frame);
 }
 
+/** How an agent's audio chunk starts, the frame the client sends most (ten a second, T17a): `{"user_audio_chunk":"<base64>"}`. */
+const AGENT_AUDIO = '{"user_audio_chunk":"';
+
+/**
+ * The only fields the client's first message may carry (`conversation_initiation_client_data`, ElevenLabs'
+ * WebSocket reference): its `type`; the greeting override (`onlyFirstMessage`); `dynamic_variables`, which
+ * fill the placeholders the agent's owner wrote and have no override switch; and `user_id` and
+ * `source_info`, which only name who and what started the call (ElevenLabs' own SDKs send `source_info`).
+ * Everything else changes what the agent does or what it bills, and is refused: the overrides outside
+ * `conversation_config_override` (`starting_workflow_node_id`, `procedure_ids`, `start_procedure_ids`),
+ * `custom_llm_extra_body`, another `branch_id` or `environment` than the signed URL's, and any field
+ * ElevenLabs may add later (Sol, #275 round 1).
+ */
+const AGENT_START_FIELDS = new Set(["type", "conversation_config_override", "dynamic_variables", "user_id", "source_info"]);
+
+/** The first message's fields refused in any later frame too, so none hides in another message. */
+const AGENT_START_ONLY = ["conversation_config_override", "custom_llm_extra_body", "starting_workflow_node_id", "procedure_ids", "start_procedure_ids", "branch_id", "environment", "user_id"];
+
+/**
+ * Fields ElevenLabs' own SDKs send empty (`{}`), which say nothing: the Python SDK's `custom_llm_extra_body`
+ * at the top level, the JavaScript SDK's `tts` and `conversation` beside the greeting override. Removed when
+ * exactly empty, before the frame is judged; a field with anything in it is judged as any other (Sol, #275
+ * round 2).
+ */
+const AGENT_EMPTY_TOP = ["custom_llm_extra_body"];
+const AGENT_EMPTY_OVERRIDE = ["tts", "conversation"];
+
+/** Whether a value is `{}`: an object with no field at all. @param {unknown} value */
+const emptyObject = (value) => isObject(value) && Object.keys(value).length === 0;
+
+/** Removes `names` from `record` where they are exactly `{}`. @param {Record<string, unknown>} record @param {readonly string[]} names */
+function dropEmpty(record, names) {
+  for (const name of names) if (emptyObject(record[name])) delete record[name];
+}
+
+/**
+ * Whether the client's overrides are only the one it may make (plan step 11): the agent's `first_message`,
+ * so a reconnect, a new conversation, doesn't repeat the whole greeting (T17a). Nothing else: above all
+ * not the duration (`conversation.max_duration_seconds`), the agent's own second cap behind ours.
+ * @param {unknown} override
+ */
+function onlyFirstMessage(override) {
+  if (override === undefined || override === null) return true;
+  if (!isObject(override) || Object.keys(override).some((name) => name !== "agent")) return false;
+  const agent = override.agent;
+  if (agent === undefined || agent === null) return true;
+  return isObject(agent) && Object.keys(agent).every((name) => name === "first_message") && (agent.first_message === undefined || agent.first_message === null || typeof agent.first_message === "string");
+}
+
+/**
+ * An agent's client frame as it goes to ElevenLabs (plan 5.1: settings messages are always fully parsed).
+ * - An audio chunk and nothing else goes as it is, never parsed: no quote in it but the last one.
+ * - Any other frame is read whole, as ElevenLabs reads it. The first message may carry only
+ *   `AGENT_START_FIELDS`, and its override only the greeting. Any other frame may carry none of the first
+ *   message's fields but the greeting override (`AGENT_START_ONLY`). A frame that breaks either is refused,
+ *   and so is one that is not a JSON object, or binary: ElevenLabs' messages are JSON text, and either would
+ *   go unread. The rest go written again as they were read, so a repeated key can't be read another way by
+ *   ElevenLabs.
+ * - Fields ElevenLabs' own SDKs send empty are removed first (`AGENT_EMPTY_TOP`, `AGENT_EMPTY_OVERRIDE`).
+ * - The first message's `user_id` is the one the ticket carries, whatever the client sent: ElevenLabs may load
+ *   that user's memory of past conversations, so a client can never name another user (Sol, #275 rounds 2
+ *   and 3). The gateway gives one only for a verified end user, scoped to the app; with none, it is removed.
+ * @param {string | ArrayBuffer} data
+ * @param {{ userId: string | null }} [session]
+ * @returns {string | { refused: string }}
+ */
+export function agentLock(data, session = { userId: null }) {
+  if (typeof data !== "string") return { refused: "binary_not_supported" };
+  if (data.startsWith(AGENT_AUDIO) && data.endsWith('"}') && data.indexOf('"', AGENT_AUDIO.length) === data.length - 2) return data;
+  const frame = parsed(data);
+  if (!isObject(frame)) return { refused: "invalid_frame" };
+  dropEmpty(frame, AGENT_EMPTY_TOP);
+  if (isObject(frame.conversation_config_override)) dropEmpty(frame.conversation_config_override, AGENT_EMPTY_OVERRIDE);
+  const start = frame.type === "conversation_initiation_client_data";
+  const allowed = start
+    ? Object.keys(frame).every((name) => AGENT_START_FIELDS.has(name))
+    : AGENT_START_ONLY.every((name) => name === "conversation_config_override" || !Object.hasOwn(frame, name));
+  if (!allowed || !onlyFirstMessage(frame.conversation_config_override)) return { refused: "override_not_allowed" };
+  if (start) {
+    delete frame.user_id;
+    if (session.userId !== null) frame.user_id = session.userId;
+  }
+  return JSON.stringify(frame);
+}
+
+/** ElevenLabs' `ping` to an agent's client, every 2 s or so (T17a): `{"ping_event":{…},"type":"ping"}`, its first key first. */
+const AGENT_PING = '{"ping_event"';
+
+/**
+ * An ElevenLabs agent (11a), over WebSocket at `v1/convai/conversation`, through the single-use signed URL
+ * `open` asked for (`../index.js`).
+ *
+ * - Billed by the relay's clock from the start, at the agent's base rate a minute: an estimate, never a
+ *   ceiling (burst minutes cost twice as much, long silences 5%, the LLM is extra; T16). ElevenLabs' own
+ *   record of the conversation corrects the session after the end (the gateway's lookup). So no frame of
+ *   ElevenLabs' is read for usage: they are forwarded as they are.
+ * - The client's frames are locked (`agentLock`): only the first message's greeting may be overridden.
+ * - A reconnect is a new conversation (T17a): when the client drops, the session ends at once, and the
+ *   provider side with it, so ElevenLabs stops billing (plan 5.1).
+ * - ElevenLabs' `ping` says nothing but "still here": the 90 s rule still ends a session whose client is gone.
+ * @type {Adapter}
+ */
+const ELEVENLABS_AGENT = {
+  shape: "per_turn",
+  detached: "end",
+  read: () => null,
+  turn: () => null,
+  lock: (data, session) => agentLock(data, session),
+  keepalive: (data) => typeof data === "string" && data.length < 256 && data.startsWith(AGENT_PING),
+};
+
 /**
  * The audio Deepgram has heard, from one of its frames, in seconds, or null: a `Results` frame's end
  * (`start` + `duration`), and the closing `Metadata` frame's `duration`, each for every channel billed
@@ -1044,6 +1157,7 @@ const ADAPTERS = {
   gptlive: GPT_LIVE,
   elevenlabs_tts: ELEVENLABS_TTS,
   deepgram: DEEPGRAM,
+  elevenlabs_agent: ELEVENLABS_AGENT,
   // A provider the gateway does not know (10b, plan D4): its frames, both ways, are forwarded as they are
   // and never read, so the session bills its connection time at the customer's per-minute rate. Its
   // frames are held for our SDK's reconnect, as for any provider that keeps the conversation.

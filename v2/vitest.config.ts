@@ -24,6 +24,7 @@ const SPLIT_KEY_FILES = [
   "test/relay-session.test.ts",
   "test/session-leases.test.ts",
   "test/streaming-voice.test.ts",
+  "test/elevenlabs-agents.test.ts",
   "test/generic-live.test.ts",
 ];
 

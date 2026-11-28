@@ -179,6 +179,13 @@
       "author": "ElevenLabs"
     }
   },
+  "elevenlabs-agents": {
+    "agent": {
+      "kind": "agent",
+      "per_minute": 0.08,
+      "author": "ElevenLabs"
+    }
+  },
   "deepgram": {
     "nova-3": {
       "kind": "transcription",

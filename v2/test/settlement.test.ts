@@ -87,7 +87,8 @@ function sessionRow(fields: Partial<SessionRow> = {}): SessionRow {
     appKeyId: null,
     providerType: "elevenlabs",
     providerConnectionId: null,
-    operation: "elevenlabs.agent",
+    // An operation no provider declares: these tests are about settling, never one provider's prices.
+    operation: "test.session_total",
     model: null,
     mode: "relayed",
     slot: "conversational",
@@ -891,10 +892,10 @@ describe("the sweep", () => {
       `INSERT INTO open_work (id, kind, account_id, app_id, owner_type, owner_id, charge_id, detail_json, due_at, tries, created_at)
        VALUES (?, 'provider_lookup', ?, 'app_sweep', 'call', ?, NULL, ?, ?, 0, ?)`,
     )
-      .bind(id, ACCOUNT_ID, id, JSON.stringify({ providerType: "elevenlabs" }), T0 - 1, T0)
+      .bind(id, ACCOUNT_ID, id, JSON.stringify({ providerType: "xai" }), T0 - 1, T0)
       .run();
     await runSweep(env, ledger(), { now: T0 });
-    expect(await rows(id)).toMatchObject([{ tries: 1, last_error: "no cost lookup for provider elevenlabs" }]);
+    expect(await rows(id)).toMatchObject([{ tries: 1, last_error: "no cost lookup for provider xai" }]);
   });
 
   it("settles a closed session and prices an unresolved charge through its handlers; a repeat run changes nothing", async () => {

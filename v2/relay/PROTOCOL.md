@@ -150,6 +150,59 @@ each channel billed).
   request and settles the session to Deepgram's own dollar figure, for up to an
   hour; after that, or when the key can't read it, the estimate stays.
 
+### ElevenLabs agents
+
+An ElevenLabs agent call (`v1/convai/conversation`, with the agent's id as
+`agent_id` or as the session's `model`) is a conversation with one agent. The
+agent is the session's model: it can't be changed once the call starts.
+
+- **Opening.** The gateway asks ElevenLabs for a single-use signed URL for the
+  agent, with `include_conversation_id=true`, when the relay calls `open`. Of
+  the app's query, only `branch_id` and `environment` go with that request. The
+  relay connects there, and sends no key with it; it connects only when the URL
+  is on the address the session's key is sealed for. If ElevenLabs refuses (a
+  deleted agent, say), the session never starts:
+  `4000 provider_unavailable`. The client's messages and ElevenLabs' go as
+  ElevenLabs' own WebSocket API has them.
+- **The first message.** The client may override only the agent's greeting:
+  `conversation_config_override` with `agent.first_message` and nothing else, so
+  a new conversation after a lost one doesn't repeat the whole greeting. Beside
+  it, the first message may carry `dynamic_variables` and `source_info`. Any
+  other field or override (the duration above all,
+  `conversation.max_duration_seconds`) ends the session with
+  `1008 override_not_allowed`, and so does one of these fields in a later
+  message. Empty fields ElevenLabs' own SDKs send (`custom_llm_extra_body: {}`,
+  and `tts: {}` or `conversation: {}` in the override) are removed first. The
+  first message's `user_id` is always the one the session's ticket carries,
+  whatever the client sent: ElevenLabs may load that user's memory of past
+  conversations. The gateway gives one only for an end user it verified (an
+  App Attest install, or an issuer's token at the exchange), as
+  `<app id>:<the first 32 hex characters of the SHA-256 of the user id>`, so two
+  apps never share a person's history. For an app key sent with every request,
+  whose end user is a header the caller sets, and for an app with no end users,
+  there is none, and `user_id` is removed. A binary client
+  frame ends it with `1008 binary_not_supported`, and text that isn't a JSON
+  object with `1008 invalid_frame`: ElevenLabs' messages are JSON text. The
+  client's other messages are sent written again as they were read; an audio
+  chunk alone (`{"user_audio_chunk":"…"}`) goes as it is.
+- **Billing.** The session's clock from the start to the close, at the agent's
+  base rate a minute. That is an estimate: ElevenLabs bills burst minutes at
+  twice the rate, long silences at 5%, and the agent's language model on top.
+  The relay keeps the conversation's id from the signed URL. After the end, the
+  gateway reads ElevenLabs' record of the conversation and settles the session to
+  ElevenLabs' own figure (`cost_fiat`, plus a voice surcharge if the record has
+  one), for up to an hour. After that, or when the record can't be read (the
+  agent was deleted, the key may not read it), or its figure is $0 or less, the
+  estimate stays.
+- **A dropped link ends the call.** A reconnect is a new conversation anyway
+  (T17a), so when the client's link drops, the session ends at once and so does
+  the provider's side: ElevenLabs stops billing. There is no coming back to the
+  same session. The app asks for a new session, with a short `first_message`
+  and, if it wants, the earlier turns sent as a `contextual_update`.
+- ElevenLabs' `ping` does not keep a session alive: a client that sends nothing
+  for 90 s is gone, as for any provider. Answer each `ping` with a `pong`, as
+  ElevenLabs asks.
+
 ### Gemini Live
 
 A Gemini Live session is billed by the tokens of each turn, as Gemini reports
@@ -288,7 +341,7 @@ provider's side stays open:
 - **While the link is down:** the provider's frames are held for the client, in
   order, up to 512 frames or 8 MB (text counts 1 byte per character). More
   than that, and the session ends with `client_closed`. A protocol whose rule
-  is to end at once (ElevenLabs agents, later) ends the session at the drop.
+  is to end at once (ElevenLabs agents) ends the session at the drop.
 - **How long:** the heartbeat still runs. If no client comes back within 90 s
   of the last frame the client sent, the session ends on the relay's next
   30 s tick (`heartbeat_timeout`), so the gap can last 90 to 120 s. The session's

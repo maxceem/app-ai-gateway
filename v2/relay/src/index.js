@@ -36,8 +36,8 @@ import { HEALTH_PATH, RECONNECT_FIRST_MESSAGE_MS, RECONNECT_MESSAGE_MAX, SESSION
 import { JOURNAL_ALLOW_UNCONFIRMED, JOURNAL_KEY } from "./journal.js";
 import { providerFrame, RELAY_MESSAGE_PREFIX, RELAY_MESSAGES_HEADER, SessionFrames, StartQueue } from "./frames.js";
 import { GeminiUpstream } from "./gemini.js";
-import { attachSideChannel, connectProvider, createObservedCall, hangUpObservedCall } from "./provider.js";
-import { SessionCore } from "./start.js";
+import { attachSideChannel, connectProvider, createObservedCall, hangUpObservedCall, signedSession } from "./provider.js";
+import { ProviderRefused, SessionCore } from "./start.js";
 import { parseTicket, verifyTicket } from "./ticket.js";
 
 /**
@@ -112,6 +112,7 @@ export default {
  *   turnOpen: boolean,
  *   turns: number,
  *   clientState: Record<string, unknown>,
+ *   providerUser: string | null,
  * }} Live
  * The session in this instance. Client frames wait in `queue` while the
  * session starts, then go to the provider in order. `client` is null while our
@@ -119,6 +120,8 @@ export default {
  * back. `turnOpen`: the provider is in the middle of an answer (the adapter's `turn`);
  * `turns` counts the answers opened, so a late "done" for an earlier one never closes a newer one.
  * `clientState`: what the adapter remembers from the client's frames (ElevenLabs' dictionaries).
+ * `providerUser`: the end user's id as the provider gets it, from the ticket (an ElevenLabs agent's `user_id`):
+ * the gateway decided it, and the relay only copies it.
  */
 
 /**
@@ -159,7 +162,16 @@ export class Session extends DurableObject {
       main: env.MAIN,
       provider: {
         connect: async (key, settings) => {
-          const { callId, socket } = await connectProvider(key, undefined, undefined, undefined, adapterFor(settings.adapter).callIdHeader);
+          // A session that starts through a signed URL (ElevenLabs agents): there, and with no key, only when
+          // it is on the address the key is sealed for. It names the conversation.
+          const signed = settings.signedUrl === undefined ? null : signedSession(key.target, settings.signedUrl);
+          if (settings.signedUrl !== undefined && signed === null) {
+            this.core.log({ level: "error", message: "relay_signed_url_refused", session: this.core.sessionId });
+            throw new ProviderRefused(502);
+          }
+          const connected = await connectProvider(signed === null ? key : { target: signed.target }, undefined, undefined, undefined, adapterFor(settings.adapter).callIdHeader);
+          const socket = connected.socket;
+          const callId = signed === null ? connected.callId : signed.callId;
           // Gemini Live: the relay owns its upstream, resumes it and swaps it (`./gemini.js`, plan 9d).
           if (settings.adapter === "gemini") return this.geminiCall(key, settings, socket);
           const meter = adapterFor(settings.adapter).perCall?.(settings.model ?? null, settings) ?? null;
@@ -396,6 +408,7 @@ export class Session extends DurableObject {
       turnOpen: false,
       turns: 0,
       clientState: {},
+      providerUser: ticket.providerUserId ?? null,
     };
     // Listened to before the start: a client that hangs up during it stops it, and its frames wait.
     this.listen(live, client, owner);
@@ -586,15 +599,13 @@ export class Session extends DurableObject {
     if (Date.now() >= live.deadline) return void this.core.end("time_cap");
     // The session is closing: nothing new goes to the provider while its last answer finishes.
     if (this.core.ending !== null) return;
-    // The adapter's own lock (ElevenLabs': a client's credentials out, a binary frame dropped).
-    if (live.adapter.lock !== undefined) {
-      const kept = live.adapter.lock(data);
-      if (kept === null) return;
-      data = kept;
-    }
-    // The model lock, for a provider whose client may name another model mid-session (OpenAI's `session.update`).
-    const locked = live.call?.meter?.lock(data) ?? data;
-    // A frame the lock refuses (GPT-Live's backend rules): the session ends, and the client is told why.
+    // The adapter's own lock (ElevenLabs': a client's credentials out, a binary frame dropped; an agent's
+    // overrides refused), then the model lock, for a provider whose client may name another model
+    // mid-session (OpenAI's `session.update`).
+    let locked = live.adapter.lock === undefined ? data : live.adapter.lock(data, { userId: live.providerUser });
+    if (locked === null) return;
+    if (typeof locked !== "object" || locked instanceof ArrayBuffer) locked = live.call?.meter?.lock(locked) ?? locked;
+    // A frame a lock refuses (GPT-Live's backend rules, an agent's overrides): the session ends, and the client is told why.
     if (typeof locked === "object" && !(locked instanceof ArrayBuffer)) {
       this.core.log({ level: "warn", message: "relay_frame_refused", session: this.core.sessionId, code: locked.refused });
       return void this.endFor(live, "error", 1008, locked.refused);

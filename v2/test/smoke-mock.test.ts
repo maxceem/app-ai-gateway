@@ -280,6 +280,36 @@ describe("the mock's streaming voice stand-ins (step 10a)", () => {
   });
 });
 
+describe("the mock's ElevenLabs agents (step 11a)", () => {
+  const get = async (path: string) => (await mock.fetch(new Request(`https://mock.test${path}`, { headers: { "xi-api-key": "mock-key" } }))).json() as Promise<Record<string, any>>;
+
+  it("answers an agent's settings, a signed URL back to itself with a new conversation, and a call that needs its signature", async () => {
+    expect((await get("/v1/convai/agents/agent_smoke")).platform_settings).toMatchObject({ auth: { enable_auth: true }, overrides: { conversation_config_override: { conversation: { max_duration_seconds: false } } } });
+    expect((await get("/v1/convai/agents/agent_mock_auth_off")).platform_settings.auth.enable_auth).toBe(false);
+    const { signed_url: signed } = (await get("/v1/convai/conversation/get-signed-url?agent_id=agent_smoke&include_conversation_id=true")) as { signed_url: string };
+    const url = new URL(signed);
+    expect(url.origin.replace("wss:", "https:")).toBe("https://mock.test");
+    expect(url.searchParams.get("conversation_id")).toMatch(/^conv_mock_[0-9a-f]{32}$/u);
+    const unsigned = await mock.fetch(new Request("https://mock.test/v1/convai/conversation?agent_id=agent_smoke", { headers: { upgrade: "websocket" } }));
+    expect(unsigned.status).toBe(401);
+    const call = await mock.fetch(new Request(url.toString().replace("wss:", "https:"), { headers: { upgrade: "websocket" } }));
+    expect(call.status).toBe(101);
+    const socket = call.webSocket!;
+    const got: string[] = [];
+    let done: () => void = () => undefined;
+    socket.addEventListener("message", (event) => {
+      got.push(String(event.data));
+      if (got.length === 2) done();
+    });
+    socket.accept();
+    socket.send(JSON.stringify({ user_audio_chunk: "AAAA" }));
+    await new Promise<void>((resolve) => (got.length >= 2 ? resolve() : (done = resolve)));
+    expect(JSON.parse(got[0]!)).toMatchObject({ type: "conversation_initiation_metadata", conversation_initiation_metadata_event: { conversation_id: url.searchParams.get("conversation_id") } });
+    expect(JSON.parse(got[1]!)).toMatchObject({ type: "audio" });
+    expect(await get(`/v1/convai/conversations/${url.searchParams.get("conversation_id")}`)).toMatchObject({ status: "done", metadata: { cost_fiat: 0.012 } });
+  });
+});
+
 describe("the mock's unknown live provider (step 10b)", () => {
   it("says which key header it got, as a label, and its query, then echoes every frame as it was sent", async () => {
     const response = await mock.fetch(new Request("https://mock.test/v1/live-echo?voice=alloy", { headers: { upgrade: "websocket", "x-api-key": "sk-mock-smoke-key" } }));

@@ -539,10 +539,28 @@ export interface SessionSpec {
   readonly backend?: { readonly operation: string; readonly tools: readonly string[] };
   /**
    * The provider's own dollar figure for the session, read after it ends, that settles it (plan 4.2):
-   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`). Its key is kept, sealed, for the
-   * lookup (plan 8j, "Keys needed with no app request").
+   * Deepgram's request record (10a, `../relay/deepgram-lookup.ts`), ElevenLabs' conversation record
+   * (11a, `../relay/elevenlabs-agent.ts`). Its key is kept, sealed, for the lookup (plan 8j, "Keys needed
+   * with no app request").
    */
-  readonly lookup?: "deepgram";
+  readonly lookup?: "deepgram" | "elevenlabs";
+  /**
+   * The session connects through a single-use signed URL the gateway asks the provider for at `open`
+   * (ElevenLabs agents, 11a, `../relay/elevenlabs-agent.ts`): the relay connects there, never with the key.
+   */
+  readonly signedUrl?: true;
+  /**
+   * Its priced slices are estimates, whatever their price: it is a base rate the provider's own bill
+   * differs from (ElevenLabs agents: burst minutes, silences, the language model, 11a). The provider's
+   * record settles it (`lookup`), exactly (`sessionPricedAsEstimate` in `../relay/session-price.ts`).
+   */
+  readonly estimate?: true;
+  /**
+   * The provider takes the end user's id in the session (an ElevenLabs agent's `user_id`, which may load that
+   * user's memory of past conversations, 11a): the ticket carries it (`providerUserId`), scoped to the app,
+   * for an end user the gateway verified only (`providerUserId` in `../relay/start-session.ts`).
+   */
+  readonly sendsUser?: true;
   /**
    * The provider takes the session's options in its address's query (Deepgram's audio format, ElevenLabs'
    * output format): the app's query goes on, without credential fields, and with the session's model. A
@@ -594,6 +612,12 @@ export interface OperationDescription {
    * model is the same on every operation.
    */
   readonly priceList?: string;
+  /**
+   * The only model ids it serves: those that start with this, and have more after it (an ElevenLabs
+   * agent's, `agent_…`, 11a). Any other is a model of another kind for it, at save and admission alike
+   * (`resolveCall` in `../pricing/billability.ts`); another operation of the provider may still serve it.
+   */
+  readonly modelPrefix?: string;
   /**
    * The price list's kinds of model it serves, such as `speech`. A model the
    * list names with another kind (a transcription model beside it on the same
@@ -915,6 +939,13 @@ export interface ProviderDescription {
    * `gpt-4o`. A namespace not listed has no price of ours.
    */
   readonly modelNamespaces?: Readonly<Record<string, string>>;
+  /**
+   * Model ids that start with `prefix` name something of the customer's own, all priced as one entry of our
+   * list, `type`'s `model`: an ElevenLabs agent (`agent_…`, ElevenLabs' own form for its ids), billed at one
+   * base rate a minute whatever the agent (11a). Read with every operation, so a voice operation sees an
+   * agent as a model of another kind. A customer's own rate is still keyed by the id (`../providers/listing.ts`).
+   */
+  readonly listedByPrefix?: { readonly prefix: string; readonly type: string; readonly model: string };
   /**
    * Request fields naming more models the provider may serve the request
    * with: Vercel's fallback list (`providerOptions.gateway.models[]`),

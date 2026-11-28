@@ -46,6 +46,7 @@ import { requestedServiceMode } from "../proxy/meter.ts";
 import { savedAlternativesProblem } from "../proxy/alternatives.ts";
 import { applyOutputCap, refuseBackground } from "../proxy/policy.ts";
 import { requireManage, type AdminVariables } from "./actor.ts";
+import { checkAgents } from "./agents.ts";
 import { applyAppPatch } from "./app-patch.ts";
 import { sameJson } from "../contracts/canonical-json.ts";
 import { planCap, planCeiling } from "./plan-caps.ts";
@@ -730,6 +731,7 @@ export async function createApp(c: AdminContext): Promise<Response> {
   const body = await parseBody(c, AppCreateRequestSchema);
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
   await checkConversations(c.env, actor.accountId, config, null);
+  await checkAgents(c.env, actor.accountId, config, null);
   const cap = await planCap(c.env, c.env.DB, actor.accountId, "app");
   // The first key is not counted against the key ceiling, as v1, except when
   // the plan allows no keys at all: such a plan allows only App Attest apps.
@@ -803,6 +805,7 @@ async function saveApp(
   const against = judgedAgainst(current, body.status);
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
   await checkConversations(c.env, actor.accountId, config, storedConfig(current));
+  await checkAgents(c.env, actor.accountId, config, storedConfig(current));
   const result = await c.env.DB.prepare(
     `UPDATE app SET name = ?, config_json = ?, status = COALESCE(?, status), revision = revision + 1, updated_at = ?
      WHERE id = ? AND account_id = ? AND revision = ?`,
@@ -862,6 +865,7 @@ export async function validateApp(c: AdminContext): Promise<Response> {
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config, against.stored, against.priced);
   // Judged as an update would be: storage needs the bucket and a plan that includes it.
   await checkConversations(c.env, actor.accountId, config, storedConfig(current));
+  await checkAgents(c.env, actor.accountId, config, storedConfig(current));
   return c.json({ valid: true, app_id: current.id } satisfies OperationResponse<"validateApp">);
 }
 
@@ -872,6 +876,7 @@ export async function validateAppDraft(c: AdminContext): Promise<Response> {
   const config = await checkAppConfig(c.env.DB, actor.accountId, body.config);
   // Judged as a create would be.
   await checkConversations(c.env, actor.accountId, config, null);
+  await checkAgents(c.env, actor.accountId, config, null);
   return c.json({ valid: true } satisfies OperationResponse<"validateAppDraft">);
 }
 
