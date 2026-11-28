@@ -600,6 +600,20 @@ public actor AppAIGatewayClient {
         return try await startSession(provider: provider, path: path, model: model, takesOver: takesOver, send: send)
     }
 
+    /// Asks for a call with one of your ElevenLabs agents
+    /// (`v1/convai/conversation`). `agentID` is the agent's id, such as
+    /// `agent_7201…`, and must be listed in the app's settings. `provider` is
+    /// the connection's slug. For voice, the `AppAIGatewayElevenLabs` library
+    /// does the rest.
+    public func startElevenLabsAgentSession(
+        agentID: String,
+        provider: String = "elevenlabs",
+        takesOver: String? = nil,
+        send: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
+    ) async throws -> LiveSessionTicket {
+        try await startSession(provider: provider, path: "v1/convai/conversation", model: agentID, takesOver: takesOver, send: send)
+    }
+
     /// Builds a request to a provider through the gateway, hands it to `send`,
     /// and builds it again where the gateway itself refused it in a way a
     /// fresh token or a fresh proof can fix.

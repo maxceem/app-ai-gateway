@@ -193,6 +193,28 @@ there rather than from a URL of your own: on an app that verifies every
 request, a request without a proof is refused with `assertion_required`, and editing
 a signed request's URL breaks its proof.
 
+### Voice calls with ElevenLabs agents
+
+The `AppAIGatewayElevenLabs` product is a voice client for your ElevenLabs
+agents through the gateway's relay. It records the microphone, plays the
+agent, and clears the agent's audio when the user talks over it. It is a
+separate library, so apps that don't use it don't carry its audio code. Add
+it to your target beside `AppAIGateway`:
+
+```swift
+import AppAIGatewayElevenLabs
+
+let voice = ElevenLabsVoiceClient(gateway: gateway, agentID: "agent_7201…")
+try await voice.start()
+for await event in voice.events {
+    // .userTranscript, .agentResponse, .interrupted, .ended(…), …
+}
+```
+
+The app needs microphone permission and the `audio` background mode. See the
+gateway's live sessions guide for a lost connection, the stop button and
+noisy places.
+
 ### Upgrading to 2.0
 
 - Every route moves from `/v1` to `/v2`. Signed requests sign the `/v2` path,

@@ -753,8 +753,9 @@ struct LiveSessionTests {
         _ = try await client.startXAIVoiceSession(model: "grok-voice-3.0", send: send)
         _ = try await client.startGeminiLiveSession(model: "gemini-3.1-flash-live-preview", send: send)
         _ = try await client.startGPTLiveSession(send: send)
+        _ = try await client.startElevenLabsAgentSession(agentID: "agent_1", takesOver: "s0", send: send)
         let seen = try #require(bodies.get())
-        #expect(seen.count == 4)
+        #expect(seen.count == 5)
         let decoded = try seen.map { line -> (String, [String: String]) in
             let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
             return (parts[0], try JSONDecoder().decode([String: String].self, from: Data(parts[1].utf8)))
@@ -767,6 +768,8 @@ struct LiveSessionTests {
         #expect(decoded[2].1 == ["path": "ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", "model": "gemini-3.1-flash-live-preview"])
         #expect(decoded[3].0 == "openai")
         #expect(decoded[3].1 == ["path": "v1/live/sessions", "model": "gpt-live-1"])
+        #expect(decoded[4].0 == "elevenlabs")
+        #expect(decoded[4].1 == ["path": "v1/convai/conversation", "model": "agent_1", "takes_over": "s0"])
     }
 
     @Test
